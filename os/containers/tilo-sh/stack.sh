@@ -1295,7 +1295,7 @@ vm_host() {
     "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$(image_archive image-vm-host image.oci.tar)}" \
     "TILO_SH_HOSTED_GUEST=${TILO_SH_HOSTED_GUEST:-$state/images/$commit/image-hosted-guest}" \
     "TILO_VM_TICKET=${TILO_VM_TICKET:-}" \
-    "TILO_SH_DEVICE_ADMIN=$programs/tilo-device-admin" \
+    "TILO_SH_SERVER_WEB_HOST=$state/server/state/tilo/device/own/web-host.json" \
     "TILO_SH_SERVER_SECRETS=$state/secrets" \
     "TILO_SH_SERVER_SECRETS_VIEW=$secrets_view" \
     "TILO_SH_SERVER_WORKSPACES_VIEW=$workspaces_view" \
@@ -1521,8 +1521,8 @@ build_programs() {
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-runtime/agents \
       -p tilo-runtime -p discord-worker --bin tilo-runtime --bin discord-worker >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
-        -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-device-admin -p tilolang-process \
-        --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-device-admin --bin tilolang-process >&2 \
+        -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process \
+        --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilolang-process >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
         -p tilo-account-probe --example mail_stand_in >&2) \
       || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
@@ -1589,7 +1589,7 @@ bundle_stage() {
 copy_programs() {
   local from=$1 file stand_in=$1/examples/mail_stand_in
   mkdir -p "$programs"
-  for file in tilo-runtime discord-worker tilo-api fake-discord fake-model-providers tilo tilo-device-admin tilolang-process; do
+  for file in tilo-runtime discord-worker tilo-api fake-discord fake-model-providers tilo tilolang-process; do
     [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
     cmp -s "$from/$file" "$programs/$file" && continue
     cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"

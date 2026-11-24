@@ -71,8 +71,7 @@ secrets=${TILO_SH_SERVER_SECRETS:-$state/secrets}
 pod=vm-host-0
 host_container=tilo-sh-$pod
 server_iroh=${TILO_SH_SERVER_IROH:-127.0.0.1:24104}
-server_identity=${TILO_SH_SERVER_IDENTITY:-$state/identity}
-device_admin=${TILO_SH_DEVICE_ADMIN:-tilo-device-admin}
+server_web_host=${TILO_SH_SERVER_WEB_HOST:-$state/server/state/tilo/device/own/web-host.json}
 # What the host holds awake at once: the size's warm template (a template is
 # counted at its size's whole memory, since warming it fills its guest), a
 # clone of that template awake beside it (a third of a gigabyte, measured), and
@@ -149,11 +148,12 @@ guest_ready() { # dir images -> reference
 
 # The server's endpoint id: an iroh endpoint is keyed apart from the device it
 # signs its runs as, and a VM's Browser session reaches the server there.
-# The identity the server signed in with names it.
+# What the daemon registered as its own host (`web-host.json`) names it.
 server_endpoint() {
-  [ -d "$server_identity" ] \
-    || fail "$server_identity: the server has not started yet: start the stack's server first"
-  "$device_admin" id --identity-root "$server_identity" | json_field endpoint
+  [ -f "$server_web_host" ] \
+    || fail "$server_web_host: the server has not started yet: start the stack's server first"
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["address"]["endpointAddr"]["id"])' \
+    "$server_web_host"
 }
 
 # The state disk: a sparse file loop-attached and made XFS with reflink the
