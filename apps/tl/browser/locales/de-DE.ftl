@@ -408,6 +408,16 @@ d-vsaswu4a = Seitenansicht
     .w-block-what-this-site-asks-for = Blockieren, wonach diese Website fragt
     .w-let-the-site-ask-again = Website darf erneut fragen
     .w-developer-tools = Entwicklerwerkzeuge
+    .w-logins = Anmeldungen
+    .w-find-this-page-s-logins = Anmeldungen dieser Seite finden
+    .w-saved-logins = Gespeicherte Anmeldungen
+    .w-save-the-login = Anmeldung speichern
+    .w-logins-on-this-page = Anmeldungen auf dieser Seite
+    .w-save-this-login = Diese Anmeldung speichern
+    .w-update-the-saved-login = Gespeicherte Anmeldung aktualisieren
+    .w-saved-for-this-site = Für diese Website gespeichert
+    .w-fill = Einsetzen
+    .w-delete = Löschen
 
 d-pu2zdrbu = Schrittzeile
 
@@ -1148,8 +1158,6 @@ d-eb3wtiud = Formular mit einer Adresse ausfüllen
 d-eb3wtiud-form = Formular
 d-eb3wtiud-a = A
 
-
-
 d-fxq6nhpy = Adressseite
     .w-the-address = Die Adresse
     .w-name-for-it = Name dafür
@@ -1336,3 +1344,124 @@ d-j4t6lwtn = Website erneut fragen lassen
 d-asdqm6oc = Lesezeichen benennen
 d-xbrdtvx6 = Adresse ausfüllen
 d-sb77wivf = Verlauf kürzen
+
+d-nfmtkvs7 = Anmeldeformulare
+    .doc = Die Anmeldeformulare, die der Motor auf dieser Seite gefunden hat, wie sein Anmeldespeicher sie aufgelistet hat.
+
+d-jbnzv4tj = Anmeldekonten
+    .doc = Die Anmeldungen, die der Motor für diese Website aufbewahrt.
+
+d-jz6xwcus = Aufzeichnung
+    .doc = Die Aufzeichnung, die der Motor von einer auf dieser Seite gesendeten Anmeldung gemacht hat, bis sie gespeichert oder verworfen wird.
+
+d-wqz44fsx = Hinweis zur Anmeldung
+    .doc = Was der Anmeldespeicher des Motors zuletzt geantwortet hat, in seinen eigenen Worten.
+
+d-2hbds7ee = Anmeldeformular
+    .doc = Ein Anmeldeformular, das der Motor auf der Seite gefunden hat: seine eigene Nummer dafür, das Konto, das es anbietet, und welche Art es ist (`sign-in` oder `create`).
+    .noun = { $count ->
+        [one] Anmeldeformular
+       *[other] Anmeldeformulare
+    }
+
+d-hdxbxfcl = Formular
+
+d-enz3azev = Benutzername
+
+d-kqqay3gr = Art
+
+d-q3arly5t = Anmeldekonto
+    .doc = Eine Anmeldung, die der Motor für diese Website aufbewahrt: seine Nummer für das Konto und der Name, mit dem sie sich anmeldet.
+    .noun = { $count ->
+        [one] Anmeldekonto
+       *[other] Anmeldekonten
+    }
+
+d-53raewop = Konto
+
+d-5oqresy2 = Benutzername
+
+d-wdlbrp6r = Anmeldedaten
+    .doc = Die Aktion des Anmeldespeichers im Motor: `status`, `cancel`, `discover`, `addresses`, `list`, `capture`, `save`, `update`, `fill`, `delete` oder `fill_address`.
+
+d-x6klrsfn = Aufzeichnung
+    .doc = Die Aufzeichnung, die der Motor von einem Anmeldeformular gemacht hat, die Speichern oder Aktualisieren benennt.
+
+d-o345kv2f = Konto
+    .doc = Die Nummer des Motors für ein gespeichertes Konto, die Einsetzen oder Löschen benennt.
+
+d-cirolhk7 = Adresse
+    .doc = Die Adresse, mit der ein Formular über den Motor ausgefüllt wird.
+
+d-e43kzg7c-filter-address = Adresse
+
+d-o4s54tdd = Anmeldungen dieser Seite finden
+    .doc = Liest die Anmeldeformulare, nach denen diese Seite fragt, über den Anmeldespeicher des Motors.
+
+d-z745w65b = Gespeicherte Anmeldungen
+    .doc = Listet die Anmeldungen, die der Motor für diese Website aufbewahrt.
+
+d-jdz7mpvk = Diese Anmeldung speichern
+    .doc = Nimmt, was die Person in ein Anmeldeformular getippt hat, damit es für diese Website gespeichert werden kann.
+
+d-jdz7mpvk-f = F
+
+d-uz7qxlux = Anmeldung speichern
+    .doc = Speichert die Aufzeichnung, die der Motor für diese Website gemacht hat.
+    .w-take-the-login-first = Nimm die Anmeldung zuerst auf
+
+d-gzdjcbf4 = Gespeicherte Anmeldung einsetzen
+    .doc = Füllt ein Formular dieser Seite mit einer Anmeldung, die der Motor aufbewahrt.
+
+d-gzdjcbf4-f = F
+
+d-gzdjcbf4-a = A
+
+d-obkrjsac = Gespeicherte Anmeldung aktualisieren
+    .doc = Ersetzt eine gespeicherte Anmeldung durch die Aufzeichnung, die der Motor gemacht hat.
+    .w-take-the-login-first = Nimm die Anmeldung zuerst auf
+
+d-obkrjsac-f = F
+
+d-obkrjsac-a = A
+
+d-3vy7jxmm = Gespeicherte Anmeldung vergessen
+    .doc = Vergisst eine Anmeldung, die der Motor für diese Website aufbewahrt.
+
+d-3vy7jxmm-a = A
+
+d-rycvvkrz = Anmeldung nicht speichern
+    .doc = Lehnt die Anmeldung ab, die der Motor zum Speichern anbietet.
+
+d-qhntuc74 = Adressen, die Formulare dieser Seite annehmen
+    .doc = Liest die Adressen, mit denen der Motor Formulare ausfüllt.
+
+d-y2b7rzoy = Mit einer gespeicherten Adresse ausfüllen
+    .doc = Füllt ein Formular dieser Seite mit einer gespeicherten Adresse, über den Motor.
+
+d-y2b7rzoy-f = F
+
+d-y2b7rzoy-a = A
+
+d-fnrvkh2d = Anmeldedaten merken
+    .doc = Schreibt, was der Anmeldespeicher des Motors geantwortet hat, in den Eintrag der Seite: die Formulare und Konten, die er aufgelistet hat, die Aufzeichnung, die er gemacht hat, und seine eigenen Worte.
+
+d-fnrvkh2d-did = Tat
+
+d-fnrvkh2d-success = Erfolg
+
+d-fnrvkh2d-message = Meldung
+
+d-fnrvkh2d-forms = Formulare
+
+d-fnrvkh2d-accounts = Konten
+
+d-fnrvkh2d-capture = Aufzeichnung
+
+d-fnrvkh2d-username = Benutzername
+
+d-fnrvkh2d-late = Verspätet
+
+d-agsgbsb5 = Anmeldung speichern~present
+
+d-5wtzjn5r = Gespeicherte Anmeldung aktualisieren~present

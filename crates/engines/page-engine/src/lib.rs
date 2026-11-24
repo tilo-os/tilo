@@ -17,8 +17,8 @@ pub use prompts::{Prompt, PromptChange, PromptKey, PromptKind, Prompts};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use tilo_webview::{
-    FileChooser, PageActor, PageFailure, PageReply, PageRequest, SharedEngine, WebViewCommand,
-    WebViewEvent,
+    CredentialAction, CredentialRequest, FileChooser, PageActor, PageFailure, PageReply,
+    PageRequest, SharedEngine, WebViewCommand, WebViewEvent,
 };
 
 /// One app window's page: its engine, the actions waiting for an answer, and the events its
@@ -48,6 +48,11 @@ pub struct PageSession {
     /// What each download last said, so a moving one is told at each tenth it reaches rather
     /// than at every event.
     download_steps: HashMap<u32, (String, u64)>,
+    /// The engine's number for the next credential action.
+    credential_next: u32,
+    /// A credential action waiting for the page's current document: the engine's store only acts
+    /// on the document the person is looking at, so the session asks for its generation first.
+    credential_waiting: Option<CredentialRequest>,
 }
 
 impl PageSession {
@@ -64,6 +69,8 @@ impl PageSession {
             choosers: Vec::new(),
             notes: Vec::new(),
             download_steps: HashMap::new(),
+            credential_next: 0,
+            credential_waiting: None,
         }
     }
 
@@ -153,6 +160,42 @@ impl PageSession {
                 } => {
                     self.notes.push(codec::history_note(*direction, entries));
                 }
+                // How the engine's credential store answered: the forms and accounts it lists,
+                // the capture it took, and what the action came to. A status the session asked
+                // only to learn the page's document is not the person's to see: their own action
+                // follows with that document.
+                WebViewEvent::CredentialResult(reply) => {
+                    if reply.action == "status" && self.credential_waiting.is_some() {
+                        if let Some(mut waiting) = self.credential_waiting.take() {
+                            if reply.document.is_empty() {
+                                self.notes.push(codec::credential_note(
+                                    waiting.action.name(),
+                                    false,
+                                    &reply.message,
+                                    &[],
+                                    &[],
+                                    None,
+                                    None,
+                                    reply.late,
+                                ));
+                            } else {
+                                waiting.document.clone_from(&reply.document);
+                                self.send_credential(waiting);
+                            }
+                        }
+                    } else {
+                        self.notes.push(codec::credential_note(
+                            &reply.action,
+                            reply.success,
+                            &reply.message,
+                            &reply.forms,
+                            &reply.accounts,
+                            reply.capture.as_deref(),
+                            reply.username.as_deref(),
+                            reply.late,
+                        ));
+                    }
+                }
                 _ => {}
             }
             self.asks.apply(&event);
@@ -228,6 +271,39 @@ impl PageSession {
         !self.notes.is_empty()
     }
 
+    /// Ask the engine's credential store to do `request`: the logins it keeps for the page's
+    /// site, the forms it reads them from, or the capture of one the person typed. The store acts
+    /// on the document the person is looking at and refuses one from a page they left, so the
+    /// session asks which document that is and names it on the action. A password never crosses
+    /// the action or its answer.
+    pub fn credential(&mut self, request: CredentialRequest) {
+        if matches!(
+            request.action,
+            CredentialAction::Status | CredentialAction::Cancel
+        ) {
+            if matches!(request.action, CredentialAction::Cancel) {
+                self.credential_waiting = None;
+            }
+            self.send_credential(request);
+            return;
+        }
+        let status = CredentialRequest {
+            request_id: 0,
+            origin: request.origin.clone(),
+            document: String::new(),
+            action: CredentialAction::Status,
+        };
+        self.credential_waiting = Some(request);
+        self.send_credential(status);
+    }
+
+    /// Send one credential action, named by the session's own number for it.
+    fn send_credential(&mut self, mut request: CredentialRequest) {
+        self.credential_next = self.credential_next.wrapping_add(1);
+        request.request_id = self.credential_next;
+        self.engine.send(WebViewCommand::Credentials(request));
+    }
+
     /// Answer the page's file chooser `id` with exactly the paths the person picked, or with
     /// none to cancel it.
     pub fn answer_chooser(&self, id: u32, paths: Vec<String>) {
@@ -243,6 +319,7 @@ impl PageSession {
             || !self.events.is_empty()
             || self.prompts.changed()
             || !self.choosers.is_empty()
+            || self.credential_waiting.is_some()
             || !self.notes.is_empty()
     }
 }
@@ -323,14 +400,120 @@ mod tests {
         );
     }
 
+    /// The engine's credential store acts on the document the person is looking at: the session
+    /// asks the page which one that is and names it on the person's action, and the question it
+    /// asked is not the person's to see.
+    #[test]
+    fn a_credential_action_names_the_pages_own_document() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        session.credential(CredentialRequest {
+            request_id: 0,
+            origin: "https://example.org".to_owned(),
+            document: String::new(),
+            action: CredentialAction::Discover,
+        });
+        match test.commands().last() {
+            Some(WebViewCommand::Credentials(request)) => {
+                assert!(
+                    matches!(request.action, CredentialAction::Status),
+                    "the document is asked for first, naming no document itself: {request:?}"
+                );
+            }
+            other => panic!("a status is asked for: {other:?}"),
+        }
+
+        test.push_event(WebViewEvent::CredentialResult(
+            tilo_webview::CredentialReply {
+                request_id: 1,
+                action: "status".to_owned(),
+                origin: "https://example.org".to_owned(),
+                document: "4".to_owned(),
+                success: true,
+                message: "Ready".to_owned(),
+                forms: Vec::new(),
+                accounts: Vec::new(),
+                capture: None,
+                username: None,
+                late: false,
+            },
+        ));
+        session.poll();
+        match test.commands().last() {
+            Some(WebViewCommand::Credentials(request)) => {
+                assert!(
+                    matches!(request.action, CredentialAction::Discover),
+                    "the person's action follows: {request:?}"
+                );
+                assert_eq!(
+                    request.document, "4",
+                    "named by the document the page is at"
+                );
+                assert_eq!(request.origin, "https://example.org");
+            }
+            other => panic!("the action follows the status: {other:?}"),
+        }
+        assert!(
+            session.notes().is_empty(),
+            "asking the page for its document is not the person's to see"
+        );
+    }
+
+    /// A page whose logins the engine will not reach (it is not secure, or it has moved on) says
+    /// so in the person's action's own answer, and no action is sent for a document unknown.
+    #[test]
+    fn a_credential_action_the_engine_refuses_is_answered_in_its_own_words() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        session.credential(CredentialRequest {
+            request_id: 0,
+            origin: "http://example.org".to_owned(),
+            document: String::new(),
+            action: CredentialAction::List,
+        });
+        let before = test.commands().len();
+        test.push_event(WebViewEvent::CredentialResult(
+            tilo_webview::CredentialReply {
+                request_id: 1,
+                action: "status".to_owned(),
+                origin: "http://example.org".to_owned(),
+                document: String::new(),
+                success: false,
+                message: "Page changed or secure form access is unavailable".to_owned(),
+                forms: Vec::new(),
+                accounts: Vec::new(),
+                capture: None,
+                username: None,
+                late: false,
+            },
+        ));
+        session.poll();
+        assert_eq!(
+            test.commands().len(),
+            before,
+            "nothing is asked of a page whose document the store will not name"
+        );
+        let notes = session.notes();
+        let note: serde_json::Value = serde_json::from_str(&notes[0]).expect("the note is JSON");
+        assert_eq!(note["did"], "list");
+        assert_eq!(note["success"], false);
+        assert_eq!(
+            note["message"],
+            "Page changed or secure form access is unavailable"
+        );
+    }
+
     /// A page a script opened (a popup the site sized, a plain new tab) is a note the window
     /// hands the app, never the page's own event.
     #[test]
     fn pages_a_script_opens_are_notes_for_the_app() {
         let test = TestEngine::new();
         let engine: SharedEngine = test.clone();
-        let mut session = PageSession::new(engine);
+        let mut session = PageSession::new(engine.clone());
         test.push_new_tab_request("https://example.org/new");
+        // The page holds a popup for a window that asked for them, which is what the session
+        // says at each poll.
+        engine.accept_popups();
         test.push_popup(9, "https://example.org/sign-in", 420, 640);
         session.poll();
         let notes = session.notes();

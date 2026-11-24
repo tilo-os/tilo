@@ -87,6 +87,7 @@ fn note(
         "download" => "update_download",
         "history" => "remember_history",
         "open" => "open_from_page",
+        "credential" => "remember_credential",
         _ => {
             tracing::warn!(kind, "a note the app has no page action for");
             return false;

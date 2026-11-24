@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_page_engine::{PageSession, codec};
-use tilo_webview::SharedEngine;
+use tilo_webview::{SharedEngine, WebViewCommand};
 use ui::webview;
 
 /// The page of one window, made when the window first needs it.
@@ -44,6 +44,16 @@ pub enum Asked {
 pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
     let engine = engine_of(page);
     match codec::decode(request)? {
+        // A credential action names the page's document, which is the session's to know and the
+        // app's never to see: the session asks the page for it and sends the action after.
+        codec::Ask::Command(WebViewCommand::Credentials(credential)) => {
+            let mut held = page.borrow_mut();
+            let session = held
+                .as_mut()
+                .ok_or_else(|| "this window has no page".to_owned())?;
+            session.credential(credential);
+            Ok(Asked::Answered(codec::accepted()))
+        }
         codec::Ask::Command(command) => {
             engine.send(command);
             Ok(Asked::Answered(codec::accepted()))

@@ -122,6 +122,14 @@ type Page (title: title) {
     muted: Bool = false
     /// The site's connection, permissions and stored data, as its window last read them.
     site: Option<SiteInfo> = .none
+    /// The login forms the engine found on this page, as its credential store listed them.
+    login_forms: Collection<LoginForm>
+    /// The logins the engine keeps for this site.
+    login_accounts: Collection<LoginAccount>
+    /// The capture the engine took of a login this page sent, until it is saved or dropped.
+    capture: Text = ""
+    /// What the engine's credential store answered last, in its own words.
+    login_notice: Text = ""
     /// The pages before this one and the ones after it, as the engine last answered the window's
     /// request for them.
     back: Collection<HistoryEntry>
@@ -256,6 +264,29 @@ type HistoryEntry (title: title) {
     }
 }
 
+/// One login form the engine found on the page: its own number for it, the account it offers,
+/// and what kind it is (`sign-in` or `create`).
+type LoginForm (title: form) {
+    form: Text
+    username: Text
+    kind: Text
+
+    search {
+        hide form
+    }
+}
+
+/// One login the engine keeps for this site: its number for the account, and the name it signs
+/// in as. The password stays in the engine's credential store and never reaches the app.
+type LoginAccount (title: username) {
+    account: Text
+    username: Text
+
+    search {
+        hide account
+    }
+}
+
 /// What a page is asked, as the window that holds it reads it: one operation and the fields it
 /// takes. A field left at its default is unsent, and the page reads it as absent.
 type Ask {
@@ -295,6 +326,15 @@ type Ask {
     origins: Option<List<Text>> = .none
     /// The site a site action or a status reading is about.
     origin: Option<Text> = .none
+    /// The engine's credential store action: `status`, `cancel`, `discover`, `addresses`,
+    /// `list`, `capture`, `save`, `update`, `fill`, `delete` or `fill_address`.
+    credential: Option<Text> = .none
+    /// The capture the engine took of a login form, which saving or updating names.
+    capture: Option<Text> = .none
+    /// The engine's number for a saved account, which filling or deleting names.
+    account: Option<Text> = .none
+    /// The address a form is filled from, through the engine.
+    address: Option<Address> = .none
     /// The document generation the site was read at, which a site action names.
     generation: Option<Int> = .none
     paths: Option<List<Text>> = .none
@@ -1080,6 +1120,144 @@ action ask_site_permissions_again(p: Page) -> Answer uses page (
     Answer(message: "Read the site's information first")
 }
 
+/// Reads the login forms this page asks for, through the engine's own credential store.
+action discover_logins(p: Page) -> Answer uses page (
+    icon: .key,
+    label: "Find this page’s logins",
+) {
+    ask_page(p, credential_request(p, Ask(credential: .some("discover"))))
+}
+
+/// Lists the logins the engine keeps for this site.
+action list_saved_logins(p: Page) -> Answer uses page (icon: .key, label: "Saved logins") {
+    ask_page(p, credential_request(p, Ask(credential: .some("list"))))
+}
+
+/// Takes what the person typed into a login form, so it can be saved for this site. The password
+/// stays in the engine's credential store and never crosses to the app.
+action capture_login(p: Page, f: LoginForm) -> Answer uses page (
+    icon: .key,
+    label: "Save this login",
+) {
+    ask_page(p, credential_request(p, Ask(credential: .some("capture"), form: .some(f.form))))
+}
+
+/// Saves the capture the engine took for this site.
+action save_login(p: Page) -> Answer uses page (icon: .check, label: "Save the login") {
+    require p.capture != "" "Take the login first"
+    ask_page(p, credential_request(p, Ask(credential: .some("save"), capture: .some(p.capture))))
+}
+
+/// Fills a form of this page with a login the engine keeps.
+action fill_saved_login(p: Page, f: LoginForm, a: LoginAccount) -> Answer uses page (
+    icon: .key,
+    label: "Fill the saved login",
+) {
+    ask_page(
+        p,
+        credential_request(
+            p,
+            Ask(credential: .some("fill"), form: .some(f.form), account: .some(a.account)),
+        ),
+    )
+}
+
+/// Replaces a saved login with the capture the engine took.
+action update_saved_login(p: Page, f: LoginForm, a: LoginAccount) -> Answer uses page (
+    icon: .refresh,
+    label: "Update the saved login",
+) {
+    require p.capture != "" "Take the login first"
+    ask_page(
+        p,
+        credential_request(
+            p,
+            Ask(
+                credential: .some("update"),
+                form: .some(f.form),
+                account: .some(a.account),
+                capture: .some(p.capture),
+            ),
+        ),
+    )
+}
+
+/// Forgets a login the engine keeps for this site.
+destructive action delete_saved_login(p: Page, a: LoginAccount) -> Answer uses page (
+    icon: .trash,
+    label: "Forget the saved login",
+) {
+    ask_page(p, credential_request(p, Ask(credential: .some("delete"), account: .some(a.account))))
+}
+
+/// Turns down the login the engine offers to save.
+action cancel_login(p: Page) -> Answer uses page (icon: .x, label: "Do not save the login") {
+    ask_page(p, credential_request(p, Ask(credential: .some("cancel"))))
+}
+
+/// Reads the addresses the engine fills forms with.
+action discover_addresses(p: Page) -> Answer uses page (
+    icon: .user,
+    label: "Addresses this page’s forms take",
+) {
+    ask_page(p, credential_request(p, Ask(credential: .some("addresses"))))
+}
+
+/// Fills a form of this page with a saved address, through the engine.
+action fill_saved_address(p: Page, f: LoginForm, a: Address) -> Answer uses page (
+    icon: .user,
+    label: "Fill with a saved address",
+) {
+    ask_page(
+        p,
+        credential_request(
+            p,
+            Ask(credential: .some("fill_address"), form: .some(f.form), address: .some(a)),
+        ),
+    )
+}
+
+/// Writes what the engine's credential store answered into the page's record: the forms and
+/// accounts it listed, the capture it took, and its own words. The window raises it; a person,
+/// agent or script never does.
+action remember_credential(
+    p: Page,
+    did: Text,
+    success: Bool,
+    message: Text,
+    forms: Text,
+    accounts: Text,
+    capture: Text,
+    username: Text,
+    late: Bool,
+) {
+    p.login_notice = message
+    if not success {
+        return
+    }
+    if did == "discover" {
+        let found = login_forms_of(forms)
+        p.login_forms.remove_where(f -> true)
+        for f in found {
+            p.login_forms.insert(f)
+        }
+    } else if did == "list" {
+        let found = login_accounts_of(accounts)
+        p.login_accounts.remove_where(a -> true)
+        for a in found {
+            p.login_accounts.insert(a)
+        }
+    } else if did == "capture" {
+        if success {
+            p.capture = capture
+        }
+    } else if did == "save" or did == "update" {
+        if success {
+            p.capture = ""
+        }
+    }
+}
+
 /// What a site action asks the engine: the site, the document it was read from, and what to do.
 fn site_action(site: SiteInfo, doing: Text) -> Text {
     json.encode(
@@ -1109,6 +1287,69 @@ action sync_site_exceptions(p: Page) -> Answer uses page (
 /// The sites tracker protection is off for, in the order the Browser holds them.
 fn protection_exceptions(b: Browser) -> List<Text> {
     b.sites_without_protection.filter(site -> true)
+}
+
+/// Asks the engine's credential store `doing` on this page's site. The window names the
+/// document the person is looking at, so an action never lands on a page that came after it.
+fn credential_request(p: Page, ask: Ask) -> Text {
+    json.encode(
+        Ask(
+            op: "credential",
+            credential: ask.credential,
+            origin: .some(origin_of(p.url)),
+            form: ask.form,
+            account: ask.account,
+            capture: ask.capture,
+            address: ask.address,
+        ),
+    )
+}
+
+/// The login forms a credential answer listed.
+fn login_forms_of(forms: Text) -> List<LoginForm> {
+    let value = match json.parse(forms) {
+        .ok(value) => value,
+        .err(_) => {
+            return []
+        }
+    }
+    let found: List<LoginForm> = []
+    for held in json_arrays(value) {
+        let form = json_text(held, "form")
+        if form != "" {
+            found = [
+                found,
+                [
+                    LoginForm(
+                        form: form,
+                        username: json_text(held, "username"),
+                        kind: json_text(held, "kind"),
+                    ),
+                ],
+            ]
+                .flat_map(x -> x)
+        }
+    }
+    found
+}
+
+/// The logins a credential answer listed.
+fn login_accounts_of(accounts: Text) -> List<LoginAccount> {
+    let value = match json.parse(accounts) {
+        .ok(value) => value,
+        .err(_) => {
+            return []
+        }
+    }
+    let found: List<LoginAccount> = []
+    for held in json_arrays(value) {
+        let account = json_text(held, "account")
+        if account != "" {
+            found = [found, [LoginAccount(account: account, username: json_text(held, "username"))]]
+                .flat_map(x -> x)
+        }
+    }
+    found
 }
 
 /// Gives an extension the more access it asked for. The window raises it as the Browser's own
@@ -2187,6 +2428,74 @@ view page_view(p: Page) {
                             )
                             .then(refresh_page(p))
                         on dismiss: answer_page_dialog(p, ask.request, false).then(refresh_page(p))
+                    }
+                }
+                if p.login_notice != "" {
+                    ui.Banner("Logins", message: p.login_notice, kind: .info)
+                }
+                stack(padding: .related) {
+                    ui.Button("Find this page’s logins", icon: .key, role: .plain) {
+                        on press: discover_logins(p)
+                    }
+                    ui.Button("Saved logins", icon: .key, role: .plain) {
+                        on press: list_saved_logins(p)
+                    }
+                    if p.capture != "" {
+                        ui.Button("Save the login", icon: .check, role: .plain) {
+                            on press: save_login(p)
+                        }
+                    }
+                }
+                if not p.login_forms.is_empty() {
+                    stack(padding: .related) {
+                        ui.Section("Logins on this page") {
+                            for f in p.login_forms {
+                                stack(padding: .related) {
+                                    ui.ListRow(
+                                        title: if f.username == "" { f.kind } else { f.username },
+                                        secondary: f.kind,
+                                        mark: .key,
+                                    )
+                                    ui.Button("Save this login", icon: .key, role: .plain) {
+                                        on press: capture_login(p, f)
+                                    }
+                                    if let a = p.login_accounts.find(
+                                            x -> f.username != "" and x.username == f.username,
+                                        ) {
+                                        ui.Button(
+                                            "Update the saved login",
+                                            icon: .refresh,
+                                            role: .plain,
+                                        ) {
+                                            on press: update_saved_login(p, f, a)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if not p.login_accounts.is_empty() {
+                    stack(padding: .related) {
+                        ui.Section("Saved logins") {
+                            for a in p.login_accounts {
+                                stack(padding: .related) {
+                                    ui.ListRow(
+                                        title: a.username,
+                                        secondary: "Saved for this site",
+                                        mark: .key,
+                                    )
+                                    if let f = p.login_forms.find(x -> true) {
+                                        ui.Button("Fill", icon: .key, role: .plain) {
+                                            on press: fill_saved_login(p, f, a)
+                                        }
+                                    }
+                                    ui.Button("Delete", icon: .trash, role: .plain) {
+                                        on press: delete_saved_login(p, a)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 if let site = p.site {

@@ -155,6 +155,18 @@ d-eg4w4fow = Muted
 d-252payib = Site
     .doc = The site's connection, permissions and stored data, as its window last read them.
 
+d-nfmtkvs7 = Login forms
+    .doc = The login forms the engine found on this page, as its credential store listed them.
+
+d-jbnzv4tj = Login accounts
+    .doc = The logins the engine keeps for this site.
+
+d-jz6xwcus = Capture
+    .doc = The capture the engine took of a login this page sent, until it is saved or dropped.
+
+d-wqz44fsx = Login notice
+    .doc = What the engine's credential store answered last, in its own words.
+
 d-ctm6ma5g = Back
     .doc = The pages before this one and the ones after it, as the engine last answered the window's request for them.
 
@@ -357,6 +369,30 @@ d-2chmpqlt = Url
 
 d-uugq5btr = Title
 
+d-2hbds7ee = Login form
+    .doc = One login form the engine found on the page: its own number for it, the account it offers, and what kind it is (`sign-in` or `create`).
+    .noun = { $count ->
+        [one] login form
+       *[other] login forms
+    }
+
+d-hdxbxfcl = Form
+
+d-enz3azev = Username
+
+d-kqqay3gr = Kind
+
+d-q3arly5t = Login account
+    .doc = One login the engine keeps for this site: its number for the account, and the name it signs in as.
+    .noun = { $count ->
+        [one] login account
+       *[other] login accounts
+    }
+
+d-53raewop = Account
+
+d-5oqresy2 = Username
+
 d-e43kzg7c = Ask
     .doc = What a page is asked, as the window that holds it reads it: one operation and the fields it takes.
     .noun = { $count ->
@@ -428,6 +464,18 @@ d-fbtgqfhx = Origins
 
 d-ymm5jh2h = Origin
     .doc = The site a site action or a status reading is about.
+
+d-wdlbrp6r = Credential
+    .doc = The engine's credential store action: `status`, `cancel`, `discover`, `addresses`, `list`, `capture`, `save`, `update`, `fill`, `delete` or `fill_address`.
+
+d-x6klrsfn = Capture
+    .doc = The capture the engine took of a login form, which saving or updating names.
+
+d-o345kv2f = Account
+    .doc = The engine's number for a saved account, which filling or deleting names.
+
+d-cirolhk7 = Address
+    .doc = The address a form is filled from, through the engine.
 
 d-7gcvts2u = Generation
     .doc = The document generation the site was read at, which a site action names.
@@ -512,6 +560,8 @@ d-e43kzg7c-filter-level = Level
 d-e43kzg7c-filter-muted = Muted
 
 d-e43kzg7c-filter-entry = Entry
+
+d-e43kzg7c-filter-address = Address
 
 d-e43kzg7c-filter-generation = Generation
 
@@ -1040,6 +1090,73 @@ d-63b5vewx = Let the site ask again
     .doc = Lets the site ask again for what it was refused.
     .w-read-the-site-s-information-first = Read the site's information first
 
+d-o4s54tdd = Find this page’s logins
+    .doc = Reads the login forms this page asks for, through the engine's own credential store.
+
+d-z745w65b = Saved logins
+    .doc = Lists the logins the engine keeps for this site.
+
+d-jdz7mpvk = Save this login
+    .doc = Takes what the person typed into a login form, so it can be saved for this site.
+
+d-jdz7mpvk-f = F
+
+d-uz7qxlux = Save the login
+    .doc = Saves the capture the engine took for this site.
+    .w-take-the-login-first = Take the login first
+
+d-gzdjcbf4 = Fill the saved login
+    .doc = Fills a form of this page with a login the engine keeps.
+
+d-gzdjcbf4-f = F
+
+d-gzdjcbf4-a = A
+
+d-obkrjsac = Update the saved login
+    .doc = Replaces a saved login with the capture the engine took.
+    .w-take-the-login-first = Take the login first
+
+d-obkrjsac-f = F
+
+d-obkrjsac-a = A
+
+d-3vy7jxmm = Forget the saved login
+    .doc = Forgets a login the engine keeps for this site.
+
+d-3vy7jxmm-a = A
+
+d-rycvvkrz = Do not save the login
+    .doc = Turns down the login the engine offers to save.
+
+d-qhntuc74 = Addresses this page’s forms take
+    .doc = Reads the addresses the engine fills forms with.
+
+d-y2b7rzoy = Fill with a saved address
+    .doc = Fills a form of this page with a saved address, through the engine.
+
+d-y2b7rzoy-f = F
+
+d-y2b7rzoy-a = A
+
+d-fnrvkh2d = Remember credential
+    .doc = Writes what the engine's credential store answered into the page's record: the forms and accounts it listed, the capture it took, and its own words.
+
+d-fnrvkh2d-did = Did
+
+d-fnrvkh2d-success = Success
+
+d-fnrvkh2d-message = Message
+
+d-fnrvkh2d-forms = Forms
+
+d-fnrvkh2d-accounts = Accounts
+
+d-fnrvkh2d-capture = Capture
+
+d-fnrvkh2d-username = Username
+
+d-fnrvkh2d-late = Late
+
 d-kqjsvdfh = Apply the sites tracker protection is off for
     .doc = Tells the engine which sites tracker protection is off for, as the Browser's own set says: the engine keeps the same list beside its filters.
 
@@ -1245,6 +1362,10 @@ d-h3g4heky = Block site permissions~present
 
 d-j4t6lwtn = Ask site permissions again~present
 
+d-agsgbsb5 = Save login~present
+
+d-5wtzjn5r = Update saved login~present
+
 d-sayctunu = Bookmark~present
 
 d-asdqm6oc = Name bookmark~present
@@ -1302,6 +1423,16 @@ d-vsaswu4a = Page view
     .w-this-page-asks = This page asks
     .w-ok = OK
     .w-cancel = Cancel
+    .w-logins = Logins
+    .w-find-this-page-s-logins = Find this page’s logins
+    .w-saved-logins = Saved logins
+    .w-save-the-login = Save the login
+    .w-logins-on-this-page = Logins on this page
+    .w-save-this-login = Save this login
+    .w-update-the-saved-login = Update the saved login
+    .w-saved-for-this-site = Saved for this site
+    .w-fill = Fill
+    .w-delete = Delete
     .w-requests-blocked = Requests blocked
     .w-certificate = Certificate
     .w-clear-this-site-s-data = Clear this site's data

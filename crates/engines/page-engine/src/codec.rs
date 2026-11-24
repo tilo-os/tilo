@@ -29,9 +29,9 @@
 
 use base64::Engine as _;
 use tilo_webview::{
-    FrameId, KeyModifiers, NavigationDirection, NavigationEntry, PageFailure, PageReply,
-    PageRequest, PageResourceNote, PointerButton, PointerPoint, PointerStep, PointerStepKind,
-    ScrollTarget, WebViewCommand,
+    AddressFields, CredentialAction, CredentialForm, CredentialRequest, FrameId, KeyModifiers,
+    NavigationDirection, NavigationEntry, PageFailure, PageReply, PageRequest, PageResourceNote,
+    PointerButton, PointerPoint, PointerStep, PointerStepKind, ScrollTarget, WebViewCommand,
 };
 
 use crate::Asks;
@@ -309,6 +309,10 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "site_exceptions" => {
             Ask::Command(WebViewCommand::SetSiteExceptions(texts(&value, "origins")))
         }
+        // The engine's own credential store: the logins it keeps for this site, the forms it
+        // reads them from, and the capture it takes of one the person typed. The password never
+        // crosses this vocabulary.
+        "credential" => Ask::Command(WebViewCommand::Credentials(credential(&value)?)),
         // What the page downloads: the engine's own transfers, which the app starts, answers,
         // stops and resumes by the id the engine gave them.
         "start_download" => Ask::Command(WebViewCommand::StartDownload {
@@ -466,6 +470,118 @@ pub fn asks_json(asks: &Asks) -> String {
         "back": entries_json(&asks.back),
         "forward": entries_json(&asks.forward),
         "site": asks.site.as_ref().map(site_json),
+    })
+    .to_string()
+}
+
+/// The credential action a request names, with the fields it takes. A password is never part of
+/// one: the engine captures and fills it.
+fn credential(value: &serde_json::Value) -> Result<CredentialRequest, String> {
+    let field = |name: &str| text(value, name).unwrap_or_default();
+    let action = match field("credential").as_str() {
+        "status" => CredentialAction::Status,
+        "cancel" => CredentialAction::Cancel,
+        "discover" => CredentialAction::Discover,
+        "addresses" => CredentialAction::DiscoverAddresses,
+        "list" => CredentialAction::List,
+        "capture" => CredentialAction::Capture {
+            form: field("form"),
+        },
+        "save" => CredentialAction::Save {
+            capture: field("capture"),
+        },
+        "update" => CredentialAction::Update {
+            capture: field("capture"),
+            account: field("account"),
+        },
+        "fill" => CredentialAction::Fill {
+            form: field("form"),
+            account: field("account"),
+        },
+        "delete" => CredentialAction::Delete {
+            account: field("account"),
+        },
+        "fill_address" => CredentialAction::FillAddress {
+            form: field("form"),
+            profile: address_fields(value)?,
+        },
+        other => return Err(format!("a credential request names no action {other:?}")),
+    };
+    Ok(CredentialRequest {
+        request_id: 1,
+        origin: field("origin"),
+        document: field("document"),
+        action,
+    })
+}
+
+/// The fields of an address a form is filled with, as the app's own address holds them.
+fn address_fields(value: &serde_json::Value) -> Result<AddressFields, String> {
+    let Some(address) = value.get("address") else {
+        return Err("a fill-address request names no address".to_owned());
+    };
+    let field = |name: &str| {
+        address
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    Ok(AddressFields {
+        full_name: field("full_name"),
+        given_name: field("given_name"),
+        family_name: field("family_name"),
+        street: field("street"),
+        city: field("city"),
+        region: field("region"),
+        postal_code: field("postal_code"),
+        country: field("country"),
+    })
+}
+
+/// What the engine's credential store answered, for the window to hand the app as its call: how
+/// the action ended, the forms and accounts it listed, the capture it took, and the account it
+/// named.
+#[must_use]
+pub fn credential_note(
+    action: &str,
+    success: bool,
+    message: &str,
+    forms: &[CredentialForm],
+    accounts: &[tilo_webview::CredentialAccount],
+    capture: Option<&str>,
+    username: Option<&str>,
+    late: bool,
+) -> String {
+    let forms: Vec<serde_json::Value> = forms
+        .iter()
+        .map(|form| {
+            serde_json::json!({
+                "form": form.id,
+                "username": form.username,
+                "kind": form.kind,
+            })
+        })
+        .collect();
+    let accounts: Vec<serde_json::Value> = accounts
+        .iter()
+        .map(|account| {
+            serde_json::json!({
+                "account": account.id,
+                "username": account.username,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "note": "credential",
+        "did": action,
+        "success": success,
+        "message": message,
+        "forms": serde_json::Value::Array(forms).to_string(),
+        "accounts": serde_json::Value::Array(accounts).to_string(),
+        "capture": capture.unwrap_or_default(),
+        "username": username.unwrap_or_default(),
+        "late": late,
     })
     .to_string()
 }

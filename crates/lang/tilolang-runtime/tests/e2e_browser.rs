@@ -560,6 +560,119 @@ mod cases {
         assert!(ask["password"].is_null(), "no password is sent: {ask}");
     }
 
+    /// The logins the engine keeps for a site are found, captured, saved, filled and forgotten
+    /// through the engine's own credential store: the app names the site and the form, and the
+    /// password never enters it.
+    #[test]
+    fn a_login_is_found_saved_filled_and_forgotten_through_the_page() {
+        let b = Browser::new();
+        b.page(
+            "went_to",
+            &[("url", Value::text("https://example.org/login"))],
+        );
+
+        b.page("discover_logins", &[]);
+        assert_eq!(b.page.ops(), ["credential"]);
+        let ask = b.page.last();
+        assert_eq!(ask["credential"].as_str(), Some("discover"));
+        assert_eq!(ask["origin"].as_str(), Some("https://example.org"));
+        assert!(
+            ask.get("document").is_none(),
+            "the window names the document the page is at: {ask}"
+        );
+
+        // What the engine's store answered reaches the page's record.
+        let answered = |did: &str, capture: &str, accounts: &str| {
+            vec![
+                ("did", Value::text(did)),
+                ("success", Value::Bool(true)),
+                ("message", Value::text("")),
+                (
+                    "forms",
+                    Value::text(r#"[{"form":"1","username":"ada","kind":"login"}]"#),
+                ),
+                ("accounts", Value::text(accounts)),
+                ("capture", Value::text(capture)),
+                ("username", Value::text("ada")),
+                ("late", Value::Bool(false)),
+            ]
+        };
+        b.page("remember_credential", &answered("discover", "", "[]"));
+        let view = b.page_view();
+        assert_eq!(
+            row_secondary(&view, "ada"),
+            "login",
+            "the form the engine found is on the page"
+        );
+
+        // The person takes the login from that form; the engine answers with a capture.
+        view.fire(&button_key(&view, "Save this login"), "press")
+            .unwrap();
+        assert_eq!(b.page.last()["credential"].as_str(), Some("capture"));
+        assert_eq!(b.page.last()["form"].as_str(), Some("1"));
+        b.page("remember_credential", &answered("capture", "7", "[]"));
+
+        // Saving names the capture, and the capture is spent once the engine has it.
+        let view = b.page_view();
+        view.fire(&button_key(&view, "Save the login"), "press")
+            .unwrap();
+        assert_eq!(b.page.last()["credential"].as_str(), Some("save"));
+        assert_eq!(b.page.last()["capture"].as_str(), Some("7"));
+        b.page("remember_credential", &answered("save", "", "[]"));
+        assert_eq!(b.text(&b.opened, "capture"), "", "the capture is spent");
+
+        // The logins the engine keeps for the site fill the page's form.
+        b.page("list_saved_logins", &[]);
+        assert_eq!(b.page.last()["credential"].as_str(), Some("list"));
+        b.page(
+            "remember_credential",
+            &answered(
+                "list",
+                "",
+                r#"[{"account":"a","username":"ada@example.org"}]"#,
+            ),
+        );
+        let view = b.page_view();
+        assert_eq!(
+            row_secondary(&view, "ada@example.org"),
+            "Saved for this site"
+        );
+        view.fire(&button_key(&view, "Fill"), "press").unwrap();
+        assert_eq!(b.page.last()["credential"].as_str(), Some("fill"));
+        assert_eq!(b.page.last()["form"].as_str(), Some("1"));
+        assert_eq!(b.page.last()["account"].as_str(), Some("a"));
+
+        view.fire(&button_key(&view, "Delete"), "press").unwrap();
+        assert_eq!(b.page.last()["credential"].as_str(), Some("delete"));
+        assert_eq!(b.page.last()["account"].as_str(), Some("a"));
+
+        // A login the engine could not save leaves the capture for another try and says why.
+        b.page("remember_credential", &answered("capture", "9", "[]"));
+        b.page(
+            "remember_credential",
+            &[
+                ("did", Value::text("save")),
+                ("success", Value::Bool(false)),
+                ("message", Value::text("Capture expired; capture again")),
+                ("forms", Value::text("[]")),
+                ("accounts", Value::text("[]")),
+                ("capture", Value::text("")),
+                ("username", Value::text("")),
+                ("late", Value::Bool(false)),
+            ],
+        );
+        assert_eq!(
+            b.text(&b.opened, "capture"),
+            "9",
+            "the capture is kept for another try"
+        );
+        assert_eq!(
+            b.text(&b.opened, "login_notice"),
+            "Capture expired; capture again",
+            "the engine's own words are shown"
+        );
+    }
+
     /// Another browser's bookmarks come in with their folders: a flat entry's folder and a
     /// tree's nested folder both reach the library as the path the bookmark stands under.
     #[test]
