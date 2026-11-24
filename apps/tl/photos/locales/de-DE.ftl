@@ -658,15 +658,6 @@ d-dnva5poj-filter-found = Gefunden
 
 d-dnva5poj-filter-done = Erledigt
 
-d-kwxrxssz = Gestarteter Auftrag
-    .doc = Der Auftrag, den ein Start zurückgab.
-    .noun = { $count ->
-        [one] gestarteter Auftrag
-       *[other] gestartete Aufträge
-    }
-
-d-cgbfeocd = Auftrag
-
 d-6ekj3sj2 = Gesichtersuche
     .doc = Die Gesichtersuche einer Person in dieser Bibliothek: ob sie das Gerät nach Gesichtern in den Fotos suchen lässt, ob eine Suche läuft oder pausiert, und welche Fotos sie gelesen hat, damit sie mit den nächsten weitermacht.
     .noun = { $count ->
@@ -703,8 +694,6 @@ d-lkqkgzw2-found = Gefunden
 d-7mf7wkrg = Importiert
     .doc = Das Ende eines Imports: Jedes gelesene Bild wird ein Foto oder ergänzt das Foto, das dasselbe Bild schon ergab, und was er nicht lesen konnte, wird für einen neuen Versuch behalten.
     .did = hat Fotos hinzugefügt
-
-d-7mf7wkrg-outcome = Ergebnis
 
 d-pgozefho = Import anhalten
     .doc = Hält den laufenden Import an: Er endet nach dem Bild, das er gerade liest, und was er bis dahin gelesen hat, kommt in die Bibliothek.

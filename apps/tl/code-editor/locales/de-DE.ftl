@@ -598,7 +598,6 @@ d-5vjxpshd = Answer line
 
 d-w3z62her = Answer column
 
-
 d-t4nipezs = Suchen job
     .doc = The project search the person started, as it stands.
 
@@ -948,9 +947,6 @@ d-o5c4jbiz = Gesucht
     .doc = The project search ended, or moved: each hit it found is added as it comes, and the files it searched are counted.
 
 d-o5c4jbiz-j = J
-
-d-7weouyp2 = Poll
-    .doc = Asks how far the language server has got, so its state, problems and answers reach the window.
 
 d-mqipns37 = Go to it
     .doc = Brings the caret to the place an item of a command's output names: the file is read if the project does not hold it yet, and the page shows it.
