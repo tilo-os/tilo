@@ -14,8 +14,8 @@
 
 use std::collections::BTreeMap;
 
+use tilo_ui::kurbo::{Affine, BezPath, Point};
 use tilo_wet_media::StrokePoint as WetPoint;
-use vello::kurbo::{Affine, BezPath, Point};
 
 use crate::model::{Mark, Shape, Style};
 

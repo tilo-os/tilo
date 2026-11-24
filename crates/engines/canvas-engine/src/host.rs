@@ -27,7 +27,8 @@ pub fn artwork(json: &str) -> Result<Artwork, String> {
     // A package names a picture by the address its language gives a file
     // (`tilo-blob://`); the engine names the same bytes by its resource address.
     let json = json.replace("tilo-blob://", "tilo.content:");
-    serde_json::from_str(&json).map_err(|error| format!("this is not a Canvas artwork: {error}"))
+    let file = ArtworkFile::parse(json.as_bytes())?;
+    artwork_of(&file)
 }
 
 /// The content reference `address` names, whichever of the two address forms it is written in.
@@ -64,6 +65,18 @@ pub fn artwork_of_records(json: &str) -> Result<Artwork, String> {
         marks: Vec<RecordMark>,
         #[serde(default)]
         selection: Option<RecordArea>,
+    }
+    impl Default for RecordLayer {
+        fn default() -> Self {
+            Self {
+                name: String::new(),
+                medium: String::new(),
+                opacity: one(),
+                visible: yes(),
+                locked: false,
+                texture: 0.0,
+            }
+        }
     }
     #[derive(serde::Deserialize)]
     struct RecordLayer {
@@ -190,7 +203,7 @@ pub fn artwork_of_records(json: &str) -> Result<Artwork, String> {
     }
     for (index, mark) in records.marks.iter().enumerate() {
         let mut style = Style {
-            opacity: mark.opacity.clamp(0.0, 1.0),
+            opacity: Some(mark.opacity.clamp(0.0, 1.0)),
             brush: crate::brushes::stored(&mark.brush),
             ..Style::default()
         };
@@ -349,7 +362,7 @@ pub fn wand(picture: &[u8], request: &str) -> Result<String, String> {
         height: image.height as usize,
         cells: &field,
     }
-    .traced(vello::kurbo::Affine::IDENTITY);
+    .traced(tilo_ui::kurbo::Affine::IDENTITY);
     Ok(region.to_path().to_svg())
 }
 
@@ -481,7 +494,7 @@ pub fn open(archive: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>), String> 
             pictures.push((address.to_owned(), bytes));
         }
     }
-    let json = serde_json::to_string(&art)
+    let json = serde_json::to_string(&ArtworkFile::of(&art))
         .map_err(|error| format!("the artwork cannot be written: {error}"))?;
     Ok((json, pictures))
 }

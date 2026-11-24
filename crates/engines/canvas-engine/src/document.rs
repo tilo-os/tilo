@@ -1,5 +1,5 @@
-//! The artwork as a document: the sizes and grounds a new one starts from,
-//! the file it is kept as in Files, and the artworks opened or saved lately.
+//! The artwork as a document: the sizes and grounds a new one starts from
+//! and the file it is kept as in Files.
 //!
 //! A window holds one artwork. Starting a new one or opening a file
 //! replaces it as one step of its history, so Undo brings the old one back;
@@ -19,8 +19,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ui::icons::Icon;
-use ui::prelude::tilo_resource;
+use tilo_ui::icons::Icon;
 
 use crate::media::MediumSpec;
 use crate::model::{Artwork, Ground, MarkBody};
@@ -346,7 +345,7 @@ impl ArtworkFile {
                 crate::model::Shape::Image { src, .. } => Some(src.as_str()),
                 _ => None,
             })
-            .filter(|src| ui::tilo_actions::content_hash(src).is_some())
+            .filter(|src| tilo_ui::tilo_actions::content_hash(src).is_some())
             .collect()
     }
 
@@ -385,68 +384,15 @@ pub fn file_name(title: &str, extension: &str) -> String {
         .collect();
     let words = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let stem = if words.is_empty() {
-        crate::locales::CATALOG.t("canvas-untitled")
+        tilo_resource::word!(
+            "canvas-untitled",
+            catalogue = "../../../apps/tl/canvas/locales"
+        )
+        .read()
     } else {
         words
     };
     format!("{stem}.{extension}")
-}
-
-/// An artwork opened or saved lately.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::JsonSchema)]
-pub struct Recent {
-    /// Where the file is.
-    pub path: String,
-    pub title: String,
-    pub width: f64,
-    pub height: f64,
-    /// When it was last opened or saved, in milliseconds since the epoch.
-    pub at_ms: u64,
-    /// A small picture of it, by content address, when one was kept.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thumbnail: Option<String>,
-}
-
-/// The artworks one device opened or saved lately, newest first, one per
-/// path.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RecentArtworks {
-    pub artworks: ui::tilo_resource::Recents<Recent, 8>,
-}
-
-tilo_resource::json_model!(RecentArtworks);
-
-/// Recent file paths this device can reopen, grouped by workspace.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct DeviceArtworkRecents {
-    #[serde(default)]
-    pub by_workspace: BTreeMap<String, RecentArtworks>,
-}
-
-impl settings_model::SettingsSchema for DeviceArtworkRecents {
-    const SCOPE: settings_model::Scope = settings_model::Scope::DeviceLocal;
-}
-
-impl DeviceArtworkRecents {
-    pub(crate) fn in_workspace(&self, workspace: &str) -> RecentArtworks {
-        self.by_workspace
-            .get(workspace)
-            .cloned()
-            .unwrap_or_default()
-    }
-}
-
-impl RecentArtworks {
-    /// `recent` first, in place of an earlier visit to its path.
-    pub fn remember(&mut self, recent: Recent) {
-        self.artworks
-            .remember_by(recent, |kept, recent| kept.path == recent.path);
-    }
-
-    /// Forget the artwork at `path` (it moved or was removed).
-    pub fn forget(&mut self, path: &str) {
-        self.artworks.retain(|kept| kept.path != path);
-    }
 }
 
 /// The package of `file`: its JSON and every picture its marks show that
@@ -477,7 +423,7 @@ pub fn pack(
         .map_err(|error| failed(&error))?;
     let mut missing = Vec::new();
     for address in file.pictures() {
-        let held = ui::tilo_actions::content_hash(address)
+        let held = tilo_ui::tilo_actions::content_hash(address)
             .and_then(|reference| Some((reference, store.read(reference)?)));
         let Some((reference, bytes)) = held else {
             missing.push(address.to_owned());

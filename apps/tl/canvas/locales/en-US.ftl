@@ -12,6 +12,7 @@ canvas-brush-pixel-eraser = Pixel eraser
 
 ## The artwork's name, its views and its actions
 canvas-artwork = Artwork
+canvas-untitled = Untitled
 canvas-command-add-layer = Add layer
 canvas-command-new-artwork = New artwork
 

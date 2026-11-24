@@ -418,6 +418,7 @@ fn number(value: f64) -> String {
     reason = "whole-number boxes and values lay out exactly"
 )]
 mod tests {
+    use super::Chart;
     use crate::actions::{Draw, NewMark};
     use crate::model::{Artwork, Shape};
     use serde_json::Value;

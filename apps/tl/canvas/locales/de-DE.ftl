@@ -12,6 +12,7 @@ canvas-brush-pixel-eraser = Pixelradierer
 
 ## The artwork's name, its views and its actions
 canvas-artwork = Bild
+canvas-untitled = Ohne Titel
 canvas-command-add-layer = Ebene hinzufügen
 canvas-command-new-artwork = Neues Bild
 
