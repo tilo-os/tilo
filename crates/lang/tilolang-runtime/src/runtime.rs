@@ -583,6 +583,13 @@ impl Runtime {
         self.set_reading(target, reading)
     }
 
+    /// Serve the workspace package's `members` root (`root`) from the members this runtime is
+    /// given ([`Self::set_members`], and those a scenario names): its reading is theirs now and
+    /// after every change, and a reading published for it elsewhere never stands over it.
+    pub fn serve_members(&self, root: &ResourceRef) {
+        self.core.serve_members(root);
+    }
+
     /// Whether this runtime's host serves `target`'s reading itself ([`Self::serve_reading`]):
     /// a host handing in the readings the session publishes skips it.
     #[must_use]

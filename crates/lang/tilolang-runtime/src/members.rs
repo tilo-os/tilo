@@ -106,9 +106,36 @@ impl Core {
                 .map(|member| Value::Actor(member.who()))
                 .collect(),
         );
+        let people = self.members_root.borrow().as_ref().map(|root| {
+            let people: Vec<serde_json::Value> = list
+                .iter()
+                .map(|member| {
+                    crate::value::to_json(&Value::Actor(member.who()))
+                        .unwrap_or_else(|why| panic!("an actor writes as JSON: {why}"))
+                })
+                .collect();
+            (root.clone(), serde_json::json!({ "people": people }))
+        });
         *self.members.borrow_mut() = Members { list, reads };
         // Grants may have moved even where the list did not: every reader runs again.
         self.view_states.borrow_mut().set(members_key(), value);
+        // `workspace.members.people` reads the members root: a member a scenario names is in
+        // it as soon as they are in the list.
+        if let Some((root, reading)) = people {
+            self.take_reading(&root, reading);
+        }
+    }
+
+    /// Serve the members root `root` from these members, now and after every change
+    /// (`Runtime::serve_members`).
+    pub(crate) fn serve_members(&self, root: &ResourceRef) {
+        self.foreign.borrow_mut().serve(root);
+        *self.members_root.borrow_mut() = Some(root.clone());
+        let (list, reads) = {
+            let members = self.members.borrow();
+            (members.list.clone(), members.reads.clone())
+        };
+        self.set_members(list, reads);
     }
 
     /// A scenario named a person (`person("Mia")`): they are in the workspace it stages, so a

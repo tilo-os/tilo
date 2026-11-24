@@ -21,18 +21,18 @@ use crate::value::Value;
 
 use Imp::{
     Abort, ActCall, ActChoose, ActChooseFolder, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine,
-    ActSave, ActSet, ActThen, ActUndo, Actions, ActorApp, ActorEq, ActorId, ActorKind, ActorName, ActorRole,
-    AgentNamed, ArgAt, Base64Decode, BytesLength, CallFn, CallMembers, CanvasExport, CanvasGrade,
-    CanvasLook, CanvasOpen, CanvasSave, CanvasSvg, CanvasSvgImport, CanvasWand, ChangeView,
-    ClipboardCopyImage, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText, CollCount,
-    CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong,
-    CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere, CollWhereWith,
-    CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday, Describe,
-    DescribeRef, DurationText, Earlier, EditField, EngineCall, EngineCancel, EnginePicture,
-    EngineStart, EngineState, EngineStatus, EngineStream, EntryParts, EnumGetF, EnumGetH, EnumGetI,
-    EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FileAt,
-    FileBook, FileBookCover, FileBookInfo, FileCompress, FileCopy, FileCrop, FileEncode,
-    FileExtract, FileFiles, FileImageInfo, FileList, FileMarkdown, FileMkdir, FileMove,
+    ActSave, ActSet, ActThen, ActUndo, Actions, ActorApp, ActorEq, ActorId, ActorKind, ActorName,
+    ActorRole, AgentNamed, ArgAt, Base64Decode, BytesLength, CallFn, CallMembers, CanvasExport,
+    CanvasGrade, CanvasLook, CanvasOpen, CanvasSave, CanvasSvg, CanvasSvgImport, CanvasWand,
+    ChangeView, ClipboardCopyImage, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText,
+    CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed, CollMove,
+    CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere,
+    CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
+    Describe, DescribeRef, DurationText, Earlier, EditField, EngineCall, EngineCancel,
+    EnginePicture, EngineStart, EngineState, EngineStatus, EngineStream, EntryParts, EnumGetF,
+    EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue,
+    FieldChanged, FileAt, FileBook, FileBookCover, FileBookInfo, FileCompress, FileCopy, FileCrop,
+    FileEncode, FileExtract, FileFiles, FileImageInfo, FileList, FileMarkdown, FileMkdir, FileMove,
     FileOfBytes, FileOfDocument, FileOfText, FileOpen, FileOpenPath, FilePart, FileReadPath,
     FileRemove, FileRename, FileResize, FileRestore, FileSize, FileStat, FileText, FileThumbnail,
     FileTrash, FileTrashEntries, FileTurn, FileWatch, FileWrite, FileZip, FilterLit, Filters, Find,
@@ -216,6 +216,9 @@ pub struct Core {
     pub sentence_by: RefCell<Option<Box<SentenceBy>>>,
     /// The workspace's members, as the host last gave them (`members(r)`).
     pub members: RefCell<crate::members::Members>,
+    /// The workspace package's `members` root, when the host serves its reading from these
+    /// members (`Runtime::serve_members`): every change to them is that reading's too.
+    pub members_root: RefCell<Option<crate::value::ResourceRef>>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
     /// The network came back: entries waiting to go online are tried again on the next settle.
     pub retry_waiting: std::cell::Cell<bool>,
@@ -415,6 +418,7 @@ impl Core {
             shown_by: RefCell::new(None),
             sentence_by: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
+            members_root: RefCell::new(None),
             sink: RefCell::new(None),
             retry_waiting: std::cell::Cell::new(false),
             words: RefCell::new(Box::new(crate::words::SourceWords)),
@@ -674,8 +678,7 @@ impl Core {
             | Delivery | Reach | MetaOf | Versions | Links | RunChanges | Unseen | FirstUnseen
             | SeenBy | Mentions | Steps | VersionEnd | FieldChanged | Phrase | Word
             | EntryParts => self.platform_import(imp, a),
-            Members | MayRead | Speakers | ActorId | ActorKind | ActorRole
-            | ActorApp => {
+            Members | MayRead | Speakers | ActorId | ActorKind | ActorRole | ActorApp => {
                 self.members_import(imp, a)
             }
             EditField => self.edit_field(a),
