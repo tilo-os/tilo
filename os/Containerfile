@@ -852,7 +852,7 @@ RUN --mount=type=secret,id=publisher_identity \
     RUNTIME_ID="tilo-runtime/$(cat /out/runtime-version)" \
     /build/os/scripts/pack-apps.sh \
     && python3 /usr/local/libexec/tilo-signed-records.py name-trees /usr/share/tilo-apps \
-    && TILO_APPS_DATA_DIR=/usr/share/tilo-apps /out/tilo-install verify \
+    && /out/tilo-install --offline-store /usr/share/tilo-apps verify \
     && rm -rf /out/language-runtime-packages
 
 # Buildah leaves the env-runtime mount out of the layer cache key; this ARG keys it on ENV_RUNTIME_REF.
