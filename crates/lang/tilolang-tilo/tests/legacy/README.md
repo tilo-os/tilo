@@ -12,12 +12,17 @@ Automerge document as hex. The `native_*` tests open them with the tilolang app 
 | `rust_skills.hex` | `apps/chat-model/tests/native_skills_fixture.rs` | `0ae397b1f5a` |
 | `rust_tube.hex` | `apps/tube-model/tests/native_tube_fixture.rs` | `0ae397b1f5a` |
 | `rust_mail.hex` | `apps/mail/tests/native_mail_fixture.rs` | `0ae397b1f5a` |
+| `rust_discord.hex` | `apps/discord/tests/native_discord_fixture.rs` | `9156778ba7b` |
 
 `0ae397b1f5a` is the parent of the commit that deleted the Rust Mail; the Tube model, the Chat
 skills model and the resource layer they store through did not change from there to their own
 deletions. Their generators are below. To write a fixture again, check that commit out in a
 worktree of its own, add the generator, and run it there with the build it had (that
 commit's `t.toml` names `starts` today's t no longer plans; empty it there first):
+
+`rust_discord.hex` is written by `apps/discord/tests/native_discord_fixture.rs`, which is in the
+tree beside the native app while it runs; it moves here with the generators below when that app
+is deleted.
 
 ```sh
 git worktree add --detach ../native-apps 0ae397b1f5a
