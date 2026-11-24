@@ -1204,7 +1204,7 @@ mod tests {
             let before: StoredWorkspace = serde_json::from_slice(&golden).unwrap();
             assert_eq!(before.version, 9);
             let frame = |id: u8| FrameToSend { bytes: Arc::from(vec![id; 300]) };
-            let mut kept = before.clone();
+            let mut kept = before;
             kept.frames = vec![frame(1)];
             let mut after = kept.clone();
             after.frames.push(frame(2));
