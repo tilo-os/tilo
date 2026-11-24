@@ -610,31 +610,52 @@ impl Caller {
         self
     }
 
-    /// The grants made for this caller's software, the one place an agent's bound becomes
-    /// grants, so every host and every receiver narrows an agent alike. An agent a person's own
-    /// device handed its session to is held to `kept`, the bound the workspace's list of its
-    /// agents keeps for it; its delegation is its acting's own ([`Acting::handed_preset`]). An
-    /// agent acting with its own key carries, where its person's device read its record
-    /// ([`Self::held_to`]), its person's delegation narrowed by that bound; elsewhere it carries
-    /// nothing of its own, and the host that admits it bounds what the workspace gives its
-    /// approved key. An agent whose bound nobody read is never more than its person allows.
+    /// The grants this caller's certificate names for the agent it is in `workspace`
+    /// ([`tilo_action_policy::roles::certified_agent`]): its person's default delegation, which
+    /// the workspace's own grants naming the agent then narrow, and what its person's device
+    /// narrowed it to where that device read its record ([`Self::held_to`]). Nothing for a
+    /// caller no certificate names as an agent: it holds only what the workspace grants it.
+    #[must_use]
+    pub fn certified(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
+        let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
+        else {
+            return Vec::new();
+        };
+        if self.device_public_key.is_none() {
+            return Vec::new();
+        }
+        let mut grants = tilo_action_policy::roles::certified_agent(workspace, agent, person);
+        grants.extend(self.narrowed());
+        grants
+    }
+
+    /// What its person's device narrowed this agent to, as grants ([`Self::held_to`]).
+    #[must_use]
+    pub fn narrowed(&self) -> Vec<tilo_action_policy::Grant> {
+        let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
+        else {
+            return Vec::new();
+        };
+        match &self.own_bound {
+            Some(bound) => tilo_action_policy::roles::agent_bound(agent, person, bound),
+            None => Vec::new(),
+        }
+    }
+
+    /// The grants made for this caller's software: its certificate's ([`Self::certified`]), and
+    /// the rules the workspace's list of its agents keeps for it (`kept`), which narrow it. The
+    /// one place an agent's rights become grants, so every host and every receiver decides an
+    /// agent alike. Asked in no workspace (its person's list of them), the certificate gives the
+    /// delegation at the root.
     #[must_use]
     pub fn granted(&self, kept: &[tilo_action_policy::Rule]) -> Vec<tilo_action_policy::Grant> {
         let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
         else {
             return Vec::new();
         };
-        if self.session_delegated {
-            return tilo_action_policy::roles::agent_bound(agent, person, kept);
-        }
-        // Asked in no workspace (its person's list of them), the agent carries the delegation at
-        // the root, as a handed agent does.
-        let Some(bound) = &self.own_bound else {
-            return Vec::new();
-        };
         let workspace = self.workspace.as_deref().unwrap_or_default();
-        let mut grants = Acting::handed_agent(agent, person).handed_preset(workspace);
-        grants.extend(tilo_action_policy::roles::agent_bound(agent, person, bound));
+        let mut grants = self.certified(workspace);
+        grants.extend(tilo_action_policy::roles::agent_bound(agent, person, kept));
         grants
     }
 
@@ -873,6 +894,39 @@ mod tests {
         // Ada's own turn records her once.
         let hers = Caller::delegated_agent("scout", ada, [3; 32]).on_roster(7, ada);
         assert_eq!(hers.acting().people(), vec![ada_id.as_str()]);
+    }
+
+    /// An agent's certificate gives it its person's default delegation in the workspace, which
+    /// the workspace's own grants naming it then narrow. A caller no certificate names as an
+    /// agent, and a person, hold nothing of their own.
+    #[test]
+    fn an_agents_certificate_gives_it_its_default_delegation() {
+        use tilo_action_policy::Grantee;
+        let (ada, device) = ([1; 32], [3; 32]);
+        let person = hex::encode(ada);
+        let agent = Caller::delegated_agent("scout", ada, device).in_workspace("w");
+        let expected = tilo_action_policy::roles::certified_agent("w", "scout", &person);
+        assert!(!expected.is_empty());
+        assert_eq!(agent.certified("w"), expected, "the certificate's own");
+        assert_eq!(agent.granted(&[]), expected, "nothing else narrows it");
+        assert!(
+            expected
+                .iter()
+                .all(|grant| grant.grantee == Grantee::agent("scout"))
+        );
+        assert!(
+            expected
+                .iter()
+                .all(|grant| grant.granted_by == Grantee::person(person.clone()))
+        );
+        // A handed agent of the person's own device carries the same delegation.
+        let handed = Caller::authenticated(ada, [4; 32])
+            .delegated_to("scout")
+            .in_workspace("w");
+        assert_eq!(handed.certified("w"), expected);
+        // A person, and an agent no certificate names, hold nothing of their own.
+        assert!(Caller::local_person("ada").certified("w").is_empty());
+        assert!(Caller::local_agent("scout").certified("w").is_empty());
     }
 
     /// An agent goes by the name of the session its client named for the call, and by its own

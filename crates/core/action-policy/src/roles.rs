@@ -1206,6 +1206,16 @@ pub(crate) fn agent_preset(workspace: &str, agent: &str, person: &str) -> Vec<Gr
     grants
 }
 
+/// The grants an agent's certificate gives it in `workspace`: the delegation
+/// preset its person's certificate names for it ([`agent_preset`]), the one
+/// place a certificate's rights become grants, so every host and every receiver
+/// decides an agent alike. The workspace's own grants naming the agent narrow it
+/// further.
+#[must_use]
+pub fn certified_agent(workspace: &str, agent: &str, person: &str) -> Vec<Grant> {
+    agent_preset(workspace, agent, person)
+}
+
 /// The rules of `agent`'s bound (`bound`; empty follows the default, which is
 /// the cap's own) as grants, given by `person`: what narrows its preset
 /// ([`agent_preset`]) to what its resource or the workspace's list keeps.
