@@ -890,6 +890,7 @@ mod tests {
 
         phase collaboration_signing_binds_route_payload_and_live_action_role;
         {
+            crate::sources::test_trust::install();
             let temp = tempfile::tempdir().expect("temp");
             let xdg = temp.path().join("config");
             let system_root = temp.path().join("system");
@@ -1275,6 +1276,7 @@ params = []
 
         phase negotiated_photo_uses_actual_selected_record_and_refuses_wrong_root_and_invalid_pixels;
         {
+            crate::sources::test_trust::install();
             let temp = tempfile::tempdir().unwrap();
             let xdg = temp.path().join("config");
             let system_root = temp.path().join("system");
