@@ -406,29 +406,8 @@ impl Core {
             Imp::EventValue => self.ret_h(Value::Event),
             Imp::EventPart => self.ret_h(Value::EventPart(usize::try_from(a.h(0)?).unwrap_or(0))),
             Imp::EventPress => self.ret_h(Value::EventPress),
-            Imp::Actions => {
-                let target = self.ref_arg(a.h(0)?)?;
-                // Where the view shows the item: the item just above it in its group, which
-                // the actions offered get as their place, never one read in storage order.
-                let above = self.val(a.h(1)?)?;
-                let offered = self.actions_on(&target, &above)?;
-                self.ret_h(Value::List(offered))
-            }
-            Imp::Delivery => {
-                let target = self.ref_arg(a.h(0)?)?;
-                let value = self.delivery_of(&target.target.doc);
-                self.ret_h(value)
-            }
-            Imp::Reach => {
-                let target = self.ref_arg(a.h(0)?)?;
-                let value = self.reach_of(&target.target)?;
-                self.ret_h(value)
-            }
-            Imp::Lenses => {
-                let target = self.ref_arg(a.h(0)?)?;
-                let value = self.host_list(lens_key(&target.target.id_string()));
-                self.ret_h(value)
-            }
+            Imp::Actions => self.actions_import(a),
+            Imp::Delivery | Imp::Reach | Imp::Lenses => self.relation_import(imp, a),
             Imp::Invoked => self.invoked_import(a),
             Imp::LinesRun => {
                 let target = self.ref_arg(a.h(0)?)?;
@@ -509,6 +488,39 @@ impl Core {
                 };
                 let text = self.word_args(&id, &args, &source);
                 self.ret_h(Value::Text(text))
+            }
+            _ => trap("not a platform import"),
+        }
+    }
+
+    /// `actions(on, above:)`: the actions offered on an item, as the view shows it.
+    fn actions_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let target = self.ref_arg(a.h(0)?)?;
+        // Where the view shows the item: the item just above it in its group, which the actions
+        // offered get as their place, never one read in storage order.
+        let above = self.val(a.h(1)?)?;
+        let offered = self.actions_on(&target, &above)?;
+        self.ret_h(Value::List(offered))
+    }
+
+    /// `delivery`, `reach` and `lenses`: what the device knows of an item, kept by the host.
+    fn relation_import(&self, imp: crate::abi::Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        use crate::abi::Imp;
+        match imp {
+            Imp::Delivery => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.delivery_of(&target.target.doc);
+                self.ret_h(value)
+            }
+            Imp::Reach => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.reach_of(&target.target)?;
+                self.ret_h(value)
+            }
+            Imp::Lenses => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.host_list(lens_key(&target.target.id_string()));
+                self.ret_h(value)
             }
             _ => trap("not a platform import"),
         }

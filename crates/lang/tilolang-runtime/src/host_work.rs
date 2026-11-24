@@ -185,22 +185,18 @@ impl Push for LiveFrames {
 /// Hold the caller between asks of a job it waits on. A device with no thread to wait on — a page
 /// in a browser — refuses instead of spinning, so the work is asked for with `engine.start` and
 /// answered by the job's `done:` there.
-#[cfg(not(target_arch = "wasm32"))]
 fn wait_for_job() -> Result<(), String> {
     /// How long a wait sleeps between asks of the job, so a quick job is not held back.
     const POLL: std::time::Duration = std::time::Duration::from_millis(5);
+    if cfg!(target_arch = "wasm32") {
+        return Err(
+            "this page has no thread to wait on the device's work: start it with `engine.start` \
+             and its `done:`"
+                .to_owned(),
+        );
+    }
     std::thread::sleep(POLL);
     Ok(())
-}
-
-/// A page has no thread to wait on: it asks for the work with `engine.start` and its `done:`.
-#[cfg(target_arch = "wasm32")]
-fn wait_for_job() -> Result<(), String> {
-    Err(
-        "this page has no thread to wait on the device's work: start it with `engine.start` and \
-         its `done:`"
-            .to_owned(),
-    )
 }
 
 /// Whether the job state `state` says the job ended, as JSON `{"state": "done", ...}`: `Some(true)`
@@ -453,16 +449,16 @@ impl Core {
         };
         let answer = self.device_work("start", op, input, || {
             let push: Arc<dyn Push> = Arc::clone(&self.live_frames) as Arc<dyn Push>;
-            let started = match self.engine_work.borrow().as_ref() {
+            let begun = match self.engine_work.borrow().as_ref() {
                 Some(host) => host.start_held(app, op, input, push),
                 None => Err(no_engine()),
             };
-            if let (Ok(said), Some(done), Some(starter)) = (&started, done, starter) {
+            if let (Ok(said), Some(done), Some(starter)) = (&begun, done, starter) {
                 self.job_done
                     .borrow_mut()
                     .insert(job_of(said), (starter, done));
             }
-            answered(started)
+            answered(begun)
         })?;
         text_answer(answer)
     }

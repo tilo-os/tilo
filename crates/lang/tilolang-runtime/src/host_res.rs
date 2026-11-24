@@ -1381,7 +1381,7 @@ impl Core {
             return self.rec_edit(imp, a);
         }
         match imp {
-            Imp::RecordAt => return self.record_at(a.h(0)?, a.h(1)?),
+            Imp::RecordAt => self.record_at(a.h(0)?, a.h(1)?),
             // A change the code makes is one write of the run, answered whole by its journal when
             // the run is run again after a call: what it checks of the store and what it decides
             // from it (the item a removal takes, the place a move goes to) were checked and

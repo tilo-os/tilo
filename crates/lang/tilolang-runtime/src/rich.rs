@@ -686,9 +686,9 @@ impl RichValue {
                 }
             },
             "color"
-                if value.len() == 7
-                    && value.starts_with('#')
-                    && value[1..].chars().all(|c| c.is_ascii_hexdigit()) =>
+                if value.strip_prefix('#').is_some_and(|hex| {
+                    hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit())
+                }) =>
             {
                 tilo_doc::AttrVal::Str(value.to_owned())
             }
@@ -800,7 +800,10 @@ impl RichValue {
                  delete-table, not {edit}"
             )
         })?;
-        let block = &self.blocks[at];
+        let block = self
+            .blocks
+            .get(at)
+            .ok_or_else(|| format!("table {table} is not in this text"))?;
         let rows = tilo_doc::table_source::data_rows(&block.text);
         let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
         let adding = matches!(
@@ -823,7 +826,10 @@ impl RichValue {
                      last one"
                 )
             })?;
-        out.blocks[at].text = made.source;
+        out.blocks
+            .get_mut(at)
+            .ok_or_else(|| format!("table {table} is not in this text"))?
+            .text = made.source;
         Ok(out)
     }
 
@@ -841,7 +847,11 @@ impl RichValue {
     ) -> Result<Self, String> {
         let at = self.table_at(table)?;
         let mut out = self.clone();
-        let rows = tilo_doc::table_source::data_rows(&self.blocks[at].text);
+        let block = self
+            .blocks
+            .get(at)
+            .ok_or_else(|| format!("table {table} is not in this text"))?;
+        let rows = tilo_doc::table_source::data_rows(&block.text);
         let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
         if row >= rows.len() || column >= columns {
             return Err(format!(
@@ -849,10 +859,11 @@ impl RichValue {
                 rows.len()
             ));
         }
-        if let Some(written) =
-            tilo_doc::table_source::with_cell(&self.blocks[at].text, row, column, text)
-        {
-            out.blocks[at].text = written;
+        if let Some(written) = tilo_doc::table_source::with_cell(&block.text, row, column, text) {
+            out.blocks
+                .get_mut(at)
+                .ok_or_else(|| format!("table {table} is not in this text"))?
+                .text = written;
         }
         Ok(out)
     }
@@ -894,32 +905,31 @@ impl RichValue {
             // Where each replacement stands, in characters of the words as they are written now.
             let mut chars_before = 0usize;
             let mut edits: Vec<usize> = Vec::new();
-            while let Some(byte) = rest.find(find) {
+            while let Some((head, tail)) = rest.split_once(find) {
                 if !all && count > 0 {
                     break;
                 }
-                let (head, tail) = rest.split_at(byte);
                 text.push_str(head);
-                chars_before += head.chars().count();
+                chars_before = chars_before.saturating_add(head.chars().count());
                 edits.push(chars_before);
                 text.push_str(with);
-                chars_before += with_chars;
-                rest = &tail[find.len()..];
-                count += 1;
+                chars_before = chars_before.saturating_add(with_chars);
+                rest = tail;
+                count = count.saturating_add(1);
             }
             text.push_str(rest);
             block.text = text;
             for at in edits {
                 // `at` is where the replacement starts in the new words; marks are still counted
                 // in the old ones from there on.
-                let old_end = at + found_chars;
+                let old_end = at.saturating_add(found_chars);
                 let shift = |pos: usize, is_end: bool| -> usize {
                     if pos <= at {
                         pos
                     } else if pos >= old_end {
-                        pos - found_chars + with_chars
+                        pos.saturating_sub(found_chars).saturating_add(with_chars)
                     } else if is_end {
-                        at + with_chars
+                        at.saturating_add(with_chars)
                     } else {
                         at
                     }

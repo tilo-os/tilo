@@ -17,6 +17,10 @@ use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
 use crate::value::Value;
 
+/// The soft edge a refine keeps: the matte picture's file name, its bytes, and the frame it
+/// covers.
+pub type Matte = (String, Vec<u8>, [f64; 4]);
+
 /// The device's drawing engine, as the runtime reaches it.
 pub trait CanvasHost {
     /// The artwork as `request` asks it seen (a look), as PNG or JPEG bytes and the info JSON.
@@ -70,7 +74,7 @@ pub trait CanvasHost {
         artwork: &str,
         request: &str,
         pictures: &[(String, Vec<u8>)],
-    ) -> Result<(String, Option<(String, Vec<u8>, [f64; 4])>), String>;
+    ) -> Result<(String, Option<Matte>), String>;
 
     /// The marks `request` names combined into one path, as the path's JSON: its outline and
     /// fill.
@@ -209,7 +213,7 @@ impl CanvasHost for NoCanvas {
         _artwork: &str,
         _request: &str,
         _pictures: &[(String, Vec<u8>)],
-    ) -> Result<(String, Option<(String, Vec<u8>, [f64; 4])>), String> {
+    ) -> Result<(String, Option<Matte>), String> {
         Err(unavailable())
     }
 
@@ -385,15 +389,19 @@ impl Core {
                 let answer = self.canvas.borrow().find(&artwork, &request, &pictures);
                 match answer {
                     Ok((d, matte)) => {
-                        let mut held = serde_json::json!({ "d": d });
+                        let mut held = serde_json::Map::new();
+                        held.insert("d".to_owned(), serde_json::Value::String(d));
                         if let Some((_, bytes, rect)) = matte {
                             let file = self
                                 .keep_bytes("matte.png", "image/png", &bytes)
                                 .or_else(trap)?;
-                            held["matte_src"] = serde_json::Value::String(file.url());
-                            held["matte_rect"] = serde_json::json!(rect);
+                            held.insert(
+                                "matte_src".to_owned(),
+                                serde_json::Value::String(file.url()),
+                            );
+                            held.insert("matte_rect".to_owned(), serde_json::json!(rect));
                         }
-                        self.result(Ok(Value::text(held.to_string())))
+                        self.result(Ok(Value::text(serde_json::Value::Object(held).to_string())))
                     }
                     Err(why) => self.result(Err(why)),
                 }
