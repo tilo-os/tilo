@@ -2821,7 +2821,7 @@ impl<T> InvocationLog<T> {
     pub fn get(&self, caller: &Caller, id: &InvocationId) -> Option<&T> {
         self.entries
             .get(id)
-            .filter(|entry| caller.continues(&entry.caller))
+            .filter(|entry| caller.follows(&entry.caller))
             .and_then(|entry| entry.handle.as_ref())
     }
 
@@ -2829,7 +2829,7 @@ impl<T> InvocationLog<T> {
     pub fn get_mut(&mut self, caller: &Caller, id: &InvocationId) -> Option<&mut T> {
         self.entries
             .get_mut(id)
-            .filter(|entry| caller.continues(&entry.caller))
+            .filter(|entry| caller.follows(&entry.caller))
             .and_then(|entry| entry.handle.as_mut())
     }
 }

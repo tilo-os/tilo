@@ -576,6 +576,26 @@ fn app_calls(
         .policy
         .set_owner(hex::encode(persons_root().verifying_key().to_bytes()));
     tree_workspace.allow_agent("scribe", crate::apps::test_support::KindSet::ALL);
+    // Sending on the bridge reaches outside the workspace: the agent does it unasked only where
+    // its person allowed that one action, as "Always allow this" does.
+    tree_workspace
+        .policy
+        .grant(tilo_action_policy::agent_answers::grant(
+            workspace,
+            "scribe",
+            (
+                &tilo_action_policy::agent_answers::AnswerScope::Action {
+                    app: BRIDGE.into(),
+                    kind: "bridge.channel".into(),
+                    action: "send".into(),
+                },
+                tilo_action_policy::ActionKind::Outside,
+            ),
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(hex::encode(
+                persons_root().verifying_key().to_bytes(),
+            )),
+        ));
     let mut tree = crate::apps::test_support::WorkspaceTree::default();
     tree.workspaces.push(tree_workspace);
     let membership = tree.shared();
@@ -929,23 +949,19 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
     );
     assert_eq!(ran_as.forwarder(), Some(&laptop_device));
 
-    // The bridge finishes the agent's call: once the laptop's record of it ended, a call
-    // carrying it is refused.
+    // The bridge finishes the agent's call: the desktop hands the agent what became of it, and
+    // a call carrying it is refused from then on.
     laptop_bridge.end_running();
-    tilo_test_env::within("an ended invocation proves nothing", async {
-        loop {
-            match ends(&to_desktop, &laptop_caller, for_it()).await {
-                Err(ActionCallError::Refused { reason }) if reason.contains("has ended") => break,
-                Ok(ReceiptStatus::Completed { .. }) => {
-                    records.ran.lock().unwrap().clear();
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-                other => panic!("an ended invocation proves nothing: {other:?}"),
-            }
-        }
-    })
-    .await;
-    running.abort();
+    let ended = running.await.unwrap();
+    assert!(
+        matches!(ended, Ok(ReceiptStatus::Completed { .. })),
+        "the agent's call settles where it was asked: {ended:?}"
+    );
+    let after = ends(&to_desktop, &laptop_caller, for_it()).await;
+    assert!(
+        matches!(&after, Err(ActionCallError::Refused { reason }) if reason.contains("has ended")),
+        "an ended invocation proves nothing: {after:?}"
+    );
     assert!(records.ran.lock().unwrap().is_empty());
 }
 

@@ -307,11 +307,26 @@ impl Caller {
             (Some(own), Some(ended)) => own.replaced(ended),
             _ => false,
         };
+
         replaced && {
             let mut same = mine;
             same.execution.clone_from(&owner.execution);
             same == theirs
         }
+    }
+
+    /// Whether this caller may follow or cancel an invocation `owner` started: as
+    /// [`Self::continues`], or it is the device that brought `owner`'s call, in the run it brought
+    /// it in, which hands the caller what became of the call as it handed them its first receipt.
+    /// Never whether it may ask the invocation again as its own.
+    #[must_use]
+    pub fn follows(&self, owner: &Self) -> bool {
+        self.continues(owner)
+            || (self.forwarded_by.is_none()
+                && owner
+                    .forwarded_by
+                    .is_some_and(|by| self.device_public_key == Some(by))
+                && self.execution == owner.execution)
     }
 
     /// This caller without the name it goes by, which is presentation only
