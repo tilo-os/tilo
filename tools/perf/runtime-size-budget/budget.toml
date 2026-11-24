@@ -97,6 +97,9 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # budgets, and Typst's is its earlier library's, until the first aarch64 run
 # prints what to lower them to. libtilo_browser_engine.so's budget is an estimate
 # on both architectures until the first run prints what to lower it to.
+# libtilo_youtube_engine.so (6291456) and libtilo_music_engine.so (8388608) are
+# provisional upper bounds on both architectures, from the code that left the
+# process with the connectors; the first release run prints what to lower them to.
 
 # The apps of apps_without_media that use an engine library
 # (crates/engines/loadable/), by library: they load it at exec. the app release
@@ -152,10 +155,12 @@ bytes = 2490368
 "libtilo_git_engine.so" = 3735552
 "libtilo_grayjay_engine.so" = 458752
 "libtilo_highlight_engine.so" = 2818048
+"libtilo_music_engine.so" = 8388608
 "libtilo_theme_painter_engine.so" = 131072
 "libtilo_totp_engine.so" = 2097152
 "libtilo_typst_engine.so" = 34406400
 "libtilo_wasm_engine.so" = 2621440
+"libtilo_youtube_engine.so" = 6291456
 
 [engines.aarch64]
 "libtilo_accounts_engine.so" = 2490368
@@ -169,7 +174,9 @@ bytes = 2490368
 "libtilo_git_engine.so" = 3735552
 "libtilo_grayjay_engine.so" = 458752
 "libtilo_highlight_engine.so" = 2752512
+"libtilo_music_engine.so" = 8388608
 "libtilo_theme_painter_engine.so" = 131072
 "libtilo_totp_engine.so" = 2097152
 "libtilo_typst_engine.so" = 41418752
 "libtilo_wasm_engine.so" = 2621440
+"libtilo_youtube_engine.so" = 6291456
