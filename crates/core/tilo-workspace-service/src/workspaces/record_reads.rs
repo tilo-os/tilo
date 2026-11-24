@@ -33,6 +33,7 @@ use tilo_actions::remote::{
 use tilo_peer_state::StatePeer;
 
 use super::{WeakWorkspaces, Workspaces};
+use crate::device_documents::on_its_own;
 
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 type Broker = crate::apps::collab_app_broker::AppBrokerState;
@@ -49,8 +50,8 @@ pub struct RecordReads {
     /// What admits a caller to the invocations of a dispatch's workspace: its admitted run.
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
     admitted: Option<Admitted>,
-    /// The runtime the reader was made on, which a held read's wait for the next write runs on:
-    /// a read is answered on a thread of its own, outside any runtime.
+    /// The runtime the reader was made on, which a held read's wait for the next write and the
+    /// routing of a read run on where whoever asks drives none.
     runtime: Option<tokio::runtime::Handle>,
 }
 
@@ -289,7 +290,7 @@ impl RecordReads {
     /// ([`super::OwnReaders::OwnRecords`]), it is the one policy decision at the record's node
     /// (a device's settings): its person reads it from any of their devices, and whoever they
     /// granted that setting reads it, in their own workspace.
-    fn own(
+    async fn own(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
@@ -321,7 +322,9 @@ impl RecordReads {
         match readers {
             super::OwnReaders::ThisDevice => Some(Err(refused())),
             super::OwnReaders::Workspace => {
-                let admitted = Self::kept_here(&workspaces, &address.workspace)
+                let admitted = workspaces
+                    .state(&address.workspace)
+                    .await
                     .ok_or_else(refused)
                     .and_then(|state| self.decides(&state, caller, address, ActionKind::Read));
                 Some(admitted.map(|()| reads))
@@ -558,23 +561,26 @@ impl RecordReads {
 
     /// `bytes`, the copy of `address` read for `caller`, handed out only once the workspace
     /// decided again that the caller may read it: a grant revoked while it was read cuts it.
-    fn hand_out(
+    async fn hand_out(
         &self,
         workspaces: &Workspaces,
         caller: &Caller,
         address: &ResourceAddress,
         bytes: Option<Vec<u8>>,
     ) -> Result<ResourceCopy, ActionCallError> {
-        let state = Self::kept_here(workspaces, &address.workspace).ok_or_else(refused)?;
+        let state = workspaces
+            .state(&address.workspace)
+            .await
+            .ok_or_else(refused)?;
         self.decides(&state, caller, address, ActionKind::Read)?;
         Ok(bytes.map_or(ResourceCopy::Absent, ResourceCopy::Document))
     }
 
     /// `read`, asked as `correlation`, answered for `caller` where it goes: a read the app action
     /// server answers goes to it whole, waits included, and every other is read here.
-    fn routed_read(
+    async fn routed_read(
         self: Arc<Self>,
-        caller: &Caller,
+        caller: Caller,
         correlation: u64,
         read: ResourceReadRequest,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
@@ -589,28 +595,33 @@ impl RecordReads {
         if address.app == tilo_actions::remote::workspace_invocations::PROVIDER
             && self.broker().is_some()
         {
-            return tilo_actions::remote::answer_read(self, caller, correlation, read);
+            return tilo_actions::remote::answer_read(self, &caller, correlation, read);
         }
-        if self.own(caller, &address).is_some() {
-            return tilo_actions::remote::answer_read(self, caller, correlation, read);
+        if self.own(&caller, &address).await.is_some() {
+            return tilo_actions::remote::answer_read(self, &caller, correlation, read);
         }
-        if let Ok(Route::Served(served)) = self.route(caller, &address) {
-            return served.answer_read(caller, correlation, read);
+        if let Ok(Route::Served(served)) = self.route(&caller, &address).await {
+            return served.answer_read(&caller, correlation, read);
         }
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
+        tilo_actions::remote::answer_read(self, &caller, correlation, read)
     }
 
-    /// `workspace` as this device holds it, when it does.
-    fn kept_here(workspaces: &Workspaces, workspace: &str) -> Option<StatePeer> {
-        let (workspaces, workspace) = (workspaces.clone(), workspace.to_owned());
-        crate::device_documents::on_its_own(async move { workspaces.state(&workspace).await })
+    /// The workspace `address` names as this device holds it, when it does and this reader still
+    /// reaches the device's workspaces.
+    async fn held_state(&self, address: &ResourceAddress) -> Option<StatePeer> {
+        let workspaces = self.workspaces.as_ref()?.upgrade()?;
+        workspaces.state(&address.workspace).await
     }
 
     /// Who reads `address` for `caller`: this device, for a workspace it holds, once that
     /// workspace's governance let the caller read it; the app action server, for any other.
-    fn route(&self, caller: &Caller, address: &ResourceAddress) -> Result<Route, ActionCallError> {
+    async fn route(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> Result<Route, ActionCallError> {
         if let Some(workspaces) = self.workspaces.as_ref().and_then(WeakWorkspaces::upgrade)
-            && let Some(state) = Self::kept_here(&workspaces, &address.workspace)
+            && let Some(state) = workspaces.state(&address.workspace).await
         {
             self.decides(&state, caller, address, ActionKind::Read)?;
             return Ok(Route::Held(workspaces));
@@ -641,7 +652,7 @@ impl RecordReads {
 
     /// The key `address` names, as `route` reads it for `caller`: its grant as the workspace's
     /// governance keeps it ([`WorkspaceGrant`]), absent where the workspace admitted no such key.
-    fn key(
+    async fn key(
         route: Route,
         caller: &Caller,
         address: &ResourceAddress,
@@ -650,18 +661,228 @@ impl RecordReads {
             Route::Held(workspaces) => workspaces,
             Route::Served(served) => return served.read(caller, address),
         };
-        let (workspace, record) = (address.workspace.clone(), address.record.clone());
-        let grant = crate::device_documents::on_its_own(async move {
-            let state = workspaces.state(&workspace).await?;
-            state
-                .governance()
-                .workspace_grants()
-                .into_iter()
-                .find(|grant| grant.id == record)
-        });
+        let grant = workspaces
+            .state(&address.workspace)
+            .await
+            .and_then(|state| {
+                state
+                    .governance()
+                    .workspace_grants()
+                    .into_iter()
+                    .find(|grant| grant.id == address.record)
+            });
         Ok(grant.map_or(ResourceCopy::Absent, |grant| {
             ResourceCopy::reading(serde_json::json!(grant), None)
         }))
+    }
+}
+
+impl RecordReads {
+    /// [`ResourceReads::may_read`], decided as the workspace the address names is held here.
+    async fn read_decision(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+        if let Some(own) = self.own(caller, address).await {
+            return match own {
+                Ok(reads) => reads.may_read(caller, address),
+                Err(refusal) => tilo_actions::remote::Pending::ready(Err(refusal)),
+            };
+        }
+        // An app keeps open only the records its manifest lets it reach.
+        if let Err(refusal) = Self::declared(caller, address) {
+            return tilo_actions::remote::Pending::ready(Err(refusal));
+        }
+        tilo_actions::remote::Pending::ready(match self.held_state(address).await {
+            Some(state) => self.decides(&state, caller, address, ActionKind::Read),
+            None => Err(refused()),
+        })
+    }
+
+    /// [`ResourceReads::may_write`], decided as the workspace the address names is held here.
+    async fn write_decision(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> tilo_actions::remote::Decided {
+        // An app changes only the records its manifest lets it change: another app's it reads
+        // at most, and changes through that app's actions.
+        match Self::declared(caller, address) {
+            Ok(AppReach::Changes) => {}
+            Ok(AppReach::Reads) | Err(_) => return Err(write_refused()),
+        }
+        match self.held_state(address).await {
+            Some(state) => self
+                .decides(&state, caller, address, ActionKind::Undoable)
+                .map_err(|decision| match decision {
+                    ActionCallError::Refused { .. } => write_refused(),
+                    other => other,
+                }),
+            None => Err(write_refused()),
+        }
+    }
+
+    /// [`ResourceReads::read`]: the copy of `address`, wherever it is read for `caller`.
+    async fn reading(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> Result<ResourceCopy, ActionCallError> {
+        if let Some(own) = self.own(caller, address).await {
+            return own?.read(caller, address);
+        }
+        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER {
+            return self.invocations(caller, address);
+        }
+        let route = self.route(caller, address).await?;
+        if address.app == PRESENCE {
+            return Self::presence(route, caller, address);
+        }
+        if address.app == KEY_GRANTS {
+            return Self::key(route, caller, address).await;
+        }
+        let workspaces = match route {
+            Route::Held(workspaces) => workspaces,
+            Route::Served(served) => return served.read(caller, address),
+        };
+        let bytes = workspaces
+            .resource_document(&address.workspace, &address.app, &address.record)
+            .await
+            .map_err(|error| ActionCallError::Unavailable {
+                reason: error.to_string(),
+            })?;
+        self.hand_out(&workspaces, caller, address, bytes).await
+    }
+
+    /// [`ResourceReads::list`]: what `caller` may read of `workspace`'s resources here.
+    async fn listing(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        app: &str,
+    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
+        let workspaces = self
+            .workspaces
+            .as_ref()
+            .and_then(WeakWorkspaces::upgrade)
+            .ok_or_else(refused)?;
+        // A resource this device publishes as its own lists through the reader that holds it,
+        // which decides each record as its read is: a device's settings among them.
+        if let Some((_, reads)) = workspaces.own_reading(app)
+            && workspace
+                == tilo_server_protocol::servers::person_workspace_id(
+                    &workspaces.device_cert().user_public_key,
+                )
+        {
+            return reads.list(caller, workspace, app);
+        }
+        let state = workspaces.state(workspace).await.ok_or_else(refused)?;
+        let listed = workspaces
+            .own_listing(workspace)
+            .map_err(|reason| ActionCallError::Unavailable { reason })?;
+        Ok(listed
+            .into_iter()
+            .filter(|(of, _)| app.is_empty() || of == app)
+            .map(|(app, record)| ResourceAddress {
+                workspace: workspace.to_owned(),
+                app,
+                record,
+            })
+            .filter(|address| {
+                self.decides(&state, caller, address, ActionKind::Read)
+                    .is_ok()
+            })
+            .collect())
+    }
+
+    /// [`ResourceReads::store_read`], asked of whoever reads `address` for `caller`.
+    async fn store_reading(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+        read: serde_json::Value,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        let route = self.route(caller, address).await?;
+        match route {
+            Route::Held(_) => {
+                // Decided already: the apps' store answers the read.
+                #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+                if let Some(broker) = self.broker() {
+                    return broker.store_read_record(caller, address, read);
+                }
+                Err(ActionCallError::Unavailable {
+                    reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+                })
+            }
+            Route::Served(served) => served.store_read(caller, address, read),
+        }
+    }
+
+    /// [`ResourceReads::watch`], a held record's wait for its next write run on `runtime`.
+    async fn watching(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+        wake: &ResourceWake,
+        runtime: Option<tokio::runtime::Handle>,
+    ) -> Result<(), ActionCallError> {
+        if let Some(own) = self.own(caller, address).await {
+            return own?.watch(caller, address, wake);
+        }
+        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER
+            && let Some(broker) = self.broker()
+        {
+            self.may_read_invocations(caller, &address.workspace)?;
+            return broker.watch_invocations(caller, &address.workspace, wake);
+        }
+        let route = self.route(caller, address).await?;
+        if address.app == PRESENCE && !matches!(route, Route::Served(_)) {
+            // Nothing is written when someone comes or goes: presence says when it moves, and the
+            // roster when its membership does.
+            super::personal::on_presence_change(wake);
+            return Ok(());
+        }
+        let workspaces = match route {
+            Route::Held(workspaces) => workspaces,
+            Route::Served(served) => return served.watch(caller, address, wake),
+        };
+        let runtime = runtime.ok_or_else(|| ActionCallError::Unavailable {
+            reason: "this device is not running".into(),
+        })?;
+        let (workspace, app, record) = (
+            address.workspace.clone(),
+            address.app.clone(),
+            address.record.clone(),
+        );
+        // A grant is no document: it moves with the workspace's governance.
+        if app == KEY_GRANTS {
+            let changes = workspaces.governance_changes();
+            wake_at(
+                &runtime,
+                changes,
+                move |changed| *changed == workspace,
+                wake,
+            );
+            return Ok(());
+        }
+        let writes = workspaces.document_writes();
+        wake_at(
+            &runtime,
+            writes,
+            move |write| write.workspace == workspace && write.app == app && write.record == record,
+            wake,
+        );
+        Ok(())
+    }
+
+    /// The runtime whoever asks drives, or else the one this reader was made on.
+    fn runtime(&self) -> Option<tokio::runtime::Handle> {
+        tokio::runtime::Handle::try_current()
+            .ok()
+            .or_else(|| self.runtime.clone())
     }
 }
 
@@ -705,31 +926,17 @@ impl Workspaces {
 }
 
 impl ResourceReads for RecordReads {
+    // Every answer below reads the workspace as this device holds it, which waits for that
+    // workspace's lock: the synchronous ones wait for it once each, on a thread of their own
+    // where the asker drives a runtime ([`on_its_own`]).
+
     /// A record of a workspace this device holds, decided as its read is; any other is not read.
     fn may_read(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
-        if let Some(own) = self.own(caller, address) {
-            return match own {
-                Ok(reads) => reads.may_read(caller, address),
-                Err(refusal) => tilo_actions::remote::Pending::ready(Err(refusal)),
-            };
-        }
-        // An app keeps open only the records its manifest lets it reach.
-        if let Err(refusal) = Self::declared(caller, address) {
-            return tilo_actions::remote::Pending::ready(Err(refusal));
-        }
-        let state = self
-            .workspaces
-            .as_ref()
-            .and_then(WeakWorkspaces::upgrade)
-            .and_then(|workspaces| Self::kept_here(&workspaces, &address.workspace));
-        tilo_actions::remote::Pending::ready(match state {
-            Some(state) => self.decides(&state, caller, address, ActionKind::Read),
-            None => Err(refused()),
-        })
+        on_its_own(self.read_decision(caller, address))
     }
 
     /// A record of a workspace this device holds, changed as its write is decided there: an app
@@ -741,28 +948,7 @@ impl ResourceReads for RecordReads {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
-        // An app changes only the records its manifest lets it change: another app's it reads
-        // at most, and changes through that app's actions.
-        match Self::declared(caller, address) {
-            Ok(AppReach::Changes) => {}
-            Ok(AppReach::Reads) | Err(_) => {
-                return tilo_actions::remote::Pending::ready(Err(write_refused()));
-            }
-        }
-        let state = self
-            .workspaces
-            .as_ref()
-            .and_then(WeakWorkspaces::upgrade)
-            .and_then(|workspaces| Self::kept_here(&workspaces, &address.workspace));
-        tilo_actions::remote::Pending::ready(match state {
-            Some(state) => self
-                .decides(&state, caller, address, ActionKind::Undoable)
-                .map_err(|decision| match decision {
-                    ActionCallError::Refused { .. } => write_refused(),
-                    other => other,
-                }),
-            None => Err(write_refused()),
-        })
+        tilo_actions::remote::Pending::ready(on_its_own(self.write_decision(caller, address)))
     }
 
     fn read(
@@ -770,37 +956,7 @@ impl ResourceReads for RecordReads {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
-        if let Some(own) = self.own(caller, address) {
-            return own?.read(caller, address);
-        }
-        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER {
-            return self.invocations(caller, address);
-        }
-        let route = self.route(caller, address)?;
-        if address.app == PRESENCE {
-            return Self::presence(route, caller, address);
-        }
-        if address.app == KEY_GRANTS {
-            return Self::key(route, caller, address);
-        }
-        let workspaces = match route {
-            Route::Held(workspaces) => workspaces,
-            Route::Served(served) => return served.read(caller, address),
-        };
-        let (held, workspace, app, record) = (
-            workspaces.clone(),
-            address.workspace.clone(),
-            address.app.clone(),
-            address.record.clone(),
-        );
-        let bytes = crate::device_documents::on_its_own(async move {
-            held.resource_document(&workspace, &app, &record).await
-        })
-        .map_err(|error| ActionCallError::Unavailable {
-            reason: error.to_string(),
-        })?;
-        self.hand_out(&workspaces, caller, address, bytes)
+        on_its_own(self.reading(caller, address))
     }
 
     /// The resources of `workspace` the device `caller` holds a certificate for there may read:
@@ -811,38 +967,7 @@ impl ResourceReads for RecordReads {
         workspace: &str,
         app: &str,
     ) -> Result<Vec<ResourceAddress>, ActionCallError> {
-        let workspaces = self
-            .workspaces
-            .as_ref()
-            .and_then(WeakWorkspaces::upgrade)
-            .ok_or_else(refused)?;
-        // A resource this device publishes as its own lists through the reader that holds it,
-        // which decides each record as its read is: a device's settings among them.
-        if let Some((_, reads)) = workspaces.own_reading(app)
-            && workspace
-                == tilo_server_protocol::servers::person_workspace_id(
-                    &workspaces.device_cert().user_public_key,
-                )
-        {
-            return reads.list(caller, workspace, app);
-        }
-        let state = Self::kept_here(&workspaces, workspace).ok_or_else(refused)?;
-        let listed = workspaces
-            .own_listing(workspace)
-            .map_err(|reason| ActionCallError::Unavailable { reason })?;
-        Ok(listed
-            .into_iter()
-            .filter(|(of, _)| app.is_empty() || of == app)
-            .map(|(app, record)| ResourceAddress {
-                workspace: workspace.to_owned(),
-                app,
-                record,
-            })
-            .filter(|address| {
-                self.decides(&state, caller, address, ActionKind::Read)
-                    .is_ok()
-            })
-            .collect())
+        on_its_own(self.listing(caller, workspace, app))
     }
 
     fn answer_read(
@@ -852,30 +977,24 @@ impl ResourceReads for RecordReads {
         read: ResourceReadRequest,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
         // Where the read goes is decided by the workspace as this device holds it, which waits
-        // for that workspace's lock. A task of the caller's runtime may have the lock across an
-        // await (a write of the workspace's records), and that task runs only once the caller's
-        // thread is free again: the decision is made on a thread of its own, never the caller's.
-        // A page has no thread beside its own.
-        #[cfg(target_arch = "wasm32")]
-        return self.routed_read(caller, correlation, read);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let (answer, answered) = tilo_actions::remote::pending();
-            let caller = caller.clone();
-            // Without a thread the completer goes with the closure: the caller hears the read
-            // dropped.
-            let _ = std::thread::Builder::new()
-                .name("resource-route".into())
-                .spawn(move || {
-                    self.routed_read(&caller, correlation, read)
-                        .then(move |reading| {
-                            if let Some(reading) = reading {
-                                answer.complete(reading);
-                            }
-                        });
-                });
-            answered
+        // for that workspace's lock. A task of the asker's runtime may hold the lock across an
+        // await (a write of the workspace's records), so the decision is a task of its own that
+        // awaits the lock, never a wait that holds the asker's thread.
+        let (answer, answered) = tilo_actions::remote::pending();
+        let runtime = self.runtime();
+        let routed = self.routed_read(caller.clone(), correlation, read);
+        let routing = async move {
+            routed.await.then(move |reading| {
+                if let Some(reading) = reading {
+                    answer.complete(reading);
+                }
+            });
+        };
+        match runtime {
+            Some(runtime) => drop(runtime.spawn(routing)),
+            None => drop(tilo_rt::app().spawn(routing)),
         }
+        answered
     }
 
     fn store_read(
@@ -884,19 +1003,7 @@ impl ResourceReads for RecordReads {
         address: &ResourceAddress,
         read: serde_json::Value,
     ) -> Result<serde_json::Value, ActionCallError> {
-        match self.route(caller, address)? {
-            Route::Held(_) => {
-                // Decided already: the apps' store answers the read.
-                #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-                if let Some(broker) = self.broker() {
-                    return broker.store_read_record(caller, address, read);
-                }
-                Err(ActionCallError::Unavailable {
-                    reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
-                })
-            }
-            Route::Served(served) => served.store_read(caller, address, read),
-        }
+        on_its_own(self.store_reading(caller, address, read))
     }
 
     fn watch(
@@ -905,57 +1012,7 @@ impl ResourceReads for RecordReads {
         address: &ResourceAddress,
         wake: &ResourceWake,
     ) -> Result<(), ActionCallError> {
-        if let Some(own) = self.own(caller, address) {
-            return own?.watch(caller, address, wake);
-        }
-        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER
-            && let Some(broker) = self.broker()
-        {
-            self.may_read_invocations(caller, &address.workspace)?;
-            return broker.watch_invocations(caller, &address.workspace, wake);
-        }
-        let route = self.route(caller, address)?;
-        if address.app == PRESENCE && !matches!(route, Route::Served(_)) {
-            // Nothing is written when someone comes or goes: presence says when it moves, and the
-            // roster when its membership does.
-            super::personal::on_presence_change(wake);
-            return Ok(());
-        }
-        let workspaces = match route {
-            Route::Held(workspaces) => workspaces,
-            Route::Served(served) => return served.watch(caller, address, wake),
-        };
-        let runtime = tokio::runtime::Handle::try_current()
-            .ok()
-            .or_else(|| self.runtime.clone())
-            .ok_or_else(|| ActionCallError::Unavailable {
-                reason: "this device is not running".into(),
-            })?;
-        let (workspace, app, record) = (
-            address.workspace.clone(),
-            address.app.clone(),
-            address.record.clone(),
-        );
-        // A grant is no document: it moves with the workspace's governance.
-        if app == KEY_GRANTS {
-            let changes = workspaces.governance_changes();
-            wake_at(
-                &runtime,
-                changes,
-                move |changed| *changed == workspace,
-                wake,
-            );
-            return Ok(());
-        }
-        let writes = workspaces.document_writes();
-        wake_at(
-            &runtime,
-            writes,
-            move |write| write.workspace == workspace && write.app == app && write.record == record,
-            wake,
-        );
-        Ok(())
+        on_its_own(self.watching(caller, address, wake, self.runtime()))
     }
 }
 

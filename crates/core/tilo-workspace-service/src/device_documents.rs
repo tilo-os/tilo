@@ -42,8 +42,8 @@ impl Held {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn on_its_own<F>(future: F) -> F::Output
 where
-    F: std::future::Future + Send + 'static,
-    F::Output: Send + 'static,
+    F: std::future::Future + Send,
+    F::Output: Send,
 {
     if tokio::runtime::Handle::try_current().is_err() {
         return block_on(future);
