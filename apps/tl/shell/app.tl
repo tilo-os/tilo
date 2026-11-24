@@ -44,6 +44,9 @@ view shell_view(a: Layout) window "Desktop shell" {
             ui.MenuItem("Join a workspace", icon: .users) {
                 on choose: session.join_workspace()
             }
+            ui.MenuItem("Invite someone", icon: .user_plus) {
+                on choose: device.show_invite(device.invite)
+            }
             ui.MenuItem("Workspace settings", icon: .settings) {
                 on choose: session.workspace_settings()
             }
@@ -244,12 +247,14 @@ view bar_part(part: BarPart) {
             if not space.compact and not frames_style() {
                 people_button()
             }
-            if device.overlays.ask != "" {
-                ui.Button(device.overlays.ask, role: .bar)
-                if device.overlays.ask_answer != "" {
-                    ui.Button(device.overlays.ask_answer, role: .bar)
-                }
+            // Whose view this is while the person follows someone: their face and name where the
+            // bar's glance value stands, with the way to stop.
+            if not space.compact {
+                follow_chip()
             }
+            wave_notice()
+            arrival_notice()
+            sharing_indicator()
         }
     } else if part.kind == .agent {
         for a in device.agents.sessions {
@@ -315,19 +320,23 @@ view bar_part(part: BarPart) {
             network_status()
             battery_status()
             bell()
-            // The person's own face opens who they are here, in the same card as anyone
-            // else's: their name, status and colour, their devices, pairing a new one and
-            // Settings. A question put to them stays its own control beside the faces, so
-            // answering it never means finding their card first; a person the session has not
+            // The person's own face opens their own card: their name, status and colour, their
+            // devices, pairing a new one and Settings. A question put to them shows as its dot
+            // here, and their card is where it is asked properly; a person the session has not
             // named yet still has a face, since that is where the name is set.
             ui.Button(
-                if layout.person != "" {
-                    "{layout.person} (you): your profile"
-                } else { "(you): your profile" },
+                if device.overlays.ask != "" {
+                    std.say("{device.overlays.ask}: open your card")
+                } else if layout.person != "" {
+                    std.say("{layout.person}: open your card")
+                } else {
+                    std.say("You: open your card")
+                },
                 faces: [invoker],
+                dot: device.overlays.ask != "",
                 role: .bar,
             ) {
-                on press: session.show_self()
+                on press: device.show_person(device.people, person: "self")
             }
         }
     }
@@ -374,6 +383,9 @@ view workspace_menu() {
             }
             ui.MenuItem("Join a workspace", icon: .users) {
                 on choose: session.join_workspace()
+            }
+            ui.MenuItem("Invite someone", icon: .user_plus) {
+                on choose: device.show_invite(device.invite)
             }
             if let cur = current {
                 ui.MenuItem("Rename {cur.name}", icon: .pencil) {
@@ -559,6 +571,12 @@ view person_menu() {
         }
         ui.MenuItem("About Tilo", icon: .info, group: "Tilo") {
             on choose: session.about()
+        }
+        ui.MenuItem("Who is here", icon: .users, group: "People") {
+            on choose: device.show(device.people)
+        }
+        ui.MenuItem("Your card", icon: .user, group: "People") {
+            on choose: device.show_person(device.people, person: "self")
         }
     }
 }

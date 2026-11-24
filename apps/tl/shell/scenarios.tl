@@ -2750,6 +2750,192 @@ scenario "the agents on the bar" {
     if let part = s.bar_parts.find(p -> p.kind == BarPartKind.agent) { show_part(s, part, true) }
 }
 
+/// Who is here: the roster over the windows, with two people working, one away, software busy in
+/// a window, and someone who follows this person marked on their row.
+scenario "who is here" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "people"))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.people, people_here())
+}
+
+/// A person's card: what they are doing, where they are, and the actions their card offers.
+scenario "a person's card" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "people"))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.people, device.People(rows: people_rows(), me: me_here(), showing: "mia"))
+}
+
+/// The person's own card, with the question the session put to them about themselves waiting on
+/// it: their name, what they are doing and how available they are, and the question as its card.
+scenario "your own card, a question waiting" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(
+        device.overlays,
+        device.Overlays(
+            here: "people",
+            ask: "Show where you are to the people here?",
+            ask_detail: "They see the window you are in, and its name.",
+            ask_answer: "Show where I am",
+            ask_open: true,
+        ),
+    )
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.people, device.People(rows: people_rows(), me: me_here(), showing: "self"))
+}
+
+/// Following someone: the bar says whose view it is, with the way to stop, and their face on the
+/// roster says this person follows them.
+scenario "following a person" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "none"))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(
+        device.people,
+        device.People(rows: people_rows(), me: me_here(), following: "mia", waved: "Mia Clayton"),
+    )
+}
+
+/// The people here, as the roster stages them, with someone just arrived: the bar says so beside
+/// the faces for a moment.
+fn people_here() -> device.People {
+    return device.People(rows: people_rows(), me: me_here(), arrived: ["Mia Clayton"])
+}
+
+/// A window shared with the workspace: the eye in its bar says a member watches it, and the bar
+/// says how many of this device's windows go out.
+scenario "sharing a window" -> Layout {
+    let v = viewing
+    v.style = "so.tilo.shell:strips"
+    let a = root Layout
+    let row = a_workspace(a, "Main")
+    let strip = a_strip(a, row, "Notes", 667)
+    a_note_place(a, strip, 0)
+    a.person = "Ada Lovelace"
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "w-shared",
+                    title: "Release planning",
+                    origin_app: "Notes",
+                    app_key: "so.tilo.notes",
+                    icon: "notebook",
+                    strip: "Notes",
+                    strip_key: "s-r-Main-Notes",
+                    workspace: "Main",
+                    workspace_key: "w-Main",
+                    place: 1,
+                    recency: 1,
+                    focused: true,
+                    preview: "live",
+                ),
+            ],
+        ),
+    )
+    stage(
+        device.shares,
+        device.Shares(
+            sharing: [
+                device.SharedWindow(
+                    tab: "w-shared",
+                    app_id: "so.tilo.notes",
+                    workspace: "w-Main",
+                    input_allowed: false,
+                    streaming: true,
+                    waiting_for: "",
+                    viewers: [device.ShareViewer(peer: 1, can_control: false)],
+                ),
+            ],
+            watching: [],
+        ),
+    )
+    a
+}
+
+/// Everyone here: two people working, one away, one following this person, and software working
+/// in a window.
+fn people_rows() -> List<device.Person> {
+    return [
+        device.Person(
+            key: "mia",
+            name: "Mia Clayton",
+            colour: "ed914c",
+            agent: false,
+            me: false,
+            availability: "available",
+            doing: "Rewriting the launch note",
+            activity: "Release planning",
+            in_app: "Notes",
+            call: "",
+            following: false,
+            follower: true,
+        ),
+        device.Person(
+            key: "sam",
+            name: "Sam Okafor",
+            colour: "3f9ae0",
+            agent: false,
+            me: false,
+            availability: "away",
+            doing: "",
+            activity: "",
+            in_app: "Tasks",
+            call: "",
+            following: false,
+            follower: false,
+        ),
+        device.Person(
+            key: "fieldwork",
+            name: "Fieldwork",
+            colour: "7c8cf8",
+            agent: true,
+            me: false,
+            availability: "available",
+            doing: "",
+            activity: "Launch checklist",
+            in_app: "Tasks",
+            call: "",
+            following: false,
+            follower: false,
+        ),
+    ]
+}
+
+/// The person at this device, as their own card shows them.
+fn me_here() -> device.Person {
+    return device.Person(
+        key: "self",
+        name: "Ada Lovelace",
+        colour: "f7857d",
+        agent: false,
+        me: true,
+        availability: "available",
+        doing: "Shipping the shell",
+        activity: "",
+        in_app: "",
+        call: "",
+        following: false,
+        follower: false,
+    )
+}
+
 /// The text channel named `name` in the chat's sidebar, on its own or in a category.
 fn channel_named(name: Text) -> Option<chat.TextChannel> {
     for x in chat.conversations.channels {

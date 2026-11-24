@@ -421,6 +421,16 @@ view banners_over() {
             }
         }
     }
+    // A question put to the person about themselves, open, stands as its card under their own
+    // avatar: what it asks, what answering brings and the two ways to put it off. Folded, it is
+    // the dot on their face instead, and their card is where the question waits.
+    if device.overlays.ask != "" and device.overlays.ask_open {
+        stack(at: .top_trailing, padding: .group) {
+            ui.FloatingPanel(width: 360.0) {
+                ask_card()
+            }
+        }
+    }
 }
 
 /// The surface the person is in, at the place its kind shows: the launcher fills the room
@@ -444,6 +454,8 @@ view surface() {
             workspaces(fill)
         } else if device.overlays.here == "history" {
             history(fill)
+        } else if device.overlays.here == "people" {
+            people()
         }
     }
 }

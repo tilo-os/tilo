@@ -529,6 +529,9 @@ view window_controls(s: LayoutStrip, shown: Option<LayoutPlace>, listed: Bool) {
                 }
             }
         }
+        // The window shared with the workspace, or the way to share it: an eye that says a member
+        // asks to see it, and the window's own menu stops the share or lets them control it.
+        share_control(shown)
         if s.maximized {
             ui.Button("Restore", icon: .minimize_2, icon_only: true, role: .plain) {
                 on press: session.maximize_strip(strip: the_strip(s.key), on: false)
@@ -735,6 +738,54 @@ view bar_search(w: device.Window) {
         }
         ui.Button("Close the search", icon: .x, icon_only: true, role: .plain) {
             on press: session.bar_search_close(tab: w.key)
+        }
+    }
+}
+
+/// The window's share, in its bar: while it is shared with the workspace, an eye naming the
+/// members watching it, opening the way to stop the share or let them control the window; while
+/// it is not, the way to share it. A window that runs on another device offers neither: what it
+/// shows is already travelling from that device.
+view share_control(shown: Option<LayoutPlace>) {
+    if let p = shown {
+        if let w = shown_window(p) {
+            if not w.elsewhere {
+                if let shared = device.shares.sharing.find(x -> x.tab == w.key) {
+                    let watching = shared.viewers.len()
+                    ui.MenuButton(
+                        if watching == 0 {
+                            "Shared with the workspace"
+                        } else { std.say("Shared, {watching} watching") },
+                        icon: .eye,
+                        role: .plain,
+                    ) {
+                        ui.MenuItem("Stop sharing", icon: .eye_off, destructive: true) {
+                            on choose: device.stop(device.shares, tab: w.key)
+                        }
+                        if shared.input_allowed {
+                            ui.MenuItem("Stop letting them control it", icon: .mouse_pointer_2) {
+                                on choose: device.allow_remote_input(
+                                    device.shares,
+                                    tab: w.key,
+                                    on: false,
+                                )
+                            }
+                        } else {
+                            ui.MenuItem("Let them control it", icon: .mouse_pointer_2) {
+                                on choose: device.allow_remote_input(
+                                    device.shares,
+                                    tab: w.key,
+                                    on: true,
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    ui.Button("Share this window", icon: .eye, icon_only: true, role: .plain) {
+                        on press: device.share(device.shares, tab: w.key)
+                    }
+                }
+            }
         }
     }
 }

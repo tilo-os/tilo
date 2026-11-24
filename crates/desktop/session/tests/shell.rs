@@ -17,7 +17,9 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-use crate::common::{LAUNCHER_SEARCH, OVERVIEW_SEARCH, WORKSPACE_NAME, press, press_at, type_text};
+use crate::common::{
+    LAUNCHER_SEARCH, OVERVIEW_SEARCH, WORKSPACE_NAME, press, press_at, press_where, type_text,
+};
 use std::collections::HashMap;
 use std::io::BufRead as _;
 use std::rc::Rc;
@@ -27,6 +29,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{Options, Service as _, Session};
+use tilo_session_core::desktop::state::{DesktopNotifications, HostAction, HostActionSource};
 use tilo_session_core::shell::{LayoutPersonReading, LayoutWorkspaceReading};
 
 const WIDTH: i32 = 1280;
@@ -1424,6 +1427,101 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
             .all(|name| labels.iter().any(|label| label == name))
     });
     keep(&mut session, "shell-people-roster");
+    // The roster's own way to bring someone new into the workspace: its button, and the
+    // session's invite sheet the button opens.
+    assert!(
+        session.shell_control("Invite someone").is_some(),
+        "the roster offers the invite: {:?}",
+        session.accessible_labels()
+    );
+    // The action the button runs opens the session's own sheet; what the sheet draws is its
+    // own, not the roster's.
+    session
+        .invoke("session:invite", "show-invite", &serde_json::Map::new())
+        .expect("the invite sheet opens");
+}
+
+/// Another of the person's devices, from their own card: the session's own sheet, whose link a
+/// new device's camera reads.
+#[test]
+fn the_persons_own_card_adds_a_device() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    press_where(&mut session, "the person's own face", |session| {
+        bar_control(session, &format!("{PERSON}: open your card"))
+    });
+    until(&mut session, |session| {
+        session.shell_control("Add a device").is_some()
+    });
+    // The action the button runs: the session's own sheet asks for the new device's link.
+    session
+        .invoke("session:people", "pair-device", &serde_json::Map::new())
+        .expect("another device is asked for");
+    assert!(
+        session.shell_refusals().is_empty(),
+        "adding a device is not refused: {:?}",
+        session.shell_refusals()
+    );
+    keep(&mut session, "shell-people-own-card-device");
+}
+
+/// A question the session put to the person about themselves, open, stands as its card under
+/// their own avatar: what it asks, what answering brings, and the way to put it off is the
+/// session's own action.
+#[test]
+fn a_question_on_the_persons_avatar_stands_as_a_card() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    tilo_session::identity::offer(
+        session.handle(),
+        &Told(session.notifications()),
+        HostAction {
+            id: "keep-identity".to_owned(),
+            title: "Keep with passkey".to_owned(),
+            label: None,
+            subtitle: None,
+            icon: None,
+            destructive: false,
+            unasked: false,
+            source: Some(HostActionSource::Identity),
+        },
+        "Keep your name and work?",
+        "A passkey brings you back as yourself on this device.",
+    );
+    until(&mut session, |session| {
+        let labels = session.accessible_labels();
+        labels
+            .iter()
+            .any(|label| label.contains("Keep your name and work?"))
+            && labels
+                .iter()
+                .any(|label| label.contains("A passkey brings you back"))
+    });
+    assert!(
+        session.shell_control("Keep with passkey").is_some(),
+        "the question's answer stands on its card: {:?}",
+        session.accessible_labels()
+    );
+    keep(&mut session, "shell-people-question");
+    // Not now is the session's own action: the question goes.
+    press(&mut session, "Not now");
+    until(&mut session, |session| {
+        session.handle().personal_ask().is_none()
+    });
+}
+
+/// The notices a test host shows, on the shell this session draws them on.
+struct Told(DesktopNotifications);
+
+impl tilo_session::platform::notice::Notices for Told {
+    fn show(&self, notice: &tilo_session::platform::notice::Notice) {
+        self.0
+            .post(tilo_session_core::desktop::notifications::Notification::of_notice(notice));
+    }
+
+    fn withdraw(&self, _tag: &str) {}
 }
 
 /// An action host that keeps what it was asked to run: where the session starts an app.

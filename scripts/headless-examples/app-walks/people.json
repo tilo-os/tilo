@@ -47,8 +47,13 @@
         },
         {
           "must": [
-            "people-panel",
-            "Keep on screen"
+            {
+              "rust": "people-panel",
+              "tl": "You"
+            },
+            {
+              "rust": "Keep on screen"
+            }
           ]
         }
       ],
