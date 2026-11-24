@@ -86,8 +86,9 @@ mod external_moderation_rpc_tests {
                     *written.lock().unwrap() = Some(Err("the fixture's origin is not named".to_owned()));
                     return;
                 };
+                // The same admission the connection's own provider makes of an app's call.
                 let came = match state
-                    .action_invoke_from_origin(&caller, &origin, &asking)
+                    .action_invoke_with_origin(&caller, None, None, Some(&origin), &asking)
                     .await
                 {
                     Some(Ok(_)) => Ok(()),

@@ -1878,18 +1878,6 @@ impl AppBrokerState {
         self.action_invoke_with_origin(caller, own_peer, launch, None, request)
     }
 
-    /// [`Self::action_invoke`] as the dispatch carrying an application's call admits it again
-    /// on its person's answer: under `origin`, the connection's own admission, which what the
-    /// call's effect goes on to do stays within. A test that stands in for that dispatch.
-    #[cfg(test)]
-    pub(crate) fn action_invoke_from_origin(
-        self: &Arc<Self>,
-        caller: &Caller,
-        origin: &super::published_invocation::InvocationCaller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.action_invoke_with_origin(caller, None, None, Some(origin), request)
-    }
 
     /// [`Self::action_invoke`] for a caller whose original invocation ownership
     /// the broker holds (an admitted local connection): an application
@@ -1898,7 +1886,7 @@ impl AppBrokerState {
     ///
     /// A call that waits for its person's yes is refused with what they are shown
     /// ([`AppBrokerState::with_asked_facts`]).
-    pub(super) fn action_invoke_with_origin(
+    pub(crate) fn action_invoke_with_origin(
         self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,
