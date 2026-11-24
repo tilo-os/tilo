@@ -102,7 +102,4 @@ d-ta2u27ch = Gesundheitsbereich
     .w-its-health-is-not-reported = Seine Gesundheit wird nicht gemeldet
     .w-this-drive-reports-no-health-of = Dieses Laufwerk meldet keine eigene Gesundheit.
 
-d-hoqau5lk = Erste Partition einhängen
-    .doc = Hängt die erste Partition des Laufwerks ein, die ein Laufwerk ohne eigenes Dateisystem trägt.
 
-d-hoqau5lk-drive = Laufwerk

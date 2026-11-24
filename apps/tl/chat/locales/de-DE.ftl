@@ -605,9 +605,6 @@ d-fom6d6su = Direktpersonen übernehmen
 d-bi2i7p2d = Nativen Chat übernehmen
     .doc = Die Unterhaltungen, die der native Chat hielt, bevor diese App seine Id übernahm, einmal in diese übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jede mit Name und Thema, und jede Nachricht eines Kanals mit dem, was sie sagte, ob sie angeheftet war und der Id, die sie dort hatte.
 
-d-iyehwolt = Native Fähigkeiten übernehmen
-    .doc = Die Fähigkeiten des Arbeitsbereichs, die der native Chat hielt, bevor diese App seine Id übernahm, einmal in diese übernommen: wie jede heißt, für welche Arbeit sie ist, wie die Arbeit hier getan wird, die Form ihres Ergebnisses und das Modell, unter der Id, die sie dort hatte, und in der Reihenfolge, in der sie stand, und die Beispiele, die sie hielt, älteste zuerst, jedes mit dem Ergebnis, ob die Person es annahm, was sie sagte und wann es behalten wurde.
-
 d-yqispavu = Problem melden
     .doc = Legt einen Problembericht ab, was jemand bei der Nutzung von Tilo erlebt hat, im #feedback-Kanal des Arbeitsbereichs, den der erste Bericht öffnet.
     .did = hat ein Problem gemeldet
