@@ -6,6 +6,7 @@ app so.tilo.calendar "Calendar" (
 )
 
 use so.tilo.mail as mail
+use so.tilo.contacts as contacts
 use tilo.workspace as workspace
 
 /// Someone invited to an event, and what they answered: `needs-action` until they say.
@@ -17,6 +18,33 @@ type Attendee (origin: caldav.attendee, title: email) {
     status: Text = "needs-action"
     /// What part they take: `required`, `optional` or `chair`.
     role: Text = "required"
+}
+
+/// One of the workspace's calendar accounts, and how its server answers: the window says a
+/// server that cannot be reached, a change it will not take, and when its calendars last came.
+/// The account itself, its address and servers, is the workspace settings'; the system keeps
+/// this in step with what its server says.
+type Account (origin: caldav.account) {
+    /// The account's id, as the workspace settings name it.
+    key: Text merge register
+    /// The name it signs in with.
+    address: Text
+    /// What it is called.
+    name: Text
+    /// The server address the person typed.
+    server: Text
+    /// Whether nothing is ever written to its server.
+    read_only: Bool
+    /// What the account's server said when it could not be reached, in its words: empty while
+    /// it stands well.
+    trouble: Text
+    /// Whether the server answers.
+    online: Bool
+    /// Whether the server is being asked now, so the window says what is under way.
+    checking: Bool
+    /// When the account's calendars were last taken in from its server, as the clock the person
+    /// read it at: 1970 when they never were.
+    fetched: Time = Time("1970-01-01T00:00:00Z")
 }
 
 /// How much a task matters, most urgent last.
@@ -188,6 +216,8 @@ type Calendar (origin: caldav.calendar, title: name) {
 type Calendars {
     events: Collection<Event>
     calendars: Collection<Calendar>
+    /// The calendar accounts the workspace settings hold, each saying how its server answers.
+    accounts: Collection<Account>
     /// Every task the calendar keeps, in the order people put them.
     tasks: Collection<Task>
     projects: Collection<Project>
@@ -388,6 +418,17 @@ action repeat_weekdays(e: Event, days: List<Text>) (icon: .repeat, label: "Every
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require not days.is_empty() "Choose the days it repeats on"
     repeat_rule(e, .weekdays, weekdays: days)
+}
+
+/// Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's `BYDAY`,
+/// and the repeat keeps the day it ends on, if it ends on one.
+action toggle_weekday(e: Event, day: Text) (icon: .repeat, label: "Repeat on this day") {
+    require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
+    require not e.recurrence_weekdays.contains(day) or e.recurrence_weekdays.len() > 1 "An event repeats on at least one day"
+    let kept = e.recurrence_weekdays.filter(d -> d != day)
+    let adding = kept.len() == e.recurrence_weekdays.len()
+    let days = if adding { kept + [day] } else { kept }
+    repeat_rule(e, .weekdays, weekdays: days, until: e.recurrence_until, count: e.recurrence_count)
 }
 
 /// Stops an event repeating from the day it stands on.
@@ -694,6 +735,11 @@ action sync(c: Calendars) (icon: .refresh, label: "Sync calendars") {
     }
 }
 
+/// Asks one account's server for its calendars now: what "Sync again" over its notice does.
+action sync_account(a: Account) (icon: .refresh, label: "Sync again") {
+    outside("caldav.check", a.key)
+}
+
 /// Adds a calendar of the workspace's own.
 action new_calendar(c: Calendars) -> Calendar (icon: .calendar, label: "New calendar") {
     c.calendars.insert(Calendar(name: std.say("New calendar")))
@@ -711,6 +757,31 @@ destructive action remove(c: Calendars, e: Event) (
     key: "Delete",
 ) {
     c.events.remove(e)
+}
+
+/// Throws away an event nothing was written in yet: what a person's New event leaves when they
+/// decide against it.
+destructive action discard_draft(c: Calendars, e: Event) (
+    icon: .trash,
+    label: "Discard this event",
+) {
+    require pristine(e) "The event has something in it"
+    c.events.remove(e)
+}
+
+/// Whether nothing was put in an event since it was made: its title, its place, its notes and
+/// its body are empty, and nobody was invited to it.
+fn pristine(e: Event) -> Bool {
+    e.title.trim() == ""
+        and e.location.trim() == ""
+        and e.notes.trim() == ""
+        and e.body.markdown.trim() == ""
+        and e.attendees.is_empty()
+        and e.categories.is_empty()
+        and e.filed_under == .none
+        and e.organizer == ""
+        and e.recurrence == ""
+        and e.key == ""
 }
 
 /// Moves an event to a day, keeping the time of day it starts and how long it lasts, and its
@@ -822,6 +893,21 @@ action answer(e: Event, g: Attendee, status: Text) (icon: .check, label: "Answer
     g.status = status
 }
 
+/// Answers the person's own invitation to an account's event, telling the organiser through the
+/// account's server: what settles the RSVP the invitation asked for.
+action answer_and_tell(e: Event, g: Attendee, said: Text) (
+    icon: .check,
+    label: "Answer the invitation",
+) {
+    require own_guest(e, g) "Only your own invitation is answered at the server"
+    answer(e, g, said)
+    if let k = e.calendar {
+        if let a = calendar.accounts.find(a -> a.key == k.account) {
+            outside("caldav.answer", (a.key, e.key, g.email, said))
+        }
+    }
+}
+
 /// Takes someone off an event's guests: nothing is sent to them.
 action uninvite(e: Event, g: Attendee) (icon: .x, label: "Remove guest") {
     e.attendees.remove(g)
@@ -929,9 +1015,27 @@ fn color_name(c: Color) -> Text {
     } else if c == .blue { "blue" } else if c == .violet { "violet" } else { "slate" }
 }
 
+/// The colour an event is drawn in: the one it names, or its calendar's when it names none.
+fn event_colour(e: Event) -> Text {
+    if e.color != "" { e.color } else if let k = e.calendar { k.color } else { "" }
+}
+
 /// Whether an event may be changed: its calendar's server keeps some for reading only.
 fn writable(e: Event) -> Bool {
     if let k = e.calendar { k.writable } else { true }
+}
+
+/// Whether the guest is the person the event's account signs in as: only their own invitation
+/// is answered at the server, since anyone else's answer is the organiser's record of theirs.
+fn own_guest(e: Event, g: Attendee) -> Bool {
+    if let k = e.calendar {
+        if k.account != "" {
+            if let a = calendar.accounts.find(a -> a.key == k.account) {
+                return a.address != "" and a.address.lower() == g.email.lower()
+            }
+        }
+    }
+    false
 }
 
 /// The palette place a colour's name stands for, as a calendar server writes the name.
@@ -1171,6 +1275,43 @@ fn found(r: Moment, q: Text) -> Bool {
         or r.event.location.lower().contains(q.lower())
 }
 
+/// The days from `from` to `to`, both included: the bands the agenda stands its rows under.
+fn days_between(from: Date, to: Date) -> List<Date> {
+    if from > to { [] } else { [from] + days_between(from + 1d, to) }
+}
+
+/// Whether a task is due on a day from `from` to `to`, both included.
+fn task_in(t: Task, from: Date, to: Date) -> Bool {
+    if let day = t.due { day >= from and day <= to } else { false }
+}
+
+/// Whether a task is found by what the window's search holds.
+fn task_named(t: Task, q: Text) -> Bool {
+    q.is_empty() or t.title.lower().contains(q.lower())
+}
+
+/// A task's priority in the person's words.
+fn priority_name(p: Priority) -> Text {
+    if p == .high {
+        std.say("High")
+    } else if p == .medium { std.say("Medium") } else if p == .low { std.say("Low") } else { "" }
+}
+
+/// A day of the week a repeat names, in the person's words: `MO` is Monday.
+fn weekday_name(day: Text) -> Text {
+    if day == "MO" {
+        std.say("Monday")
+    } else if day == "TU" {
+        std.say("Tuesday")
+    } else if day == "WE" {
+        std.say("Wednesday")
+    } else if day == "TH" {
+        std.say("Thursday")
+    } else if day == "FR" {
+        std.say("Friday")
+    } else if day == "SA" { std.say("Saturday") } else { std.say("Sunday") }
+}
+
 /// The events that repeat, in the calendar chosen when one is.
 fn repeating_in(c: Calendars, k: Option<Calendar>, hidden: Text) -> List<Event> {
     if let chosen = k {
@@ -1324,6 +1465,22 @@ action export_calendar(c: Calendars, e: Option<Event> = .none) -> File (
     File.of_text("calendar.ics", text)
 }
 
+/// Takes an invitation into the calendar: the event it asks for is kept by the account's server
+/// where one can be written to it, so the organiser hears the answer, and by this workspace
+/// otherwise. What the server took comes back with the account's next sync.
+action take_invitation(c: Calendars, text: Text) -> Text (
+    icon: .calendar,
+    label: "Take an invitation in",
+) {
+    require text.find("BEGIN:VEVENT") != .none "That is not a calendar invitation"
+    if let k = c.calendars.find(k -> k.account != "" and k.writable) {
+        outside("caldav.import", (k.account, k.key, text))
+        std.say("Added to {k.name}")
+    } else {
+        import_ics(c, File.of_text("invitation.ics", text))
+    }
+}
+
 /// Imports the events and tasks of an iCalendar file, and answers how many it took: what a
 /// person's own file offers, and what another calendar exported. A line naming a zone this
 /// build cannot read is read in the person's zone.
@@ -1474,7 +1631,7 @@ fn ics_guest(line: Text) -> Option<Attendee> {
             Attendee(
                 name: if name == "" { email } else { name },
                 email: email,
-                status: ics_parameter(line, "PARTSTAT=").lower().replace("-", "_"),
+                status: ics_parameter(line, "PARTSTAT=").lower(),
                 role: if role == "" { "required" } else { role.lower() },
             ),
         )
@@ -1578,7 +1735,22 @@ view window(c: Calendars) {
     let title = period
     ui.NavShell(content_kind: .page, title: title, sidebar_title: "Calendar") {
         on search(q: Text): set(searched, q)
+        // What each account's server says of itself stands beside the sidebar's name, so a
+        // calendar whose server will not answer is seen from wherever the person is.
+        sidebar_actions: {
+            for a in c.accounts {
+                std.service_mark(account_name(a), a.online, a.trouble)
+            }
+        }
         actions: {
+            ui.Button(
+                "",
+                icon: .refresh,
+                icon_only: true,
+                accessible_name: std.say("Sync calendars"),
+            ) {
+                on press: sync(c)
+            }
             ui.SearchButton()
         }
         sidebar: {
@@ -1643,15 +1815,79 @@ view window(c: Calendars) {
             }
         }
         content: {
-            if place == "agenda" {
-                agenda(c, chosen, searched, hidden)
-            } else if place == "tasks" {
-                tasks(c, smart, task_project, searched)
-            } else {
-                timeline(c, chosen, searched, hidden, place, picked)
+            stack(gap: .related, fill: true) {
+                account_notices(c)
+                if place == "agenda" {
+                    agenda(c, chosen, searched, hidden)
+                } else if place == "tasks" {
+                    tasks(c, smart, task_project, searched)
+                } else {
+                    timeline(c, chosen, searched, hidden, place, picked)
+                }
             }
         }
     }
+}
+
+/// What each account's server says of itself, over the window: a server that cannot be reached
+/// says so with "Sync again", calendars it would not take say why, and one being asked now says
+/// that. An account that stands well and is not being asked takes no room.
+view account_notices(c: Calendars) {
+    for a in c.accounts {
+        let who = account_name(a)
+        if a.trouble != "" {
+            stack(padding: .group, gap: .tight) {
+                std.service_banner(
+                    who,
+                    a.online,
+                    a.trouble,
+                    retry: sync_account(a),
+                    fetched: fetched_clock(a),
+                    retry_label: std.say("Sync again"),
+                )
+            }
+        } else if a.checking {
+            stack(padding: .group, gap: .tight) {
+                ui.Spinner(std.say("Syncing {who}…"))
+            }
+        }
+    }
+    // A calendar kept by an account the workspace no longer configures said nothing of its
+    // server: its events stand as they were last read.
+    for k in c.calendars {
+        if k.account != "" and not c.accounts.any(a -> a.key == k.account) {
+            stack(padding: .group, gap: .tight) {
+                ui.Banner(
+                    std.say("{k.name} is no longer kept"),
+                    message: std.say(
+                        "Its account is not configured any more. Add it back in Settings, or its events stay as they are.",
+                    ),
+                    kind: .neutral,
+                    icon: .calendar,
+                )
+            }
+        }
+    }
+}
+
+/// Whether the address book holds anyone with an address to invite.
+fn book_has_email(book: contacts.Book) -> Bool {
+    book.contacts.any(who -> not who.emails.is_empty())
+}
+
+/// What an account is called: its name, or the address it signs in with when it has none.
+fn account_name(a: Account) -> Text {
+    if a.name != "" { a.name } else { a.address }
+}
+
+/// When an account's calendars were last taken in, as the clock the person reads: empty while
+/// they never were.
+fn fetched_clock(a: Account) -> Text {
+    let never = Time("1970-01-01T00:00:00Z")
+    if a.fetched <= never {
+        return ""
+    }
+    a.fetched.clock()
 }
 
 /// The timeline: the week's seven days or one day, its events at their hours and what is all
@@ -1756,6 +1992,9 @@ view timeline(
                 on change(at): go_to_day(c, at)
             }
         }
+        // A line typed here becomes an event where the window stands: "Lunch with Sam Friday
+        // 1pm" names the day and the hour, and the words nothing else takes are its title.
+        std.add_entry(std.say("New event, such as Lunch with Sam Friday at 1pm"), new_event(c))
         // The timeline draws the hours, the all-day lane, the month's bars and the now line.
         ui.Timeline(
             label: std.say("Calendar"),
@@ -1806,6 +2045,7 @@ template view timeline_item(
     asked_to: State<Option<Time>>,
     asked_end: State<Option<Time>>,
 ) {
+    let colour = event_colour(e)
     ui.TimelineItem(
         e,
         title: e.title,
@@ -1813,19 +2053,19 @@ template view timeline_item(
         end: if e.all_day { ends(e) - 1d } else { ends(e) },
         all_day: e.all_day,
         location: e.location,
-        tone: if e.color == "indigo" {
+        tone: if colour == "indigo" {
             .first
-        } else if e.color == "emerald" {
+        } else if colour == "emerald" {
             .second
-        } else if e.color == "amber" {
+        } else if colour == "amber" {
             .third
-        } else if e.color == "red" {
+        } else if colour == "red" {
             .fourth
-        } else if e.color == "blue" {
+        } else if colour == "blue" {
             .fifth
-        } else if e.color == "violet" {
+        } else if colour == "violet" {
             .sixth
-        } else if e.color == "slate" { .seventh } else { .neutral },
+        } else if colour == "slate" { .seventh } else { .neutral },
     ) {
         on pressed(item: Event): open(item)
         on moved(item: Event, start: Time): dropped(item, start, place)
@@ -1847,25 +2087,26 @@ template view timeline_occurrence(
     asked_to: State<Option<Time>>,
     asked_end: State<Option<Time>>,
 ) {
+    let colour = event_colour(e)
     ui.TimelineItem(
         e,
         title: e.title,
         start: at,
         end: at + (ends(e) - starts(e)),
         location: e.location,
-        tone: if e.color == "indigo" {
+        tone: if colour == "indigo" {
             .first
-        } else if e.color == "emerald" {
+        } else if colour == "emerald" {
             .second
-        } else if e.color == "amber" {
+        } else if colour == "amber" {
             .third
-        } else if e.color == "red" {
+        } else if colour == "red" {
             .fourth
-        } else if e.color == "blue" {
+        } else if colour == "blue" {
             .fifth
-        } else if e.color == "violet" {
+        } else if colour == "violet" {
             .sixth
-        } else if e.color == "slate" { .seventh } else { .neutral },
+        } else if colour == "slate" { .seventh } else { .neutral },
     ) {
         on pressed(item: Event): open(item)
         on moved(item: Event, start: Time): set(asked, item)
@@ -1877,8 +2118,8 @@ template view timeline_occurrence(
     }
 }
 
-/// What is coming, by day, each event opening where it stands, with the entry that adds one at
-/// the foot.
+/// What is coming, by day: the events of each day and the tasks due on it, with the controls
+/// that walk the agenda a week at a time and the entry that adds an event at the foot.
 view agenda(c: Calendars, chosen: Option<Calendar>, searched: Text, hidden: Text) {
     // The next three weeks, from the day the window stands on.
     let from = c.anchor_at.day()
@@ -1892,36 +2133,68 @@ view agenda(c: Calendars, chosen: Option<Calendar>, searched: Text, hidden: Text
         e -> moments(e, from, to).map(at -> Moment(event: e, at: at, day: day_of(e, at))),
     )
     let shown = rows.filter(r -> found(r, searched))
+    // The tasks due in the same days, each on the day it is due: what is coming is the day's
+    // work, not only what stands on a calendar.
+    let due = c.tasks.filter(
+        t -> t.parent == .none and task_in(t, from, to) and task_named(t, searched),
+    )
     ui.Docked {
         foot: {
             stack {
                 std.add_entry(std.say("New event"), new_event(c))
             }
         }
-        if shown.is_empty() {
-            ui.EmptyState(std.say("Nothing scheduled in the next three weeks"), icon: .calendar)
-        } else {
-            // One list by time, under the day bands of the event's own zone, so a repeating
-            // meeting stands between the one-off events of the day it meets. A date of a series
-            // is its own row, at its own moment, opening the event it stands for.
-            ui.VirtualList(selection_follows_focus: true, in_column: true, narrow: space.compact) {
-                on select(r: Event): open(r, front: false)
-                on activate(r: Event): open(r)
-                for r in shown.sort_by(.at) {
-                    ui.ListItem(item: r.event, group: r.day, opens: false) {
-                        ui.ListRow(
-                            title: r.event.title,
-                            secondary: r.event.location,
-                            item: r.event,
-                            icon: .calendar,
-                            motion: .brisk,
-                        ) {
-                            trailing: {
-                                ui.Time(r.at, role: .caption, secondary: true, clock: true)
+        stack(gap: .group) {
+            // Walking the agenda a week at a time, as the week and month are walked.
+            row(gap: .tight) {
+                ui.Button(
+                    "",
+                    icon: .chevron_left,
+                    icon_only: true,
+                    accessible_name: std.say("Previous week"),
+                ) {
+                    on press: previous_week(c)
+                }
+                ui.Button(std.say("Today"), icon: .calendar) {
+                    on press: this_week(c)
+                }
+                ui.Button(
+                    "",
+                    icon: .chevron_right,
+                    icon_only: true,
+                    accessible_name: std.say("Next week"),
+                ) {
+                    on press: next_week(c)
+                }
+                ui.Text("{from} – {to}", role: .caption, secondary: true, fill: 1.0)
+            }
+            if shown.is_empty() and due.is_empty() {
+                ui.EmptyState(std.say("Nothing scheduled in the next three weeks"), icon: .calendar)
+            } else {
+                // One band per day, its events at their own moments and its tasks beside them,
+                // each opening where it stands.
+                for day in days_between(from, to) {
+                    let on_day = shown.filter(r -> r.day == day).sort_by(.at)
+                    let due_on = due.filter(t -> t.due == .some(day))
+                    if not on_day.is_empty() or not due_on.is_empty() {
+                        section("{day}") {
+                            for r in on_day {
+                                ui.ListRow(
+                                    title: r.event.title,
+                                    secondary: r.event.location,
+                                    item: r.event,
+                                    icon: .calendar,
+                                    meta: if r.event.all_day {
+                                        std.say("All day")
+                                    } else { r.at.clock() },
+                                    motion: .brisk,
+                                ) {
+                                    on activate: open(r.event)
+                                }
                             }
-                        }
-                        detail: {
-                            event_body(r.event)
+                            for t in due_on {
+                                agenda_task(t)
+                            }
                         }
                     }
                 }
@@ -1965,6 +2238,17 @@ view tasks(c: Calendars, smart: Text, project: Option<Project>, searched: Text) 
             }
         }
     }
+}
+
+/// A task as the agenda draws it: its box, its title, its project and how much it matters.
+view agenda_task(t: Task) {
+    row(
+        t.title,
+        checkbox: t.done,
+        check: check_task(t),
+        secondary: if let p = t.project { p.name } else { "" },
+        meta: if t.priority != .none { priority_name(t.priority) } else { "" },
+    )
 }
 
 /// A task as a row: its box, its title, and what it waits on.
@@ -2113,6 +2397,19 @@ template view event_body(e: Event) {
     state at_time: Option<Time> = .none
     state to_time: Option<Time> = .none
     stack(gap: .group) {
+        // An event still waiting for its first word says so, and the person can let it go
+        // instead of leaving an untitled entry behind.
+        if pristine(e) {
+            ui.Banner(
+                std.say("This event is still empty"),
+                message: std.say("Fill it in, or discard it and it leaves no trace."),
+                kind: .neutral,
+                icon: .calendar,
+                action: std.say("Discard"),
+            ) {
+                on act: discard_draft(calendar, e)
+            }
+        }
         stack(gap: .related) {
             ui.TextInput(bind: e.title, placeholder: std.say("Event title"), title: true)
             stack(lead: 1) {
@@ -2262,6 +2559,20 @@ template view event_body(e: Event) {
                             on submit: repeat_every_text(e, every).then(set(every, ""))
                         }
                     }
+                    // A weekly repeat says which days of the week it comes on: every day of the
+                    // chosen ones, in the order a calendar writes them.
+                    if e.repeat == .weekly or e.repeat == .weekdays {
+                        row(gap: .tight, wrap: true) {
+                            for day in ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] {
+                                ui.Chip(
+                                    weekday_name(day),
+                                    selected: e.recurrence_weekdays.contains(day),
+                                ) {
+                                    on press: toggle_weekday(e, day)
+                                }
+                            }
+                        }
+                    }
                     row(gap: .tight) {
                         ui.Text(std.say("Until"), role: .caption, secondary: true)
                         ui.DateField(bind: until, label: std.say("Repeat until")) {
@@ -2358,21 +2669,27 @@ template view event_body(e: Event) {
                                         icon: .check,
                                         checked: g.status == "accepted",
                                     ) {
-                                        on choose: answer(e, g, "accepted")
+                                        on choose: if own_guest(e, g) {
+                                            answer_and_tell(e, g, "accepted")
+                                        } else { answer(e, g, "accepted") }
                                     }
                                     ui.MenuItem(
                                         std.say("Declined"),
                                         icon: .x,
                                         checked: g.status == "declined",
                                     ) {
-                                        on choose: answer(e, g, "declined")
+                                        on choose: if own_guest(e, g) {
+                                            answer_and_tell(e, g, "declined")
+                                        } else { answer(e, g, "declined") }
                                     }
                                     ui.MenuItem(
                                         std.say("Maybe"),
                                         icon: .circle_help,
                                         checked: g.status == "tentative",
                                     ) {
-                                        on choose: answer(e, g, "tentative")
+                                        on choose: if own_guest(e, g) {
+                                            answer_and_tell(e, g, "tentative")
+                                        } else { answer(e, g, "tentative") }
                                     }
                                 }
                                 ui.Button(
@@ -2390,6 +2707,22 @@ template view event_body(e: Event) {
                                     accessible_name: std.say("Remove guest"),
                                 ) {
                                     on press: uninvite(e, g)
+                                }
+                            }
+                        }
+                    }
+                }
+                // Anyone the workspace's address book knows, invited by the name and address the
+                // book keeps; a guest the book does not know is typed by their address.
+                if book_has_email(contacts.book) {
+                    ui.MenuButton(std.say("From Contacts"), icon: .user_plus) {
+                        for who in contacts.book.contacts {
+                            for reach in who.emails {
+                                if reach.value != ""
+                                    and not e.attendees.any(g -> g.email == reach.value) {
+                                    ui.MenuItem(who.name, icon: .user, description: reach.value) {
+                                        on choose: invite(e, who.name, reach.value)
+                                    }
                                 }
                             }
                         }

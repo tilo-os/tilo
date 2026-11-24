@@ -2,6 +2,8 @@
 
 d-so-tilo-calendar = Kalender
 
+d-so-tilo-calendar-keywords = kalender, termine, zeitplan, woche, monat, agenda, verabredungen, besprechungen, einladungen, caldav, ics, gemeinsamer kalender
+
 d-qpfc7vua = Gast
     .doc = Jemand, der zu einem Termin eingeladen ist, und was er geantwortet hat: `needs-action`, bis er es sagt.
     .noun = { $count ->
@@ -19,6 +21,48 @@ d-wyfwksgq = Status
 
 d-fweteite = Rolle
     .doc = Welche Rolle sie haben: `required`, `optional` oder `chair`.
+
+d-odmyabgk = Konto
+    .doc = One of the workspace's calendar accounts, and how its server answers: the window says a server that cannot be reached, a change it will not take, and when its calendars last came.
+    .noun = { $count ->
+        [one] account
+       *[other] accounts
+    }
+
+d-f44j5f26 = Schlüssel
+    .doc = The account's id, as the workspace settings name it.
+
+d-gxn236ef = Adresse
+    .doc = The name it signs in with.
+
+d-rfeeyuff = Name
+    .doc = What it is called.
+
+d-turzovgi = Server
+    .doc = The server address the person typed.
+
+d-vupfntcd = Schreibgeschützt
+    .doc = Whether nothing is ever written to its server.
+
+d-cgmndfzg = Störung
+    .doc = What the account's server said when it could not be reached, in its words: empty while it stands well.
+
+d-yfntdxb7 = Online
+    .doc = Whether the server answers.
+
+d-5ebgjcbp = Wird geprüft
+    .doc = Whether the server is being asked now, so the window says what is under way.
+
+d-qmpjl3oc = Abgerufen
+    .doc = When the account's calendars were last taken in from its server, as the clock the person read it at: 1970 when they never were.
+
+d-odmyabgk-filter-read_only = Schreibgeschützt
+
+d-odmyabgk-filter-online = Online
+
+d-odmyabgk-filter-checking = Wird geprüft
+
+d-odmyabgk-filter-fetched = Abgerufen
 
 d-uvsswhpm = Projekt
     .doc = Ein Projekt: wofür eine Reihe von Terminen und Aufgaben ist und welche Farbe es trägt.
@@ -233,6 +277,9 @@ d-g3gq3jmz = Keine Priorität
 
 d-ozulkrgt = Niedrig
 
+d-lubytvuv = Konten
+    .doc = The calendar accounts the workspace settings hold, each saying how its server answers.
+
 d-jum24lyb = Tasks
     .doc = Every task the calendar keeps, in the order people put them.
 
@@ -371,16 +418,16 @@ d-nlrpnve5-categories = Alle
 
 d-se6shkk2 = Time zone
     .doc = Sets the zone an event's wall times are read in: `Europe/Berlin`, `UTC`, or `floating` for the same time of day everywhere.
+    .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
     .w-a-zone-is-floating-utc-or = A zone is floating, UTC, or a name such as Europe/Berlin
     .w-that-is-not-a-time-zone = That is not a time zone this build knows
-    .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
 
 d-se6shkk2-zone = Bis
 
 d-yollo4f5 = Add a category
     .doc = Files an event under one more category.
-    .w-a-category-is-a-few-words = A category is a few words
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-a-category-is-a-few-words = A category is a few words
 
 d-yollo4f5-category = Category
 
@@ -402,15 +449,15 @@ d-qdqgaukz = Diesen Tag zurückgeben
 
 d-uif2dwsr = Before
     .doc = Reminds them a given number of minutes before it starts.
-    .w-a-reminder-is-before-the-start = A reminder is before the start
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-a-reminder-is-before-the-start = A reminder is before the start
 
 d-uif2dwsr-minutes = Minutes
 
 d-vjp2n4ek = No reminder
     .doc = Tells nobody, once more.
-    .w-it-has-no-reminder = It has no reminder
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-it-has-no-reminder = It has no reminder
 
 d-fowc4rav = Repeat
     .doc = Repeats an event, its rule in iCalendar's words, how often, and where it ends.
@@ -428,20 +475,27 @@ d-fowc4rav-count = Fällig
 
 d-q23cd64i = Every week on
     .doc = Repeats an event on chosen days of the week from the day it stands on.
-    .w-choose-the-days-it-repeats-on = Choose the days it repeats on
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-choose-the-days-it-repeats-on = Choose the days it repeats on
 
 d-q23cd64i-days = Days
 
+d-vk663ftr = An diesem Tag wiederholen
+    .doc = Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's `BYDAY`, and the repeat keeps the day it ends on, if it ends on one.
+    .w-this-calendar-is-connected-for-reading = Dieser Kalender ist schreibgeschützt, deshalb wird nichts darin geändert
+    .w-an-event-repeats-on-at-least = Ein Termin wiederholt sich an mindestens einem Tag
+
+d-vk663ftr-day = Day
+
 d-e64m52e3 = Does not repeat
     .doc = Stops an event repeating from the day it stands on.
-    .w-it-does-not-repeat = It does not repeat
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-it-does-not-repeat = It does not repeat
 
 d-yeztwom7 = Skip this date
     .doc = Skips one date of a repeating event.
-    .w-it-does-not-repeat = It does not repeat
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-it-does-not-repeat = It does not repeat
 
 d-yeztwom7-day = Day
 
@@ -535,8 +589,8 @@ d-xtjwddq3-p = P
 
 d-zaeu6beo = Only this event
     .doc = Moves one date of a repeating event: an event of its own stands in its place and the series keeps every other date.
-    .w-it-does-not-repeat = It does not repeat
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-it-does-not-repeat = It does not repeat
 
 d-zaeu6beo-at = At
 
@@ -546,8 +600,8 @@ d-zaeu6beo-end = End
 
 d-bd3x7ejn = Cancel this date
     .doc = Cancels one date of a repeating event.
-    .w-it-does-not-repeat = It does not repeat
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-it-does-not-repeat = It does not repeat
 
 d-bd3x7ejn-at = At
 
@@ -559,8 +613,8 @@ d-25bxqiqq-at = At
 
 d-xagcihzh = This and following events
     .doc = Moves a repeating event from one date on: the series ends the day before, and a new one begins where it was moved to, with every date after it.
-    .w-it-does-not-repeat = It does not repeat
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-it-does-not-repeat = It does not repeat
 
 d-xagcihzh-at = At
 
@@ -585,6 +639,9 @@ d-tsbzrzd5 = Today
 d-6src2gs5 = Sync calendars
     .doc = Asks each account's server for its calendars now, so what it holds comes in as it does when the server is heard from.
 
+d-hi3fbhxf = Erneut synchronisieren
+    .doc = Asks one account's server for its calendars now: what "Sync again" over its notice does.
+
 d-rox4evo5 = New calendar
     .doc = Adds a calendar of the workspace's own.
     .w-new-calendar = New calendar
@@ -599,10 +656,16 @@ d-ael6ndgj = Wiederholen bis
 
 d-ael6ndgj-e = Um
 
+d-awfwvmso = Diesen Termin verwerfen
+    .doc = Throws away an event nothing was written in yet: what a person's New event leaves when they decide against it.
+    .w-the-event-has-something-in-it = Der Termin enthält bereits etwas
+
+d-awfwvmso-e = E
+
 d-qg4djklq = Move to day
     .doc = Moves an event to a day, keeping the time of day it starts and how long it lasts, and its reminder at the same distance from its start.
-    .w-it-is-on-that-day-already = It is on that day already
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-it-is-on-that-day-already = It is on that day already
 
 d-qg4djklq-day = Anzahl
 
@@ -620,19 +683,17 @@ d-e7aimj6j-at = Name
 
 d-4fezz4oa = Change end
     .doc = Sets when an event ends.
-    .w-an-event-ends-after-it-starts = An event ends after it starts
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-an-event-ends-after-it-starts = An event ends after it starts
 
 d-4fezz4oa-at = At
 
 d-zrdjom25 = Endtag verschieben
     .doc = Beendet einen Termin an dem Tag, den ein Zeitpunkt nennt, und behält dabei die Uhrzeit seines Endes: ein Tag nach seinem Beginn lässt ihn jeden Tag dazwischen dauern, und ein ganztägiger Termin endet um Mitternacht nach seinem letzten Tag, dem Tag, an dem er erscheint.
-    .w-an-event-does-not-end-before = Ein Termin endet nicht vor seinem Beginn
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-an-event-does-not-end-before = Ein Termin endet nicht vor seinem Beginn
 
 d-zrdjom25-at = Zeitpunkt
-
-d-6pmulvk5 = Endtag verschieben~present
 
 d-lbfkyak2 = Repeat
     .doc = Repeats an event every day, week, month or year from the day it stands on, on the days chosen of a week, and no longer on the days it named before.
@@ -642,8 +703,8 @@ d-lbfkyak2-how = Status
 
 d-z7u3n5xs = How often
     .doc = How often it repeats, in the unit it repeats in: every two weeks is 2.
-    .w-it-repeats-at-least-once = It repeats at least once
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-it-repeats-at-least-once = It repeats at least once
 
 d-z7u3n5xs-every = G
 
@@ -666,8 +727,8 @@ d-y5e66bkb-count = Count
 
 d-6tammo57 = Calendar
     .doc = Files an event under a calendar the person picks.
-    .w-it-is-in-that-calendar-already = It is in that calendar already
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+    .w-it-is-in-that-calendar-already = It is in that calendar already
 
 d-6tammo57-k = K
 
@@ -688,6 +749,14 @@ d-luj3kjit-g = Eingetippt
 
 d-luj3kjit-status = Status
 
+d-kscklssi = Die Einladung beantworten
+    .doc = Answers the person's own invitation to an account's event, telling the organiser through the account's server: what settles the RSVP the invitation asked for.
+    .w-only-your-own-invitation-is-answered = Nur die eigene Einladung wird am Server beantwortet
+
+d-kscklssi-g = G
+
+d-kscklssi-said = Said
+
 d-gtgyzaen = Remove guest
     .doc = Takes someone off an event's guests: nothing is sent to them.
 
@@ -695,9 +764,9 @@ d-gtgyzaen-g = G
 
 d-fesqobfx = Invite by mail
     .doc = Starts a message inviting a guest, the event's calendar invitation carried beside it: what Mail shows the person, to read and send.
+    .w-add-a-mail-account-in-settings = Füge zuerst ein Mailkonto in den Einstellungen hinzu
     .w-invitation = Invitation: { $title }
     .w-you-are-invited-to-on-at = You are invited to { $title } on { $day } at { $start }. The attached calendar invitation holds the details.
-    .w-add-a-mail-account-in-settings = Füge zuerst ein Mailkonto in den Einstellungen hinzu
 
 d-fesqobfx-g = G
 
@@ -744,6 +813,13 @@ d-3u4tdxfq = Export calendar
 
 d-3u4tdxfq-e = Jede Woche am
 
+d-va2m7dny = Eine Einladung übernehmen
+    .doc = Takes an invitation into the calendar: the event it asks for is kept by the account's server where one can be written to it, so the organiser hears the answer, and by this workspace otherwise.
+    .w-that-is-not-a-calendar-invitation = Das ist keine Kalendereinladung
+    .w-added-to = Added to { $name }
+
+d-va2m7dny-text = Text
+
 d-zmfdk46t = Import calendar
     .doc = Imports the events and tasks of an iCalendar file, and answers how many it took: what a person's own file offers, and what another calendar exported.
     .w-could-not-read = Could not read { $name }: { $why }
@@ -759,6 +835,20 @@ d-4hhlot2y = Color label
     .w-violet = Violet
     .w-slate = Slate
     .w-indigo = Indigo
+
+d-xzgjn4zd = Priority name
+    .w-high = Hoch
+    .w-medium = Mittel
+    .w-low = Niedrig
+
+d-vlba7mdp = Weekday name
+    .w-monday = Montag
+    .w-tuesday = Dienstag
+    .w-wednesday = Mittwoch
+    .w-thursday = Donnerstag
+    .w-friday = Freitag
+    .w-saturday = Samstag
+    .w-sunday = Sonntag
 
 d-i2lmojqn = Task list name
     .w-inbox = Inbox
@@ -792,6 +882,8 @@ d-dulzqkmm = Wiederholen bis
 
 d-m55bevrg = Anzahl
 
+d-cwlt5hoh = Toggle weekday~present
+
 d-ghy7ry76 = In Kalender legen
 
 d-7yrte5jx = Einladen
@@ -810,6 +902,8 @@ d-m4vjjhhy = Restore occurrence~present
 
 d-bcgihhy5 = Move following~present
 
+d-bngncbmz = Discard draft~present
+
 d-baljrz2g = Move to day~present
 
 d-r6l53d5k = Terminzeile
@@ -817,6 +911,8 @@ d-r6l53d5k = Terminzeile
 d-u2vnroei = Change start~present
 
 d-c3a3dxxn = Change end~present
+
+d-6pmulvk5 = Endtag verschieben~present
 
 d-7cffrvhe = Repeat~present
 
@@ -832,14 +928,21 @@ d-v36oxy7z = Invite~present
 
 d-3l63az42 = Answer~present
 
+d-gocme73g = Answer and tell~present
+
+d-dtektxut = Per Mail einladen~present
+
 d-eapd2aju = Remind now~present
 
 d-m2in7j2d = Repeat every text~present
 
 d-5bfm4ii5 = Minuten
 
+d-qfoc7u6b = Take invitation~present
+
 d-nd2mftjh = Window
     .w-calendar = Calendar
+    .w-sync-calendars = Kalender synchronisieren
     .w-week = Week
     .w-month = Month
     .w-agenda = Agenda
@@ -853,79 +956,36 @@ d-nd2mftjh = Window
     .w-projects = Projects
     .w-calendars = Calendars
     .w-all-calendars = All calendars
+    .w-show = { $name } anzeigen
+    .w-hide = { $name } ausblenden
     .w-previous-day = Previous day
     .w-next-day = Next day
     .w-previous-month = Previous month
     .w-next-month = Next month
     .w-previous-week = Previous week
     .w-next-week = Next week
+    .w-pick-a-day = Einen Tag wählen
+    .w-new-event-such-as-lunch-with = Neuer Termin, etwa Mittagessen mit Sam Freitag um 13 Uhr
     .w-repeats = { $title } repeats
     .w-only-this-date = Only this date
     .w-this-and-all-following = This and all following
-    .w-pick-a-day = Einen Tag wählen
-    .w-show = { $name } anzeigen
-    .w-hide = { $name } ausblenden
+
+d-kergju7m = Account notices
+    .w-sync-again = Erneut synchronisieren
+    .w-can-t-save-what-fetched = Can't save what { $name } fetched
+    .w-can-t-reach = Keine Verbindung zu { $name }
+    .w-last-fetched = Zuletzt abgerufen { $fetched }
+    .w-syncing = Synchronisiere { $who } …
+    .w-is-no-longer-kept = { $name } wird nicht mehr geführt
+    .w-its-account-is-not-configured-any = Ihr Konto ist nicht mehr eingerichtet. Richte es in den Einstellungen wieder ein, sonst bleiben die Termine, wie sie sind.
 
 d-uc6iwdpn = Agenda
-    .w-new-event = New event
-    .w-nothing-scheduled-in-the-next-three = Nothing scheduled in the next three weeks
-    .w-event-title = Event title
-    .w-what-is-it-about = What is it about?
-    .w-day = Abgelegt unter
-    .w-starts = Starts
-    .w-ends = Ends
-    .w-last-day = Letzter Tag
-    .w-add-a-place = Add a place
-    .w-all-day = Notizen
-    .w-overlaps = Overlaps { $other }
-    .w-my-calendar = My calendar
-    .w-colour = Zum Anfang
-    .w-its-calendar-s-colour = Its calendar's colour
-    .w-no-project = No project
-    .w-move = Move
-    .w-tomorrow = Verschieben
-    .w-next-week = Next week
-    .w-repeat = Anzahl der Wiederholungen
-    .w-every-day = Every day
-    .w-every-week = Anfang
-    .w-every-month = Ort
-    .w-every-year = Every year
-    .w-does-not-repeat = Does not repeat
-    .w-remind = Erinnern
-    .w-reminder-set = Reminder set
-    .w-at-the-start = Diesen Tag zurückgeben
-    .w-5-minutes-before = 5 minutes before
-    .w-10-minutes-before = 10 minutes before
-    .w-15-minutes-before = 15 Minuten vorher
-    .w-30-minutes-before = 30 minutes before
-    .w-an-hour-before = An hour before
-    .w-a-day-before = A day before
-    .w-no-reminder = No reminder
-    .w-how-often = How often
-    .w-until = Until
-    .w-repeat-until = Repeat until
-    .w-clear = Clear
-    .w-no-end = No end
-    .w-times = Times
-    .w-occurrences = Occurrences
-    .w-cancelled = Ursprünglicher Anfang
-    .w-this-date = Dieses Datum
-    .w-restore-this-date = Restore this date
-    .w-cancel-this-date = Cancel this date
-    .w-skip-this-date = Skip this date
-    .w-filed-under = Erinnern
-    .w-remove-a-category = Remove a category
-    .w-add-a-category = Add a category
-    .w-organiser-s-email-address = Organiser's email address
-    .w-guests = Guests
-    .w-accepted = Zugesagt
-    .w-maybe = Vielleicht
-    .w-declined = Abgesagt
-    .w-awaiting-response = Antwort ausstehend
-    .w-answer = Male
-    .w-invite-by-mail = Invite by mail
-    .w-remove-guest = Remove guest
-    .w-invite-by-email-address = Invite by email address
+    .w-new-event = Neuer Termin
+    .w-previous-week = Vorherige Woche
+    .w-today = Heute
+    .w-next-week = Nächste Woche
+    .w-nothing-scheduled-in-the-next-three = In den nächsten drei Wochen ist nichts geplant
+    .w-all-day = Ganztägig
 
 d-nx5lspqo = Tasks
     .w-new-task-in = New task in { $name }
@@ -946,6 +1006,8 @@ d-nx5lspqo = Tasks
     .w-high = Jedes Jahr
     .w-steps = Steps
     .w-add-a-step = Add a step
+
+d-hmue7ipj = Agenda task
 
 d-u2sfuxhf = Task row
     .w-a-step-of = A step of { $title }
@@ -970,17 +1032,21 @@ d-jy3d3ql4 = Task page
     .w-add-a-step = Add a step
 
 d-jd6ftqrt = Moment page
+    .w-this-event-is-still-empty = Dieser Termin ist noch leer
+    .w-fill-it-in-or-discard-it = Fülle ihn aus, oder verwirf ihn, dann bleibt nichts zurück.
+    .w-discard = Verwerfen
     .w-event-title = Event title
     .w-what-is-it-about = What is it about?
     .w-day = Day
+    .w-last-day = Letzter Tag
     .w-starts = Starts
     .w-ends = Ends
-    .w-last-day = Letzter Tag
     .w-add-a-place = Add a place
     .w-all-day = All day
     .w-overlaps = Overlaps { $other }
     .w-my-calendar = My calendar
     .w-colour = Colour
+    .w-its-calendar-s-colour = Its calendar's colour
     .w-no-project = No project
     .w-move = Move
     .w-tomorrow = Tomorrow
@@ -1008,18 +1074,16 @@ d-jd6ftqrt = Moment page
     .w-no-end = No end
     .w-times = Times
     .w-occurrences = Occurrences
-    .w-filed-under = Filed under
-    .w-add-a-category = Add a category
-    .w-organiser-s-email-address = Organiser's email address
-    .w-guests = Guests
-    .w-invite-by-email-address = Invite by email address
-    .w-its-calendar-s-colour = Its calendar's colour
     .w-cancelled = Ursprünglicher Anfang
     .w-this-date = Dieses Datum
     .w-restore-this-date = Restore this date
     .w-cancel-this-date = Cancel this date
     .w-skip-this-date = Skip this date
+    .w-filed-under = Filed under
     .w-remove-a-category = Remove a category
+    .w-add-a-category = Add a category
+    .w-organiser-s-email-address = Organiser's email address
+    .w-guests = Guests
     .w-accepted = Zugesagt
     .w-maybe = Vielleicht
     .w-declined = Abgesagt
@@ -1027,19 +1091,25 @@ d-jd6ftqrt = Moment page
     .w-answer = Male
     .w-invite-by-mail = Invite by mail
     .w-remove-guest = Remove guest
+    .w-from-contacts = Aus den Kontakten
+    .w-invite-by-email-address = Invite by email address
 
 d-qy4w4m3w = Event page
+    .w-this-event-is-still-empty = Dieser Termin ist noch leer
+    .w-fill-it-in-or-discard-it = Fülle ihn aus, oder verwirf ihn, dann bleibt nichts zurück.
+    .w-discard = Verwerfen
     .w-event-title = Event title
     .w-what-is-it-about = What is it about?
     .w-day = Day
+    .w-last-day = Letzter Tag
     .w-starts = Starts
     .w-ends = Ends
-    .w-last-day = Letzter Tag
     .w-add-a-place = Add a place
     .w-all-day = All day
     .w-overlaps = Overlaps { $other }
     .w-my-calendar = My calendar
     .w-colour = Colour
+    .w-its-calendar-s-colour = Its calendar's colour
     .w-no-project = No project
     .w-move = Move
     .w-tomorrow = Tomorrow
@@ -1067,18 +1137,16 @@ d-qy4w4m3w = Event page
     .w-no-end = No end
     .w-times = Times
     .w-occurrences = Occurrences
-    .w-filed-under = Filed under
-    .w-add-a-category = Add a category
-    .w-organiser-s-email-address = Organiser's email address
-    .w-guests = Guests
-    .w-invite-by-email-address = Invite by email address
-    .w-its-calendar-s-colour = Its calendar's colour
     .w-cancelled = Ursprünglicher Anfang
     .w-this-date = Dieses Datum
     .w-restore-this-date = Restore this date
     .w-cancel-this-date = Cancel this date
     .w-skip-this-date = Skip this date
+    .w-filed-under = Filed under
     .w-remove-a-category = Remove a category
+    .w-add-a-category = Add a category
+    .w-organiser-s-email-address = Organiser's email address
+    .w-guests = Guests
     .w-accepted = Zugesagt
     .w-maybe = Vielleicht
     .w-declined = Abgesagt
@@ -1086,7 +1154,6 @@ d-qy4w4m3w = Event page
     .w-answer = Male
     .w-invite-by-mail = Invite by mail
     .w-remove-guest = Remove guest
+    .w-from-contacts = Aus den Kontakten
+    .w-invite-by-email-address = Invite by email address
 
-d-so-tilo-calendar-keywords = kalender, termine, zeitplan, woche, monat, agenda, verabredungen, besprechungen, einladungen, caldav, ics, gemeinsamer kalender
-
-d-dtektxut = Per Mail einladen~present

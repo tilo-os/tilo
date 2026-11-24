@@ -12,8 +12,8 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::{
-        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-        ViewInstance,
+        ActionInfo, Actor, AmStore, Authority, Decision, EnumValue, InvokeOutcome, MemorySink,
+        ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
 
     /// The moment every test reads as now: a Tuesday, late morning, in UTC.
@@ -67,23 +67,43 @@ mod cases {
         }
     }
 
+    /// The authority a test at the workspace runs under: everything it asks for is allowed, so
+    /// an effect to a server is delivered rather than held for a person's yes.
+    #[derive(Clone, Default)]
+    struct Allow;
+
+    impl Authority for Allow {
+        fn decide(
+            &self,
+            _: &Actor,
+            _: &[tilolang_runtime::ids::ModuleHash],
+            _: &ActionInfo,
+        ) -> Decision {
+            Decision::Allow
+        }
+    }
+
     struct Sheet {
         rt: Runtime,
         app: App,
         root: ResourceRef,
         device: Device,
         raised: Raised,
+        /// What the app asked of a server, as every outside effect it delivered.
+        sink: MemorySink,
     }
 
     fn sheet() -> Sheet {
         let device = Device::default();
         let raised = Raised::default();
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), Allow).unwrap();
         rt.set_clock(|| NOW.to_owned());
         rt.set_zone(|| 0);
         rt.set_week_start(|| 0);
         rt.set_blobs(device.clone());
         rt.set_notices(raised.clone());
+        let sink = MemorySink::new();
+        rt.set_sink(sink.clone());
         rt.set_members(
             vec![tilolang_runtime::members::Member::person(
                 "me",
@@ -107,6 +127,7 @@ mod cases {
             root,
             device,
             raised,
+            sink,
         }
     }
 
@@ -756,9 +777,9 @@ mod cases {
         );
         s.repeat(&e, "Repeat.weekly");
         let w = s.place("agenda");
-        let bands: Vec<String> = of_kind(w.tree(), "ui.ListItem")
+        let bands: Vec<String> = of_kind(w.tree(), "ui.Section")
             .iter()
-            .filter_map(|item| text_prop_opt(item, "group"))
+            .filter_map(|section| text_prop_opt(section, "title"))
             .collect();
         // Tokyo is nine hours on, so the late evening of the 24th is the 25th there.
         assert!(
@@ -1156,6 +1177,608 @@ mod cases {
             text_prop_opt(shells[0], "title"),
             Some("2026-11-01 – 2026-11-30".to_owned()),
             "the month of the 24th"
+        );
+    }
+
+    /// An account's own record is what the window says of its server: one that cannot be
+    /// reached names itself and the server's words, with the action that asks it again.
+    #[test]
+    fn a_calendar_account_that_cannot_be_reached_is_said_over_the_window() {
+        let s = sheet();
+        seed_origin(
+            &s.rt,
+            "caldav",
+            &s.root,
+            &field_id(&s.app, "Calendars", "accounts"),
+            &type_id(&s.app, "Account"),
+            vec![
+                ("key", Value::text("acct")),
+                ("address", Value::text("me@example.test")),
+                ("name", Value::text("Work")),
+                ("server", Value::text("https://cal.example.test")),
+                ("read_only", Value::Bool(false)),
+                ("trouble", Value::text("connection refused")),
+                ("online", Value::Bool(false)),
+                ("checking", Value::Bool(false)),
+            ],
+        );
+        let w = s.root_window();
+        let banner = of_kind(w.tree(), "ui.Banner")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("the window says why: {}", dump(w.tree())));
+        assert_eq!(
+            text_prop_opt(banner, "title").as_deref(),
+            Some("Can't reach Work")
+        );
+        assert!(
+            text_prop_opt(banner, "message")
+                .unwrap_or_default()
+                .contains("Connection refused"),
+            "the server's own reason is said"
+        );
+        assert_eq!(
+            text_prop_opt(banner, "action").as_deref(),
+            Some("Sync again")
+        );
+    }
+
+    /// An account asking its server right now says so, and takes no room once the answer came.
+    #[test]
+    fn an_account_being_asked_right_now_says_so() {
+        let s = sheet();
+        seed_origin(
+            &s.rt,
+            "caldav",
+            &s.root,
+            &field_id(&s.app, "Calendars", "accounts"),
+            &type_id(&s.app, "Account"),
+            vec![
+                ("key", Value::text("acct")),
+                ("address", Value::text("me@example.test")),
+                ("name", Value::text("Work")),
+                ("online", Value::Bool(true)),
+                ("checking", Value::Bool(true)),
+            ],
+        );
+        let w = s.root_window();
+        let spinner = of_kind(w.tree(), "ui.Spinner")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("the window says it is asking: {}", dump(w.tree())));
+        assert_eq!(
+            text_prop_opt(spinner, "label").as_deref(),
+            Some("Syncing Work…")
+        );
+    }
+
+    /// The person's own invitation is answered at the account's server, so the organiser hears
+    /// it; another guest's answer stays the organiser's record and tells nobody.
+    #[test]
+    fn answering_your_own_invitation_tells_the_organiser_through_the_server() {
+        let s = sheet();
+        let account = seed_origin(
+            &s.rt,
+            "caldav",
+            &s.root,
+            &field_id(&s.app, "Calendars", "accounts"),
+            &type_id(&s.app, "Account"),
+            vec![
+                ("key", Value::text("acct")),
+                ("address", Value::text("me@example.test")),
+                ("name", Value::text("Work")),
+                ("online", Value::Bool(true)),
+            ],
+        );
+        let _ = account;
+        let calendar = seed_origin(
+            &s.rt,
+            "caldav",
+            &s.root,
+            &field_id(&s.app, "Calendars", "calendars"),
+            &type_id(&s.app, "Calendar"),
+            vec![
+                ("key", Value::text("work")),
+                ("account", Value::text("acct")),
+                ("name", Value::text("Work")),
+                ("color", Value::text("")),
+                ("writable", Value::Bool(true)),
+                ("sync_token", Value::text("")),
+            ],
+        );
+        let e = s.make("Planning", TODAY);
+        s.call(
+            "file_in",
+            &[
+                ("e", Value::resource(&e)),
+                ("k", Value::resource(&calendar)),
+            ],
+        );
+        assert_eq!(
+            s.read(&e, "calendar"),
+            Value::some(Value::resource(&calendar)),
+            "the event stands in the account's calendar"
+        );
+        let me = s.call_ref(
+            "invite",
+            &[
+                ("e", Value::resource(&e)),
+                ("name", Value::text("Me")),
+                ("email", Value::text("me@example.test")),
+            ],
+        );
+        s.call(
+            "answer_and_tell",
+            &[
+                ("e", Value::resource(&e)),
+                ("g", Value::resource(&me)),
+                ("said", Value::text("accepted")),
+            ],
+        );
+        // An outside effect is marked in one settle and handed to the server in the next.
+        s.rt.settle().unwrap();
+        s.rt.settle().unwrap();
+        let delivered = s.sink.delivered();
+        let (capability, payload) = delivered
+            .iter()
+            .find(|(capability, _)| capability == "caldav.answer")
+            .unwrap_or_else(|| panic!("the organiser is told: {delivered:?}"));
+        assert_eq!(payload[0], "acct");
+        assert_eq!(payload[2], "me@example.test");
+        assert_eq!(payload[3], "accepted");
+        assert_eq!(s.text(&me, "status"), "accepted");
+
+        // Another guest's answer is kept here and tells the server nothing.
+        let bo = s.call_ref(
+            "invite",
+            &[
+                ("e", Value::resource(&e)),
+                ("name", Value::text("Bo")),
+                ("email", Value::text("bo@example.test")),
+            ],
+        );
+        s.call(
+            "answer",
+            &[
+                ("e", Value::resource(&e)),
+                ("g", Value::resource(&bo)),
+                ("status", Value::text("declined")),
+            ],
+        );
+        s.rt.settle().unwrap();
+        assert_eq!(
+            s.sink
+                .delivered()
+                .iter()
+                .filter(|(capability, _)| capability == "caldav.answer")
+                .count(),
+            1,
+            "nobody else's answer is written at the server"
+        );
+        assert_eq!(s.text(&bo, "status"), "declined");
+    }
+
+    /// A guest who is not the account's own address is refused an answer at the server.
+    #[test]
+    fn another_guests_invitation_is_not_answered_at_the_server() {
+        let s = sheet();
+        seed_origin(
+            &s.rt,
+            "caldav",
+            &s.root,
+            &field_id(&s.app, "Calendars", "accounts"),
+            &type_id(&s.app, "Account"),
+            vec![
+                ("key", Value::text("acct")),
+                ("address", Value::text("me@example.test")),
+                ("name", Value::text("Work")),
+                ("online", Value::Bool(true)),
+            ],
+        );
+        seed_origin(
+            &s.rt,
+            "caldav",
+            &s.root,
+            &field_id(&s.app, "Calendars", "calendars"),
+            &type_id(&s.app, "Calendar"),
+            vec![
+                ("key", Value::text("work")),
+                ("account", Value::text("acct")),
+                ("name", Value::text("Work")),
+                ("writable", Value::Bool(true)),
+            ],
+        );
+        let e = s.make("Planning", TODAY);
+        let bo = s.call_ref(
+            "invite",
+            &[
+                ("e", Value::resource(&e)),
+                ("name", Value::text("Bo")),
+                ("email", Value::text("bo@example.test")),
+            ],
+        );
+        let why = s.refusal(
+            "answer_and_tell",
+            &[
+                ("e", Value::resource(&e)),
+                ("g", Value::resource(&bo)),
+                ("said", Value::text("accepted")),
+            ],
+        );
+        assert!(why.contains("your own invitation"), "{why}");
+    }
+
+    /// An invitation taken in with no account to write it makes the event: what it says, its
+    /// organiser and the people it names, and the answer it waits for.
+    #[test]
+    fn an_invitation_taken_in_becomes_its_event() {
+        let s = sheet();
+        let text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n\
+                    UID:invite@example.test\r\nSUMMARY:Dinner\r\nDTSTART:20261127T190000Z\r\n\
+                    DTEND:20261127T200000Z\r\nORGANIZER:mailto:bo@example.test\r\n\
+                    ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:me@example.test\r\n\
+                    END:VEVENT\r\nEND:VCALENDAR\r\n";
+        s.call(
+            "take_invitation",
+            &[("c", Value::resource(&s.root)), ("text", Value::text(text))],
+        );
+        let events = s.projected(&s.root, "events");
+        assert_eq!(events.len(), 1, "the invitation made its event");
+        assert_eq!(events[0]["fields"]["title"], "Dinner");
+        assert_eq!(events[0]["fields"]["organizer"], "bo@example.test");
+        let made =
+            s.rt.read(&s.root, &field_id(&s.app, "Calendars", "events"))
+                .unwrap();
+        let Value::List(items) = made else {
+            panic!("the events read as a list")
+        };
+        let event = match &items[0] {
+            Value::Ref(r) => (*r.target).clone(),
+            other => panic!("an event is a resource: {other:?}"),
+        };
+        let guests = s.projected(&event, "attendees");
+        assert_eq!(guests.len(), 1);
+        assert_eq!(guests[0]["fields"]["email"], "me@example.test");
+        assert_eq!(guests[0]["fields"]["status"], "needs-action");
+    }
+
+    /// An invitation an account can write is handed to its server, so the organiser hears the
+    /// answer from where the event is kept.
+    #[test]
+    fn an_invitation_is_written_to_the_accounts_server_when_one_can_take_it() {
+        let s = sheet();
+        seed_origin(
+            &s.rt,
+            "caldav",
+            &s.root,
+            &field_id(&s.app, "Calendars", "calendars"),
+            &type_id(&s.app, "Calendar"),
+            vec![
+                ("key", Value::text("work")),
+                ("account", Value::text("acct")),
+                ("name", Value::text("Work")),
+                ("writable", Value::Bool(true)),
+            ],
+        );
+        let text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n\
+                    UID:invite@example.test\r\nSUMMARY:Dinner\r\nDTSTART:20261127T190000Z\r\n\
+                    DTEND:20261127T200000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        s.call(
+            "take_invitation",
+            &[("c", Value::resource(&s.root)), ("text", Value::text(text))],
+        );
+        // An outside effect is marked in one settle and handed to the server in the next.
+        s.rt.settle().unwrap();
+        s.rt.settle().unwrap();
+        s.rt.settle().unwrap();
+        let delivered = s.sink.delivered();
+        let (_, payload) = delivered
+            .iter()
+            .find(|(capability, _)| capability == "caldav.import")
+            .unwrap_or_else(|| panic!("the server takes it: {delivered:?}"));
+        assert_eq!(payload[0], "acct");
+        assert_eq!(payload[1], "work");
+        assert!(
+            payload[2]
+                .as_str()
+                .unwrap_or_default()
+                .contains("invite@example.test")
+        );
+    }
+
+    /// A line typed over the week becomes an event where it says: "Lunch with Sam friday 1pm"
+    /// names its day and its hour, and the words left are its title.
+    #[test]
+    fn a_line_typed_over_the_week_becomes_an_event() {
+        let s = sheet();
+        s.opened();
+        let mut w = s.place_view("week");
+        let entry = of_kind(w.tree(), "ui.TextInput")
+            .into_iter()
+            .find(|field| {
+                matches!(
+                    field.props.get("entry"),
+                    Some(Value::Int(1) | Value::Bool(true))
+                )
+            })
+            .unwrap_or_else(|| panic!("the week ends in its entry: {}", dump(w.tree())))
+            .key
+            .clone();
+        w.fire_with(
+            &entry,
+            "submit",
+            Some(&Value::text("Lunch with Sam friday 1pm")),
+        )
+        .unwrap();
+        w.poll_patches().unwrap();
+        let events = s.projected(&s.root, "events");
+        assert_eq!(events.len(), 1, "one event: {}", dump(w.tree()));
+        assert_eq!(events[0]["fields"]["title"], "Lunch with Sam");
+        assert_eq!(
+            events[0]["fields"]["day"], "2026-11-27",
+            "the friday it named"
+        );
+        assert_eq!(events[0]["fields"]["start"], "2026-11-27T13:00:00");
+    }
+
+    /// A weekly repeat comes on the days its person chooses: a day is added and taken off the
+    /// rule, and the last one is kept rather than left a repeat that never comes.
+    #[test]
+    fn a_weekly_repeat_chooses_its_weekdays() {
+        let s = sheet();
+        let e = s.make("Standup", TODAY);
+        s.call(
+            "repeat_weekdays",
+            &[
+                ("e", Value::resource(&e)),
+                (
+                    "days",
+                    Value::List(vec![Value::text("MO"), Value::text("WE")]),
+                ),
+            ],
+        );
+        assert_eq!(s.text(&e, "recurrence"), "FREQ=WEEKLY");
+        assert_eq!(s.texts_of_set(&e, "recurrence_weekdays"), ["MO", "WE"]);
+        s.call(
+            "toggle_weekday",
+            &[("e", Value::resource(&e)), ("day", Value::text("FR"))],
+        );
+        assert_eq!(
+            s.texts_of_set(&e, "recurrence_weekdays"),
+            ["FR", "MO", "WE"],
+            "a day is added"
+        );
+        s.call(
+            "toggle_weekday",
+            &[("e", Value::resource(&e)), ("day", Value::text("MO"))],
+        );
+        assert_eq!(s.texts_of_set(&e, "recurrence_weekdays"), ["FR", "WE"]);
+        s.call(
+            "toggle_weekday",
+            &[("e", Value::resource(&e)), ("day", Value::text("FR"))],
+        );
+        let why = s.refusal(
+            "toggle_weekday",
+            &[("e", Value::resource(&e)), ("day", Value::text("WE"))],
+        );
+        assert!(why.contains("at least one day"), "{why}");
+        assert_eq!(s.texts_of_set(&e, "recurrence_weekdays"), ["WE"]);
+    }
+
+    /// An event is drawn in its calendar's colour until it names one of its own: two events of
+    /// the same emerald calendar are drawn alike, and an event's own colour wins over it.
+    #[test]
+    fn a_calendar_colour_is_drawn_until_an_event_names_its_own() {
+        let s = sheet();
+        s.opened();
+        let home = s.make_calendar("Home");
+        let work = s.make_calendar("Work");
+        s.call(
+            "set_calendar_color",
+            &[
+                ("k", Value::resource(&home)),
+                ("color", s.case("Color", "Color.emerald")),
+            ],
+        );
+        let a = s.make("Standup", TODAY);
+        s.call(
+            "file_in",
+            &[("e", Value::resource(&a)), ("k", Value::resource(&home))],
+        );
+        let b = s.call_ref(
+            "new_event",
+            &[
+                ("c", Value::resource(&s.root)),
+                ("title", Value::text("Review")),
+                ("at", Value::some(Value::text(format!("{TODAY}T11:00:00Z")))),
+            ],
+        );
+        s.call(
+            "file_in",
+            &[("e", Value::resource(&b)), ("k", Value::resource(&work))],
+        );
+        s.call(
+            "set_event_color",
+            &[
+                ("e", Value::resource(&b)),
+                ("color", s.case("Color", "Color.emerald")),
+            ],
+        );
+        assert_eq!(
+            s.text(&home, "color"),
+            "emerald",
+            "the calendar keeps its colour"
+        );
+        let held = match s.read(&a, "calendar") {
+            Value::Opt(Some(held)) => match *held {
+                Value::Ref(r) => (*r.target).clone(),
+                other => panic!("the calendar is a resource: {other:?}"),
+            },
+            other => panic!("the event names a calendar: {other:?}"),
+        };
+        assert_eq!(held, home, "the event stands in Home");
+        let w = s.place_view("week");
+        let items = of_kind(w.tree(), "ui.TimelineItem");
+        let tone_of = |title: &str| {
+            items
+                .iter()
+                .find(|n| text_prop_opt(n, "title").as_deref() == Some(title))
+                .and_then(|n| n.props.get("tone").cloned())
+                .unwrap_or_else(|| panic!("{title} is drawn: {}", dump(w.tree())))
+        };
+        assert_eq!(
+            tone_of("Standup"),
+            tone_of("Review"),
+            "the calendar's emerald is drawn for the event that names none"
+        );
+        assert_eq!(s.text(&a, "color"), "", "the event itself names no colour");
+    }
+
+    /// The agenda shows what each day holds: its events and the tasks due on it, under the
+    /// controls that walk it a week at a time.
+    #[test]
+    fn the_agenda_shows_the_days_tasks_and_walks_a_week() {
+        let s = sheet();
+        s.opened();
+        s.make("Standup", TODAY);
+        s.call_ref(
+            "new_task",
+            &[
+                ("c", Value::resource(&s.root)),
+                ("title", Value::text("Write notes")),
+                ("due", Value::some(Value::text(TODAY))),
+            ],
+        );
+        let mut w = s.place_view("agenda");
+        let shown = labels(w.tree());
+        assert!(shown.iter().any(|t| t == "Standup"), "{shown:?}");
+        assert!(shown.iter().any(|t| t == "Write notes"), "{shown:?}");
+        let controls: Vec<String> = of_kind(w.tree(), "ui.Button")
+            .iter()
+            .filter_map(|b| {
+                text_prop_opt(b, "label")
+                    .filter(|t| t != "")
+                    .or_else(|| text_prop_opt(b, "accessible_name"))
+            })
+            .collect();
+        for control in ["Previous week", "Today", "Next week"] {
+            assert!(
+                controls.iter().any(|c| c == control),
+                "the agenda walks its days: {controls:?}"
+            );
+        }
+        let next = of_kind(w.tree(), "ui.Button")
+            .into_iter()
+            .find(|b| text_prop_opt(b, "accessible_name").as_deref() == Some("Next week"))
+            .expect("the button that walks on")
+            .key
+            .clone();
+        w.fire(&next, "press").unwrap();
+        w.poll_patches().unwrap();
+        assert_eq!(
+            s.text(&s.root, "anchor_at"),
+            "2026-12-01T00:00:00Z",
+            "a week on from the day it stood on"
+        );
+    }
+
+    /// An event nothing was written in yet is thrown away; one with a word in it stays.
+    #[test]
+    fn a_pristine_event_is_discarded_and_one_with_a_word_is_not() {
+        let s = sheet();
+        let blank = s.call_ref("new_event", &[("c", Value::resource(&s.root))]);
+        s.call(
+            "discard_draft",
+            &[
+                ("c", Value::resource(&s.root)),
+                ("e", Value::resource(&blank)),
+            ],
+        );
+        assert!(s.projected(&s.root, "events").is_empty(), "nothing is left");
+        let written = s.make("Standup", TODAY);
+        let why = s.refusal(
+            "discard_draft",
+            &[
+                ("c", Value::resource(&s.root)),
+                ("e", Value::resource(&written)),
+            ],
+        );
+        assert!(why.contains("something in it"), "{why}");
+        assert_eq!(s.projected(&s.root, "events").len(), 1);
+    }
+
+    /// The address book's people are offered to invite: choosing one invites them by the name
+    /// and address the book keeps.
+    #[test]
+    fn a_guest_is_invited_from_the_address_book() {
+        let s = sheet();
+        let e = s.make("Planning", TODAY);
+        // The book is another app's root: the calendar reads it through its own window.
+        let book_app = built("calendar")
+            .into_iter()
+            .find(|used| used.meta().app == "so.tilo.contacts")
+            .expect("the address book runs beside the calendar");
+        let book = s.rt.create_root("Book").unwrap();
+        let contact = seed_origin(
+            &s.rt,
+            "vcard",
+            &book,
+            &field_id(&book_app, "Book", "contacts"),
+            &type_id(&book_app, "Contact"),
+            vec![("name", Value::text("Sam Rivera"))],
+        );
+        seed_origin(
+            &s.rt,
+            "vcard",
+            &contact,
+            &field_id(&book_app, "Contact", "emails"),
+            &type_id(&book_app, "Labeled"),
+            vec![
+                ("label", Value::text("work")),
+                ("value", Value::text("sam@example.test")),
+            ],
+        );
+        let mut w = s.window("event_page", vec![Value::resource(&e)]);
+        let invite = of_kind(w.tree(), "ui.MenuItem")
+            .into_iter()
+            .find(|item| text_prop_opt(item, "label").as_deref() == Some("Sam Rivera"))
+            .unwrap_or_else(|| panic!("the book's people are offered: {}", dump(w.tree())))
+            .key
+            .clone();
+        w.fire(&invite, "choose").unwrap();
+        w.poll_patches().unwrap();
+        let guests = s.projected(&e, "attendees");
+        assert_eq!(guests.len(), 1);
+        assert_eq!(guests[0]["fields"]["name"], "Sam Rivera");
+        assert_eq!(guests[0]["fields"]["email"], "sam@example.test");
+    }
+
+    /// A calendar whose account the workspace no longer configures says so, rather than
+    /// standing silent as if its server had nothing to say.
+    #[test]
+    fn a_calendar_whose_account_is_gone_says_so() {
+        let s = sheet();
+        seed_origin(
+            &s.rt,
+            "caldav",
+            &s.root,
+            &field_id(&s.app, "Calendars", "calendars"),
+            &type_id(&s.app, "Calendar"),
+            vec![
+                ("key", Value::text("work")),
+                ("account", Value::text("acct")),
+                ("name", Value::text("Work")),
+                ("writable", Value::Bool(true)),
+            ],
+        );
+        let w = s.root_window();
+        let said: Vec<String> = of_kind(w.tree(), "ui.Banner")
+            .iter()
+            .filter_map(|banner| text_prop_opt(banner, "title"))
+            .collect();
+        assert!(
+            said.iter().any(|title| title == "Work is no longer kept"),
+            "{said:?}"
         );
     }
 }

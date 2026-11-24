@@ -115,7 +115,7 @@ template view service_mark(name: Text, online: Bool, trouble: Text) {
 }
 
 /// What a window says over the items it holds while the service they come from does not stand
-/// well: one calm notice naming the service and what its trouble means, with `Try again` where
+/// well: one calm notice naming the service and what its trouble means, with `retry_label` where
 /// `retry` asks it again, and nothing while it stands well.
 ///
 /// It stands as a card in the container the app gives it, a gutter in from the column it stands
@@ -131,6 +131,7 @@ template view service_banner(
     trouble: Text,
     retry: Action,
     fetched: Text = "",
+    retry_label: Text = "Try again",
 ) {
     if trouble != "" {
         // The reason in a sentence of its own: "connection refused" is what the server said,
@@ -141,7 +142,7 @@ template view service_banner(
             message: if fetched == "" { reason } else { "{reason}. Last fetched {fetched}" },
             kind: if online { .warning } else { .neutral },
             icon: if online { .triangle_alert } else { .wifi_off },
-            action: "Try again",
+            action: retry_label,
         ) {
             on act: retry
         }
