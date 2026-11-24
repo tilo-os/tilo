@@ -674,14 +674,27 @@ fn chunks(bytes: &[u8]) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
 /// anywhere is copied, so a write carries the chunks it changed and not the
 /// stretch between its first change and its last.
 fn delta_chunked(old: &[u8], new: &[u8]) -> Vec<Op> {
-    let known: std::collections::HashMap<&[u8], u64> = chunks(old)
-        .filter_map(|range| Some((old.get(range.clone())?, range.start as u64)))
-        .collect();
+    // Every place each chunk is in `old`: a list of like entries (the frames a device keeps until
+    // a link carries them) repeats chunks, and copying the one that goes on from the last copy
+    // keeps an unchanged stretch one copy however many entries it holds.
+    let mut known: std::collections::HashMap<&[u8], Vec<u64>> = std::collections::HashMap::new();
+    for range in chunks(old) {
+        if let Some(chunk) = old.get(range.clone()) {
+            known.entry(chunk).or_default().push(range.start as u64);
+        }
+    }
     let mut ops = Ops(Vec::new());
     for range in chunks(new) {
         let chunk = new.get(range).unwrap_or_default();
         match known.get(chunk) {
-            Some(offset) => ops.copy(*offset, chunk.len()),
+            Some(offsets) => {
+                let next = ops.next_copied();
+                let offset = next
+                    .filter(|next| offsets.binary_search(next).is_ok())
+                    .or_else(|| offsets.first().copied())
+                    .unwrap_or_default();
+                ops.copy(offset, chunk.len());
+            }
             None => ops.bytes(chunk),
         }
     }
@@ -765,6 +778,14 @@ fn after(bytes: &[u8], from: usize) -> &[u8] {
 struct Ops(Vec<Op>);
 
 impl Ops {
+    /// Where in the old bytes a copy would go on from the last one: `None` after bytes of its own.
+    fn next_copied(&self) -> Option<u64> {
+        match self.0.last() {
+            Some(Op::Copy { from, len }) => Some(from.saturating_add(*len)),
+            _ => None,
+        }
+    }
+
     fn copy(&mut self, from: u64, len: usize) {
         if len == 0 {
             return;
