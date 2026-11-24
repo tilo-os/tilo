@@ -226,6 +226,7 @@ impl std::error::Error for DuplicateListKey {}
 
 type RowBuilder = Box<dyn FnMut(&dyn AnyModel, usize, &ListKey, RowBuild) -> Element>;
 type KeyCallback<K> = Box<dyn FnMut(K)>;
+type ShortcutCallback<K> = Box<dyn FnMut(&K, &crate::platform::Shortcut) -> bool>;
 type FoldCallback<K> = Box<dyn FnMut(&K, bool)>;
 type SemanticKey<K> = Box<dyn Fn(&K) -> String>;
 type RowPresence =
@@ -473,6 +474,9 @@ pub struct VirtualRows {
     /// The edit key was pressed on the focused row. What editing means is the host's: it opens
     /// what it edits, or renames the row where it stands ([`Self::on_rename`]).
     on_edit: Option<KeyCallback<ListKey>>,
+    /// A key the focused row's own commands declare (`Ctrl+Enter`) was pressed while the list
+    /// holds the keyboard: the host runs the command, on the row, whichever way it is drawn.
+    on_row_shortcut: Option<ShortcutCallback<ListKey>>,
     /// The row a view asks the list to show, read at every sync: what a press in the view
     /// made of the rows.
     reveal_asked: Option<Box<dyn FnMut() -> Option<ListKey>>>,
@@ -656,6 +660,7 @@ impl VirtualRows {
             tab_indents: false,
             on_delete: None,
             on_edit: None,
+            on_row_shortcut: None,
         };
         list.refresh_anchor();
         list
@@ -985,6 +990,16 @@ impl VirtualRows {
     /// Receive `Delete` on the focused row: the host decides what deleting means.
     pub fn set_on_delete(&mut self, callback: impl FnMut(ListKey) + 'static) {
         self.on_delete = Some(Box::new(callback));
+    }
+
+    /// Run a command the focused row declares (`Ctrl+Enter`), answering whether one did: the
+    /// row answers the key however it is drawn, a list row and any other view alike. The typed
+    /// list hands it the key its model wrote ([`typed::VirtualList::set_on_row_shortcut`]).
+    pub(super) fn set_on_row_shortcut(
+        &mut self,
+        callback: impl FnMut(&ListKey, &crate::platform::Shortcut) -> bool + 'static,
+    ) {
+        self.on_row_shortcut = Some(Box::new(callback));
     }
 
     pub fn set_on_opened(&mut self, callback: impl FnMut(ListKey) + 'static) {
@@ -2356,15 +2371,35 @@ impl Widget for VirtualRows {
                         *ctx.focus_target = Some(node);
                     }
                 } else {
-                    let toggle =
-                        ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
-                    *ctx.handled = self.on_key(
-                        &event.logical_key,
-                        toggle,
-                        ctx.modifiers.state().shift_key(),
-                    );
-                    if *ctx.handled && !self.is_focused {
-                        *ctx.focus_target = Some(ctx.node_id);
+                    // A command the focused row declares answers before the list's own keys, so a
+                    // plain letter a row names is that row's and no type-ahead, whichever way the
+                    // row is drawn. A field in a row that holds the keyboard keeps its keys: the
+                    // list is not the one the keyboard is on, and its row's commands wait.
+                    let mut answered = false;
+                    if self.is_focused
+                        && let Some(pressed) = crate::platform::Shortcut::pressed(
+                            &event.logical_key,
+                            ctx.modifiers.state(),
+                            crate::platform::PlatformConventions::default(),
+                        )
+                        && let Some(row) = self.focused_row_key()
+                        && let Some(run) = self.on_row_shortcut.as_mut()
+                    {
+                        answered = run(&row, &pressed);
+                    }
+                    if answered {
+                        *ctx.handled = true;
+                    } else {
+                        let toggle = ctx.modifiers.state().control_key()
+                            || ctx.modifiers.state().super_key();
+                        *ctx.handled = self.on_key(
+                            &event.logical_key,
+                            toggle,
+                            ctx.modifiers.state().shift_key(),
+                        );
+                        if *ctx.handled && !self.is_focused {
+                            *ctx.focus_target = Some(ctx.node_id);
+                        }
                     }
                 }
             }

@@ -80,8 +80,9 @@ pub struct ListItemProps {
     /// The item offers a menu the row does not carry: opening the row's menu asks for the row
     /// again with it ([`RowSource::ask_menu`]), and the menu opens when it comes.
     pub offers_menu: bool,
-    /// The keys the item's actions answer to ("Ctrl+Enter"): a press of one while the row holds
-    /// the keyboard reports `shortcut` with it, whether or not the row carries its menu.
+    /// The keys the item's actions answer to ("Ctrl+Enter"): a press of one while the list holds
+    /// the keyboard on the row reports `shortcut` with it, whether or not the row carries its
+    /// menu, and whether the row is one list row or a view of any kind.
     pub keys: Vec<String>,
     /// A key of `keys` was pressed on the row: carries it.
     #[component(event(value = String))]
@@ -384,6 +385,13 @@ impl PartType for RemovedRows {
     }
 }
 
+/// How the item of a row is read: built into its widget, or for what its props alone say.
+#[derive(Clone, Copy)]
+enum RowRead {
+    Built,
+    PropsOnly,
+}
+
 #[derive(Clone, Default)]
 enum Held {
     #[default]
@@ -510,6 +518,22 @@ impl DescribedRows {
     }
 
     fn with_item<R>(&self, key: &str, read: impl FnOnce(ListItemProps) -> R) -> Option<R> {
+        self.with(key, RowRead::Built, read)
+    }
+
+    /// The same item, for what its props alone say (the keys its commands answer, the menu it
+    /// offers): the host renders its props without building its views, where it renders them at
+    /// all, which each key the list answers asks of the row it is on.
+    fn with_props<R>(&self, key: &str, read: impl FnOnce(ListItemProps) -> R) -> Option<R> {
+        self.with(key, RowRead::PropsOnly, read)
+    }
+
+    fn with<R>(
+        &self,
+        key: &str,
+        how: RowRead,
+        read: impl FnOnce(ListItemProps) -> R,
+    ) -> Option<R> {
         if let Some(item) = self.removed.iter().find(|item| item.key == key) {
             return Some(read(reusable(item)?));
         }
@@ -527,7 +551,13 @@ impl DescribedRows {
                     );
                     Ok(())
                 };
-                let shown = rows.try_borrow_mut().ok()?.read(key, read_one);
+                let Ok(mut rows) = rows.try_borrow_mut() else {
+                    return None;
+                };
+                let shown = match how {
+                    RowRead::Built => rows.read(key, read_one),
+                    RowRead::PropsOnly => rows.read_props(key, read_one),
+                };
                 match shown {
                     Ok(true) => found.map(read),
                     Ok(false) => None,
@@ -975,6 +1005,35 @@ fn wire_keys(
             }
         });
     }
+}
+
+/// Have `list` run the command the focused row's own menus and keys declare for a pressed chord,
+/// on that row: the item's menu first, then what the view attached to the row, then the keys the
+/// app names for it ([`ListItemProps::keys`]). The row answers however it is drawn, a list row
+/// and a view of any kind alike, because what it declares is the item's, not its widget's.
+fn wire_row_shortcuts(
+    list: &mut VirtualList<DescribedRows>,
+    reading: &Rc<RefCell<DescribedRows>>,
+) {
+    let rows = Rc::clone(reading);
+    list.set_on_row_shortcut(move |key, pressed| {
+        let run = {
+            let rows = rows.borrow();
+            rows.with_props(key, |item| {
+                declared_shortcuts(&item.menu, &item.attached.menu, (&item.keys, &item.shortcut))
+                    .into_iter()
+                    .find(|(declared, _)| declared.same_press(pressed))
+                    .map(|(_, run)| run)
+            })
+            .flatten()
+        };
+        if let Some(run) = run {
+            run();
+            true
+        } else {
+            false
+        }
+    });
 }
 
 /// What the list reports of the rows `keys` (a selection): the items they show, and the values
@@ -1703,6 +1762,7 @@ impl Described for DescribedList {
             }
             list.set_on_end_reached(end_reached.handler());
             wire_keys(&mut list, &reading, &edit, &delete);
+            wire_row_shortcuts(&mut list, &reading);
             let list = reorderable(list, &reorder);
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
                 row_menu(list, at, &Event::None)
@@ -1802,6 +1862,7 @@ impl Described for DescribedList {
                 });
         }
         wire_keys(&mut list, &reading, &edit, &delete);
+        wire_row_shortcuts(&mut list, &reading);
         if !selected_changed.is_none() || !values.selected.is_none() {
             let fired = selected_changed.clone();
             let valued = values.selected.clone();
@@ -3018,6 +3079,13 @@ mod tests {
         /// The width a row's leading control takes, and the gap after it.
         lead: f32,
         gap: f32,
+        /// Whether a row is a view of the app's own rather than one list row: the two renderings
+        /// a keyed item answers alike.
+        views: bool,
+        /// The keys the item's actions answer to.
+        keys: Vec<String>,
+        /// What the item's `shortcut` event runs, when it names what a press reports.
+        shortcut: Event,
     }
 
     impl ViewRows {
@@ -3035,7 +3103,23 @@ mod tests {
                 answered: Rc::new(Cell::new(false)),
                 lead,
                 gap,
+                views: false,
+                keys: Vec::new(),
+                shortcut: Event::None,
             }
+        }
+
+        /// The same rows, each rendered as a view of the app's own.
+        fn with_views(mut self) -> Self {
+            self.views = true;
+            self
+        }
+
+        /// The same rows, their items answering `keys`, each running `event`.
+        fn keys(mut self, keys: &[&str], event: Event) -> Self {
+            self.keys = keys.iter().map(|key| (*key).to_owned()).collect();
+            self.shortcut = event;
+            self
         }
 
         /// The host answers the ask for a row's menu once `answered` is set.
@@ -3096,6 +3180,9 @@ mod tests {
                 menu: self.answered.get() && self.asked.as_deref() == Some(key),
                 lead: self.lead,
                 gap: self.gap,
+                views: self.views,
+                keys: self.keys.clone(),
+                shortcut: self.shortcut.clone(),
             })?;
             Ok(true)
         }
@@ -3124,6 +3211,12 @@ mod tests {
         menu: bool,
         lead: f32,
         gap: f32,
+        /// The row is a view of the app's own, with more in it than one list row.
+        views: bool,
+        /// The keys the item's actions answer to.
+        keys: Vec<String>,
+        /// What a press on one of the item's keys reports.
+        shortcut: Event,
     }
 
     impl Source for ViewItemSource<'_> {
@@ -3141,11 +3234,17 @@ mod tests {
                     .map(|parent| Value::Resource(ViewRows::item_of(parent))),
                 // Until the host asks, the row says its item offers a menu it does not carry.
                 "offers_menu" if !self.menu => Some(Value::Bool(true)),
+                "keys" => Some(Value::List(
+                    self.keys.iter().cloned().map(Value::Text).collect(),
+                )),
                 _ => None,
             }
         }
 
-        fn event(&mut self, _name: &str) -> Event {
+        fn event(&mut self, name: &str) -> Event {
+            if name == "shortcut" {
+                return self.shortcut.clone();
+            }
             Event::None
         }
 
@@ -3155,6 +3254,7 @@ mod tests {
 
         fn children(&mut self, part: &str) -> Vec<Element> {
             match part {
+                "row" if self.views => vec![view_row(&self.item.key)],
                 "detail" => vec![document(&self.item.key, self.lead, self.gap)],
                 _ => Vec::new(),
             }
@@ -3162,6 +3262,7 @@ mod tests {
 
         fn part_kinds(&mut self, part: &str) -> Vec<Option<String>> {
             match part {
+                "row" if self.views => vec![None],
                 "row" => vec![Some(ListRowProps::NAME.to_owned())],
                 "detail" => vec![None],
                 "attached" => vec![Some(crate::widget::ContextMenuProps::NAME.to_owned())],
@@ -3344,6 +3445,19 @@ mod tests {
         )
     }
 
+    /// The row of one item, as a view of the app's own: a list row under what the view writes
+    /// about it, so the row is no one component the list knows and is built as the view it is.
+    fn view_row(key: &str) -> Element {
+        Box::new(
+            Stack::stack()
+                .fill_width()
+                .gap(Rhythm::Tight)
+                .with_id(format!("view-{key}"))
+                .push(Box::new(ListRow::new(key, format!("{key}'s words"))))
+                .push(Box::new(Text::new("under it"))),
+        )
+    }
+
     /// Where the widget `id` stands, in `node`.
     fn rect_of_id(node: &crate::headless::InspectionNode, id: &str) -> Option<[f64; 4]> {
         if node.test_id.as_deref() == Some(id) {
@@ -3486,5 +3600,65 @@ mod tests {
         );
         assert!(strike_row(view.as_mut()), "the view holds a row to strike");
         assert!(first_row(view.as_mut()).expect("a list row").is_struck());
+    }
+
+    /// A keyed row answers its key however the app draws it: the item's key runs on the row the
+    /// list's keyboard is on, whether the row is one list row or a view of any kind, and the
+    /// window shows that row answered it.
+    #[test]
+    fn a_keyed_row_answers_whichever_way_it_is_drawn() {
+        for views in [false, true] {
+            let queue = crate::Intents::<Fired>::default();
+            let mut rows = ViewRows::new(&[("row-0", None), ("row-1", None)], 20.0, 8.0).keys(
+                &["s"],
+                Event::View(Intent::new(&queue, "row", "key")),
+            );
+            if views {
+                rows = rows.with_views();
+            }
+            let rendered: SharedRows = Rc::new(RefCell::new(rows));
+            let mut list = DescribedList::from_props(
+                "keys",
+                VirtualListProps {
+                    rows: DescribedRows {
+                        held: Held::Rendered(rendered),
+                        ..DescribedRows::default()
+                    },
+                    ..VirtualListProps::default()
+                },
+            );
+            let pressed = crate::synthetic_input::char_key("s");
+            let handled = {
+                let inner = list.list_mut().expect("the list stands");
+                let (taffy, node) = lay_out_tree(inner, 400.0);
+                Widget::set_focus(inner, true);
+                inner.focus_row("row-0".to_owned());
+                crate::testing::Dispatch::new()
+                    .layout(&taffy, node)
+                    .send(inner, &pressed)
+                    .handled
+            };
+            assert!(handled, "the row's key answers (a view: {views})");
+            assert_eq!(
+                queue.take(),
+                [Fired {
+                    key: "row".to_owned(),
+                    event: "key".to_owned(),
+                    value: Some(Value::Text("s".to_owned())),
+                    gesture: None,
+                }],
+                "the item's `shortcut` reports the key pressed (a view: {views})"
+            );
+            let list = list.list().expect("the list stands");
+            assert_eq!(
+                list.focused_key().map(String::as_str),
+                Some("row-0"),
+                "the window shows the row the key acted on, under its keyboard ring"
+            );
+            assert!(
+                list.row_rect(&"row-0".to_owned()).is_some(),
+                "the row it answered on is the one on screen (a view: {views})"
+            );
+        }
     }
 }
