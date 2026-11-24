@@ -83,6 +83,18 @@ struct Laptop {
 /// The daemon of the device `key`, `cert`, logged in to `site`'s workspace, keeping what it keeps
 /// under `dir`, serving the trees once its record content runs.
 async fn laptop(dir: &Path, (key, cert): (&SigningKey, &DeviceCert), site: &Site) -> Laptop {
+    daemon(dir, (key, cert), site, true).await
+}
+
+/// The daemon of the device `key`, `cert` as it starts again from what it keeps under `dir`,
+/// logging in to `site`'s workspace first only when `enters`: a device back after time away
+/// syncs the copies it kept with no login.
+async fn daemon(
+    dir: &Path,
+    (key, cert): (&SigningKey, &DeviceCert),
+    site: &Site,
+    enters: bool,
+) -> Laptop {
     let login = tilo_device_identity::login::Device {
         site: "https://tilo.test/".into(),
         host_origin: "https://eu1.tilo.test".into(),
@@ -105,17 +117,19 @@ async fn laptop(dir: &Path, (key, cert): (&SigningKey, &DeviceCert), site: &Site
     )
     .await
     .expect("the laptop's own service opens");
-    let entered = tilo_test_env::within(
-        "the login enters its workspace",
-        tilo_api::daemon::enter::connect(key, &login, Some(own.lent())),
-    )
-    .await
-    .expect("the login enters");
-    tilo_test_env::within(
-        "the device's service keeps the workspace",
-        own.hold(&entered),
-    )
-    .await;
+    if enters {
+        let entered = tilo_test_env::within(
+            "the login enters its workspace",
+            tilo_api::daemon::enter::connect(key, &login, Some(own.lent())),
+        )
+        .await
+        .expect("the login enters");
+        tilo_test_env::within(
+            "the device's service keeps the workspace",
+            own.hold(&entered),
+        )
+        .await;
+    }
     let daemons = Arc::new(tilo_workspace_service::files::socket::Daemons::default());
     super::content::document_content(&own, &dir.join("blob.sock"), Arc::clone(&daemons));
     let socket = dir.join("run").join("files-tree.sock");
@@ -643,4 +657,130 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
         "the workspace's other member keeps what he holds"
     );
     assert_eq!(ada_mount.open(adas, Access::Write), Ok(()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_removed_while_their_link_is_down_finds_no_workspace_when_it_returns() {
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (bob, _) = tilo_user_identity::UserIdentity::generate("Bob", 1);
+    let (server_key, server_cert) = enrol(&ada, "home-server", DeviceCapabilities::member());
+    let (ada_key, ada_cert) = enrol(&ada, "Ada's laptop", DeviceCapabilities::primary());
+    let (bob_key, bob_cert) = enrol(&bob, "Bob's laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: ada.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server has workspaces")
+        .clone();
+    let workspace = hosted.create("Studio").await.unwrap().workspace;
+    hosted
+        .add_member(
+            &workspace,
+            &server_cert,
+            tilo_workspace_service::workspaces::AddMemberRequest {
+                request_id: fresh_id(),
+                user_public_key: bob_cert.user_public_key,
+                place: tilo_workspace_service::workspaces::MemberPlace::Role(Role::Editor),
+                name: Some("Bob".into()),
+            },
+        )
+        .await
+        .expect("the owner adds Bob as an editor");
+    for cert in [&ada_cert, &bob_cert] {
+        hosted
+            .enter(&workspace, cert)
+            .await
+            .expect("a member's device enters the workspace");
+    }
+    let site = Site {
+        server,
+        cert: server_cert.clone(),
+        workspace: workspace.clone(),
+    };
+    let ada_laptop = laptop(&state.path().join("ada"), (&ada_key, &ada_cert), &site).await;
+    let _ada_mount = mount(&ada_laptop, &state.path().join("ada-mount"), &workspace).await;
+    let bob_laptop = laptop(&state.path().join("bob"), (&bob_key, &bob_cert), &site).await;
+    let bob_mount = mount(&bob_laptop, &state.path().join("bob-mount"), &workspace).await;
+
+    // Bob holds the workspace and writes in it while he is here.
+    let tree = tree_of(&workspace);
+    let own = tilo_desktop_model::WorkspaceId::parse(&workspace).unwrap();
+    let plan = format!("{tree}/brief/plan.md");
+    let note = bob_mount.file(&plan);
+    bob_mount
+        .until(
+            "Bob's mount lets the editor write while he is here",
+            note,
+            Access::Write,
+            Ok(()),
+        )
+        .await;
+
+    // He goes away: his daemon and its mount end while the workspace still has him.
+    bob_laptop.own.shutdown().await;
+    drop(bob_mount);
+    drop(bob_laptop);
+
+    // Removed while he is away: nothing of it reaches the copy his device kept.
+    hosted
+        .remove_member(
+            &workspace,
+            &server_cert,
+            RemoveMemberRequest {
+                request_id: fresh_id(),
+                user_public_key: bob_cert.user_public_key,
+            },
+        )
+        .await
+        .expect("the owner removes Bob while he is away");
+
+    // He comes back with the copy his device kept, which still has him as its editor, and the
+    // device serving the workspace answers that he is no member of it: the copy is let go, and
+    // with it the access a mount here would enforce.
+    let bob_laptop = daemon(&state.path().join("bob"), (&bob_key, &bob_cert), &site, false).await;
+    let kept = bob_laptop.own.copies();
+    tilo_test_env::within("the copy Bob's device kept is let go", async {
+        while kept.copy_now(own).is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        released_under(&state.path().join("bob")),
+        "the copy was held again and let go, not missing from the start"
+    );
+    let listed = kept
+        .files_access(&hex::encode(bob_laptop.person), Some(bob_laptop.device))
+        .await;
+    assert!(
+        listed.authority.capabilities.is_empty(),
+        "nothing of the workspace reaches Bob's mounts: {:?}",
+        listed.authority.capabilities
+    );
+    let back = mount(&bob_laptop, &state.path().join("bob-returned"), &workspace).await;
+    let theirs = back.file(&plan);
+    assert_eq!(back.open(theirs, Access::Read), Err(libc::ENOENT));
+    assert_eq!(back.open(theirs, Access::Write), Err(libc::ENOENT));
+}
+
+/// Whether a workspace kept under `dir` was let go: its service marks a released copy beside it.
+fn released_under(dir: &Path) -> bool {
+    std::fs::read_dir(dir).unwrap().any(|entry| {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            return released_under(&path);
+        }
+        path.extension().is_some_and(|extension| extension == "released")
+    })
 }

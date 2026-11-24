@@ -1810,6 +1810,9 @@ impl Workspaces {
         tracing::info!(%workspace, workspace_id = %governed.workspace_id(), "governed workspace released");
         drop(governed);
         let _ = self.inner.changes.send(workspace.to_owned());
+        // What this device decides for others no longer covers the workspace: whoever follows
+        // that, the Files mounts among them, is woken to make what it enforces again.
+        tilo_identity::policy_change::announce();
         Ok(())
     }
 

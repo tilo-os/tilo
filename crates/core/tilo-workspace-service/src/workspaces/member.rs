@@ -1988,6 +1988,23 @@ impl Workspaces {
                             workspaces.take_refusal(refusal).await;
                         }
                     }
+                    Err(refusal @ Refusal::NotAMember(_)) => {
+                        // The device serving the workspace answers that this device is no member
+                        // of it: the copy is let go rather than kept and dialled again, so what
+                        // the Files mounts enforce for it goes with it. Off this task, which
+                        // letting the copy go ends along with its other syncs.
+                        tracing::info!(%name, ?refusal, "this device is no longer a member of the workspace");
+                        let Some(released) = workspaces.upgrade() else {
+                            return;
+                        };
+                        let name = name.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = released.release(&name).await {
+                                tracing::warn!(%name, %error, "a workspace this device is no longer a member of was not let go");
+                            }
+                        });
+                        return;
+                    }
                     Err(error) => {
                         tracing::debug!(%name, %error, "a member copy's device is unavailable");
                     }
