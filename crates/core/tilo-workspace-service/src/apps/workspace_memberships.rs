@@ -86,6 +86,18 @@ impl AppBrokerState {
             | WorkspaceMembershipCommand::KeepDone { .. } => {
                 return Err("a lease is claimed by the device that does the work".into());
             }
+            WorkspaceMembershipCommand::AddAttestor(_)
+            | WorkspaceMembershipCommand::RemoveAttestor { .. }
+            | WorkspaceMembershipCommand::RevokePublisher { .. }
+            | WorkspaceMembershipCommand::AddRegistry(_)
+            | WorkspaceMembershipCommand::RemoveRegistry { .. }
+            | WorkspaceMembershipCommand::SetRegistryEnabled { .. }
+            | WorkspaceMembershipCommand::SetRegistryChannel { .. } => {
+                return Err(
+                    "a workspace's package trust and registries change through its trust and registry actions"
+                        .into(),
+                );
+            }
             WorkspaceMembershipCommand::InstallApp(_)
             | WorkspaceMembershipCommand::UninstallApp { .. } => {
                 return Err(
