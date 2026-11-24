@@ -758,21 +758,9 @@ impl KeptContent {
         bytes: u64,
         now: u64,
     ) {
-        let key = (workspace.to_owned(), hash.to_owned());
-        if state.kept.contains_key(&key) {
+        if !Self::count_stored(state, workspace, hash, *member, bytes, now) {
             return;
         }
-        state.kept.insert(key, (*member, bytes));
-        let taken = state
-            .taken
-            .entry(workspace.to_owned())
-            .or_default()
-            .entry(*member)
-            .or_default();
-        taken.kept = taken.kept.saturating_add(bytes);
-        taken.this_hour.push((now, bytes));
-        let kept = state.kept_bytes.entry(workspace.to_owned()).or_default();
-        *kept = kept.saturating_add(bytes);
         self.ledger.note(
             workspace,
             &ledger::Entry {
@@ -784,16 +772,57 @@ impl KeptContent {
         );
     }
 
+    /// Count `bytes` of the content `hash` as what the host keeps for
+    /// `workspace` from `member`, taken in at `at`; whether it was counted
+    /// already. The share, the intake this hour and the workspace's total all
+    /// follow from what is counted here.
+    fn count_stored(
+        state: &mut State,
+        workspace: &str,
+        hash: &str,
+        member: [u8; 32],
+        bytes: u64,
+        at: u64,
+    ) -> bool {
+        let key = (workspace.to_owned(), hash.to_owned());
+        if state.kept.contains_key(&key) {
+            return false;
+        }
+        state.kept.insert(key, (member, bytes));
+        let taken = state
+            .taken
+            .entry(workspace.to_owned())
+            .or_default()
+            .entry(member)
+            .or_default();
+        taken.kept = taken.kept.saturating_add(bytes);
+        taken.this_hour.push((at, bytes));
+        let kept = state.kept_bytes.entry(workspace.to_owned()).or_default();
+        *kept = kept.saturating_add(bytes);
+        true
+    }
+
     /// Read what the host kept of `workspace` back from its ledger, counting
     /// what its store holds still: a host that opens the workspace again counts
     /// every member's share and this hour's intake from what it has, not from
-    /// nothing.
+    /// nothing. What the keeper counted while the ledger was read is in no line
+    /// of it yet, and stays counted: a piece arrives as the keeper reads the
+    /// workspace, not before.
     fn open_ledger(&self, workspace: &str) {
         let Ok(store) = self.store.get(workspace) else {
             return;
         };
         let entries = self.ledger.read(workspace, |hash| store.has(hash));
+        let now = now_ms();
         let mut state = self.state.lock_recover();
+        let ledgered: std::collections::BTreeSet<String> =
+            entries.iter().map(|entry| entry.hash.clone()).collect();
+        let arrived: Vec<(String, ([u8; 32], u64))> = state
+            .kept
+            .iter()
+            .filter(|((held, hash), _)| held == workspace && !ledgered.contains(hash))
+            .map(|((_, hash), counted)| (hash.clone(), *counted))
+            .collect();
         state.kept.retain(|(held, _), _| held != workspace);
         state.taken.remove(workspace);
         state.kept_bytes.remove(workspace);
@@ -804,21 +833,22 @@ impl KeptContent {
             else {
                 continue;
             };
-            let key = (workspace.to_owned(), entry.hash);
-            if state.kept.contains_key(&key) {
+            Self::count_stored(
+                &mut state,
+                workspace,
+                &entry.hash,
+                member,
+                entry.bytes,
+                entry.at,
+            );
+        }
+        for (hash, (member, bytes)) in arrived {
+            // Content the store no longer holds, and that is being written no
+            // more, is not what the workspace keeps either.
+            if !store.has(&hash) && !state.storing.contains(&hash) {
                 continue;
             }
-            state.kept.insert(key, (member, entry.bytes));
-            let taken = state
-                .taken
-                .entry(workspace.to_owned())
-                .or_default()
-                .entry(member)
-                .or_default();
-            taken.kept = taken.kept.saturating_add(entry.bytes);
-            taken.this_hour.push((entry.at, entry.bytes));
-            let kept = state.kept_bytes.entry(workspace.to_owned()).or_default();
-            *kept = kept.saturating_add(entry.bytes);
+            Self::count_stored(&mut state, workspace, &hash, member, bytes, now);
         }
         state.counted.insert(workspace.to_owned());
     }
