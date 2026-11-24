@@ -13,9 +13,10 @@ mod cases {
     use tilolang_runtime::host_work::EngineHost;
     use tilolang_runtime::run::WebRequest;
     use tilolang_runtime::web::{WebReply, WebTransport};
+    use tilolang_runtime::ids::MemberId;
     use tilolang_runtime::{
-        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-        ViewInstance,
+        Actor, AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode,
+        Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/maps/app.tl");
@@ -788,6 +789,50 @@ mod cases {
                 .iter()
                 .any(|node| props_text(node, "value").contains("OpenStreetMap contributors")),
             "the map credits its data"
+        );
+    }
+
+    phase the_window_shows_who_is_at_a_place;
+    {
+        let m = Maps::new();
+        m.search("Marienplatz");
+        let at = m.found()[0].clone();
+        // Another window's view at the place: who is there comes from the system's presence, and
+        // the map docks them on the place's marker.
+        let scout = Actor::from(MemberId::agent("scout"));
+        m.rt.set_lenses(&at.id_string(), &[(scout, false, false)]);
+        let presence = |m: &Maps| {
+            let window = m.window();
+            let marker = of_kind(window.tree(), "ui.MapMarker")
+                .into_iter()
+                .find(|node| node.props.get("name") == Some(&Value::text("Marienplatz")))
+                .expect("the place stands on the map");
+            marker.props.get("presence").cloned().unwrap_or(Value::none())
+        };
+        // The lens's `who`: the actor itself, or the option holding it.
+        let at_the_place = presence(&m);
+        let who = match &at_the_place {
+            Value::Actor(actor) => Some(actor),
+            Value::Opt(Some(held)) => match held.as_ref() {
+                Value::Actor(actor) => Some(actor),
+                _ => None,
+            },
+            _ => None,
+        };
+        assert_eq!(
+            who.and_then(Actor::member_id),
+            Some(&MemberId::agent("scout")),
+            "the window docks the agent the lens names: {at_the_place:?}"
+        );
+        // The person's own view is not someone else at the place.
+        m.rt.set_lenses(
+            &at.id_string(),
+            &[(Actor::from(MemberId::agent("scout")), true, false)],
+        );
+        let own = presence(&m);
+        assert!(
+            matches!(own, Value::Opt(None) | Value::Missing),
+            "a person's own view docks nobody on the place: {own:?}"
         );
     }
 

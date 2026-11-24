@@ -1865,6 +1865,7 @@ view map_pane(a: Atlas, chosen: State<Text>) {
                         .shop
                     } else if place.category == .hospital { .hospital } else { .other },
                     selected: place.name == chosen,
+                    presence: lenses(place).find(l -> not l.mine)?.who,
                 )
             }
             for place in a.pois {
@@ -1891,6 +1892,7 @@ view map_pane(a: Atlas, chosen: State<Text>) {
                     } else if place.category == .shop {
                         .shop
                     } else if place.category == .hospital { .hospital } else { .other },
+                    presence: lenses(place).find(l -> not l.mine)?.who,
                 )
             }
         }

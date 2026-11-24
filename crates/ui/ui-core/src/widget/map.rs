@@ -512,6 +512,10 @@ pub struct MapMarkerProps {
     pub kind: Option<MapMarkerKind>,
     /// Whether it is the one the person chose: drawn a size larger, with a ring.
     pub selected: bool,
+    /// Who else is at the place now: a member's or an agent's lens on it (`lenses(place)`), whose
+    /// face docks on the marker as a list row wears the member at its item. The map draws them in
+    /// the presence of the window it is in, and shows none for this person's own views.
+    pub presence: Option<crate::component::Person>,
 }
 
 crate::component::part_type!(MapMarkerProps);
@@ -867,8 +871,15 @@ pub struct Map {
     /// ink, how thick it draws in logical pixels, and whether it is dashed.
     tracks: Vec<(String, Vec<(f64, f64)>, MapTrackTone, f64, bool)>,
     /// The markers drawn over the lines: each its key, its place in degrees, what it is, whether
-    /// it is chosen, and what it is called.
-    markers: Vec<(String, (f64, f64), MapMarkerKind, bool, Option<String>)>,
+    /// it is chosen, what it is called, and who else is at it.
+    markers: Vec<(
+        String,
+        (f64, f64),
+        MapMarkerKind,
+        bool,
+        Option<String>,
+        Option<crate::component::Person>,
+    )>,
     /// The areas kept for offline use.
     areas: Vec<MapArea>,
     /// The areas whose tiles the map has asked for, so an area is saved once and reported once.
@@ -1749,6 +1760,7 @@ impl Described for Map {
                     held.kind.unwrap_or_default(),
                     held.selected,
                     held.name.filter(|name| !name.is_empty()),
+                    held.presence,
                 )
             })
             .collect();
@@ -1862,6 +1874,7 @@ impl Described for Map {
                     held.kind.unwrap_or_default(),
                     held.selected,
                     held.name.filter(|name| !name.is_empty()),
+                    held.presence,
                 )
             })
             .collect();
@@ -2468,15 +2481,23 @@ impl Map {
 
     /// What stands on the map at its places: a dot at each, in the ink of what it is, ringed
     /// with the surface's colour so it reads on any imagery, and a size larger with a ring while
-    /// it is the one the person chose. A dot keeps its size on screen whatever the zoom.
-    fn draw_markers(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    /// it is the one the person chose. A dot keeps its size on screen whatever the zoom. Who of
+    /// the workspace's people has a view at a place docks on its marker.
+    fn draw_markers(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        env: &crate::draw::DrawEnv<'_>,
+    ) {
         if self.markers.is_empty() {
             return;
         }
         let camera = self.shown.get();
         let corner = self.rect.origin();
         let ring = theme.tokens.colors.surfaces.content;
-        for (_, (latitude, longitude), kind, selected, _) in &self.markers {
+        for (_, (latitude, longitude), kind, selected, _, _) in &self.markers {
             let at = camera.to_screen(corner, mercator_project(*latitude, *longitude));
             if !self.rect.inflate(MARKER_RING, MARKER_RING).contains(at) {
                 continue;
@@ -2510,6 +2531,36 @@ impl Map {
                 &vello::kurbo::Circle::new(at, radius),
             );
         }
+        // Who is at a place docks on its marker, as a list row wears the member at its item: the
+        // view gives the lens, and the window's presence names and paints them. A person's own
+        // view shows no face of its own.
+        let Some(presence) = env.presence else {
+            return;
+        };
+        for (_, (latitude, longitude), _, _, _, person) in &self.markers {
+            let Some(person) = person else { continue };
+            let Some(member) = person.identity.member_id() else {
+                continue;
+            };
+            if presence.is_own_identity(member) || env.self_member.as_ref() == Some(member) {
+                continue;
+            }
+            let at = camera.to_screen(corner, mercator_project(*latitude, *longitude));
+            if !self.rect.contains(at) {
+                continue;
+            }
+            let dock = Point::new(
+                at.x + MARKER_RADIUS + MARKER_RING + 6.0,
+                at.y - MARKER_RADIUS,
+            );
+            presence.draw_placed_tag(
+                &mut crate::paint::PaintCtx::new(scene, transform, text, theme),
+                (dock, self.rect),
+                &[(member.clone(), Some(person.name.clone()))],
+                crate::widget::primitives::SurfaceLevel::Window.color(theme),
+                false,
+            );
+        }
     }
 
     /// What a press at `at` (the window's logical coordinates, as the pointer reaches the map)
@@ -2521,13 +2572,13 @@ impl Map {
         self.markers
             .iter()
             .rev()
-            .find(|(_, (latitude, longitude), _, _, _)| {
+            .find(|(_, (latitude, longitude), _, _, _, _)| {
                 camera
                     .to_screen(corner, mercator_project(*latitude, *longitude))
                     .distance(at)
                     <= MARKER_RADIUS + MARKER_RING
             })
-            .map(|(key, _, _, _, name)| name.clone().unwrap_or_else(|| key.clone()))
+            .map(|(key, _, _, _, name, _)| name.clone().unwrap_or_else(|| key.clone()))
     }
 
     /// Draw the region's pins, each posed by its own [`crate::motion::Placed`]: a pin that just
@@ -3106,7 +3157,7 @@ impl Widget for Map {
         self.draw_basemap(scene, transform, &pictures);
         self.ask_for_areas(&pictures);
         self.draw_tracks(scene, transform, theme);
-        self.draw_markers(scene, transform, theme);
+        self.draw_markers(scene, transform, text, theme, &env);
         self.draw_hint(scene, transform, text, theme);
         self.draw_frame_outline(scene, transform, theme);
         self.draw_pins(&mut crate::draw::DrawCtx::new(
@@ -3348,6 +3399,10 @@ mod canvas_tests;
 #[cfg(test)]
 #[path = "map_answer_tests.rs"]
 mod answer_tests;
+
+#[cfg(test)]
+#[path = "map_presence_tests.rs"]
+mod presence_tests;
 
 /// The width a map projects the world into, in canvas pixels at scale 1: a Web Mercator plane
 /// `MERCATOR_WORLD` wide, the equator at half its height. A map's camera pans and zooms over it,

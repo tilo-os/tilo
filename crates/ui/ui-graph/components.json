@@ -9704,6 +9704,13 @@
           "name": "selected",
           "doc": "Whether it is the one the person chose: drawn a size larger, with a ring.",
           "type": "bool"
+        },
+        {
+          "name": "presence",
+          "doc": "Who else is at the place now: a member's or an agent's lens on it (`lenses(place)`), whose face docks on the marker as a list row wears the member at its item. The map draws them in the presence of the window it is in, and shows none for this person's own views.",
+          "type": {
+            "option": "actor"
+          }
         }
       ],
       "semantics": {
