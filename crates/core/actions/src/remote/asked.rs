@@ -233,7 +233,21 @@ pub struct AskedFacts {
     /// offered.
     #[serde(default)]
     pub effect: Option<crate::ActionKind>,
+    /// Whether only the person's root signs the call, so it is answered and run at one of their
+    /// devices that keeps it, not the device that asked ([`AT_ROOT`]).
+    #[serde(default)]
+    pub at_root: bool,
 }
+
+/// The dispatch a call answered at a device that keeps the person's root is kept under
+/// ([`AskedFacts::at_root`]): the device that asked keeps no root, so its record waits in the
+/// workspace for one of the person's devices that keeps it, which asks them once, runs it under
+/// its own key and writes how it went into the record ([`KeptAsk::outcome`]).
+pub const AT_ROOT: &str = "at-root";
+
+/// What answering a call kept for a device that keeps the person's root is refused with on a
+/// device that keeps none.
+pub const ANSWERED_AT_ROOT: &str = "This is answered on a device of yours that keeps your identity";
 
 /// One thing the person types, or records, with their answer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -644,6 +658,10 @@ pub struct KeptAsk {
     pub dispatch: String,
     /// What that dispatch needs to admit it again ([`AskedDispatch::context`]).
     pub context: serde_json::Value,
+    /// How the call ended where it ran, once a device that keeps the person's root ran it
+    /// ([`AT_ROOT`]): what the device that asked shows, after which it forgets the record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<crate::InvocationUpdate>,
 }
 
 /// Where a host keeps the asked records that wait, across its restarts: each kept once it is

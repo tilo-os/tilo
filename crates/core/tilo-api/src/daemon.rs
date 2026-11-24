@@ -339,18 +339,68 @@ impl DaemonPlace {
         action: &str,
         args: serde_json::Value,
     ) -> Result<serde_json::Value, DeviceRefusal> {
+        let (typed, text, failed) = self.call(action, &args, None)?;
+        Self::answered(&typed, &text, failed)
+    }
+
+    /// [`Self::act`] for an action that may wait (for the person's answer at a device of theirs
+    /// that keeps their root, say): its call is followed by its invocation until it settles.
+    ///
+    /// # Errors
+    /// The daemon does not answer, or the call failed or was refused.
+    pub fn act_followed(
+        &self,
+        action: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let mut following = None;
+        loop {
+            let (typed, text, failed) = self
+                .call(action, &args, following.as_deref())
+                .map_err(|refused| refused.message)?;
+            match typed.get("status").and_then(serde_json::Value::as_str) {
+                Some("asked" | "pending") => {
+                    following = Some(
+                        typed
+                            .get("invocation_id")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or("Tilo named no call to follow")?
+                            .to_owned(),
+                    );
+                }
+                _ => {
+                    return Self::answered(&typed, &text, failed).map_err(|refused| refused.message);
+                }
+            }
+        }
+    }
+
+    /// The daemon's answer to `devices#<action>` with `args`, or to following the call
+    /// `following` names: its typed answer, its words, and whether it says it failed.
+    fn call(
+        &self,
+        action: &str,
+        args: &serde_json::Value,
+        following: Option<&str>,
+    ) -> Result<(serde_json::Value, String, bool), DeviceRefusal> {
         use std::io::{BufRead as _, Write as _};
         let mut native = tilo_files::native::socket::connect(&self.native()).map_err(|error| {
             DeviceRefusal::said(format!("Tilo isn't answering on this computer: {error}"))
         })?;
+        let mut arguments = serde_json::json!({
+            "path": format!("{}#{action}", tilo_device_identity::login::RESOURCE),
+            "args": args,
+        });
+        if let (Some(invocation), Some(fields)) = (following, arguments.as_object_mut()) {
+            fields.insert("invocation_id".into(), invocation.into());
+            fields.insert("wait_ms".into(), FOLLOW_WAIT_MS.into());
+        }
         let line = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": {"name": "tilo_do", "arguments": {
-                "path": format!("{}#{action}", tilo_device_identity::login::RESOURCE),
-                "args": args,
-            }, "_meta": {"so.tilo.mcp": {"structured": true}}},
+            "params": {"name": "tilo_do", "arguments": arguments,
+                "_meta": {"so.tilo.mcp": {"structured": true}}},
         });
         writeln!(native, "{line}").map_err(|error| DeviceRefusal::said(error.to_string()))?;
         let mut answer = String::new();
@@ -374,18 +424,27 @@ impl DaemonPlace {
         let text = answer
             .pointer("/result/content/0/text")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .to_owned();
         let typed = answer
             .pointer("/result/structuredContent")
             .cloned()
             .unwrap_or_default();
+        let failed = answer.pointer("/result/isError") == Some(&serde_json::Value::Bool(true));
+        Ok((typed, text, failed))
+    }
+
+    /// What the daemon's answer `typed`, in words `text`, gives: its result, or its refusal.
+    fn answered(
+        typed: &serde_json::Value,
+        text: &str,
+        failed: bool,
+    ) -> Result<serde_json::Value, DeviceRefusal> {
         match typed.get("status").and_then(serde_json::Value::as_str) {
             Some("ok") => Ok(typed.get("result").cloned().unwrap_or_default()),
             // An answer in words alone: what it said, read as the value it names.
-            None if answer.pointer("/result/isError") != Some(&serde_json::Value::Bool(true)) => {
-                Ok(serde_json::from_str(text)
-                    .unwrap_or_else(|_| serde_json::Value::String(text.to_owned())))
-            }
+            None if !failed => Ok(serde_json::from_str(text)
+                .unwrap_or_else(|_| serde_json::Value::String(text.to_owned()))),
             _ => Err(DeviceRefusal {
                 code: typed
                     .pointer("/error/code")
@@ -402,6 +461,9 @@ impl DaemonPlace {
         }
     }
 }
+
+/// How long one read of a followed call waits for it to move before it is read again.
+const FOLLOW_WAIT_MS: u64 = 60_000;
 
 /// The code of a device action's refusal that named none.
 const REFUSED: &str = "refused";

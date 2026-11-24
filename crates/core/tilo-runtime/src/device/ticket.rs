@@ -373,6 +373,12 @@ fn descriptor(
             .tags
             .push(tilo_actions::SECRET_ANSWER_TAG.to_owned());
     }
+    if ROOT_ONLY.contains(&action) {
+        descriptor
+            .contract
+            .tags
+            .push(tilo_actions::ROOT_ONLY_TAG.to_owned());
+    }
     descriptor
 }
 
@@ -392,6 +398,10 @@ const IDENTITY_CONFIRM: ActionParam = ActionParam::required(
 /// The device actions whose answer is a secret ([`tilo_actions::SECRET_ANSWER_TAG`]): handed to
 /// the person once, and kept nowhere here.
 const SECRET_ANSWERS: [&str; 2] = [RECOVERY_WORDS, BACKUP];
+
+/// The device actions only the person's root signs ([`tilo_actions::ROOT_ONLY_TAG`]): a device that
+/// keeps none is capped for them, and they are answered at one that does.
+const ROOT_ONLY: [&str; 2] = [REVOKE, CERTIFY_AGENT];
 
 /// The device actions as the device's one dispatch runs them: it admitted the caller, recorded the
 /// invocation, and follows it here.
@@ -563,6 +573,8 @@ struct Inner {
     reach: std::sync::Mutex<HashMap<[u8; 32], iroh::EndpointAddr>>,
     /// The agents' keys this daemon serves a sign-in ticket for, one per agent.
     agent_keys: std::sync::Mutex<Vec<agent_key::AgentKey>>,
+    /// Told whenever a device action that waited ended.
+    ended: tokio::sync::Notify,
     runtime: tokio::runtime::Handle,
     /// The device a ticket made of this computer, once it logged in with one: the person's part
     /// of the daemon starts again as it.
@@ -618,6 +630,7 @@ impl Tickets {
             update: std::sync::OnceLock::new(),
             reach: std::sync::Mutex::default(),
             agent_keys: std::sync::Mutex::default(),
+            ended: tokio::sync::Notify::new(),
             runtime: tokio::runtime::Handle::current(),
             logged_in: tokio::sync::watch::Sender::new(None),
         }))
@@ -681,13 +694,10 @@ impl Tickets {
         // endpoint reached one of its relays, it would name only the network this device stands
         // in. It waits for the relay first, as an invitation does.
         let unreached = action == ISSUE && !wait && !reached(&self.0.endpoint);
-        // What only the person's root signs waits, asked, on a device that keeps none, while a
-        // device of theirs that keeps it is asked ([`manage::ROOT_ACTIONS`]).
-        let handed_on = action == CERTIFY_AGENT && !self.holds_root();
         let waiting = matches!(
             action.as_str(),
             ISSUE | LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE
-        ) || handed_on;
+        );
         if !waiting {
             let answer = match action.as_str() {
                 INFO => Ok(device_info(&self.0.place, &self.0.key)),
@@ -732,7 +742,7 @@ impl Tickets {
                 PENDING => served.pending(&args).await,
                 APPROVE => served.approve(&args).await,
                 REPORTED => served.report(&args).await,
-                RENAME | REVOKE | UPDATE | CERTIFY_AGENT => served.manage(&action, &args).await,
+                RENAME | REVOKE | UPDATE => served.manage(&action, &args).await,
                 _ if wait => served.waited().await,
                 _ => {
                     if unreached {
@@ -750,8 +760,27 @@ impl Tickets {
                 .calls
                 .lock_recover()
                 .insert(invocation, InvocationState::new(invocation, update));
+            served.0.ended.notify_waiters();
         });
         Pending::ready(Ok(receipt))
+    }
+
+    /// Take `request` and wait for it to end: how it ended.
+    pub(crate) async fn run_to_end(&self, request: &InvokeRequest) -> InvocationUpdate {
+        let invocation = request.invocation;
+        if let Some(Err(error)) = Tickets::invoke(self, request).await {
+            return failed(invocation, &error.to_string());
+        }
+        loop {
+            let ended = self.0.ended.notified();
+            tokio::pin!(ended);
+            ended.as_mut().enable();
+            match self.observe(&invocation) {
+                Some(state) if state.update.is_terminal() => return state.update,
+                None => return failed(invocation, "the device action was not taken"),
+                Some(_) => ended.await,
+            }
+        }
     }
 
     /// Where the device action `id` is, once it was taken.
@@ -762,15 +791,25 @@ impl Tickets {
     /// Whether `request` asks one of the device actions whose answer is a secret
     /// ([`tilo_actions::SECRET_ANSWER_TAG`]), as their catalogue rows say.
     pub(crate) fn answers_a_secret(request: &InvokeRequest) -> bool {
-        Self::answers(request)
-            && catalogue(&CatalogueQuery::default())
-                .rows
-                .iter()
-                .filter_map(|row| row.action.as_ref())
-                .any(|action| {
-                    action.address.action == request.target.address.action
-                        && action.contract.answers_a_secret()
-                })
+        Self::listed(request).is_some_and(|action| action.contract.answers_a_secret())
+    }
+
+    /// Whether `request` asks one of the device actions only the person's root signs
+    /// ([`tilo_actions::ROOT_ONLY_TAG`]), as their catalogue rows say.
+    pub(crate) fn root_only(request: &InvokeRequest) -> bool {
+        Self::listed(request).is_some_and(|action| action.contract.root_only())
+    }
+
+    /// The device action `request` asks, as the catalogue lists it.
+    pub(crate) fn listed(request: &InvokeRequest) -> Option<ActionDescriptor> {
+        if !Self::answers(request) {
+            return None;
+        }
+        catalogue(&CatalogueQuery::default())
+            .rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find(|action| action.address.action == request.target.address.action)
     }
 
     /// Serve a ticket for a new computer, approved by the person's root on this computer: the

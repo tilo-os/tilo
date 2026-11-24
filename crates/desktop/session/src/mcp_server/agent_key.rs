@@ -19,9 +19,14 @@
 //! grant, working in a run its admission starts, like a client the person admitted on the sheet.
 //! A key the session does not hold, an expired or revoked grant, or one the person's root could not
 //! certify here is refused, saying which.
+//!
+//! On a device that keeps no root of the person's, certifying waits for them at one that does:
+//! the call waits there for their answer, and the session follows it until it settles, admitting
+//! no client of the key meanwhile.
 
 use std::io;
 use std::path::Path;
+use std::sync::mpsc;
 
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
@@ -51,7 +56,14 @@ pub(crate) struct AgentKey {
     /// The grant's public key, derived from the secret in the file.
     grant: [u8; 32],
     state: GrantState,
+    /// The person whose root certified it, once it did: whose revocations end it.
+    person: Option<[u8; 32]>,
+    /// The certifying under way, followed until it settles.
+    certifying: Option<mpsc::Receiver<Certified>>,
 }
+
+/// How certifying the grant settled: where it stands, and the person whose root certified it.
+type Certified = Result<(GrantState, Option<[u8; 32]>), String>;
 
 /// Why a client presenting a key is refused.
 #[derive(Debug, PartialEq, Eq)]
@@ -174,6 +186,8 @@ impl AgentKey {
         Ok(Self {
             grant: grant_key(&key),
             state: GrantState::Uncertified,
+            person: None,
+            certifying: None,
         })
     }
 
@@ -186,18 +200,53 @@ impl AgentKey {
 
     /// Have the device certify the grant under the person's root, unless it is certified for long
     /// enough already, revoked, or certifying failed: once per session start, when the session
-    /// first knows who its person is.
+    /// first knows who its person is. It is followed apart from the session, which goes on
+    /// meanwhile: on a device without the root it waits for the person's answer at one that has
+    /// it.
     pub(crate) fn certify(&mut self) {
-        if self.state != GrantState::Uncertified {
+        if self.state != GrantState::Uncertified || self.certifying.is_some() {
             return;
         }
-        self.state = match certify(self.grant) {
-            Ok(state) => state,
-            Err(why) => {
-                tracing::warn!(%why, "MCP server: the agent key's grant is not certified");
-                GrantState::Failed(why)
+        let (settled, certifying) = mpsc::channel();
+        let grant = self.grant;
+        let started = std::thread::Builder::new()
+            .name("agent-key-certify".into())
+            .spawn(move || {
+                let _ = settled.send(certify(grant));
+            });
+        match started {
+            Ok(_) => self.certifying = Some(certifying),
+            Err(error) => self.settle(Err(error.to_string())),
+        }
+    }
+
+    /// Take how certifying settled, once it has.
+    fn certified(&mut self) {
+        let Some(certifying) = &self.certifying else {
+            return;
+        };
+        let settled = match certifying.try_recv() {
+            Ok(settled) => settled,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("certifying it ended without an answer".to_owned())
             }
         };
+        self.certifying = None;
+        self.settle(settled);
+    }
+
+    fn settle(&mut self, settled: Certified) {
+        match settled {
+            Ok((state, person)) => {
+                self.state = state;
+                self.person = person;
+            }
+            Err(why) => {
+                tracing::warn!(%why, "MCP server: the agent key's grant is not certified");
+                self.state = GrantState::Failed(why);
+            }
+        }
         if let GrantState::Certified { expires_at_ns } = &self.state {
             tracing::info!(
                 agent = %self.agent(),
@@ -212,16 +261,25 @@ impl AgentKey {
         if grant_key(presented) != self.grant {
             return Err(KeyRefusal::NotThisSessions);
         }
+        self.certified();
         match &self.state {
+            GrantState::Uncertified if self.certifying.is_some() => Err(KeyRefusal::Uncertified(
+                "it is being certified; where this device does not keep your identity, it waits \
+                 for your answer on one that does"
+                    .into(),
+            )),
             GrantState::Uncertified => Err(KeyRefusal::Uncertified(
                 "the session has not certified it yet; try again shortly".into(),
             )),
             GrantState::Failed(why) => Err(KeyRefusal::Uncertified(why.clone())),
             GrantState::Revoked => Err(KeyRefusal::Revoked),
             GrantState::Certified { expires_at_ns } => {
-                // The person may have revoked it since, from their device list: the daemon that
-                // keeps their revocations says.
-                if matches!(certify(self.grant), Ok(GrantState::Revoked)) {
+                // The person may have revoked it since, from their device list: their
+                // revocations, as this device reads them, say.
+                if let Some(person) = &self.person
+                    && let Ok(keys) = tilo_workspace_service::agents::agent_keys::this_device()
+                    && matches!(keys.revocation(person, &self.grant), Ok(Some(_)))
+                {
                     self.state = GrantState::Revoked;
                     return Err(KeyRefusal::Revoked);
                 }
@@ -258,17 +316,18 @@ fn now_ns() -> u64 {
 }
 
 /// Have this computer's daemon certify `grant` as an agent's grant of its person, with the root
-/// it keeps (`devices#certifyAgent`), or find it certified for long enough already, or revoked.
-fn certify(grant: [u8; 32]) -> Result<GrantState, String> {
-    let answer = tilo_api::daemon::this_computer()?.act(
+/// it keeps (`devices#certifyAgent`), or find it certified for long enough already, or revoked:
+/// on a device that keeps none, once the person answered at one that does. Where it stands, and
+/// the person whose root certified it.
+fn certify(grant: [u8; 32]) -> Certified {
+    let answer = tilo_api::daemon::this_computer()?.act_followed(
         tilo_device_identity::login::CERTIFY_AGENT,
         serde_json::json!({ "grant": hex::encode(grant) }),
     )?;
     if answer.get("revoked").and_then(serde_json::Value::as_bool) == Some(true) {
-        return Ok(GrantState::Revoked);
+        return Ok((GrantState::Revoked, None));
     }
-    // Every device of the person's lists it among their keys, as an agent's.
-    if let Some(cert) = answer
+    let cert = answer
         .get("cert")
         .and_then(serde_json::Value::as_str)
         .and_then(|cert| hex::decode(cert).ok())
@@ -277,17 +336,22 @@ fn certify(grant: [u8; 32]) -> Result<GrantState, String> {
                 &cert,
             )
             .ok()
-        })
+        });
+    // Every device of the person's lists it among their keys, as an agent's.
+    if let Some(cert) = &cert
         && let Ok(keys) = tilo_workspace_service::agents::agent_keys::this_device()
     {
-        keys.keep_key(&cert);
+        keys.keep_key(cert);
     }
-    Ok(GrantState::Certified {
-        expires_at_ns: answer
-            .get("expires_at_ns")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or("this computer's daemon named no time the key's certificate ends")?,
-    })
+    Ok((
+        GrantState::Certified {
+            expires_at_ns: answer
+                .get("expires_at_ns")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or("this computer's daemon named no time the key's certificate ends")?,
+        },
+        cert.map(|cert| cert.user_public_key),
+    ))
 }
 
 #[cfg(test)]

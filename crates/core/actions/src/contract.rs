@@ -766,6 +766,12 @@ pub const SCREEN_PLACE_TAG: &str = "tilo.screen.place";
 /// ([`ActionContract::answers_a_secret`]).
 pub const SECRET_ANSWER_TAG: &str = "tilo.answer.secret";
 
+/// The contract tag of an action only the person's root signs: taking a key back, certifying an
+/// agent's. A device that keeps no root of its person's is capped for it
+/// (`tilo_action_policy::Cap`), and the call is answered at one of their devices that keeps it
+/// ([`ActionContract::root_only`]).
+pub const ROOT_ONLY_TAG: &str = "tilo.root-only";
+
 /// The contract tag of an effect whose whole scope is the invoking
 /// person's own device: it touches nothing a workspace shares and no one else
 /// (their clipboard, their own appearance, a network test from their own
@@ -1042,6 +1048,11 @@ impl ActionContract {
     /// what it declares.
     pub fn only_shows(&self) -> bool {
         self.tags.iter().any(|tag| tag == SCREEN_TAG) && !self.shows_a_place()
+    }
+
+    /// Whether only the person's root signs it ([`ROOT_ONLY_TAG`]).
+    pub fn root_only(&self) -> bool {
+        self.tags.iter().any(|tag| tag == ROOT_ONLY_TAG)
     }
 
     /// Whether its answer is a secret, handed over once and kept nowhere ([`SECRET_ANSWER_TAG`]).

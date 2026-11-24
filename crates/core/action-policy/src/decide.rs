@@ -15,6 +15,9 @@ pub enum Basis<'g> {
     Grant(&'g Grant),
     /// The cap the code puts on the party, below what its grants allow.
     Capped(Cap),
+    /// The cap of a device that keeps no root of its person's, for an action only that root
+    /// signs ([`Cap::root_only`]).
+    RootOnly(Cap),
     /// The party owns the workspace the node is in.
     Owner,
     /// The node is the party's own: their view of the layout, or a private record of theirs
@@ -32,6 +35,13 @@ pub struct Decision<'g> {
 }
 
 impl<'g> Decision<'g> {
+    /// Whether the call is answered at one of the person's devices that keeps their root: asked
+    /// there once, and run there under that root ([`Cap::root_only`]).
+    #[must_use]
+    pub const fn answered_at_root(&self) -> bool {
+        matches!(self.basis, Basis::RootOnly(_)) && matches!(self.answer, Answer::Ask)
+    }
+
     #[must_use]
     pub const fn grant(&self) -> Option<&'g Grant> {
         match self.basis {
@@ -159,14 +169,16 @@ pub struct Party<'g> {
 /// What a device or a piece of software may do at most, whatever its grants
 /// say: the code's rule about the thing acting, not a grant anyone gave.
 ///
-/// A capped call is not a refusal. The capped device hands the call on to one
-/// of the person's root-holding devices through the one dispatch, the same way
-/// `devices#update` hands an action to another of the person's devices, with no
-/// special relay; the call is an invocation record. The root-holding device
-/// asks the person once through the one ask and makes the change under its own
-/// key. The capped device follows the record and shows the outcome. If no
-/// root-holding device is reachable, the record stays asked and is answered
-/// when one comes online.
+/// A capped call is not a refusal. What only the person's root signs, an action
+/// declares (`tilo_actions::ROOT_ONLY_TAG`), and the cap of a device that keeps
+/// no root answers it [`Answer::Ask`], answered at a root-holding device
+/// ([`Decision::answered_at_root`]). The capped device keeps the call as its
+/// waiting invocation record in the workspace, with no special relay. A
+/// root-holding device takes the record up when it comes online, asks the
+/// person once through the one ask whatever the action's own confirmation
+/// says, makes the change under its own key and writes the outcome into the
+/// record. The capped device follows the record and shows the outcome. While no
+/// root-holding device is online, the record stays asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cap {
     /// What it may do to the workspace's content.
@@ -175,6 +187,9 @@ pub struct Cap {
     pub outside: Answer,
     /// What it may do to the workspace's own resource (its governance).
     pub governance: Answer,
+    /// What it may do that only the person's root signs: [`Answer::Ask`] is answered at a
+    /// device that keeps that root ([`Decision::answered_at_root`]).
+    pub root_only: Answer,
     /// Why, in words for the person it holds back.
     pub why: &'static str,
 }
@@ -186,10 +201,31 @@ impl Cap {
         content: Answer::Allow,
         outside: Answer::Ask,
         governance: Answer::Deny,
+        root_only: Answer::Deny,
         why: "this computer is not one of the person's own Tilo devices, so from it they \
               change content, are asked before reaching outside the workspace, and leave its \
               members and settings to a device of their own",
     };
+
+    /// One of the person's own devices that keeps no root of theirs: it does all its grants
+    /// allow, and what only the root signs is answered at one of their devices that keeps it.
+    pub const ROOTLESS_DEVICE: Self = Self {
+        content: Answer::Allow,
+        outside: Answer::Allow,
+        governance: Answer::Allow,
+        root_only: Answer::Ask,
+        why: "only a device of the person's that keeps their identity signs this, so it is \
+              asked and carried out there",
+    };
+
+    /// What this cap answers an action only the person's root signs (`tilo_actions::ROOT_ONLY_TAG`).
+    #[must_use]
+    pub const fn root_only(self) -> Decision<'static> {
+        Decision {
+            answer: self.root_only,
+            basis: Basis::RootOnly(self),
+        }
+    }
 
     /// What this cap answers for `kind` at `node` in the workspace it governs.
     fn answer(self, node: &TreePath, kind: ActionKind) -> Answer {
@@ -730,7 +766,7 @@ impl<'g> Verdict<'g> {
         let reason = match self.parts.get(index).map(|part| part.basis) {
             Some(Basis::Owner) => "the person owns the workspace".to_owned(),
             Some(Basis::OwnRecord) => format!("{} is theirs alone", self.node),
-            Some(Basis::Capped(cap)) => cap.why.to_owned(),
+            Some(Basis::Capped(cap) | Basis::RootOnly(cap)) => cap.why.to_owned(),
             Some(Basis::Grant(grant)) => format!(
                 "{} give {} on {} the answer \"{}\" (grant {})",
                 who(index),

@@ -1200,7 +1200,7 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
         };
         let invocation = InvocationId::new();
         let receipt = super::services::device_action(
-            &invocations,
+            (&invocations, None),
             &tickets,
             &person,
             InvokeRequest {
@@ -1262,4 +1262,202 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
         );
     }
     drop(env);
+}
+
+/// A device of the person's that keeps no root of theirs is asked to revoke a device: its cap
+/// keeps the call as its asked record in the workspace, where the person cannot answer it on that
+/// device. A device that keeps the root comes online, takes the record up, the person answers it
+/// there once, and it runs under that root; the device that asked shows how it ended, and the
+/// record is gone from the workspace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_keeps_it() {
+    use tilo_actions::remote::ActionProvider as _;
+    use tilo_actions::remote::asked::{AskedKeeping, AskedStore, Offer, Resolve};
+
+    let workspace = tilo_desktop_model::WorkspaceId::new();
+    let (issuer, state, key, cert, _paths) =
+        super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;
+    let copies = issuer.copies();
+    let tickets = |root: RootSource, at: &str| {
+        Tickets::new(
+            (key.clone(), cert.clone()),
+            issuer.endpoint(),
+            None,
+            root,
+            None,
+            Some(Arc::clone(&issuer)),
+            tilo_device_identity::login::Place::at(
+                state.path().join(at),
+                tilo_device_identity::IdentityPaths::under(state.path().join(format!("{at}-keys"))),
+            ),
+            copies.action_service(),
+        )
+    };
+    // Each device's one dispatch, keeping what waits in the person's workspace.
+    let device = |tickets: &Tickets, key: [u8; 32]| {
+        let keeping: Arc<dyn AskedKeeping> = copies.asked_keeping();
+        let store = AskedStore::opened(None, Some(keeping), Vec::new()).unwrap();
+        store.asks_on(&key);
+        let invocations: Arc<tilo_actions::remote::invocation_record::Invocations> = Arc::default();
+        let asked = super::asked::DeviceAsked::new(
+            Arc::clone(&store),
+            Arc::clone(&invocations),
+            Box::new(|_| Err("nothing waits here to be sent again".to_owned())),
+        );
+        if tickets.holds_root() {
+            asked.serve_at_root(tickets.clone());
+        }
+        (store, invocations, asked)
+    };
+    let rootless_key = [8; 32];
+    let rootless = tickets(no_root(), "rootless");
+    assert!(!rootless.holds_root());
+    let (rootless_store, invocations, rootless_asked) = device(&rootless, rootless_key);
+    let follows = Arc::downgrade(&rootless_asked);
+    copies.follow_asked_at_root(move |asks| {
+        if let Some(asked) = follows.upgrade() {
+            asked.kept_changed(asks);
+        }
+    });
+
+    // The person, on the device without their root, revokes a key.
+    let person = tilo_actions::remote::Caller::authenticated(cert.user_public_key, rootless_key);
+    let invocation = InvocationId::new();
+    let revoked = hex::encode([9; 32]);
+    let receipt = super::services::device_action(
+        (&invocations, Some(&rootless_asked)),
+        &rootless,
+        &person,
+        InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target: RemoteActionTarget {
+                provider: PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    RESOURCE,
+                    tilo_device_identity::login::REVOKE,
+                ),
+            },
+            argument: InvokeArgument::Json(json!({"device": revoked}).as_object().unwrap().clone()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        },
+        &workspace.to_string(),
+    )
+    .await
+    .expect("the call is taken");
+    assert!(
+        !matches!(
+            receipt.status,
+            tilo_actions::remote::ReceiptStatus::Completed { .. }
+        ),
+        "nothing runs on a device without the root: {:?}",
+        receipt.status
+    );
+    let at = rootless_store
+        .record(&invocation.0.to_string())
+        .expect("the call is kept as its asked record");
+    let kept = copies.asked_kept().await;
+    let ask = kept
+        .iter()
+        .find(|ask| ask.at == at)
+        .expect("the record is in the person's workspace");
+    assert!(ask.facts.at_root && ask.outcome.is_none());
+    let refused = rootless_store
+        .resolve(
+            &at,
+            &person,
+            &Resolve {
+                resolution: Offer::Approve,
+                ..Resolve::default()
+            },
+        )
+        .await
+        .expect("the answer is decided at once");
+    assert!(
+        refused.is_err(),
+        "a device without the root does not run what only it signs"
+    );
+    assert!(
+        rootless_asked
+            .observe(&person, &invocation)
+            .is_some_and(|state| !state.update.is_terminal()),
+        "the call stays asked"
+    );
+
+    // A device that keeps the root comes online and takes the record up.
+    let holder_key = cert.device_public_key;
+    let holder = tickets(root_in(state.path().to_path_buf()), "holder");
+    assert!(holder.holds_root());
+    let (holder_store, _, holder_asked) = device(&holder, holder_key);
+    let (taken, took) = tokio::sync::oneshot::channel();
+    let taken = std::sync::Mutex::new(Some(taken));
+    let follows = Arc::downgrade(&holder_asked);
+    copies.follow_asked_at_root(move |asks| {
+        let here = asks.iter().any(|ask| ask.request.invocation == invocation);
+        if let Some(asked) = follows.upgrade() {
+            asked.kept_changed(asks);
+        }
+        if here && let Some(taken) = taken.lock().unwrap().take() {
+            let _ = taken.send(());
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(30), took)
+        .await
+        .expect("the device that keeps the root reads the record")
+        .unwrap();
+    let at = holder_store
+        .record(&invocation.0.to_string())
+        .expect("the record waits for the person there");
+
+    // The person answers once, there.
+    let answering = tilo_actions::remote::Caller::authenticated(cert.user_public_key, holder_key);
+    holder_store
+        .resolve(
+            &at,
+            &answering,
+            &Resolve {
+                resolution: Offer::Approve,
+                ..Resolve::default()
+            },
+        )
+        .await
+        .expect("the answer is decided at once")
+        .expect("the person's answer is taken at a device that keeps the root");
+
+    // The device that asked shows how the call ended where it ran.
+    let ends = Instant::now() + Duration::from_secs(30);
+    let ended = loop {
+        let state = rootless_asked
+            .observe(&person, &invocation)
+            .expect("the device that asked follows its call");
+        if state.update.is_terminal() {
+            break state.update;
+        }
+        let change = rootless_asked
+            .next_change(&person, &invocation)
+            .expect("the call is followed while it waits");
+        assert!(
+            tokio::time::timeout_at(tokio::time::Instant::from_std(ends), change)
+                .await
+                .is_ok(),
+            "the call ends on the device that asked"
+        );
+    };
+    let InvocationUpdate::Failed { error, .. } = &ended else {
+        panic!("the revoke of a key that is no device ends failed: {ended:?}");
+    };
+    assert!(
+        error.message.contains("no device of yours"),
+        "it ran under the root, which found no such device: {}",
+        error.message
+    );
+    assert!(
+        rootless_store.record(&invocation.0.to_string()).is_none(),
+        "the device that asked forgets the record once it shows how it ended"
+    );
 }

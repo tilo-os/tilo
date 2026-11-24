@@ -14,6 +14,12 @@
 //! The record keeps the whole call (target, arguments, id and caller) and the run it was made in
 //! ([`Run`]), so a call that waits across the device's restart is sent again from it, in a run
 //! admitted afresh for the same agent, under the key this device keeps for it.
+//!
+//! A call only the person's root signs, made on a device that keeps none, is capped
+//! (`tilo_action_policy::Cap::ROOTLESS_DEVICE`): it waits in its record for a device of theirs that
+//! keeps the root ([`asked::AT_ROOT`], [`DeviceAsked::hand_on`]). That device takes the record up
+//! ([`DeviceAsked::kept_changed`]), asks the person once, runs it under its root ([`AtRoot`]) and
+//! writes how it went into the record, which the device that asked shows and then forgets.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
@@ -99,6 +105,10 @@ pub(crate) struct DeviceAsked {
     me: Weak<Self>,
     store: Arc<AskedStore>,
     records: Arc<dyn AskedRecords>,
+    /// Where a call only the person's root signs waits for a device that keeps it.
+    at_root: Arc<dyn AskedRecords>,
+    /// What runs those calls here, on a device that keeps the person's root.
+    serving_at_root: std::sync::OnceLock<Arc<AtRoot>>,
     invocations: Arc<Invocations>,
     waiting: Mutex<HashMap<InvocationId, Waiting>>,
     /// How each call this dispatch keeps stands while nothing of it runs: waiting, declined,
@@ -158,8 +168,13 @@ impl DeviceAsked {
     ) -> Arc<Self> {
         Arc::new_cyclic(|me: &Weak<Self>| {
             let dispatch: Weak<dyn AskedDispatch> = me.clone();
+            // Nothing here runs a call kept for a device that keeps the root, until this device
+            // serves them ([`DeviceAsked::serve_at_root`]).
+            let none: Weak<dyn AskedDispatch> = Weak::<AtRoot>::new();
             Self {
                 me: me.clone(),
+                at_root: store.for_dispatch(asked::AT_ROOT, none),
+                serving_at_root: std::sync::OnceLock::new(),
                 records: store.for_dispatch(DISPATCH, dispatch),
                 store,
                 invocations,
@@ -180,6 +195,102 @@ impl DeviceAsked {
             if runtime_collab::wire::shell::serves(&target.provider) {
                 self.store.withdraw(&at, PROGRAM_GONE);
             }
+        }
+    }
+
+    /// Keep `request`, which `caller` made in `run` and only the person's root signs, as its
+    /// asked record in the workspace for a device of theirs that keeps that root, showing
+    /// `facts`: it waits under way here until that device ran it, as the record then says.
+    pub(crate) fn hand_on(
+        &self,
+        run: &Run,
+        caller: &Caller,
+        request: &InvokeRequest,
+        mut facts: AskedFacts,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        facts.at_root = true;
+        if let Some(by) = run.asker() {
+            facts.by = by;
+        }
+        let invocation = request.invocation;
+        // The same call followed again under its id is the one that waits, or how it ended.
+        if let Some(receipt) = self
+            .standing
+            .lock_recover()
+            .by_id
+            .get(&invocation)
+            .map(|(_, state)| state.receipt())
+        {
+            return Ok(receipt);
+        }
+        let workspace = run.workspace();
+        let record = match self.at_root.write_asked(workspace, caller, request, &facts) {
+            Ok(record) => record,
+            Err(why) => {
+                return Err(ActionCallError::Refused {
+                    reason: format!(
+                        "it waits for a device of yours that keeps your identity, and could not \
+                         be kept for it: {why}"
+                    ),
+                });
+            }
+        };
+        let state = InvocationState::new(invocation, record.waiting(invocation));
+        let receipt = state.receipt();
+        Standing::stand(&self.standing, caller, state);
+        self.invocations
+            .record(caller, caller, request, Some(workspace), self.route(caller));
+        self.invocations.note_waiting(&invocation);
+        Ok(receipt)
+    }
+
+    /// Run here what waits for a device that keeps the person's root, with `tickets`: this
+    /// device keeps it.
+    pub(crate) fn serve_at_root(&self, tickets: super::ticket::Tickets) {
+        let at_root = Arc::new(AtRoot {
+            tickets,
+            store: Arc::clone(&self.store),
+            runtime: tokio::runtime::Handle::current(),
+        });
+        let dispatch: Weak<dyn AskedDispatch> = Arc::downgrade(&at_root) as Weak<dyn AskedDispatch>;
+        let _ = self.store.for_dispatch(asked::AT_ROOT, dispatch);
+        let _ = self.serving_at_root.set(at_root);
+    }
+
+    /// `asks`, the calls the workspaces here keep for a device that keeps the person's root, as
+    /// they stand now: a device that keeps it takes up those that wait, for its person to answer
+    /// once; the device that asked shows how each it handed on ended, and forgets its record.
+    pub(crate) fn kept_changed(&self, asks: Vec<KeptAsk>) {
+        if self.serving_at_root.get().is_some() {
+            self.store.take_in(asks);
+            return;
+        }
+        let here = self.store.here().map(str::to_owned);
+        for ask in asks {
+            let Some(outcome) = ask.outcome.clone() else {
+                continue;
+            };
+            let caller = ask.caller.clone().restored();
+            if caller.device_public_key().map(hex::encode) != here {
+                continue;
+            }
+            let invocation = ask.request.invocation;
+            // Followed from here after the device started again too: its record reads it here.
+            if self.invocations.get(&caller, &invocation).is_none() {
+                self.invocations.record(
+                    &caller,
+                    &caller,
+                    &ask.request,
+                    Some(&ask.at.workspace),
+                    self.route(&caller),
+                );
+            }
+            Standing::stand(
+                &self.standing,
+                &caller,
+                InvocationState::new(invocation, outcome),
+            );
+            self.store.settled(&ask.at);
         }
     }
 
@@ -464,6 +575,73 @@ impl AskedDispatch for DeviceAsked {
                 cancelled(invocation, message),
             );
         }
+    }
+}
+
+/// What runs here, on a device that keeps the person's root, a call another device of theirs kept
+/// for one ([`asked::AT_ROOT`]): the person answered it here, once, whatever the action's own
+/// confirmation says; it runs under the root kept here, and how it ended is written into its
+/// record for the device that asked.
+pub(crate) struct AtRoot {
+    tickets: super::ticket::Tickets,
+    store: Arc<AskedStore>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl AtRoot {
+    /// Write `outcome` into the record of `invocation`, for the device that asked.
+    fn settle(store: &AskedStore, invocation: InvocationId, outcome: InvocationUpdate) {
+        if let Some(at) = store.record(&invocation.0.to_string()) {
+            store.settle(&at, outcome);
+        }
+    }
+}
+
+impl AskedDispatch for AtRoot {
+    fn context(&self, _: InvocationId) -> Value {
+        Value::Null
+    }
+
+    fn readmit(
+        &self,
+        _: &Caller,
+        request: InvokeRequest,
+        _: &Value,
+    ) -> Result<(), ActionCallError> {
+        if !super::ticket::Tickets::root_only(&request) {
+            return Err(ActionCallError::Refused {
+                reason: "only what the person's root signs is answered at it".into(),
+            });
+        }
+        let (tickets, store) = (self.tickets.clone(), Arc::clone(&self.store));
+        self.runtime.spawn(async move {
+            let outcome = tickets.run_to_end(&request).await;
+            Self::settle(&store, request.invocation, outcome);
+        });
+        Ok(())
+    }
+
+    fn declined(&self, _: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
+        Self::settle(
+            &self.store,
+            invocation,
+            InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(asked::DECLINED.to_owned()),
+            },
+        );
+        Ok(())
+    }
+
+    fn withdrawn(&self, _: &Caller, invocation: InvocationId, message: &str) {
+        Self::settle(
+            &self.store,
+            invocation,
+            InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(message.to_owned()),
+            },
+        );
     }
 }
 

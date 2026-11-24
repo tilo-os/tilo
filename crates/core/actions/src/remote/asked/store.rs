@@ -81,6 +81,7 @@ impl Record {
             asked_at_ms: self.asked_at_ms,
             dispatch: self.dispatch.clone(),
             context: self.context.clone(),
+            outcome: None,
         }
     }
 }
@@ -145,6 +146,12 @@ impl AskedStore {
     /// ([`AskedFacts::answered_where_asked`]) names it, and is answered only from it.
     pub fn asks_on(&self, device: &[u8; 32]) {
         let _ = self.here.set(hex::encode(device));
+    }
+
+    /// The device this store asks on, its key in hex, once it is told ([`Self::asks_on`]).
+    #[must_use]
+    pub fn here(&self) -> Option<&str> {
+        self.here.get().map(String::as_str)
     }
 
     /// The one store a host keeps the calls that wait in: grants people give with an approve
@@ -427,6 +434,11 @@ impl AskedStore {
         if record.status != Status::Asked {
             return Err(refused(ANSWERED));
         }
+        // A call only the person's root signs is answered where a device keeps it: elsewhere no
+        // dispatch runs it, and the record waits on for that device.
+        if record.facts.at_root && self.dispatch(&record.dispatch).upgrade().is_none() {
+            return Err(refused(super::ANSWERED_AT_ROOT));
+        }
         // What is typed in secret, or picked from the device's files, reaches the asker only on
         // the device that asked: answered by the person there (a caller of no other device's).
         if let Some(device) = &record.at.device
@@ -528,6 +540,60 @@ impl AskedStore {
             .filter(|record| record.status == Status::Asked && record.dispatch == name)
             .map(|record| (record.at.clone(), record.request.target.clone()))
             .collect()
+    }
+
+    /// Take in each of `asks`, a call another device kept in the workspace to be answered at a
+    /// device that keeps the person's root ([`super::AT_ROOT`]), that this store does not keep
+    /// yet: it waits here for the person's answer, as one written here does.
+    pub fn take_in(&self, asks: Vec<KeptAsk>) {
+        let mut kept = self.kept.lock_recover();
+        let before = kept.records.len();
+        for ask in asks {
+            if !ask.facts.at_root || ask.outcome.is_some() || kept.find(&ask.at).is_some() {
+                continue;
+            }
+            kept.records.push(Record {
+                invocation: ask.request.invocation,
+                at: ask.at,
+                person: ask.person,
+                caller: ask.caller.restored(),
+                request: ask.request,
+                facts: ask.facts,
+                asked_at_ms: ask.asked_at_ms,
+                status: Status::Asked,
+                relayed: false,
+                dispatch: ask.dispatch,
+                context: ask.context,
+            });
+        }
+        if kept.records.len() != before {
+            kept.moved();
+        }
+    }
+
+    /// Write how the call kept under `at` ended where it ran, `outcome`, into its record in the
+    /// workspace: what the device that asked it follows ([`KeptAsk::outcome`]).
+    pub fn settle(&self, at: &RecordRef, outcome: crate::InvocationUpdate) {
+        let ask = {
+            let kept = self.kept.lock_recover();
+            kept.records
+                .iter()
+                .find(|record| record.at == *at)
+                .map(Record::kept)
+        };
+        if let Some(mut ask) = ask {
+            ask.outcome = Some(outcome);
+            self.keep(&ask);
+        }
+    }
+
+    /// Forget the record `at`, whose call ended where it ran: here and in the workspace.
+    pub fn settled(&self, at: &RecordRef) {
+        let mut kept = self.kept.lock_recover();
+        kept.records.retain(|record| record.at != *at);
+        kept.moved();
+        drop(kept);
+        self.forget(at);
     }
 
     /// Put the record `at` back to asked where its answer could not go on (its grant was not

@@ -766,7 +766,8 @@ impl KeptCaller {
     }
 
     /// The caller this was kept from, with no execution of its own.
-    pub(crate) fn restored(self) -> Caller {
+    #[must_use]
+    pub fn restored(self) -> Caller {
         Caller {
             acting: self.acting,
             user_public_key: self.user_public_key,

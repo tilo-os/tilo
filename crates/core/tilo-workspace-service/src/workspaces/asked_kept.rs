@@ -3,6 +3,11 @@
 //! admitting it again needs. The record syncs and is sealed as every record of the workspace
 //! is, so a call that waits stays suspended in it across the host's restarts, and the host
 //! reads the calls back from it when it starts.
+//!
+//! A call only the person's root signs is kept there by the device that keeps no root, for one
+//! that does ([`tilo_actions::remote::asked::AT_ROOT`]): every device follows the record
+//! ([`Workspaces::follow_asked_at_root`]), so a root-holding device takes the call up when it
+//! comes online, and the device that asked reads how it went once it ran.
 
 use std::sync::Arc;
 
@@ -134,6 +139,62 @@ impl Workspaces {
                 Err(why) => {
                     tracing::error!(%why, %workspace, "a workspace's asked calls could not be read: nobody can answer them");
                 }
+            }
+        }
+        kept
+    }
+
+    /// Hand `seen` the calls kept in the records of every workspace kept here to be answered at
+    /// a device that keeps the person's root ([`tilo_actions::remote::asked::AT_ROOT`]): now,
+    /// again on each write to one of those records, and again whenever presence moves (a device
+    /// of the person's came online), from a task of the runtime this is called on.
+    pub fn follow_asked_at_root(&self, seen: impl Fn(Vec<KeptAsk>) + Send + 'static) {
+        let workspaces = self.downgrade();
+        let mut writes = self.document_writes();
+        tokio::spawn(async move {
+            loop {
+                let (wake, moved) = tilo_actions::remote::ResourceWake::new();
+                super::on_presence_change(&wake);
+                let Some(held) = workspaces.upgrade() else {
+                    return;
+                };
+                seen(held.asked_at_root().await);
+                drop(held);
+                let written = async {
+                    loop {
+                        match writes.recv().await {
+                            Ok(write) if write.app == PROVIDER && write.record == RECORD => {
+                                return true;
+                            }
+                            Ok(_) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                return true;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+                        }
+                    }
+                };
+                tokio::select! {
+                    open = written => if !open {
+                        return;
+                    },
+                    _ = moved => {}
+                }
+            }
+        });
+    }
+
+    /// The calls kept to be answered at a device that keeps the person's root, in the records
+    /// of every workspace kept here.
+    async fn asked_at_root(&self) -> Vec<KeptAsk> {
+        let mut kept = Vec::new();
+        for workspace in self.ids().await {
+            if let Ok(Some(bytes)) = self
+                .resource_document(&workspace.to_string(), PROVIDER, RECORD)
+                .await
+                && let Ok(calls) = read(&bytes)
+            {
+                kept.extend(calls.into_iter().filter(|call| call.facts.at_root));
             }
         }
         kept
