@@ -673,6 +673,21 @@
           }
         },
         {
+          "name": "live",
+          "doc": "What it says is news: a screen reader announces it when it appears or changes, without the person moving focus — `polite` waits for a pause, `assertive` speaks at once.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Politeness",
+                "cases": [
+                  "polite",
+                  "assertive"
+                ]
+              }
+            }
+          }
+        },
+        {
           "name": "key",
           "doc": "The plain key that presses it while its window has the keyboard (and, on a row's action, while that row is selected), as the app declared it (`key: \"e\"`): the host answers it beside the pressed control's own event. A control of the view's own press shows it beside the label as the keyboard in use spells it; a button for an action keeps its face, its key shown where the action is listed.",
           "type": {
@@ -1603,6 +1618,21 @@
           "doc": "Why it cannot be pressed now, where the label does not say (an action whose requirement does not hold): spoken as its description beside the name, and shown on hover.",
           "type": {
             "option": "text"
+          }
+        },
+        {
+          "name": "live",
+          "doc": "What it says is news: a screen reader announces it when it appears or changes, without the person moving focus — `polite` waits for a pause, `assertive` speaks at once.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Politeness",
+                "cases": [
+                  "polite",
+                  "assertive"
+                ]
+              }
+            }
           }
         }
       ],

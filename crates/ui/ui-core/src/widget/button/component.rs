@@ -43,6 +43,9 @@ pub struct ButtonProps {
     pub enabled: bool,
     /// Why it cannot be pressed now, where the label does not say: the requirement an action does not meet.
     pub description: Option<String>,
+    /// What it says is news: a screen reader announces it when it appears or changes, without the
+    /// person moving focus — `polite` waits for a pause, `assertive` speaks at once.
+    pub live: Option<crate::a11y::Politeness>,
     /// The plain key that presses it while its window has the keyboard (and, on a row's action, while that
     /// row is selected), as the app declared it (`key: "e"`): the host answers it beside the pressed
     /// control's own event. A control of the view's own press shows it beside the label as the keyboard
@@ -84,6 +87,7 @@ impl Default for ButtonProps {
             size: ControlSize::default(),
             enabled: true,
             description: None,
+            live: None,
             key: None,
             keys: Vec::new(),
             count: None,
@@ -111,6 +115,7 @@ impl Described for Button {
             size,
             enabled,
             description,
+            live,
             key: shortcut_key,
             keys: _,
             count,
@@ -132,6 +137,9 @@ impl Described for Button {
         };
         if let Some(name) = accessible_name {
             button = button.with_accessible_name(&name);
+        }
+        if let Some(politeness) = live {
+            button = button.with_live(politeness);
         }
         if let Some(role) = role {
             button = button.role(role);
@@ -216,6 +224,7 @@ impl Described for Button {
             && props.in_menu == self.is_menu_only()
             && props.group == self.menu_group
             && props.description == self.description
+            && props.live == self.live
             && props.press.is_none() == (self.action.is_none() && self.on_click.is_none());
         if !same_face || matches!(props.press, Event::Action(_)) {
             return false;
@@ -224,6 +233,7 @@ impl Described for Button {
             self.set_toggled(on);
         }
         self.set_enabled(props.enabled && !props.press.is_none());
+        self.live = props.live;
         true
     }
 }

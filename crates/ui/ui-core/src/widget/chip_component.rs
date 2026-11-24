@@ -30,6 +30,9 @@ pub struct ChipProps {
     /// Why it cannot be pressed now, where the label does not say (an action whose requirement
     /// does not hold): spoken as its description beside the name, and shown on hover.
     pub description: Option<String>,
+    /// What it says is news: a screen reader announces it when it appears or changes, without the
+    /// person moving focus — `polite` waits for a pause, `assertive` speaks at once.
+    pub live: Option<crate::a11y::Politeness>,
     /// It was pressed: open or apply what it names.
     #[component(event(press))]
     pub press: Event,
@@ -49,6 +52,7 @@ impl Default for ChipProps {
             selected: None,
             enabled: true,
             description: None,
+            live: None,
             press: Event::None,
             remove: Event::None,
         }
@@ -67,10 +71,14 @@ impl Described for Chip {
             selected,
             enabled,
             description,
+            live,
             press,
             remove,
         } = props;
         let mut chip = Self::new(label).with_id(key.to_owned());
+        if let Some(politeness) = live {
+            chip = chip.with_live(politeness);
+        }
         if let Some(who) = faces.into_iter().next() {
             chip = chip.with_face_of(who);
         } else if let Some(icon) = icon {
@@ -104,9 +112,11 @@ impl Described for Chip {
             selected,
             enabled,
             description,
+            live,
             press,
             remove,
         } = props;
+        self.live = live;
         if label != self.label {
             self.label.clone_from(&label);
             self.footprint = None;

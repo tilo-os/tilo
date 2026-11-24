@@ -681,6 +681,9 @@ pub struct Chip {
     /// Why it cannot be pressed now, where the label does not say.
     description: Option<String>,
     accessible_name: Option<String>,
+    /// Wait for a pause, or speak at once, when what it says changes without focus moving: what a
+    /// chip that appears to say something new is announced by.
+    live: Option<crate::a11y::Politeness>,
     metrics: PillMetrics,
     /// `metrics.min_pointer_target`: the hit rect grows to this even though
     /// the painted pill stays at the 28 px selector height.
@@ -724,6 +727,7 @@ impl Chip {
             tooltip: None,
             description: None,
             accessible_name: None,
+            live: None,
             label,
             face: None,
             face_hue: None,
@@ -768,6 +772,14 @@ impl Chip {
             crate::presence::identity_rgb(who.hue),
         ));
         self.face = Some(who);
+        self
+    }
+
+    /// Announce what it says without moving focus when it changes: a polite wait for a pause, or
+    /// assertive speech, for a chip whose words are the news ([`AccessNode::live`]).
+    #[must_use]
+    pub fn with_live(mut self, politeness: crate::a11y::Politeness) -> Self {
+        self.live = Some(politeness);
         self
     }
 
@@ -1437,7 +1449,7 @@ impl Chip {
             .accessible_name
             .clone()
             .unwrap_or_else(|| self.label.clone());
-        if self.selectable {
+        let node = if self.selectable {
             let node = AccessNode::new(Role::ToggleButton)
                 .with_name(name)
                 .with_bounds(self.rect)
@@ -1448,10 +1460,10 @@ impl Chip {
                         .selected(self.selected)
                         .checked(self.selected),
                 );
-            Some(match &self.description {
+            match &self.description {
                 Some(why) => node.with_description(why.clone()),
                 None => node,
-            })
+            }
         } else if self.activation.is_bound() {
             let mut state = AccessState::new()
                 .focusable(true)
@@ -1465,21 +1477,24 @@ impl Chip {
                 .with_bounds(self.rect)
                 .with_state(state);
             // Why it cannot be pressed now, if it says: read beside its name, never instead.
-            Some(match &self.description {
+            match &self.description {
                 Some(why) => node.with_description(why.clone()),
                 None => node,
-            })
+            }
         } else {
             // A chip that names a value rather than running anything reads as that value, as a
             // `Text` does: its words are what a reader, a screen reader and a test find it by,
             // and a reader lands on it in the order it meets the values a resource carries.
-            Some(
-                AccessNode::new(Role::StaticText)
-                    .with_name(self.label.clone())
-                    .with_value(self.label.clone())
-                    .with_state(AccessState::new().focusable(true)),
-            )
-        }
+            AccessNode::new(Role::StaticText)
+                .with_name(self.label.clone())
+                .with_value(self.label.clone())
+                .with_bounds(self.rect)
+                .with_state(AccessState::new().focusable(true))
+        };
+        Some(match self.live {
+            Some(politeness) => node.with_live(politeness),
+            None => node,
+        })
     }
 }
 
@@ -1837,6 +1852,31 @@ mod tests {
                     node.state.focusable,
                     "a reader lands on a value chip and hears it"
                 );
+                assert_eq!(
+                    node.live, None,
+                    "a chip that says nothing new is no live region"
+                );
+            }
+
+            /// A chip whose words are the news is announced without focus moving: the politeness
+            /// its node carries is what a screen reader reads it as, on a value chip and a
+            /// pressable one alike.
+            fn accessibility_a_chip_whose_words_are_news_is_a_live_region() {
+                let value = Chip::new("Stopped following").with_live(crate::a11y::Politeness::Polite);
+                let node = Widget::accessibility(&value).unwrap();
+                assert_eq!(node.live, Some(crate::a11y::Politeness::Polite));
+                assert_eq!(node.name.as_deref(), Some("Stopped following"));
+                assert!(
+                    node.bounds.is_some(),
+                    "a live region a test and a reader find says where it stands"
+                );
+
+                let urgent = Chip::new("The connection dropped")
+                    .with_id("view-chip:offline")
+                    .on_click(|| {})
+                    .with_live(crate::a11y::Politeness::Assertive);
+                let node = Widget::accessibility(&urgent).unwrap();
+                assert_eq!(node.live, Some(crate::a11y::Politeness::Assertive));
             }
 
             /// A chip showing whether it is chosen and naming what a press does (a choice among
