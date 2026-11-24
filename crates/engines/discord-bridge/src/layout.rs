@@ -298,7 +298,7 @@ impl Guild {
     /// A mapped channel Discord has not shown yet: created, its echo not in.
     #[must_use]
     pub fn creating(&self, discord: &str) -> bool {
-        observed(self, discord).is_none() && !self.vanished.contains(&discord.to_owned())
+        observed(self, discord).is_none() && !self.vanished.contains(discord)
     }
 
     /// A Discord channel some mapping points at.

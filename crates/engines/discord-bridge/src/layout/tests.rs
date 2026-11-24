@@ -1,4 +1,4 @@
-use discord_wire::op::{DiscordResult, Queued};
+use discord_wire::op::DiscordResult;
 
 use super::*;
 use crate::guild::{Mapping, Origin, map_key};
@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
     {
         let mut guild = mirroring();
         guild.ownership = Ownership::Importing;
-        guild.map = Default::default();
+        guild.map.clear();
         assert!(plan(&guild, &workspace_chat()).is_empty());
     }
 
@@ -278,7 +278,7 @@ tilo_test_env::scenario! {
     {
         let mut guild = mirroring();
         guild.outbox.push(
-            crate::guild::Id::from_raw("op1"),
+            &crate::guild::Id::from_raw("op1"),
             crate::guild::Queued {
                 key: String::new(),
                 op: serde_json::json!({"apply-channel": ChannelSpec {

@@ -302,7 +302,9 @@ fn chat_moves(moves: Vec<order::ChatMove>) -> Vec<Value> {
                 .as_deref()
                 .map_or(Value::Null, |category| tilo::reference(CATEGORY_KIND, category));
             let mut value = serde_json::to_value(moved).ok()?;
-            value["category"] = category;
+            value
+                .as_object_mut()?
+                .insert("category".to_owned(), category);
             Some(value)
         })
         .collect()
@@ -661,10 +663,10 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
     let mut observed = read.guild.clone();
     observed.observe(
         layout.bot_user.clone(),
-        layout.channels.clone(),
-        layout.roles.clone(),
+        &layout.channels,
+        &layout.roles,
     );
-    observed.observe_emojis(layout.emojis.clone());
+    observed.observe_emojis(&layout.emojis);
     let adopted = read.guild.ownership == Ownership::Adopted;
     let workspace = read.chat.workspace();
     if observed == *read.guild {

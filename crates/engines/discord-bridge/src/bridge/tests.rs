@@ -172,7 +172,7 @@ tilo_test_env::scenario! {
         assert!(first.again);
         assert!(first.apply_channels.is_empty());
 
-        g.observe("9".into(), Vec::new(), Vec::new());
+        g.observe("9".into(), &[], &[]);
         let second = planned(&g, &discord("layout-changed", &payload));
         assert!(second.observe.is_empty());
         assert!(!second.again);
@@ -209,7 +209,7 @@ tilo_test_env::scenario! {
         let mut g = guild();
         let first = planned(&g, &discord("layout-changed", &payload));
         assert_eq!(first.observe[0]["emojis"][0]["name"], "tilo_hello");
-        g.observe_emojis(vec![discord_wire::event::EmojiInfo {
+        g.observe_emojis(&[discord_wire::event::EmojiInfo {
             id: "55".into(),
             name: "tilo_hello".into(),
             animated: false,
@@ -430,7 +430,7 @@ fn layout_payload(positions: &[(&str, i64)], connected: bool) -> Value {
 fn observed(g: &mut Guild, positions: &[(&str, i64)]) {
     let layout: discord_wire::event::LayoutChanged =
         serde_json::from_value(layout_payload(positions, false)).unwrap();
-    g.observe("9".into(), layout.channels, Vec::new());
+    g.observe("9".into(), &layout.channels, &[]);
 }
 
 /// The workspace's chat with "talk" listing `channels` in this order.

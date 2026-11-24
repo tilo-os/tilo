@@ -738,7 +738,7 @@ tilo_test_env::scenario! {
             }]
         );
         assert!(linked_reply("Ada Lovelace").starts_with("Linked to Ada Lovelace."));
-        g.links[0].interaction = None;
+        g.links.iter_mut().for_each(|link| link.interaction = None);
         assert!(
             plan_linked(&g, &chat_with_ada(), "u_ada")
                 .answers

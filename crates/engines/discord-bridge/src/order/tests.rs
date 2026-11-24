@@ -1,4 +1,3 @@
-use discord_wire::op::{DiscordResult, Queued};
 use crate::guild::Settled;
 
 use super::*;
@@ -106,10 +105,10 @@ fn moved_to<'a>(moves: &'a [ChatMove], id: &str) -> &'a ChatMove {
 }
 
 /// `guild` with `op` asked for, answered as `settled`.
-fn asked(guild: &Guild, op: ArrangeOp, settled: Option<Settled>) -> Guild {
+fn asked(guild: &Guild, op: &ArrangeOp, settled: Option<Settled>) -> Guild {
     let mut guild = guild.clone();
     let id = guild.outbox.push(
-        Id::from_raw("arrange1"),
+        &Id::from_raw("arrange1"),
         crate::guild::Queued {
             key: String::new(),
             op: serde_json::json!({"arrange-channels": op}),
@@ -332,7 +331,7 @@ tilo_test_env::scenario! {
         workspace.channels.swap(1, 4);
         workspace.categories.reverse();
         let op = to_discord(&guild(), &workspace).unwrap();
-        let waiting = asked(&guild(), op.clone(), None);
+        let waiting = asked(&guild(), &op, None);
         // Asked, not answered: not asked again.
         assert_eq!(to_discord(&waiting, &workspace), None);
         // Discord's updates arrive one by one, before and after its answer.
@@ -346,7 +345,7 @@ tilo_test_env::scenario! {
         // Answered and shown whole, it is done with.
         let done = asked(
             &guild(),
-            op.clone(),
+            &op,
             Some(Settled::Done(serde_json::json!({"result": "done"}))),
         );
         let shown = echoes(&done, &op).pop().unwrap();
@@ -374,7 +373,7 @@ tilo_test_env::scenario! {
         let mut workspace = workspace();
         workspace.categories.reverse();
         let op = to_discord(&guild(), &workspace).unwrap();
-        let waiting = asked(&guild(), op, None);
+        let waiting = asked(&guild(), &op, None);
         // Someone moves #plans to the top before Discord shows the categories
         // moved: Chat follows that move and keeps its own.
         let after = moved(&waiting, "31", None, 1);
@@ -393,7 +392,7 @@ tilo_test_env::scenario! {
         let op = to_discord(&guild(), &workspace).unwrap();
         let failed = asked(
             &guild(),
-            op.clone(),
+            &op,
             Some(Settled::Failed(serde_json::json!({
                 "reason": "Missing Permissions",
                 "partial": "done",
@@ -426,7 +425,7 @@ tilo_test_env::scenario! {
             "{op:?}"
         );
         // Discord showing it last before the order lands is no move.
-        let waiting = asked(&guild, op, None);
+        let waiting = asked(&guild, &op, None);
         let mut shown = waiting.clone();
         shown
             .channels

@@ -407,7 +407,7 @@ tilo_test_env::scenario! {
     {
         let mut g = guild();
         g.map.push(mapping(MappedKind::Message, &at("m1"), "d_m1"));
-        g.observe_emojis(vec![discord_wire::event::EmojiInfo {
+        g.observe_emojis(&[discord_wire::event::EmojiInfo {
             id: "55".into(),
             name: "tilo_hello".into(),
             animated: false,

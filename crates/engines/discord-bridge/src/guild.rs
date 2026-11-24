@@ -39,7 +39,6 @@ pub trait Identified {
 pub struct Keyed<T>(Vec<T>);
 
 impl<T> Keyed<T> {
-    #[must_use]
     pub fn iter(&self) -> std::slice::Iter<'_, T> {
         self.0.iter()
     }
@@ -62,23 +61,8 @@ impl<T> Keyed<T> {
         self.0.clear();
     }
 
-    #[must_use]
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
         self.0.iter_mut()
-    }
-}
-
-impl<T> std::ops::Index<usize> for Keyed<T> {
-    type Output = T;
-
-    fn index(&self, at: usize) -> &T {
-        &self.0[at]
-    }
-}
-
-impl<T> std::ops::IndexMut<usize> for Keyed<T> {
-    fn index_mut(&mut self, at: usize) -> &mut T {
-        &mut self.0[at]
     }
 }
 
@@ -111,6 +95,15 @@ impl<'a, T> IntoIterator for &'a Keyed<T> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a mut Keyed<T> {
+    type Item = &'a mut T;
+    type IntoIter = std::slice::IterMut<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter_mut()
     }
 }
 
@@ -178,8 +171,8 @@ impl Outbox<Queued> {
     }
 
     /// Queue `entry` under `key`, as the app's verbs do.
-    pub fn push(&mut self, key: Id, mut entry: Queued) -> Id {
-        entry.key = key.as_str().to_owned();
+    pub fn push(&mut self, key: &Id, mut entry: Queued) -> Id {
+        key.as_str().clone_into(&mut entry.key);
         let key = Id::from_raw(entry.key.clone());
         self.0.push(entry);
         key
@@ -477,7 +470,9 @@ pub fn map_key(kind: MappedKind, tilo: &str) -> String {
 pub fn named_emojis(emojis: &[EmojiInfo]) -> BTreeMap<String, String> {
     let mut by_name = BTreeMap::new();
     for emoji in emojis {
-        by_name.entry(emoji.name.clone()).or_insert(emoji.id.clone());
+        by_name
+            .entry(emoji.name.clone())
+            .or_insert_with(|| emoji.id.clone());
     }
     by_name
 }
@@ -485,7 +480,7 @@ pub fn named_emojis(emojis: &[EmojiInfo]) -> BTreeMap<String, String> {
 impl Guild {
     /// Record the layout Discord reported, remembering what vanished since the last report so
     /// the reconcile can tell a deletion from a creation still in flight.
-    pub fn observe(&mut self, bot_user: String, channels: Vec<ChannelInfo>, roles: Vec<RoleInfo>) {
+    pub fn observe(&mut self, bot_user: String, channels: &[ChannelInfo], roles: &[RoleInfo]) {
         self.bot_user = bot_user;
         let now: std::collections::BTreeSet<&str> = channels
             .iter()
@@ -523,10 +518,7 @@ impl Guild {
             .outbox
             .entries()
             .filter(|(_, entry)| entry.settled.as_ref().is_some_and(Settled::is_done))
-            .filter_map(|(id, entry)| match entry.op.get("set-overwrite") {
-                Some(op) => Some((id, op)),
-                None => None,
-            })
+            .filter_map(|(id, entry)| entry.op.get("set-overwrite").map(|op| (id, op)))
             .filter(|(_, op)| {
                 let channel = op.get("channel").and_then(Value::as_str).unwrap_or_default();
                 let target = op.get("target").and_then(Value::as_str).unwrap_or_default();
@@ -554,8 +546,8 @@ impl Guild {
     }
 
     /// The server's custom emoji as Discord reported them.
-    pub fn observe_emojis(&mut self, emojis: Vec<EmojiInfo>) {
-        self.emojis = named_emojis(&emojis);
+    pub fn observe_emojis(&mut self, emojis: &[EmojiInfo]) {
+        self.emojis = named_emojis(emojis);
     }
 
     #[must_use]

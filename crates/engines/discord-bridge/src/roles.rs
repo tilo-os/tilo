@@ -188,7 +188,7 @@ pub fn plan(guild: &Guild) -> RolePlan {
 }
 
 fn role_vanished(guild: &Guild, discord: Option<&str>) -> bool {
-    discord.is_some_and(|d| guild.vanished.contains(&d.to_owned()))
+    discord.is_some_and(|d| guild.vanished.contains(d))
 }
 
 /// Bring a linked member's managed roles in line with their Tilo role.
@@ -207,14 +207,6 @@ pub fn plan_member(
         return None;
     }
     guild.links.find(&Id::from_raw(discord_user))?;
-    let managed: Vec<String> = TILO_ROLES
-        .iter()
-        .filter_map(|role| {
-            guild
-                .mapping(MappedKind::Role, role)
-                .map(|m| m.discord.clone())
-        })
-        .collect();
     let want = tilo_role
         .and_then(|role| guild.mapping(MappedKind::Role, role))
         .map(|m| m.discord.clone());
@@ -224,8 +216,13 @@ pub fn plan_member(
         .filter(|w| current.is_none_or(|roles| !roles.contains(w)))
         .cloned()
         .collect();
-    let remove: Vec<String> = managed
-        .into_iter()
+    let remove: Vec<String> = TILO_ROLES
+        .iter()
+        .filter_map(|role| {
+            guild
+                .mapping(MappedKind::Role, role)
+                .map(|m| m.discord.clone())
+        })
         .filter(|r| Some(r) != want.as_ref() && holds(r))
         .collect();
     (!add.is_empty() || !remove.is_empty()).then(|| MemberRolesOp {
@@ -410,10 +407,10 @@ mod tests {
             let asked = first.overwrites[0].clone();
             let entry = Id::from_raw("e1");
             g.outbox.push(
-                entry.clone(),
+                &entry,
                 crate::guild::Queued {
                     key: String::new(),
-                    op: serde_json::json!({"set-overwrite": asked.clone()}),
+                    op: serde_json::json!({"set-overwrite": asked}),
                     settled: None,
                 },
             );
@@ -422,7 +419,8 @@ mod tests {
                 .settle(&entry, Settled::Done(serde_json::json!({"result": "done"})));
             // A layout from before it took effect: nothing changed for it.
             let stale = layout_of(&g);
-            g.observe(String::new(), stale.clone(), roles_of(&g));
+            let roles = roles_of(&g);
+            g.observe(String::new(), &stale, &roles);
             assert_eq!(
                 plan(&g).overwrites,
                 first.overwrites[1..],
@@ -437,7 +435,7 @@ mod tests {
                 allow: "0".into(),
                 deny: "0".into(),
             });
-            g.observe(String::new(), edited, roles_of(&g));
+            g.observe(String::new(), &edited, &roles);
             assert!(g.outbox.is_empty(), "the ask is forgotten");
             assert!(plan(&g).overwrites.contains(&asked));
         }

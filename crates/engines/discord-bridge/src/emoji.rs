@@ -182,16 +182,15 @@ mod tests {
 
     fn guild_with(emoji: &[(&str, &str)]) -> Guild {
         let mut guild = Guild::default();
-        guild.observe_emojis(
-            emoji
-                .iter()
-                .map(|(name, id)| discord_wire::event::EmojiInfo {
-                    id: (*id).into(),
-                    name: (*name).into(),
-                    animated: false,
-                })
-                .collect(),
-        );
+        let emojis: Vec<discord_wire::event::EmojiInfo> = emoji
+            .iter()
+            .map(|(name, id)| discord_wire::event::EmojiInfo {
+                id: (*id).into(),
+                name: (*name).into(),
+                animated: false,
+            })
+            .collect();
+        guild.observe_emojis(&emojis);
         guild
     }
 

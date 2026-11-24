@@ -12,16 +12,15 @@ fn guild(server: &[(&str, &str)], uploaded: &[(&str, &str, &str)]) -> Guild {
         bot_user: "2000".into(),
         ..Guild::default()
     };
-    guild.observe_emojis(
-        server
-            .iter()
-            .map(|(name, id)| EmojiInfo {
-                id: (*id).into(),
-                name: (*name).into(),
-                animated: false,
-            })
-            .collect(),
-    );
+    let emojis: Vec<EmojiInfo> = server
+        .iter()
+        .map(|(name, id)| EmojiInfo {
+            id: (*id).into(),
+            name: (*name).into(),
+            animated: false,
+        })
+        .collect();
+    guild.observe_emojis(&emojis);
     for (tilo, discord, picture) in uploaded {
         guild.map.push(Mapping {
             key: map_key(MappedKind::Emoji, tilo),

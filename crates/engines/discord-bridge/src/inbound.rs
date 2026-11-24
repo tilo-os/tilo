@@ -236,7 +236,7 @@ fn persona(user: &str) -> Persona {
 pub fn ignored(guild: &Guild, user: &str, webhook: Option<&str>) -> bool {
     webhook.is_some_and(|w| guild.is_bridge_webhook(w))
         || (!guild.bot_user.is_empty() && user == guild.bot_user)
-        || guild.blocked_personas.contains(&user.to_owned())
+        || guild.blocked_personas.contains(user)
 }
 
 /// The appearance of `author`, or the avatar to fetch first. A linked
