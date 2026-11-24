@@ -660,10 +660,12 @@ fi
 # failing. The key is read off the Finish screen. Acknowledge the disposable
 # test target, then Power off so the next boot contains only the produced
 # target. The reply to power-off may be cut off by the guest going down.
-if ic invoke copy-recovery-key@installer 2>"$out/copy-recovery-key.txt"; then
+# The refusal names the recovery key, so its text stays out of the uploaded
+# artifacts, whose scrubber would otherwise withhold it as recovery material.
+if ic invoke copy-recovery-key@installer 2>"$run/copy-recovery-key.txt"; then
   die "the live installer copied the recovery key to a clipboard nothing on its kiosk reads"
 fi
-grep -qi 'no clipboard' "$out/copy-recovery-key.txt" \
+grep -qi 'no clipboard' "$run/copy-recovery-key.txt" \
   || die "the live installer refused the copy without saying it has no clipboard"
 ic invoke confirm-recovery-saved@installer '{"saved":true}' \
   || die "installer refused the saved-key acknowledgement"
@@ -754,9 +756,12 @@ for attempt in $(seq 1 60); do
   sleep 5
 done
 if [ "$oobe_started" -ne 1 ]; then
-  # What the installed system showed instead: the last screen and its words.
-  [ ! -f "$run/target-observe.png" ] || cp -f "$run/target-observe.png" "$out/07-first-boot-timeout.png"
-  [ ! -f "$out/target-observe.txt" ] || cp -f "$out/target-observe.txt" "$out/07-first-boot-timeout.txt"
+  # What the installed system showed instead: its screen now, its words, and
+  # why the screen could not be read when it could not.
+  if "$vm" shot 07-first-boot-timeout >/dev/null 2>"$out/07-first-boot-timeout-shot.txt"; then
+    cp -f "$run/07-first-boot-timeout.png" "$out/07-first-boot-timeout.png"
+    tesseract "$out/07-first-boot-timeout.png" stdout 2>/dev/null > "$out/07-first-boot-timeout.txt" || true
+  fi
   die "first installed boot did not reach direct OOBE"
 fi
 wait_screen 08-oobe-intro 'Create[[:space:]]+your[[:space:]]+local' 10 1 \
