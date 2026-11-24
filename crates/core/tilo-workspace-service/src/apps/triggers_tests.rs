@@ -2433,6 +2433,7 @@ async fn keeps_an_assistant(
                 .as_author(&person);
             made.apply(
                 WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    avatar: None,
                     name: tilo_resource::NonBlank::parse("Assistant").unwrap(),
                     id: Some("assistant".into()),
                     model: None,

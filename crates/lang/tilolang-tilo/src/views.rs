@@ -81,6 +81,7 @@ impl RustViews for DeclaredViews {
                 id: person.clone(),
                 name: person.id().to_owned(),
                 hue: None,
+                picture: None,
             },
             BTreeMap::new(),
         );

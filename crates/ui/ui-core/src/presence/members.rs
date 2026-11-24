@@ -67,6 +67,20 @@ impl PresenceCtx {
         }
         for member in &members {
             self.set_joined_at(member.id.clone(), member.joined_at);
+            // The picture they set in their profile, as the list names it: a face reads it
+            // wherever a view shows them as an author, and every chip of them draws it.
+            match &member.avatar {
+                Some(picture) => {
+                    self.pictures.insert(member.id.clone(), picture.clone());
+                }
+                None => {
+                    self.pictures.remove(&member.id);
+                }
+            }
+            crate::people_photos::set_encoded(
+                member.id.id(),
+                member.avatar.as_ref().map(|picture| picture.0.as_slice()),
+            );
         }
         if let Some(me) = members.iter().find(|member| member.is_self) {
             self.set_self_member(me.id.clone(), me.name.clone());

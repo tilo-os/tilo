@@ -177,6 +177,7 @@ impl Agents {
                     workspace: workspace.clone(),
                     id: agent.id.0.clone(),
                     name: agent.name.clone(),
+                    avatar: agent.avatar.clone(),
                     retired: !agent.is_active(),
                 });
                 if !agent.is_active() {
@@ -185,6 +186,7 @@ impl Agents {
                 named.push(tilo_broker_core::services::ListedAgent {
                     id: agent.id.0.clone(),
                     name: agent.name.clone(),
+                    avatar: agent.avatar.clone(),
                     acts_for: agent.acts_for.clone(),
                 });
                 spend.insert(
@@ -317,6 +319,7 @@ impl crate::Shared {
         self.agents.roster().list(
             workspace,
             tilo_broker_core::services::ListedAgent {
+                avatar: None,
                 id: agent.clone(),
                 name: name.clone(),
                 acts_for: self.person.clone(),
@@ -484,5 +487,190 @@ mod tests {
             1,
             "and one agent in the workspace's list"
         );
+    }
+
+    /// An agent's persona, made and pictured through the record's own actions, reaches the
+    /// names the broker hands a window: its name and its picture are what an author's face
+    /// draws, wherever the workspace shows that agent.
+    #[test]
+    fn an_agents_persona_is_what_the_member_list_names_and_pictures_it_by() {
+        /// A picture a persona may carry: a 1-by-1 PNG.
+        const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX///+nxBvIAAAAAXRSTlMAQObYZgAAAAxJREFUeNoBgAEAAP//AwABWgH+AAAAAElFTkSuQmCC";
+
+        let _settled = ui::motion::testing::settled();
+        let mut home = tilo_test_env::TestHome::new().expect("a home");
+        let state = tempfile::tempdir().expect("a state directory");
+        let shell = Shell::new(&mut home, state.path());
+        let session = &shell.session;
+        let person = shell.person.clone();
+        let studio = shell.workspace.clone();
+        let workspace = session
+            .handle()
+            .read(Clone::clone)
+            .workspaces
+            .into_iter()
+            .find(|workspace| workspace.id().to_string() == studio)
+            .expect("the workspace in front");
+
+        let roster = session.shared.agents.roster();
+        let (agent, _) = {
+            let feed = session.shared.workspace_settings_feed();
+            feed.create(Some(&workspace), &person, ("Scout", None), "")
+                .expect("the workspace makes the agent")
+        };
+        session.shared.feed_agents();
+        let listed = roster.listed(&studio);
+        assert_eq!(listed.len(), 1, "one agent: {listed:?}");
+        assert_eq!(listed[0].name, "Scout");
+        assert_eq!(listed[0].avatar, None, "she set no picture yet");
+
+        {
+            let feed = session.shared.workspace_settings_feed();
+            feed.set_avatar(Some(&workspace), &agent, Some(PNG))
+                .expect("the workspace pictures the agent");
+        }
+        session.shared.feed_agents();
+        let listed = roster.listed(&studio);
+        assert_eq!(listed[0].name, "Scout", "the persona keeps its name");
+        assert_eq!(
+            listed[0].avatar.as_deref(),
+            Some(PNG),
+            "and the picture it wears"
+        );
+    }
+
+    /// An agent turn this device's daemon takes is listed in `session:agents`, read from the
+    /// daemon over its dispatch, for as long as the turn runs, and leaves the list when its
+    /// claim is let go of.
+    #[test]
+    fn session_agents_lists_a_turn_the_daemon_takes_until_it_ends() {
+        use tilo_workspace_service::work::{Actor, Turn, takes_turn};
+
+        let _settled = ui::motion::testing::settled();
+        let mut home = tilo_test_env::TestHome::new().expect("a home");
+        let state = tempfile::tempdir().expect("a state directory");
+        let mut shell = Shell::new(&mut home, state.path());
+        let workspaces = shell
+            .session
+            .shared
+            .workspace_service
+            .service()
+            .expect("this device's own workspace service is open")
+            .workspaces()
+            .clone();
+        tilo_workspace_service::workspaces::fixtures::act_as_every_agent(&workspaces);
+        let turn = Turn::once(
+            "agents.agent:scout#answer",
+            serde_json::json!({ "asked": "what changed" }),
+        )
+        .acting_as(Actor::Agent("scout".to_owned()));
+        let lease = turn.lease();
+        let runtime = tilo_rt::try_app().expect("the session's runtime");
+        let claim = runtime
+            .block_on(takes_turn(&workspaces, &shell.workspace, &turn))
+            .expect("the session's runtime runs the claim")
+            .expect("this device takes the agent's turn");
+        let lists = move |session: &crate::Session, lease: &str| {
+            session
+                .shared
+                .agent_sessions
+                .readings()
+                .iter()
+                .any(|agent| agent.key == lease && agent.state == "running")
+        };
+        let taken = lease.clone();
+        shell.until(
+            "session:agents lists the turn the daemon took",
+            move |session| lists(session, &taken),
+        );
+
+        runtime
+            .block_on(claim.release())
+            .expect("the session's runtime lets go of the claim");
+        shell.until(
+            "session:agents drops the turn once it ended",
+            move |session| !lists(session, &lease),
+        );
+    }
+
+    /// A turn this device takes shows on the person's agent card, read from the device's runs
+    /// over its dispatch, and stopping it there ends the run and takes it off the card.
+    #[test]
+    fn the_agents_card_shows_a_taken_run_and_stopping_it_removes_it() {
+        use tilo_workspace_service::work::{Actor, Turn, takes_turn};
+
+        let _settled = ui::motion::testing::settled();
+        let mut home = tilo_test_env::TestHome::new().expect("a home");
+        let state = tempfile::tempdir().expect("a state directory");
+        let mut shell = Shell::new(&mut home, state.path());
+        let workspaces = shell
+            .session
+            .shared
+            .workspace_service
+            .service()
+            .expect("this device's own workspace service is open")
+            .workspaces()
+            .clone();
+        tilo_workspace_service::workspaces::fixtures::act_as_every_agent(&workspaces);
+        let turn = Turn::once(
+            "agents.agent:scout#answer",
+            serde_json::json!({ "asked": "what changed" }),
+        )
+        .acting_as(Actor::Agent("scout".to_owned()));
+        let lease = turn.lease();
+        let runtime = tilo_rt::try_app().expect("the session's runtime");
+        let claim = runtime
+            .block_on(takes_turn(&workspaces, &shell.workspace, &turn))
+            .expect("the session's runtime runs the claim")
+            .expect("this device takes the agent's turn");
+        // The card's rows, as the person's overview draws them from the runs the session read.
+        let on_card = |session: &crate::Session, lease: &str| {
+            let overview = tilo_desktop::overview_tilo::TiloOverview {
+                runs: session.shared.agent_sessions.runs(),
+                names: session.shared.agent_sessions.named_agents(),
+                ..tilo_desktop::overview_tilo::TiloOverview::default()
+            };
+            tilo_desktop::overview_tilo::rows(&overview)
+                .into_iter()
+                .any(|row| {
+                    matches!(
+                        row,
+                        tilo_desktop::overview_tilo::TiloRow::Item(item)
+                            if item.key == format!("overview-agent:{lease}")
+                    )
+                })
+        };
+        let taken = lease.clone();
+        shell.until(
+            "the person's agent card shows the turn the daemon took",
+            move |session| on_card(session, &taken),
+        );
+        assert!(
+            workspaces
+                .agent_runs()
+                .follow()
+                .borrow()
+                .runs
+                .iter()
+                .any(|run| run.run == lease && run.agent == "scout"),
+            "the run reads as the agent's"
+        );
+
+        // Stop, as the card's Stop does: over the device's dispatch, which releases the claim and
+        // cancels the turn.
+        shell.session.shared.agent_sessions.stop_run(&lease);
+        let stopped = lease.clone();
+        shell.until("stopping it takes it off the card", move |session| {
+            !on_card(session, &stopped)
+        });
+        assert!(
+            runtime
+                .block_on(workspaces.lease_holder(&shell.workspace, &lease))
+                .expect("the session's runtime runs the read")
+                .expect("the workspace reads")
+                .is_none(),
+            "a stopped turn's claim is let go of"
+        );
+        drop(claim);
     }
 }

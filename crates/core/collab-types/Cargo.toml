@@ -51,6 +51,9 @@ postcard = { workspace = true, features = ["alloc"] }
 # without needing a separate blake3 dep.
 sha2.workspace = true
 hex.workspace = true
+# A picture is a base64 `data:` URL, and what it is reads from its first bytes.
+base64.workspace = true
+tilo-content-types = { version = "0.1.0", path = "../content-types" }
 thiserror.workspace = true
 # `caps::net::EgressPolicy::from_grants` names the grants it ignores.
 tracing.workspace = true

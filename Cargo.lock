@@ -2455,6 +2455,7 @@ name = "collab-types"
 version = "0.1.0"
 dependencies = [
  "app-fleet",
+ "base64 0.22.1",
  "blake3",
  "ed25519-dalek 3.0.0",
  "fnv",
@@ -2473,6 +2474,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-canonical-json",
+ "tilo-content-types",
  "tilo-face",
  "tilo-failure",
  "tilo-files",

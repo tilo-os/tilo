@@ -73,6 +73,7 @@ struct Said {
     me: Option<String>,
     others: HashMap<MemberId, String>,
     hues: HashMap<MemberId, u8>,
+    pictures: HashMap<MemberId, String>,
 }
 
 /// The names an instance shows people by: what its host heard the member list call them
@@ -94,13 +95,15 @@ impl Told {
         }
     }
 
-    /// The member list calls the person `me` and each of `others` by id now, and paints each
-    /// member of `hues` in its presence palette slot. Whether any of it changed.
+    /// The member list calls the person `me` and each of `others` by id now, paints each member
+    /// of `hues` in its presence palette slot, and shows each of `pictures` as the address of
+    /// their face. Whether any of it changed.
     pub fn tell(
         &self,
         me: String,
         others: Vec<(MemberId, String)>,
         hues: Vec<(MemberId, u8)>,
+        pictures: Vec<(MemberId, String)>,
     ) -> bool {
         let next = Said {
             me: Some(me).filter(|me| !me.trim().is_empty()),
@@ -109,6 +112,10 @@ impl Told {
                 .filter(|(_, name)| !name.trim().is_empty())
                 .collect(),
             hues: hues.into_iter().collect(),
+            pictures: pictures
+                .into_iter()
+                .filter(|(_, picture)| !picture.trim().is_empty())
+                .collect(),
         };
         if *self.said.borrow() == next {
             return false;
@@ -135,6 +142,18 @@ impl NameHost for Told {
         }
         drop(said);
         self.otherwise.name(who)
+    }
+
+    /// The picture the member list gives `who`, as the address a face reads it from: shown
+    /// wherever a view shows them as an author. `None` shows their initials.
+    fn picture(&self, who: &Actor) -> Option<String> {
+        let member = who.member_id()?;
+        self.said
+            .borrow()
+            .pictures
+            .get(member)
+            .cloned()
+            .or_else(|| self.otherwise.picture(who))
     }
 
     /// The colour the member list paints `who` in, so a byline or a chip in a view wears the
@@ -247,10 +266,12 @@ mod tests {
             "Ada".to_owned(),
             vec![(MemberId::person("ben-id"), "Ben".to_owned())],
             Vec::new(),
+            Vec::new(),
         ));
         assert!(!told.tell(
             "Ada".to_owned(),
             vec![(MemberId::person("ben-id"), "Ben".to_owned())],
+            Vec::new(),
             Vec::new(),
         ));
         assert_eq!(told.name(&person(id)), "Ada");
@@ -271,6 +292,7 @@ mod tests {
                 (MemberId::agent("planner"), 9),
                 (MemberId::person("ada-id"), 4),
             ],
+            Vec::new(),
         ));
         assert_eq!(told.hue(&person("ben-id")), Some(1));
         assert_eq!(told.hue(&agent("planner")), Some(9));
@@ -283,6 +305,43 @@ mod tests {
             told.hue(&app("so.tilo.lang.today")),
             None,
             "an app is no member"
+        );
+    }
+}
+
+#[cfg(test)]
+mod picture_tests {
+    use super::*;
+
+    fn person(id: &str) -> Actor {
+        MemberId::person(id).into()
+    }
+
+    fn agent(id: &str) -> Actor {
+        MemberId::agent(id).into()
+    }
+
+    /// A member's face draws the picture the member list gives them, and shows initials until
+    /// it gives one.
+    #[test]
+    fn a_member_wears_the_picture_the_member_list_gives_them() {
+        let told = Told::new("ada-id".into(), Rc::new(Installed));
+        assert_eq!(told.picture(&person("ben-id")), None, "nothing said yet");
+        let picture = "data:image/png;base64,iVBORw0KGgo=".to_owned();
+        assert!(told.tell(
+            "Ada".to_owned(),
+            vec![(MemberId::person("ben-id"), "Ben".to_owned())],
+            Vec::new(),
+            vec![(MemberId::person("ben-id"), picture.clone())],
+        ));
+        assert_eq!(
+            told.picture(&person("ben-id")).as_deref(),
+            Some(picture.as_str())
+        );
+        assert_eq!(
+            told.picture(&agent("planner")),
+            None,
+            "an agent nobody pictured shows its mark"
         );
     }
 }

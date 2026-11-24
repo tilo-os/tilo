@@ -6,6 +6,7 @@ fn person(id: &str, name: &str) -> Person {
         hue: crate::tokens::PresenceHue::of_identity(id),
         identity: tilo_actions::MemberId::person(id).into(),
         name: name.into(),
+        picture: None,
     }
 }
 

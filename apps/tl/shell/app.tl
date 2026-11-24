@@ -481,7 +481,8 @@ action rename_strip(key: Text, name: Text) {
 view person_menu() {
     let v = viewing
     let me = if layout.person != "" { layout.person } else { "You" }
-    ui.MenuButton("{me}: style and workspaces", faces: [me], role: .bar) {
+    let face = if layout.person != "" { workspace.me } else { person("You") }
+    ui.MenuButton("{me}: style and workspaces", faces: [face], role: .bar) {
         for style in device.styles.offered {
             if style_listed(style) {
                 ui.MenuItem(style_label(style), checked: v.style == style.style) {

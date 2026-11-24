@@ -79,7 +79,8 @@ impl Presence {
                 true
             }
             CollabEvent::Context { members, .. } => {
-                // The window names people and wears their colours; their pictures stay here.
+                // The window names people and wears their colours; the pictures reach the views
+                // through [`Instance::name_people`], where a face draws them.
                 self.for_window.push(Heard::Members(
                     members
                         .iter()
@@ -133,7 +134,20 @@ impl Presence {
                     (member.clone(), u8::try_from(slot).unwrap_or_default())
                 })
                 .collect();
-            instance.name_people(me, others, hues);
+            // The picture each member set in their profile, as the address a face reads it
+            // from: what an author's avatar draws wherever a view shows them.
+            let pictures = self
+                .heard
+                .names
+                .keys()
+                .chain(self.heard.self_id())
+                .filter_map(|member| {
+                    let avatar = self.heard.user(member).avatar?;
+                    let url = collab_types::photo_url(&avatar.0)?;
+                    Some((member.clone(), url))
+                })
+                .collect();
+            instance.name_people(me, others, hues, pictures);
         }
         let now = ui_core::time::now();
         self.heard.prune_composing(now);
@@ -321,7 +335,7 @@ mod tests {
         assert_eq!(members.len(), 1);
         assert!(
             members[0].avatar.is_none(),
-            "pictures stay with the instance"
+            "the window names people; the views draw their pictures"
         );
         assert_eq!(interaction.resource.id, "channel-1");
         assert!(sent(&mut presence).is_empty(), "each is sent once");

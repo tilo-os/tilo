@@ -47,6 +47,7 @@ fn an_agent_is_found_from_the_workspace_resource() {
     agents
         .apply(
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                avatar: None,
                 name: NonBlank::parse("Ada").expect("a name"),
                 id: None,
                 model: None,

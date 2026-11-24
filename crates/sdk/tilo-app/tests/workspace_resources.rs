@@ -363,6 +363,7 @@ fn the_workspaces_agents_are_offered_to_callers_and_changed_as_the_grants_say() 
         .invoke_as(
             &tilo_actions::ActionInvoker::person("grace"),
             &WorkspaceAgents::CREATE_AGENT.with(workspace_agent::workspace_agents::CreateAgent {
+                avatar: None,
                 name: tilo_app::tilo_resource::NonBlank::parse("Scout").expect("a name"),
                 id: Some("scout".to_owned()),
                 model: None,
@@ -809,6 +810,7 @@ fn a_part_that_read_a_workspaces_document_as_not_here_shows_it_when_it_arrives()
         agents
             .invoke(
                 &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    avatar: None,
                     name: tilo_app::tilo_resource::NonBlank::parse("Scout").expect("a name"),
                     id: None,
                     model: None,

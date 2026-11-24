@@ -124,6 +124,14 @@ pub trait NameHost {
         let _ = who;
         None
     }
+
+    /// The picture the host shows for `who`, as the address a face reads its bytes from (a
+    /// `data:` or `tilo-blob://` URL): what every view showing them as an author draws.
+    /// `None` shows their initials.
+    fn picture(&self, who: &crate::ids::Actor) -> Option<String> {
+        let _ = who;
+        None
+    }
 }
 
 /// How a value a change shows reads as text, where a sentence must carry it rather than a view

@@ -726,12 +726,12 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
 /// where several stay a group of faces.
 #[test]
 fn one_persons_menu_is_their_whole_avatar() {
-    use crate::component::Described;
+    use crate::component::{Described, Person};
     let own = MenuButton::from_props(
         "me",
         MenuButtonProps {
             label: "Sam Rivera: style and workspaces".into(),
-            faces: vec!["Sam Rivera".into()],
+            faces: vec![Person::named("Sam Rivera")],
             ..MenuButtonProps::default()
         },
     );
@@ -744,7 +744,7 @@ fn one_persons_menu_is_their_whole_avatar() {
         "people",
         MenuButtonProps {
             label: "Who is here".into(),
-            faces: vec!["Sam Rivera".into(), "Ana Ruiz".into()],
+            faces: vec![Person::named("Sam Rivera"), Person::named("Ana Ruiz")],
             ..MenuButtonProps::default()
         },
     );

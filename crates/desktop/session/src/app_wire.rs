@@ -1068,6 +1068,22 @@ impl WorkspaceMemberships for SessionMemberships {
                 .map_err(|error| error.to_string())
         })
     }
+
+    /// The person sitting at this device, as the picture they set in their own identity: a
+    /// member's own face reads wherever it shows them as an author. Another member's picture
+    /// comes from the profile the workspace's host keeps for them.
+    #[cfg(target_os = "linux")]
+    fn person_photo(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
+        let identity = hex::encode(person);
+        let photo = collaboration::local_identity::photo_for(&identity)?;
+        ui::png::encode_rgba8(
+            u32::from(photo.width()),
+            u32::from(photo.height()),
+            photo.rgba(),
+        )
+        .ok()
+        .filter(|png| !png.is_empty())
+    }
 }
 
 /// The grants a person gives an app for another app's action, written into

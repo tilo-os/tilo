@@ -10,6 +10,7 @@ fn id(text: &str) -> Id {
 
 fn make(name: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
     WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+        avatar: None,
         name: NonBlank::parse(name).expect("a name"),
         id: None,
         model: None,
@@ -20,6 +21,7 @@ fn make(name: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
 /// An agent admitted before records were, under the id its grants carry.
 fn restore(id: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
     WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+        avatar: None,
         name: NonBlank::parse(id).expect("a name"),
         id: Some(id.to_owned()),
         model: None,
@@ -602,6 +604,7 @@ fn golden_state() -> WorkspaceAgents {
     record
         .apply(
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                avatar: None,
                 name: NonBlank::parse("Claude").expect("a name"),
                 id: Some("claude".to_owned()),
                 model: Some("anthropic/sonnet".to_owned()),
@@ -816,4 +819,85 @@ fn whatever_acts_for_a_member_is_refused_what_a_member_does_only_in_person() {
     assert!(grace.state().unwrap().agents[0].bound.is_empty());
     grace.apply(retire(&agent)).unwrap();
     assert_eq!(grace.state().unwrap().agents[0].state, AgentState::Retired);
+}
+
+/// A picture a persona may carry: a 1-by-1 PNG.
+const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX///+nxBvIAAAAAXRSTlMAQObYZgAAAAxJREFUeNoBgAEAAP//AwABWgH+AAAAAElFTkSuQmCC";
+
+fn set_avatar(agent: &str, avatar: Option<&str>) -> tilo_resource::Invoke<WorkspaceAgents> {
+    WorkspaceAgents::SET_AGENT_AVATAR.with(workspace_agents::SetAgentAvatar {
+        agent: id(agent),
+        avatar: avatar.map(str::to_owned),
+    })
+}
+
+fn made_with_avatar(name: &str, avatar: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
+    WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+        name: NonBlank::parse(name).expect("a name"),
+        avatar: Some(avatar.to_owned()),
+        id: None,
+        model: None,
+        mcp_client: None,
+    })
+}
+
+#[test]
+fn an_agents_persona_is_its_name_and_its_picture() {
+    let mut record = as_person(ADA);
+    record.apply(make("Scout")).unwrap();
+    let scout = record.state().unwrap().agents[0].id.0.clone();
+    record.apply(set_avatar(&scout, Some(PNG))).unwrap();
+    assert_eq!(
+        record.state().unwrap().agents[0].avatar.as_deref(),
+        Some(PNG)
+    );
+    record.apply(rename(&scout, "Lookout")).unwrap();
+    let state = record.state().unwrap();
+    assert_eq!(only(&state).name, "Lookout");
+    assert_eq!(
+        only(&state).avatar.as_deref(),
+        Some(PNG),
+        "a new name keeps the picture it wears"
+    );
+    drop(state);
+    record.apply(set_avatar(&scout, None)).unwrap();
+    assert_eq!(
+        record.state().unwrap().agents[0].avatar,
+        None,
+        "no picture shows its initials"
+    );
+}
+
+#[test]
+fn a_persona_is_a_picture_pages_draw_and_never_a_document() {
+    let mut record = as_person(ADA);
+    assert!(
+        record
+            .apply(made_with_avatar(
+                "Scout",
+                "data:image/svg+xml;base64,PHN2Zy8+"
+            ))
+            .is_err(),
+        "an SVG is a document, not a picture"
+    );
+    record.apply(made_with_avatar("Scout", PNG)).unwrap();
+    let scout = record.state().unwrap().agents[0].id.0.clone();
+    assert!(
+        record
+            .apply(set_avatar(&scout, Some("not a picture")))
+            .is_err()
+    );
+    let huge = format!(
+        "data:image/png;base64,{}",
+        "A".repeat(collab_types::MAX_PHOTO_CHARS)
+    );
+    assert!(
+        record.apply(set_avatar(&scout, Some(&huge))).is_err(),
+        "a picture is bounded"
+    );
+    assert_eq!(
+        record.state().unwrap().agents[0].avatar.as_deref(),
+        Some(PNG),
+        "a refusal changes nothing"
+    );
 }

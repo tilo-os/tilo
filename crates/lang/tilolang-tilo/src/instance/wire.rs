@@ -207,6 +207,7 @@ impl Convert<'_> {
                 id: who.clone(),
                 name: self.names.name(who),
                 hue: self.names.hue(who),
+                picture: self.names.picture(who),
             }),
             Value::Error(text) => wire::Value::Error(text.clone()),
             Value::Map(entries) => wire::Value::Map(

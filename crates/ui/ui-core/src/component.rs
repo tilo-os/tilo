@@ -412,6 +412,9 @@ pub struct Person {
     pub name: String,
     /// The hue their chip and avatar wear.
     pub hue: crate::tokens::PresenceHue,
+    /// The address of their picture (a `data:` or `tilo-blob://` URL), when they set one: every
+    /// face drawn for them shows it. `None` shows their initials.
+    pub picture: Option<String>,
 }
 
 impl Person {
@@ -423,6 +426,7 @@ impl Person {
             hue: crate::tokens::PresenceHue::of_actor(&identity),
             identity,
             name: name.into(),
+            picture: None,
         }
     }
 }
@@ -461,11 +465,18 @@ impl PartialOrd for Person {
 
 impl Ord for Person {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (&self.identity, self.name.as_str(), self.hue.slot()).cmp(&(
-            &other.identity,
-            other.name.as_str(),
-            other.hue.slot(),
-        ))
+        (
+            &self.identity,
+            self.name.as_str(),
+            self.hue.slot(),
+            self.picture.as_deref(),
+        )
+            .cmp(&(
+                &other.identity,
+                other.name.as_str(),
+                other.hue.slot(),
+                other.picture.as_deref(),
+            ))
     }
 }
 
@@ -482,11 +493,13 @@ impl PropType for Person {
                 identity,
                 name,
                 hue,
+                picture,
             } => Ok(Self {
                 hue: hue.map_or_else(
                     || crate::tokens::PresenceHue::of_actor(identity),
                     |slot| crate::tokens::PresenceHue::from_slot(usize::from(slot)),
                 ),
+                picture: picture.clone(),
                 ..Self::new(identity.clone(), name.clone())
             }),
             other => Err(wrong(&Self::ty(), other)),

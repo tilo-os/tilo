@@ -143,6 +143,7 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
                 .as_author(&person);
             made.apply(
                 WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    avatar: None,
                     name: tilo_resource::NonBlank::parse("Scout").unwrap(),
                     id: Some(SCOUT.into()),
                     model: None,

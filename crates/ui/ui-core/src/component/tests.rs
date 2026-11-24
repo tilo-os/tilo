@@ -301,6 +301,7 @@ fn sample(ty: &Type) -> Value {
             identity: tilo_actions::MemberId::person("ada").into(),
             name: "Ada".into(),
             hue: None,
+            picture: None,
         },
         Type::Resource => Value::Resource("r".into()),
         Type::Link => Value::Link {
@@ -1087,6 +1088,7 @@ fn a_person_wears_the_colour_that_travels_with_them() {
             identity: identity.clone(),
             name: "Planner".into(),
             hue,
+            picture: None,
         })
         .unwrap()
         .hue

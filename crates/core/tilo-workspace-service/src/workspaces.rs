@@ -258,6 +258,10 @@ pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompletion, MemberPlace};
 pub use listing::EntryRefusal;
 pub use pages::PreAdmitRequest;
+#[cfg(feature = "apps")]
+mod profile_memberships;
+#[cfg(feature = "apps")]
+pub use profile_memberships::ProfileMemberships;
 use tilo_server_protocol::WorkspaceId;
 pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListed};
 

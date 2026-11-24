@@ -17,8 +17,8 @@ mod key;
 mod labels;
 mod layer;
 mod mark;
-mod overlay;
 mod members;
+mod overlay;
 mod placed;
 pub(crate) mod render;
 pub use caret_tag::{
@@ -439,6 +439,10 @@ pub struct PresenceCtx {
     /// (`CollabEvent::Context`). A peer with no entry falls back to its raw
     /// id via [`PresenceCtx::display_name`], so a caret chip is never blank.
     pub names: HashMap<MemberId, String>,
+    /// The picture each member set, as the image's own bytes, seeded from the collab roster
+    /// (`CollabEvent::Context`): what an author's face draws where a view shows them, and in no
+    /// record of its own.
+    pictures: HashMap<MemberId, collab_types::AvatarBytes>,
     /// The person each agent or bot acts for, as the broker admitted it: a fact a history
     /// hover names, never part of the agent's name.
     acting_for: HashMap<MemberId, MemberId>,
@@ -1214,7 +1218,7 @@ impl PresenceCtx {
             id: user.clone(),
             role: None,
             name: self.display_name(user),
-            avatar: None,
+            avatar: self.pictures.get(user).cloned(),
             colour: self.hue_for(user),
             joined_at: self.joined.get(user).copied(),
             is_self: self.is_own_identity(user),
@@ -1743,6 +1747,7 @@ impl PresenceCtx {
         self.pointer_glides.retain(|(_, u), _| u != &uid);
         self.pointer_moved.retain(|(_, u), _| u != &uid);
         self.chats.forget(&uid);
+        self.pictures.remove(&uid);
         for list in self.carets.values_mut() {
             list.retain(|(u, _)| u != &uid);
         }

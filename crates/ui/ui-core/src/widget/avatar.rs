@@ -769,10 +769,14 @@ impl Avatar {
         self
     }
 
-    /// `who`'s face as every surface shows it ([`AvatarFace::of`]).
+    /// `who`'s face as every surface shows it ([`AvatarFace::of`]), showing the picture they
+    /// set where they set one.
     #[must_use]
     pub fn of(who: crate::component::Person) -> Self {
         let mut avatar = Self::person(who.name.clone(), who.identity.id());
+        if let Some(picture) = who.picture.clone().filter(|picture| !picture.is_empty()) {
+            avatar = avatar.with_picture_url(picture);
+        }
         avatar.who = Some(who);
         avatar
     }
@@ -1101,6 +1105,18 @@ mod tests {
             initials,
             "a picture is not the initials of the same name"
         );
+        // A member the workspace pictured shows that picture through the actor a view is
+        // handed, as a roster's row names them: an author's face.
+        let pictured_member = Person {
+            picture: Some(crate::headless::FIXTURE_PICTURE.into()),
+            ..Person::new(tilo_actions::MemberId::person("ada"), "Ada")
+        };
+        let mut author = Avatar::of(pictured_member);
+        assert!(
+            author.follow_picture(),
+            "the roster's picture is read where the author's face is drawn"
+        );
+        assert!(author.image.is_some());
         // A bot wears its own picture or initials on the rounded square.
         let bot = Person::new(tilo_actions::MemberId::bot("greeter"), "Greeter");
         assert!(AvatarFace::of(&bot).is_square());

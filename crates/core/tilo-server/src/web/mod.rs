@@ -1432,6 +1432,10 @@ async fn route(
                 .publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
                 .await
                 .map(|root| {
+                    // A profile is what every surface showing them as an author reads: the
+                    // members' pictures moved with it, and the apps' member lists read them
+                    // again.
+                    tilo_identity::policy_change::announce();
                     // A profile's name is the person's in every workspace here: each names them
                     // by it from now on.
                     if let (Some(workspaces), Some(name)) =

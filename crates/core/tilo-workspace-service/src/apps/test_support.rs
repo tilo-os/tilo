@@ -168,6 +168,7 @@ impl crate::apps::services::AgentRoster for KeptAgents {
             .iter()
             .filter(|(held, _)| held == workspace)
             .map(|(_, agent)| crate::apps::services::ListedAgent {
+                avatar: None,
                 id: agent.clone(),
                 name: agent.clone(),
                 acts_for: String::new(),

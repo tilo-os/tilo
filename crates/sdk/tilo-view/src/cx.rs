@@ -313,6 +313,7 @@ mod tests {
                 id: tilo_actions::MemberId::person("Pat").into(),
                 name: "Pat".to_owned(),
                 hue: None,
+                picture: None,
             },
             BTreeMap::new(),
         )

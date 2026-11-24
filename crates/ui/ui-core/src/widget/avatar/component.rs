@@ -66,6 +66,11 @@ impl Described for Avatar {
 
     fn set_props(&mut self, props: AvatarProps) -> bool {
         let (name, identity) = props.name_and_identity();
+        let picture = props
+            .picture
+            .clone()
+            .or_else(|| props.who.as_ref().and_then(|who| who.picture.clone()))
+            .filter(|url| !url.is_empty());
         self.name = name;
         self.identity = identity;
         self.who = props.who;
@@ -73,7 +78,6 @@ impl Described for Avatar {
         self.neutral = props.glyph.is_some();
         self.square = props.square || props.glyph.is_some();
         self.placeholder = props.placeholder;
-        let picture = props.picture.filter(|url| !url.is_empty());
         let shown = match &self.picture {
             super::Picture::Lazy { url, .. } => Some(url.clone()),
             super::Picture::None => None,

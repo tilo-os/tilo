@@ -442,6 +442,7 @@ impl Fixture {
         let mut listed = self.native.listed.lock().unwrap();
         if !listed.iter().any(|agent| agent.id == "scribe") {
             listed.push(crate::apps::services::ListedAgent {
+                avatar: None,
                 id: "scribe".into(),
                 name: "Scribe".into(),
                 acts_for: String::new(),

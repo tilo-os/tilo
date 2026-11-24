@@ -29,9 +29,6 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::resources::ResourceStore;
 use tilolang_tilo::runtime::Value;
 
-/// What an action returns reaches its invoker over its connection.
-#[path = "process/results.rs"]
-mod results;
 /// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
 #[path = "process/chat.rs"]
 mod chat;
@@ -43,6 +40,9 @@ mod native_notes;
 /// A paste past a mebibyte, kept and undone.
 #[path = "process/paste.rs"]
 mod paste;
+/// What an action returns reaches its invoker over its connection.
+#[path = "process/results.rs"]
+mod results;
 /// Tasks in a hosted window, and Today reading Tasks' resources from the workspace's store.
 #[path = "process/tasks.rs"]
 mod tasks;
@@ -67,9 +67,8 @@ fn counter() -> Bundle {
 struct Window {
     transport: ChannelTransport,
     root: Option<patch::Node>,
-    /// The tree of the level beside the root: the item the window shows.
+    /// The tree of the level beside the root: the item the window shows, and the resource it is.
     detail: Option<patch::Node>,
-    /// The item the level beside the root shows.
     detail_target: Option<patch::ResourceRef>,
     /// The item the window shows beside its list: what a press showed in place, as the
     /// window heard it from the instance.
@@ -82,6 +81,9 @@ struct Window {
     /// The form the instance shows for the action waiting for its arguments, as the window
     /// last had it.
     form: Option<Box<patch::Form>>,
+    /// The rows the app sent of each virtual list, by the list's key, as the window last asked
+    /// for them.
+    rows: BTreeMap<String, Vec<patch::Node>>,
     /// How many of the window's presses the instance said ran.
     took: u64,
     /// The patches taken in.
@@ -102,6 +104,7 @@ impl Window {
             activated: false,
             bound: BTreeMap::new(),
             form: None,
+            rows: BTreeMap::new(),
             took: 0,
             patched: 0,
             notices: Vec::new(),
@@ -155,6 +158,9 @@ impl Window {
                         self.bound.insert(key, value);
                     }
                     ToUi::Form(form) => self.form = form,
+                    ToUi::Rows { list, rows, .. } => {
+                        self.rows.insert(list, rows);
+                    }
                     ToUi::Took { fired } => self.took = fired,
                     ToUi::Notice { words, .. } => self.notices.push(words),
                     _ => {}
@@ -167,6 +173,30 @@ impl Window {
         self.transport
             .send(patch::encode_batch(messages).unwrap())
             .unwrap();
+    }
+
+    /// Ask for the rows of the virtual list `list` in `tree` from `start` to `end`, as the list
+    /// showing them does: the app answers with them ([`ToUi::Rows`]).
+    fn request_rows(&mut self, level: Level, tree: &patch::Node, start: u32, end: u32) {
+        let list = tree
+            .of_kind("ui.VirtualList")
+            .first()
+            .expect("the tree shows a list")
+            .key
+            .clone();
+        self.send(&[ToApp::Rows {
+            level,
+            list,
+            start,
+            end,
+            open: None,
+            menu: None,
+        }]);
+    }
+
+    /// The rows of the virtual list `list` as the app last sent them.
+    fn rows_of(&self, list: &str) -> Vec<patch::Node> {
+        self.rows.get(list).cloned().unwrap_or_default()
     }
 
     /// The key of the counter's last button, its increment, and the event it fires.

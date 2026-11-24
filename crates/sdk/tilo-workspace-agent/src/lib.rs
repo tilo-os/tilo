@@ -232,6 +232,10 @@ pub struct Agent {
     /// Its name, as people read it and search finds it.
     #[model(label)]
     pub name: String,
+    /// The picture it wears wherever an author is shown, as a bounded `data:` URL of a small
+    /// raster image; none shows its initials. Its name and picture together are its persona:
+    /// what a turn of it posts under.
+    pub avatar: Option<String>,
     /// The person the agent acts for: the member who made it, or for whom an agent started it.
     /// It is no owner: the agent is the workspace's, and the workspace's grants alone decide
     /// who changes it.
@@ -404,6 +408,7 @@ impl WorkspaceAgents {
         &mut self,
         cx: &mut ActionCx,
         #[param("Its name, as people read it")] name: NonBlank,
+        #[param("Its picture, as a data: URL; none shows its initials")] avatar: Option<String>,
         #[param("Its id: one already in use elsewhere; none to mint one")] id: Option<String>,
         #[param("The model it plans with, as provider/model; none for the workspace's default")]
         model: Option<String>,
@@ -439,6 +444,7 @@ impl WorkspaceAgents {
         self.agents.push(Agent {
             id: Atom(id),
             name,
+            avatar: checked_avatar(avatar)?,
             acts_for,
             model,
             mcp_client,
@@ -569,6 +575,26 @@ impl WorkspaceAgents {
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
         found.name = name;
+        Ok(())
+    }
+
+    /// Set the picture an agent wears wherever an author is shown. A member's, in person, for
+    /// the same reason its name is: what people read over its words is not the agent's to draw.
+    #[action(item = agents)]
+    pub fn set_agent_avatar(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+        #[param("Its picture, as a data: URL; none shows its initials")] avatar: Option<String>,
+    ) -> Result<(), Refusal> {
+        self.not_by_sub_agent(cx)?;
+        in_person(cx)?;
+        let avatar = checked_avatar(avatar)?;
+        let found = self
+            .agents
+            .find_mut(&agent)
+            .ok_or_else(|| no_such(&agent))?;
+        found.avatar = avatar;
         Ok(())
     }
 
@@ -905,6 +931,7 @@ impl WorkspaceAgents {
             sub::check(agent)?;
             check_id(&agent.id.0)?;
             check_name(&agent.name)?;
+            checked_avatar(agent.avatar.clone())?;
             person(&agent.acts_for)?;
             if let Some(model) = &agent.model {
                 check_model(model)?;
@@ -1085,6 +1112,19 @@ fn clean_name(name: &NonBlank) -> Result<String, Refusal> {
     let name = name.as_str().trim().to_owned();
     check_name(&name)?;
     Ok(name)
+}
+
+/// The picture an agent's persona keeps: a bounded raster `data:` URL, or none.
+fn checked_avatar(avatar: Option<String>) -> Result<Option<String>, Refusal> {
+    let Some(avatar) = avatar.map(|avatar| avatar.trim().to_owned()) else {
+        return Ok(None);
+    };
+    if avatar.is_empty() {
+        return Ok(None);
+    }
+    collab_types::photo(&avatar)
+        .map(|kept| kept.map(str::to_owned))
+        .map_err(|error| Refusal::new(error.to_string()))
 }
 
 fn check_name(name: &str) -> Result<(), Refusal> {

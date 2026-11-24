@@ -5,7 +5,7 @@
 //! display_name, photo?}`, JSON) is kept so each of their devices, paired or
 //! signed in, shows the name and picture they chose, and everyone here sees
 //! that picture beside their name. The picture is a small square image as a
-//! `data:` URL (PNG, JPEG or WebP, at most [`MAX_PHOTO_CHARS`] characters);
+//! `data:` URL (PNG, JPEG, WebP or GIF, at most [`MAX_PHOTO_CHARS`] characters);
 //! without one their initials show.
 //!
 //! `POST /peer/v1/profile` keeps one: `{profile, issued_at_ms, signature}`
@@ -23,17 +23,11 @@ use tilo_lock::MutexRecover as _;
 
 use tilo_user_identity::root_statement;
 
-/// A profile's picture, as its `data:` URL: a 96 px square encodes in a few
-/// kilobytes, so this bounds a profile without cramping one.
-pub(super) const MAX_PHOTO_CHARS: usize = 48 * 1024;
+/// A profile's picture, as its `data:` URL: the same bound every picture a person or an agent
+/// keeps has.
+pub(super) const MAX_PHOTO_CHARS: usize = collab_types::MAX_PHOTO_CHARS;
 /// A profile is a name, a key, at most one small picture and a few lines.
 const MAX_PROFILE_BYTES: usize = MAX_PHOTO_CHARS + 2048;
-/// The image types a profile's picture may be.
-const PHOTO_PREFIXES: [&str; 3] = [
-    "data:image/png;base64,",
-    "data:image/jpeg;base64,",
-    "data:image/webp;base64,",
-];
 /// How far ahead of this host's clock a statement may be dated.
 const MAX_SKEW_MS: u64 = 10 * 60 * 1000;
 
@@ -107,15 +101,7 @@ fn valid_status(status: &str) -> bool {
 /// Whether `photo` is a picture a profile may carry: a bounded base64
 /// `data:` URL of an image type pages draw.
 fn valid_photo(photo: &str) -> bool {
-    photo.len() <= MAX_PHOTO_CHARS
-        && PHOTO_PREFIXES.iter().any(|prefix| {
-            photo.strip_prefix(prefix).is_some_and(|data| {
-                !data.is_empty()
-                    && data
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
-            })
-        })
+    collab_types::photo(photo).is_ok_and(|kept| kept.is_some())
 }
 
 /// The root the profile `text` (JSON) belongs to, once it reads.
@@ -189,6 +175,9 @@ pub(super) struct Profiles {
     /// The name each person's kept profile gives, once read: `None` for a person whose server
     /// keeps none. A profile kept here moves it.
     names: std::sync::Mutex<std::collections::HashMap<[u8; 32], Option<String>>>,
+    /// The picture each person's kept profile carries, once read, as its image's own bytes: a
+    /// profile kept here moves it.
+    photos: std::sync::Mutex<std::collections::HashMap<[u8; 32], Option<Vec<u8>>>>,
 }
 
 fn root_of(text: &str) -> Option<[u8; 32]> {
@@ -208,6 +197,7 @@ impl Profiles {
             dir,
             write: std::sync::Mutex::new(()),
             names: std::sync::Mutex::default(),
+            photos: std::sync::Mutex::default(),
         }
     }
 
@@ -284,6 +274,7 @@ impl Profiles {
             },
         )?;
         self.names.lock_recover().remove(&root);
+        self.photos.lock_recover().remove(&root);
         Ok(root)
     }
 
@@ -310,6 +301,22 @@ impl Profiles {
             .filter(|name| !name.trim().is_empty());
         self.names.lock_recover().insert(*root, name.clone());
         name
+    }
+
+    /// The picture the profile kept for `root` carries, as the image's own bytes: what every
+    /// surface showing them as an author draws. `None` before they set one. Read once per
+    /// person, then from memory until their profile changes.
+    pub(super) fn kept_photo(&self, root: &[u8; 32]) -> Option<Vec<u8>> {
+        let known = self.photos.lock_recover().get(root).cloned();
+        if let Some(known) = known {
+            return known;
+        }
+        let photo = Self::kept(&self.path(root))
+            .and_then(|kept| serde_json::from_str::<serde_json::Value>(&kept.profile).ok())
+            .and_then(|profile| profile.get("photo")?.as_str().map(str::to_owned))
+            .and_then(|photo| collab_types::photo_bytes(&photo));
+        self.photos.lock_recover().insert(*root, photo.clone());
+        photo
     }
 
     /// Keep `name` as the one the person `root` goes by, as a device of theirs asked this
@@ -373,6 +380,10 @@ impl crate::workspaces::PersonNames for Profiles {
     fn keep_name(&self, person: &[u8; 32], name: &str) -> Result<(), String> {
         Self::keep_name(self, person, name, tilo_clock::unix_now_ms())
             .map_err(|refusal| refusal.message().to_owned())
+    }
+
+    fn photo_of(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
+        self.kept_photo(person)
     }
 }
 
@@ -518,6 +529,11 @@ mod tests {
             .await
             .expect("kept with a picture");
         assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(pictured));
+        assert_eq!(
+            profiles.kept_photo(&root.verifying_key().to_bytes()),
+            Some(b"RIFF".to_vec()),
+            "the picture every surface showing them as an author draws"
+        );
         let answer = profiles.answer(hex_root.as_bytes()).expect("a root");
         assert!(String::from_utf8_lossy(&answer).contains(r#""issued_at_ms":4000"#));
         // Only a bounded image, never a link elsewhere or a script.

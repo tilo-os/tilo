@@ -409,11 +409,13 @@ mod tests {
             identity: mia_id(),
             name: "Mia".to_owned(),
             hue: crate::tokens::PresenceHue::Violet,
+            picture: None,
         };
         let sam = Person {
             identity: sam_id(),
             name: "Sam".to_owned(),
             hue: crate::tokens::PresenceHue::Cyan,
+            picture: None,
         };
         (vec![mia.clone(), sam], mia)
     }

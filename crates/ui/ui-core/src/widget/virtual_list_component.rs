@@ -1392,7 +1392,9 @@ fn message_of(
         let row = row_of(rows, key, feel, None, RowBuild::default());
         return page_row(under_unread(row, first_unread), RUN_GAP, measure);
     };
-    let avatar = Avatar::person(author.name.clone(), author.identity.id());
+    // The author's face as every surface draws a member: an agent's mark or a person's disc,
+    // in the hue the workspace wears them in, showing the picture they set where they set one.
+    let avatar = Avatar::of(author.clone());
     let message = Row::row().fill_width().align(Align::Start);
     let message = if continues {
         message.push(Box::new(avatar.placeholder()))
@@ -2158,6 +2160,7 @@ mod tests {
                     identity: tilo_actions::MemberId::person(format!("person-{index}")).into(),
                     name: format!("Writer {index}"),
                     hue: crate::tokens::PresenceHue::of_identity(&format!("person-{index}")),
+                    picture: None,
                 }),
                 time: Some(Moment(*said)),
                 read_by: read_by(index),

@@ -185,8 +185,8 @@ mod platform;
 
 pub use platform::{
     GlobalLocale, Locale, Platform, PlatformBlobs, PlatformClipboard, PlatformFiles, PlatformFonts,
-    PlatformWeb, PlatformWords, SharedCanvas, SharedPdf, Zoned, sentence_at, shown_at,
-    wall_moment, wall_now,
+    PlatformWeb, PlatformWords, SharedCanvas, SharedPdf, Zoned, sentence_at, shown_at, wall_moment,
+    wall_now,
 };
 #[cfg(all(not(target_family = "wasm"), feature = "test-support"))]
 pub mod testing;
@@ -226,6 +226,10 @@ impl NameHost for SharedNames {
 
     fn hue(&self, who: &Actor) -> Option<u8> {
         self.0.hue(who)
+    }
+
+    fn picture(&self, who: &Actor) -> Option<String> {
+        self.0.picture(who)
     }
 }
 
@@ -2625,15 +2629,17 @@ impl Instance {
         self.host().is_some_and(|host| host.follow_members())
     }
 
-    /// What the workspace calls the person `me` and each of `others` by id now, and the colour
-    /// it paints each member in (`hues`), as its member list says: the views show people by these.
+    /// What the workspace calls the person `me` and each of `others` by id now, the colour it
+    /// paints each member in (`hues`) and the picture each set (`pictures`), as its member list
+    /// says: the views show people by these.
     pub fn name_people(
         &mut self,
         me: String,
         others: Vec<(MemberId, String)>,
         hues: Vec<(MemberId, u8)>,
+        pictures: Vec<(MemberId, String)>,
     ) {
-        if self.told.tell(me, others, hues) {
+        if self.told.tell(me, others, hues, pictures) {
             self.person_changed = true;
         }
     }

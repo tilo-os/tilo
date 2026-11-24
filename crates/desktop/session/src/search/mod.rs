@@ -2524,6 +2524,7 @@ mod tests {
         let (id, name) = ("helper".to_owned(), "Helper".to_owned());
         let workspace = ws.clone();
         search.set_listed_agents(&[ListedAgent {
+            avatar: None,
             workspace,
             id: id.clone(),
             name: name.clone(),
@@ -2593,12 +2594,14 @@ mod tests {
         );
         search.set_listed_agents(&[
             ListedAgent {
+                avatar: None,
                 workspace: ws.clone(),
                 id: "video-agent".to_owned(),
                 name: "Video agent".to_owned(),
                 retired: false,
             },
             ListedAgent {
+                avatar: None,
                 workspace: ws.clone(),
                 id: "old-video".to_owned(),
                 name: "Old video".to_owned(),
@@ -2631,6 +2634,9 @@ pub(crate) struct ListedAgent {
     pub workspace: String,
     pub id: String,
     pub name: String,
+    /// The picture it wears wherever an author is shown, as a `data:` URL; none shows its
+    /// initials.
+    pub avatar: Option<String>,
     /// It was retired: it takes no new work, and what it said before stays named by it.
     pub retired: bool,
 }

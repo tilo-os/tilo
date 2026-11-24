@@ -427,10 +427,12 @@ impl Adapter {
                 identity,
                 name,
                 hue,
+                picture,
             } => Value::Actor(crate::Actor {
                 id: identity.clone(),
                 name: name.clone(),
                 hue: *hue,
+                picture: picture.clone(),
             }),
             // What a drop carries: the card and its place.
             Prop::List(items) => Value::List(
@@ -723,6 +725,7 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
             identity: who.id.clone(),
             name: who.name.clone(),
             hue: who.hue,
+            picture: who.picture.clone(),
         },
         (Type::Resource, Value::Ref(reference)) => {
             reconciler.adapter().given(reference);

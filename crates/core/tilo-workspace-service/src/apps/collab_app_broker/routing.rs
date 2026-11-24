@@ -808,25 +808,38 @@ impl AppBrokerState {
             .find(|named| named.id == agent)
             .map_or_else(|| agent.to_owned(), |named| named.name.clone())
     }
-    /// The agents in a workspace, named as its record of its agents names them: those its grants
-    /// admit, and those only the record names.
+    /// The agents in a workspace, named and pictured as its record of its agents names them:
+    /// those its grants admit, and those only the record names.
     pub(super) fn named_agent_members(
-        mut agents: Vec<(String, String)>,
+        mut agents: Vec<(String, String, Option<String>)>,
         listed: Vec<crate::apps::services::ListedAgent>,
-    ) -> Vec<(String, String)> {
+    ) -> Vec<(String, String, Option<String>)> {
         for named in listed {
-            match agents.iter_mut().find(|(agent, _)| *agent == named.id) {
-                Some((_, name)) => name.clone_from(&named.name),
-                None => agents.push((named.id, named.name)),
+            match agents.iter_mut().find(|(agent, _, _)| *agent == named.id) {
+                Some((_, name, avatar)) => {
+                    name.clone_from(&named.name);
+                    avatar.clone_from(&named.avatar);
+                }
+                None => agents.push((named.id, named.name, named.avatar)),
             }
         }
         agents.sort_by(|left, right| left.0.cmp(&right.0));
         agents
     }
+    /// The picture `person` (their root, bytes) set in their profile, as the image's own bytes:
+    /// what a member row showing them as an author draws. `None` where this host keeps none.
+    pub(super) fn person_photo(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
+        self.services
+            .workspace_memberships
+            .as_ref()?
+            .person_photo(person)
+            .filter(|photo| !photo.is_empty())
+    }
     /// The workspace's people as member rows, in id order, then those it removed: presence may
     /// supply a label, but only owner-backed membership supplies the identity. An offline member
     /// remains a member.
     pub(super) fn people_members(
+        &self,
         workspace: &tilo_desktop_model::Workspace,
     ) -> Vec<collab_types::Member> {
         let mut people: Vec<(String, tilo_action_policy::Role)> = workspace
@@ -860,6 +873,17 @@ impl AppBrokerState {
                     &collab_types::Person::new(person.clone(), name).wearing(colour),
                     Some(role),
                 );
+                // The picture they set in their profile, as the image's own bytes: every
+                // surface showing them as an author draws it.
+                let root = tilo_failure::ignored!(
+                    "a member list row names a person by their root key",
+                    hex::decode(&person)
+                        .ok()
+                        .and_then(|root| <[u8; 32]>::try_from(root).ok())
+                );
+                member.avatar = root
+                    .and_then(|root| self.person_photo(&root))
+                    .map(collab_types::AvatarBytes);
                 member.joined_at = workspace.policy.joined_at(&person);
                 member
             })
@@ -890,13 +914,13 @@ impl AppBrokerState {
             .ok_or("native context has no membership authority")?
             .decide_in_workspace(&route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("native context workspace is unavailable")?;
-                let agents: Vec<(String, String)> = workspace
+                let agents: Vec<(String, String, Option<String>)> = workspace
                     .policy
                     .agent_members_at(now)
                     .into_iter()
-                    .map(|(agent, _)| (agent.clone(), agent))
+                    .map(|(agent, _)| (agent.clone(), agent, None))
                     .collect();
-                let people = Self::people_members(workspace);
+                let people = self.people_members(workspace);
                 Ok::<_, &str>((agents, people))
             })??;
         let listed = self
@@ -917,10 +941,12 @@ impl AppBrokerState {
                 members.push(row);
             }
         }
-        for (agent, name) in agents {
+        for (agent, name, avatar) in agents {
             tilo_peer_state::workspace_membership::valid_agent_id(&agent)
                 .map_err(|_| "native context contains a noncanonical agent identity")?;
-            let row = collab_types::Member::of_software(collab_types::MemberId::agent(agent), name);
+            let mut row =
+                collab_types::Member::of_software(collab_types::MemberId::agent(agent), name);
+            row.avatar = avatar.as_deref().and_then(collab_types::avatar_of);
             if row.id == self_id {
                 mine = Some(row);
             } else {
@@ -1049,6 +1075,7 @@ impl AppBrokerState {
                 && left.iter().zip(right).all(|(left, right)| {
                     left.id == right.id
                         && left.name == right.name
+                        && left.avatar == right.avatar
                         && left.packed_colour() == right.packed_colour()
                         && left.is_self == right.is_self
                         && left.removed == right.removed

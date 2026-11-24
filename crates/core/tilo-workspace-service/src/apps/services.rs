@@ -70,6 +70,14 @@ pub trait WorkspaceMemberships: Send + Sync {
         caller: tilo_user_identity::DeviceCert,
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
     ) -> WorkspaceMembershipFuture;
+
+    /// The picture `person` (their root, bytes) set in their profile, as the image's own bytes:
+    /// what a member row an app reads shows wherever it names them as an author. `None` before
+    /// they set one, or where this host keeps no profile for them.
+    fn person_photo(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
+        let _ = person;
+        None
+    }
 }
 
 /// A membership command on its way into the workspace it changes.

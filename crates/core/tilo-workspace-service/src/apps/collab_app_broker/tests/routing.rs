@@ -1116,3 +1116,184 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// The roster an app reads names each member as they set themselves: the picture a person keeps
+/// in their profile, and an agent's persona from the workspace's record of its agents. What a
+/// window draws as an author's face comes from these rows.
+#[tokio::test(flavor = "current_thread")]
+async fn the_member_list_draws_a_persons_profile_picture_and_an_agents_persona() {
+    /// The image a person set, and the picture an agent's persona keeps: a 1-by-1 PNG.
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x1a\n\x00\x00\x00\rIHDR";
+    const PERSONA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX///+nxBvIAAAAAXRSTlMAQObYZgAAAAxJREFUeNoBgAEAAP//AwABWgH+AAAAAElFTkSuQmCC";
+
+    struct Photos([u8; 32]);
+
+    impl crate::apps::services::WorkspaceMemberships for Photos {
+        fn requires_workspace(&self, _: &str) -> bool {
+            true
+        }
+
+        fn execute(
+            &self,
+            _: String,
+            _: tilo_user_identity::DeviceCert,
+            _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+        ) -> crate::apps::services::WorkspaceMembershipFuture {
+            Box::pin(async { Err("roster fixture never commits owner state".into()) })
+        }
+
+        fn person_photo(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
+            (person == &self.0).then(|| PNG.to_vec())
+        }
+    }
+
+    struct Scouts;
+
+    impl crate::apps::services::AgentRoster for Scouts {
+        fn listed(&self, _: &str) -> Vec<crate::apps::services::ListedAgent> {
+            vec![crate::apps::services::ListedAgent {
+                id: "scout".to_owned(),
+                name: "Scout".to_owned(),
+                avatar: Some(PERSONA.to_owned()),
+                acts_for: String::new(),
+            }]
+        }
+    }
+
+    let root = SigningKey::from_bytes(&[52; 32]);
+    let person = person_id_for_root(root.verifying_key().to_bytes());
+    let mut workspace = crate::apps::test_support::Workspace::new(
+        crate::apps::test_support::WorkspaceId::from_u128(52),
+        "Personas",
+    );
+    workspace.set_owner(person.clone());
+    workspace.members.push(collab_types::Member::of_person(
+        &collab_types::Person::new(person, "Ada"),
+        None,
+    ));
+    let cluster_id = workspace.id().to_string();
+    let mut tree = WorkspaceTree::default();
+    tree.workspaces.push(workspace);
+    let route = CrdtRoute::record("so.tilo.lang.chat", &cluster_id, "main");
+    let admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
+    let fanout = Arc::new(FanoutState::new());
+    let (state, _bridge_rx) = AppBrokerState::new_configured(
+        &fanout,
+        Arc::new(Mutex::new(BrokerChannels::default())),
+        PeerPublisher::disabled(),
+        Some(tree.shared().authority()),
+        None,
+        None,
+        ProcessServices {
+            workspace_memberships: Some(Arc::new(Photos(root.verifying_key().to_bytes()))),
+            agents: Some(Arc::new(Scouts)),
+            ..Default::default()
+        },
+    );
+    fanout.attach_app_broker(state.clone());
+    let roster = state.native_membership_roster(&route, &admitted).unwrap();
+    let me = roster.iter().find(|row| row.is_self).expect("Ada's row");
+    assert_eq!(
+        me.avatar.as_ref().map(|avatar| avatar.0.as_slice()),
+        Some(PNG),
+        "the picture Ada set in her profile: {me:?}"
+    );
+    let scout = roster
+        .iter()
+        .find(|row| row.id == collab_types::MemberId::agent("scout"))
+        .expect("Scout's row");
+    assert_eq!(scout.name, "Scout", "the audience reads its persona's name");
+    assert_eq!(
+        scout.avatar,
+        collab_types::avatar_of(PERSONA),
+        "and the picture its persona keeps"
+    );
+}
+
+/// The member list a daemon serves pictures a person whose profile the host keeps: another
+/// member reading it sees their face, though the two are on different devices and the daemon is
+/// the only place the profile lives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_members_picture_reaches_another_member_through_the_daemons_member_list() {
+    use crate::workspaces::PersonNames;
+    use crate::workspaces::fixtures::{governor, test_host};
+
+    /// A picture a profile keeps: a 1-by-1 PNG.
+    const PHOTO: &[u8] = b"\x89PNG\r\n\x1a\n\x1a\n\x00\x00\x00\rIHDR";
+
+    struct KeptPhotos([u8; 32]);
+
+    impl PersonNames for KeptPhotos {
+        fn name_of(&self, _: &[u8; 32]) -> Option<String> {
+            None
+        }
+
+        fn keep_name(&self, _: &[u8; 32], _: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn photo_of(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
+            (person == &self.0).then(|| PHOTO.to_vec())
+        }
+    }
+
+    // The hosted daemon: a workspace service keeping its member's profile.
+    let dir = tempfile::tempdir().expect("a state directory");
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    host.workspaces()
+        .person_names(Arc::new(KeptPhotos(cert.user_public_key)));
+
+    // Ada holds the workspace here; Bo reads it from another device.
+    let ada = person_id_for_root(cert.user_public_key);
+    let bo_root = SigningKey::from_bytes(&[53; 32]);
+    let bo = hex::encode(bo_root.verifying_key().to_bytes());
+    let mut workspace = crate::apps::test_support::Workspace::new(
+        crate::apps::test_support::WorkspaceId::from_u128(53),
+        "Pictured",
+    );
+    workspace.set_owner(ada.clone());
+    workspace.members.push(collab_types::Member::of_person(
+        &collab_types::Person::new(ada, "Ada"),
+        None,
+    ));
+    workspace.admit(bo.clone(), crate::apps::test_support::Role::Editor);
+    let cluster_id = workspace.id().to_string();
+    let mut tree = WorkspaceTree::default();
+    tree.workspaces.push(workspace);
+
+    let route = CrdtRoute::record("so.tilo.lang.chat", &cluster_id, "main");
+    let admitted = admit_verified_join(&tree, &route, verified_device(&bo_root)).unwrap();
+    let fanout = Arc::new(FanoutState::new());
+    let (state, _bridge_rx) = AppBrokerState::new_configured(
+        &fanout,
+        Arc::new(Mutex::new(BrokerChannels::default())),
+        PeerPublisher::disabled(),
+        Some(tree.shared().authority()),
+        None,
+        None,
+        ProcessServices {
+            // The service the daemon installs on its broker.
+            workspace_memberships: Some(crate::workspaces::ProfileMemberships::new(
+                host.workspaces().clone(),
+                tree.shared().authority(),
+            )
+                as Arc<dyn crate::apps::services::WorkspaceMemberships>),
+            ..Default::default()
+        },
+    );
+    fanout.attach_app_broker(state.clone());
+    let members = state.native_membership_roster(&route, &admitted).unwrap();
+    let ada = members
+        .iter()
+        .find(|row| {
+            row.id == collab_types::MemberId::person(person_id_for_root(cert.user_public_key))
+        })
+        .expect("Ada's row");
+    assert_eq!(
+        ada.avatar.as_ref().map(|avatar| avatar.0.as_slice()),
+        Some(PHOTO),
+        "the picture her profile holds reaches the member list another member reads: {ada:?}"
+    );
+    host.shutdown().await;
+}

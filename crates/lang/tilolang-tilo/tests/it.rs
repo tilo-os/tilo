@@ -20,6 +20,7 @@ mod bundle;
 mod capture;
 mod chained;
 mod chat;
+mod chat_persona_shot;
 mod composer;
 mod contacts;
 mod direct_readers;

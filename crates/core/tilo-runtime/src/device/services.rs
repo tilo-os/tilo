@@ -1613,6 +1613,14 @@ fn broker_services(
             person: parts.person,
             apps: Arc::clone(parts.apps),
         })),
+        // Who is in each workspace this host holds, for the apps it serves: their names and the
+        // picture each person set in the profile kept here.
+        workspace_memberships: Some(tilo_workspace_service::workspaces::ProfileMemberships::new(
+            parts.workspaces.copies().clone(),
+            Arc::clone(parts.workspaces)
+                as tilo_workspace_service::apps::services::WorkspaceAuthorityHandle,
+        )
+            as Arc<dyn tilo_workspace_service::apps::services::WorkspaceMemberships>),
         journal_root: Some(parts.root.join(INVOCATION_JOURNAL)),
         // What a caller puts into a workspace here is kept on the shelf its records' content is.
         content_store: parts

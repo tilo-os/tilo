@@ -604,6 +604,7 @@ impl Agents {
             // Until it does, or where the workspace's grants refuse the person, the tab still
             // lists the agent from its grants.
             let request = AgentsChange::Create(actions::CreateAgent {
+                avatar: None,
                 name,
                 id: Some(agent.clone()),
                 model,
@@ -729,6 +730,7 @@ impl Agents {
         let id = self.ask(
             workspace,
             AgentsChange::Create(actions::CreateAgent {
+                avatar: None,
                 name: name.clone(),
                 id,
                 model: (!model.is_empty()).then(|| model.to_owned()),
@@ -736,6 +738,28 @@ impl Agents {
             }),
         )?;
         Ok((id, name.as_str().to_owned()))
+    }
+
+    /// Set the picture `agent` wears wherever an author is shown, as the picture a profile keeps:
+    /// a bounded `data:` URL of a small raster image, or none for its initials.
+    ///
+    /// # Errors
+    /// The workspace's grants refuse the change.
+    #[cfg(test)]
+    pub(crate) fn set_avatar(
+        &self,
+        workspace: Option<&Workspace>,
+        agent: &str,
+        avatar: Option<&str>,
+    ) -> Result<(), String> {
+        self.ask(
+            workspace,
+            AgentsChange::Update(actions::SET_AGENT_AVATAR.with(actions::SetAgentAvatar {
+                agent: Id::from_raw(agent.to_owned()),
+                avatar: avatar.map(str::to_owned),
+            })),
+        )
+        .map(drop)
     }
 
     /// The active agent `person` keeps in `workspace` for the MCP client `client`, with the name

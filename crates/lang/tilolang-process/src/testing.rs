@@ -150,10 +150,17 @@ pub struct Directory {
 #[derive(Default)]
 pub struct Bus {
     joined: RefCell<Vec<(RouteSpec, String, Inbox)>>,
-    /// The workspace's members, people and software, with their names.
-    members: RefCell<Vec<(collaboration::MemberId, String)>>,
+    /// The workspace's members, people and software.
+    members: RefCell<Vec<MemberRow>>,
     /// The workspace's one store.
     workspace: Rc<Workspace>,
+}
+
+/// One member of a test's workspace: who, what they are called, and the picture they set.
+struct MemberRow {
+    who: collaboration::MemberId,
+    name: String,
+    avatar: Option<collab_types::AvatarBytes>,
 }
 
 impl Bus {
@@ -165,10 +172,25 @@ impl Bus {
 
     /// The workspace has the member `who`, named `name`: every connection is told.
     pub fn member(&self, who: collaboration::MemberId, name: &str) {
+        self.member_with_avatar(who, name, None);
+    }
+
+    /// The workspace has the member `who`, named `name` and pictured as `avatar`, the image's
+    /// own bytes: every connection is told.
+    pub fn member_with_avatar(
+        &self,
+        who: collaboration::MemberId,
+        name: &str,
+        avatar: Option<collab_types::AvatarBytes>,
+    ) {
         {
             let mut members = self.members.borrow_mut();
-            members.retain(|(held, _)| *held != who);
-            members.push((who, name.to_owned()));
+            members.retain(|held| held.who != who);
+            members.push(MemberRow {
+                who,
+                name: name.to_owned(),
+                avatar,
+            });
         }
         let joined: Vec<(String, Inbox)> = self
             .joined

@@ -1,6 +1,6 @@
 //! [`Button`] as a described component.
 
-use crate::component::{Component, Described, Event};
+use crate::component::{Component, Described, Event, Person};
 use crate::icons::Icon;
 use crate::widget::{ButtonRole, ControlSize};
 
@@ -30,8 +30,8 @@ pub struct ButtonProps {
     /// Show only the icon, the label naming the button to assistive technology.
     pub icon_only: bool,
     /// Who is here, as their faces: up to three faces, then a face counting the rest, and nothing else on
-    /// the button at any width.
-    pub faces: Vec<String>,
+    /// the button at any width. Each is the member, so their face wears the picture they set.
+    pub faces: Vec<Person>,
     /// What kind of action it is: `secondary` unless said, `plain` for an icon-only one.
     pub role: Option<ButtonRole>,
     /// A toggle button, and whether it is on: on, it stands on a lift of its ground and is announced as
@@ -117,7 +117,7 @@ impl Described for Button {
             _ if !faces.is_empty() => Self::new(key, "")
                 .with_accessible_name(&label)
                 .tooltip(label.clone())
-                .with_faces(faces),
+                .with_faces_of(faces),
             Some(icon) if icon_only => Self::icon_only(key, icon, &label),
             Some(icon) => Self::new(key, &label).with_icon(icon),
             None => Self::new(key, &label),

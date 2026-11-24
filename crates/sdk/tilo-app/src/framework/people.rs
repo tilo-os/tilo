@@ -114,6 +114,7 @@ impl Actor {
             identity: tilo_actions::Actor::Member(member),
             name: self.name.clone(),
             hue: self.hue,
+            picture: None,
         }
     }
 }
@@ -428,6 +429,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                             identity: tilo_actions::Actor::Member(member.id.clone()),
                             name: member.name.clone(),
                             hue: member.hue,
+                            picture: None,
                         }),
                         held_action.clone(),
                     ));

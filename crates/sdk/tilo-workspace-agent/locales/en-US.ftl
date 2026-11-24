@@ -5,6 +5,7 @@ tilo-workspace-agent-create-agent = Create agent
 tilo-workspace-agent-set-agent-spend-limit = Set daily spend limit
 tilo-workspace-agent-record-agent-spend = Record spend
 tilo-workspace-agent-rename-agent = Rename agent
+tilo-workspace-agent-set-agent-avatar = Set agent picture
 tilo-workspace-agent-set-agent-model = Choose agent model
 tilo-workspace-agent-set-agent-instruction = Tell agent how to work
 tilo-workspace-agent-set-agent-bound = Set agent bounds

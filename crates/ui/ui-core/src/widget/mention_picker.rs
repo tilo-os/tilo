@@ -191,6 +191,7 @@ fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggest
             identity: candidate.id.clone().into(),
             name: candidate.name.clone(),
             hue: candidate.hue,
+            picture: None,
         });
     match detail {
         Some(detail) => row.with_detail(detail),

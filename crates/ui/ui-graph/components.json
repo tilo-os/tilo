@@ -444,9 +444,9 @@
         },
         {
           "name": "faces",
-          "doc": "Who is here, as their faces: up to three faces, then a face counting the rest, and nothing else on the button at any width.",
+          "doc": "Who is here, as their faces: up to three faces, then a face counting the rest, and nothing else on the button at any width. Each is the member, so their face wears the picture they set.",
           "type": {
-            "list": "text"
+            "list": "actor"
           }
         },
         {
@@ -1576,9 +1576,9 @@
         },
         {
           "name": "faces",
-          "doc": "Whose menu it is, as their faces in place of the label and icon: the person's own menu on a bar is their face, one person's at an avatar's full size. The label names it to assistive technology.",
+          "doc": "Whose menu it is, as their faces in place of the label and icon: the person's own menu on a bar is their face, one person's at an avatar's full size, wearing the picture they set. The label names it to assistive technology.",
           "type": {
-            "list": "text"
+            "list": "actor"
           }
         },
         {

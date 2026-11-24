@@ -1,6 +1,8 @@
 //! A menu's commands and the button that opens them as described components.
 
-use crate::component::{Component, Described, Event, OfferedAction, PartType, ResourceId, Source};
+use crate::component::{
+    Component, Described, Event, OfferedAction, PartType, Person, ResourceId, Source,
+};
 use crate::icons::Icon;
 use crate::widget::{ButtonRole, MenuEntry, Press};
 
@@ -185,9 +187,9 @@ pub struct MenuButtonProps {
     /// Show only the icon, the label naming the button to assistive technology.
     pub icon_only: bool,
     /// Whose menu it is, as their faces in place of the label and icon: the person's own menu
-    /// on a bar is their face, one person's at an avatar's full size. The label names it to
-    /// assistive technology.
-    pub faces: Vec<String>,
+    /// on a bar is their face, one person's at an avatar's full size, wearing the picture they
+    /// set. The label names it to assistive technology.
+    pub faces: Vec<Person>,
     /// What kind of button it is: `secondary` unless said, `plain` for an icon-only one.
     pub role: Option<ButtonRole>,
     /// Actions offered on something (`actions(r)`), each a command after `items`.
@@ -206,7 +208,7 @@ fn face(
     label: String,
     icon: Option<Icon>,
     icon_only: bool,
-    faces: Vec<String>,
+    faces: Vec<Person>,
     role: Option<ButtonRole>,
 ) -> crate::widget::Button {
     // One person's own menu is their avatar, whole: the menu stands behind their face as it
@@ -215,14 +217,14 @@ fn face(
         return crate::widget::Button::new(key, "")
             .with_accessible_name(&label)
             .tooltip(label)
-            .with_avatar(crate::component::Person::named(only.clone()))
+            .with_avatar(only.clone())
             .role(role.unwrap_or(ButtonRole::Plain));
     }
     if !faces.is_empty() {
         return crate::widget::Button::new(key, "")
             .with_accessible_name(&label)
             .tooltip(label)
-            .with_faces(faces)
+            .with_faces_of(faces)
             .role(role.unwrap_or(ButtonRole::Plain));
     }
     match icon {

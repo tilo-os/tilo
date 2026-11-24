@@ -28,6 +28,14 @@ pub trait PersonNames: Send + Sync {
     ///
     /// It could not be kept, named with why.
     fn keep_name(&self, person: &[u8; 32], name: &str) -> Result<(), String>;
+
+    /// The picture `person` set in their profile, as the image's own bytes: what every surface
+    /// that shows them as an author draws. `None` before they set one, or where this host keeps
+    /// their profile without its picture.
+    fn photo_of(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
+        let _ = person;
+        None
+    }
 }
 
 impl Workspaces {
@@ -64,6 +72,18 @@ impl Workspaces {
             .as_ref()?
             .name_of(person)
             .filter(|name| !name.trim().is_empty())
+    }
+
+    /// The picture `person` set in their profile, as its image bytes: what a surface showing
+    /// them as an author draws. `None` before they set one.
+    #[must_use]
+    pub fn person_profile_photo(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
+        self.inner
+            .person_names
+            .read_recover()
+            .as_ref()?
+            .photo_of(person)
+            .filter(|photo| !photo.is_empty())
     }
 
     /// Keep `name` as `person`'s, then name them by it in every workspace governed here that they

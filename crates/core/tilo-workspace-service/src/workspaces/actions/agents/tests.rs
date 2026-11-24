@@ -282,6 +282,7 @@ async fn set_under_agents(
                 agents
                     .apply(
                         WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                            avatar: None,
                             name: NonBlank::parse("Claude").unwrap(),
                             id: Some("claude".into()),
                             model: None,

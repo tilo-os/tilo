@@ -19,6 +19,7 @@ pub(super) fn with_main() -> Replica<WorkspaceAgents> {
     record
         .apply(
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                avatar: None,
                 name: NonBlank::parse("Assistant").expect("a name"),
                 id: Some(MAIN.to_owned()),
                 model: None,
@@ -570,6 +571,7 @@ fn a_sub_agent_changes_nothing_of_the_workspaces_agents_but_its_own_team() {
         (
             "make an agent nothing binds",
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                avatar: None,
                 name: NonBlank::parse("Free").expect("a name"),
                 id: None,
                 model: None,

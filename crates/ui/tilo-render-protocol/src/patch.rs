@@ -172,6 +172,10 @@ pub struct Actor {
     /// and the window derives it from `id` by the same rule.
     #[serde(default)]
     pub hue: Option<u8>,
+    /// The picture the workspace shows for them, as the address a face reads its bytes from (a
+    /// `data:` or `tilo-blob://` URL). `None` shows their initials.
+    #[serde(default)]
+    pub picture: Option<String>,
 }
 
 /// A value a node holds: the language's values as a view shows them. Formatting (a date the
@@ -1046,6 +1050,7 @@ mod tests {
                 id: tilo_actions::MemberId::person(id).into(),
                 name: id.to_owned(),
                 hue: None,
+                picture: None,
             })
         };
         let reactions = Value::Map(vec![

@@ -32,6 +32,16 @@ pub fn set(person: &str, image: Option<ImageData>) {
     GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 
+/// `person` wears the picture `bytes` encode (a member list's `avatar`), or their initials when
+/// they carry none: what a roster hands the faces that show them, so every chip and author line
+/// draws the picture without each card learning to read one.
+pub fn set_encoded(person: &str, bytes: Option<&[u8]>) {
+    if person.is_empty() {
+        return;
+    }
+    set(person, bytes.and_then(crate::image_decoders::page));
+}
+
 /// `identity` (a device's key, say) is `person`'s.
 pub fn alias(identity: &str, person: &str) {
     if identity == person {

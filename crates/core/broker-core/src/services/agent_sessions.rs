@@ -53,6 +53,9 @@ pub fn session_answer_id(
 pub struct ListedAgent {
     pub id: String,
     pub name: String,
+    /// The picture it wears wherever an author is shown, as a `data:` URL; none shows its
+    /// initials.
+    pub avatar: Option<String>,
     /// The person the agent acts for.
     pub acts_for: String,
 }

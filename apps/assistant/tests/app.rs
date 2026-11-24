@@ -411,6 +411,7 @@ fn a_window_opened_before_the_agents_arrive_shows_them_when_they_do() {
         agents
             .invoke(
                 &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    avatar: None,
                     name: NonBlank::parse("Assistant").expect("a name"),
                     id: Some("assistant".to_owned()),
                     model: None,

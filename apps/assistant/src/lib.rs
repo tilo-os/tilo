@@ -170,6 +170,7 @@ impl Hands {
         agents
             .invoke(
                 &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    avatar: None,
                     name,
                     id: Some(id),
                     model: None,

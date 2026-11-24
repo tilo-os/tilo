@@ -498,6 +498,10 @@ pub enum Value {
         name: String,
         #[serde(default)]
         hue: Option<u8>,
+        /// The address of their picture (a `data:` or `tilo-blob://` URL), when the workspace
+        /// shows one; `None` shows their initials.
+        #[serde(default)]
+        picture: Option<String>,
     },
     /// A resource, by its id.
     Resource(String),
