@@ -2,9 +2,11 @@
 //! transport.
 
 mod document;
+mod facts;
 mod landing;
 mod sniff;
 pub use document::{DocumentFormat, RECORDING, RECORDING_MAGIC, document_format, opened_by};
+pub use facts::{FACTS_SCAN_BYTES, MediaFacts, facts, has_facts};
 pub use landing::{HEAD_BYTES, Landing, Takes, landing, landing_in};
 pub use sniff::{ImageFormat, image_format, image_size, sniff};
 
