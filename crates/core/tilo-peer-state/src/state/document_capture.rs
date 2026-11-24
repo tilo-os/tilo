@@ -413,22 +413,10 @@ impl StatePeer {
         // A resource store's change reads the kinds of the records it writes from the changes it
         // builds on. Where this device holds the record without them (it holds it sealed), it
         // decides the write by the kinds its claims name, checked above against the changes it
-        // carries, as a device without the key decides it. Claims that name no kinds yet (the
-        // writer's own draft, before its store names them) leave it to where it is admitted.
-        if let collab_types::DocumentMutation::Incremental(bytes) = mutation
-            && collab_types::is_store_document(record)
-            && !self.holds_what_changes_build_on((app, record), bytes)
+        // carries, as a device without the key decides it.
+        if self.store_write_without_its_base((app, record), mutation)
+            && !claims_name_no_kinds(write)
         {
-            let unnamed = write.claims.is_empty()
-                || write.claims.iter().any(|claim| {
-                    collab_types::claim::whole_edit_kinds(&claim.action)
-                        .is_some_and(|kinds| kinds.is_empty())
-                });
-            if unnamed {
-                return Err(OpenedRefusal::CannotDecide(
-                    "the record is held here without the changes the write builds on".into(),
-                ));
-            }
             return self.decide_opened(app, record, write, (write, None));
         }
         let mut opened = write.clone();
@@ -467,6 +455,18 @@ impl StatePeer {
                 self.decide_opened(app, record, write, (&opened, Some(&changes)))
             }
         }
+    }
+
+    /// Whether `mutation` is a change of a resource store's record that builds on changes this
+    /// state does not hold of it.
+    fn store_write_without_its_base(
+        &self,
+        (app, record): (&str, &str),
+        mutation: &collab_types::DocumentMutation,
+    ) -> bool {
+        matches!(mutation, collab_types::DocumentMutation::Incremental(bytes)
+            if collab_types::is_store_document(record)
+                && !self.holds_what_changes_build_on((app, record), bytes))
     }
 
     /// Whether this state holds every change that the changes `bytes` encode build on, in
@@ -539,6 +539,13 @@ impl StatePeer {
         collab_types::claim::check_claimed(write).map_err(|unclaimed| {
             WriteRefusal::Refused(format!("{record} of {app}: {unclaimed}"))
         })?;
+        // The writer's own draft names no kinds before its store names them: where this device
+        // holds the record without what the draft builds on, it cannot read them either, and the
+        // write is decided where it is admitted.
+        if self.store_write_without_its_base((app, record), mutation) && claims_name_no_kinds(write)
+        {
+            return Ok(());
+        }
         match self.check_opened_write((app, record), write, mutation) {
             Ok(()) | Err(OpenedRefusal::CannotDecide(_)) => Ok(()),
             Err(OpenedRefusal::Refused(refused)) => Err(WriteRefusal::ChangeRefused(refused)),
@@ -1103,4 +1110,14 @@ fn name_refused(
             });
         }
     }
+}
+
+/// Whether `write`'s claims name none of the kinds it writes: the writer's own draft, before its
+/// store names them.
+fn claims_name_no_kinds(write: &SignedOp) -> bool {
+    write.claims.is_empty()
+        || write.claims.iter().any(|claim| {
+            collab_types::claim::whole_edit_kinds(&claim.action)
+                .is_some_and(|kinds| kinds.is_empty())
+        })
 }
