@@ -115,6 +115,9 @@ where
     H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
 {
     fn exchange(&mut self, request: Value) -> Result<Option<Value>> {
-        Ok(tilo_rt::app().handle().block_on(self.0.handle(request)))
+        // A step of a migration runs on a thread of its own, never one of the runtime's.
+        tilo_rt::app()
+            .block_on(self.0.handle(request))
+            .map_err(|error| anyhow!("the session could not be asked: {error}"))
     }
 }

@@ -174,7 +174,9 @@ fn a_commands_migration_steps_reach_the_devices_own_migrations() {
         .expect("the daemon answered")
         .expect("the person's step is admitted");
     let mut status = receipt.status;
-    let until = std::time::Instant::now() + tilo_test_env::hang_bound();
+    let until = std::time::Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .expect("a time in reach");
     let answer = loop {
         match status {
             tilo_actions::remote::ReceiptStatus::Accepted => {}

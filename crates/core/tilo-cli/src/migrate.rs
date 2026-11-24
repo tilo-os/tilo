@@ -230,21 +230,20 @@ fn handed_profile(profile: &str) -> Result<String> {
 /// What a step that failed `failure` asks the person to type, when it failed for a key or
 /// password it was not given.
 fn asked_secret(failure: &ActionFailure) -> Option<String> {
-    (failure.code == SECRET_NEEDED)
-        .then(|| {
-            failure
-                .details
-                .as_ref()?
-                .get("asks")?
-                .as_str()
-                .map(str::to_owned)
-        })
-        .flatten()
+    if failure.code != SECRET_NEEDED {
+        return None;
+    }
+    failure
+        .details
+        .as_ref()?
+        .get("asks")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// A step's failure, as the person reads it.
 fn failed(failure: ActionFailure) -> anyhow::Error {
-    anyhow!("{}", failure.message)
+    anyhow::Error::msg(failure.message)
 }
 
 /// This computer's device, whose migrations each command invokes.
