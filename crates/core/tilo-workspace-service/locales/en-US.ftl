@@ -65,6 +65,7 @@ tilo-devices-keep-wifi = Keep a Wi-Fi passphrase
 tilo-devices-name-device = Rename a device
 tilo-devices-keep-agent = Keep the agent a device runs
 tilo-devices-revoke-device = Mark a device taken back
+tilo-devices-mark-root-holder = Mark the device that keeps the root
 
 ## Nearby Send
 

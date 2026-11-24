@@ -62,7 +62,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 25] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 24] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -1423,7 +1423,7 @@ impl Workspaces {
             let summary = self
                 .summary(&existing)
                 .await
-                .map_err(|error| ActionCallError::refused(&error))?;
+                .map_err(|error| ActionCallError::refused(&error.to_string()))?;
             return self
                 .invite_own_person(
                     summary,

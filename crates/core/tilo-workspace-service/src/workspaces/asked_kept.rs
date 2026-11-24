@@ -163,7 +163,8 @@ impl Workspaces {
                 let Some(held) = workspaces.upgrade() else {
                     return;
                 };
-                seen(held.asked_at_root().await);
+                let asked = held.asked_at_root().await;
+                seen(asked);
                 drop(held);
                 let written = async {
                     loop {

@@ -65,6 +65,7 @@ tilo-devices-keep-wifi = Ein WLAN-Passwort behalten
 tilo-devices-name-device = Ein Gerät umbenennen
 tilo-devices-keep-agent = Den Agenten behalten, den ein Gerät ausführt
 tilo-devices-revoke-device = Ein Gerät als zurückgenommen markieren
+tilo-devices-mark-root-holder = Das Gerät markieren, das den Stammschlüssel hält
 
 ## Nearby Send
 

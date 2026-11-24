@@ -333,7 +333,7 @@ impl Hand {
                 // it: it counts the run, and answers the caller that follows it.
                 let _ = server.relayed(workspace_id, to, reply);
             }
-            completer.complete(answer);
+            completer.complete(answer.flatten());
         });
         answered
     }

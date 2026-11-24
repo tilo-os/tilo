@@ -823,7 +823,7 @@ impl Workspaces {
                 // it. A host keeping the workspace, and an environment's
                 // device, hold their lists another way.
                 if reads.is_none() && !keeps_workspace {
-                    self.keep_device_in_membership(peer.cert, workspace_id, false);
+                    self.keep_device_in_membership(peer.cert.clone(), workspace_id, false);
                 }
             }
             // One of a member's devices the workspace's governance has not

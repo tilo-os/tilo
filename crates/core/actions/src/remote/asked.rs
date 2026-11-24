@@ -375,6 +375,19 @@ impl PartialEq for RecordRef {
 
 impl Eq for RecordRef {}
 
+impl PartialOrd for RecordRef {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Ordered as it is named: by its workspace, then its address there.
+impl Ord for RecordRef {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (&self.workspace, &self.record).cmp(&(&other.workspace, &other.record))
+    }
+}
+
 impl std::hash::Hash for RecordRef {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.workspace.hash(state);

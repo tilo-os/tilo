@@ -298,7 +298,7 @@ fn change_of(bytes: &[u8], workspace: WorkspaceId) -> Option<([u8; 32], Vec<u8>)
             let mut inner = 1usize;
             let _channel: [u8; 32] = delta.get(inner..inner.checked_add(32)?)?.try_into().ok()?;
             inner = inner.checked_add(32)?;
-            bytes_at(delta, &mut inner)?
+            bytes_at(&delta, &mut inner)?
         }
         _ => delta.to_vec(),
     };
@@ -487,7 +487,10 @@ mod tests {
         envelope.extend(payload);
         envelope.extend([0u8; 64]);
         // The frame codec's four-byte length prefix.
-        let mut framed = u32::try_from(envelope.len()).unwrap().to_le_bytes().to_vec();
+        let mut framed = u32::try_from(envelope.len())
+            .unwrap()
+            .to_le_bytes()
+            .to_vec();
         framed.extend(envelope);
         framed
     }

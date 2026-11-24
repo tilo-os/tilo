@@ -608,14 +608,11 @@ impl Workspaces {
         now: u64,
     ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {
         let key = &self.inner.host.key;
-        let admission = self
-            .admission(
-                workspace,
-                joins
-                    .iter()
-                    .map(|join| join.redemption.certificate().user_public_key),
-            )
-            .await?;
+        let people: Vec<[u8; 32]> = joins
+            .iter()
+            .map(|join| join.redemption.certificate().user_public_key)
+            .collect();
+        let admission = self.admission(workspace, people).await?;
         let deciding = crate::timing::start();
         let (admitted, committed, kept) = {
             let keep: Keeping<'_> = &|peer, at| admission.keep(peer, at);

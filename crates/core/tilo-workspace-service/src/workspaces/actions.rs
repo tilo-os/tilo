@@ -2169,10 +2169,6 @@ impl Workspaces {
                     && caller.device_public_key() == Some(&certificate.device_public_key)
                     && caller.user_public_key() == Some(&certificate.user_public_key)
                     && certificate.user_public_key == host.user_public_key
-                    && !self
-                        .inner
-                        .mcp_server
-                        .is_agent(&certificate.device_public_key)
             })
             .map(|_| ())
             .ok_or(ActionCallError::UnknownAction)

@@ -618,7 +618,8 @@ impl Workspaces {
         let message = tilo_failure::ignored!(
             "the body is the host's own request, which it just encoded",
             NeighbourMsg::decode(&body)
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         let link = self
             .inner
             .direct

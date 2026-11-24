@@ -277,7 +277,7 @@ pub use tilo_server_protocol::workspaces::{
 };
 
 use crate::registry::WorkspaceRegistry;
-use tilo_lock::RwLockRecover as _;
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 /// The record's version this build writes, and the one it reads: it keeps no
 /// name of its own, the governance's being the one (see [`document_format`]).
