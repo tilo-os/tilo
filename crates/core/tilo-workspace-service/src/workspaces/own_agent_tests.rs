@@ -303,6 +303,24 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         Some(bea_cert.user_public_key),
         "Scout acts for Bea, who made it"
     );
+    // Bea lets her agent write in Chat as she may, as her settings grant it: an agent's calls are
+    // decided by the grants naming it.
+    beas.commit_own_membership(
+        &workspace,
+        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant {
+            grant: tilo_action_policy::Grant::new(
+                "scout-for-bea",
+                tilo_action_policy::Grantee::agent(SCOUT.to_owned()),
+                tilo_action_policy::TreePath::workspace(workspace.clone()).app(CHAT),
+                tilo_action_policy::KindSet::READ_UNDOABLE,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Grantee::person(bea_person.clone()),
+            ),
+        },
+        None,
+    )
+    .await
+    .expect("Bea grants her agent");
 
     // Her trigger for it is saved as hers, and arms on her device.
     let started = Arc::new(Started::default());

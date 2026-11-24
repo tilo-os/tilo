@@ -393,7 +393,8 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     assert_eq!(
         undone.len(),
         taken.len(),
-        "each change is taken back: {undone:#?}"
+        "each change is taken back: {undone:#?}, the undo answered {}",
+        asked.last().map(tool_results).unwrap_or_default()
     );
     let run = undone[0]["task"]["id"].as_str().unwrap_or_default();
     assert!(

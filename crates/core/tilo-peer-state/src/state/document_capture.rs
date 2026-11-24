@@ -410,6 +410,27 @@ impl StatePeer {
             collab_types::check_opened_mutation(write, mutation)
                 .map_err(|refusal| self.refused_opened(app, record, write, &refusal))?;
         }
+        // A resource store's change reads the kinds of the records it writes from the changes it
+        // builds on. Where this device holds the record without them (it holds it sealed), it
+        // decides the write by the kinds its claims name, checked above against the changes it
+        // carries, as a device without the key decides it. Claims that name no kinds yet (the
+        // writer's own draft, before its store names them) leave it to where it is admitted.
+        if let collab_types::DocumentMutation::Incremental(bytes) = mutation
+            && collab_types::is_store_document(record)
+            && !self.holds_what_changes_build_on((app, record), bytes)
+        {
+            let unnamed = write.claims.is_empty()
+                || write.claims.iter().any(|claim| {
+                    collab_types::claim::whole_edit_kinds(&claim.action)
+                        .is_some_and(|kinds| kinds.is_empty())
+                });
+            if unnamed {
+                return Err(OpenedRefusal::CannotDecide(
+                    "the record is held here without the changes the write builds on".into(),
+                ));
+            }
+            return self.decide_opened(app, record, write, (write, None));
+        }
         let mut opened = write.clone();
         // A cleartext op names each change's action in the change itself; the
         // sealed envelope's claims were what a device without the key decided.
@@ -446,6 +467,33 @@ impl StatePeer {
                 self.decide_opened(app, record, write, (&opened, Some(&changes)))
             }
         }
+    }
+
+    /// Whether this state holds every change that the changes `bytes` encode build on, in
+    /// `record` of `app`: what reading the records they write needs.
+    fn holds_what_changes_build_on(&self, (app, record): (&str, &str), bytes: &[u8]) -> bool {
+        use automerge::ReadDoc as _;
+        let Ok(changes) = tilo_automerge_isolate::parse_changes(bytes) else {
+            return false;
+        };
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let made: std::collections::BTreeSet<_> =
+            changes.iter().map(automerge::Change::hash).collect();
+        let deps: Vec<_> = changes
+            .iter()
+            .flat_map(|change| change.deps().iter().copied())
+            .filter(|dep| !made.contains(dep))
+            .collect();
+        if deps.is_empty() {
+            return true;
+        }
+        self.core
+            .documents
+            .get(&route)
+            .is_some_and(|held| held.doc.get_missing_deps(&deps).is_empty())
     }
 
     /// `write` refused by the workspace's rules as `refusal`, named as a received change's

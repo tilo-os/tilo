@@ -579,6 +579,13 @@ mod tests {
                 .on_roster(1, owner.user_public_key)
         };
 
+        // Chat's record is in use before the workspace narrows its agent, its channel's keys
+        // made as a workspace's are when it starts.
+        records
+            .rooted(&workspace, &person)
+            .await
+            .expect("Chat's root is made");
+
         // Outside its delegation: the workspace denies it everything.
         crate::workspaces::fixtures::record_grants(
             &workspaces,
@@ -610,11 +617,25 @@ mod tests {
             "nobody reads what was refused"
         );
 
-        // Within it, once the workspace's deny is taken back, the write lands as the agent's.
+        // Within it, once the workspace takes its deny back and grants the agent its person's
+        // undoable writes, the write lands as the agent's.
         crate::workspaces::fixtures::revoke_grants(
             &workspaces,
             &workspace,
             &[tilo_action_policy::GrantId::new("scout-denied")],
+        )
+        .await;
+        crate::workspaces::fixtures::record_grants(
+            &workspaces,
+            &workspace,
+            &[tilo_action_policy::Grant::new(
+                "scout-delegated",
+                tilo_action_policy::Grantee::agent("scout"),
+                TreePath::workspace(&workspace),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                tilo_action_policy::Grantee::person(person.clone()),
+            )],
         )
         .await;
         let delegated = scout();
@@ -769,15 +790,16 @@ mod tests {
             .unwrap()
             .expect("Tasks is built in");
         // The record's channel is founded here, as a window opening it first would.
-        BuiltInRecords {
+        let tasks_records = BuiltInRecords {
             workspaces: workspaces.clone(),
             app: TASKS,
             runtime: tokio::runtime::Handle::current(),
             rooted: Arc::default(),
-        }
-        .rooted(&workspace, &ada_person)
-        .await
-        .expect("Tasks' record has its root");
+        };
+        tasks_records
+            .rooted(&workspace, &ada_person)
+            .await
+            .expect("Tasks' record has its root");
         let ada = crate::tl_records::member(tilo_actions::MemberId::person(ada_person.clone()));
         let who = ada.clone();
         workspaces
@@ -816,6 +838,71 @@ mod tests {
         assert!(
             !found(&stranger).contains("Quokka census"),
             "search finds nothing of it for a person outside the workspace"
+        );
+
+        // `new_tasks` targets no resource, and the caller's grants still decide it: a viewer of
+        // the workspace adds no task.
+        let cy_root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        workspaces
+            .add_member(
+                &workspace,
+                &owner,
+                crate::workspaces::AddMemberRequest {
+                    request_id: [9; 32],
+                    user_public_key: cy_root.verifying_key().to_bytes(),
+                    place: crate::workspaces::MemberPlace::Role(tilo_action_policy::Role::Viewer),
+                    name: Some("Cy".into()),
+                },
+            )
+            .await
+            .expect("the owner adds Cy");
+        let ada_caller = Caller::authenticated(owner.user_public_key, owner.device_public_key)
+            .in_workspace(workspace.clone());
+        let new_tasks = tasks_records
+            .rows(&ada_caller)
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find(|action| action.address.action == "new_tasks")
+            .expect("Tasks offers new_tasks");
+        let cy = Caller::authenticated(cy_root.verifying_key().to_bytes(), [4; 32])
+            .in_workspace(workspace.clone());
+        let receipt = tasks_records
+            .run(
+                &cy,
+                InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: format!("{RESOURCE_PROVIDER}:{TASKS}:"),
+                        address: new_tasks.address,
+                    },
+                    argument: InvokeArgument::Json(
+                        serde_json::json!({ "titles": ["Wombat survey"] })
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    ),
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    on_behalf_of: None,
+                    wait_ms: None,
+                    appearance: None,
+                    signed: None,
+                },
+                Admitted::default(),
+            )
+            .await
+            .expect("the call is answered");
+        assert!(
+            !matches!(
+                &receipt,
+                Ok(receipt) if matches!(receipt.status, ReceiptStatus::Completed { .. })
+            ),
+            "a viewer adds no task: {receipt:?}"
+        );
+        assert!(
+            !found(&ada_person).contains("Wombat survey"),
+            "nothing of the refused call reaches the record"
         );
         server.shutdown().await;
     }
