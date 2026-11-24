@@ -180,6 +180,16 @@ impl Wallpapers {
         }
     }
 
+    /// The picture workspace `id` shows, as the person's choice names it (`None` for the one the
+    /// image ships): what the shell publishes and an agent reads.
+    pub(crate) fn value(&self, id: &str) -> Option<String> {
+        self.state
+            .lock_recover()
+            .choices
+            .value_for(id)
+            .map(str::to_owned)
+    }
+
     /// The picture workspace `id` shows, if it is decoded: a frame draws what is ready and asks for
     /// the rest.
     pub(crate) fn picture(&self, id: &str) -> Option<ImageData> {

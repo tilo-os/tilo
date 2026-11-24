@@ -244,6 +244,7 @@ session-tray = Tray
 session-invite = Invite
 session-agents = Agents
 session-styles = Styles
+session-wallpaper = Wallpaper
 session-live = Live now
 session-folders = Folders
 session-search = Search

@@ -8950,6 +8950,20 @@
       ]
     },
     {
+      "kind": "wallpaper",
+      "label": "Wallpaper",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "picture",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        }
+      ]
+    },
+    {
       "kind": "live",
       "label": "Live now",
       "version": 1,

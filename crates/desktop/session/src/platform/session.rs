@@ -991,6 +991,7 @@ impl Session {
             folders: folders.clone(),
             styles,
             lists: options.lists.clone(),
+            wallpapers: std::sync::Arc::clone(&wallpapers),
         });
         let shell_service = shell();
         let shell = crate::shell::Shell::mount(
@@ -1795,6 +1796,7 @@ impl Session {
             live,
             tray,
             wallpapers,
+            wallpaper: ui::backdrop::wallpaper::Source::new(),
             lock_layouts: options.config.keyboard_layouts.clone(),
             lock_layout: Cell::new(0),
             session_actions: options.session_actions,

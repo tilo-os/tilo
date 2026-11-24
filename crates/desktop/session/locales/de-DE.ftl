@@ -249,6 +249,7 @@ session-tray = Statusleiste
 session-invite = Einladen
 session-agents = Agenten
 session-styles = Stile
+session-wallpaper = Hintergrundbild
 session-live = Gerade aktiv
 session-folders = Ordner
 session-search = Suche

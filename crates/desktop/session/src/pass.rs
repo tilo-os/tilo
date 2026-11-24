@@ -460,6 +460,12 @@ impl Session {
         self.shared
             .wallpapers
             .set_active(active.map(|workspace| workspace.to_string()));
+        // The picture the workspace in front shows, as the shell's views draw it under everything:
+        // decoded once for all its hosts and handed to the thread that lays the views out.
+        self.shared
+            .wallpaper
+            .set(active.and_then(|workspace| self.shared.wallpapers.picture(&workspace.to_string())));
+        ui::backdrop::wallpaper::install(Some(self.shared.wallpaper.clone()));
         // A command the person starts here joins the workspace in front: the file is written on
         // the switch, never read for on a clock of its own.
         self.published_workspace.follow(active);

@@ -117,6 +117,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::device_lists::folders_surface(),
         crate::device_lists::search_surface(),
         crate::device_lists::launchpad_surface(),
+        crate::device_lists::wallpaper_surface(),
         crate::device_lists::notice_surface(),
         crate::live_list::surface(),
         crate::shell::state::overlays_surface(),

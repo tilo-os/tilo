@@ -42,6 +42,9 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         or device.overlays.here == "none"
         or device.overlays.here == "switcher" and not device.overlays.switcher_revealed
     layers {
+        // The shell's wallpaper, covering the whole shell under the windows and the bar: the
+        // picture the person chose, or the shell's own gradient where it shows none.
+        ui.Backdrop()
         stack(gap: .tight, fill) {
             if bar_shows(s) {
                 bar_on_edge(s, traditional)

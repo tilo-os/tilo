@@ -45,6 +45,8 @@ pub(crate) const LAUNCHPAD_RESOURCE: &str = "session:launchpad";
 /// The notice the shell says in passing over the windows: what just happened, and what the person
 /// can still do about it.
 pub(crate) const NOTICE_RESOURCE: &str = "session:notice";
+/// The picture the workspace in front shows behind its windows, as a view reads it.
+pub(crate) const WALLPAPER_RESOURCE: &str = "session:wallpaper";
 
 /// The windows as a view of another language reads them (`device.windows`).
 #[must_use]
@@ -52,6 +54,32 @@ pub fn windows_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<crate::windows::Windows, tilo_resource::NoEffect>(
         "windows", "Windows",
     )
+}
+
+/// The wallpaper as a view of another language reads it (`device.wallpaper`): the picture the
+/// workspace in front shows, by the name the person's choice gives it, empty for the one the
+/// image ships.
+#[must_use]
+pub fn wallpaper_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Wallpaper, tilo_resource::NoEffect>(
+        "wallpaper",
+        "Wallpaper",
+    )
+}
+
+/// The picture a workspace shows behind its windows, as the person's choice names it.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct Wallpaper {
+    pub picture: String,
 }
 
 /// The tray as a view of another language reads it (`device.tray`).
@@ -868,6 +896,8 @@ impl Surfaces {
 
 /// The shell as the session reads it. See the module docs.
 pub(crate) struct DeviceLists {
+    /// The pictures the workspaces show, as the person chose them.
+    pub(crate) wallpapers: std::sync::Arc<crate::wallpapers::Wallpapers>,
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
     /// The surfaces the shell shows over its windows, and where they stand.
@@ -923,6 +953,8 @@ pub(crate) struct Shared {
     pub(crate) folders: Followed<tilo_workspace_service::files::FolderList>,
     pub(crate) styles: Followed<tilo_workspace_service::styles::StyleList>,
     pub(crate) lists: crate::lists::Lists,
+    /// The pictures the workspaces show, as the person chose them: what the shell's wallpaper is.
+    pub(crate) wallpapers: std::sync::Arc<crate::wallpapers::Wallpapers>,
 }
 
 /// A factory making the session's shell: called once for the shell's own service and once for the
@@ -943,6 +975,7 @@ pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
         failed_styles: Rc::clone(&failed_styles),
         folders: shared.folders.clone(),
         lists_source: shared.lists.clone(),
+        wallpapers: std::sync::Arc::clone(&shared.wallpapers),
         lists: None,
         notice_seen: None,
     }
@@ -1010,6 +1043,7 @@ impl DeviceLists {
                     .collect(),
             })),
             SEARCH_RESOURCE => Some(reading(&self.search())),
+            WALLPAPER_RESOURCE => Some(reading(&self.wallpaper())),
             LAUNCHPAD_RESOURCE => Some(reading(&Launchpad {
                 cards: crate::host_actions::cards(&self.lists_source)
                     .into_iter()
@@ -1058,6 +1092,19 @@ impl DeviceLists {
             expecting: open && self.handle.search_expecting(),
             groups,
         }
+    }
+
+    /// The picture the workspace in front shows behind its windows, by the name the person's
+    /// choice gives it.
+    fn wallpaper(&self) -> Wallpaper {
+        let active = self
+            .handle
+            .read(|tree| tree.active_workspace().map(|workspace| workspace.id().to_string()));
+        let picture = active
+            .as_deref()
+            .and_then(|workspace| self.wallpapers.value(workspace))
+            .unwrap_or_default();
+        Wallpaper { picture }
     }
 
     /// The passing notice the shell says over the windows now, as the reading spells it: empty
@@ -1515,6 +1562,10 @@ pub(crate) struct SearchRoot;
 pub(crate) struct LaunchpadRoot;
 
 #[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Wallpaper")]
+pub(crate) struct WallpaperRoot;
+
+#[derive(tilo_resource::Row)]
 #[row(kind = "session", label = "Notice", effects = SaidEffect)]
 pub(crate) struct SaidRoot;
 
@@ -1569,6 +1620,11 @@ impl Service for DeviceLists {
             tilo_resource::LiveRow::typed::<LaunchpadRoot>(
                 LAUNCHPAD_RESOURCE,
                 crate::i18n::t("session-launchpad"),
+            )
+            .into_resource(),
+            tilo_resource::LiveRow::typed::<WallpaperRoot>(
+                WALLPAPER_RESOURCE,
+                crate::i18n::t("session-wallpaper"),
             )
             .into_resource(),
             offer::<SaidEffect>(

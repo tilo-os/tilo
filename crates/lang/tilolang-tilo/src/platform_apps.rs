@@ -115,6 +115,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("live", "Live", "session:live"),
     ("search", "Search", "session:search"),
     ("launchpad", "Launchpad", "session:launchpad"),
+    ("wallpaper", "Wallpaper", "session:wallpaper"),
     ("said", "Said", "session:notice"),
     ("overlays", "Overlays", "desktop:overlays"),
     ("power_menu", "PowerMenu", "desktop:power-menu"),
