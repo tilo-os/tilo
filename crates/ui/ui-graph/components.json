@@ -105,6 +105,20 @@
           "type": "bool"
         },
         {
+          "name": "kinds",
+          "doc": "The kinds of result the rows can be narrowed to, in the order their chips stand over them (a kind's name, as the rows are grouped by it). Empty offers no chips.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "chosen",
+          "doc": "The kinds whose chips are chosen. Empty narrows nothing.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
           "name": "status",
           "doc": "A line shown under the field while there are no rows (\"Searching…\", \"Nothing matches\").",
           "type": {
@@ -127,6 +141,21 @@
         {
           "name": "accept",
           "doc": "The person took a suggestion, or the text they typed: carries what the field holds now.",
+          "value": "text"
+        },
+        {
+          "name": "alternate",
+          "doc": "The person took a row with a modifier held: the row's value, and the way they opened it (`here` for Shift, `beside` for Ctrl, `more` for Alt), as `\"<way>\\t<value>\"`.",
+          "value": "text"
+        },
+        {
+          "name": "filter_kind",
+          "doc": "The person pressed the chip of a kind: carries the kind's name.",
+          "value": "text"
+        },
+        {
+          "name": "adjust",
+          "doc": "The person stepped the selected row's value: the step (`1` up, `-1` down) and the row's value, as `\"<delta>\\t<value>\"`. Left and Right step a row its host marks adjustable while it is selected.",
           "value": "text"
         },
         {
@@ -9378,6 +9407,11 @@
           "type": {
             "option": "actor"
           }
+        },
+        {
+          "name": "adjustable",
+          "doc": "Its value can be stepped in place (a level, a volume): Left and Right on the selected row report the step through the field's `adjust`.",
+          "type": "bool"
         }
       ],
       "semantics": {

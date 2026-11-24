@@ -36,11 +36,28 @@ pub struct AutocompleteProps {
     /// The rows narrow to what is typed. Off, the rows are shown as they are offered: a host that
     /// already computed them for what is typed, or whose ranking is fuzzier than a substring.
     pub filter: bool,
+    /// The kinds of result the rows can be narrowed to, in the order their chips stand over them
+    /// (a kind's name, as the rows are grouped by it). Empty offers no chips.
+    pub kinds: Vec<String>,
+    /// The kinds whose chips are chosen. Empty narrows nothing.
+    pub chosen: Vec<String>,
     /// A line shown under the field while there are no rows ("Searching…", "Nothing matches").
     pub status: Option<String>,
     /// The person took a suggestion, or the text they typed: carries what the field holds now.
     #[component(event(value = String))]
     pub accept: Event,
+    /// The person took a row with a modifier held: the row's value, and the way they opened it
+    /// (`here` for Shift, `beside` for Ctrl, `more` for Alt), as `"<way>\t<value>"`.
+    #[component(event(value = String))]
+    pub alternate: Event,
+    /// The person pressed the chip of a kind: carries the kind's name.
+    #[component(event(value = String))]
+    pub filter_kind: Event,
+    /// The person stepped the selected row's value: the step (`1` up, `-1` down) and the
+    /// row's value, as `"<delta>\t<value>"`. Left and Right step a row its host marks
+    /// adjustable while it is selected.
+    #[component(event(value = String))]
+    pub adjust: Event,
     /// The person dismissed the list, keeping nothing.
     #[component(event)]
     pub cancel: Event,
@@ -58,8 +75,13 @@ impl Default for AutocompleteProps {
             open_list: false,
             tab_groups: false,
             filter: true,
+            kinds: Vec::new(),
+            chosen: Vec::new(),
             status: None,
             accept: Event::None,
+            alternate: Event::None,
+            filter_kind: Event::None,
+            adjust: Event::None,
             cancel: Event::None,
         }
     }
@@ -85,6 +107,9 @@ pub struct SuggestionProps {
     pub icon: Option<crate::icons::Icon>,
     /// The person it names, shown as their avatar.
     pub who: Option<Person>,
+    /// Its value can be stepped in place (a level, a volume): Left and Right on the selected
+    /// row report the step through the field's `adjust`.
+    pub adjustable: bool,
 }
 
 impl From<SuggestionProps> for Suggestion {
@@ -111,6 +136,7 @@ impl From<SuggestionProps> for Suggestion {
         if let Some(who) = props.who {
             suggestion = suggestion.with_person(who);
         }
+        suggestion.adjustable = props.adjustable;
         suggestion.role = RowRole::Item;
         suggestion
     }
@@ -130,8 +156,13 @@ impl Described for Autocomplete {
             open_list,
             tab_groups,
             filter,
+            kinds,
+            chosen,
             status,
             accept,
+            alternate,
+            filter_kind,
+            adjust,
             cancel: _,
         } = props;
         let _ = enabled;
@@ -148,7 +179,11 @@ impl Described for Autocomplete {
         field.set_open_list(open_list);
         field.set_tab_groups(tab_groups);
         field.set_filter(filter);
+        field.set_kinds(kinds, chosen);
         field.set_status(status);
+        field.on_alternate(alternate);
+        field.on_filter(filter_kind);
+        field.on_adjust(adjust);
         if autofocus {
             field.request_focus();
         }
@@ -167,7 +202,11 @@ impl Described for Autocomplete {
         self.set_open_list(props.open_list);
         self.set_tab_groups(props.tab_groups);
         self.set_filter(props.filter);
+        self.set_kinds(props.kinds, props.chosen);
         self.set_status(props.status);
+        self.on_alternate(props.alternate);
+        self.on_filter(props.filter_kind);
+        self.on_adjust(props.adjust);
         self.set_suggestions(
             props
                 .suggestions

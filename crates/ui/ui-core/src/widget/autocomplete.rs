@@ -10,9 +10,11 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::chrome::SelectionState;
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
+use crate::search::system::filters::{draw_filter_chip, share_row};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -51,6 +53,9 @@ pub struct Suggestion {
     pub aside: Option<String>,
     pub checked: Option<bool>,
     pub shortcut: Option<String>,
+    /// Its value can be stepped in place (a level, a volume): Left and Right on it report the
+    /// step through the field's `adjust`.
+    pub adjustable: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,6 +92,7 @@ impl Suggestion {
             aside: None,
             checked: None,
             shortcut: None,
+            adjustable: false,
         }
     }
 
@@ -103,6 +109,7 @@ impl Suggestion {
             aside: None,
             checked: None,
             shortcut: None,
+            adjustable: false,
         }
     }
 
@@ -625,12 +632,23 @@ pub struct Autocomplete {
     open_list: bool,
     /// The rows narrow to what is typed; off, they are offered as the host computed them.
     filter: bool,
+    /// The kinds of result the rows can be narrowed to, drawn as chips over the rows.
+    kinds: Vec<String>,
+    /// The kinds whose chips are chosen.
+    chosen: Vec<String>,
+    /// The chip rectangles, as last drawn.
+    chip_rects: Vec<Rect>,
     rect: Rect,
     last_pointer: Point,
     outcome: AutocompleteOutcome,
     edited: bool,
+    /// The modifier a row was taken with, and the row: fired as [`Autocomplete::on_alternate`].
+    alternate_pending: Option<String>,
     edits: Option<crate::component::Bound<String>>,
     accepted: Option<crate::component::Event>,
+    alternate: Option<crate::component::Event>,
+    filter_kind: Option<crate::component::Event>,
+    adjust_event: Option<crate::component::Event>,
 }
 
 impl Autocomplete {
@@ -649,12 +667,19 @@ impl Autocomplete {
             tab_groups: false,
             open_list: false,
             filter: true,
+            kinds: Vec::new(),
+            chosen: Vec::new(),
+            chip_rects: Vec::new(),
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             outcome: AutocompleteOutcome::None,
             edited: false,
+            alternate_pending: None,
             edits: None,
             accepted: None,
+            alternate: None,
+            filter_kind: None,
+            adjust_event: None,
         }
     }
 
@@ -771,6 +796,31 @@ impl Autocomplete {
             self.filter = filter;
             self.refilter();
         }
+    }
+
+    /// The kinds of result the rows can be narrowed to, drawn as chips over them, and the chips
+    /// that are chosen.
+    pub fn set_kinds(&mut self, kinds: Vec<String>, chosen: Vec<String>) {
+        if self.kinds != kinds || self.chosen != chosen {
+            self.kinds = kinds;
+            self.chosen = chosen;
+            self.chip_rects.clear();
+        }
+    }
+
+    /// The event a row taken with Shift, Ctrl or Alt fires: the way it was opened and the row.
+    pub fn on_alternate(&mut self, event: crate::component::Event) {
+        self.alternate = (!event.is_none()).then_some(event);
+    }
+
+    /// The event a kind chip fires when it is pressed.
+    pub fn on_filter(&mut self, event: crate::component::Event) {
+        self.filter_kind = (!event.is_none()).then_some(event);
+    }
+
+    /// The event a step of the selected row's value fires: the step and the row's value.
+    pub fn on_adjust(&mut self, event: crate::component::Event) {
+        self.adjust_event = (!event.is_none()).then_some(event);
     }
 
     /// Ask the window to give the field the keyboard: a palette opening to be typed into.
@@ -1033,6 +1083,38 @@ impl Default for Autocomplete {
 }
 
 impl Autocomplete {
+    /// The field's own band, at the top of the widget.
+    fn field_band(&self, theme: &Theme) -> f64 {
+        self.input
+            .band_in(theme)
+            .max(f64::from(self.input.interaction().minimum_target()))
+    }
+
+    /// How far the kind chips take under the field, none when there are no chips.
+    fn strip_band(&self, theme: &Theme) -> f64 {
+        if self.kinds.is_empty() {
+            0.0
+        } else {
+            f64::from(theme.tokens.spacing.s2) + f64::from(theme.tokens.metrics.selector_height)
+        }
+    }
+
+    /// Where the kind chips stand: one row under the field, across the widget.
+    fn chip_band(&self, theme: &Theme) -> Rect {
+        let top = self.rect.y0 + self.field_band(theme) + f64::from(theme.tokens.spacing.s2);
+        Rect::new(
+            self.rect.x0,
+            top,
+            self.rect.x1,
+            top + f64::from(theme.tokens.metrics.selector_height),
+        )
+    }
+
+    /// The chip under `pt`, by its place.
+    fn chip_at(&self, pt: Point) -> Option<usize> {
+        self.chip_rects.iter().position(|rect| rect.contains(pt))
+    }
+
     /// The `KeyboardInput` arm of [`Widget::handle_event`], split out to
     /// keep that under the line cap. Navigation/accept/cancel keys are
     /// intercepted here since the field itself never consumes them;
@@ -1056,19 +1138,54 @@ impl Autocomplete {
             // accepts the typed text and goes on to the host, so a form's
             // or dialog's default action still runs.
             Key::Named(NamedKey::Enter) => {
-                if let Some(value) = self.highlighted().map(|s| s.value.clone()) {
-                    self.accept(value);
+                let highlighted = self.highlighted().map(|s| s.value.clone());
+                let value = highlighted
+                    .clone()
+                    .unwrap_or_else(|| self.input.value().to_string());
+                if highlighted.is_some() {
+                    let held = ctx.modifiers.state();
+                    let way = if held.shift_key() {
+                        Some("here")
+                    } else if held.control_key() {
+                        Some("beside")
+                    } else if held.alt_key() {
+                        Some("more")
+                    } else {
+                        None
+                    };
+                    if let Some(way) = way
+                        && self.alternate.is_some()
+                    {
+                        self.alternate_pending = Some(format!("{way}\t{value}"));
+                    }
                     *ctx.handled = true;
-                } else {
-                    let value = self.input.value().to_string();
-                    self.accept(value);
                 }
+                self.accept(value);
             }
             Key::Named(NamedKey::Tab) if !self.list.rows().is_empty() => {
                 if self.tab_groups {
                     self.step_group(!ctx.modifiers.state().shift_key());
                 } else {
                     self.complete_to_highlight();
+                }
+                *ctx.handled = true;
+            }
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight)
+                if self.open
+                    && self
+                        .highlighted()
+                        .is_some_and(|suggestion| suggestion.adjustable) =>
+            {
+                let delta = if matches!(logical_key, Key::Named(NamedKey::ArrowRight)) {
+                    1
+                } else {
+                    -1
+                };
+                if let (Some(row), Some(event)) = (self.highlighted(), &self.adjust_event) {
+                    event.fire(Some(crate::component::Value::Text(format!(
+                        "{delta}\t{}",
+                        row.value
+                    ))));
                 }
                 *ctx.handled = true;
             }
@@ -1112,7 +1229,11 @@ impl Widget for Autocomplete {
             if let Some(edits) = &self.edits {
                 edits.edited(crate::component::Value::Text(text.clone()));
             }
-            if let Some(accepted) = &self.accepted {
+            if let Some(pending) = self.alternate_pending.take() {
+                if let Some(alternate) = &self.alternate {
+                    alternate.fire(Some(crate::component::Value::Text(pending)));
+                }
+            } else if let Some(accepted) = &self.accepted {
                 accepted.fire(Some(crate::component::Value::Text(text)));
             }
         }
@@ -1125,11 +1246,7 @@ impl Widget for Autocomplete {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let height = f32_of_f64(
-            self.input
-                .band_in(theme)
-                .max(f64::from(self.input.interaction().minimum_target())),
-        );
+        let height = f32_of_f64(self.field_band(theme) + self.strip_band(theme));
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -1152,18 +1269,58 @@ impl Widget for Autocomplete {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        let (scene, transform, text_renderer, theme, env) = ctx.parts();
         if let Some(viewport) = env.viewport {
             self.list.set_viewport(viewport);
         }
-        self.input.apply_layout_external(self.rect);
+        let field = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + self.field_band(theme),
+        );
+        self.input.apply_layout_external(field);
         self.input
             .draw_child(scene, transform, text_renderer, theme, &env);
+        if self.kinds.is_empty() {
+            self.chip_rects.clear();
+            return;
+        }
+        let band = self.chip_band(theme);
+        let style = theme.text(TextRole::Label);
+        let pad = f64::from(theme.tokens.spacing.s3);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let natural: Vec<f64> = self
+            .kinds
+            .iter()
+            .map(|kind| f64::from(text_renderer.measure_style(kind, None, &style).0) + 2.0 * pad)
+            .collect();
+        let widths = share_row(&natural, band.width(), gap);
+        let mut rects = Vec::with_capacity(self.kinds.len());
+        let mut x = band.x0;
+        for (kind, width) in self.kinds.iter().zip(widths) {
+            let rect = Rect::new(x, band.y0, x + width, band.y1);
+            let chosen = self.chosen.iter().any(|chosen| chosen == kind);
+            let hover = rect.contains(self.last_pointer);
+            let label = text_renderer.elide_to_width_style(
+                kind,
+                f32_of_f64((width - pad).max(1.0)),
+                &style,
+            );
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                &label,
+                &style,
+                SelectionState::new(chosen, hover, false),
+            );
+            rects.push(rect);
+            x += width + gap;
+        }
+        self.chip_rects = rects;
     }
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
@@ -1247,6 +1404,19 @@ impl Widget for Autocomplete {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
+            } if self.chip_at(self.last_pointer).is_some() => {
+                if let Some(i) = self.chip_at(self.last_pointer)
+                    && let Some(kind) = self.kinds.get(i).cloned()
+                    && let Some(event) = &self.filter_kind
+                {
+                    event.fire(Some(crate::component::Value::Text(kind)));
+                }
+                *ctx.handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
             } if self.row_at(self.last_pointer).is_some() => {
                 if let Some(i) = self.row_at(self.last_pointer)
                     && let Some(s) = self.list.rows().get(i)
@@ -1306,7 +1476,9 @@ impl Widget for Autocomplete {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.rect.contains(point) {
+        if self.chip_at(point).is_some() {
+            Some(winit::window::CursorIcon::Pointer)
+        } else if self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else if self.row_at(point).is_some() {
             Some(winit::window::CursorIcon::Pointer)
@@ -1369,6 +1541,31 @@ impl Widget for Autocomplete {
         node.bounds = Some(self.rect.into());
         node.state.expanded = Some(self.open);
         node.state.busy = self.open && self.list.is_busy();
+        if !self.kinds.is_empty() {
+            use crate::a11y::{AccessNode, AccessState, Role};
+            let mut chips = Vec::with_capacity(self.kinds.len());
+            for (i, kind) in self.kinds.iter().enumerate() {
+                let chosen = self.chosen.iter().any(|chosen| chosen == kind);
+                let rect = self.chip_rects.get(i).copied().unwrap_or(Rect::ZERO);
+                chips.push(
+                    AccessNode::new(Role::ToggleButton)
+                        .with_name(kind.clone())
+                        .with_key(hash_key(&("autocomplete-kind", kind.as_str())))
+                        .with_bounds(rect)
+                        .with_state(AccessState {
+                            checked: Some(chosen),
+                            selected: chosen,
+                            hidden: rect.area() <= 0.0,
+                            ..AccessState::default()
+                        }),
+                );
+            }
+            node.children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Result kinds")
+                    .with_children(chips),
+            );
+        }
         if self.open {
             node.children.extend(self.list.access_rows(|suggestion| {
                 hash_key(&("autocomplete-suggestion", suggestion.value.as_str()))
@@ -1386,6 +1583,17 @@ impl Widget for Autocomplete {
     ) -> bool {
         use crate::a11y::{Action, hash_key};
         let own_key = hash_key(&self.test_id().unwrap_or("autocomplete"));
+        if let [_, chip_key] = key_path
+            && matches!(action, Action::Activate | Action::ToggleCheck)
+            && let Some(kind) = self
+                .kinds
+                .iter()
+                .find(|kind| hash_key(&("autocomplete-kind", kind.as_str())) == *chip_key)
+            && let Some(event) = &self.filter_kind
+        {
+            event.fire(Some(crate::component::Value::Text(kind.clone())));
+            return true;
+        }
         if key_path.is_empty() || key_path == [own_key] {
             let (state, path) = crate::doc::document(state, path);
             return match action {
@@ -1907,4 +2115,112 @@ fn a_view_offered_list_narrows_as_text_is_typed() {
         Suggestion::labelled("bo@example.com", "Bo"),
     ]);
     assert_eq!(ac.suggestions().len(), 2, "an empty field offers them all");
+}
+
+/// A row taken with Shift, Ctrl or Alt reports the row and the way it opens, which a palette
+/// hands to its host as a tab in front, a window beside or the row's own way.
+#[test]
+fn a_held_modifier_carries_the_row_and_the_way_it_opens() {
+    use crate::component::{Event, Intent};
+    use crate::synthetic_input::named_key;
+    use crate::testing::{Dispatch, dispatch};
+    use winit::event::Modifiers;
+    use winit::keyboard::{ModifiersState, NamedKey};
+
+    let queue = crate::Intents::default();
+    let mut ac = Autocomplete::new().with_id("search");
+    ac.set_open_list(true);
+    ac.on_alternate(Event::View(Intent::new(&queue, "search", "alternate")));
+    ac.set_suggestions(vec![Suggestion::new("row:1")]);
+    ac.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 34.0));
+    ac.begin_edit();
+    dispatch(&mut ac, &named_key(NamedKey::ArrowDown));
+    Dispatch::new()
+        .modifiers(Modifiers::from(ModifiersState::SHIFT))
+        .send(&mut ac, &named_key(NamedKey::Enter));
+    assert_eq!(
+        ac.alternate_pending.as_deref(),
+        Some("here\trow:1"),
+        "the row and the way its host opens it"
+    );
+    assert_eq!(
+        ac.take_outcome(),
+        AutocompleteOutcome::Accepted("row:1".into())
+    );
+}
+
+/// A kind chip is a toggle a person and an assistive technology press: it reports the kind the
+/// host narrows the rows to.
+#[test]
+fn a_kind_chip_reports_the_kind_it_narrows_to() {
+    use crate::a11y::{Action, hash_key};
+    use crate::component::testing::fired;
+    use crate::component::{Event, Intent, Value};
+
+    let queue = crate::Intents::default();
+    let mut ac = Autocomplete::new().with_id("search");
+    ac.set_open_list(true);
+    ac.set_kinds(vec!["Apps".into(), "Files".into()], Vec::new());
+    ac.on_filter(Event::View(Intent::new(&queue, "search", "filter_kind")));
+    ac.set_suggestions(vec![Suggestion::new("row:1")]);
+    ac.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 34.0));
+
+    let handled = Widget::perform_action(
+        &mut ac,
+        &Action::Activate,
+        &[
+            hash_key(&"search"),
+            hash_key(&("autocomplete-kind", "Files")),
+        ],
+        &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+        &automerge::ROOT,
+    );
+    assert!(handled, "the chip takes the press");
+    assert_eq!(
+        queue.take(),
+        [fired(
+            "search",
+            "filter_kind",
+            Some(Value::Text("Files".into()))
+        )]
+    );
+}
+
+/// Left and Right on an adjustable row report the step and the row instead of moving the
+/// caret, so a level or a volume is stepped where it stands.
+#[test]
+fn a_step_on_an_adjustable_row_reports_the_step_and_the_row() {
+    use crate::component::testing::fired;
+    use crate::component::{Event, Intent, Value};
+    use crate::synthetic_input::named_key;
+    use crate::testing::dispatch;
+    use winit::keyboard::NamedKey;
+
+    let queue = crate::Intents::default();
+    let mut ac = Autocomplete::new().with_id("search");
+    ac.set_open_list(true);
+    let mut volume = Suggestion::new("level:volume");
+    volume.adjustable = true;
+    ac.set_suggestions(vec![volume]);
+    ac.on_adjust(Event::View(Intent::new(&queue, "search", "adjust")));
+    ac.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 34.0));
+    ac.begin_edit();
+    dispatch(&mut ac, &named_key(NamedKey::ArrowDown));
+    dispatch(&mut ac, &named_key(NamedKey::ArrowRight));
+    dispatch(&mut ac, &named_key(NamedKey::ArrowLeft));
+    assert_eq!(
+        queue.take(),
+        [
+            fired(
+                "search",
+                "adjust",
+                Some(Value::Text("1\tlevel:volume".into()))
+            ),
+            fired(
+                "search",
+                "adjust",
+                Some(Value::Text("-1\tlevel:volume".into()))
+            ),
+        ]
+    );
 }
