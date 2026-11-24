@@ -38,7 +38,10 @@ enum a stored type's fields name moves bytes a later build reads back.
 
 ``carried_types`` is the tree's one answer to which types a compact format
 carries: the interfaces' ``postcard``/``bincode`` declarations and what their
-roots reach. Checks that must know whether a type's bytes are read by position
+roots reach. A field written ``with`` a module is written by that module, so the
+type the field names is not followed through it; the shape the module writes is
+carried when a root names it, as a claim's runs are roots of the runtime
+interface. Checks that must know whether a type's bytes are read by position
 use it (``check_wire_attributes.py``); this one judges every serde enum,
 since a variant that moves breaks bytes either way.
 """
@@ -169,6 +172,44 @@ def in_scope(path: str) -> bool:
     )
 
 
+def carried_sources(spec, root: Path = ROOT) -> dict[str, set[str]]:
+    """`{file: type names}` of what one positional interface carries.
+
+    The types reachable from the interface's roots, with the types reached only
+    through a field a `with` module writes left out, and with what only the
+    interface's `json_roots` reach taken away: those bytes name their fields, and
+    the module (or JSON) decides them, so no positional reader breaks on them."""
+    from check_interfaces import (
+        InterfaceError,
+        read_items,
+        rust_schema,
+        tokenize,
+        top_type,
+    )
+
+    reachable = {
+        top_type(key) for key in rust_schema(spec, root, follow_written_by_hand=False)
+    }
+    # The same closure over the JSON roots alone: what only they carry is JSON.
+    if spec.json_roots:
+        as_json = replace(spec, roots=spec.json_roots)
+        reachable -= {
+            top_type(key) for key in rust_schema(as_json, root, follow_written_by_hand=False)
+        }
+    found: dict[str, set[str]] = {}
+    for source in spec.sources:
+        try:
+            text = (root / source).read_text()
+        except OSError as error:
+            raise InterfaceError(f"{source}: {error.strerror}") from error
+        items: list = []
+        read_items(tokenize(text), source, items)
+        defined = reachable & {item.name for item in items}
+        if defined:
+            found[source] = defined
+    return found
+
+
 def carried_types(
     root: Path = ROOT, unreadable: list[str] | None = None
 ) -> dict[str, set[str]]:
@@ -188,14 +229,7 @@ def carried_types(
     """
     # Imported here: the enum check above reads a file's own text, and only what a
     # compact format carries needs the interfaces read.
-    from check_interfaces import (
-        InterfaceError,
-        load_spec,
-        read_items,
-        rust_schema,
-        tokenize,
-        top_type,
-    )
+    from check_interfaces import InterfaceError, load_spec
 
     carried: dict[str, set[str]] = {}
     for manifest in sorted(root.glob("crates/*/*/interface.toml")):
@@ -203,22 +237,14 @@ def carried_types(
             spec = load_spec(manifest)[0]
             if spec.encoding not in POSITIONAL:
                 continue
-            reachable = {top_type(key) for key in rust_schema(spec, root)}
-            # The same closure over the JSON roots alone: what only they carry is JSON.
-            if spec.json_roots:
-                as_json = replace(spec, roots=spec.json_roots)
-                reachable -= {top_type(key) for key in rust_schema(as_json, root)}
+            found = carried_sources(spec, root)
         except InterfaceError as error:
             if unreadable is None:
                 raise
             unreadable.append(str(error))
             continue
-        for source in spec.sources:
-            items = []
-            read_items(tokenize((root / source).read_text()), source, items)
-            defined = reachable & {item.name for item in items}
-            if defined:
-                carried.setdefault(source, set()).update(defined)
+        for source, names in found.items():
+            carried.setdefault(source, set()).update(names)
     return carried
 
 

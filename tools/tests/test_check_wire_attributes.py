@@ -1,9 +1,13 @@
 import importlib.util
+import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+
+from git_fixture import isolated_git_environment
 
 TOOLS = Path(__file__).resolve().parents[1]
 POLICY = TOOLS / "policy"
@@ -55,9 +59,10 @@ def row(attribute):
     return SOURCE.format(attribute=attribute)
 
 
-class WireAttributeTests(unittest.TestCase):
+class PostcardTree(unittest.TestCase):
+    """A tree with one interface over the fixture's one source."""
+
     def tree(self, source, encoding="postcard", roots='"Frame"', extra=""):
-        """A tree whose one postcard interface carries the fixture's types."""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -70,6 +75,8 @@ class WireAttributeTests(unittest.TestCase):
         )
         return root
 
+
+class WireAttributeTests(PostcardTree):
     def judged(self, source, **kwargs):
         return attributes.problems(self.tree(source, **kwargs))
 
@@ -449,6 +456,189 @@ class SpecTests(unittest.TestCase):
         ))
         with self.assertRaises(InterfaceError):
             load_spec(path)
+
+
+MODULES = '''#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Frame {
+    #[serde(with = "runs")]
+    pub runs: Vec<Run>,
+}
+
+mod runs {
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct Run {
+        pub change: [u8; 32],
+        ATTRIBUTE
+        pub call: Option<String>,
+    }
+}
+'''
+
+
+class ModuleTests(PostcardTree):
+    """A module `with` writes a field's bytes; its types are carried only when a root names them."""
+
+    def carried(self, roots):
+        return attributes.problems(
+            self.tree(
+                MODULES.replace(
+                    "ATTRIBUTE", '#[serde(skip_serializing_if = "Option::is_none")]'
+                ),
+                roots=roots,
+            )
+        )
+
+    def test_the_type_a_module_names_is_not_read_by_position(self):
+        """A field `with` a module is written by it, so the type it names is not judged."""
+        self.assertEqual(self.carried('"Frame"'), [])
+
+    def test_a_root_names_the_type_a_module_writes(self):
+        """The claims' runs: a type a `with` module writes, named as a root of the wire."""
+        found = self.carried('"Frame", "crates/demo/wire/src/lib.rs:Run"')
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("Run.call", found[0])
+
+
+DEFAULT_INTERFACE = '''name = "demo"
+version = {version}
+version_const = "crates/demo/wire/src/lib.rs:DEMO"
+encoding = "{encoding}"
+sources = ["crates/demo/wire/src/lib.rs"]
+roots = ["Frame"]
+{extra}
+
+[opaque]
+
+[schema]
+'''
+
+DEFAULT_SOURCE = '''pub const DEMO: u32 = {version};
+pub const OLDEST: u32 = {oldest};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Row {{
+    pub id: String,
+{field}
+}}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Frame {{
+    pub row: Row,
+}}
+'''
+
+
+class DefaultedFieldTests(unittest.TestCase):
+    """A field `default` lets a reader leave out needs the carrying interface's version moved."""
+
+    def git(self, root, *args):
+        subprocess.run(
+            ["git", *args], cwd=root, check=True, capture_output=True,
+            env=isolated_git_environment(),
+        )
+
+    @staticmethod
+    def write(root, source, interface):
+        path = root / "crates/demo/wire/src/lib.rs"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+        (path.parent.parent / "interface.toml").write_text(interface)
+
+    @contextmanager
+    def repository(self, before, after):
+        """A repository whose main holds `before`, the working tree `after`."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.git(root, "init", "-q", "-b", "main")
+            self.git(root, "config", "user.email", "t@example.com")
+            self.git(root, "config", "user.name", "t")
+            self.write(root, *before)
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "base")
+            self.write(root, *after)
+            yield root
+
+    def judged(self, before, after):
+        with self.repository(before, after) as root:
+            unreadable = []
+            found = attributes.default_problems("main", root, unreadable)
+            self.assertEqual(unreadable, [])
+            return found
+
+    @staticmethod
+    def source(version, field="    pub name: String,", oldest=None):
+        return DEFAULT_SOURCE.format(
+            version=version, oldest=version if oldest is None else oldest, field=field
+        )
+
+    @staticmethod
+    def interface(version, encoding="postcard", extra=""):
+        return DEFAULT_INTERFACE.format(version=version, encoding=encoding, extra=extra)
+
+    def test_a_default_added_to_an_existing_field_changes_no_byte(self):
+        before = (self.source(1), self.interface(1))
+        after = (
+            self.source(1, '    #[serde(default)]\n    pub name: String,'),
+            self.interface(1),
+        )
+        self.assertEqual(self.judged(before, after), [])
+
+    def test_a_default_added_with_a_new_version_passes(self):
+        before = (self.source(1), self.interface(1))
+        after = (
+            self.source(2, '    #[serde(default)]\n    pub name: String,'),
+            self.interface(2),
+        )
+        self.assertEqual(self.judged(before, after), [])
+
+    def test_a_defaulted_field_appended_without_a_version_fails(self):
+        before = (self.source(1, ""), self.interface(1))
+        after = (
+            self.source(1, '    #[serde(default)]\n    pub extra: Option<String>,'),
+            self.interface(1),
+        )
+        found = self.judged(before, after)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("Row.extra", found[0])
+
+    def test_a_json_message_needs_no_new_version(self):
+        before = (self.source(1), self.interface(1, encoding="json"))
+        after = (
+            self.source(1, '    #[serde(default)]\n    pub name: String,'),
+            self.interface(1, encoding="json"),
+        )
+        self.assertEqual(self.judged(before, after), [])
+
+    def test_the_oldest_served_version_moves_with_the_new_version(self):
+        extra = 'oldest_const = "crates/demo/wire/src/lib.rs:OLDEST"'
+        before = (self.source(1), self.interface(1, extra=extra))
+        unmoved = (
+            self.source(2, '    #[serde(default)]\n    pub extra: Option<String>,', oldest=1),
+            self.interface(2, extra=extra),
+        )
+        found = self.judged(before, unmoved)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("move the oldest served version to 2", found[0])
+        moved = (
+            self.source(2, '    #[serde(default)]\n    pub extra: Option<String>,', oldest=2),
+            self.interface(2, extra=extra),
+        )
+        self.assertEqual(self.judged(before, moved), [])
+
+    def test_a_new_type_is_judged_where_it_is_used_not_here(self):
+        """A type no earlier build read cannot break it: its fields are no addition."""
+        before = (self.source(1), self.interface(1))
+        after = (
+            self.source(1) + '''
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Added {
+    #[serde(default)]
+    pub name: String,
+}
+''',
+            self.interface(1),
+        )
+        self.assertEqual(self.judged(before, after), [])
 
 
 if __name__ == "__main__":

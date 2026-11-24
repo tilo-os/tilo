@@ -609,11 +609,37 @@ def code_const(reference: str, root: Path = ROOT) -> int:
     return int(found.group(1).replace("_", ""))
 
 
-def rust_schema(spec: Spec, root: Path = ROOT) -> dict[str, str]:
+def written_by_hand(serde: Serde) -> bool:
+    """Whether a field's bytes go through a module of its own both ways.
+
+    `with` hands over both directions; `serialize_with` or `deserialize_with`
+    alone hands over one, and the other still reads or writes the field's type
+    by position, so that type stays followed. What a `with` module writes is its
+    own business (the runs of a claim, say), as a type with an impl of its own
+    is."""
+    return "with" in serde.values or (
+        "serialize_with" in serde.values and "deserialize_with" in serde.values
+    )
+
+
+def rust_schema(
+    spec: Spec, root: Path = ROOT, follow_written_by_hand: bool = True
+) -> dict[str, str]:
+    """The wire form of what `spec` carries, one line per item, field and variant.
+
+    With `follow_written_by_hand` false, the types a field handed over both ways
+    to a module (`written_by_hand`) names are not followed: whoever writes that
+    field decides its bytes."""
     items: dict[str, list[Item]] = {}
     for source in spec.sources:
         found: list[Item] = []
-        read_items(tokenize((root / source).read_text()), source, found)
+        try:
+            text = (root / source).read_text()
+        except OSError as error:
+            # A source the tree no longer holds is a declaration that does not
+            # read: `carried_types` leaves that wire out by `InterfaceError`.
+            raise InterfaceError(f"{source}: {error.strerror}") from error
+        read_items(tokenize(text), source, found)
         for item in found:
             items.setdefault(item.name, []).append(item)
     schema: dict[str, str] = {}
@@ -665,7 +691,8 @@ def rust_schema(spec: Spec, root: Path = ROOT) -> dict[str, str]:
         for key in ("with", "deserialize_with"):
             if key in f.serde.values:
                 notes.append(f"{key}={f.serde.values[key]}")
-        want(f.ty, params, f"{owner}.{wire}", path)
+        if follow_written_by_hand or not written_by_hand(f.serde):
+            want(f.ty, params, f"{owner}.{wire}", path)
         return f"{owner}.{wire}", " ".join(notes)
 
     while pending:
@@ -698,8 +725,9 @@ def rust_schema(spec: Spec, root: Path = ROOT) -> dict[str, str]:
             if item.shape == "tuple":
                 inner = ", ".join(type_text(t) for t in item.types)
                 schema[name] = " ".join([f"tuple({inner})", *container])
-                for t in item.types:
-                    want(t, item.params, name, item.path)
+                if follow_written_by_hand or not written_by_hand(serde):
+                    for t in item.types:
+                        want(t, item.params, name, item.path)
                 continue
             schema[name] = " ".join(["struct", *container])
             rule = serde.values.get("rename_all")
@@ -728,8 +756,9 @@ def rust_schema(spec: Spec, root: Path = ROOT) -> dict[str, str]:
                 notes.append("unit")
             elif variant.shape == "tuple":
                 notes.append(f"tuple({', '.join(type_text(t) for t in variant.types)})")
-                for t in variant.types:
-                    want(t, item.params, owner, item.path)
+                if follow_written_by_hand or not written_by_hand(variant.serde):
+                    for t in variant.types:
+                        want(t, item.params, owner, item.path)
             else:
                 notes.append("struct")
             if "other" in variant.serde.flags:

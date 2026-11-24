@@ -39,13 +39,24 @@ only the crate that held the call was read, and a grant's ``CapOverride``,
 declared in ``collab-types`` and carried in an agent's postcard frame, left its
 absent ``app`` and ``granted_by`` out of the bytes unnoticed. A field written
 ``with`` a module of its own is written by that module, as a type with its own
-impl is: what its type is made of is not followed.
+impl is: what its type is made of is not followed, and neither is the type it
+names judged by this type's fields. The shape the module writes is judged when a
+root names it — the claims' runs a signed op's ``claims`` field writes through
+``claims_wire`` are roots of the runtime interface for that reason — and a run
+that left out its absent call ended the frame early before it was.
 
-``#[serde(default)]`` is not refused: it says what an absent field reads as and
-never changes what is written, and a positional format only omits a field at
-the end of a frame. Neither are ``rename``/``rename_all`` (a positional format
-writes no names), ``with``/``serialize_with`` (which write the field the same
-way on both sides), or ``transparent``.
+``#[serde(default)]`` says what an absent field reads as and never changes what
+is written, so it is not refused on its own. A field added with it is another
+matter: a positional reader cannot tell a field it never saw from the next
+value, so the build of the version before the field cannot read the frame
+either, and ``default`` never gets to say anything. ``against BASE`` refuses
+such a field unless the carrying interface's version moved past the one that
+wrote the type, and, where the interface serves a range, its oldest moved with
+it. A type the tree did not hold at ``BASE`` is no addition to a wire an earlier
+build read, so it is judged where it is used, by
+``check_interfaces.py against``. Neither are ``rename``/``rename_all`` (a
+positional format writes no names), ``with``/``serialize_with`` (which write
+the field the same way on both sides), or ``transparent``.
 
 A type that only builds what a frame holds is not judged: a roster's `Person` is
 turned into its `Member` row before it reaches the frame, and no byte of it is
@@ -53,8 +64,11 @@ read by position. A type that becomes a field of a carried type is judged from
 then on.
 
 This is an absolute judgement of a tree, not of a change: it runs over the whole
-tree in the pre-commit hook and in the repository policy suite, so a commit made
-with ``--no-verify`` is judged by the suite on the tree that would land.
+tree in the repository policy suite, which CI applies to every pushed head, so a
+commit made with ``--no-verify`` is judged by the suite on the tree that would
+land. The one rule that needs a change's before is the ``default`` one: ``against
+BASE`` carries it, in t's ``changes`` check on each push, against the main it
+started from.
 """
 
 from __future__ import annotations
@@ -67,12 +81,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_interfaces import (  # noqa: E402
+    InterfaceError,
+    at_revision,
+    code_const,
+    code_version,
+    load_spec,
     matching,
     named_types,
     read_items,
+    schema_at,
     tokenize,
+    written_by_hand,
 )
-from check_wire_enums import carried_types  # noqa: E402
+from check_wire_enums import POSITIONAL, carried_sources, carried_types  # noqa: E402
 from rust_source import (  # noqa: E402
     dependency_tables,
     is_test_file,
@@ -204,11 +225,6 @@ def components(item) -> list[tuple[str, tuple[str, ...]]]:
     if item.target:
         types.append(item.target)
     return [named for ty in types for named in qualified_types(ty)]
-
-
-def written_by_hand(serde) -> bool:
-    """Whether a field's serde attributes hand its bytes to a module of its own."""
-    return any(key in serde.values for key in ("with", "serialize_with"))
 
 
 def qualified_types(tokens) -> list[tuple[str, tuple[str, ...]]]:
@@ -516,13 +532,141 @@ def problems(root: Path = ROOT, unreadable: list[str] | None = None) -> list[str
     return found
 
 
+def defaults(text: str) -> dict[tuple[str, str], bool]:
+    """`{(type, where): defaulted}` for the fields of `text`'s serde-derived types.
+
+    `where` names a field as `placed` does (`Row.name`, `Row::Tail.name`); the
+    type's own name stands for a `#[serde(default)]` on the container, which
+    every field of it inherits."""
+    items: list = []
+    read_items(tokenize(text), "wire", items)
+    written = serde_derived(text)
+    found: dict[tuple[str, str], bool] = {}
+    for item in items:
+        if item.name not in written:
+            continue
+        container = "default" in item.serde.flags or "default" in item.serde.values
+        found[(item.name, item.name)] = container
+        for where, serde in placed(item)[1:]:
+            found[(item.name, where)] = (
+                container and "." in where
+            ) or "default" in serde.flags or "default" in serde.values
+    return found
+
+
+def carrier_interfaces(
+    root: Path = ROOT, unreadable: list[str] | None = None
+) -> dict[tuple[str, str], list]:
+    """`{(file, type): interfaces}` of the positional interfaces that carry each
+    type, read with `carried_sources` so "carried" has one definition."""
+    found: dict[tuple[str, str], list] = {}
+    for manifest in sorted(root.glob("crates/*/*/interface.toml")):
+        try:
+            spec = load_spec(manifest)[0]
+            if spec.encoding not in POSITIONAL:
+                continue
+            carried = carried_sources(spec, root)
+        except InterfaceError as error:
+            if unreadable is None:
+                raise
+            unreadable.append(str(error))
+            continue
+        for source, names in carried.items():
+            for name in names:
+                found.setdefault((source, name), []).append(spec)
+    return found
+
+
+def default_problems(
+    base: str, root: Path = ROOT, unreadable: list[str] | None = None
+) -> list[str]:
+    """A field appended to a carried type without a new interface version.
+
+    A positional format reads a field by its place, so a field appended after a
+    version's release is a field the build before it cannot read: its frame ends
+    before it, or the bytes after it are read as the next value. `default` says
+    only what an absent field reads as, which such a build never gets to, so a
+    field that is added with it needs the carrying interface's version moved
+    past the one that wrote the type, and, where the image serves a range, its
+    oldest moved with it. A field that was already there and gains `default`
+    changes no byte, and no version."""
+    base = subprocess.run(
+        ["git", "merge-base", base, "HEAD"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    carriers = carrier_interfaces(root, unreadable)
+    base_versions: dict[str, int | None] = {}
+
+    def version_at_base(spec) -> int | None:
+        if spec.name not in base_versions:
+            rel = spec.path.relative_to(root).as_posix()
+            found = schema_at(base, rel, root)
+            base_versions[spec.name] = None if found is None else found[1]
+        return base_versions[spec.name]
+
+    by_source: dict[str, set[str]] = {}
+    for source, name in carriers:
+        by_source.setdefault(source, set()).add(name)
+    found = []
+    for source, names in sorted(by_source.items()):
+        before_text = at_revision(root, base, source)
+        if before_text is None:
+            continue
+        before = defaults(before_text)
+        after = defaults((root / source).read_text(errors="replace"))
+        before_types = {type_name for type_name, _ in before}
+        for (type_name, where), defaulted in sorted(after.items()):
+            if not defaulted or "." not in where or type_name not in names:
+                continue
+            if type_name not in before_types or (type_name, where) in before:
+                continue
+            specs = carriers[(source, type_name)]
+            stale = [
+                spec.name
+                for spec in specs
+                if (version := version_at_base(spec)) is not None
+                and code_version(spec, root) <= version
+            ]
+            if stale:
+                found.append(
+                    f"{source}: {where} is added with #[serde(default)] while the "
+                    f"{', '.join(sorted(stale))} interface keeps its version; a field "
+                    "appended to a positional format is one the build before it cannot "
+                    "read, so bump the version and write the field always"
+                )
+                continue
+            for spec in specs:
+                if not spec.oldest_const:
+                    continue
+                current = code_version(spec, root)
+                oldest = code_const(spec.oldest_const, root)
+                if oldest < current:
+                    found.append(
+                        f"{source}: {where} is added with #[serde(default)] and the "
+                        f"{spec.name} interface serves from {oldest}; the version it "
+                        f"serves there reads no such field, so move the oldest served "
+                        f"version to {current}"
+                    )
+    return found
+
+
 def main(argv: list[str] | None = None) -> int:
-    """`check_wire_attributes.py [ROOT]`, failing on what the lines above name."""
+    """`check_wire_attributes.py [ROOT]`, or `against BASE [ROOT]`: what the lines
+    above name, judged on the whole tree or on this tree against `BASE`."""
     arguments = list(sys.argv[1:] if argv is None else argv)
-    root = Path(arguments[0]).resolve() if arguments else ROOT
+    comparing = arguments[:1] == ["against"]
+    if comparing:
+        if len(arguments) < 2:
+            print(__doc__, file=sys.stderr)
+            return 2
+        base = arguments[1]
+        root = Path(arguments[2]).resolve() if len(arguments) > 2 else ROOT
+    else:
+        root = Path(arguments[0]).resolve() if arguments else ROOT
     unreadable: list[str] = []
     found = problems(root, unreadable)
-    for error in unreadable:
+    if comparing:
+        found += default_problems(base, root, unreadable)
+    for error in dict.fromkeys(unreadable):
         print(
             f"note: {error}; the wire types it declares are left unjudged until "
             "`python3 tools/policy/check_interfaces.py check` passes",
@@ -532,7 +676,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"::error::{problem}", file=sys.stderr)
     if found:
         print(
-            f"{len(found)} serde attribute(s) omit part of a value a compact format carries",
+            f"{len(found)} serde attribute(s) break what a compact format carries",
             file=sys.stderr,
         )
         return 1

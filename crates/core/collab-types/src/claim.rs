@@ -46,7 +46,7 @@ pub struct ChangeClaim {
     /// presence. A receiver that keeps the op sealed checks it as the caller's
     /// call; one that opens the change checks that the call the change keeps
     /// is this one ([`crate::receipt::check_opened_mutation`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub call: Option<Box<tilo_actions::remote::SignedInvocation>>,
 }
 

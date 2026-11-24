@@ -55,7 +55,7 @@ sources = [
     "crates/core/tilo-fs-client/src/directory_types.rs",
     "crates/core/tilo-fs-client/src/entry_name.rs",
 ]
-roots = ["Request", "Response", "ToolRequest", "ToolReply", "Call", "HostFrame", "FsRequest", "FsReply"]
+roots = ["Request", "Response", "ToolRequest", "ToolReply", "Call", "HostFrame", "FsRequest", "FsReply", "crates/core/collab-types/src/op.rs:Run", "crates/core/collab-types/src/op.rs:RunRef"]
 # The shell-owned tools (`tools.rs`) are length-prefixed JSON on their own socket;
 # the rest of this interface is postcard. Both share the interface's one version and
 # are checked by the stricter rules, but a field left out of a JSON message is only
@@ -872,6 +872,18 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "Rule.answer" = "#2 Answer"
 "Rule.kinds" = "#1 KindSet"
 "Rule.node" = "#0 TreePath"
+"Run" = "struct"
+"Run.action" = "#1 ClaimedAction"
+"Run.call" = "#4 Option<Box<SignedInvocation>>"
+"Run.changes" = "#0 Vec<[u8; 32]>"
+"Run.invoker" = "#3 Option<Invoker> with=crate::claim::invoker_text"
+"Run.units" = "#2 Vec<UnitPath>"
+"RunRef" = "struct"
+"RunRef.action" = "#1 &ClaimedAction"
+"RunRef.call" = "#4 Option<&SignedInvocation>"
+"RunRef.changes" = "#0 Vec<[u8; 32]>"
+"RunRef.invoker" = "#3 Option<String>"
+"RunRef.units" = "#2 &[UnitPath]"
 "SCHEMA_ANNOTATIONS" = "words"
 "SCHEMA_ANNOTATIONS::$comment" = "word"
 "SCHEMA_ANNOTATIONS::$id" = "word"
