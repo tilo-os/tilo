@@ -4414,6 +4414,17 @@ on = ["idle"]
 arch = ["x86_64", "aarch64"]
 
 [[check]]
+name = "build/windows-gstreamer-x86_64"
+# GStreamer's MSVC build at the release and digests tools/ci/windows/gstreamer_runtime.py pins,
+# and the reviewed closure tilolang-process plays video with taken out of it: nothing under the
+# GPL and no encoder library. Served from the cache once fetched.
+egress = { to = ["files.pythonhosted.org:443"], pinned = true }
+run = "python3 -I tools/ci/windows/gstreamer_runtime.py stage /target/windows/x86_64/gstreamer"
+image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
+outputs = ["/target/windows/x86_64/gstreamer/*"]
+default = false
+
+[[check]]
 name = "package/windows-{arch}"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
