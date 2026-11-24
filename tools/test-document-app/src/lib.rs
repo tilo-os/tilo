@@ -111,10 +111,8 @@ mod tests {
 
     #[test]
     fn the_app_publishes_a_read_and_a_job_effect() {
-        let ids: Vec<&str> = TestEffect::specs()
-            .iter()
-            .map(|spec| spec.id.as_str())
-            .collect();
+        let specs = TestEffect::specs();
+        let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
         assert!(ids.contains(&"read-content"), "{ids:?}");
         assert!(ids.contains(&"open-document"), "{ids:?}");
     }
