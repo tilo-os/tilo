@@ -412,7 +412,7 @@ fields = [
   { path = "keyboard_preview_extra_levels", type = "bool", readonly = true },
   { path = "keyboard_preview_level", type = "int", readonly = true },
   { path = "keyboard_inspected_key", type = "text", readonly = true },
-  { path = "tablets", type = { map = "any" }, readonly = true },
+  { path = "tablets", type = { map = { named = "TabletConfig" } }, readonly = true },
 ]
 
 [[resources.verbs]]
@@ -523,11 +523,104 @@ params = [
 ]
 
 [[resources.types]]
+name = "EraserAction"
+cases = [
+  { name = "native" },
+  { name = "left" },
+  { name = "middle" },
+  { name = "right" },
+  { name = "back" },
+  { name = "forward" },
+  { name = "shortcut", fields = [{ name = "0", type = { named = "ShortcutAction" } }] },
+]
+
+[[resources.types]]
 name = "KeyboardProfile"
 fields = [
   { name = "sources", type = { list = "text" } },
   { name = "active", type = "text" },
   { name = "options", type = { map = { named = "SourceOptions" } } },
+]
+
+[[resources.types]]
+name = "PadDialAction"
+cases = [
+  { name = "nothing" },
+  { name = "scroll" },
+  { name = "zoom" },
+  { name = "brush_size" },
+  { name = "volume" },
+  { name = "brightness" },
+]
+
+[[resources.types]]
+name = "ShortcutAction"
+cases = [
+  { name = "search" },
+  { name = "workspace_overview" },
+  { name = "lock" },
+  { name = "quick_settings" },
+  { name = "shortcut_help" },
+  { name = "focus_previous_window" },
+  { name = "focus_next_window" },
+  { name = "previous_tab" },
+  { name = "next_tab" },
+  { name = "tab_menu" },
+  { name = "previous_strip" },
+  { name = "next_strip" },
+  { name = "previous_workspace" },
+  { name = "next_workspace" },
+  { name = "toggle_maximize" },
+  { name = "maximize_window" },
+  { name = "restore_window" },
+  { name = "detach_tab" },
+  { name = "attach_tab_left" },
+  { name = "attach_tab_right" },
+  { name = "move_group_left" },
+  { name = "move_group_right" },
+  { name = "move_group_to_previous_strip" },
+  { name = "move_group_to_next_strip" },
+  { name = "move_group_to_previous_display" },
+  { name = "move_group_to_next_display" },
+  { name = "resize_narrower" },
+  { name = "resize_wider" },
+  { name = "reopen_closed_tab" },
+  { name = "focus_group1" },
+  { name = "focus_group2" },
+  { name = "focus_group3" },
+  { name = "focus_group4" },
+  { name = "focus_group5" },
+  { name = "focus_group6" },
+  { name = "focus_group7" },
+  { name = "focus_group8" },
+  { name = "focus_group9" },
+  { name = "focus_strip1" },
+  { name = "focus_strip2" },
+  { name = "focus_strip3" },
+  { name = "focus_strip4" },
+  { name = "focus_strip5" },
+  { name = "focus_strip6" },
+  { name = "focus_strip7" },
+  { name = "focus_strip8" },
+  { name = "focus_strip9" },
+  { name = "open_files" },
+  { name = "open_terminal" },
+  { name = "clipboard_history" },
+  { name = "notifications" },
+  { name = "toggle_fullscreen" },
+  { name = "toggle_magnifier" },
+  { name = "magnifier_zoom_in" },
+  { name = "magnifier_zoom_out" },
+  { name = "power_menu" },
+  { name = "next_input_source" },
+  { name = "emoji_picker" },
+  { name = "ask_agent" },
+  { name = "say_something" },
+  { name = "report_problem" },
+  { name = "dictation_toggle" },
+  { name = "dictation_finish" },
+  { name = "dictation_cancel" },
+  { name = "toggle_float" },
 ]
 
 [[resources.types]]
@@ -537,6 +630,36 @@ fields = [
   { name = "compose_key", type = { option = "text" } },
   { name = "caps_lock", type = { option = "text" } },
   { name = "customised", type = "bool" },
+]
+
+[[resources.types]]
+name = "StylusButtonAction"
+cases = [
+  { name = "default" },
+  { name = "left" },
+  { name = "middle" },
+  { name = "right" },
+  { name = "back" },
+  { name = "forward" },
+  { name = "shortcut", fields = [{ name = "0", type = { named = "ShortcutAction" } }] },
+  { name = "disabled" },
+]
+
+[[resources.types]]
+name = "TabletConfig"
+fields = [
+  { name = "output", type = { option = "text" } },
+  { name = "keep_aspect", type = "bool" },
+  { name = "left_handed", type = "bool" },
+  { name = "pressure_curve", type = { list = "float" } },
+  { name = "lower_button", type = { named = "StylusButtonAction" } },
+  { name = "upper_button", type = { named = "StylusButtonAction" } },
+  { name = "third_button", type = { named = "StylusButtonAction" } },
+  { name = "eraser", type = { named = "EraserAction" } },
+  { name = "pad_buttons", type = { map = { named = "ShortcutAction" } } },
+  { name = "pad_map_button", type = { option = "int" } },
+  { name = "pad_rings", type = { map = { list = { named = "PadDialAction" } } } },
+  { name = "pad_strips", type = { map = { list = { named = "PadDialAction" } } } },
 ]
 
 [[resources]]
@@ -1191,9 +1314,6 @@ setters = true
 fields = [
   { path = "id", type = "int", readonly = true },
   { path = "state", type = "any", readonly = true },
-  { path = "set", type = "any", readonly = true },
-  { path = "previous", type = "any", readonly = true },
-  { path = "candidate", type = "any", readonly = true },
   { path = "deadline_unix_ms", type = { option = "int" }, readonly = true },
   { path = "message", type = { option = "text" }, readonly = true },
 ]
@@ -1202,7 +1322,78 @@ fields = [
 id = "request"
 kind = "undoable"
 params = [
-  { name = "change", required = true, schema = {} },
+  { name = "change", type = { named = "DisplayTransaction" }, required = true, schema = { type = "object", additionalProperties = false, properties = { candidate = { type = "object", additionalProperties = false, properties = { outputs = { type = "object" } } }, deadline_unix_ms = { type = ["integer", "null"], minimum = 0 }, id = { type = "integer", minimum = 0 }, message = { type = ["string", "null"] }, previous = { type = "object", additionalProperties = false, properties = { outputs = { type = "object" } } }, set = { type = "object", additionalProperties = false, properties = { key = { type = "string" }, members = { type = "object" } } }, state = { type = "string", enum = ["requested", "awaiting_confirmation", "confirm_requested", "revert_requested", "confirmed", "reverted", "rejected"] } } } },
+]
+
+[[resources.types]]
+name = "DisplayConfig"
+fields = [
+  { name = "outputs", type = { map = { named = "OutputConfig" } } },
+]
+
+[[resources.types]]
+name = "DisplaySet"
+fields = [
+  { name = "key", type = "text" },
+  { name = "members", type = { map = "text" } },
+]
+
+[[resources.types]]
+name = "DisplayTransaction"
+fields = [
+  { name = "id", type = "int" },
+  { name = "state", type = { named = "DisplayTransactionState" } },
+  { name = "set", type = { named = "DisplaySet" } },
+  { name = "previous", type = { named = "DisplayConfig" } },
+  { name = "candidate", type = { named = "DisplayConfig" } },
+  { name = "deadline_unix_ms", type = { option = "int" } },
+  { name = "message", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "DisplayTransactionState"
+cases = [
+  { name = "requested" },
+  { name = "awaiting_confirmation" },
+  { name = "confirm_requested" },
+  { name = "revert_requested" },
+  { name = "confirmed" },
+  { name = "reverted" },
+  { name = "rejected" },
+]
+
+[[resources.types]]
+name = "OutputConfig"
+fields = [
+  { name = "enabled", type = "bool" },
+  { name = "primary", type = "bool" },
+  { name = "x", type = "int" },
+  { name = "y", type = "int" },
+  { name = "scale", type = "float" },
+  { name = "transform", type = { named = "OutputTransform" } },
+  { name = "mode", type = { option = { named = "OutputMode" } } },
+  { name = "mirror_of", type = { option = "text" } },
+  { name = "hdr", type = "bool" },
+  { name = "sdr_brightness_nits", type = "int" },
+  { name = "vrr", type = "bool" },
+  { name = "color_profile", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "OutputMode"
+fields = [
+  { name = "width", type = "int" },
+  { name = "height", type = "int" },
+  { name = "refresh_mhz", type = "int" },
+]
+
+[[resources.types]]
+name = "OutputTransform"
+cases = [
+  { name = "normal" },
+  { name = "rotate90" },
+  { name = "rotate180" },
+  { name = "rotate270" },
 ]
 
 [[resources]]

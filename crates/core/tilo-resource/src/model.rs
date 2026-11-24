@@ -1097,9 +1097,28 @@ macro_rules! __table_functions {
 /// A type whose JSON form is one value of a known type names its schema and
 /// its [`FieldType`](crate::FieldType) variant
 /// (`json_model!(ResetDay => {"type": "integer"}, Int)`): its setter then
-/// takes that value, and a surface publishes the field as that type.
+/// takes that value, and a surface publishes the field as that type. A type
+/// that also derives [`JsonSchema`](crate::JsonSchema) publishes the record
+/// that schema describes (`json_model!(TabletConfig => named)`), so a view
+/// reads its fields rather than an opaque value.
 #[macro_export]
 macro_rules! json_model {
+    ($ty:ty => named) => {
+        impl $crate::Settable for $ty {}
+        impl $crate::Model for $ty {
+            $crate::leaf_paths!();
+            const NULLABLE: bool = true;
+            const TABLE: &'static $crate::table::ModelTable =
+                &$crate::table::ModelTable::of_json(&$crate::table::JsonOf::<$ty>::COMPARED);
+            $crate::__table_functions!();
+            fn missing() -> ::core::result::Result<Self, $crate::ModelError> {
+                ::core::result::Result::Ok(<Self as ::core::default::Default>::default())
+            }
+            fn field_type(types: &mut $crate::TypeSet) -> $crate::FieldType {
+                <$ty as $crate::JsonSchema>::field_type(types)
+            }
+        }
+    };
     ($ty:ty => $schema:tt, $field_type:ident) => {
         impl $crate::Settable for $ty {}
         impl $crate::Model for $ty {

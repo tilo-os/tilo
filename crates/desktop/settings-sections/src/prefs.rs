@@ -322,7 +322,6 @@ pub struct InputDevicePrefs {
     #[model(readonly)]
     pub keyboard_inspected_key: String,
     /// Per-tablet mapping, pressure and buttons, keyed by device identity.
-    #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
     #[model(readonly)]
     pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
 }

@@ -774,7 +774,7 @@ pub struct TabletConfig {
 crate::read_through_json_value!(TabletConfig);
 
 #[cfg(feature = "model")]
-tilo_resource::json_model!(TabletConfig);
+tilo_resource::json_model!(TabletConfig => named);
 
 impl TabletConfig {
     fn dials(&self, dial: PadDial) -> (&BTreeMap<u32, Vec<PadDialAction>>, u32) {
