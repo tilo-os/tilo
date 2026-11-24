@@ -739,8 +739,9 @@ fn a_host_windows_name_is_changed_from_its_menu() {
         on_screen(session, "Rename").is_some()
     });
     press(&mut session, "Rename");
+    // The name field stands in the window's own bar, as the desktop's Rename opened it there.
     until(&mut session, "the name field", |session| {
-        on_screen(session, "A new name").is_some()
+        on_screen(session, "Window name").is_some()
     });
     crate::common::type_text(&mut session, "Renamed");
     crate::common::window::press_key(&mut session, KEY_ENTER, true);
