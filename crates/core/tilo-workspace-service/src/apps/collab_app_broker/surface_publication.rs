@@ -3,7 +3,6 @@
 //! reads that generation, so a move with nothing changed is churn, and
 //! each move is traced with its cause.
 
-#[cfg(any(test, feature = "test-support"))]
 use super::{AppBrokerState, PublishedSurface};
 use std::sync::{Arc, OnceLock, Weak, mpsc};
 
