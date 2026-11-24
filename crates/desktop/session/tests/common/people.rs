@@ -1560,6 +1560,10 @@ impl Device {
             // This device relays through this machine's loopback relay, as the site does: no
             // session of a test reaches the person's relays or their directory out on the internet.
             .env(test_server::loopback_relay().0, test_server::loopback_relay().1)
+            // Every device of a test runs on this one machine, so each takes its workspaces' work
+            // on a port the machine gives it rather than the one port a computer's single runtime
+            // takes: the person's other devices reach it at the address its endpoint says.
+            .env(tilo_runtime::device::services::PORT_ENV, "0")
             // This device's files daemon serves beside the session in its own runtime directory,
             // where the session finds the daemon's link to the network (`fs::net`).
             .env("TILO_FS_BLOB_SOCKET", root.join("runtime/fs-blobs.sock"))
