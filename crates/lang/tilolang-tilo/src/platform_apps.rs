@@ -1030,35 +1030,15 @@ mod tests {
         }
     }
 
-    /// Every root a published app names is a type its committed surface publishes. A resource
-    /// added to the table without its surface fails here, naming the kind, before every package
-    /// that reads the app does.
+    /// Every app the platform publishes reads as the package a program compiles against, its
+    /// roots the resources the app names: an app whose committed surface stops carrying a root's
+    /// kind fails here, with the error every host that reads the platform is given, before a
+    /// daemon's first workspace does.
     #[test]
     fn every_published_root_is_a_type_its_surface_publishes() {
         for published in PUBLISHED {
-            if published.roots.is_empty() {
-                continue;
-            }
-            let file = published.files.first().copied().unwrap_or_default();
-            let mut surfaces = Vec::new();
-            for file in published.files {
-                surfaces.extend(surfaces_of(file).unwrap_or_else(|why| {
-                    panic!("{}'s surface does not read: {why}", published.app)
-                }));
-            }
-            let meta = if published.described {
-                crate::catalogue::described(published.app, published.title, file).unwrap_or_else(
-                    |why| panic!("{}'s description does not read: {why}", published.app),
-                )
-            } else {
-                package_of(published.app, published.title, &surfaces)
-            };
-            for (root, ty, _) in published.roots {
-                assert!(
-                    meta.types.iter().any(|declared| declared.name == *ty),
-                    "{} publishes no `{ty}`, the type its root `{root}` names: add that kind to {file}",
-                    published.app
-                );
+            if let Err(why) = package(published) {
+                panic!("{}: {why}", published.app);
             }
         }
     }
