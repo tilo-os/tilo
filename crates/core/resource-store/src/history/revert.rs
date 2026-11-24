@@ -739,6 +739,25 @@ pub fn revert_changes(
     changes: &[(ChangeHash, String)],
     authors: &dyn ResolveAuthor,
 ) -> Result<Vec<RevertOutcome>, RevertError> {
+    revert_changes_keeping(doc, changes, authors, &[])
+}
+
+/// [`revert_changes`], leaving the keys `kept` of the document's root as they are.
+fn revert_changes_keeping(
+    doc: &mut AutoCommit,
+    changes: &[(ChangeHash, String)],
+    authors: &dyn ResolveAuthor,
+    kept: &[&str],
+) -> Result<Vec<RevertOutcome>, RevertError> {
+    let at_kept_root_key = |patch: &Patch| {
+        patch.obj == automerge::ROOT
+            && match &patch.action {
+                PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => {
+                    kept.contains(&key.as_str())
+                }
+                _ => false,
+            }
+    };
     let mut plans = Vec::with_capacity(changes.len());
     for (hash, actor) in changes {
         let run = ChangeRange::single(entry_id_from_hash(&hash.to_string()));
@@ -746,12 +765,13 @@ pub fn revert_changes(
         let invoker = tilo_actions::entry_of(doc.committed_document(), *hash)
             .and_then(|context| context.invoker)
             .map(|invoker| invoker.acting.by);
-        let (outcome, patches) = plan(
+        let (outcome, mut patches) = plan(
             doc,
             (&before, &after, covered),
             (Some(actor), invoker.as_ref()),
             authors,
         );
+        patches.retain(|(patch, _)| !at_kept_root_key(patch));
         plans.push((outcome, patches, before, after));
     }
     Ok(plans
@@ -780,14 +800,23 @@ pub fn revert_stamped(
     invocation: &str,
     stamp: &tilo_actions::stamp::Stamp,
 ) -> Result<Option<automerge::Change>, automerge::AutomergeError> {
+    // The verb the invocation was made as, which the undo names: a holder admits the undo as
+    // that verb, since what it writes is what that verb wrote, taken back.
+    let mut verb = None;
     let mut changes: Vec<(ChangeHash, String)> = doc
         .get_changes_meta(&[])
         .into_iter()
         .filter(|meta| {
-            meta.message
+            let Some(made) = meta
+                .message
                 .as_deref()
                 .and_then(tilo_actions::stamp::Stamp::of_message)
-                .is_some_and(|stamp| stamp.invocation == invocation)
+                .filter(|made| made.invocation == invocation)
+            else {
+                return false;
+            };
+            verb.get_or_insert(made.verb);
+            true
         })
         .map(|meta| (meta.hash, meta.actor.to_hex_string()))
         .collect();
@@ -796,8 +825,15 @@ pub fn revert_stamped(
     }
     changes.reverse();
     let mut working = AutoCommit::from(doc.clone());
-    let outcomes = revert_changes(&mut working, &changes, &super::authors::Unnamed)
-        .map_err(|_| automerge::AutomergeError::Fail)?;
+    // Who reads a document is fixed when it is placed: taking back the change that placed it
+    // takes back what it wrote there, never its readers.
+    let outcomes = revert_changes_keeping(
+        &mut working,
+        &changes,
+        &super::authors::Unnamed,
+        &[crate::store::READERS],
+    )
+    .map_err(|_| automerge::AutomergeError::Fail)?;
     if !outcomes.iter().any(|outcome| outcome.wrote) {
         return Ok(None);
     }
@@ -812,6 +848,8 @@ pub fn revert_stamped(
     ));
     let stamp = tilo_actions::stamp::Stamp {
         context: Some(Box::new(context)),
+        verb: verb.unwrap_or_else(|| stamp.verb.clone()),
+        undoes: Some(invocation.to_owned()),
         ..stamp.clone()
     };
     working.commit_with(

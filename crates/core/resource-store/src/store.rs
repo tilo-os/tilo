@@ -60,7 +60,8 @@ pub use readers::RecordReader;
 /// The most resources one document holds before the next one starts.
 pub const DOCUMENT_LIMIT: usize = 4096;
 
-const READERS: &str = "w";
+/// The key at a document's root that names who reads it: fixed when the document is placed.
+pub(crate) const READERS: &str = "w";
 /// What a resource's key at the document's root starts with: each resource is a key of the root
 /// of its own, so two devices starting one document both keep what they wrote.
 const HELD: &str = collab_types::claim::STORE_RECORD;

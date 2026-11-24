@@ -223,7 +223,8 @@ impl TurnHistory {
             .agent_id()
             .ok_or(ActionCallError::NotPermitted)?
             .to_owned();
-        let mut invocations: Vec<String> = Vec::new();
+        // Each invocation once, at the time it last wrote.
+        let mut made: Vec<(String, u64, String)> = Vec::new();
         for version in self.versions(caller, &app).await? {
             let change = version
                 .get("change")
@@ -232,12 +233,34 @@ impl TurnHistory {
             if !changes.contains(change) || !writes(&version, &person) {
                 continue;
             }
-            if let Some(invocation) = version.get("invocation").and_then(Value::as_str)
-                && !invocations.iter().any(|held| held.as_str() == invocation)
-            {
-                invocations.push(invocation.to_owned());
+            let Some(invocation) = version.get("invocation").and_then(Value::as_str) else {
+                continue;
+            };
+            let at = version
+                .get("at")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let op = version
+                .get("op")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            match made.iter_mut().find(|(_, _, held)| held == invocation) {
+                Some(held) => {
+                    if (&at, op) > (&held.0, held.1) {
+                        (held.0, held.1) = (at, op);
+                    }
+                }
+                None => made.push((at, op, invocation.to_owned())),
             }
         }
+        // The newest first: a change is taken back before the ones it was built on, so a message
+        // goes before the channel it was written in.
+        made.sort_by(|a, b| (&b.0, b.1).cmp(&(&a.0, a.1)));
+        let invocations: Vec<String> = made
+            .into_iter()
+            .map(|(_, _, invocation)| invocation)
+            .collect();
         if invocations.is_empty() {
             return Ok(json!({"undone": 0}));
         }
