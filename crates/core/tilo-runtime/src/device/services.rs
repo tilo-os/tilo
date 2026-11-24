@@ -103,7 +103,7 @@ pub struct Daemon {
     workspaces: Arc<ServiceWorkspaces>,
     /// Whether this run walked the old keeper's kept secrets into the person's vault: done once
     /// the workspace is held, so an app launch costs no keyring read after the first.
-    old_secrets: std::sync::atomic::AtomicBool,
+    pub(crate) old_secrets: std::sync::atomic::AtomicBool,
     _identity: IdentityBrokerHandle,
     workspace: String,
     actor: String,
