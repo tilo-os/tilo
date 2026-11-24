@@ -17,7 +17,7 @@ use ntfs_mount::protocol::{
 use tilo_actions::ResourceSpec;
 use tilo_service::{offer, unavailable};
 use tilo_system_resources::drives::{
-    DRIVES, Drive as DriveReading, DriveMode, Drives, DrivesAction, Mounted,
+    DRIVES, DriveMode, DriveVolume as DriveVolumeReading, Drives, DrivesAction, Mounted,
     Placement as PlacementReading, ReadOnlyReason, RememberOffer, Remembered,
     RememberedDrive as RememberedDriveReading,
 };
@@ -145,8 +145,8 @@ fn placement(placement: Placement) -> PlacementReading {
     }
 }
 
-fn drive_reading(drive: Drive) -> DriveReading {
-    DriveReading {
+fn drive_reading(drive: Drive) -> DriveVolumeReading {
+    DriveVolumeReading {
         id: drive.id,
         label: drive.label,
         size_bytes: drive.size_bytes,

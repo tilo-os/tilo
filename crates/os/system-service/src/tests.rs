@@ -9,7 +9,7 @@ use tilo_service::{Service, Services, Started, Wake};
 use tilo_system_resources::codec_pack::{CodecPack, CodecState, HardwareVideo};
 use tilo_system_resources::disk_unlock::{DiskUnlock, Sealing, UnlockVolume};
 use tilo_system_resources::drives::{
-    Drive, DriveMode, Drives, Placement, RememberOffer, RememberedDrive,
+    DriveMode, DriveVolume, Drives, Placement, RememberOffer, RememberedDrive,
 };
 use tilo_system_resources::firmware::{Firmware, FirmwareUpdate};
 use tilo_system_resources::host_info::HostInfo;
@@ -1665,7 +1665,7 @@ fn a_machine_with_nothing_to_go_back_to_offers_no_rollback() {
 fn a_windows_drive() -> Drives {
     Drives {
         serving: true,
-        drives: vec![Drive {
+        drives: vec![DriveVolume {
             id: "sdb1:7".into(),
             label: "Windows".into(),
             size_bytes: 64 * 1024 * 1024 * 1024,

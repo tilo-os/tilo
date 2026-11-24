@@ -77,7 +77,7 @@ pub struct Remembered {
 
 /// An NTFS volume attached now.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
-pub struct Drive {
+pub struct DriveVolume {
     /// Names the volume while it stays attached.
     pub id: String,
     pub label: String,
@@ -117,7 +117,7 @@ pub struct Drives {
     #[serde(default)]
     pub read_error: Option<String>,
     /// The NTFS volumes attached now.
-    pub drives: Vec<Drive>,
+    pub drives: Vec<DriveVolume>,
     /// The drives the person chose to remember.
     pub remembered: Vec<RememberedDrive>,
     /// Actions taken and not landed yet, by the action's id.

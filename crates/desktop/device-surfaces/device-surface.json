@@ -3929,7 +3929,7 @@
           "stored": "value",
           "type": {
             "list": {
-              "named": "Drive"
+              "named": "DriveVolume"
             }
           },
           "readonly": true
@@ -3963,7 +3963,7 @@
       ],
       "types": [
         {
-          "name": "Drive",
+          "name": "DriveVolume",
           "doc": "An NTFS volume attached now.",
           "fields": [
             {
