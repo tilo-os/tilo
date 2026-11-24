@@ -646,6 +646,30 @@ pub trait HostedWorkspaces: Send + Sync {
         &self,
         workspace: &str,
     ) -> Option<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>>;
+
+    /// Where a call to `app`'s actions in `workspace` runs, when the app keeps a long-lived
+    /// connection ([`crate::work::connection_call`]): here, or the actions of the device that
+    /// has the connection's lease, which runs the app's process. Where no device has it, why;
+    /// nothing starts here for the call.
+    fn connection_actions<'a>(
+        &'a self,
+        workspace: &'a str,
+        app: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ConnectionActions> + Send + 'a>> {
+        let _ = (workspace, app);
+        Box::pin(std::future::ready(ConnectionActions::Here))
+    }
+}
+
+/// Where a call to an app that keeps a long-lived connection runs
+/// ([`HostedWorkspaces::connection_actions`]).
+pub enum ConnectionActions {
+    /// Here, as any app's call.
+    Here,
+    /// On the device that has the connection's lease, through its actions.
+    On(Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>),
+    /// Nowhere yet, and why.
+    Unplaced(String),
 }
 
 /// A resource command's certified route and caller, supplied by the broker.

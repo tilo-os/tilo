@@ -66,7 +66,9 @@
 //! holds the lease, or it went longer without renewing than the claim stays
 //! live (asleep, suspended), so it never runs the connection beside the device
 //! that took over. That device takes the turn once the claim it no longer
-//! renews is over.
+//! renews is over. A call to the app's actions runs on the device that has
+//! the lease ([`connection_call`]): every other device sends it there as its
+//! caller signed it, and none starts the app for it.
 
 use std::fmt;
 
@@ -649,6 +651,56 @@ async fn turn_comes(
         order.other_grace
     };
     Some(came_up.saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX)))
+}
+
+/// Where a call to an app's actions runs ([`connection_call`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConnectionCall {
+    /// Here: this device has the lease of the app's connection, or the app keeps none this
+    /// device knows of.
+    Here,
+    /// On the device that has the lease of the app's connection, which runs its process.
+    On([u8; 32]),
+    /// Nowhere yet: no device has the lease, and why. Nothing starts here for the call, so the
+    /// connection never runs twice.
+    Unplaced(String),
+}
+
+/// Where a call to `app`'s actions in `workspace` runs, when `app` keeps a long-lived connection
+/// ([`Turn::Connection`]): on the one device that has the connection's lease, since only that
+/// device runs the app's process. A call is never what claims the lease: where no device has it,
+/// the answer says why this device does not take it, or that it takes it shortly.
+pub async fn connection_call(
+    workspaces: &Workspaces,
+    workspace: &str,
+    app: &str,
+) -> ConnectionCall {
+    let leased = connection_holder(workspaces, workspace, app)
+        .await
+        .ok()
+        .flatten();
+    if let Some(leased) = leased {
+        return if leased == workspaces.lease_device(workspace).await {
+            ConnectionCall::Here
+        } else {
+            ConnectionCall::On(leased)
+        };
+    }
+    let Some(needs) = workspaces.host_connections().and_then(|host| {
+        host.connections()
+            .into_iter()
+            .find_map(|(kept, needs)| (kept == app).then_some(needs))
+    }) else {
+        return ConnectionCall::Here;
+    };
+    ConnectionCall::Unplaced(
+        match eligibility(workspaces, workspace, &Turn::connection(app, needs)).await {
+            Err(why) => format!("no device runs this app's connection, and {why}"),
+            Ok(()) => {
+                "no device runs this app's connection yet: this device takes it shortly".to_owned()
+            }
+        },
+    )
 }
 
 /// Whether this device runs the shortcuts of every member of the workspaces it keeps: it is one

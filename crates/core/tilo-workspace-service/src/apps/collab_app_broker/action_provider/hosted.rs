@@ -152,7 +152,7 @@ impl AppBrokerState {
 /// Complete `done` with `receipt` once the host says the invocation settled:
 /// an accepted one is followed there, a while at a time, for as long as it
 /// runs. A host that stops telling leaves the admission as it stood.
-fn follow(
+pub(super) fn follow(
     host: Arc<dyn ActionProvider + Send + Sync>,
     caller: Caller,
     receipt: InvocationReceipt,

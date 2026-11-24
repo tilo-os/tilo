@@ -21,7 +21,8 @@ use super::super::fixtures::{TestHost, device_cert};
 use super::tests::{member_service, shared_with};
 use crate::apps::triggers::{Firing, Runner, StartRun};
 use crate::work::{
-    HostConnections, Ineligible, NotTaken, Order, Turn, connection_holder, takes_turn,
+    ConnectionCall, HostConnections, Ineligible, NotTaken, Order, Turn, connection_call,
+    connection_holder, takes_turn,
 };
 
 const BRIDGE: &str = "so.tilo.bridge";
@@ -137,7 +138,8 @@ async fn two_devices(
     hosts: (&Arc<Device>, &Arc<Device>),
 ) -> (TestHost, TestHost, String) {
     let laptop = device_cert(&persons_root(), "laptop", DeviceCapabilities::member());
-    let (desktop, laptop, created, invitation) = shared_with(states.0, "Bridged", seed, laptop).await;
+    let (desktop, laptop, created, invitation) =
+        shared_with(states.0, "Bridged", seed, laptop).await;
     let laptop = member_service(states.1, laptop).await;
     laptop.workspaces().join_member(&invitation).await.unwrap();
     desktop
@@ -180,19 +182,28 @@ async fn a_connection_runs_only_on_a_device_that_has_what_the_app_needs() {
 
     let mut on_desktop = runner(desktop.workspaces());
     on_desktop.pass(Vec::new()).await;
-    assert!(on_desktop.connections_held().is_empty(), "nothing is installed there");
+    assert!(
+        on_desktop.connections_held().is_empty(),
+        "nothing is installed there"
+    );
     assert_eq!(
-        takes_turn(desktop.workspaces(), &workspace, &turn).await.err(),
+        takes_turn(desktop.workspaces(), &workspace, &turn)
+            .await
+            .err(),
         Some(NotTaken::Ineligible(Ineligible::NotInstalled))
     );
     desktop_has.has.lock().unwrap().installed = true;
     assert_eq!(
-        takes_turn(desktop.workspaces(), &workspace, &turn).await.err(),
+        takes_turn(desktop.workspaces(), &workspace, &turn)
+            .await
+            .err(),
         Some(NotTaken::Ineligible(Ineligible::LacksCapability))
     );
     desktop_has.has.lock().unwrap().capabilities = true;
     assert_eq!(
-        takes_turn(desktop.workspaces(), &workspace, &turn).await.err(),
+        takes_turn(desktop.workspaces(), &workspace, &turn)
+            .await
+            .err(),
         Some(NotTaken::Ineligible(Ineligible::OnBattery))
     );
     on_desktop.pass(Vec::new()).await;
@@ -201,12 +212,22 @@ async fn a_connection_runs_only_on_a_device_that_has_what_the_app_needs() {
         "a device on its battery leaves the connection to another"
     );
     assert_eq!(*desktop_has.starts.lock().unwrap(), 0);
-    assert_eq!(holder(desktop.workspaces(), &workspace).await, None, "no claim was written");
+    assert_eq!(
+        holder(desktop.workspaces(), &workspace).await,
+        None,
+        "no claim was written"
+    );
 
     let mut on_laptop = runner(laptop.workspaces());
     on_laptop.pass(Vec::new()).await;
-    assert_eq!(on_laptop.connections_held(), [(workspace.clone(), BRIDGE.to_owned())]);
-    assert!(laptop_has.runs_bridge(), "the laptop runs the bridge's process");
+    assert_eq!(
+        on_laptop.connections_held(),
+        [(workspace.clone(), BRIDGE.to_owned())]
+    );
+    assert!(
+        laptop_has.runs_bridge(),
+        "the laptop runs the bridge's process"
+    );
     reads_holder(desktop.workspaces(), &workspace, laptop_device).await;
 
     // Plugged in, the desktop could run it too, but the laptop holds it.
@@ -223,15 +244,21 @@ async fn a_connection_runs_only_on_a_device_that_has_what_the_app_needs() {
     on_laptop.pass(Vec::new()).await;
     assert!(on_laptop.connections_held().is_empty() && !laptop_has.runs_bridge());
     let desktop_device = desktop.workspaces().lease_device(&workspace).await;
-    tilo_test_env::within("the desktop takes the connection the laptop let go", async {
-        while !desktop_has.runs_bridge() {
-            on_desktop.pass(Vec::new()).await;
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+    tilo_test_env::within(
+        "the desktop takes the connection the laptop let go",
+        async {
+            while !desktop_has.runs_bridge() {
+                on_desktop.pass(Vec::new()).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        },
+    )
     .await;
     wall.release();
-    assert_eq!(holder(desktop.workspaces(), &workspace).await, Some(desktop_device));
+    assert_eq!(
+        holder(desktop.workspaces(), &workspace).await,
+        Some(desktop_device)
+    );
     assert!(!laptop_has.runs_bridge(), "never on both");
 }
 
@@ -246,10 +273,14 @@ async fn a_silent_holder_is_taken_over_and_stops_its_connection_when_it_resumes(
         two_devices((one.path(), two.path()), 52, (&desktop_has, &laptop_has)).await;
     let desktop_device = desktop.workspaces().lease_device(&workspace).await;
     let laptop_device = laptop.workspaces().lease_device(&workspace).await;
-    let (mut on_desktop, mut on_laptop) = (runner(desktop.workspaces()), runner(laptop.workspaces()));
+    let (mut on_desktop, mut on_laptop) =
+        (runner(desktop.workspaces()), runner(laptop.workspaces()));
 
     on_desktop.pass(Vec::new()).await;
-    assert!(desktop_has.runs_bridge(), "the first device to look takes it");
+    assert!(
+        desktop_has.runs_bridge(),
+        "the first device to look takes it"
+    );
     reads_holder(laptop.workspaces(), &workspace, desktop_device).await;
     for _ in 0..3 {
         on_laptop.pass(Vec::new()).await;
@@ -267,14 +298,23 @@ async fn a_silent_holder_is_taken_over_and_stops_its_connection_when_it_resumes(
         + Duration::from_secs(1);
     wall.pin(silent);
     on_laptop.pass(Vec::new()).await;
-    assert_eq!(on_laptop.connections_held(), [(workspace.clone(), BRIDGE.to_owned())]);
-    assert!(laptop_has.runs_bridge(), "the laptop took the connection over");
+    assert_eq!(
+        on_laptop.connections_held(),
+        [(workspace.clone(), BRIDGE.to_owned())]
+    );
+    assert!(
+        laptop_has.runs_bridge(),
+        "the laptop took the connection over"
+    );
     reads_holder(desktop.workspaces(), &workspace, laptop_device).await;
 
     // The desktop wakes: before anything else, it stops the connection it no longer holds, and
     // looking again it finds the laptop holding it.
     on_desktop.pass(Vec::new()).await;
-    assert!(!desktop_has.runs_bridge(), "a device that resumes stops the connection");
+    assert!(
+        !desktop_has.runs_bridge(),
+        "a device that resumes stops the connection"
+    );
     for _ in 0..3 {
         on_desktop.pass(Vec::new()).await;
         on_laptop.pass(Vec::new()).await;
@@ -282,6 +322,63 @@ async fn a_silent_holder_is_taken_over_and_stops_its_connection_when_it_resumes(
         assert!(laptop_has.runs_bridge());
     }
     wall.release();
-    assert_eq!(holder(desktop.workspaces(), &workspace).await, Some(laptop_device));
-    assert_eq!(*desktop_has.starts.lock().unwrap(), 1, "the desktop started it once");
+    assert_eq!(
+        holder(desktop.workspaces(), &workspace).await,
+        Some(laptop_device)
+    );
+    assert_eq!(
+        *desktop_has.starts.lock().unwrap(),
+        1,
+        "the desktop started it once"
+    );
+}
+
+/// A call to the bridge's actions runs where its connection runs: on the device that has the
+/// lease, which the other device sends it to. Before any device has it, the call is told why, and
+/// no device starts the bridge for it.
+#[tokio::test]
+async fn a_call_to_a_connection_goes_to_the_device_that_has_its_lease() {
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let desktop_has = Device::with(Has {
+        power: false,
+        ..Has::ALL
+    });
+    let laptop_has = Device::with(Has::ALL);
+    let (desktop, laptop, workspace) =
+        two_devices((one.path(), two.path()), 53, (&desktop_has, &laptop_has)).await;
+    let laptop_device = laptop.workspaces().lease_device(&workspace).await;
+
+    let unplaced = |call: ConnectionCall| match call {
+        ConnectionCall::Unplaced(why) => why,
+        other => panic!("no device has the lease yet, got {other:?}"),
+    };
+    let why = unplaced(connection_call(desktop.workspaces(), &workspace, BRIDGE).await);
+    assert!(why.contains(&Ineligible::OnBattery.to_string()), "{why}");
+    let why = unplaced(connection_call(laptop.workspaces(), &workspace, BRIDGE).await);
+    assert!(why.contains("takes it shortly"), "{why}");
+    assert_eq!(
+        (
+            *desktop_has.starts.lock().unwrap(),
+            *laptop_has.starts.lock().unwrap()
+        ),
+        (0, 0),
+        "a call starts no connection"
+    );
+    assert_eq!(
+        connection_call(desktop.workspaces(), &workspace, "so.tilo.notes").await,
+        ConnectionCall::Here,
+        "an app that keeps no connection is called as any app"
+    );
+
+    runner(laptop.workspaces()).pass(Vec::new()).await;
+    reads_holder(desktop.workspaces(), &workspace, laptop_device).await;
+    assert_eq!(
+        connection_call(desktop.workspaces(), &workspace, BRIDGE).await,
+        ConnectionCall::On(laptop_device)
+    );
+    assert_eq!(
+        connection_call(laptop.workspaces(), &workspace, BRIDGE).await,
+        ConnectionCall::Here
+    );
+    assert!(!desktop_has.runs_bridge(), "never on both");
 }

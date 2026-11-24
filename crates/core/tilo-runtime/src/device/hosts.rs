@@ -14,13 +14,18 @@
 //! decided here.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
+
+use iroh::{EndpointAddr, EndpointId};
 
 use tilo_actions::remote::ActionProvider;
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::RemoteDevice;
-use tilo_workspace_service::apps::services::HostedWorkspaces;
+use tilo_workspace_service::apps::services::{ConnectionActions, HostedWorkspaces};
+use tilo_workspace_service::work::{self, ConnectionCall};
 use tilo_workspace_service::workspaces::standing;
 
 use super::workspaces::ServiceWorkspaces;
@@ -42,30 +47,91 @@ impl Hosts {
             reached: Mutex::default(),
         })
     }
+
+    /// The device serving `workspace` when another device than this one does, and where it is
+    /// reached. It may key its endpoint apart from the device it signs as, which the action
+    /// service learns here before anything dials it.
+    pub(crate) fn serving(&self, workspace: &str) -> Option<([u8; 32], EndpointAddr)> {
+        let id = WorkspaceId::parse(workspace)?;
+        let workspaces = self.workspaces.upgrade()?;
+        let own = workspaces.device_cert().device_public_key;
+        let host = standing::host_elsewhere(&workspaces.peer(id)?, &own)?;
+        workspaces
+            .copies()
+            .action_service()
+            .keyed_apart(host.device, *host.address.id.as_bytes());
+        Some((host.device, host.address))
+    }
+
+    /// The actions of `device`, a device of `workspace`: over the link it holds to this device,
+    /// where it holds one; the device serving the workspace itself, or `device` through it, where
+    /// another device serves it; and otherwise `device` dialled by its key.
+    fn reach(&self, workspace: &str, device: [u8; 32]) -> Option<RemoteDevice> {
+        let workspaces = self.workspaces.upgrade()?;
+        let service = workspaces.copies().action_service();
+        if let Some(linked) = service.remote_held(device, workspace) {
+            return Some(linked);
+        }
+        let endpoint = workspaces.endpoint();
+        Some(match self.serving(workspace) {
+            Some((serving, address)) if serving == device => {
+                service.remote(&endpoint, &address, workspace)
+            }
+            Some((_, address)) => service.through(&endpoint, &address, workspace, device),
+            None => service.remote(
+                &endpoint,
+                &EndpointAddr::new(EndpointId::from_bytes(&device).ok()?),
+                workspace,
+            ),
+        })
+    }
 }
 
 impl HostedWorkspaces for Hosts {
     fn host_actions(&self, workspace: &str) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
         let id = WorkspaceId::parse(workspace)?;
-        let workspaces = self.workspaces.upgrade()?;
-        let own = workspaces.device_cert().device_public_key;
-        let host = standing::host_elsewhere(&workspaces.peer(id)?, &own)?;
+        let (device, address) = self.serving(workspace)?;
         let kept = self
             .reached
             .lock_recover()
             .get(&id)
-            .filter(|(device, _)| *device == host.device)
+            .filter(|(reached, _)| *reached == device)
             .map(|(_, actions)| actions.clone());
         if let Some(actions) = kept {
             return Some(Arc::new(actions));
         }
-        let service = workspaces.copies().action_service();
-        // A server keys its endpoint apart from the device it signs as.
-        service.keyed_apart(host.device, *host.address.id.as_bytes());
-        let actions = service.remote(&workspaces.endpoint(), &host.address, workspace);
+        let workspaces = self.workspaces.upgrade()?;
+        let actions = workspaces.copies().action_service().remote(
+            &workspaces.endpoint(),
+            &address,
+            workspace,
+        );
         self.reached
             .lock_recover()
-            .insert(id, (host.device, actions.clone()));
+            .insert(id, (device, actions.clone()));
         Some(Arc::new(actions))
+    }
+
+    fn connection_actions<'a>(
+        &'a self,
+        workspace: &'a str,
+        app: &'a str,
+    ) -> Pin<Box<dyn Future<Output = ConnectionActions> + Send + 'a>> {
+        Box::pin(async move {
+            let Some(workspaces) = self.workspaces.upgrade() else {
+                return ConnectionActions::Unplaced("this device is shutting down".into());
+            };
+            let device = match work::connection_call(workspaces.copies(), workspace, app).await {
+                ConnectionCall::Here => return ConnectionActions::Here,
+                ConnectionCall::Unplaced(why) => return ConnectionActions::Unplaced(why),
+                ConnectionCall::On(device) => device,
+            };
+            match self.reach(workspace, device) {
+                Some(actions) => ConnectionActions::On(Arc::new(actions)),
+                None => ConnectionActions::Unplaced(
+                    "the device that runs this app's connection cannot be reached from here".into(),
+                ),
+            }
+        })
     }
 }

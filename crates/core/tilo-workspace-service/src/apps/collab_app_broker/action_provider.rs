@@ -37,6 +37,7 @@ mod agent_app_list_tests;
 mod owner_approval_tests;
 
 mod app_admission;
+mod connection;
 pub(super) mod delivering;
 mod directory;
 mod hosted;
@@ -2066,6 +2067,25 @@ impl AppBrokerState {
                     }),
                 };
             }
+            // An app whose connection another device runs is called there, and never started
+            // here beside it.
+            let destination = match destination {
+                Ok(destination) => match state
+                    .connection_forward(&caller, origin.as_ref(), &destination, &request)
+                    .await
+                {
+                    Ok(None) => Ok(destination),
+                    Ok(Some(there)) => {
+                        if let Ok(mut log) = state.remote_invocations.lock() {
+                            log.abandon(&request.invocation);
+                        }
+                        connection::run_there(there, caller, request, completer).await;
+                        return;
+                    }
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            };
             let started = match destination {
                 Ok(destination) => {
                     state
