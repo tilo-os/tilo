@@ -1209,6 +1209,11 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   daemon checks each connection's peer credentials and refuses any other account,
   the Browser's included. A tenant connection acts as the person's unnamed agent,
   so asked actions still ask.
+  On a person's own device, a connection the daemon verifies by peer credentials as
+  that person's account is the person: a workspace's ask before outside actions
+  doesn't apply to it, since nothing stands between them and the action. Apps,
+  agents, shell programs and forwarded links still ask, whatever identity they
+  carry.
   Reads work the same way: a record, page, search or view opened for a person
   reads with that person's grants, never with those of the person whose
   device serves it.
