@@ -4,7 +4,7 @@ use tilo_actions::remote::{Caller, Pending};
 use tilo_server_client::frame::{read_frame, write_frame};
 use tilo_server_protocol::auth::{Hello, HelloAck, client_challenge_digest};
 use tilo_server_protocol::page::{
-    OpenedPage, PageAction, PageAddress, PageAnswer, PageAsk, PagePatch, PageRefusal,
+    OpenedPage, PageAction, PageAddress, PageAnswer, PageAsk, PageNotice, PagePatch, PageRefusal,
 };
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
@@ -161,6 +161,10 @@ struct Echo {
     answered: Mutex<Vec<(u64, u64, tilo_server_protocol::page::CallAnswer)>>,
     /// Wakes the page's stream when a step is queued.
     waker: std::sync::Arc<tokio::sync::Notify>,
+    /// The notifications the person's devices show, as the record of them holds them.
+    notices: Mutex<Vec<PageNotice>>,
+    /// What the browser answered of them: the person it was for, the device, and the notice.
+    answered_notices: Mutex<Vec<([u8; 32], [u8; 32], String)>>,
 }
 
 impl Echo {
@@ -232,6 +236,39 @@ impl AppPages for Echo {
 
     fn calls_waker(&self) -> Option<std::sync::Arc<tokio::sync::Notify>> {
         Some(std::sync::Arc::clone(&self.waker))
+    }
+
+    fn notices(&self, caller: &Caller, _: i64) -> Pending<Vec<PageNotice>> {
+        let person = caller
+            .user_public_key()
+            .copied()
+            .expect("the page's person is the caller's");
+        let notices = self
+            .notices
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|notice| {
+                // The record is the person's own: an empty one reaches nobody.
+                assert_eq!(person, [1; 32], "the record read is the page's person's");
+                notice.clone()
+            })
+            .collect();
+        Pending::ready(notices)
+    }
+
+    fn answer_notice(
+        &self,
+        caller: &Caller,
+        device: &[u8; 32],
+        id: &str,
+    ) -> Pending<Result<(), String>> {
+        self.answered_notices.lock().unwrap().push((
+            *caller.user_public_key().unwrap(),
+            *device,
+            id.to_owned(),
+        ));
+        Pending::ready(Ok(()))
     }
 }
 
@@ -442,4 +479,63 @@ fn every_face_the_page_stylesheet_names_is_served_from_the_page_s_own_origin() {
     }
     assert!(super::font("/fonts/TiloSans[wdth,wght].ttf").is_none());
     assert!(super::font("/fonts/../manifest.toml").is_none());
+}
+
+#[tokio::test]
+async fn the_notifications_the_person_s_devices_show_reach_the_page_and_its_answer_reaches_them() {
+    let pages = Echo::default();
+    let told = PageNotice {
+        id: "7f".repeat(32),
+        app_name: "Mail".into(),
+        title: "A message from Ada".into(),
+        body: String::new(),
+        urgency: 0,
+    };
+    *pages.notices.lock().unwrap() = vec![told.clone()];
+    let person = Caller::authenticated([1; 32], [2; 32]);
+    let (mut browser, served) = tokio::io::duplex(1 << 16);
+    let (recv, send) = tokio::io::split(served);
+    let address = PageAddress {
+        workspace: WORKSPACE.into(),
+        app: "mail".into(),
+        show: None,
+    };
+    let serving = serve_pages(&pages, &person, |_, _| async { Ok(true) }, recv, send);
+    let browsing = async {
+        ask(&mut browser, &PageAsk::Open(address)).await;
+        assert_eq!(answer(&mut browser).await, PageAnswer::Loading);
+        assert!(matches!(
+            answer(&mut browser).await,
+            PageAnswer::Shown { .. }
+        ));
+        // The record of the person's devices holds a notice none of them answered: the page is
+        // told, and raises it as a browser notification while it is not in front.
+        assert_eq!(
+            answer(&mut browser).await,
+            PageAnswer::Notices(vec![told.clone()])
+        );
+
+        // The person dismissed it in the browser: the device they answered on is the browser's
+        // own, so the record can tell the device it was sent on where they were.
+        ask(
+            &mut browser,
+            &PageAsk::AnswerNotice {
+                id: told.id.clone(),
+            },
+        )
+        .await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while pages.answered_notices.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the person's answer reached the record");
+        assert_eq!(
+            pages.answered_notices.lock().unwrap().as_slice(),
+            [([1; 32], [2; 32], told.id.clone())]
+        );
+        drop(browser);
+    };
+    tokio::join!(serving, browsing);
 }

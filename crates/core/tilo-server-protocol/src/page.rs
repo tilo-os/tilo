@@ -5,9 +5,13 @@
 //! The serving device opens the app's view of the workspace's document and
 //! renders it as semantic HTML; the page shows that HTML and sends back what
 //! its person does on it, one [`PageAsk::Act`] per click or edit, each
-//! answered with the elements that changed. After the handshake on the
-//! session's first stream, the same stream carries one JSON message per frame,
-//! each behind a little-endian `u32` length, as the handshake's frames are.
+//! answered with the elements that changed. Beside those answers the page is
+//! told what the person's devices show as notifications
+//! ([`PageAnswer::Notices`]), which it raises while it is not in front, and a
+//! notification they dismiss there is answered in the record their devices
+//! keep ([`PageAsk::AnswerNotice`]). After the handshake on the session's
+//! first stream, the same stream carries one JSON message per frame, each
+//! behind a little-endian `u32` length, as the handshake's frames are.
 
 use serde::{Deserialize, Serialize};
 
@@ -184,6 +188,26 @@ pub enum PageAsk {
     /// What the browser's call service answered to the step `CallAnswer::Call` gave it, by the
     /// request id that step carried.
     CallResult { request_id: u64, answer: CallAnswer },
+    /// The person is done with the notification `id` — they dismissed it, on the page or in the
+    /// browser's own list: said in the record of their devices, which takes it off every one.
+    AnswerNotice { id: String },
+}
+
+/// One notification the person's devices show, as the record of their devices holds it: what a
+/// page raises as a browser notification while it is not in front, so a notice an app sends on one
+/// of the person's devices reaches them on the one they are looking at. Its text is empty when the
+/// person keeps previews on the device it was sent on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageNotice {
+    /// The id the record keeps it under: 32 bytes in hex, which is also the notification's tag,
+    /// so the browser shows one per notice however many pages raise it.
+    pub id: String,
+    /// The app that sent it, as the person's language names it.
+    pub app_name: String,
+    pub title: String,
+    pub body: String,
+    /// How much it matters: 0 says something, 1 warns, 2 tells of an error.
+    pub urgency: i64,
 }
 
 /// A call step a page's view asked for, from the device that lays the view out to the browser
@@ -270,6 +294,10 @@ pub enum PageAnswer {
     /// A call step the page's view asked for: the browser carries it, and answers with
     /// [`PageAsk::CallResult`] under the step's request id.
     Call(PageCall),
+    /// The notifications the person's devices show now, sent when that set changed: the page
+    /// raises them as browser notifications while it is not in front, and takes away the ones
+    /// that left the set — answered on a device of theirs, or run out.
+    Notices(Vec<PageNotice>),
 }
 
 /// Why a page is not shown.
@@ -384,6 +412,22 @@ mod tests {
                 ..
             }
         ));
+        // The page answers a notification the person dismissed as the record names it.
+        assert_eq!(
+            serde_json::from_str::<PageAsk>(r#"{"answer_notice":{"id":"7f"}}"#).unwrap(),
+            PageAsk::AnswerNotice { id: "7f".into() }
+        );
+        assert_eq!(
+            serde_json::to_string(&PageAnswer::Notices(vec![PageNotice {
+                id: "7f".into(),
+                app_name: "Mail".into(),
+                title: "A message from Ada".into(),
+                body: String::new(),
+                urgency: 0,
+            }]))
+            .unwrap(),
+            r#"{"notices":[{"id":"7f","app_name":"Mail","title":"A message from Ada","body":"","urgency":0}]}"#
+        );
         assert_eq!(
             serde_json::to_string(&PageAnswer::Patched(vec![
                 PagePatch::Remove { id: 3 },

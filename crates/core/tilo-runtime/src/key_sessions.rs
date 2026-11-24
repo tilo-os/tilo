@@ -27,7 +27,7 @@ use crate::personal_devices::{PersonalDevices, Refusal};
 use collab_types::WorkspaceId;
 
 mod pages;
-pub use pages::{PageViews, Pages};
+pub use pages::{PageViews, Pages, PersonNotices};
 
 /// The most sessions one device keeps for its person's keys at once.
 const MAX_SESSIONS: usize = 256;

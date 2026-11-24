@@ -371,6 +371,87 @@ function siteModule(name) {
   return modules.get(name);
 }
 
+// ---- The person's notifications, while the page is not in front ----
+// A notice an app sends on one of the person's devices is kept in the record of their devices while
+// it is shown, and every device of theirs shows it from there (the server sends them over this
+// page's stream). A page nobody looks at shows nothing of its view, so it raises them as browser
+// notifications instead; one in front has the page itself. What the person does with one here —
+// clicking it, or dismissing it — is an answer in the record, so it leaves every device of theirs.
+
+/** The browser notifications a page raises for the notices the person's devices show, while it is
+ * not in front. `follow(list)` is what the record holds now: a notice in it is raised, one that
+ * left it is taken away, and while the page is in front none is shown at all.
+ * `visibilityChanged()` is the page coming in front or going away. `Notification` is the browser's
+ * own, `hidden()` whether the page is not in front, `answer(id)` says the person is done with a
+ * notice in the record, and `focus()` brings the page in front. */
+export function browserNotices({hidden, Notification: Kind, answer, focus}) {
+  // The notification each notice is raised as, by the record's id.
+  const raised = new Map();
+  // What the person here is done with: the record may show it for another moment, and a notice
+  // they just dismissed is not raised again.
+  const answered = new Set();
+  let notices = [];
+  // Take one away here without answering it: its person did not touch it.
+  const take = id => {
+    const notification = raised.get(id);
+    if (!notification) return;
+    raised.delete(id);
+    // Ours, so the browser's closing of it is not the person's.
+    notification.onclose = null;
+    notification.close?.();
+  };
+  const raise = notice => {
+    const notification = new Kind(notice.title || notice.app_name, {
+      body: notice.body,
+      tag: notice.id,
+      requireInteraction: notice.urgency >= 2,
+    });
+    raised.set(notice.id, notification);
+    const personDone = () => {
+      answered.add(notice.id);
+      answer(notice.id);
+    };
+    notification.onclick = () => {
+      focus();
+      take(notice.id);
+      personDone();
+    };
+    // The person dismissed it from the browser's own list: an answer like any other.
+    notification.onclose = () => {
+      raised.delete(notice.id);
+      personDone();
+    };
+  };
+  const follow = list => {
+    notices = list;
+    if (!hidden()) {
+      for (const id of [...raised.keys()]) take(id);
+      return;
+    }
+    const there = new Set(list.map(notice => notice.id));
+    for (const id of [...answered]) if (!there.has(id)) answered.delete(id);
+    for (const id of [...raised.keys()]) if (!there.has(id)) take(id);
+    for (const notice of list) {
+      if (raised.has(notice.id) || answered.has(notice.id) || Kind.permission !== 'granted') continue;
+      // A browser that refuses them anyway says nothing useful to the person here, and the page
+      // goes on without: it is not worth the page.
+      try {
+        raise(notice);
+      } catch (error) {
+        console.warn('notices: the browser showed none', error);
+      }
+    }
+  };
+  const visibilityChanged = () => {
+    if (!hidden()) {
+      for (const id of [...raised.keys()]) take(id);
+      return;
+    }
+    follow(notices);
+  };
+  return {follow, visibilityChanged};
+}
+
 // ---- The page ----
 
 function start() {
@@ -765,6 +846,13 @@ function start() {
     // A call step is the server's own question, not the answer to one the page asked: it keeps
     // the queue of asks where it is.
     if (answer?.call) { void carryCall(answer.call); return; }
+    // What the person's devices show now, as the record of them holds it: raised as browser
+    // notifications while the page is not in front, and taken away as they leave it.
+    if (answer?.notices) {
+      page.dataset.notices = String(answer.notices.length);
+      noticesShown?.follow(answer.notices);
+      return;
+    }
     page.dataset.answers = String(++heard);
     if (answer.changed) { restoring = true; patch(answer.changed); return; }
     unanswered = Math.max(0, unanswered - 1);
@@ -930,6 +1018,28 @@ function start() {
     ask({open: addressOf()});
   });
 
+  // ---- The person's notifications ----
+  // A page that is not in front shows the notices the person's devices hold as browser
+  // notifications, and answers the ones its person dismisses there, so they leave every device of
+  // theirs. The browser's permission is asked from a press of theirs, never on the page's own.
+  const noticesShown = typeof globalThis.Notification === 'function' ? browserNotices({
+    hidden: () => document.hidden,
+    Notification: globalThis.Notification,
+    answer: id => {
+      if (link) link.send({answer_notice: {id}}).catch(() => {});
+    },
+    focus: () => globalThis.focus?.(),
+  }) : null;
+  const askToNotify = () => {
+    if (!noticesShown || globalThis.Notification.permission !== 'default') return;
+    globalThis.Notification.requestPermission()
+      .then(() => noticesShown.visibilityChanged())
+      .catch(() => {});
+  };
+  addEventListener('pointerdown', askToNotify, {once: true});
+  addEventListener('keydown', askToNotify, {once: true});
+  addEventListener('visibilitychange', () => noticesShown?.visibilityChanged());
+
   // ---- A browser of the person's waiting to be signed in ----
   // A tab that holds no root shows a ticket, and the person runs `tilo device add` with it on a
   // device of theirs. That device may hold no root either: it hands the signing on, and this
@@ -1049,6 +1159,8 @@ function start() {
       unanswered = 0;
       sent.length = 0;
       redone.length = 0;
+      // The record no longer reaches this page: nothing of it is shown here.
+      noticesShown?.follow([]);
       caughtUp();
       if (page.querySelector('[data-p]')) {
         // The session ended under an open page: open it again.

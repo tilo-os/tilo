@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use tilo_actions::remote::{ActionProvider, Caller, Pending, RemoteActionMessage, ResourceReads};
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal};
+use tilo_server_protocol::page::{
+    OpenedPage, PageAction, PageAddress, PageNotice, PagePatch, PageRefusal,
+};
 
 /// Answers remote-action requests addressed to this host.
 ///
@@ -241,6 +243,26 @@ pub trait AppPages: Send + Sync {
     fn follow_every(&self, page: u64) -> std::time::Duration {
         let _ = page;
         FOLLOW_EVERY
+    }
+
+    /// The notifications the person of `caller` is shown on their devices at `now_ms`, as the
+    /// record of their devices holds them: what the page raises as browser notifications while
+    /// the browser is not in front, since a page nobody looks at shows nothing of its view.
+    fn notices(&self, caller: &Caller, now_ms: i64) -> Pending<Vec<PageNotice>> {
+        let _ = (caller, now_ms);
+        Pending::ready(Vec::new())
+    }
+
+    /// The person of `caller` is done with the notification `id`, on the browser `device` (its
+    /// key): said in the record of their devices, so it leaves every one of them.
+    fn answer_notice(
+        &self,
+        caller: &Caller,
+        device: &[u8; 32],
+        id: &str,
+    ) -> Pending<Result<(), String>> {
+        let _ = (caller, device, id);
+        Pending::ready(Ok(()))
     }
 }
 

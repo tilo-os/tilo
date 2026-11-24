@@ -32,7 +32,8 @@ use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::page::window::{WindowAsk, WindowLink};
 use tilo_server_protocol::page::{
-    CallAnswer, DESKTOP, OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal, encode_part,
+    CallAnswer, DESKTOP, OpenedPage, PageAction, PageAddress, PageNotice, PagePatch, PageRefusal,
+    encode_part,
 };
 use tilo_workspace_service::app_serving::{AppPages, FOLLOW_EVERY, LIVE_FOLLOW_EVERY, PageAct};
 use ui::composition::page::escape;
@@ -59,6 +60,23 @@ pub trait PageViews: Send + Sync {
     fn open(&self, workspace: &str, app: &str, caller: &Caller) -> Result<WindowLink, PageRefusal>;
 }
 
+/// The notifications the person of a page is shown on their devices, as the record of their
+/// devices keeps them: the one place a notification dismissed on any of their devices leaves all
+/// of them. A page raises them as browser notifications while it is not in front, and answers the
+/// ones its person dismisses there.
+pub trait PersonNotices: Send + Sync {
+    /// The notifications `caller`'s person is shown at `now_ms`: the ones nobody answered and
+    /// whose time has not run out, named as the record has them.
+    fn shown(&self, caller: &Caller, now_ms: i64) -> Vec<PageNotice>;
+
+    /// The person answered the notification `id` on `device` (its key): they dismissed it, so it
+    /// leaves the record every device of theirs reads.
+    ///
+    /// # Errors
+    /// The record refused the answer, or this device reaches none of the person's.
+    fn answer(&self, caller: &Caller, device: &[u8; 32], id: &str) -> Result<(), String>;
+}
+
 /// The pages a device serves, each by its number.
 #[derive(Clone, Default)]
 pub struct Pages(Arc<Inner>);
@@ -70,6 +88,8 @@ struct Inner {
     /// against.
     devices: OnceLock<Arc<crate::personal_devices::PersonalDevices>>,
     views: OnceLock<Arc<dyn PageViews>>,
+    /// The person's notifications, once the daemon keeps them in the record of their devices.
+    notices: OnceLock<Arc<dyn PersonNotices>>,
     open: Mutex<HashMap<u64, Arc<Mutex<Held>>>>,
     /// How a page's view reaches the browser that shows it when it asks for a call: what the
     /// view's device cannot carry itself, because the microphone, camera and the workspace's
@@ -135,6 +155,12 @@ impl Pages {
     /// Show apps' views through `views` from now on. A second call is ignored.
     pub fn show_through(&self, views: Arc<dyn PageViews>) {
         let _ = self.0.views.set(views);
+    }
+
+    /// Read and answer the person's notifications through `notices` from now on: the record of
+    /// their devices, which every one of them shows them from. A second call is ignored.
+    pub fn notices_through(&self, notices: Arc<dyn PersonNotices>) {
+        let _ = self.0.notices.set(notices);
     }
 
     /// Ask the browser that shows the page of `app` in `workspace` for `person` to carry
@@ -596,6 +622,27 @@ impl AppPages for Pages {
 
     fn follow_every(&self, page: u64) -> std::time::Duration {
         self.0.follow_every(page)
+    }
+
+    fn notices(&self, caller: &Caller, now_ms: i64) -> Pending<Vec<PageNotice>> {
+        let Some(notices) = self.0.notices.get().cloned() else {
+            return Pending::ready(Vec::new());
+        };
+        let caller = caller.clone();
+        off_thread(move || notices.shown(&caller, now_ms))
+    }
+
+    fn answer_notice(
+        &self,
+        caller: &Caller,
+        device: &[u8; 32],
+        id: &str,
+    ) -> Pending<Result<(), String>> {
+        let Some(notices) = self.0.notices.get().cloned() else {
+            return Pending::ready(Ok(()));
+        };
+        let (caller, id, device) = (caller.clone(), id.to_owned(), *device);
+        off_thread(move || notices.answer(&caller, &device, &id))
     }
 }
 

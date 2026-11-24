@@ -19,7 +19,7 @@ use std::future::Future;
 use tilo_actions::remote::Caller;
 use tilo_server_client::frame::{read_frame_or_eof, write_frame};
 use tilo_server_protocol::page::{
-    MAX_PAGE_FRAME_BYTES, PageAddress, PageAnswer, PageAsk, PageCall, PageRefusal,
+    MAX_PAGE_FRAME_BYTES, PageAddress, PageAnswer, PageAsk, PageCall, PageNotice, PageRefusal,
 };
 use tilo_server_protocol::web::LINK_PAGE_PATH;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -111,6 +111,17 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
         }
     });
     let mut open: Option<(WorkspaceId, u64)> = None;
+    // The notifications the person's devices showed when the page was last told, and whether
+    // the last turn was the pass that asks for what changed: what others changed and what the
+    // record of the person's devices holds now are read together.
+    let mut notices: Vec<PageNotice> = Vec::new();
+    let mut followed = false;
+    // When the record of the person's devices was last read: a page drawing a call's pictures is
+    // followed far faster than its person's notifications change. It starts a pass behind, so the
+    // page is told what the record holds as soon as it opens.
+    let mut notices_read = std::time::Instant::now()
+        .checked_sub(FOLLOW_EVERY)
+        .unwrap_or_else(std::time::Instant::now);
     // What wakes this stream when the page's view asks for a call step: the browser carries
     // the call, and hears of a step the moment the view asks for it.
     let calls = pages.calls_waker();
@@ -134,6 +145,9 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                         if let Some((workspace_id, page)) = open.take() {
                             pages.close(workspace_id, page);
                         }
+                        // Another page of the same browser: what it was told of the person's
+                        // notifications is told again for the one it opens now.
+                        notices.clear();
                         let opened = open_page(pages, person, &ready, address, &mut send).await;
                         if let Ok((workspace_id, page, _)) = &opened {
                             open = Some((*workspace_id, *page));
@@ -178,9 +192,18 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                         }
                         None
                     }
+                    // The person dismissed a notification the record of their devices holds: it
+                    // is answered there, so it leaves every device of theirs.
+                    PageAsk::AnswerNotice { id } => {
+                        if let (Some(_), Some(device)) = (open, person.device_public_key()) {
+                            pages.answer_notice(&person, device, &id).await;
+                        }
+                        None
+                    }
                 }
             }
             () = tokio::time::sleep(follow_in), if open.is_some() => {
+                followed = true;
                 let Some((workspace_id, page)) = open else { continue };
                 match pages.act(workspace_id, page, None).await {
                     Some(Ok(patches)) if patches.is_empty() => None,
@@ -202,6 +225,22 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                 break;
             }
         }
+        // What the person's devices show now, read from the record they all share: a page raised
+        // as a browser notification while it is not in front, and taken away when the record no
+        // longer shows it — the person dismissed it on a device of theirs, or its time ran out.
+        if followed && open.is_some() && notices_read.elapsed() >= FOLLOW_EVERY {
+            notices_read = std::time::Instant::now();
+            let now_ms = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
+            if let Some(shown) = pages.notices(&person, now_ms).await
+                && shown != notices
+            {
+                notices.clone_from(&shown);
+                if write(&mut send, &PageAnswer::Notices(shown)).await.is_err() {
+                    break;
+                }
+            }
+        }
+        followed = false;
         // Every step the view asked for since the browser was last given one: the page's own
         // answer to the press that asked for it is already on its way.
         if let Some((workspace_id, page)) = open {

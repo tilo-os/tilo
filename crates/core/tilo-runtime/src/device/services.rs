@@ -44,6 +44,8 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
 use tilo_lock::MutexRecover as _;
+use tilo_server_protocol::page::PageNotice;
+use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
     BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CREATE_WEBHOOK, CreatedWorkspace, DELETE_WEBHOOK,
     DELETE_WORKSPACE, LIST_WEBHOOKS, REVOKE_KEY, RUN_UNATTENDED, WorkspaceLabels, WorkspaceListing,
@@ -64,6 +66,8 @@ use tilo_workspace_service::apps::{
 };
 use tilo_workspace_service::service::ServiceConfig;
 use tilo_workspace_service::workspaces::Refusal;
+use tilo_workspace_service::workspaces::person_workspace;
+use tilo_workspace_service::workspaces::person_workspace::devices::{self, Devices};
 use uuid::Uuid;
 
 /// The name the person's devices list a local MCP client under: one agent, whichever client
@@ -5151,6 +5155,11 @@ fn serve_key_sessions(
     key_sessions
         .pages_served()
         .show_through(Arc::new(AppViews(Arc::clone(apps))));
+    key_sessions
+        .pages_served()
+        .notices_through(Arc::new(AppNotices {
+            workspaces: Arc::clone(workspaces),
+        }));
     Ok(())
 }
 
@@ -5204,6 +5213,51 @@ impl crate::key_sessions::PageViews for AppViews {
             .open_view(caller, app, workspace, None, None)
             .map(tilo_server_protocol::page::window::WindowLink::over)
             .map_err(tilo_server_protocol::page::PageRefusal::Unavailable)
+    }
+}
+
+/// The notifications the person's devices show each other, as the record of their own devices
+/// keeps them: what a browser page raises as browser notifications while it is not in front, and
+/// where what the person dismisses there is answered, so the record takes it off every device of
+/// theirs. The record is the person's own workspace's, whichever workspace the page shows.
+struct AppNotices {
+    workspaces: Arc<ServiceWorkspaces>,
+}
+
+impl crate::key_sessions::PersonNotices for AppNotices {
+    fn shown(&self, caller: &Caller, now_ms: i64) -> Vec<PageNotice> {
+        let Some(&person) = caller.user_public_key() else {
+            return Vec::new();
+        };
+        let workspaces = Arc::clone(&self.workspaces);
+        let record = block_on_owned(async move {
+            person_workspace::devices::of(workspaces.copies(), &person).await
+        });
+        record
+            .notices
+            .iter()
+            .filter(|(_, notice)| notice.shown_at(now_ms))
+            .map(|(id, notice)| PageNotice {
+                id: id.as_str().to_owned(),
+                app_name: notice.app_name.clone(),
+                title: notice.title.clone(),
+                body: notice.body.clone(),
+                urgency: notice.urgency,
+            })
+            .collect()
+    }
+
+    fn answer(&self, caller: &Caller, device: &[u8; 32], id: &str) -> Result<(), String> {
+        let person = *caller
+            .user_public_key()
+            .ok_or("the page's person is not known")?;
+        let workspaces = Arc::clone(&self.workspaces);
+        let action = Devices::answering_notice(id, device, "");
+        let workspace = person_workspace_id(&person);
+        block_on_owned(async move {
+            person_workspace::apply_on(workspaces.copies(), &workspace, devices::DEVICES, action)
+                .await
+        })
     }
 }
 
