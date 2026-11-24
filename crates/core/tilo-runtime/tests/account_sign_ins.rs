@@ -273,13 +273,15 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
         let workspace = host.workspace().to_owned();
         let workspaces = host.daemon().workspaces().clone();
         let cert = workspaces.device_cert().clone();
-        let agent = async |denied: &[&str]| {
+        // Each is an agent of its own: the workspace's policy keeps every answer recorded, so one
+        // agent's denial never narrows the next.
+        let agent = async |name: &str, denied: &[&str]| {
             let grants: Vec<_> = denied
                 .iter()
                 .map(|app| {
                     tilo_action_policy::agent_answers::grant(
                         &workspace,
-                        "scout",
+                        name,
                         (
                             &tilo_action_policy::agent_answers::AnswerScope::app(*app),
                             tilo_action_policy::ActionKind::Read,
@@ -297,7 +299,7 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
                 )
                 .await;
             }
-            Caller::delegated_agent("scout", cert.user_public_key, cert.device_public_key)
+            Caller::delegated_agent(name, cert.user_public_key, cert.device_public_key)
                 .in_workspace(workspace.clone())
         };
         // What a sign-in asked by Mail's connector, or else by the cloud service, is refused with
@@ -318,13 +320,13 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
                 other => panic!("a refusal, not {other:?}"),
             }
         };
-        assert_eq!(refused(agent(&[MAIL]).await, true).await, MAY_NOT_READ_APP);
+        assert_eq!(refused(agent("off-mail", &[MAIL]).await, true).await, MAY_NOT_READ_APP);
         let files = tilo_app_id::apps::FILE_EXPLORER;
         assert_eq!(
-            refused(agent(&[files]).await, false).await,
+            refused(agent("off-files", &[files]).await, false).await,
             MAY_NOT_READ_APP
         );
-        let reading = refused(agent(&[]).await, true).await;
+        let reading = refused(agent("reader", &[]).await, true).await;
         assert_ne!(
             reading, MAY_NOT_READ_APP,
             "reading Mail, the account decides: {reading}"
