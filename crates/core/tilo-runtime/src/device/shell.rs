@@ -635,6 +635,8 @@ impl Standing {
         let mut readings = BTreeMap::new();
         let mut listed = Vec::new();
         for (workspace, name, peer) in self.workspaces.held() {
+            // The device that keeps it, which is this one unless another runs the workspace's work:
+            // what a read of it and its changes are asked of.
             let holder = standing::keeping_device_elsewhere(&peer, &cert.device_public_key)
                 .map_or(cert.device_public_key, |(device, _)| device);
             let reading = standing::reading(workspace, &peer, &reader, Some(holder), Vec::new());
@@ -643,7 +645,6 @@ impl Standing {
                 name,
                 labels: Vec::new(),
                 own: reading.owner.as_deref() == Some(hex::encode(cert.user_public_key).as_str()),
-                kept_here: holder == cert.device_public_key,
                 host: standing::host_elsewhere(&peer, &cert.device_public_key)
                     .and_then(|host| host.written()),
             });

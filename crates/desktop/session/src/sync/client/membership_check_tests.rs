@@ -400,7 +400,6 @@ fn a_workspace_the_daemon_holds_elsewhere_is_listed_and_let_go_once_this_device_
         name: "Notes".to_owned(),
         labels: Vec::new(),
         own: false,
-        kept_here: false,
         host: Some(written_host),
     }])
     .expect("the list encodes");

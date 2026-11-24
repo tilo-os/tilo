@@ -109,8 +109,10 @@ async fn follow(
         if view.apply(LIST, reading.reading.as_deref())? {
             wake();
         }
+        // Every workspace the daemon lists is one it holds: each one's standing is followed, whether
+        // this device runs its work or another does.
         let listed: Vec<Listed> = view.listed();
-        for workspace in listed.into_iter().filter(|listed| listed.kept_here) {
+        for workspace in listed {
             if !followed.lock_recover().insert(workspace.id.clone()) {
                 continue;
             }

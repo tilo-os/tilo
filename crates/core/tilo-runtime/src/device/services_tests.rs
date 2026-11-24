@@ -1103,8 +1103,8 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
         assert!(
             listed
                 .iter()
-                .any(|entry| entry.id == workspace && entry.own && entry.kept_here),
-            "the person's own workspace, kept here, stands in the list: {listed:?}"
+                .any(|entry| entry.id == workspace && entry.own),
+            "the person's own workspace, held here, stands in the list: {listed:?}"
         );
         // A write the shell sends with no keys: the daemon seals it with the group's keys and
         // signs it as the device. It waits while the device takes the keys in.
