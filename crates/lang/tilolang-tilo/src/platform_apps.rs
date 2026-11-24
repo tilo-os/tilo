@@ -330,10 +330,12 @@ pub fn device_surfaces() -> Result<Vec<tilo_actions::surface::Surface>, String> 
 /// The platform's resources a view reads, each as a view names it (`power:battery`,
 /// `devices/{device}/settings/power`: the host reads one of the device's settings on its own
 /// device, [`on_device`]) and as the view's type names it (`so.tilo.device#Battery`): what the
-/// host reads for them.
+/// host reads for them. Each package's roots are its own table's, and Settings' are its
+/// sections' ([`settings_roots`]), so one package's surface never keeps another's roots from a
+/// view.
 ///
 /// # Panics
-/// A committed surface this build reads does not read: a fault of the build itself.
+/// Settings' committed surfaces do not read: a fault of the build itself.
 #[must_use]
 #[allow(
     clippy::expect_used,
@@ -343,14 +345,43 @@ pub fn platform_roots() -> Vec<(String, String)> {
     static ROOTS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
     ROOTS
         .get_or_init(|| {
-            platform_packages()
-                .expect("the platform's committed surfaces read")
-                .into_iter()
-                .flat_map(|meta| meta.named_roots)
-                .filter_map(|root| Some((root.published?, root.ty)))
+            let tables = PUBLISHED.iter().flat_map(|published| {
+                published.roots.iter().map(move |(_, ty, published_as)| {
+                    (
+                        (*published_as).to_owned(),
+                        format!("{}#{ty}", published.app),
+                    )
+                })
+            });
+            tables
+                .chain(settings_types().expect("Settings' committed surfaces read"))
                 .collect()
         })
         .clone()
+}
+
+/// Settings' roots as [`platform_roots`] lists them: where each section is published, and the
+/// type its kind reads as.
+fn settings_types() -> Result<Vec<(String, String)>, String> {
+    let mut surfaces = Vec::new();
+    for published in PUBLISHED
+        .iter()
+        .filter(|published| published.app == SETTINGS_APP)
+    {
+        for file in published.files {
+            surfaces.extend(surfaces_of(file)?);
+        }
+    }
+    let types = crate::catalogue::kind_names_of(&surfaces);
+    settings_roots()?
+        .into_iter()
+        .map(|(_, kind, published)| {
+            let ty = types
+                .get(&kind)
+                .ok_or_else(|| format!("{SETTINGS_APP} publishes no `{kind}` with fields"))?;
+            Ok((published, format!("{SETTINGS_APP}#{ty}")))
+        })
+        .collect()
 }
 
 /// The types whose records a view lists with a query (`query(invocations.Invocation)`), each as
@@ -392,6 +423,19 @@ pub fn platform_packages() -> Result<Vec<PackageMeta>, String> {
 
 fn read_packages() -> Result<Vec<PackageMeta>, String> {
     PUBLISHED.iter().map(package).collect()
+}
+
+/// The package of the platform's app `app` alone ([`platform_packages`]): what a view that uses
+/// only that app compiles against.
+///
+/// # Errors
+/// The platform publishes no app `app`, or its surface does not read.
+pub fn platform_package(app: &str) -> Result<PackageMeta, String> {
+    PUBLISHED
+        .iter()
+        .find(|published| published.app == app)
+        .ok_or_else(|| format!("the platform publishes no app {app}"))
+        .and_then(package)
 }
 
 /// The package [`Published`] describes: its surfaces, the resources a program reads of them,

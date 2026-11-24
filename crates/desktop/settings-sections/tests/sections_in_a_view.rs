@@ -1,6 +1,7 @@
 //! A tilolang view over the settings sections the session keeps: it reads the person's
 //! appearance and this device's power where the session publishes them, its buttons call their
-//! setters, the session's settings service runs them, and the view shows the change.
+//! setters and its bound switch sets its field through the field's setter, the session's settings
+//! service runs them, and the view shows the change.
 
 #![allow(
     clippy::expect_used,
@@ -13,10 +14,11 @@ use std::rc::Rc;
 
 use serde_json::Value as Json;
 use tilo_service::Services;
+use tilolang_tilo::call::Callees;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::platform_apps::{on_device, platform_packages, platform_roots};
+use tilolang_tilo::platform_apps::{SETTINGS_APP, on_device, platform_package, platform_roots};
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
-use tilolang_tilo::runtime::{Actor, ResourceRef, Value, ViewInstance};
+use tilolang_tilo::runtime::{Actor, EditOutcome, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::tilolang::{IdsLock, compile_package};
 
 /// This device's key, in lowercase hex, as the session names it.
@@ -30,6 +32,7 @@ view looks(a: settings.Appearance) {
   stack {
     text("{a.mode}")
     button("Light", on: settings.set_mode(a, "light")) as light
+    toggle(bind: a.reduce_motion) as calm
   }
 }
 
@@ -51,26 +54,35 @@ fn root(ty: &str) -> (ResourceRef, String) {
     (reference, on_device(&published, DEVICE))
 }
 
-/// Sends what a view invokes of Settings to the session's settings service, at the address the
-/// session publishes the resource under, as the shell's places do.
-struct Session(Rc<RefCell<Services>>);
+/// Sends what a view invokes of Settings to the session's settings service as the call the
+/// platform's API makes of it ([`Callees`]): the setter and its arguments, at the address the
+/// session publishes the section under on this device.
+struct Session {
+    services: Rc<RefCell<Services>>,
+    callees: Callees,
+}
 
 impl Invoker for Session {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
-        let Invocation::Action {
-            app, name, target, ..
-        } = invocation
-        else {
-            return Invoked::Failed("a section is changed through its setters".to_owned());
+        let call = match self.callees.call(invocation) {
+            Ok(call) => call,
+            Err(answered) => return Invoked::Failed(format!("{answered:?}")),
         };
-        let target = target.as_ref().expect("a setter names its section");
+        // The section where the session publishes it on this device, by its type, as the shell's
+        // places find it.
+        let target = match invocation {
+            Invocation::Action { target, .. } => {
+                target.as_ref().expect("a setter names its section")
+            }
+            Invocation::Edit { target, .. } => target,
+        };
         let (_, resource) = root(&target.ty);
-        // The setter as the settings publish it, not as the view's package names it.
-        let name = tilolang_tilo::catalogue::published_verb(app.as_str(), name);
+        let name = call["action"].as_str().expect("a call names its action");
+        let arguments = call["arguments"].as_object().cloned().unwrap_or_default();
         match self
-            .0
+            .services
             .borrow_mut()
-            .invoke(&resource, name, &invocation.api_arguments())
+            .invoke(&resource, name, &arguments)
         {
             Some(Ok(_)) => Invoked::Done(Value::Unit),
             Some(Err(error)) => Invoked::Failed(error.to_string()),
@@ -121,14 +133,25 @@ fn a_view_sets_the_persons_appearance_and_this_devices_lock_through_their_setter
         || None,
     )
     .unwrap();
-    let metas = platform_packages().unwrap();
+    let metas = vec![platform_package(SETTINGS_APP).unwrap()];
     for meta in &metas {
         host.runtime().load_foreign(meta.clone()).unwrap();
     }
     let compiled = compile_package(VIEW, &IdsLock::new(), &metas)
         .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
     let package = host.load_compiled(&compiled).unwrap();
-    host.runtime().set_invoker(Session(Rc::clone(&services)));
+    host.runtime().set_invoker(Session {
+        services: Rc::clone(&services),
+        callees: Callees {
+            apps: metas
+                .iter()
+                .map(|meta| (meta.app.clone(), meta.clone()))
+                .collect(),
+            published: metas.iter().map(|meta| meta.app.clone()).collect(),
+            addresses: tilolang_tilo::platform_apps::session_addresses().unwrap(),
+            ..Callees::default()
+        },
+    });
     let declared = |name: &str| {
         package
             .meta
@@ -170,6 +193,22 @@ fn a_view_sets_the_persons_appearance_and_this_devices_lock_through_their_setter
     publish(&host, &services, &appearance, &published);
     looks.poll_patches().unwrap();
     assert_eq!(shown(&looks), Value::text("light"), "{:?}", looks.tree());
+
+    // The switch bound to `reduce_motion` sets it through `set-reduce-motion`: a section
+    // publishes no generic field edit.
+    assert_eq!(looks.bound_value(&anchor("calm")), Some(Value::Bool(false)));
+    assert_eq!(
+        looks.edit(&anchor("calm"), &Value::Bool(true)).unwrap(),
+        EditOutcome::Applied
+    );
+    assert_eq!(
+        services.borrow().read(&published).unwrap()["reduce_motion"],
+        true,
+        "the bound edit reached the field's setter"
+    );
+    publish(&host, &services, &appearance, &published);
+    looks.poll_patches().unwrap();
+    assert_eq!(looks.bound_value(&anchor("calm")), Some(Value::Bool(true)));
 
     // This device's power, at `devices/<device>/settings/power`, locked sooner through
     // `set-lock-minutes`.

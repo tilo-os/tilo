@@ -225,6 +225,32 @@ fn published_call(
                         .rsplit_once('.')
                         .map_or(field.as_str(), |(_, key)| key)
                 }));
+                // A resource whose fields each have their own setter (a settings section,
+                // `set-<field>`) publishes no generic field edit: the edit is its setter of the
+                // field it is in, given the value, or the edit inside it from that field.
+                let setter = at
+                    .first()
+                    .and_then(|step| step["field"].as_str())
+                    .map(|top| format!("{}/{}", target.ty, tilo_actions::surface::setter_id(top)))
+                    .and_then(|id| {
+                        meta.actions
+                            .iter()
+                            .find(|declared| declared.id.ends_with(&id))
+                    });
+                if let Some(setter) = setter {
+                    let arguments = if at.len() == 1 {
+                        json!({ "value": edited(value)? })
+                    } else {
+                        json!({ "edit": { "path": &at[1..], "op": "set", "value": edited(value)? } })
+                    };
+                    return Ok(json!({
+                        "app": app,
+                        "resource": target.id_string(),
+                        "action": setter.verb,
+                        "arguments": arguments,
+                        "published": true,
+                    }));
+                }
                 Ok(json!({
                     "app": app,
                     "resource": target.id_string(),
