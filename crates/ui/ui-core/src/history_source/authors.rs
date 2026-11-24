@@ -293,8 +293,12 @@ impl AuthorDirectory {
                     let member = tilo_actions::MemberId::agent(noted.name.clone());
                     (noted.name.clone(), crate::presence::member_color(&member))
                 } else {
-                    person(&noted.name)
-                        .unwrap_or_else(|| (noted.name.clone(), crate::presence::identity_color(&noted.name)))
+                    person(&noted.name).unwrap_or_else(|| {
+                        (
+                            noted.name.clone(),
+                            crate::presence::identity_color(&noted.name),
+                        )
+                    })
                 };
                 let author = author_coloured(shown, short_id(&identity), rgb);
                 let author = if agent {
@@ -761,7 +765,11 @@ pub fn local_identity_author() -> Option<HistoryAuthor> {
 /// History row for `identity`: the colour presence paints that identity in
 /// when no override is set.
 pub fn author_for_identity(name: impl Into<String>, identity: &str) -> HistoryAuthor {
-    author_coloured(name, short_id(identity), crate::presence::identity_color(identity))
+    author_coloured(
+        name,
+        short_id(identity),
+        crate::presence::identity_color(identity),
+    )
 }
 
 #[cfg(test)]

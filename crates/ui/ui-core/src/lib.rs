@@ -519,7 +519,7 @@ pub mod autocorrect {
     pub use spellcheck::contraction;
 }
 pub use action_palette::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
-pub use draw::{DrawCtx, DrawEnv, WidgetOverlay, draw_widget};
+pub use draw::{DrawCtx, DrawEnv, WidgetOverlay};
 pub use widget::ModelView;
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
@@ -598,9 +598,8 @@ pub use text_render::{
 };
 pub use text_selection::{
     CopyWatch, Selection, TextAffinity, TextPosition, clipboard_available, clipboard_copy,
-    clipboard_copy_image,
-    clipboard_copy_primary, clipboard_copy_rich_accepted, clipboard_paste, clipboard_paste_image,
-    clipboard_paste_primary, clipboard_paste_rich, extend_span_drag,
+    clipboard_copy_image, clipboard_copy_primary, clipboard_copy_rich_accepted, clipboard_paste,
+    clipboard_paste_image, clipboard_paste_primary, clipboard_paste_rich, extend_span_drag,
     grapheme_boundary_at_or_before, line_boundaries, next_char_boundary, next_word_boundary,
     next_word_boundary_chars, prev_char_boundary, prev_word_boundary, prev_word_boundary_chars,
     reserve_clipboard_copy, try_clipboard_copy, try_clipboard_copy_secret, word_boundaries,

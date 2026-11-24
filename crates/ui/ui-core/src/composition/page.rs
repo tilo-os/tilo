@@ -284,14 +284,10 @@ fn shows(semantics: Option<&AccessNode>, width: Option<f64>) -> Shows {
                 Shows::Paint
             }
         }
-        Role::Checkbox | Role::RadioButton | Role::Switch => {
-            if width.is_none() {
-                Shows::Words
-            } else {
-                Shows::Paint
-            }
-        }
-        Role::Slider
+        Role::Checkbox
+        | Role::RadioButton
+        | Role::Switch
+        | Role::Slider
         | Role::Separator
         | Role::ProgressBar
         | Role::Spinner
@@ -345,7 +341,9 @@ fn node_words(node: &AccessNode) -> Option<Words> {
     // after it.
     let (title, rest) = match node.title.as_deref().map(str::trim) {
         Some(title) if !title.is_empty() && shown.starts_with(title) => {
-            let rest = shown[title.len()..]
+            let rest = shown
+                .strip_prefix(title)
+                .unwrap_or_default()
                 .trim_start_matches(|c: char| c == ',' || c.is_whitespace())
                 .trim();
             (
@@ -582,7 +580,6 @@ impl Page {
                 }
             }
             (Shows::Words, Some(access)) => words_into(&mut element, access),
-            (Shows::Field, _) => {}
             (Shows::Paint, _) => {
                 if let Some(data) = node
                     .picture
@@ -1172,8 +1169,7 @@ fn aria_role(role: Role) -> Option<&'static str> {
         Role::Slider => "slider",
         Role::Separator => "separator",
         Role::ComboBox => "combobox",
-        Role::ProgressBar => "progressbar",
-        Role::Spinner => "progressbar",
+        Role::ProgressBar | Role::Spinner => "progressbar",
         Role::Tooltip => "tooltip",
         Role::Image | Role::Canvas => "img",
         Role::Dialog => "dialog",

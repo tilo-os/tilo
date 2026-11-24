@@ -158,7 +158,10 @@ pub fn record_invocation_with_details(
     steps: &[InvocationStep],
 ) -> Option<String> {
     let first = steps.first()?;
-    let key = format!("{INVOCATIONS_KEY}{}", HistoryEntryId::hex(&first.range.start));
+    let key = format!(
+        "{INVOCATIONS_KEY}{}",
+        HistoryEntryId::hex(&first.range.start)
+    );
     let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
     let at = i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX);
 
@@ -220,8 +223,10 @@ pub fn read_invocations(doc: &AutoCommit) -> Vec<AgentSession> {
                     continue;
                 };
                 let (Some(start), Some(end)) = (
-                    doc.str_at(&m, "start").and_then(|s| HistoryEntryId::from_hex(&s)),
-                    doc.str_at(&m, "end").and_then(|s| HistoryEntryId::from_hex(&s)),
+                    doc.str_at(&m, "start")
+                        .and_then(|s| HistoryEntryId::from_hex(&s)),
+                    doc.str_at(&m, "end")
+                        .and_then(|s| HistoryEntryId::from_hex(&s)),
                 ) else {
                     continue;
                 };

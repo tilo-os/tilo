@@ -496,8 +496,10 @@ impl CodeEditor {
         theme: &Theme,
         window: Rect,
     ) {
-        let mut env = crate::draw::DrawEnv::default();
-        env.viewport = Some(window);
+        let env = crate::draw::DrawEnv {
+            viewport: Some(window),
+            ..crate::draw::DrawEnv::default()
+        };
         self.draw_diagnostic_hover(&mut crate::draw::DrawCtx::new(
             scene,
             transform,

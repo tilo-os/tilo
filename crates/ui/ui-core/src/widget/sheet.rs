@@ -774,7 +774,7 @@ impl Sheet {
     }
 
     /// Scroll by the wheel.
-    fn wheel(&mut self, delta: &winit::event::MouseScrollDelta, modifiers: &Modifiers) {
+    fn wheel(&mut self, delta: &winit::event::MouseScrollDelta, modifiers: Modifiers) {
         let (dx, dy) = match delta {
             winit::event::MouseScrollDelta::LineDelta(x, y) => {
                 (f64::from(*x) * 48.0, f64::from(*y) * 48.0)
@@ -795,7 +795,7 @@ impl Sheet {
     }
 
     /// The keys the grid handles itself, before the window takes them.
-    fn key(&mut self, event: &KeyEvent, modifiers: &Modifiers) -> bool {
+    fn key(&mut self, event: &KeyEvent, modifiers: Modifiers) -> bool {
         let shift = modifiers.state().shift_key();
         let control = modifiers.state().control_key() || modifiers.state().super_key();
         let key = &event.logical_key;
@@ -823,7 +823,7 @@ impl Sheet {
                 self.step(if shift { -1 } else { 1 }, 0, false);
                 true
             }
-            Key::Named(NamedKey::Enter) => {
+            Key::Named(NamedKey::Enter | NamedKey::F2) => {
                 self.begin_edit(self.focus, None);
                 true
             }
@@ -848,10 +848,6 @@ impl Sheet {
             }
             Key::Named(NamedKey::Delete | NamedKey::Backspace) => {
                 self.clear_selection();
-                true
-            }
-            Key::Named(NamedKey::F2) => {
-                self.begin_edit(self.focus, None);
                 true
             }
             Key::Named(NamedKey::Escape) => {
@@ -934,20 +930,20 @@ impl Sheet {
                 return true;
             }
             Key::Named(NamedKey::Backspace) => {
-                let edit = if !editing.core.has_selection() {
-                    editing.core.delete_backward(&text, control)
-                } else {
+                let edit = if editing.core.has_selection() {
                     editing.core.delete_selection()
+                } else {
+                    editing.core.delete_backward(&text, control)
                 };
                 edit.apply(&mut text);
                 editing.text = text;
                 true
             }
             Key::Named(NamedKey::Delete) => {
-                let edit = if !editing.core.has_selection() {
-                    editing.core.delete_forward(&text, control)
-                } else {
+                let edit = if editing.core.has_selection() {
                     editing.core.delete_selection()
+                } else {
+                    editing.core.delete_forward(&text, control)
                 };
                 edit.apply(&mut text);
                 editing.text = text;
@@ -1031,7 +1027,7 @@ impl Sheet {
     }
 
     /// Empty every chosen cell but the one the selection started at, which the editor shows.
-    fn clear_selection(&mut self) {
+    fn clear_selection(&self) {
         let (start, end) = self.selection();
         let mut writes = Vec::new();
         for row in start.1..=end.1 {
@@ -1427,7 +1423,7 @@ impl Widget for Sheet {
                 }
             },
             WindowEvent::MouseWheel { delta, .. } => {
-                self.wheel(delta, ctx.modifiers);
+                self.wheel(delta, *ctx.modifiers);
                 *ctx.handled = true;
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
@@ -1440,10 +1436,10 @@ impl Widget for Sheet {
                     *ctx.handled = true;
                 }
             }
-            WindowEvent::KeyboardInput { event: key, .. } => {
-                if key.state.is_pressed() && self.key(key, ctx.modifiers) {
-                    *ctx.handled = true;
-                }
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state.is_pressed() && self.key(key, *ctx.modifiers) =>
+            {
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -1591,7 +1587,7 @@ impl Sheet {
         let body = self.body();
         let color = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
         let stroke = Stroke::new(1.0);
-        for &column in columns.clone().collect::<Vec<_>>().iter() {
+        for &column in &columns.clone().collect::<Vec<_>>() {
             let x = (body.x0 + self.column_x(column) + self.column_w(column) - self.scroll_x)
                 .round()
                 + 0.5;
@@ -1605,7 +1601,7 @@ impl Sheet {
                 );
             }
         }
-        for &row in rows.clone().collect::<Vec<_>>().iter() {
+        for &row in &rows.clone().collect::<Vec<_>>() {
             let y = (body.y0 + self.row_y(row) + self.row_h(row) - self.scroll_y).round() + 0.5;
             if (body.y0..=body.y1).contains(&y) {
                 ctx.scene.stroke(
@@ -2123,9 +2119,9 @@ mod window_tests {
                 winit::event::ElementState::Pressed,
             )
         };
-        assert!(sheet.key(&press("c"), &ctrl));
-        assert!(sheet.key(&press("x"), &ctrl));
-        assert!(sheet.key(&press("v"), &ctrl));
+        assert!(sheet.key(&press("c"), ctrl));
+        assert!(sheet.key(&press("x"), ctrl));
+        assert!(sheet.key(&press("v"), ctrl));
         let fired = queue.take();
         assert_eq!(fired.len(), 3);
         assert_eq!(fired[0].event, "copy");

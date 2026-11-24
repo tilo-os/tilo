@@ -241,6 +241,20 @@ fn slash_probe(row: Rect) -> Point {
 /// Row 0 carries the longest label on purpose: measured menus hug their
 /// widest row, so the probed rows (1 and 2) must be well short of it for the
 /// right-edge probe to stay clear of glyphs.
+/// `menu`'s overlay drawn on its own, at rest, with nobody else in the window.
+fn drawn_menu(menu: &mut ContextMenu, theme: &Theme) -> Rendered {
+    let presence = PresenceCtx::default();
+    render(theme, |scene, tr| {
+        menu.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
+            scene,
+            Affine::IDENTITY,
+            tr,
+            theme,
+            presence.draw_env(),
+        ));
+    })
+}
+
 fn labels() -> [&'static str; 4] {
     ["Duplicate everything here", "Open", "Rename…", "Delete"]
 }
@@ -261,16 +275,7 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
             assert_eq!(menu.hovered(), Some(1), "pointer over row 1 highlights it");
             let row2 = menu.item_rect(2).unwrap();
 
-            let presence = PresenceCtx::default();
-            let rendered = render(&theme, |scene, tr| {
-                menu.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
-                    scene,
-                    Affine::IDENTITY,
-                    tr,
-                    &theme,
-                    presence.draw_env(),
-                ));
-            });
+            let rendered = drawn_menu(&mut menu, &theme);
             rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
             assert_armed_row(
                 &rendered,
@@ -293,7 +298,6 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
             // The measured, viewport-bounded path shared hosts (toolbar
             // overflow, shell) use.
             menu.open_anchored(Rect::new(40.0, 20.0, 120.0, 48.0), viewport);
-            let presence = PresenceCtx::default();
             let mut tr_probe = TextRenderer::new();
             menu.layout_within(&mut tr_probe, &theme);
             dispatch(&mut menu, &key_press(NamedKey::ArrowDown));
@@ -302,15 +306,7 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
             let row1 = menu.item_rect(1).unwrap();
             let row2 = menu.item_rect(2).unwrap();
 
-            let rendered = render(&theme, |scene, tr| {
-                menu.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
-                    scene,
-                    Affine::IDENTITY,
-                    tr,
-                    &theme,
-                    presence.draw_env(),
-                ));
-            });
+            let rendered = drawn_menu(&mut menu, &theme);
             rendered.dump(&format!("menu_highlight_context_menu_keyboard_{name}"));
             assert_armed_row(
                 &rendered,
@@ -342,16 +338,7 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
             assert_eq!(menu.hovered(), Some(1));
             let row2 = menu.item_rect(2).unwrap();
 
-            let presence = PresenceCtx::default();
-            let rendered = render(&theme, |scene, tr| {
-                menu.draw_overlay(&mut tilo_ui::draw::DrawCtx::new(
-                    scene,
-                    Affine::IDENTITY,
-                    tr,
-                    &theme,
-                    presence.draw_env(),
-                ));
-            });
+            let rendered = drawn_menu(&mut menu, &theme);
             rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
             assert_armed_row(
                 &rendered,

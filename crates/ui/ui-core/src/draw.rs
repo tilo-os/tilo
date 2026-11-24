@@ -151,17 +151,3 @@ impl<'a> DrawCtx<'a> {
         )
     }
 }
-
-/// Draw `widget` through a fresh context, for a host or a test that holds the
-/// parts rather than a context.
-pub fn draw_widget(
-    widget: &mut dyn crate::widget::Widget,
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    env: DrawEnv<'_>,
-) {
-    let mut ctx = DrawCtx::new(scene, transform, text_renderer, theme, env);
-    widget.draw(&mut ctx);
-}

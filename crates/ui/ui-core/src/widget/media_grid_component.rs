@@ -217,7 +217,7 @@ fn build_band(bands: &Bands, index: usize, gap: Rhythm, range: &GridRange) -> El
             let len = order.len();
             order.resize((at + 1).max(len), None);
             if let Some(held) = order.get_mut(at) {
-                *held = props.item.clone();
+                held.clone_from(&props.item);
             }
         }
         let card = card(props).slot(CardSlot {

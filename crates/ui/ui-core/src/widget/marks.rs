@@ -781,7 +781,11 @@ mod tests {
 
         assert!(Mark::Superscript.same_kind(&Mark::Subscript));
         assert!(!Mark::Color([1, 2, 3]).same_kind(&Mark::Highlight([1, 2, 3])));
-        assert!(range_covered_by(&spans, &(4..5), &Mark::Color([0xcf, 0x22, 0x2e])));
+        assert!(range_covered_by(
+            &spans,
+            &(4..5),
+            &Mark::Color([0xcf, 0x22, 0x2e])
+        ));
         assert!(
             !range_covered_by(&spans, &(4..5), &Mark::Color([0x09, 0x69, 0xda])),
             "another colour of the same kind is not the value held"

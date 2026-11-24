@@ -1797,13 +1797,13 @@ impl TabBar {
                     &rect.inflate(3.0, 3.0),
                 );
             }
-            if !face.agent {
+            if face.agent {
+                let colour = ctx.theme.tokens.colors.presence.of_rgb(face.colour);
+                paint_tab_face(ctx, rect, "", colour, true, ring);
+            } else {
                 let colour =
                     vello::peniko::Color::from_rgb8(face.colour.0, face.colour.1, face.colour.2);
                 paint_tab_face(ctx, rect, &face.name, colour, false, ring);
-            } else {
-                let colour = ctx.theme.tokens.colors.presence.of_rgb(face.colour);
-                paint_tab_face(ctx, rect, "", colour, true, ring);
             }
             if face.dimmed {
                 ctx.scene.pop_layer();

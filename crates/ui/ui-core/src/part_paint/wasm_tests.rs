@@ -95,7 +95,13 @@ fn a_wasm_set_draws_a_button_and_its_shape_takes_the_pointer() {
     let mut button = Button::new("go", "Go");
     button.apply_layout_external(Rect::new(100.0, 50.0, 220.0, 90.0));
     let mut scene = Scene::new();
-    button.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, crate::presence::PresenceCtx::default().draw_env()));
+    button.draw(&mut crate::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &theme,
+        crate::presence::PresenceCtx::default().draw_env(),
+    ));
     assert!(moved_to(&mut button, (160.0, 60.0)));
     assert!(moved_to(&mut button, (116.0, 88.0)));
     assert!(!moved_to(&mut button, (104.0, 54.0)));

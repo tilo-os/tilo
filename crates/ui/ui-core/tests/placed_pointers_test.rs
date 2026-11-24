@@ -109,7 +109,7 @@ impl tilo_ui::Widget for AdasCaret {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        let fallback_presence = Default::default();
+        let fallback_presence = PresenceCtx::default();
         let presence = env.presence.unwrap_or(&fallback_presence);
         presence.draw_peer_caret_labeled(
             scene,

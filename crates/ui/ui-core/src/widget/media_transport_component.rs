@@ -13,6 +13,16 @@ use crate::widget::DrawChild;
 /// How far the place moves before the view is told again, as the video player reports its own.
 const PROGRESS_STEP_MS: f64 = 5_000.0;
 
+/// Which five-second step of the song `ms` falls in.
+fn progress_step(ms: f64) -> i64 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a song's place in steps of five seconds is far inside i64"
+    )]
+    let step = (ms / PROGRESS_STEP_MS).floor() as i64;
+    step
+}
+
 /// A declared place within this of the one the band reported is the same place, not a seek.
 const SEEK_TOLERANCE_MS: f64 = 250.0;
 
@@ -337,7 +347,7 @@ impl DeclaredTransport {
         if let Some(duration) = duration.filter(|duration| *duration > 0.0) {
             let due = if playing {
                 self.told
-                    .is_none_or(|was| position / PROGRESS_STEP_MS != was / PROGRESS_STEP_MS)
+                    .is_none_or(|was| progress_step(position) != progress_step(was))
             } else {
                 self.told != Some(position)
             };

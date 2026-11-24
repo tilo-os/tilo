@@ -14,9 +14,9 @@ use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stro
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
+use crate::chart_palette::ChartPalette;
 use crate::paint::with_alpha;
 use crate::text_render::{TextRenderer, TextWeight};
-use crate::chart_palette::ChartPalette;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;

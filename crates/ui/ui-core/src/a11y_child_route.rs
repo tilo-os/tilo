@@ -188,11 +188,21 @@ mod tests {
         }
 
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, text, theme, mut env) = ctx.parts();
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, text, theme, mut env) = ctx.parts();
             let at = Rect::new(40.0, 60.0, 200.0, 60.0);
             self.button.layout(at, theme, text);
-            self.button.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            self.button.draw(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         }
 
         fn get_rect(&self) -> Rect {

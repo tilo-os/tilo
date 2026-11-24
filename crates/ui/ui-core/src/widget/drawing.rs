@@ -230,6 +230,9 @@ impl Shape {
         match self {
             Self::Rect {
                 x, y, w, h, round, ..
+            }
+            | Self::Area {
+                x, y, w, h, round, ..
             } => {
                 let rect = Rect::from_points(at(*x, *y), at(x + w, y + h));
                 let radius = round.clamp(0.0, 0.5) * rect.width().min(rect.height());
@@ -296,15 +299,6 @@ impl Shape {
                     Lowered::Outline(path)
                 })
             }
-            Self::Area {
-                x, y, w, h, round, ..
-            } => {
-                let rect = Rect::from_points(at(*x, *y), at(x + w, y + h));
-                let radius = round.clamp(0.0, 0.5) * rect.width().min(rect.height());
-                Some(Lowered::Area(
-                    RoundedRect::from_rect(rect, radius).to_path(0.1),
-                ))
-            }
             Self::Stroke { points, .. } => {
                 let mut path = BezPath::new();
                 let pts: Vec<Point> = points.chunks_exact(2).map(|p| at(p[0], p[1])).collect();
@@ -325,6 +319,9 @@ impl Shape {
         match self {
             Self::Rect {
                 x, y, w, h, round, ..
+            }
+            | Self::Area {
+                x, y, w, h, round, ..
             } => out.extend([*x, *y, *w, *h, *round]),
             Self::Ellipse { cx, cy, rx, ry, .. } => out.extend([*cx, *cy, *rx, *ry]),
             Self::Arc {
@@ -336,12 +333,10 @@ impl Shape {
                 ..
             } => out.extend([*cx, *cy, *radius, *from, *to]),
             Self::Line { x1, y1, x2, y2, .. } => out.extend([*x1, *y1, *x2, *y2]),
-            Self::Path { points, .. } => out.extend(points.iter().copied()),
+            Self::Path { points, .. } | Self::Stroke { points, .. } => {
+                out.extend(points.iter().copied());
+            }
             Self::Text { x, y, .. } | Self::Label { x, y, .. } => out.extend([*x, *y]),
-            Self::Area {
-                x, y, w, h, round, ..
-            } => out.extend([*x, *y, *w, *h, *round]),
-            Self::Stroke { points, .. } => out.extend(points.iter().copied()),
             Self::Picture { x, y, w, h, .. } => out.extend([*x, *y, *w, *h]),
         }
     }
@@ -355,6 +350,9 @@ impl Shape {
         };
         match self {
             Self::Rect {
+                x, y, w, h, round, ..
+            }
+            | Self::Area {
                 x, y, w, h, round, ..
             } => {
                 for slot in [x, y, w, h, round] {
@@ -390,13 +388,6 @@ impl Shape {
             }
             Self::Text { x, y, .. } | Self::Label { x, y, .. } => {
                 for slot in [x, y] {
-                    next(slot);
-                }
-            }
-            Self::Area {
-                x, y, w, h, round, ..
-            } => {
-                for slot in [x, y, w, h, round] {
                     next(slot);
                 }
             }
@@ -613,14 +604,7 @@ impl Drawing {
         shapes
             .iter()
             .map(|shape| {
-                if let Shape::Picture {
-                    x,
-                    y,
-                    w,
-                    h,
-                    src,
-                } = shape
-                {
+                if let Shape::Picture { x, y, w, h, src } = shape {
                     let at = |x: f64, y: f64| {
                         Point::new(
                             bounds.x0 + x * bounds.width(),
@@ -632,9 +616,7 @@ impl Drawing {
                         return None;
                     }
                     let picture = crate::widget::PictureSource { src: src.clone() };
-                    let Some(image) = crate::pictures::Pictures::window().get(&picture) else {
-                        return None;
-                    };
+                    let image = crate::pictures::Pictures::window().get(&picture)?;
                     let (iw, ih) = (f64::from(image.width), f64::from(image.height));
                     if iw <= 0.0 || ih <= 0.0 {
                         return None;
@@ -652,7 +634,13 @@ impl Drawing {
                         transform,
                         &dest,
                     );
-                    scene.fill(Fill::NonZero, transform, &ImageBrush::new(image), Some(brush), &dest);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        &ImageBrush::new(image),
+                        Some(brush),
+                        &dest,
+                    );
                     scene.pop_layer();
                     return None;
                 }
@@ -698,9 +686,7 @@ impl Drawing {
                     anchor,
                 } = shape
                 {
-                    let Some(ink) = crate::color::parse_hex(colour) else {
-                        return None;
-                    };
+                    let ink = crate::color::parse_hex(colour)?;
                     let mut style = theme.text(TextRole::Body);
                     #[expect(
                         clippy::cast_possible_truncation,

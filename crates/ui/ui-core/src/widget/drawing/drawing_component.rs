@@ -539,7 +539,8 @@ impl PropType for Shape {
                     Some(Value::Text(src)) => src.clone(),
                     _ => {
                         return Err(
-                            "`picture` needs `src`, the content address its bytes are at".to_owned()
+                            "`picture` needs `src`, the content address its bytes are at"
+                                .to_owned(),
                         );
                     }
                 },

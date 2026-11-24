@@ -74,7 +74,9 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         let Some(label) = doc.str_at(&rec, "label") else {
             continue;
         };
-        let end = doc.str_at(&rec, "end").and_then(|s| HistoryEntryId::from_hex(&s));
+        let end = doc
+            .str_at(&rec, "end")
+            .and_then(|s| HistoryEntryId::from_hex(&s));
         let by = doc.str_at(&rec, "by");
         // `filter` above guarantees `ms > 0` by the time the cast below runs,
         // so the conversion never loses a sign; `checked_add` only guards
@@ -309,11 +311,15 @@ fn named_range_resource(
     doc: &AutoCommit,
     document_id: &str,
 ) -> Option<(HistoryEntryId, Option<HistoryEntryId>)> {
-    let start = document_id.strip_prefix(GROUPS_KEY).and_then(HistoryEntryId::from_hex)?;
+    let start = document_id
+        .strip_prefix(GROUPS_KEY)
+        .and_then(HistoryEntryId::from_hex)?;
     let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, document_id) else {
         return None;
     };
-    let end = doc.str_at(&rec, "end").and_then(|value| HistoryEntryId::from_hex(&value));
+    let end = doc
+        .str_at(&rec, "end")
+        .and_then(|value| HistoryEntryId::from_hex(&value));
     Some((start, end))
 }
 

@@ -2685,8 +2685,7 @@ mod lifecycle_tests {
     }
 
     fn dispatch(tb: &mut Toolbar, event: WindowEvent) -> bool {
-        let handled = crate::testing::dispatch(tb, &event);
-        handled
+        crate::testing::dispatch(tb, &event)
     }
     fn cursor(tb: &mut Toolbar, p: Point) {
         dispatch(

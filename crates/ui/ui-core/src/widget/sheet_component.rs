@@ -101,8 +101,7 @@ impl PropType for Peer {
             return Err("`peer` needs `area`, the cells they chose as `A1` or `A1:B2`".to_owned());
         };
         let who = match field("who") {
-            Some(Value::Actor { name, .. }) => name.clone(),
-            Some(Value::Text(name)) => name.clone(),
+            Some(Value::Actor { name, .. } | Value::Text(name)) => name.clone(),
             _ => return Err("`peer` needs `who`, the person they are".to_owned()),
         };
         Ok(Self { area, who })

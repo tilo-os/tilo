@@ -10,8 +10,8 @@ pub mod paint;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub use tilo_webview::SharedEngine;
 use tilo_page_engine::PageSession;
+pub use tilo_webview::SharedEngine;
 
 /// The page a window shows, as the window keeps it: its engine and the one session that reads
 /// the engine's events for both the view and the app's page calls.

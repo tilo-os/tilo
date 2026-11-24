@@ -52,8 +52,12 @@ mod tests {
     impl Widget for SettledSecret {
         crate::testing::inert_widget_methods!(leaf_layout, name = "settled-secret");
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (_, _, _, _, mut env) = ctx.parts();
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (_, _, _, _, mut env) = ctx.parts();
             note_secret_painted();
         }
         fn needs_redraw(&self) -> bool {
@@ -65,7 +69,13 @@ mod tests {
         let presence = crate::presence::PresenceCtx::empty();
         let mut text = TextRenderer::new();
         let secrets = SecretPaint::begin();
-        widget.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &Theme::dark(), presence.draw_env()));
+        widget.draw(&mut crate::draw::DrawCtx::new(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            presence.draw_env(),
+        ));
         secrets.finish()
     }
 

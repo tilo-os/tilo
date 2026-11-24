@@ -55,13 +55,13 @@ tilo_test_env::scenario! {
                 .unwrap();
             widget.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
             let mut scene = vello::Scene::new();
-            crate::draw::draw_widget(
+            crate::widget::DrawChild::draw_child(
                 widget,
                 &mut scene,
                 vello::kurbo::Affine::IDENTITY,
                 &mut crate::text_render::TextRenderer::new(),
                 &theme,
-                crate::draw::DrawEnv::default(),
+                &crate::draw::DrawEnv::default(),
             );
             scene.encoding().draw_data.clone()
         };

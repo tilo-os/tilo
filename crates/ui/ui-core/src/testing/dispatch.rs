@@ -132,4 +132,3 @@ impl<'a> Dispatch<'a> {
         }
     }
 }
-

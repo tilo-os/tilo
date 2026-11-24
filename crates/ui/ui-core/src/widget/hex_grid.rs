@@ -164,8 +164,7 @@ impl Geo {
 
     fn hex_column_at(&self, x: f64, columns: usize) -> Option<usize> {
         let half = self.byte_gap / 2.0;
-        (0..columns)
-            .find(|&c| x >= self.hex_x(c) - half && x < self.hex_x(c) + self.byte_w + half)
+        (0..columns).find(|&c| x >= self.hex_x(c) - half && x < self.hex_x(c) + self.byte_w + half)
     }
 
     fn ascii_column_at(&self, x: f64, columns: usize) -> Option<usize> {
@@ -261,7 +260,7 @@ impl HexGrid {
     }
 
     /// Resolve this frame's geometry from the rect, the theme and the measured cells.
-    fn place(&mut self, theme: &Theme, metrics: Metrics) -> Geo {
+    fn place(&self, theme: &Theme, metrics: Metrics) -> Geo {
         let mut geo = Geo {
             line_h: metrics.line_h,
             row_h: (metrics.line_h + f64::from(theme.tokens.spacing.s1) / 2.0).ceil(),
@@ -287,14 +286,14 @@ impl HexGrid {
         let hex_x0 = gutter_x0 + plan.gutter_w + col_gap;
         let ascii_x0 = hex_x0 + hex_span + col_gap;
         let head_top = self.rect.y0 + f64::from(theme.tokens.spacing.s2);
-        geo.header = Rect::new(
-            self.rect.x0,
-            head_top,
-            self.rect.x1,
-            head_top + geo.row_h,
-        );
+        geo.header = Rect::new(self.rect.x0, head_top, self.rect.x1, head_top + geo.row_h);
         let grid_top = geo.header.y1 + f64::from(theme.tokens.spacing.s1);
-        geo.grid = Rect::new(self.rect.x0, grid_top, self.rect.x1, self.rect.y1.max(grid_top));
+        geo.grid = Rect::new(
+            self.rect.x0,
+            grid_top,
+            self.rect.x1,
+            self.rect.y1.max(grid_top),
+        );
         geo.byte_w = plan.byte_w;
         geo.byte_gap = byte_gap;
         geo.group_gap = group_gap;
@@ -517,10 +516,7 @@ impl Widget for HexGrid {
         labels.push(("Offset".to_owned(), g.gutter_x0));
         for c in 0..g.columns {
             let digits = [DIGITS[(c >> 4) & 0xF], DIGITS[c & 0xF]];
-            labels.push((
-                String::from_utf8_lossy(&digits).into_owned(),
-                g.hex_x(c),
-            ));
+            labels.push((String::from_utf8_lossy(&digits).into_owned(), g.hex_x(c)));
         }
         labels.push(("ASCII".to_owned(), g.ascii_x0));
         for (text, x) in &labels {
@@ -557,18 +553,20 @@ impl Widget for HexGrid {
             }
             let row_off = row * g.columns;
             let y = g.grid.y0 + vr as f64 * g.row_h;
-            self.paint_row(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &code,
-                &code_strong,
+            let at = RowAt {
                 vr,
                 row_off,
                 y,
                 selected,
                 cursor,
+            };
+            self.paint_row(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                (&code, &code_strong),
+                at,
             );
         }
 
@@ -680,25 +678,32 @@ impl Widget for HexGrid {
     }
 }
 
+/// One visible row: where it stands and what is drawn over its bytes.
+#[derive(Clone, Copy)]
+struct RowAt {
+    /// Its index among the visible rows.
+    vr: usize,
+    /// The offset of its first byte.
+    row_off: usize,
+    /// Its top.
+    y: f64,
+    /// The bytes chosen, first to last.
+    selected: Option<(usize, usize)>,
+    /// The byte the cursor is on.
+    cursor: Option<usize>,
+}
+
 impl HexGrid {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the row's place, its bytes and the styles they are set in"
-    )]
     fn paint_row(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        code: &TextStyle,
-        code_strong: &TextStyle,
-        vr: usize,
-        row_off: usize,
-        y: f64,
-        selected: Option<(usize, usize)>,
-        cursor: Option<usize>,
+        (code, code_strong): (&TextStyle, &TextStyle),
+        at: RowAt,
     ) {
+        let RowAt { vr, row_off, y, .. } = at;
         let g = &self.geo;
         let colors = &theme.tokens.colors;
         let text_y = y + (g.row_h - g.line_h) / 2.0;
@@ -712,7 +717,7 @@ impl HexGrid {
             code,
         );
 
-        self.paint_tints(scene, transform, theme, vr, row_off, y, selected, cursor);
+        self.paint_tints(scene, transform, theme, at);
 
         let hex = self.rows.get(vr).map_or("", String::as_str);
         let changed = self.changed.get(vr).map_or("", String::as_str);
@@ -759,21 +764,14 @@ impl HexGrid {
 
     /// The bands under one row's glyphs, lowest to highest: the bytes edited, a search's matches,
     /// the selection, then the cursor.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one row's place and what is drawn over it"
-    )]
-    fn paint_tints(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        vr: usize,
-        row_off: usize,
-        y: f64,
-        selected: Option<(usize, usize)>,
-        cursor: Option<usize>,
-    ) {
+    fn paint_tints(&self, scene: &mut Scene, transform: Affine, theme: &Theme, at: RowAt) {
+        let RowAt {
+            vr,
+            row_off,
+            y,
+            selected,
+            cursor,
+        } = at;
         let g = &self.geo;
         let colors = &theme.tokens.colors;
         let columns = g.columns;
@@ -822,7 +820,9 @@ impl HexGrid {
             let Some((a, b)) = span_in_row(start, end.saturating_sub(1), row_off, columns) else {
                 continue;
             };
-            let current = self.at_match == Some(index as i64);
+            let current = self
+                .at_match
+                .is_some_and(|at| usize::try_from(at) == Ok(index));
             crate::widget::paint_find_match(scene, transform, hex_band(a, b), current, theme);
             crate::widget::paint_find_match(scene, transform, ascii_band(a, b), current, theme);
         }

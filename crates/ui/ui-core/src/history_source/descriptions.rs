@@ -36,7 +36,10 @@ pub const MAX_DESCRIPTION_LEN: usize = 160;
 pub fn read_descriptions(doc: &AutoCommit) -> HashMap<HistoryEntryId, String> {
     let mut out = HashMap::new();
     for key in doc.keys(automerge::ROOT) {
-        let Some(id) = key.strip_prefix(DESCRIPTIONS_KEY).and_then(HistoryEntryId::from_hex) else {
+        let Some(id) = key
+            .strip_prefix(DESCRIPTIONS_KEY)
+            .and_then(HistoryEntryId::from_hex)
+        else {
             continue;
         };
         let Ok(Some((Value::Object(ObjType::Map), record))) = doc.get(automerge::ROOT, &key) else {

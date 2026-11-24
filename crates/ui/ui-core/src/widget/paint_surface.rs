@@ -159,7 +159,7 @@ impl PaintSurface {
     }
 
     /// Paint what is there and the stroke under the hand.
-    fn paint(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    fn paint(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }

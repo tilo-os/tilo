@@ -565,8 +565,8 @@ impl ContextMenuArea {
         // rows: a link's copy belongs to the link, whether the row around it offers nothing or
         // a menu of its own.
         let mut own: Vec<Option<OwnChoice>> = vec![None; entries.len()];
-        if let Some((path, actions)) = at_pointer
-            .and_then(|at| own_actions_under(self.content.as_ref(), at))
+        if let Some((path, actions)) =
+            at_pointer.and_then(|at| own_actions_under(self.content.as_ref(), at))
         {
             for action in actions {
                 entries.push(MenuEntry::own(action.name.clone()));
@@ -1642,7 +1642,11 @@ mod tests {
                 crate::theme::Theme::dark(),
             );
             harness.relayout();
-            let page = harness.root::<ContextMenuArea>().content().get_rect().center();
+            let page = harness
+                .root::<ContextMenuArea>()
+                .content()
+                .get_rect()
+                .center();
             harness.send(&crate::synthetic_input::cursor_moved(page.x, page.y));
             right_click(&mut harness);
             let labels: Vec<String> = harness
@@ -1654,7 +1658,11 @@ mod tests {
                 .map(str::to_owned)
                 .collect();
             assert_eq!(
-                labels.iter().take(2).map(String::as_str).collect::<Vec<_>>(),
+                labels
+                    .iter()
+                    .take(2)
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
                 ["Open", "Copy link"],
                 "the link's copy stands beside what its row offers"
             );
@@ -1696,7 +1704,11 @@ mod tests {
             .map(str::to_owned)
             .collect();
         assert_eq!(
-            labels.iter().take(4).map(String::as_str).collect::<Vec<_>>(),
+            labels
+                .iter()
+                .take(4)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
             ["First", "Second", "Third", "Fourth"]
         );
     }

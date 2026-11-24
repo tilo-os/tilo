@@ -646,7 +646,6 @@ impl FloatingPanel {
     }
 }
 
-
 impl FloatingPanel {
     /// `event` to the header, the body and the footer, in turn, until one takes it.
     fn slots_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -672,7 +671,6 @@ impl FloatingPanel {
             }
         }
     }
-
 }
 
 impl Widget for FloatingPanel {
@@ -753,10 +751,12 @@ impl Widget for FloatingPanel {
         self.room = taffy
             .parent(node)
             .and_then(|parent| taffy.layout(parent).ok())
-            .map_or(self.rect, |held| Rect::from_origin_size(origin, (
-                f64::from(held.size.width),
-                f64::from(held.size.height),
-            )));
+            .map_or(self.rect, |held| {
+                Rect::from_origin_size(
+                    origin,
+                    (f64::from(held.size.width), f64::from(held.size.height)),
+                )
+            });
         let wrappers = taffy.children(node).unwrap_or_default();
         let has_header = self.header.is_some();
         let origin = Point::new(self.rect.x0, self.rect.y0);

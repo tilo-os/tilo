@@ -5,12 +5,12 @@
 
 use super::PresenceCtx;
 use super::capability::{self, PublishesPresence};
-use crate::widget::capability::capability as capability_of;
 use crate::draw::{DrawEnv, WidgetOverlay};
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
+use crate::widget::capability::capability as capability_of;
 use vello::Scene;
 use vello::kurbo::Affine;
 

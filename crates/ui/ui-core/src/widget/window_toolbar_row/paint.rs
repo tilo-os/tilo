@@ -164,7 +164,7 @@ impl ToolbarRow {
             let _ = paint_parts(
                 scene,
                 at,
-                (tr, theme, &env),
+                (tr, theme, env),
                 toolbar,
                 parts,
                 (None, None),
@@ -491,7 +491,7 @@ pub(super) fn paint_parts(
             trigger = paint_location(
                 scene,
                 at,
-                (tr, theme, &env),
+                (tr, theme, env),
                 (location, crumbs),
                 (parts.location, parts.form),
                 (lifted, toolbar.notice.as_ref().map(|notice| notice.kind)),

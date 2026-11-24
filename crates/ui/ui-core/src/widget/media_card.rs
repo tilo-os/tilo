@@ -1329,10 +1329,8 @@ impl Widget for MediaCard {
                         slot.hovered.set(None);
                     }
                 }
-                WindowEvent::CursorLeft { .. } => {
-                    if slot.hovered.get() == Some(slot.index) {
-                        slot.hovered.set(None);
-                    }
+                WindowEvent::CursorLeft { .. } if slot.hovered.get() == Some(slot.index) => {
+                    slot.hovered.set(None);
                 }
                 _ => {}
             }
@@ -1635,7 +1633,7 @@ impl MediaGrid {
 
     /// A press with shift takes the cards from the one pressed last to the one pressed now; a
     /// press held and dragged over the cards takes the ones it sweeps. Whether it took the press.
-    fn range_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+    fn range_event(&self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
         if self.select.is_none() {
             return false;
         }

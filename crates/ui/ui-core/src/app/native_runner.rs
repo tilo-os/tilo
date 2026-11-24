@@ -5211,12 +5211,11 @@ impl App {
         // What the app's scope signals, this loop waits on: a document change, a call, a
         // permission change or a scheduled wake. Nothing here asks a window system for anything.
         let (wake_tx, wake_rx) = std::sync::mpsc::channel::<crate::wake::WakeEvent>();
-        let bound = self
-            .wake_scope
-            .as_mut()
-            .map(|scope| scope.bind(move |event| {
+        let bound = self.wake_scope.as_mut().map(|scope| {
+            scope.bind(move |event| {
                 let _ = wake_tx.send(event);
-            }));
+            })
+        });
         if !matches!(bound, Some(Ok(()))) {
             tracing::warn!("a process with no window could not bind its wake scope; it ends");
             app_state::finish_writes();

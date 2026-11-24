@@ -11,9 +11,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
+use crate::chart_palette::ChartPalette;
 use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
-use crate::chart_palette::ChartPalette;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_geometry;
