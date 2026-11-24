@@ -530,7 +530,6 @@ impl Shared {
         let Ok(wire) = postcard::from_bytes::<super::HeardWire>(body) else {
             return;
         };
-        let named = wire.track.clone();
         let Some(heard) = wire.into_heard() else {
             return;
         };
