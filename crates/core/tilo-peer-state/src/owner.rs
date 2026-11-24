@@ -921,12 +921,9 @@ impl NativeWorkspaceOwner {
     ) -> Result<AdmissionReport, crate::AdmissionError> {
         let workspace = candidate.workspace_id();
         let mut live = candidate.live();
-        if matches!(&message, NeighbourMsg::AppDocument { .. })
-            && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })
-            && let Some(exact) = live.lookup_exact_document_report(origin, &message, now)?
-        {
-            return Ok(exact);
-        }
+        // A write the replica recorded already is answered as recorded, and one under a number
+        // its writer gave another change refuses the writer as a device on two machines: both
+        // decided by the one admission every writer's input goes through.
         let report = live.receive_from_report(origin, message, now)?;
         // A message let go for newer ones is no loss: its server retains it, and it is asked for
         // again once what it waited for arrives. While a replica waits for its governance, every

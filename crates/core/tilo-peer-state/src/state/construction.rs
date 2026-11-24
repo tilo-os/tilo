@@ -97,6 +97,7 @@ impl StatePeer {
             workspace_host: false,
             own_device: None,
             governance_now: None,
+            copied: std::collections::BTreeMap::new(),
         })
     }
     /// Add a root-certified device to existing governed history, as a device

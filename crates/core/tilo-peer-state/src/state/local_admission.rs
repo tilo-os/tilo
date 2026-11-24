@@ -796,4 +796,88 @@ mod tests {
             "no lookup changes the state"
         );
     }
+
+    /// The daemon and its workspace service are two writers of one device under its one key.
+    /// Each drafts a write from the record as it sees it, so two drafts can carry one number;
+    /// the device's one count, the record's floor in its owner's turn, numbers the later one past
+    /// the earlier before it is signed again. Interleaved either way round, every write the
+    /// device admits carries a number of its own, strictly increasing, and another device takes
+    /// them all with none clashing.
+    #[test]
+    fn a_devices_two_writers_interleave_under_its_one_count() {
+        use automerge::transaction::Transactable as _;
+        let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
+        peer.select_exact_admissions().unwrap();
+        let mut receiver = peer.clone();
+        let draft = |view: &StatePeer, writer: &str, round: i64| -> NeighbourMsg {
+            let mut doc =
+                automerge::AutoCommit::load(&view.document("test.app", "tab:1").unwrap()).unwrap();
+            doc.put(automerge::ROOT, writer, round).unwrap();
+            view.clone()
+                .publication_mut()
+                .publish_document("test.app", "tab:1", doc.save(), &key, now)
+                .unwrap()
+        };
+        let mut admitted = Vec::new();
+        for round in 0..6 {
+            // Both draft from the record as it stands, before either write is taken.
+            let daemon = draft(&peer, "daemon", round);
+            let service = draft(&peer, "service", round);
+            let (
+                NeighbourMsg::AppDocument { envelope: first, .. },
+                NeighbourMsg::AppDocument { envelope: second, .. },
+            ) = (&daemon, &service)
+            else {
+                panic!("document writes")
+            };
+            assert_eq!(first.seq, second.seq, "two drafts from one view carry one number");
+            let order = if round % 2 == 0 {
+                [daemon, service]
+            } else {
+                [service, daemon]
+            };
+            for mut message in order {
+                let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
+                    unreachable!()
+                };
+                let (mut write, again) = peer
+                    .sequenced_local_document("test.app", "tab:1", (**envelope).clone(), now)
+                    .unwrap();
+                if again {
+                    collab_types::sign_op(&mut write, &key).unwrap();
+                }
+                peer.admit_new_local_document("test.app", "tab:1", write.clone(), now)
+                    .unwrap();
+                **envelope = write;
+                admitted.push(message);
+            }
+        }
+        let numbers: Vec<u64> = admitted
+            .iter()
+            .map(|message| match message {
+                NeighbourMsg::AppDocument { envelope, .. } => envelope.seq,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert!(
+            numbers.windows(2).all(|pair| pair[0] < pair[1]),
+            "every write has a number of its own, in the order it was taken: {numbers:?}"
+        );
+        let origin = crate::TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        for message in admitted {
+            receiver
+                .receive_from_report(origin, message, now)
+                .expect("another device takes every write of the one count");
+        }
+        assert!(receiver.copied_devices().is_empty());
+        let heads = |copy: &StatePeer| {
+            let mut heads =
+                automerge::AutoCommit::load(&copy.document("test.app", "tab:1").unwrap())
+                    .unwrap()
+                    .get_heads();
+            heads.sort();
+            heads
+        };
+        assert_eq!(heads(&receiver), heads(&peer), "both have every write");
+    }
 }

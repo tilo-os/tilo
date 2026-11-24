@@ -29,6 +29,31 @@ pub enum AdmissionError {
     /// crashed, overran its deadline or never started. That says nothing about
     /// the input, so it is no refusal of a write and leaves no verdict.
     Device(String),
+    /// The writer's key signed two different changes under one sequence number: one device key
+    /// running on two machines. Its changes are refused until the person re-adds one of them.
+    CopiedDevice(CopiedDevice),
+}
+
+/// A device whose key runs on two machines, as a receiver found it: two different changes,
+/// each signed by the key, under one sequence number. No receiver can tell the machines apart,
+/// so it takes nothing more under the key until the person re-adds one of them with a ticket,
+/// which gives that one a key of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopiedDevice {
+    /// The device's key.
+    pub device: [u8; 32],
+    /// The device's name, as its certificate gives it.
+    pub name: String,
+}
+
+impl std::fmt::Display for CopiedDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} is running on two machines; its changes clash. Re-add one of them with a ticket",
+            self.name
+        )
+    }
 }
 impl AdmissionError {
     /// Whether this device failed to decide the input, rather than the input
@@ -63,7 +88,8 @@ impl AdmissionError {
         use neighbour_wire::RefusalReason;
         match self {
             Self::WriterSelectionRequired => RefusalReason::Malformed,
-            Self::ConflictingSequence => RefusalReason::Conflict,
+            // Not for good: the key is taken again once the person re-adds one machine.
+            Self::ConflictingSequence | Self::CopiedDevice(_) => RefusalReason::Conflict,
             Self::ResourceLimit | Self::HistoryFull => RefusalReason::Full,
             Self::Rejected { reason, .. } => *reason,
             Self::ChangeRefused(refused) => refused.reason_class(),
@@ -94,6 +120,7 @@ impl std::fmt::Display for AdmissionError {
             Self::Rejected { detail, .. } => f.write_str(detail),
             Self::Device(reason) => f.write_str(reason),
             Self::ChangeRefused(refused) => f.write_str(&refused.reason),
+            Self::CopiedDevice(copied) => copied.fmt(f),
         }
     }
 }

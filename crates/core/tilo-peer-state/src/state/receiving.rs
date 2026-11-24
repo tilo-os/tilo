@@ -63,6 +63,28 @@ impl StatePeer {
         now: SystemTime,
         exact: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
+        // A key found on two machines writes nothing here until one of them is re-added; a
+        // change it signed under a number another change of its took here is how it is found.
+        let key = super::copied::changed_by(&message);
+        if let Some(refused) = key.and_then(|key| self.refused_as_copied(key)) {
+            return Err(refused);
+        }
+        match self.admit_from_one_writer(origin, message, now, exact) {
+            Err(AdmissionError::ConflictingSequence) if let Some(key) = key => {
+                Err(self.found_copied(key, now))
+            }
+            admitted => admitted,
+        }
+    }
+
+    /// [`Self::admit_from`] for a writer this copy takes changes of.
+    fn admit_from_one_writer(
+        &mut self,
+        origin: TransportOrigin,
+        message: NeighbourMsg,
+        now: SystemTime,
+        exact: bool,
+    ) -> Result<AdmissionReport, AdmissionError> {
         let document = matches!(message, NeighbourMsg::AppDocument { .. });
         if exact && document && !self.core.exact_selected {
             return Err(AdmissionError::WriterSelectionRequired);

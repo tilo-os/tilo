@@ -137,6 +137,7 @@ pub(crate) use durable::Durable;
 use durable::brought_up;
 pub use durable::DURABLE_VERSION;
 pub(crate) use durable::{DocumentParts, DurableParts};
+mod copied;
 mod receiving;
 mod records;
 mod sealing;
@@ -380,6 +381,10 @@ pub struct StatePeer {
     /// ([`Self::judged_under`]): what a cut kept since is read from. Boxed:
     /// every copy carries it, and only one judging a write holds one.
     governance_now: Option<Box<CachedDocument>>,
+    /// Device keys this copy found signing two different changes under one sequence number,
+    /// running on two machines ([`copied`]): their changes are refused until the person re-adds
+    /// one of the machines. Never persisted: a copy that starts again finds the clash again.
+    copied: std::collections::BTreeMap<[u8; 32], copied::Copied>,
 }
 
 /// The Automerge actor a workspace host's own changes to a workspace are made under,

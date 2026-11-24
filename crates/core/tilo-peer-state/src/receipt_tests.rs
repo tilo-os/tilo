@@ -1264,3 +1264,105 @@ fn writes_ahead_of_their_role_change_are_asked_for_again_once_it_arrives() {
 
 #[path = "written_under_tests.rs"]
 mod written_under;
+
+/// What the machine copied from the guest's writes: the record as it stood when the disk was
+/// copied, changed under the copy's own Automerge writer, and signed with the key both machines
+/// carry as the `seq`th write of the record, the number the original gave a write of its own.
+fn copied_machine_write(
+    copied_from: &StatePeer,
+    key: &SigningKey,
+    write: impl FnOnce(&mut AutoCommit),
+    item: &str,
+    seq: u64,
+) -> NeighbourMsg {
+    let mut doc = AutoCommit::load(&copied_from.document(APP, RECORD).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(b"the copied machine".to_vec()));
+    let heads = doc.get_heads();
+    write(&mut doc);
+    step(&mut doc, comment(), Some(item), person_of(copied_from, key));
+    signed_write_at(&mut doc, &heads, key, seq)
+}
+
+/// One device key on two machines: each signs a change of its own under the same number. The
+/// workspace takes the first, refuses the second naming the device, and takes nothing more under
+/// the key while its other members write on. Once the person re-adds one machine with a ticket,
+/// a device of theirs certified after the clash, the original's writes are taken again.
+#[test]
+fn a_device_running_on_two_machines_is_refused_by_name_until_one_is_readded() {
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
+    peer.select_exact_admissions().unwrap();
+    let origin = TransportOrigin::ServerDelta(guest.device_public_key);
+    let copied_from = peer.clone();
+
+    let original = guest_write_at(&peer, &key, comment_on("c1"), comment(), Some("c1"), 1);
+    peer.receive_from_report(origin, original, now())
+        .expect("the original machine's write");
+    let clash = copied_machine_write(&copied_from, &key, comment_on("c2"), "c2", 1);
+    let refused = peer
+        .receive_from_report(origin, clash, now())
+        .expect_err("two changes under one number");
+    assert!(
+        matches!(&refused, crate::AdmissionError::CopiedDevice(copied)
+            if copied.device == guest.device_public_key && copied.name == "guest"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        refused.to_string(),
+        "guest is running on two machines; its changes clash. Re-add one of them with a ticket"
+    );
+    assert_eq!(refused.reason(), neighbour_wire::RefusalReason::Conflict);
+    assert_eq!(peer.copied_devices().len(), 1);
+
+    // Nothing more under the key, from either machine.
+    let next = guest_write_at(&peer, &key, comment_on("c3"), comment(), Some("c3"), 2);
+    assert!(matches!(
+        peer.receive_from_report(origin, next.clone(), now()),
+        Err(crate::AdmissionError::CopiedDevice(_))
+    ));
+    assert!(!value_has_comment(&peer, "c3"));
+
+    // The owner writes on meanwhile.
+    let owner_key = SigningKey::from_bytes(&[2; 32]);
+    let owner_origin = TransportOrigin::ServerDelta(owner_key.verifying_key().to_bytes());
+    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(b"the owner".to_vec()));
+    let heads = doc.get_heads();
+    comment_on("o1")(&mut doc);
+    step(&mut doc, comment(), Some("o1"), person_of(&peer, &owner_key));
+    let owners = signed_write_at(&mut doc, &heads, &owner_key, 1);
+    peer.receive_from_report(owner_origin, owners, now())
+        .expect("another device's write is taken");
+    assert!(value_has_comment(&peer, "o1"));
+
+    // The person re-adds the copy with a ticket: it is certified under a key of its own.
+    let later = now() + std::time::Duration::from_secs(1);
+    let readded_key = SigningKey::from_bytes(&[46; 32]);
+    let mut readded = certificate(&SigningKey::from_bytes(&[41; 32]), &readded_key, "guest");
+    readded.issued_at_ns = u64::try_from(
+        later
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap();
+    tilo_user_identity::sign_device_cert(&mut readded, &SigningKey::from_bytes(&[41; 32]))
+        .unwrap();
+    assert!(
+        peer.governance_mut()
+            .admit_member_device(&readded, &owner_key, later)
+            .unwrap()
+    );
+    peer.receive_from_report(origin, next, later)
+        .expect("the original's write is taken once the copy was re-added");
+    assert!(value_has_comment(&peer, "c3"));
+    assert!(peer.copied_devices().is_empty());
+}
+
+/// Whether the record on `peer` has the comment `id`.
+fn value_has_comment(peer: &StatePeer, id: &str) -> bool {
+    let doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    let Some((_, comments)) = doc.get(ROOT, "comments").unwrap() else {
+        return false;
+    };
+    doc.get(&comments, id).unwrap().is_some()
+}

@@ -25,7 +25,9 @@
 //! device key, read by two components running as two uids, so it may
 //! additionally be group-readable ([`DEVICE_KEY_MODE`]) but must be owned by
 //! root (or the reader for an injected/test store) and never reachable by
-//! anyone outside that group.
+//! anyone outside that group. One process writes as the device, its daemon,
+//! which takes the key with [`take_device_key`]: a second one that takes it is
+//! refused ([`PersistError::KeyInUse`]).
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 #[cfg(target_os = "linux")]
@@ -51,6 +53,10 @@ use tilo_user_identity::CanonicalError;
 use tilo_user_identity::cert::{
     DeviceCapabilities, DeviceCert, DeviceCertError, verify_device_cert, verify_device_cert_at,
 };
+
+mod one_writer;
+
+pub use one_writer::{DeviceKeyLock, take_device_key};
 
 const MAX_DEVICE_CERT_BYTES: usize = 64 * 1024;
 
@@ -402,6 +408,18 @@ pub enum PersistError {
     /// Canonical decode of the cert file failed.
     #[error("cert decode failed: {0}")]
     Canonical(#[from] CanonicalError),
+    /// Another process writes as this device: it took the device's key
+    /// ([`take_device_key`]), and one device signs from one process.
+    #[error(
+        "this device's key is already in use by {}: one process writes as the device",
+        one_writer::in_use_by(*pid, program.as_deref())
+    )]
+    KeyInUse {
+        /// The process that took the key, when the system says.
+        pid: Option<u32>,
+        /// The program it runs, when the system says.
+        program: Option<String>,
+    },
 }
 
 impl PersistError {
@@ -416,7 +434,8 @@ impl PersistError {
             | Self::InsecureLinkCount { .. }
             | Self::InsecureOwner { .. }
             | Self::WrongKeyLength(_)
-            | Self::Canonical(_) => None,
+            | Self::Canonical(_)
+            | Self::KeyInUse { .. } => None,
         }
     }
 }
@@ -887,6 +906,10 @@ fn write_public_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// [`PersistError::Io`] if it cannot be read, or
 /// [`PersistError::WrongKeyLength`] if it is not exactly 32 bytes.
 pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
+    // The process that writes as the device answers the key it took, and opens the file once.
+    if let Some(key) = one_writer::taken_here(path) {
+        return Ok(key);
+    }
     let key = signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)?;
     // Reading the key made this process non-dumpable, so the person's Secret
     // Service can no longer read its executable to know who is calling. The
@@ -965,6 +988,7 @@ pub fn replace_device_key(paths: &IdentityPaths, sk: &SigningKey) -> Result<(), 
 /// Write the device key with [`DEVICE_KEY_MODE`], atomically.
 pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     protect_secret_process()?;
+    one_writer::forget(path);
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     let seed = Zeroizing::new(sk.to_bytes());

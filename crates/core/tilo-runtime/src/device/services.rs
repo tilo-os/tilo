@@ -161,9 +161,13 @@ pub struct Daemon {
     place: DaemonPlace,
     /// The device's directory: its login, its synced folders' settings and its migrations.
     dir: PathBuf,
-    /// The device's lock, when this daemon took it itself: one started under the lock the
-    /// daemon's device part keeps ([`Self::start_locked`]) holds none of its own.
-    _lock: Option<advisory_lock::FileLock>,
+    /// The device's key and lock, when this daemon took them itself: one started under the lock
+    /// the daemon's device part keeps ([`Self::start_locked`]) has none of its own. The key is
+    /// let go of first, so the daemon that takes the device over finds it free.
+    _lock: Option<(
+        tilo_device_identity::persist::DeviceKeyLock,
+        advisory_lock::FileLock,
+    )>,
 }
 
 /// The services a profile is served as: the person's own runtime, or the same
@@ -1226,7 +1230,9 @@ impl Daemon {
             }
             None => {
                 stage("locking the device");
-                Some(super::serve::lock_device(&place)?)
+                let lock = super::serve::lock_device(&place)?;
+                let key = super::unclaimed::take_key(identity.place.keys(), &identity.key)?;
+                Some((key, lock))
             }
         };
         tilo_files::native::private::directory(root)?;

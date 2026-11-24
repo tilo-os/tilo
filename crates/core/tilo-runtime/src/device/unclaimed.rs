@@ -52,6 +52,9 @@ const SERVING_WAIT: Duration = Duration::from_secs(120);
 pub(crate) struct ThisDevice {
     key: SigningKey,
     place: Place,
+    /// The device's key, taken by this daemon alone: let go of before the lock beside it, so the
+    /// daemon that takes the device over finds the key free once it has the lock.
+    _key: tilo_device_identity::persist::DeviceKeyLock,
     lock: advisory_lock::FileLock,
     /// The device a ticket made of this computer, once one did: kept in memory for the person's
     /// services to enter through, as nothing of it is written down.
@@ -111,6 +114,30 @@ impl Founding {
     }
 }
 
+/// Take the device's key in `keys` as this daemon, the one process that writes as the device,
+/// once it has the device's lock: the key read before it, `read`, is the one taken.
+///
+/// # Errors
+/// Another process took the key, or it changed since it was read.
+pub(crate) fn take_key(
+    keys: &tilo_device_identity::IdentityPaths,
+    read: &SigningKey,
+) -> io::Result<tilo_device_identity::persist::DeviceKeyLock> {
+    let taken = tilo_device_identity::persist::take_device_key(keys).map_err(|error| {
+        let kind = match error {
+            tilo_device_identity::PersistError::KeyInUse { .. } => io::ErrorKind::WouldBlock,
+            _ => io::ErrorKind::Other,
+        };
+        io::Error::new(kind, error.to_string())
+    })?;
+    if taken.key().verifying_key() != read.verifying_key() {
+        return Err(io::Error::other(
+            "this computer's device key changed while its daemon started",
+        ));
+    }
+    Ok(taken)
+}
+
 /// The device a ticket made of this computer while its daemon runs, once one did.
 type Entered = Arc<std::sync::Mutex<Option<Device>>>;
 
@@ -124,13 +151,15 @@ impl ThisDevice {
         let keys = tilo_api::calls::device_keys();
         let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys)
             .map_err(|error| io::Error::other(format!("this computer's device key: {error}")))?;
-        let place = Place::here(keys).map_err(io::Error::other)?;
+        let place = Place::here(keys.clone()).map_err(io::Error::other)?;
         tilo_files::native::private::directory(place.dir())?;
         let daemon = tilo_api::daemon::this_computer().map_err(io::Error::other)?;
         let lock = super::serve::lock_device(&daemon)?;
+        let taken = take_key(&keys, &key)?;
         Ok(Self {
             key,
             place,
+            _key: taken,
             lock,
             entered: Entered::default(),
             founding: Arc::default(),

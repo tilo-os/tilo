@@ -148,6 +148,6 @@ pub mod resources;
 /// process.
 pub mod work;
 pub use admission::{
-    AdmissionError, AdmissionReport, DocumentAdmission, DropReason, DroppedInput, InputDisposition,
+    AdmissionError, AdmissionReport, CopiedDevice, DocumentAdmission, DropReason, DroppedInput, InputDisposition,
     MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite, Released, StillHeld,
 };

@@ -289,6 +289,7 @@ impl StatePeer {
                 .governance_now
                 .clone()
                 .or_else(|| self.core.workspace_doc.clone().map(Box::new)),
+            copied: self.copied.clone(),
         }
     }
 

@@ -336,6 +336,17 @@ nothing at boot signs:
   key, or a copy of one, certify another key on its own: a stolen device key
   revoked from the person would otherwise mint unrevoked successors.
 
+**A copy that kept the key is refused by name.** A copy this check cannot
+tell from its source (above) keeps the source's key, and two machines then
+sign two different changes under one sequence number. A receiver that sees
+that refuses the key (`tilo_peer_state::CopiedDevice`: "<device> is running
+on two machines; its changes clash. Re-add one of them with a ticket") and
+takes nothing more under it until the person re-adds one of the machines with
+a ticket: a device of theirs certified after the clash. On one machine, the
+device's daemon is the key's one writer: it takes the key file's lock
+(`tilo_device_identity::persist::take_device_key`), and a second process
+taking it is told which process has it.
+
 ### A person's servers
 
 A person's servers are configured in their admin workspace: an ordinary
