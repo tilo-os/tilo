@@ -179,7 +179,7 @@ impl Dialer {
                         ));
                     }
                 };
-                Ok(Link::of(Inner::Iroh(connection)))
+                Ok(Link::over(Inner::Iroh(connection), Some(endpoint)))
             }
         }
     }
@@ -363,6 +363,10 @@ fn connect_error(error: &iroh::endpoint::ConnectError, alpn: &[u8]) -> LinkError
 #[derive(Clone)]
 pub struct Link {
     inner: Inner,
+    /// The endpoint an iroh connection runs on, kept while the link is: iroh
+    /// closes a connection once the last handle on the endpoint it runs on
+    /// drops, and a link outlives the dialer that opened it.
+    _endpoint: Option<iroh::Endpoint>,
     /// What an entry on it is bound to, once read ([`Link::binding`]): a
     /// server offers it once per link.
     binding: std::sync::Arc<tokio::sync::OnceCell<[u8; 32]>>,
@@ -380,8 +384,15 @@ enum Inner {
 
 impl Link {
     fn of(inner: Inner) -> Self {
+        Self::over(inner, None)
+    }
+
+    /// [`Self::of`], keeping `endpoint`, the endpoint an iroh connection
+    /// runs on, alive for as long as any clone of the link is.
+    fn over(inner: Inner, endpoint: Option<iroh::Endpoint>) -> Self {
         Self {
             inner,
+            _endpoint: endpoint,
             binding: std::sync::Arc::default(),
             device: None,
         }
