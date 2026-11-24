@@ -240,6 +240,9 @@ pub struct ListRowFace<'a> {
     count: Option<usize>,
     leading: Option<RowLeading<'a>>,
     leading_column: Option<f64>,
+    /// Keep the glyph column whether or not this row has a glyph: a tree whose rows mix rows with
+    /// a leading glyph and rows without keeps one title column for all of them.
+    glyph_column: bool,
     /// The column a leading control takes, left empty: a row that takes the place of one whose
     /// own control is gone (a struck row) keeps the title column of the rows around it.
     leading_empty: bool,
@@ -340,6 +343,7 @@ impl<'a> ListRowFace<'a> {
             count: None,
             leading: None,
             leading_column: None,
+            glyph_column: false,
             leading_empty: false,
             nested: false,
             depth: 0,
@@ -611,6 +615,15 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn leading_column(mut self, width: f64) -> Self {
         self.leading_column = Some(width);
+        self
+    }
+
+    /// Keep the glyph column whether or not the row has a leading glyph: rows of one tree or
+    /// list that mix the two keep one title column, as a row's leading control, its checkbox and
+    /// its face stand in one column.
+    #[must_use]
+    pub fn glyph_column(mut self, keep: bool) -> Self {
+        self.glyph_column = keep;
         self
     }
 
@@ -1103,6 +1116,8 @@ pub struct ListRow {
     author: Option<AuthorCell>,
     leading: Option<Leading>,
     leading_column: Option<f64>,
+    /// Keep the glyph column whether or not this row has a glyph ([`ListRowFace::glyph_column`]).
+    glyph_column: bool,
     /// The column a leading control takes, left empty ([`ListRowFace::leading_empty`]).
     leading_empty: bool,
     nested: bool,
@@ -1195,6 +1210,7 @@ impl ListRow {
             author: None,
             leading: None,
             leading_column: None,
+            glyph_column: false,
             leading_empty: false,
             nested: false,
             depth: 0,
@@ -1608,6 +1624,13 @@ impl ListRow {
     #[must_use]
     pub fn leading_column(mut self, width: f64) -> Self {
         self.leading_column = Some(width);
+        self
+    }
+
+    /// See [`ListRowFace::glyph_column`].
+    #[must_use]
+    pub fn glyph_column(mut self, keep: bool) -> Self {
+        self.glyph_column = keep;
         self
     }
 
@@ -2225,6 +2248,7 @@ impl ListRow {
         if let Some(width) = self.leading_column.or(self.shared_leading) {
             face = face.leading_column(width);
         }
+        face = face.glyph_column(self.glyph_column);
         face = face.nested(self.nested);
         face = face.leading_empty(self.leading_empty);
         face = face.depth(self.depth);

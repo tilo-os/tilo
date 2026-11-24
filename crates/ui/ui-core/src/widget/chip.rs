@@ -1131,6 +1131,12 @@ impl Widget for Chip {
                 width,
                 height: length(self.box_height() as f32),
             },
+            // A chip never stands wider than the box that holds it: a label longer than the line
+            // elides in place, as a text does, instead of reaching past the window.
+            max_size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
+            },
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
