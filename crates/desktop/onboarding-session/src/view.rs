@@ -48,8 +48,7 @@ use taffy::{NodeId, TaffyTree};
 use ui::ColorCompat as _;
 use ui::theme::Theme;
 use ui::widget::{AppModel, ModelPath, TaffyTreeExt, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -786,8 +785,8 @@ impl OnboardingView {
         );
         ui::widget::DrawChild::draw_child(
             self,
-            &mut Scene::new(),
-            Affine::IDENTITY,
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
             &mut text,
             &theme,
             &ui::presence::PresenceCtx::empty().draw_env(),
