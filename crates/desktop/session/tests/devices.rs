@@ -1219,3 +1219,71 @@ fn what_plays_reaches_the_shell_with_the_panel_closed() {
         harness.session.accessible_labels()
     );
 }
+
+/// A shell form of another language reads whether this device is the person's and the workspaces
+/// their layout lists, under the keys and names the layout uses. A login that reaches no daemon
+/// fails, and a session on the person's fabric stays theirs.
+#[test]
+fn a_view_reads_the_login_and_the_layouts_workspaces() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(true);
+    let mut harness = session(&link, Rc::new(Host::default()));
+    for _ in 0..4 {
+        harness.step();
+    }
+    let reading = harness
+        .reading()
+        .expect("the session publishes its devices");
+    assert!(
+        reading.signed_in,
+        "a session on the person's fabric is one of their devices"
+    );
+    let layout = harness.session.layout_reading();
+    assert!(
+        !layout.workspaces.is_empty(),
+        "the layout holds a workspace"
+    );
+    assert_eq!(
+        reading
+            .workspaces
+            .iter()
+            .map(|workspace| (workspace.key.as_str(), workspace.name.as_str()))
+            .collect::<Vec<_>>(),
+        layout
+            .workspaces
+            .iter()
+            .map(|workspace| (workspace.key.as_str(), workspace.name.as_str()))
+            .collect::<Vec<_>>(),
+        "the same workspaces, under the keys and names the layout uses"
+    );
+    // A login is this computer's daemon's, and no daemon answers here: it fails and changes
+    // nothing of the reading, never a silent success.
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove(tilo_api::calls::KEY_FILE_ENV);
+    env.set(tilo_api::calls::DESKTOP_ENV, "/nonexistent/tilo-api.sock");
+    let ticket = serde_json::json!({"ticket": "tilo1-a-ticket"});
+    harness
+        .session
+        .invoke(
+            tilo_session::DEVICES_RESOURCE,
+            "log-in",
+            ticket.as_object().expect("arguments"),
+        )
+        .expect("the login is taken");
+    until(&mut harness, |harness| {
+        harness
+            .reading()
+            .is_some_and(|reading| !reading.refused.is_empty())
+    });
+    let reading = harness
+        .reading()
+        .expect("the session still publishes its devices");
+    assert!(
+        reading.signed_in,
+        "a login that failed leaves the session the person's device"
+    );
+    assert!(
+        !reading.refused.is_empty(),
+        "what went wrong reads under the ticket field"
+    );
+}

@@ -33,6 +33,7 @@ mod gallery;
 mod headings;
 mod held_records;
 mod inline_views;
+mod layers;
 mod legibility;
 mod library;
 mod link_editor;

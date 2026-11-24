@@ -129,6 +129,15 @@ view timeline(a: shell.Layout) {
 There is no list of styles in code and no keyword. The type is the contract, as it is for every
 view (one-app-model.md §2).
 
+**A host with no desktop.** A shell package can also give a host that arranges nothing a screen
+of its own, and such a screen takes no parameters: a view whose one parameter is the layout is a
+style and nothing else. `so.tilo.shell` declares `view phone()` for the Tilo app on a phone, and
+that app shows it as its window (`RootView`'s view, over the package's root). It reads the device
+package — whether this device is signed in, the person's workspaces, the apps installed here — and
+hands each press to the session's own actions (`log_in`, `switch_workspace`, `open_app`), which
+the phone's host carries out. Which workspace the person picked is the view's state, and its
+wiring is the shell's like any other view's.
+
 **Where styles come from.** Any installed tilolang package may declare styles. The session
 reads installed packages from the person's package store the way it reads every tilolang app:
 `package_store::Catalog`, then `Bundle::read(payload_root)` and `Host::load_bundle`. That is

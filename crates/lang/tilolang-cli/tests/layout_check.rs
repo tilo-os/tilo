@@ -381,6 +381,30 @@ fn a_view_another_app_draws_and_the_views_the_system_draws_are_reached_while_a_d
     );
 }
 
+/// A view that takes nothing and no code calls it is a screen its host shows by name, as a
+/// phone's shell shows its `phone` view: the check opens it as the window's own on the scenario
+/// that names it, so it is reached rather than named as a view to delete.
+#[test]
+fn a_screen_a_host_shows_by_name_is_reached_on_the_scenario_that_names_it() {
+    let dir = manifest().join("tests/layout_check/reach");
+    let report = layout_check::check(&Options {
+        dirs: vec![dir.join("drawer")],
+        search: vec![dir],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(
+        report.unreached.is_empty(),
+        "the phone screen the scenario names is drawn, so no view stands unshown:\n{}",
+        layout_check::render(&report)
+    );
+    assert!(
+        report.findings.is_empty(),
+        "the phone screen is laid out right:\n{}",
+        layout_check::render(&report)
+    );
+}
+
 /// A view whose body is a bare `if let` leaves no widget of its own: absent, it draws nothing, and
 /// present, what it draws is the view it calls.
 #[test]

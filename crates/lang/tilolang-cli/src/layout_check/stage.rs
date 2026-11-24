@@ -718,6 +718,14 @@ impl Staged {
         self.harness.relayout();
     }
 
+    /// Show the view `view` (a name) as the window's own, over no resource: a screen a host shows
+    /// by name (a phone's shell), which takes no arguments.
+    pub fn open_screen(&mut self, view: &str) {
+        self.instance.open_screen(view);
+        self.exchange();
+        self.harness.relayout();
+    }
+
     pub fn failed(&mut self) -> Option<String> {
         self.window()
             .and_then(|window| window.failed().map(str::to_owned))

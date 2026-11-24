@@ -20,18 +20,26 @@
 //! ([`DevicesAction::Press`]) and the loop carries it out
 //! ([`press::press`]), as it carries out every other verb
 //! published here.
+//!
+//! Beside the devices it reads whether this device is one of the person's, the workspaces its
+//! layout lists, and the verb that makes it theirs ([`DevicesAction::LogIn`]): what a shell on a
+//! device that is not logged in yet shows, and what it logs in with.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use crate::hosted::{
-    DevicesReading, MediaOffer, PersonalDevice, RowPart, SendableSound, SoundAsk, SoundRoute,
+    DeviceWorkspace, DevicesReading, MediaOffer, PersonalDevice, RowPart, SendableSound, SoundAsk,
+    SoundRoute,
 };
 use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
+use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect;
+use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_speaker_service::remote_audio::{self, RemoteAudioPhase};
 
@@ -75,6 +83,18 @@ pub enum DevicesAction {
         #[param("The device to move it to")]
         device: String,
     },
+    /// Make this device one of the person's, with the ticket another of their devices printed
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    LogIn {
+        /// The ticket the person's other device printed.
+        #[param("The ticket to log in with")]
+        ticket: String,
+    },
+    /// Start a new person on this device, when no person's certificate names it yet
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    Found,
 }
 
 /// The person's devices as the fabric reads them, what plays here that they can take, the remote
@@ -141,6 +161,9 @@ pub(crate) fn current(
         devices,
         chosen: *chosen.borrow(),
         offer: handoff.borrow().clone(),
+        // What the layout lists and whether the person is logged in here are the session's
+        // ([`Served::current`]), not what the fabric and the audio service say.
+        ..DevicesReading::default()
     }
 }
 
@@ -183,6 +206,8 @@ fn read(fabric: &SharedLink) -> Vec<PersonalDevice> {
 /// a device that comes or goes is one revision.
 pub(crate) struct Served {
     fabric: SharedLink,
+    /// The person's layout, whose workspaces the reading lists.
+    handle: DesktopHandle,
     /// What the services read of this device, of which the reading says what plays here that a
     /// device can take.
     readings: crate::status::Shared,
@@ -196,6 +221,9 @@ pub(crate) struct Served {
     pressed: Rc<RefCell<Vec<Press>>>,
     /// The accessories the person asked to move to another device.
     handed: Rc<RefCell<Vec<HandOff>>>,
+    /// Why the last login from here failed, as the daemon said it: written by the login's own
+    /// thread, read on every pass.
+    refused: Arc<Mutex<String>>,
     /// The reading last reported, so a pass that changed nothing is no revision.
     published: RefCell<Option<DevicesReading>>,
 }
@@ -215,30 +243,49 @@ pub(crate) struct HandOff {
 }
 
 impl Served {
-    /// The service publishing what `fabric` , `readings` , `chosen` and `handoff` read, whose
-    /// presses `pressed` carries to the loop.
+    /// The service publishing what `fabric` , `handle` , `readings` , `chosen` and `handoff` read,
+    /// whose presses `pressed` carries to the loop.
     pub(crate) fn new(
         fabric: SharedLink,
+        handle: DesktopHandle,
         readings: crate::status::Shared,
         chosen: Rc<RefCell<Option<u64>>>,
         handoff: Rc<RefCell<Option<MediaOffer>>>,
         pressed: Rc<RefCell<Vec<Press>>>,
         handed: Rc<RefCell<Vec<HandOff>>>,
+        refused: Arc<Mutex<String>>,
     ) -> Self {
         Self {
             fabric,
+            handle,
             readings,
             chosen,
             handoff,
             pressed,
             handed,
+            refused,
             published: RefCell::new(None),
         }
     }
 
     /// The reading as it stands now.
     fn current(&self) -> DevicesReading {
-        current(&self.fabric, &self.readings, &self.chosen, &self.handoff)
+        let mut reading = current(&self.fabric, &self.readings, &self.chosen, &self.handoff);
+        // A device the fabric knows this session as is one a person's certificate names it: their
+        // device, logged in.
+        reading.signed_in = self.fabric.local_device_fabric_identity().is_some();
+        reading.workspaces = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .filter(|workspace| !workspace.id().is_nil())
+                .map(|workspace| DeviceWorkspace {
+                    key: workspace.id().to_string(),
+                    name: tilo_session_core::desktop::names::workspace(&workspace.name),
+                })
+                .collect()
+        });
+        reading.refused.clone_from(&self.refused.lock_recover());
+        reading
     }
 }
 
@@ -285,6 +332,24 @@ impl Service for Served {
             DevicesAction::HandOff { address, device } => {
                 self.handed.borrow_mut().push(HandOff { address, device });
             }
+            // A login is this computer's daemon's to run, and can take a while: it answers the
+            // caller when it lands, refusing in the daemon's own words.
+            DevicesAction::LogIn { ticket } => {
+                let label = self
+                    .fabric
+                    .local_device_fabric_identity()
+                    .map(|(_, label)| label);
+                return Ok(Started::Later(log_in(
+                    ticket,
+                    label,
+                    Arc::clone(&self.refused),
+                )));
+            }
+            // As a person's own computer's first command founds its person: this computer's
+            // daemon does, and refuses once a person's certificate names it.
+            DevicesAction::Found => {
+                return Ok(Started::Later(found(Arc::clone(&self.refused))));
+            }
         }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
@@ -298,6 +363,68 @@ impl Service for Served {
         *published = Some(now);
         true
     }
+}
+
+/// The agent a login from here makes this computer, when nobody named one: the same word
+/// `tilo login` gives it.
+const AGENT: &str = "Your agent";
+
+/// Log this device in with `ticket`, as `tilo login <ticket>` does: this computer's daemon runs
+/// the login (`devices#logIn`, [`tilo_device_identity::login::LOG_IN`]), kept where the daemon
+/// keeps it, so what answers the caller is that daemon's word, its refusal included.
+fn log_in(
+    ticket: String,
+    label: Option<String>,
+    refused: Arc<Mutex<String>>,
+) -> tilo_actions::remote::Pending<Result<tilo_actions::ActionOutput, ApiError>> {
+    crate::landing::off_loop(async move {
+        answered(log_in_with(&ticket, label.as_deref()).await, &refused)
+    })
+}
+
+/// Start a new person on this device ([`tilo_device_identity::login::FOUND`]), as a person's own
+/// computer's first command does, keeping why it failed in `refused` as a login does.
+fn found(
+    refused: Arc<Mutex<String>>,
+) -> tilo_actions::remote::Pending<Result<tilo_actions::ActionOutput, ApiError>> {
+    crate::landing::off_loop(async move {
+        answered(
+            tilo_api::daemon::this_computer().and_then(|daemon| daemon.found()),
+            &refused,
+        )
+    })
+}
+
+/// What the daemon answered `outcome`, kept in `refused` (cleared when it went through), which
+/// the reading shows under the ticket the person typed.
+fn answered(
+    outcome: Result<(), String>,
+    refused: &Mutex<String>,
+) -> Result<tilo_actions::ActionOutput, ApiError> {
+    *refused.lock_recover() = outcome.as_ref().err().cloned().unwrap_or_default();
+    outcome.map_err(ApiError::Failed)?;
+    Ok(tilo_actions::ActionOutput::default())
+}
+
+/// [`log_in`] through this computer's daemon, as `tilo` calls it: the workspace the login enters,
+/// then `devices#logIn`, as `tilo login <ticket>` asks it. A refusal is the daemon's own words.
+async fn log_in_with(ticket: &str, label: Option<&str>) -> Result<(), String> {
+    let said = |error: anyhow::Error| format!("{error:#}");
+    let calls = tilo_api::calls::Calls::open(tilo_api::calls::Reach::default())
+        .await
+        .map_err(said)?;
+    let workspace = calls.founded_workspace().await.map_err(said)?;
+    calls
+        .act(
+            Some(&workspace),
+            "devices",
+            tilo_device_identity::login::LOG_IN,
+            &serde_json::json!({"ticket": ticket.trim(), "agent": AGENT, "label": label}),
+            "Log in",
+        )
+        .await
+        .map_err(said)?;
+    Ok(())
 }
 
 /// Land a session another of the person's devices hands this one, so the now-playing card offers to
@@ -330,6 +457,16 @@ pub(crate) struct DevicesView {
     /// The sound of this device's that a press on a device would send.
     #[serde(default)]
     pub chosen: Option<u64>,
+    /// Whether this device holds a person's certificate: logged in, with workspaces of theirs to
+    /// show.
+    #[serde(default)]
+    pub signed_in: bool,
+    /// The workspaces this device's shell lists, as the person reads them.
+    #[serde(default)]
+    pub workspaces: Vec<DeviceWorkspace>,
+    /// Why the last login failed, in the words of whoever refused it; empty when it did not.
+    #[serde(default)]
+    pub refused: String,
 }
 
 /// One of the person's devices as a view of another language reads it.
@@ -384,6 +521,9 @@ impl From<&DevicesReading> for DevicesView {
                 .collect(),
             playing: reading.playing.clone(),
             chosen: reading.chosen,
+            signed_in: reading.signed_in,
+            workspaces: reading.workspaces.clone(),
+            refused: reading.refused.clone(),
         }
     }
 }
@@ -415,6 +555,11 @@ mod surface_tests {
             }],
             playing: Some("A song".to_owned()),
             chosen: Some(7),
+            signed_in: true,
+            workspaces: vec![DeviceWorkspace {
+                key: "w1".to_owned(),
+                name: "Studio".to_owned(),
+            }],
             ..DevicesReading::default()
         };
         let section = serde_json::to_value(&reading).expect("the section serialises");
@@ -427,8 +572,15 @@ mod surface_tests {
                 .keys()
                 .map(String::as_str)
                 .collect::<std::collections::BTreeSet<&str>>(),
-            std::collections::BTreeSet::from(["chosen", "devices", "playing"]),
-            "the view reads the devices, what plays and what would be sent"
+            std::collections::BTreeSet::from([
+                "chosen",
+                "devices",
+                "playing",
+                "refused",
+                "signed_in",
+                "workspaces",
+            ]),
+            "the view reads the devices, what plays, what would be sent, and the person's login"
         );
         for key in view_fields.keys() {
             assert!(
@@ -436,6 +588,17 @@ mod surface_tests {
                 "{key} is not the section's"
             );
         }
+        let workspace = &view["workspaces"][0];
+        assert_eq!(
+            workspace
+                .as_object()
+                .expect("a workspace is an object")
+                .keys()
+                .map(String::from)
+                .collect::<Vec<String>>(),
+            ["key", "name"],
+            "a workspace is named as the shell's layout names it"
+        );
         let device = &view["devices"][0];
         let published = &section["devices"][0];
         let published = published.as_object().expect("a device is an object");
@@ -445,5 +608,55 @@ mod surface_tests {
                 "{key} is not a field of the device the fabric reads"
             );
         }
+    }
+
+    /// What the `devices` surface declares: the fields a view reads and the verb that makes this
+    /// device the person's.
+    #[test]
+    fn the_surface_publishes_the_login_and_the_workspaces() {
+        let published = surface();
+        let fields: Vec<&str> = published
+            .fields
+            .iter()
+            .map(|field| field.path.as_str())
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "devices",
+                "playing",
+                "chosen",
+                "signed_in",
+                "workspaces",
+                "refused"
+            ]
+        );
+        assert!(
+            published
+                .types
+                .iter()
+                .any(|declared| declared.name == "DeviceWorkspace"
+                    && declared
+                        .fields
+                        .iter()
+                        .map(|field| field.name.as_str())
+                        .eq(["key", "name"])),
+            "the workspaces carry the key and name the shell's layout uses: {:?}",
+            published.types
+        );
+        let log_in = published
+            .verbs
+            .iter()
+            .find(|verb| verb.id == "log-in")
+            .expect("the surface publishes log-in");
+        assert_eq!(
+            log_in
+                .params
+                .iter()
+                .map(|param| param.name.as_str())
+                .collect::<Vec<_>>(),
+            ["ticket"],
+            "a login asks for the ticket another device printed"
+        );
     }
 }

@@ -417,9 +417,10 @@ fn refuse_a_missing_press(
     Ok(())
 }
 
-/// The views no layout showed a node of: a view its window draws off a call, or the system draws
-/// for its kind (the default view of a resource, a row of a list, a place on the canvas), is not
-/// one.
+/// The views no layout showed a node of: a view its window draws off a call, the system draws
+/// for its kind (the default view of a resource, a row of a list, a place on the canvas), or a
+/// host shows by name (a screen that takes nothing, which the check opens, [`open_views`]) is
+/// not one.
 fn unreached_views(apps: &[App], shown: &[Shown]) -> Vec<Unreached> {
     let drawn: Shown = shown.iter().flatten().cloned().collect();
     let called: BTreeSet<(String, String)> = apps
@@ -714,7 +715,8 @@ impl Scene {
     }
 
     /// Whether opening a view on this scenario may show one nothing showed yet: the views of types
-    /// it did not open, and the views the system shows on surfaces of its own.
+    /// it did not open, the views the system shows on surfaces of its own, and the screens a host
+    /// opens by name.
     fn needs_opens(&self, apps: &[App], shown: &Shown) -> bool {
         let Some(app) = apps.get(self.app) else {
             return false;
@@ -746,7 +748,44 @@ impl Scene {
                 && meta
                     .offered_views()
                     .any(|view| !shows(shown, &meta.app, &view.name)))
+            // A screen a host shows by name (`view phone()`) takes nothing and no code calls it:
+            // the check opens it as the window's own while it stands unshown.
+            || meta.views.iter().any(|view| {
+                view.params.is_empty()
+                    && (names_screen(&self.scenario, &view.name)
+                        || (!a_scenario_names(meta, &view.name)
+                            && !shows(shown, &meta.app, &view.name)))
+                    && !app
+                        .sources
+                        .called()
+                        .any(|(app, name)| app == meta.app && name == view.name)
+            })
     }
+}
+
+/// Whether the scenario `scenario` names the screen `view`: its name holds the view's name in
+/// words, so a scenario called "the phone, signed out" stages the `phone` screen a host shows.
+fn names_screen(scenario: &str, view: &str) -> bool {
+    let words = |text: &str| -> Vec<String> {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let said = words(scenario);
+    let wanted = words(&view.replace('_', " "));
+    !wanted.is_empty()
+        && said
+            .windows(wanted.len())
+            .any(|window| window == wanted.as_slice())
+}
+
+/// Whether a scenario of the package names the host screen `view`: where one does, the screen is
+/// laid out on those and on no other, so each scenario stages a screen of its own.
+fn a_scenario_names(meta: &tilolang::PackageMeta, view: &str) -> bool {
+    meta.scenarios
+        .iter()
+        .any(|scenario| names_screen(&scenario.name, view))
 }
 
 /// Where a unit of work runs: one scenario of one app on one layer.
@@ -1551,7 +1590,7 @@ impl AppCheck<'_> {
             }
             What::Opens { .. } => {
                 let mut staged = self.stage(packages, unit)?;
-                self.open_views(&mut staged, &title)?;
+                self.open_views(&mut staged, &title, &unit.scene.scenario)?;
                 self.choose_destinations(packages, unit, &title)
             }
             What::Press => self.press(packages, unit),
@@ -1584,12 +1623,17 @@ impl AppCheck<'_> {
         )
     }
 
-    /// The views of types the scenario did not open, on a resource its window names; and the views
+    /// The views of types the scenario did not open, on a resource its window names; the views
     /// the system shows on surfaces of its own rather than in a window of the app: a type's row
     /// view (a search result, a row of an agent's answer), a type's place view (what a place on the
     /// canvas shows) and an action's proposal view (the card asking to run it), on a resource of
-    /// the type they take.
-    fn open_views(&mut self, staged: &mut stage::Staged, title: &str) -> Result<(), String> {
+    /// the type they take; and the screens a host shows by name, which take nothing.
+    fn open_views(
+        &mut self,
+        staged: &mut stage::Staged,
+        title: &str,
+        scenario: &str,
+    ) -> Result<(), String> {
         // A page a person meets from a list is one of that list's own rows, so a view staged over
         // the list opens a resource the list holds where it holds one, and a resource of a type the
         // list does not show where it holds none.
@@ -1652,6 +1696,31 @@ impl AppCheck<'_> {
             staged.open(resource.clone());
             staged.open_with(&resource, &view.id);
             self.read(staged, &format!("{title}, then {} shown", view.name))?;
+        }
+        // A view that takes nothing and no code of the package calls is a screen its host shows
+        // by name rather than a resource's: a phone's shell (`view phone()`). Its host opens it
+        // as the window's own, over no resource, which is what the check lays out here: on each
+        // scenario that names it (so each state it stages is a screen of its own), and once on
+        // another where nothing showed it yet.
+        for view in &meta.views {
+            if !view.params.is_empty() {
+                continue;
+            }
+            let named = names_screen(scenario, &view.name);
+            if !named
+                && (a_scenario_names(meta, &view.name) || shows(&self.shown, &meta.app, &view.name))
+            {
+                continue;
+            }
+            let called = self
+                .sources
+                .called()
+                .any(|(app, name)| app == meta.app && name == view.name);
+            if called {
+                continue;
+            }
+            staged.open_screen(&view.id);
+            self.read(staged, &format!("{title}, then {} alone", view.name))?;
         }
         Ok(())
     }

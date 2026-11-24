@@ -300,6 +300,35 @@ pub struct DevicesReading {
     /// What another of the person's devices was playing, until the person
     /// continues it here: the now-playing card offers it.
     pub offer: Option<MediaOffer>,
+    /// Whether this device holds a person's certificate: the device is theirs,
+    /// with workspaces of theirs to show.
+    #[serde(default)]
+    pub signed_in: bool,
+    /// The workspaces this device's shell lists, by their key and as the
+    /// person reads them.
+    #[serde(default)]
+    pub workspaces: Vec<DeviceWorkspace>,
+    /// Why the last login failed, in the words of whoever refused it; empty
+    /// when it did not.
+    #[serde(default)]
+    pub refused: String,
+}
+
+/// A workspace this device's shell lists, as a view of the devices reads it:
+/// the same `key` and `name` the layout's workspaces go by.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub struct DeviceWorkspace {
+    pub key: String,
+    pub name: String,
 }
 
 impl DevicesReading {

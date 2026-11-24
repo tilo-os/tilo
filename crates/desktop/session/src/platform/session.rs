@@ -1893,11 +1893,13 @@ impl Session {
                 .borrow_mut()
                 .add(Box::new(crate::devices::Served::new(
                     fabric,
+                    shared.handle.clone(),
                     Rc::clone(&shared.readings),
                     Rc::clone(&shared.devices.chosen),
                     Rc::clone(&shared.handoff),
                     Rc::clone(&shared.devices.pressed),
                     Rc::clone(&shared.devices.handed),
+                    std::sync::Arc::new(std::sync::Mutex::default()),
                 )));
         }
         // What the portal brings comes from any thread, and wakes the loop

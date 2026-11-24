@@ -107,7 +107,10 @@ A window that names its places in a sidebar shows one of them, so the check choo
 as a person does and lays the page behind it out at every size and scale: a page only a choice
 reaches is checked like the one the window opens on. A window that draws on a surface shows what the
 person pointed at, so a finger taps that surface once where nothing else stands, and the page at that
-point is checked too.
+point is checked too. A view that takes nothing and no code of its package calls is a screen its host
+shows by name rather than a resource's — a phone's shell's `phone` — so the check opens it as the
+window's own: on each scenario that names it, which is how each state it stages becomes a screen of
+its own, and once on another where no layout showed it yet.
 
 It reads that a text is not laid out narrower than the longest word it holds while the row it
 stands in is wide enough for that word: a label cut inside a word ("Create" over "d") where the

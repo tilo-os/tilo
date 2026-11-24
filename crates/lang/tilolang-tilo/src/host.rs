@@ -1660,6 +1660,10 @@ impl Host {
     /// [`Self::open_layer`] with the resource it opened: the window's level keeps the root it
     /// shows, so what is opened is resolved once rather than once for the root and once for the
     /// view.
+    ///
+    /// A view that takes nothing (`view phone()`, a shell's own screen for a host with no desktop)
+    /// opens over the root without taking it: the root is the window's, and a view says whether it
+    /// is one of its arguments.
     pub fn open_layer_at(
         &self,
         app: &str,
@@ -1680,11 +1684,21 @@ impl Host {
                 chosen.view.as_deref().unwrap_or("the root")
             ))
         })?;
-        let opened = self.inner.runtime.open_view(
-            &self.inner.viewer,
-            &view,
-            vec![Value::resource(&root)],
-        )?;
+        let takes_nothing = package
+            .meta
+            .views
+            .iter()
+            .find(|meta| meta.id == view)
+            .is_some_and(|meta| meta.params.is_empty());
+        let args = if takes_nothing {
+            Vec::new()
+        } else {
+            vec![Value::resource(&root)]
+        };
+        let opened = self
+            .inner
+            .runtime
+            .open_view(&self.inner.viewer, &view, args)?;
         Ok((root, opened))
     }
 

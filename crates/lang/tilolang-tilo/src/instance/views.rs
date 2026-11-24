@@ -51,6 +51,19 @@ impl Instance {
         true
     }
 
+    /// Show the view `view` as the window's own, over no resource of its own: a screen a host
+    /// shows by name, such as a phone's shell (`view phone()`), which takes nothing. What the
+    /// window showed before is replaced, as opening another layer replaces it.
+    pub fn open_screen(&mut self, view: &str) {
+        self.root_view = crate::host::RootView {
+            root: None,
+            view: Some(view.to_owned()),
+        };
+        if let Some(host) = self.host() {
+            self.open_root(&host);
+        }
+    }
+
     /// Open the package's root view.
     pub(super) fn open_root(&mut self, host: &Host) {
         match host.open_layer_at(&self.app, &self.root_view) {

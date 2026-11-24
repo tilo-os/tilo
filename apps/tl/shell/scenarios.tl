@@ -1606,6 +1606,27 @@ scenario "the workspaces" {
     d.people.insert(LayoutPerson(key: "sam", name: "Sam Okafor"))
 }
 
+/// The phone's shell, signed out: the page asks for the ticket another device printed.
+scenario "the phone, signed out" {
+    stage(device.devices, device.Devices(signed_in: false))
+}
+
+/// The phone's shell with the person signed in, and two workspaces to choose from: picking one
+/// shows that workspace's apps, each opening as it does in the launcher.
+scenario "the phone, two workspaces" {
+    stage(
+        device.devices,
+        device.Devices(
+            signed_in: true,
+            workspaces: [
+                device.DeviceWorkspace(key: "studio", name: "Studio"),
+                device.DeviceWorkspace(key: "home", name: "Home"),
+            ],
+        ),
+    )
+    stage(device.apps, device.Apps(installed: installed_apps()))
+}
+
 /// A banner over the shell: a build failure with its actions, above a shell at work.
 scenario "a banner" {
     let d = root Layout

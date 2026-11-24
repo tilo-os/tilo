@@ -16,3 +16,14 @@ view drawer(p: Page) {
 
 scenario "a page" {
 }
+
+/// A screen this app's host shows by name, as a phone's shell shows its `phone` view: it takes
+/// nothing, and no view of the package calls it.
+view phone() {
+    page(full) {
+        ui.Text("Phone", role: .title)
+    }
+}
+
+scenario "a phone screen" {
+}

@@ -4243,6 +4243,29 @@
               "type": "text"
             }
           ]
+        },
+        {
+          "id": "log-in",
+          "label": "Log in with a ticket",
+          "description": "Make this device one of the person's, with the ticket another of their devices printed",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "ticket",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "found",
+          "label": "Start a new person on this device",
+          "description": "Start a new person on this device, when no person's certificate names it yet",
+          "kind": "outside",
+          "params": []
         }
       ],
       "fields": [
@@ -4271,9 +4294,45 @@
             "option": "int"
           },
           "readonly": true
+        },
+        {
+          "path": "signed_in",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "workspaces",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "DeviceWorkspace"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "refused",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
         }
       ],
       "types": [
+        {
+          "name": "DeviceWorkspace",
+          "doc": "A workspace this device's shell lists, as a view of the devices reads it: the same `key` and `name` the layout's workspaces go by.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            }
+          ]
+        },
         {
           "name": "PersonalDeviceView",
           "doc": "One of the person's devices as a view of another language reads it.",
