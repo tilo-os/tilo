@@ -389,7 +389,7 @@ mod tests {
                 open((&channel, &outsider), &scope, HOST, VIEWER, &object),
                 Err(Refusal::OffRoster)
             );
-            let mut changed = object.clone();
+            let mut changed = object;
             let last = changed.len() - 1;
             changed[last] ^= 1;
             assert_eq!(

@@ -2149,72 +2149,83 @@ async fn read(
                         }
                         continue;
                     }
-                    if matches!(track, Track::Page(_)) {
-                        // A page keeps the header the relay validated: whether
-                        // it is a whole frame is what a viewer acts on.
-                        if let Some((sequence, body)) =
-                            open_page(shared, device, (track, name), &frame.payload)
-                        {
-                            shared.deliver(Heard {
-                                sender: device,
-                                track,
-                                sequence,
-                                body,
-                            });
-                        }
-                        continue;
-                    }
-                    if matches!(
-                        track,
-                        Track::Camera(_) | Track::Screen(_) | Track::Window(..)
-                    ) {
-                        // A picture keeps the header the relay validated.
-                        if let Some((sequence, body)) =
-                            open_picture(shared, device, (track, name), &frame.payload)
-                        {
-                            shared.deliver_picture(Heard {
-                                sender: device,
-                                track,
-                                sequence,
-                                body,
-                            });
-                        }
-                        continue;
-                    }
-                    if track == Track::Presence && !shared.hears_presence() {
-                        // Arrived as the subscription was let go.
-                        continue;
-                    }
-                    if track == Track::Share {
-                        // Addressed to one device, and sealed under its host's key: only what is
-                        // this device's is opened, and what is another's is passed by.
-                        match shared.open_share(device, &frame.payload) {
-                            Ok(Some(body)) => shared.deliver(Heard {
-                                sender: device,
-                                track,
-                                sequence,
-                                body,
-                            }),
-                            Ok(None) => {}
-                            Err(refusal) => shared.refused(&refusal),
-                        }
-                        continue;
-                    }
-                    match shared.open(device, track, name, &frame.payload) {
-                        Ok(body) => {
-                            said |= track == Track::Presence;
-                            shared.deliver(Heard {
-                                sender: device,
-                                track,
-                                sequence,
-                                body,
-                            });
-                        }
-                        Err(refusal) => shared.refused(&refusal),
-                    }
+                    said |= take_frame(shared, device, (track, name), sequence, &frame.payload);
                 }
             }
             Next::End => return said,
+        }
+    }
+}
+
+/// Open one frame of a group of `track` (anything but audio) and deliver it: `true` when it is
+/// a presence frame that was delivered.
+fn take_frame(
+    shared: &Shared,
+    device: [u8; 32],
+    (track, name): (Track, &str),
+    sequence: u32,
+    payload: &[u8],
+) -> bool {
+    if matches!(track, Track::Page(_)) {
+        // A page keeps the header the relay validated: whether
+        // it is a whole frame is what a viewer acts on.
+        if let Some((sequence, body)) = open_page(shared, device, (track, name), payload) {
+            shared.deliver(Heard {
+                sender: device,
+                track,
+                sequence,
+                body,
+            });
+        }
+        return false;
+    }
+    if matches!(
+        track,
+        Track::Camera(_) | Track::Screen(_) | Track::Window(..)
+    ) {
+        // A picture keeps the header the relay validated.
+        if let Some((sequence, body)) = open_picture(shared, device, (track, name), payload) {
+            shared.deliver_picture(Heard {
+                sender: device,
+                track,
+                sequence,
+                body,
+            });
+        }
+        return false;
+    }
+    if track == Track::Presence && !shared.hears_presence() {
+        // Arrived as the subscription was let go.
+        return false;
+    }
+    if track == Track::Share {
+        // Addressed to one device, and sealed under its host's key: only what is
+        // this device's is opened, and what is another's is passed by.
+        match shared.open_share(device, payload) {
+            Ok(Some(body)) => shared.deliver(Heard {
+                sender: device,
+                track,
+                sequence,
+                body,
+            }),
+            Ok(None) => {}
+            Err(refusal) => shared.refused(&refusal),
+        }
+        return false;
+    }
+    match shared.open(device, track, name, payload) {
+        Ok(body) => {
+            shared.deliver(Heard {
+                sender: device,
+                track,
+                sequence,
+                body,
+            });
+            track == Track::Presence
+        }
+        Err(refusal) => {
+            shared.refused(&refusal);
+            false
         }
     }
 }
