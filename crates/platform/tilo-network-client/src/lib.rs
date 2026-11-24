@@ -846,3 +846,169 @@ mod tests {
         forget_credential(APP, &ask.auth_reference).ok();
     }
 }
+
+/// One response as the language's `web.get` and `web.post` read it: the status, the headers
+/// each `Name: value`, and the body whole, up to `max_body` bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reply {
+    pub status: u16,
+    pub status_text: String,
+    pub headers: Vec<String>,
+    pub body: Vec<u8>,
+}
+
+/// One request over this device's network, for the language's journaled `web.*` mode: the
+/// method, the URL, the headers and an optional body, bounded by `max_body` and `timeout`.
+///
+/// # Errors
+///
+/// No connection, a timeout, or a body larger than `max_body`.
+pub fn fetch(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+    max_body: usize,
+    timeout: std::time::Duration,
+) -> Result<Reply, String> {
+    let client = tilo_net::http::blocking_client()
+        .user_agent(concat!("tilo-network-client/", env!("CARGO_PKG_VERSION")))
+        .timeout(timeout)
+        .build()
+        .map_err(|error| format!("no connection: {error}"))?;
+    let method = tilo_net::Method::from_bytes(method.as_bytes())
+        .map_err(|error| format!("invalid method: {error}"))?;
+    let mut request = client.request(method, url);
+    for (name, value) in headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    if let Some(bytes) = body {
+        request = request.body(bytes.to_vec());
+    }
+    let mut response = request.send().map_err(|error| {
+        if error.is_timeout() {
+            format!("no answer within {} seconds", timeout.as_secs())
+        } else if error.is_connect() {
+            format!("could not reach the server: {error}")
+        } else {
+            format!("no answer: {error}")
+        }
+    })?;
+    let status = response.status();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(name, value)| format!("{name}: {}", value.to_str().unwrap_or_default()))
+        .collect();
+    let mut read = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let got = response
+            .read(&mut chunk)
+            .map_err(|error| format!("the reply stopped: {error}"))?;
+        if got == 0 {
+            break;
+        }
+        if read.len().saturating_add(got) > max_body {
+            return Err(format!("the reply is larger than {max_body} bytes"));
+        }
+        read.extend_from_slice(chunk.get(..got).unwrap_or_default());
+    }
+    Ok(Reply {
+        status: status.as_u16(),
+        status_text: status.canonical_reason().unwrap_or_default().to_owned(),
+        headers,
+        body: read,
+    })
+}
+
+#[cfg(test)]
+mod fetch_tests {
+    use super::*;
+    use test_http::{Reply as Served, Responder};
+
+    /// The one path `web.get` and `web.post` take: any method, its headers both ways, a body
+    /// sent and read whole, and the answer's status and headers.
+    #[test]
+    fn one_request_moves_a_body_and_its_headers_both_ways() {
+        let served = Responder::start(vec![
+            Served::status(200)
+                .header("content-type", "text/plain")
+                .body("hello"),
+            Served::status(201).body("made"),
+        ]);
+        let answer = fetch(
+            "GET",
+            &served.url(),
+            &[("X-Test".to_owned(), "one".to_owned())],
+            None,
+            2 * 1024 * 1024,
+            std::time::Duration::from_secs(10),
+        )
+        .expect("the reply");
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.status_text, "OK");
+        assert_eq!(answer.body, b"hello");
+        assert!(
+            answer
+                .headers
+                .iter()
+                .any(|line| line.eq_ignore_ascii_case("content-type: text/plain")),
+            "{:?}",
+            answer.headers
+        );
+        let seen = served.next_request();
+        assert_eq!(seen.method, "GET");
+        assert_eq!(seen.header("x-test"), Some("one"));
+
+        let post = fetch(
+            "POST",
+            &served.url(),
+            &[("content-type".to_owned(), "application/json".to_owned())],
+            Some(br#"{"a":1}"#),
+            2 * 1024 * 1024,
+            std::time::Duration::from_secs(10),
+        )
+        .expect("the reply");
+        assert_eq!(post.status, 201);
+        assert_eq!(post.body, b"made");
+        let seen = served.next_request();
+        assert_eq!(seen.method, "POST");
+        assert_eq!(seen.body_text(), r#"{"a":1}"#);
+    }
+
+    /// A body past the bound is refused rather than kept whole: the language reads values.
+    #[test]
+    fn a_reply_larger_than_its_bound_is_refused() {
+        let served = Responder::start(vec![Served::status(200).body("0123456789")]);
+        let refused = fetch(
+            "GET",
+            &served.url(),
+            &[],
+            None,
+            4,
+            std::time::Duration::from_secs(10),
+        );
+        assert_eq!(
+            refused,
+            Err("the reply is larger than 4 bytes".to_owned()),
+            "{refused:?}"
+        );
+    }
+
+    /// A host that answers nothing is a value with a reason, never a trap.
+    #[test]
+    fn an_unreachable_host_answers_a_reason() {
+        let served = Responder::silent();
+        let answer = fetch(
+            "GET",
+            &format!("http://127.0.0.1:{}/", served.port()),
+            &[],
+            None,
+            1024,
+            std::time::Duration::from_millis(200),
+        );
+        let reason = answer.expect_err("no answer");
+        assert!(reason.contains("no answer") || reason.contains("could not reach"), "{reason}");
+    }
+}

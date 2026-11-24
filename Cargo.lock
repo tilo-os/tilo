@@ -18628,6 +18628,7 @@ dependencies = [
  "serde_json",
  "tilo-net",
  "tilo-secrets",
+ "tilo-test-http",
  "workspace-hack",
 ]
 
@@ -22293,6 +22294,7 @@ dependencies = [
  "tilo-socket",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tilo-test-http",
  "tilo-thumbnail",
  "tilo-tiles",
  "tilo-ui",

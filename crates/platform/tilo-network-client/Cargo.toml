@@ -18,6 +18,9 @@ percent-encoding = { workspace = true }
 # The device's own store for the credentials a request signs in with.
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 
+[dev-dependencies]
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
 
