@@ -122,6 +122,20 @@ pub enum TriggerWhen {
 pub type FieldId = String;
 
 impl Env {
+    /// The type of the items the collection `field` of the named root `root` holds, when it is a
+    /// collection of records: what a window of an app with `document: root.field` shows one of.
+    pub fn root_items(&self, root: &str, field: &str) -> Option<&TypeKey> {
+        let (_, key) = self.named_roots.iter().find(|(n, _)| n == root)?;
+        let info = self.type_info(key)?;
+        match &info.fields.iter().find(|f| f.name == field)?.ty {
+            Ty::Collection(item) => match item.as_ref() {
+                Ty::Record(key) => Some(key),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub fn type_info(&self, key: &TypeKey) -> Option<&TypeInfo> {
         self.types.iter().find(|t| &t.key == key)
     }
@@ -2905,8 +2919,9 @@ impl Resolver<'_> {
         self.window_decls(module);
     }
 
-    /// `windows: .personal` and `document: root` in the app's header: the root a window keeps one
-    /// of is one the app names, and windows are said personal only where they are not already.
+    /// `windows: .personal` and `document: root` (or `root.items`) in the app's header: what a
+    /// window shows one of is a root the app names, or a collection of records that root holds,
+    /// and windows are said personal only where they are not already.
     fn window_decls(&mut self, module: &ast::Module) {
         let app = &module.app;
         if app.personal_windows && app.own_resources {
@@ -2919,15 +2934,44 @@ impl Resolver<'_> {
                     .to_owned(),
             );
         }
-        let Some(document) = &app.document else {
+        let Some(ast::WindowDocument { root: document, items }) = &app.document else {
             return;
         };
-        if self
-            .env
-            .named_roots
-            .iter()
-            .any(|(n, _)| *n == document.name)
-        {
+        if let Some((_, key)) = self.env.named_roots.iter().find(|(n, _)| *n == document.name) {
+            let Some(items) = items else {
+                return;
+            };
+            if self.env.root_items(&document.name, &items.name).is_some() {
+                return;
+            }
+            let collections: Vec<String> = self
+                .env
+                .type_info(key)
+                .map(|info| {
+                    info.fields
+                        .iter()
+                        .filter(|f| self.env.root_items(&document.name, &f.name).is_some())
+                        .map(|f| format!("`{}.{}`", document.name, f.name))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let root = &document.name;
+            let field = &items.name;
+            let what = if collections.is_empty() {
+                format!(
+                    "`document: {root}.{field}` names the items each window shows one of, and \
+                     the root `{root}` holds no collection of records: a window shows the root \
+                     itself with `document: {root}`, or one record of a field \
+                     `{field}: Collection<T>` the root gains"
+                )
+            } else {
+                format!(
+                    "`{root}` holds no collection of records `{field}`; the items a window may \
+                     show one of are {}",
+                    collections.join(", ")
+                )
+            };
+            self.err("E147", items.span, what);
             return;
         }
         let unnamed = self

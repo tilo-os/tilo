@@ -526,11 +526,13 @@ fn build_meta(
         splash_budget: module.app.splash_budget,
         own_resources: module.app.own_resources,
         personal_windows: module.app.personal_windows,
+        // A window that holds a root of its own: the app keeps none for the workspace.
         each_document: module
             .app
             .document
             .iter()
-            .map(|root| root.name.clone())
+            .filter(|document| document.items.is_none())
+            .map(|document| document.root.name.clone())
             .collect(),
         web: module.app.web.clone(),
         schemes: module.app.schemes.clone(),
@@ -540,6 +542,21 @@ fn build_meta(
     let type_id =
         |key: &crate::types::TypeKey| env.type_info(key).map(|t| t.id.clone()).unwrap_or_default();
     meta.roots = env.roots.iter().map(type_id).collect();
+    // A window that holds one item of a shared root's collection: the root stays the workspace's.
+    meta.document_items = module
+        .app
+        .document
+        .iter()
+        .filter_map(|document| {
+            let field = document.items.as_ref()?;
+            let item = env.root_items(&document.root.name, &field.name)?;
+            Some(crate::meta::DocumentItemsMeta {
+                root: document.root.name.clone(),
+                field: field.name.clone(),
+                ty: type_id(item),
+            })
+        })
+        .collect();
     // The apps it imports by their ids now: a `use` of an id a package had before names it.
     meta.uses = module
         .items

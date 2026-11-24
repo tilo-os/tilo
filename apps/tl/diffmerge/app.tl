@@ -4,7 +4,7 @@ app so.tilo.diffmerge "Diff & Merge" (
     tagline: "Compares two texts, and merges three",
     keywords: ["diff", "merge", "compare", "comparison", "three-way", "three-way merge", "conflict", "patch", "diff tool", "vergleich", "zusammenführen", "konflikt"],
     splash_budget: 250,
-    document: library,
+    document: library.sessions,
 )
 
 /// One change of a comparison: the aligned rows it spans, and the first line they touch.

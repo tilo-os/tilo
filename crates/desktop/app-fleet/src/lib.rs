@@ -213,6 +213,8 @@ mod tests {
         assert!(windows_are_own("dev.tilo.settings"));
         assert!(!windows_are_own("so.tilo.chat"));
         assert!(windows_hold_documents("so.tilo.sheets"));
+        // Each window of PDF Viewer holds one document of the workspace's shared library.
+        assert!(windows_hold_documents("so.tilo.pdf-viewer"));
         assert!(!windows_hold_documents("so.tilo.tasks"));
         for (app, kind) in every_private_kind() {
             assert!(

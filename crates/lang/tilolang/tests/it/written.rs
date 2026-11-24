@@ -144,4 +144,30 @@ tilo_test_env::scenario! {
         // One of them, by its id, is read as before.
         view(BY_ID, &notes).unwrap_or_else(|d| panic!("{d:#?}"));
     }
+
+    phase windows_on_two_items_share_the_one_library_another_app_lists;
+    {
+        // Each window shows one note of the workspace's one notebook (`document:
+        // notebook.notes`): the notebook stays the workspace's, which another app lists as a
+        // whole, and two windows hold two of its notes, each by its id.
+        let notes = compile_with(
+            &NOTES.replacen("\"Notes\"", "\"Notes\" (document: notebook.notes)", 1),
+            &[],
+        )
+        .expect("notes whose windows each show a note")
+        .meta;
+        assert!(notes.windows_hold_documents());
+        assert!(notes.each_document.is_empty(), "the notebook is no window's own");
+        let items = &notes.document_items;
+        assert_eq!(items.len(), 1, "{items:#?}");
+        assert_eq!((items[0].root.as_str(), items[0].field.as_str()), ("notebook", "notes"));
+        let note = notes.type_named("Note").expect("Note");
+        assert_eq!(items[0].ty, note.id, "a window opens a note");
+        let view = |source: &str| {
+            tilolang::compile_view_definition(source, "ada", std::slice::from_ref(&notes))
+        };
+        view(ALONE).unwrap_or_else(|d| panic!("the library is listed whole: {d:#?}"));
+        let two = "view two() {\n    text(@notes.Note:uuid:0f2b1c00-0000-4000-8000-000000000001.title)\n    text(@notes.Note:uuid:0f2b1c00-0000-4000-8000-000000000002.title)\n}";
+        view(two).unwrap_or_else(|d| panic!("two windows' notes, each by its id: {d:#?}"));
+    }
 }

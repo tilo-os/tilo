@@ -157,7 +157,7 @@ pub fn fleet(dir: &Path, search: &[PathBuf]) -> Result<Option<FleetEntry>, Strin
         offers: offers(meta),
         window_kind: meta.resource_type(),
         windows_personal: meta.windows_are_personal(),
-        window_documents: !meta.each_document.is_empty(),
+        window_documents: meta.windows_hold_documents(),
         surface: String::from_utf8_lossy(&surface).into_owned(),
         previously: meta.previously.clone(),
     }))

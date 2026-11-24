@@ -157,6 +157,11 @@ pub struct PackageMeta {
     /// one is named by its own id (`@app.Type:id`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub each_document: Vec<String>,
+    /// The collections of a named root each window shows one item of (`document:
+    /// library.documents`): the root is the workspace's one, named alone as any other, and a
+    /// window holds one of its items, another window another.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub document_items: Vec<DocumentItemsMeta>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<AliasMeta>,
     #[serde(default)]
@@ -233,6 +238,17 @@ pub struct NamedRootMeta {
     /// resources (`devices/<device>/<app>/…`), rather than one for the workspace.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub device: bool,
+}
+
+/// A collection of a named root each window shows one item of.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentItemsMeta {
+    /// The named root (`library`).
+    pub root: String,
+    /// Its collection field (`documents`).
+    pub field: String,
+    /// The id of the type of its items: what a window opens.
+    pub ty: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -979,6 +995,13 @@ impl PackageMeta {
     /// window of the app opens.
     pub fn shared_roots(&self) -> impl Iterator<Item = &String> {
         self.roots.iter().filter(|ty| !self.is_device_root(ty))
+    }
+
+    /// Whether each window of the package shows a document of its own: a root it keeps one of
+    /// for each document, or one item of the collection a shared root holds.
+    #[must_use]
+    pub fn windows_hold_documents(&self) -> bool {
+        !self.each_document.is_empty() || !self.document_items.is_empty()
     }
 
     /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.

@@ -58,6 +58,12 @@ one `root workbook: Workbook` for each, and the app keeps none for the workspace
 then names one workbook by its id, `@sheets.Workbook:<id>`; `sheets.workbook` alone names none of
 them and is refused. The option names a root by its name, so the root needs one.
 
+Where the workspace keeps one library and each window shows one item of it, the option names the
+collection: `app so.tilo.pdf-viewer "PDF Viewer" (document: library.documents)`. The library
+stays the workspace's, and `pdf.library` names it whole for search, agents and other apps; a
+window holds one document of it, and another window another. The field is a `Collection` of
+records the root holds.
+
 A package migrates its own records when its schema changes shape. The field the type no longer
 uses stays as an ordinary field: its values stay in the records, and a migration reads them. A
 `migration action` on the type moves what a field held to where the type keeps it now:

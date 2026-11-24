@@ -57,9 +57,10 @@ pub struct AppHeader {
     /// Each window is the person's own who opened it, and never stands on a workspace's shared
     /// desktop (`windows: .personal`).
     pub personal_windows: bool,
-    /// `(document: workbook)`: the named root of which the app keeps one for each document, each
-    /// window showing one, and none for the workspace.
-    pub document: Option<Ident>,
+    /// What each window of the app shows one of: `(document: workbook)`, a named root the app
+    /// keeps one of for each document and none for the workspace, or `(document:
+    /// library.documents)`, one item of a collection the workspace's one root holds.
+    pub document: Option<WindowDocument>,
     /// `(web: ["example.com", "*.rss.org"])`: the hosts `uses web` requests may reach; any other is
     /// refused. `*.rss.org` covers subdomains, not `rss.org`.
     pub web: Vec<String>,
@@ -71,6 +72,25 @@ pub struct AppHeader {
     /// web engine's sandbox.
     pub engine: Option<String>,
     pub span: Span,
+}
+
+/// `document: root` or `document: root.items` in an app's header.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowDocument {
+    /// The named root.
+    pub root: Ident,
+    /// The collection field of the root each window shows one item of; none when each window is
+    /// a root of its own.
+    pub items: Option<Ident>,
+}
+
+impl std::fmt::Display for WindowDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.items {
+            Some(items) => write!(f, "{}.{}", self.root.name, items.name),
+            None => f.write_str(&self.root.name),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

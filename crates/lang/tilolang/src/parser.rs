@@ -9,7 +9,7 @@ use crate::ast::{
     MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, ReadersDecl, RootDecl,
     ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart,
     TitleDecl, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UntitledDecl,
-    UseDecl, VariantDecl, ViewDecl, ViewsDecl,
+    UseDecl, VariantDecl, ViewDecl, ViewsDecl, WindowDocument,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
@@ -209,7 +209,7 @@ struct AppOptions {
     schemes: Vec<String>,
     own_resources: bool,
     personal_windows: bool,
-    document: Option<Ident>,
+    document: Option<WindowDocument>,
     web: Vec<String>,
     engine: Option<String>,
     splash_budget: Option<u32>,
@@ -627,9 +627,19 @@ impl<'a> Parser<'a> {
                 if out.document.is_some() {
                     return self.fail(key.span, "`document:` is given twice".to_owned());
                 }
-                out.document = Some(self.ident(
-                    "the name of the root each window keeps one of, such as `document: workbook`",
-                )?);
+                let root = self.ident(
+                    "the name of the root each window shows one of, such as `document: workbook`, \
+                     or of its items, such as `document: library.documents`",
+                )?;
+                let items = if self.eat(&Tok::Dot) {
+                    Some(self.ident(
+                        "the collection of the root each window shows one item of, such as \
+                         `documents` in `document: library.documents`",
+                    )?)
+                } else {
+                    None
+                };
+                out.document = Some(WindowDocument { root, items });
             } else if key.name == "previously" {
                 if std::mem::replace(&mut seen_previously, true) {
                     return self.fail(key.span, "`previously:` is given twice".to_owned());

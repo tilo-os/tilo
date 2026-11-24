@@ -1062,6 +1062,26 @@ tilo_test_env::scenario! {
         assert!(none[0].message.contains("declares no named root"), "{none:#?}");
         assert_eq!(codes_header("document: book, document: book", ""), ["E003"]);
     }
+
+    phase a_document_item_is_a_record_of_a_collection_the_root_holds;
+    {
+        let shelf = "type Book {\n    title: Text\n}\ntype Shelf {\n    name: Text\n    books: Collection<Book>\n}\nview book(b: Book) {\n    text(b.title)\n}\nview shelf(s: Shelf) {\n    text(s.name)\n}\ndefault view book for Book\ndefault view shelf for Shelf\nroot shelf: Shelf\n";
+        let fine = compile(&format!("app t.x \"X\" (document: shelf.books)\n{shelf}"));
+        assert!(fine.meta.windows_hold_documents());
+        assert!(fine.meta.each_document.is_empty(), "the shelf stays the workspace's");
+        let fault = |items: &str| {
+            compile_with(&format!("app t.x \"X\" (document: shelf.{items})\n{shelf}"), &[])
+                .expect_err("refused")
+        };
+        // A field the root does not have, and one that is no collection of records.
+        for (items, says) in [("songs", "are `shelf.books`"), ("name", "are `shelf.books`")] {
+            let refused = fault(items);
+            assert_eq!(refused.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(), ["E147"]);
+            assert!(refused[0].line == 1, "{refused:#?}");
+            assert!(refused[0].message.contains(says), "{refused:#?}");
+        }
+        assert_eq!(codes_header("document: shelf.", ""), ["E003"]);
+    }
 }
 
 /// Error codes reported for a module whose `app` header carries `options`.

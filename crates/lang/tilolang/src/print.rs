@@ -65,7 +65,7 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
             options.push("windows: .personal".to_owned());
         }
         if let Some(document) = &app.document {
-            options.push(format!("document: {}", document.name));
+            options.push(format!("document: {document}"));
         }
         if !app.web.is_empty() {
             let hosts: Vec<String> = app.web.iter().map(|host| quote(host)).collect();

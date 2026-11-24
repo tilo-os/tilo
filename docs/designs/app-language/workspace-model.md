@@ -142,6 +142,9 @@ default view note_editor for Note
 - An app each window of which shows a document of its own (a workbook, a film being cut) names
   that root in its header, `app so.tilo.sheets "Sheets" (document: workbook)`. It keeps no
   workbook for the workspace: a document is named by its id, `@sheets.Workbook:<id>`.
+  Where the documents are items of the workspace's one library (PDFs, artworks), the header
+  names the collection, `(document: library.documents)`: the library stays shared and named
+  whole, and each window holds one of its items.
 - `open(r)` is an action usable from views and from actions.
 
 ## 9. The layout is a resource
