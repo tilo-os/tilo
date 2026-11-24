@@ -179,7 +179,7 @@ d-bnfk7mx5-filter-badge = Badge
 d-bnfk7mx5-filter-attention = Attention
 
 d-66jw6ezz = Report pick
-    .doc = Reporting a problem: the screen dims to the desktop's ground, every window of the workspace in front stands as a card with its own live picture, and the person chooses the window the report is about — a click on its card, or a rectangle dragged over it.
+    .doc = Reporting a problem: the screen dims to the desktop's ground, every window of the workspace in front stands as a card with its own live picture, and the person chooses the window the report is about: a click on its card, or a rectangle dragged over it.
     .noun = { $count ->
         [one] report pick
        *[other] report picks
@@ -779,7 +779,7 @@ d-fipjigt5 = Pick report window
 d-fipjigt5-key = Window
 
 d-y6cjt65t = Pick the window a report is about
-    .doc = The rectangle `area` the person dragged over the picker — its x, y, width and height in canvas pixels — picks the window it covers first, as a click on that card does.
+    .doc = The rectangle `area` the person dragged over the picker, with its x, y, width and height in canvas pixels, picks the window it covers first, as a click on that card does.
 
 d-y6cjt65t-area = Area
 
@@ -1380,9 +1380,9 @@ d-thduakjg = Network section
     .w-hidden-network = Hidden network
     .w-join-a-network-that-does-not = Join a network that does not broadcast its name
     .w-network-name = Network name
-    .w-saved-networks = Saved networks
+    .w-saved-networks = Remembered networks
     .w-joins-by-itself = Joins by itself
-    .w-saved = Saved
+    .w-saved = Remembered
     .w-this-network = This network
     .w-stop-joining-by-itself = Stop joining by itself
     .w-join-by-itself = Join by itself
