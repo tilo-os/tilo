@@ -173,14 +173,6 @@ mod cases {
             path.to_str().unwrap().to_owned()
         }
 
-        /// A file as another app hands it over.
-        fn handed(name: &str, bytes: &[u8]) -> (FileValue, Vec<u8>) {
-            (
-                FileValue::new(name, "application/octet-stream", 1, String::new()),
-                bytes.to_vec(),
-            )
-        }
-
         fn open(&self, path: &str) -> ResourceRef {
             returned_ref(self.call(
                 "open_path",

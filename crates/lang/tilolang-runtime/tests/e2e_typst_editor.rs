@@ -228,7 +228,6 @@ mod cases {
         lib: ResourceRef,
         engine: Engine,
         device: Device,
-        board: Board,
     }
 
     impl Desk {
@@ -243,7 +242,7 @@ mod cases {
                 .insert("pdf-1".to_owned(), b"%PDF-1.7 a document".to_vec());
             rt.set_blobs(device.clone());
             let board = Board::default();
-            rt.set_clipboard(board.clone());
+            rt.set_clipboard(board);
             let app = App::compile(SOURCE, &[]);
             app.load(&rt);
             let lib = rt.create_root("Library").unwrap();
@@ -253,7 +252,6 @@ mod cases {
                 lib,
                 engine,
                 device,
-                board,
             }
         }
 

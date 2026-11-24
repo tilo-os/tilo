@@ -37,10 +37,6 @@ mod cases {
                 .collect()
         }
 
-        fn last(&self) -> (String, String) {
-            self.asked.borrow().last().cloned().unwrap_or_default()
-        }
-
         fn asks(&self, op: &str) -> Vec<String> {
             self.asked
                 .borrow()

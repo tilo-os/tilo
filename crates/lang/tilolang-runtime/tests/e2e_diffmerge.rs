@@ -317,23 +317,6 @@ mod cases {
         node.children.iter().find_map(|child| find(child, kind))
     }
 
-    fn texts(node: &UiNode, out: &mut Vec<String>) {
-        if node.kind == "ui.Text" {
-            if let Some(Value::Text(text)) = node.props.get("value") {
-                out.push(text.clone());
-            }
-        }
-        for child in &node.children {
-            texts(child, out);
-        }
-    }
-
-    fn words(window: &ViewInstance) -> Vec<String> {
-        let mut out = Vec::new();
-        texts(&window.tree(), &mut out);
-        out
-    }
-
     /// Every section's title in `node`'s tree.
     fn sections(node: &UiNode, out: &mut Vec<String>) {
         if node.kind == "ui.Section" {

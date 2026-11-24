@@ -120,14 +120,6 @@ mod cases {
                 .collect()
         }
 
-        fn last_input(&self) -> String {
-            self.asked
-                .borrow()
-                .last()
-                .map(|(_, input)| input.clone())
-                .unwrap_or_default()
-        }
-
         fn loaded(&self) -> String {
             let repo = self.repo.borrow();
             let changes: Vec<String> = repo
@@ -581,13 +573,6 @@ mod cases {
 
         fn snapshot_len(&self, field: &str) -> usize {
             self.snapshot()[field].as_array().map_or(0, Vec::len)
-        }
-
-        fn list_len(&self, at: &ResourceRef, field: &str) -> usize {
-            match self.rt.read(at, field).unwrap() {
-                Value::List(items) => items.len(),
-                other => panic!("{field} reads {other:?}"),
-            }
         }
 
         fn enum_field(&self, at: &ResourceRef, field: &str) -> tilolang_runtime::EnumValue {
