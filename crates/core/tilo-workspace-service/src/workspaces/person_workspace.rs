@@ -146,6 +146,9 @@ pub async fn apply_on<R: Resource>(
     (app, name): (&str, &str),
     action: Invoke<R>,
 ) -> Result<(), String> {
+    if workspaces.is_member(workspace).await? {
+        return apply_as_member(workspaces, workspace, (app, name), action).await;
+    }
     let cert = workspaces.serving_certificate().clone();
     let start = Box::new(genesis::<R>(workspace)?);
     let applied = Box::pin(workspaces.author_workspace_document_from(
@@ -160,6 +163,55 @@ pub async fn apply_on<R: Resource>(
         workspaces.wrote(workspace, app, name);
     }
     applied
+}
+
+/// [`apply_on`] where this device holds `workspace` as a member copy another of the person's
+/// devices keeps: the change is this device's own write, carried to the device keeping the
+/// workspace and decided there as any member's write is.
+///
+/// # Errors
+/// As [`apply`].
+async fn apply_as_member<R: Resource>(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (app, name): (&str, &str),
+    action: Invoke<R>,
+) -> Result<(), String> {
+    let cert = workspaces.serving_certificate().clone();
+    let (mut doc, founding) = match workspaces
+        .resource_document(workspace, app, name)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        Some(bytes) => (
+            automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?,
+            false,
+        ),
+        None => (genesis::<R>(workspace)?, true),
+    };
+    let heads = doc.get_heads();
+    invoke(&mut doc, &cert, action)?;
+    let changes = if founding {
+        doc.save()
+    } else {
+        doc.save_after(&heads)
+    };
+    if changes.is_empty() {
+        return Ok(());
+    }
+    // Boxed: committing a write can apply a change of the person's own workspace in turn.
+    Box::pin(workspaces.own_write(
+        workspace,
+        (app, name),
+        None,
+        &changes,
+        founding,
+        founding,
+        None,
+    ))
+    .await
+    .map(drop)
+    .map_err(|refusal| refusal.to_string())
 }
 
 /// Apply `action` to `doc`, a resource `R`, as `cert`'s person on `cert`'s
