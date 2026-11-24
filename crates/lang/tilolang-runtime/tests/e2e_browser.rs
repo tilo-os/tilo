@@ -937,8 +937,10 @@ mod cases {
         rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
         let files = App::compile(FILES_SOURCE, &[]);
         files.load(&rt);
+        let print_centre = App::compile(PRINT_CENTRE_SOURCE, &[]);
+        print_centre.load(&rt);
         // The Browser is not trusted with another app's actions, so its call to Files asks.
-        let app = App::compile(SOURCE, &[files.meta().clone()]);
+        let app = App::compile(SOURCE, &[files.meta().clone(), print_centre.meta().clone()]);
         app.load(&rt);
         let files_root = rt.create_root("Files").expect("the Files root");
         let dispatch = Dispatch::new();
@@ -1813,7 +1815,10 @@ mod cases {
             .unwrap_or_else(|| panic!("no side panel row in\n{}", dump(view.tree())));
         let offered = offered.key.clone();
         view.fire(&offered, "choose").unwrap();
-        assert_eq!(b.page.ops().last().map(String::as_str), Some("open_side_panel"));
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("open_side_panel")
+        );
         assert_eq!(b.page.last()["extension"].as_str(), Some(id));
 
         // Its page shows beside the page the person browsed, as the window's second page.
@@ -1833,7 +1838,12 @@ mod cases {
             .into_iter()
             .filter(|node| node.props.get("surface") == Some(&Value::text("panel")))
             .collect();
-        assert_eq!(panels.len(), 1, "one panel beside the page:\n{}", dump(view.tree()));
+        assert_eq!(
+            panels.len(),
+            1,
+            "one panel beside the page:\n{}",
+            dump(view.tree())
+        );
         assert_eq!(panels[0].props.get("title"), Some(&Value::text("Reader")));
         let close = button_key(&view, "Close");
         view.fire(&close, "press").unwrap();
@@ -1880,10 +1890,16 @@ mod cases {
             ],
         );
         let view = b.page_view();
-        let address = text_inputs(&view).first().cloned().expect("an address field");
+        let address = text_inputs(&view)
+            .first()
+            .cloned()
+            .expect("an address field");
         view.fire_with(&address, "changed", Some(&Value::text("kw ca")))
             .unwrap();
-        assert_eq!(b.page.ops().last().map(String::as_str), Some("address_typed"));
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("address_typed")
+        );
         let ask = b.page.last();
         assert_eq!(ask["text"].as_str(), Some("kw ca"));
         assert_eq!(ask["extension"].as_str(), Some(id));
@@ -1912,14 +1928,20 @@ mod cases {
             .unwrap_or_else(|| panic!("no suggestion row in\n{}", dump(view.tree())));
         let cat = cat.key.clone();
         view.fire(&cat, "activate").unwrap();
-        assert_eq!(b.page.ops().last().map(String::as_str), Some("address_entered"));
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("address_entered")
+        );
         assert_eq!(b.page.last()["text"].as_str(), Some("cat"));
 
         // Enter goes to the extension with what follows its keyword, never to the address.
         let view = b.page_view();
         view.fire_with(&address, "submit", Some(&Value::text("kw cats")))
             .unwrap();
-        assert_eq!(b.page.ops().last().map(String::as_str), Some("address_entered"));
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("address_entered")
+        );
         assert_eq!(b.page.last()["text"].as_str(), Some("cats"));
 
         // Anything else is an address to go to, and leaving the address tells the extension.
@@ -1930,7 +1952,10 @@ mod cases {
         assert_eq!(b.page.last()["url"].as_str(), Some("example.org"));
         let view = b.page_view();
         view.fire(&address, "blur").unwrap();
-        assert_eq!(b.page.ops().last().map(String::as_str), Some("address_left"));
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("address_left")
+        );
     }
 
     /// An extension asking the person to sign in has its page shown in the page's window, named
@@ -1945,7 +1970,10 @@ mod cases {
                 ("open", Value::Bool(true)),
                 ("kind", Value::text("sign-in")),
                 ("id", Value::text(id)),
-                ("url", Value::text("https://accounts.example.org/o/oauth?client=1")),
+                (
+                    "url",
+                    Value::text("https://accounts.example.org/o/oauth?client=1"),
+                ),
                 ("interactive", Value::Bool(true)),
             ],
         );
@@ -1954,7 +1982,12 @@ mod cases {
             .into_iter()
             .filter(|node| node.props.get("surface") == Some(&Value::text("panel")))
             .collect();
-        assert_eq!(panels.len(), 1, "the sign-in page is shown:\n{}", dump(view.tree()));
+        assert_eq!(
+            panels.len(),
+            1,
+            "the sign-in page is shown:\n{}",
+            dump(view.tree())
+        );
         assert_eq!(
             panels[0].props.get("title"),
             Some(&Value::text("accounts.example.org")),
@@ -1964,5 +1997,4 @@ mod cases {
         view.fire(&close, "press").unwrap();
         assert_eq!(b.page.ops().last().map(String::as_str), Some("panel_close"));
     }
-
 }
