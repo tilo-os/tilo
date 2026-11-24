@@ -1,11 +1,8 @@
 use super::*;
-// The presence a drawing of this window is made under (a change on main this app has not caught
-// up with yet).
 use crate::presentation::MAX_KEYBOARD_CONTENT_WIDTH;
 use automerge::AutoCommit;
 use std::cell::RefCell;
 use std::rc::Rc;
-use ui::presence::PresenceCtx;
 use ui::presence::PresenceCtx;
 use ui::widget::DrawChild;
 
