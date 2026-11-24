@@ -187,6 +187,67 @@ impl Checker<'_> {
         )
     }
 
+    /// `record_at(r, version)`: the record `r` as it stood at the version a change id names,
+    /// as JSON: each field by name, a collection's items inline. It is the store's own read of
+    /// a past state, so a reader compares versions without keeping a copy of them.
+    pub(super) fn builtin_record_at(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [r, version] = args else {
+            self.err(
+                "E022",
+                span,
+                "`record_at` takes a resource and a version: `record_at(n, v.change)`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        if r.name.is_some() || version.name.is_some() {
+            self.err(
+                "E022",
+                span,
+                "`record_at` takes the resource and the version by position: \
+                 `record_at(n, v.change)`",
+            );
+        }
+        let r_span = r.value.span;
+        let r = self.expr(&r.value, None);
+        match &r.ty {
+            Ty::Record(_) | Ty::Union(_) => {}
+            Ty::Error => return Ex::error(),
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    r_span,
+                    format!("`record_at` takes a resource; this is {t}"),
+                );
+                return Ex::error();
+            }
+        }
+        let version = self.expr_as(&version.value, &Ty::Text);
+        Ex::host(Imp::RecordAt, vec![r, version], Ty::Text)
+    }
+
+    /// `change_of(v)`: the change a version is, as the store names it: what `record_at` reads a
+    /// past record at.
+    pub(super) fn builtin_change_of(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(v) = self.resource_arg("change_of", args, span) else {
+            return Ex::error();
+        };
+        let version = matches!(&v.ty, Ty::Record(key) if key.app == crate::host::HOST_APP && key.name == "Version");
+        if !version {
+            let t = self.show(&v.ty);
+            self.err(
+                "E020",
+                span,
+                format!("`change_of` takes a version history names; this is {t}"),
+            );
+            return Ex::error();
+        }
+        Ex::host(Imp::VersionChange, vec![v], Ty::Text)
+    }
+
     /// `linked(r)`: the resources linked to `r`, each a `host.Link` with how it links: made from it,
     /// naming it in a field, or mentioning it in its rich text.
     pub(super) fn builtin_links(&mut self, args: &[ast::Arg], span: Span) -> Ex {

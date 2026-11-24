@@ -34,6 +34,13 @@ pub struct PaintSurfaceProps {
     pub zoom: Option<f64>,
     /// The artwork unit at the surface's top left: where the view looks.
     pub pan: Option<Vec<f64>>,
+    /// A picture laid over the artwork, such as a comparison's changed region.
+    pub overlay: Option<PictureSource>,
+    /// The frame the overlay fills, `[x, y, width, height]` in artwork units; the whole artwork
+    /// when absent.
+    pub overlay_rect: Option<Vec<f64>>,
+    /// How strongly the overlay shows over the artwork, 0 to 1 (default 1).
+    pub overlay_opacity: Option<f64>,
     /// What it shows, as assistive technology announces it.
     pub label: Option<String>,
     /// The window's pictures, which load the artwork's; a host hands them in.
@@ -103,6 +110,21 @@ impl Described for PaintSurface {
             self.picture = props.picture;
         }
         self.pictures = Some(held);
+        // An empty address is no overlay: a view that compares nothing passes one.
+        let overlay = props.overlay.filter(|picture| !picture.src.is_empty());
+        let same_overlay = match (&overlay, self.overlay.as_ref()) {
+            (None, None) => true,
+            (Some(want), Some(shown)) => want.src == shown.src,
+            _ => false,
+        };
+        if !same_overlay {
+            self.overlay = overlay;
+        }
+        self.overlay_rect = props.overlay_rect.as_deref().and_then(|rect| {
+            let [x, y, width, height] = [rect.first(), rect.get(1), rect.get(2), rect.get(3)];
+            Some([*x?, *y?, *width?, *height?])
+        });
+        self.overlay_opacity = props.overlay_opacity.unwrap_or(1.0);
         self.label = props.label;
         self.on_stroke_start = fire_vec(props.stroke_start);
         self.on_stroke = fire_vec(props.stroke);

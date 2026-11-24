@@ -127,8 +127,15 @@ mod cases {
             _artwork: &str,
             _request: &str,
             _pictures: &[(String, Vec<u8>)],
-        ) -> Result<String, String> {
-            Ok("M 1 1 L 9 1 L 9 9 Z".to_owned())
+        ) -> Result<(String, Option<(String, Vec<u8>, [f64; 4])>), String> {
+            Ok((
+                "M 1 1 L 9 1 L 9 9 Z".to_owned(),
+                Some((
+                    "tilo-blob://soft".to_owned(),
+                    vec![1, 2, 3],
+                    [1.0, 2.0, 30.0, 20.0],
+                )),
+            ))
         }
 
         fn combine(&self, _artwork: &str, _request: &str) -> Result<String, String> {
@@ -148,6 +155,23 @@ mod cases {
             Ok(r#"[{"id":"mark-0","ink_area":12.5,"offset":[-1.5,2.0]}]"#.to_owned())
         }
 
+        fn diff(
+            &self,
+            before: &str,
+            after: &str,
+            request: &str,
+            _pictures: &[(String, Vec<u8>)],
+        ) -> Result<(Option<Vec<u8>>, String), String> {
+            self.0
+                .borrow_mut()
+                .push(format!("{before}|{after}|{request}"));
+            Ok((
+                Some(vec![7, 7, 7]),
+                r#"{"same":false,"marks":[{"id":"mark-1"}],"layers":[],"artwork":[],"media":[],"changed_region":[1.0,2.0,30.0,20.0]}"#
+                    .to_owned(),
+            ))
+        }
+
         fn compare(
             &self,
             artwork: &str,
@@ -163,6 +187,18 @@ mod cases {
                     .join(",")
             ));
             Ok((vec![4, 5, 6], r#"{"format":"png","score":0.12}"#.to_owned()))
+        }
+
+        fn inspect(&self, _artwork: &str, _request: &str) -> Result<String, String> {
+            Ok(r#"{"layers":[{"id":"layer-1"}],"marks":[{"id":"mark-0"}]}"#.to_owned())
+        }
+
+        fn select(&self, _artwork: &str, _request: &str) -> Result<String, String> {
+            Ok(r#"{"d":"M 0 0 L 9 0 L 9 9 Z","feather":1.0}"#.to_owned())
+        }
+
+        fn remove_along(&self, _artwork: &str, _request: &str) -> Result<String, String> {
+            Ok(r#"["mark-1","mark-3"]"#.to_owned())
         }
 
         fn svg(&self, _artwork: &str, _request: &str) -> Result<String, String> {
@@ -700,6 +736,328 @@ mod cases {
     }
 
     #[test]
+    fn marks_are_picked_moved_clipped_and_finished() {
+        let c = Canvas::new();
+        let art = c.new_artwork("Marks");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        c.rt.set_blobs(Device::default());
+        c.rt.set_canvas(Drawing(log.clone()));
+        let mut made = Vec::new();
+        for d in [
+            "M 0 0 L 4 0 L 4 4 Z",
+            "M 6 0 L 9 0 L 9 4 Z",
+            "M 2 6 L 5 6 L 5 9 Z",
+        ] {
+            made.push(returned_ref(c.call(
+                "add_shape",
+                vec![
+                    Value::resource(&art),
+                    Value::none(),
+                    Value::text(d),
+                    Value::text("#2f7fb8"),
+                ],
+            )));
+        }
+        c.call(
+            "pick_marks",
+            vec![
+                Value::resource(&art),
+                Value::List(vec![Value::resource(&made[0]), Value::resource(&made[1])]),
+            ],
+        );
+        match c.rt.read(&art, "picked") {
+            Ok(Value::List(rows)) => assert_eq!(rows.len(), 2, "two marks picked"),
+            other => panic!("picked, not {other:?}"),
+        }
+        let combined = c.call(
+            "combine_marks",
+            vec![
+                Value::resource(&art),
+                Value::List(Vec::new()),
+                Value::text("union"),
+            ],
+        );
+        match combined {
+            InvokeOutcome::Done(Value::Opt(Some(_))) => {}
+            other => panic!("the combined mark, not {other:?}"),
+        }
+        let remaining = c.marks(&art);
+        assert_eq!(
+            remaining.len(),
+            2,
+            "two picked became one; the third stayed"
+        );
+        let kept = remaining[0].clone();
+        c.call(
+            "move_mark",
+            vec![Value::resource(&kept), Value::Float(3.0), Value::Float(4.0)],
+        );
+        c.call(
+            "rotate_mark",
+            vec![
+                Value::resource(&kept),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(90.0),
+            ],
+        );
+        let transform = match c.rt.read(&kept, "transform").unwrap() {
+            Value::List(values) => values.len(),
+            other => panic!("a transform, not {other:?}"),
+        };
+        assert_eq!(transform, 6, "a move and a turn compose into one affine");
+        c.call(
+            "clip_mark",
+            vec![Value::resource(&kept), Value::text("icons")],
+        );
+        c.call(
+            "finish_mark",
+            vec![
+                Value::resource(&kept),
+                Value::Bool(true),
+                Value::Float(0.5),
+                Value::Float(4.0),
+                Value::Float(2.0),
+                Value::Float(3.0),
+                Value::Float(1.0),
+                Value::text("#00000040"),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(2.0),
+                Value::text(""),
+            ],
+        );
+        c.call(
+            "set_dynamics",
+            vec![Value::resource(&kept), Value::Float(0.4), Value::Float(0.7)],
+        );
+        let inspected = c.call(
+            "inspect_artwork",
+            vec![Value::resource(&art), Value::Bool(false)],
+        );
+        match inspected {
+            InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
+                Value::Text(info) => assert!(info.contains("marks"), "{info}"),
+                other => panic!("the inspection, not {other:?}"),
+            },
+            other => panic!("the inspection, not {other:?}"),
+        }
+        assert!(
+            c.text(&art, "notice").contains("marks listed"),
+            "the window says what it listed: {}",
+            c.text(&art, "notice")
+        );
+        c.call(
+            "set_curve",
+            vec![
+                Value::resource(&kept),
+                Value::List(vec![
+                    Value::List(vec![Value::Float(0.1), Value::Float(0.0)]),
+                    Value::List(vec![Value::Float(0.9), Value::Float(1.0)]),
+                ]),
+            ],
+        );
+        let layer = c.layers(&art).first().cloned().expect("a layer");
+        c.call(
+            "adjust_layer",
+            vec![
+                Value::resource(&layer),
+                Value::Float(0.5),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Bool(false),
+                Value::Bool(false),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+            ],
+        );
+        c.call("draw_look", vec![Value::resource(&art), Value::Int(128)]);
+        let seen = log.borrow().first().cloned().expect("the engine was asked");
+        for field in [
+            "\"transform\":[",
+            "\"clip\":\"icons\"",
+            "\"pixelated\":true",
+            "\"grain\":0.5",
+            "\"feather\":4.0",
+            "\"inner_shadow_blur\":2.0",
+            "\"curve\":[[0.1,0.0],[0.9,1.0]]",
+            "\"exposure\":0.5",
+            "\"flow\":0.4",
+            "\"hardness\":0.7",
+        ] {
+            assert!(seen.contains(field), "the engine reads {field}: {seen}");
+        }
+    }
+
+    #[test]
+    fn selections_lasso_grow_invert_and_remove_along() {
+        let c = Canvas::new();
+        let art = c.new_artwork("Selecting");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        c.rt.set_blobs(Device::default());
+        c.rt.set_canvas(Drawing(log.clone()));
+        let selected = c.call(
+            "select_shape",
+            vec![
+                Value::resource(&art),
+                Value::text("rect"),
+                Value::List(vec![Value::Float(1.0), Value::Float(1.0)]),
+                Value::List(vec![Value::Float(9.0), Value::Float(9.0)]),
+                Value::text("add"),
+                Value::Float(2.0),
+                Value::Float(0.0),
+                Value::Bool(false),
+            ],
+        );
+        match selected {
+            InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
+                Value::Text(answer) => {
+                    assert!(answer.contains("M 0 0 L 9 0"), "{answer}");
+                    assert!(answer.contains("\"feather\":1.0"), "{answer}");
+                }
+                other => panic!("the selection, not {other:?}"),
+            },
+            other => panic!("the selection, not {other:?}"),
+        }
+        let lasso = c.call(
+            "select_lasso",
+            vec![
+                Value::resource(&art),
+                Value::List(vec![
+                    Value::List(vec![Value::Float(0.0), Value::Float(0.0)]),
+                    Value::List(vec![Value::Float(5.0), Value::Float(0.0)]),
+                    Value::List(vec![Value::Float(5.0), Value::Float(5.0)]),
+                ]),
+            ],
+        );
+        match lasso {
+            InvokeOutcome::Done(Value::Opt(Some(_))) => {}
+            other => panic!("the lassoed area, not {other:?}"),
+        }
+        c.call(
+            "grow_selection",
+            vec![Value::resource(&art), Value::Float(3.0)],
+        );
+        c.call("invert_selection", vec![Value::resource(&art)]);
+        for d in [
+            "M 0 0 L 1 0 L 1 1 Z",
+            "M 2 2 L 3 2 L 3 3 Z",
+            "M 4 4 L 5 4 L 5 5 Z",
+            "M 6 6 L 7 6 L 7 7 Z",
+        ] {
+            c.call(
+                "add_shape",
+                vec![
+                    Value::resource(&art),
+                    Value::none(),
+                    Value::text(d),
+                    Value::text("#2f7fb8"),
+                ],
+            );
+        }
+        let removed = c.call(
+            "remove_along",
+            vec![
+                Value::resource(&art),
+                Value::List(vec![
+                    Value::List(vec![Value::Float(0.0), Value::Float(0.0)]),
+                    Value::List(vec![Value::Float(9.0), Value::Float(9.0)]),
+                ]),
+                Value::none(),
+            ],
+        );
+        assert_eq!(removed, InvokeOutcome::Done(Value::Int(2)));
+        assert_eq!(c.marks(&art).len(), 2, "the crossed strokes went");
+    }
+
+    #[test]
+    fn a_version_compares_over_the_surface() {
+        let c = Canvas::new();
+        let art = c.new_artwork("Versions");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        c.rt.set_blobs(Device::default());
+        c.rt.set_canvas(Drawing(log.clone()));
+        c.call(
+            "add_shape",
+            vec![
+                Value::resource(&art),
+                Value::none(),
+                Value::text("M 0 0 L 4 0 L 4 4 Z"),
+                Value::text("#2f7fb8"),
+            ],
+        );
+        let versions = c.rt.versions(&art).unwrap();
+        let write = c.app.action("add_shape");
+        let change = versions
+            .iter()
+            .rev()
+            .find(|version| version.action == write)
+            .expect("the shape's version")
+            .change
+            .clone();
+        c.call(
+            "add_shape",
+            vec![
+                Value::resource(&art),
+                Value::none(),
+                Value::text("M 8 8 L 12 8 L 12 12 Z"),
+                Value::text("#d24b3a"),
+            ],
+        );
+        let compared = c.call(
+            "compare_versions",
+            vec![Value::resource(&art), Value::text(&change)],
+        );
+        match compared {
+            InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
+                Value::Text(info) => assert!(info.contains("changed_region"), "{info}"),
+                other => panic!("the comparison, not {other:?}"),
+            },
+            other => panic!("the comparison, not {other:?}"),
+        }
+        assert!(
+            c.text(&art, "version_note").contains("Changed"),
+            "the window says what changed: {}",
+            c.text(&art, "version_note")
+        );
+        assert_eq!(
+            c.rt.read(&art, "version_region").unwrap(),
+            Value::List(vec![
+                Value::Float(1.0),
+                Value::Float(2.0),
+                Value::Float(30.0),
+                Value::Float(20.0),
+            ]),
+            "the region the surface lays the comparison over"
+        );
+        assert!(
+            c.text(&art, "version_overlay") != "",
+            "the comparison's picture is kept for the surface"
+        );
+        let seen = log.borrow().last().cloned().expect("the engine compared");
+        let (before, rest) = seen.split_once('|').expect("before|after|request");
+        let (after, request) = rest.split_once('|').expect("after|request");
+        assert!(request.contains("\"overlay\":true"), "{request}");
+        assert_eq!(
+            before.matches("\"kind\":\"path\"").count(),
+            1,
+            "the version holds the first shape: {before}"
+        );
+        assert_eq!(
+            after.matches("\"kind\":\"path\"").count(),
+            2,
+            "the artwork now holds both: {after}"
+        );
+    }
+
+    #[test]
     fn a_picture_is_cropped_turned_flipped_blended_and_graded() {
         let c = Canvas::new();
         let art = c.new_artwork("A photo");
@@ -941,7 +1299,17 @@ mod cases {
         );
         match subject {
             InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
-                Value::Text(d) => assert!(d.contains("M 1 1"), "the subject's area: {d}"),
+                Value::Text(answer) => {
+                    assert!(answer.contains("M 1 1"), "the subject's area: {answer}");
+                    assert!(
+                        answer.contains("matte_src"),
+                        "the soft edge's picture comes with the area: {answer}"
+                    );
+                    assert!(
+                        answer.contains("\"matte_rect\":[1.0,2.0,30.0,20.0]"),
+                        "{answer}"
+                    );
+                }
                 other => panic!("the subject's area, not {other:?}"),
             },
             other => panic!("the subject's area, not {other:?}"),
@@ -959,9 +1327,17 @@ mod cases {
             vec![Value::resource(&art), Value::Float(6.0)],
         );
         let selection = c.rt.read(&art, "selection").unwrap();
+        let shown = format!("{selection:?}");
         assert!(
-            format!("{selection:?}").contains("M 1 1 L 9 1"),
-            "the refined edge is the artwork's selection: {selection:?}"
+            shown.contains("M 1 1 L 9 1"),
+            "the refined edge is the artwork's selection: {shown}"
+        );
+        // The device keeps the engine's soft edge under its own address, with the frame it fills.
+        assert!(
+            shown.contains("tilo-blob://")
+                && shown.contains("Float(30.0)")
+                && shown.contains("Float(20.0)"),
+            "it keeps the soft edge: {shown}"
         );
     }
 

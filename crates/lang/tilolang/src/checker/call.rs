@@ -294,6 +294,8 @@ impl Checker<'_> {
             "created" | "updated" | "history" => {
                 return self.builtin_versions(name, args, span);
             }
+            "record_at" => return self.builtin_record_at(args, span),
+            "change_of" => return self.builtin_change_of(args, span),
             "changed" => return self.builtin_changed(args, span),
             "unseen" => return self.builtin_unseen(args, span),
             "linked" => return self.builtin_links(args, span),
@@ -3409,6 +3411,36 @@ impl Checker<'_> {
                 "the artwork as JSON, the comparison's fields as JSON, and its pictures' addresses",
                 vec![Ty::Text, Ty::Text, pictures()],
             ),
+            "diff" => (
+                Imp::CanvasDiff,
+                result(Ty::Text),
+                "the earlier and later artwork as JSON, what to compare as JSON, and the pictures' addresses",
+                vec![Ty::Text, Ty::Text, Ty::Text, pictures()],
+            ),
+            "diff_picture" => (
+                Imp::CanvasDiffPicture,
+                result(Ty::File),
+                "the earlier and later artwork as JSON, what to compare as JSON, and the pictures' addresses",
+                vec![Ty::Text, Ty::Text, Ty::Text, pictures()],
+            ),
+            "inspect" => (
+                Imp::CanvasInspect,
+                result(Ty::Text),
+                "the artwork as JSON and what to inspect as JSON",
+                vec![Ty::Text, Ty::Text],
+            ),
+            "select" => (
+                Imp::CanvasSelect,
+                result(Ty::Text),
+                "the artwork as JSON and the selection to make, as JSON",
+                vec![Ty::Text, Ty::Text],
+            ),
+            "remove_along" => (
+                Imp::CanvasRemoveAlong,
+                result(Ty::Text),
+                "the artwork as JSON and the path to remove strokes along, as JSON",
+                vec![Ty::Text, Ty::Text],
+            ),
             "svg" => (
                 Imp::CanvasSvg,
                 result(Ty::Text),
@@ -3439,9 +3471,9 @@ impl Checker<'_> {
                     name.span,
                     format!(
                         "`canvas` has `look`, `export`, `grade`, `wand`, `find`, `combine`, \
-                         `measure`, `compare`, `svg`, `svg_import`, `save` and `open`, not \
-                         `{other}`: `canvas.look(artwork, request, pictures)` is a picture of \
-                         the artwork"
+                         `measure`, `compare`, `diff`, `diff_picture`, `select`, `inspect`, \
+                         `remove_along`, `svg`, `svg_import`, `save` and `open`, not `{other}`: `canvas.look(artwork, request, \
+                         pictures)` is a picture of the artwork"
                     ),
                 );
                 for a in args {

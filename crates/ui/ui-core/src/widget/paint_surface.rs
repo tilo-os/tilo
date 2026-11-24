@@ -37,6 +37,11 @@ pub struct PaintSurface {
     pub(crate) pan: Point,
     pub(crate) label: Option<String>,
     pub(crate) picture: Option<PictureSource>,
+    /// A picture laid over the artwork, such as a comparison's changed region.
+    pub(crate) overlay: Option<PictureSource>,
+    /// The frame the overlay fills, in artwork units; the whole artwork when absent.
+    pub(crate) overlay_rect: Option<[f64; 4]>,
+    pub(crate) overlay_opacity: f64,
     pub(crate) pictures: Option<Pictures>,
     pub(crate) rect: Rect,
     /// The stroke under the hand, in the artwork's units, its pressure with each point.
@@ -79,6 +84,9 @@ impl Default for PaintSurface {
             pan: Point::ZERO,
             label: None,
             picture: None,
+            overlay: None,
+            overlay_rect: None,
+            overlay_opacity: 1.0,
             pictures: None,
             rect: Rect::ZERO,
             stroke: Vec::new(),
@@ -196,7 +204,52 @@ impl PaintSurface {
                 );
             }
         }
+        self.paint_overlay(scene, to_screen);
         self.paint_stroke(scene, to_screen);
+        scene.pop_layer();
+    }
+
+    /// The picture laid over the artwork, such as a comparison's changed region, within its
+    /// frame in the artwork's units.
+    fn paint_overlay(&self, scene: &mut Scene, to_screen: Affine) {
+        let (Some(pictures), Some(overlay)) = (&self.pictures, &self.overlay) else {
+            return;
+        };
+        let Some(image) = pictures.get(overlay) else {
+            return;
+        };
+        let opacity = self.overlay_opacity.clamp(0.0, 1.0);
+        let [image_width, image_height] = [f64::from(image.width), f64::from(image.height)];
+        if opacity <= 0.0 || image_width <= 0.0 || image_height <= 0.0 {
+            return;
+        }
+        let [x, y, width, height] =
+            self.overlay_rect
+                .unwrap_or([0.0, 0.0, self.width, self.height]);
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let frame = Rect::new(x, y, x + width, y + height);
+        let fit = Affine::scale_non_uniform(width / image_width, height / image_height);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "an overlay's alpha is a fraction the scene's layer takes"
+        )]
+        let alpha = opacity as f32;
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            to_screen,
+            &frame,
+        );
+        scene.fill(
+            Fill::NonZero,
+            to_screen,
+            &ImageBrush::new(image),
+            Some(Affine::translate((x, y)) * fit),
+            &frame.to_path(0.1),
+        );
         scene.pop_layer();
     }
 

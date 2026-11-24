@@ -5294,6 +5294,29 @@ impl Store for ResourceStore {
         self.value_from(field, entry.as_ref(), cell, json)
     }
 
+    fn read_at(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        change: &str,
+    ) -> Result<FieldValue, StoreError> {
+        let at = &*self.typed(at);
+        let at_version = self.at_change(at, change, true)?;
+        let entry = self.field(&at.ty, &field.id);
+        let name = entry
+            .as_ref()
+            .map_or_else(|| field.id.clone(), |entry| entry.name.clone());
+        let cell = at_version
+            .indexed
+            .as_ref()
+            .and_then(|held| held.fields.get(&name));
+        let json = at_version
+            .content
+            .as_ref()
+            .and_then(|content| content.get(&name));
+        self.value_from(field, entry.as_ref(), cell, json)
+    }
+
     fn written(
         &self,
         at: &ResourceRef,

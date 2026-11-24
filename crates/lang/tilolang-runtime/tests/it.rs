@@ -94,6 +94,8 @@ mod e2e_pdf;
 mod e2e_photos;
 #[path = "e2e_publisher.rs"]
 mod e2e_publisher;
+#[path = "e2e_record_at.rs"]
+mod e2e_record_at;
 #[path = "e2e_record_values.rs"]
 mod e2e_record_values;
 #[path = "e2e_removals.rs"]

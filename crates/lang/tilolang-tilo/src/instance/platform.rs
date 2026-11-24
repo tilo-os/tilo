@@ -1055,7 +1055,7 @@ impl tilolang_runtime::canvas::CanvasHost for SharedCanvas {
         artwork: &str,
         request: &str,
         pictures: &[(String, Vec<u8>)],
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<(String, Vec<u8>, [f64; 4])>), String> {
         self.0.find(artwork, request, pictures)
     }
 
@@ -1079,6 +1079,28 @@ impl tilolang_runtime::canvas::CanvasHost for SharedCanvas {
         pictures: &[(String, Vec<u8>)],
     ) -> Result<(Vec<u8>, String), String> {
         self.0.compare(artwork, request, pictures)
+    }
+
+    fn diff(
+        &self,
+        before: &str,
+        after: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<(Option<Vec<u8>>, String), String> {
+        self.0.diff(before, after, request, pictures)
+    }
+
+    fn select(&self, artwork: &str, request: &str) -> Result<String, String> {
+        self.0.select(artwork, request)
+    }
+
+    fn inspect(&self, artwork: &str, request: &str) -> Result<String, String> {
+        self.0.inspect(artwork, request)
+    }
+
+    fn remove_along(&self, artwork: &str, request: &str) -> Result<String, String> {
+        self.0.remove_along(artwork, request)
     }
 
     fn svg(&self, artwork: &str, request: &str) -> Result<String, String> {

@@ -452,6 +452,91 @@ impl Core {
         self.field_value(target, field, fv, author)
     }
 
+    /// The record `r` names as it stood at the version `version` names, as JSON: each field by
+    /// name, a collection's items inline, each with its id. It is the store's own read at a
+    /// change ([`crate::store::Store::read_at`]), so a reader compares past states without a
+    /// copy of the log.
+    pub(crate) fn record_at(&self, r: i32, version: i32) -> HResult<Option<Wasm>> {
+        let Value::Ref(at) = self.val(r)? else {
+            return trap("record_at takes a resource");
+        };
+        let version = self.text(version)?;
+        let json = self.record_json_at(&at.target, &version).or_else(trap)?;
+        let text = serde_json::to_string(&json).or_else(|e| trap(e.to_string()))?;
+        self.ret_h(Value::text(text))
+    }
+
+    /// `target`'s record at `version`, as JSON: its fields by name, its collection items inline.
+    fn record_json_at(&self, target: &ResourceRef, version: &str) -> Result<Json, String> {
+        let info = self
+            .registry
+            .borrow()
+            .type_info(&target.ty)
+            .map(|(_, info)| Rc::clone(&info))
+            .ok_or_else(|| format!("`{}` is not a type this workspace knows", target.ty))?;
+        let mut fields = serde_json::Map::new();
+        for f in &info.fields {
+            let fv = self
+                .store
+                .borrow()
+                .read_at(target, &spec(f), version)
+                .map_err(|error| error.to_string())?;
+            let v = self.field_value(target, f, fv, None)?;
+            fields.insert(f.name.clone(), self.plain_json(&v, version)?);
+        }
+        Ok(serde_json::json!({
+            "id": target.id_string(),
+            "type": target.ty,
+            "fields": fields,
+        }))
+    }
+
+    /// `v` as a reader of a record reads it: plain JSON, with no tag for a list, an option or a
+    /// map, and a collection's items as records of their own.
+    fn plain_json(&self, v: &Value, version: &str) -> Result<Json, String> {
+        Ok(match v {
+            Value::Unit | Value::Opt(None) => Json::Null,
+            Value::Opt(Some(inner)) => self.plain_json(inner, version)?,
+            Value::List(items) => Json::Array(
+                items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Ref(r) => self.record_json_at(&r.target, version),
+                        other => self.plain_json(other, version),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Value::Map(entries) => {
+                let mut out = serde_json::Map::new();
+                for (key, value) in entries {
+                    let Value::Text(key) = key else {
+                        return to_json(v);
+                    };
+                    out.insert(key.clone(), self.plain_json(value, version)?);
+                }
+                Json::Object(out)
+            }
+            Value::Rec(rec) => {
+                let info = self
+                    .registry
+                    .borrow()
+                    .type_info(&rec.ty)
+                    .map(|(_, info)| Rc::clone(&info));
+                let mut out = serde_json::Map::new();
+                for (id, value) in &rec.fields {
+                    let name = info
+                        .as_ref()
+                        .and_then(|info| info.field(id))
+                        .map_or_else(|| id.clone(), |f| f.name.clone());
+                    out.insert(name, self.plain_json(value, version)?);
+                }
+                Json::Object(out)
+            }
+            // An enum, rich text and anything else keep their stored form.
+            other => to_json(other)?,
+        })
+    }
+
     /// A field of `target` as the store holds it (`fv`), as a value of its declared type:
     /// [`Self::read_value`] of a value read some other way (as a change wrote it).
     ///
@@ -1296,6 +1381,7 @@ impl Core {
             return self.rec_edit(imp, a);
         }
         match imp {
+            Imp::RecordAt => return self.record_at(a.h(0)?, a.h(1)?),
             // A change the code makes is one write of the run, answered whole by its journal when
             // the run is run again after a call: what it checks of the store and what it decides
             // from it (the item a removal takes, the place a move goes to) were checked and
@@ -2220,6 +2306,13 @@ impl Core {
         // A Bool crosses as an int; the record holds it as the Bool it is.
         let v = match (&declared.ty, v) {
             (Ty::Bool, Value::Int(held)) => Value::Bool(held != 0),
+            (Ty::Option(inner), Value::Opt(Some(held)))
+                if **inner == Ty::Bool && matches!(*held, Value::Int(_)) =>
+            {
+                Value::Opt(Some(Box::new(Value::Bool(
+                    matches!(*held, Value::Int(n) if n != 0),
+                ))))
+            }
             (_, v) => v,
         };
         if let Value::Rec(rec) = self.frames.borrow_mut().get_mut(rec_h)? {
@@ -2259,6 +2352,13 @@ impl Core {
         // A Bool crosses as an int; the record holds it as the Bool it is.
         let v = match (&declared.ty, v) {
             (Ty::Bool, Value::Int(held)) => Value::Bool(held != 0),
+            (Ty::Option(inner), Value::Opt(Some(held)))
+                if **inner == Ty::Bool && matches!(*held, Value::Int(_)) =>
+            {
+                Value::Opt(Some(Box::new(Value::Bool(
+                    matches!(*held, Value::Int(n) if n != 0),
+                ))))
+            }
             (_, v) => v,
         };
         if let Value::Rec(rec) = self.frames.borrow_mut().get_mut(rec_h)? {

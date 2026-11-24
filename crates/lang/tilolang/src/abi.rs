@@ -188,6 +188,7 @@ imports! {
     MapGetValue = "map_get_value" ([H, H] -> [H]);
     MapKeysValue = "map_keys_value" ([H] -> [H]);
     RecNew = "rec_new" ([H] -> [H]);
+    RecordAt = "record_at" ([H, H] -> [H]);
     RecSetI = "rec_set_i" ([H, H, I64] -> []);
     RecSetF = "rec_set_f" ([H, H, F64] -> []);
     RecSetH = "rec_set_h" ([H, H, H] -> []);
@@ -337,6 +338,7 @@ imports! {
     Speakers = "speakers" ([H, I64] -> [H]);
     MetaOf = "meta_of" ([H] -> [H]);
     Versions = "versions" ([H] -> [H]);
+    VersionChange = "version_change" ([H] -> [H]);
     Links = "links" ([H] -> [H]);
     Earlier = "earlier" ([H] -> [H]);
     VersionEnd = "version_end" ([H, I32] -> [H]);
@@ -538,6 +540,11 @@ imports! {
     CanvasCombine = "canvas_combine" ([H, H] -> [H]);
     CanvasMeasure = "canvas_measure" ([H, H, H] -> [H]);
     CanvasCompare = "canvas_compare" ([H, H, H] -> [H]);
+    CanvasDiff = "canvas_diff" ([H, H, H, H] -> [H]);
+    CanvasSelect = "canvas_select" ([H, H] -> [H]);
+    CanvasInspect = "canvas_inspect" ([H, H] -> [H]);
+    CanvasRemoveAlong = "canvas_remove_along" ([H, H] -> [H]);
+    CanvasDiffPicture = "canvas_diff_picture" ([H, H, H, H] -> [H]);
     CanvasSvg = "canvas_svg" ([H, H] -> [H]);
     CanvasSvgImport = "canvas_svg_import" ([H, H] -> [H]);
     CanvasSave = "canvas_save" ([H, H] -> [H]);

@@ -541,7 +541,10 @@ action prune(g: Design, d: device.Desk, first: Text, second: Text) -> Text {
         for name in ["a", "b", "c"] {
             rt.invoke_action(
                 &me(),
-                (add.as_str(), vec![Value::resource(&design), Value::text(name)]),
+                (
+                    add.as_str(),
+                    vec![Value::resource(&design), Value::text(name)],
+                ),
             )
             .unwrap();
         }

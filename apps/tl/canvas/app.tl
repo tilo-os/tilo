@@ -26,6 +26,8 @@ type Artwork (title: title, untitled: "Untitled artwork") {
     pictures: Collection<Picture>
     /// The area selected for the next edit, kept with the artwork.
     selection: Option<Area>
+    /// The marks a person picked, which combine and measure act on.
+    picked: List<Mark>
     /// The picture to work from, which `compare_reference` shows the artwork against; it is not
     /// part of the work and never exported.
     reference: Option<Reference> = .none
@@ -33,6 +35,13 @@ type Artwork (title: title, untitled: "Untitled artwork") {
     look: Text = ""
     /// The artwork beside, over or against its reference as last compared, kept to look at.
     comparison: Text = ""
+    /// What comparing two versions found, in a line a person reads.
+    version_note: Text = ""
+    /// The changed region of the version compared, as the artwork now stands, laid over the
+    /// surface where it stands.
+    version_overlay: Text = ""
+    /// That region, `[x, y, width, height]` in artwork units.
+    version_region: List<Float>
     /// Why the last thing asked of the engine did not happen; empty when it did.
     notice: Text = ""
 
@@ -64,6 +73,23 @@ type Layer (title: name) {
     clip: Bool = false
     /// A mask that stays put when its layer's marks move.
     unlinked: Bool = false
+    /// Colour and tone adjustments of everything on the layer, applied after each mark's own.
+    exposure: Float = 0.0
+    contrast: Float = 0.0
+    highlights: Float = 0.0
+    shadows: Float = 0.0
+    saturation: Float = 0.0
+    vibrance: Float = 0.0
+    hue: Float = 0.0
+    temperature: Float = 0.0
+    tint: Float = 0.0
+    adjust_grayscale: Bool = false
+    adjust_invert: Bool = false
+    blur: Float = 0.0
+    sharpen: Float = 0.0
+    vignette: Float = 0.0
+    /// Tone curve `[[in, out], …]`, 0 to 1.
+    curve: List<List<Float>>
 }
 
 /// One mark: a brush stroke (`stroke`) or a shape (`path`) drawn on a layer.
@@ -144,6 +170,28 @@ type Mark (title: name) {
     line_height: Float = 0.0
     tracking: Float = 0.0
     text_path: Text = ""
+    /// An affine transform `[a, b, c, d, e, f]` applied to the mark's geometry: how it is
+    /// moved, scaled and turned.
+    transform: List<Float>
+    /// The mark or group whose shape this mark is cut to; empty for uncut.
+    clip: Text = ""
+    /// Enlarge picture pixels with nearest-neighbour sampling.
+    pixelated: Bool = false
+    /// Film grain over the mark, 0 to 1.
+    grain: Float = 0.0
+    /// Soften the mark's edge outward over this many units.
+    feather: Float = 0.0
+    /// A shadow cast outside the mark, and one cast inside it.
+    shadow_x: Float = 0.0
+    shadow_y: Float = 0.0
+    shadow_blur: Float = 0.0
+    shadow_colour: Text = ""
+    inner_shadow_x: Float = 0.0
+    inner_shadow_y: Float = 0.0
+    inner_shadow_blur: Float = 0.0
+    inner_shadow_colour: Text = ""
+    /// Tone curve `[[in, out], …]`, 0 to 1.
+    curve: List<List<Float>>
 }
 
 /// The area selected for the next edit.
@@ -152,6 +200,13 @@ type Area {
     d: Text
     /// How far its edge fades, in units.
     feather: Float = 0.0
+    /// The soft edge a refined selection keeps: a picture, white where selected, and its frame.
+    /// A mask made of the selection draws it.
+    matte_src: Text = ""
+    matte_x: Float = 0.0
+    matte_y: Float = 0.0
+    matte_width: Float = 0.0
+    matte_height: Float = 0.0
 }
 
 /// A picture the artwork shows, kept by the address of its bytes.
@@ -258,6 +313,21 @@ type LayerJson {
     invert: Bool
     clip: Bool
     unlinked: Bool
+    exposure: Float
+    contrast: Float
+    highlights: Float
+    shadows: Float
+    saturation: Float
+    vibrance: Float
+    hue: Float
+    temperature: Float
+    tint: Float
+    grayscale: Bool
+    invert_adjust: Bool
+    blur: Float
+    sharpen: Float
+    vignette: Float
+    curve: List<List<Float>>
 }
 
 type MediumJson {
@@ -339,11 +409,31 @@ type MarkJson {
     text_path: Text
     wet: Bool
     params: Map<Float>
+    transform: List<Float>
+    clip: Text
+    pixelated: Bool
+    grain: Float
+    feather: Float
+    shadow_x: Float
+    shadow_y: Float
+    shadow_blur: Float
+    shadow_colour: Text
+    inner_shadow_x: Float
+    inner_shadow_y: Float
+    inner_shadow_blur: Float
+    inner_shadow_colour: Text
+    curve: List<List<Float>>
 }
 
 type AreaJson {
     d: Text
     feather: Float
+    matte: Option<MatteJson>
+}
+
+type MatteJson {
+    src: Text
+    rect: List<Float>
 }
 
 root library: Library
@@ -418,6 +508,21 @@ primary action open_artwork(lib: Library, file: File) -> Artwork (
                             invert: flag_field(row, "invert") ?? false,
                             clip: flag_field(row, "clip") ?? false,
                             unlinked: flag_field(row, "unlinked") ?? false,
+                            exposure: number_field(row, "exposure") ?? 0.0,
+                            contrast: number_field(row, "contrast") ?? 0.0,
+                            highlights: number_field(row, "highlights") ?? 0.0,
+                            shadows: number_field(row, "shadows") ?? 0.0,
+                            saturation: number_field(row, "saturation") ?? 0.0,
+                            vibrance: number_field(row, "vibrance") ?? 0.0,
+                            hue: number_field(row, "hue") ?? 0.0,
+                            temperature: number_field(row, "temperature") ?? 0.0,
+                            tint: number_field(row, "tint") ?? 0.0,
+                            adjust_grayscale: flag_field(row, "grayscale") ?? false,
+                            adjust_invert: flag_field(row, "invert_adjust") ?? false,
+                            blur: number_field(row, "blur") ?? 0.0,
+                            sharpen: number_field(row, "sharpen") ?? 0.0,
+                            vignette: number_field(row, "vignette") ?? 0.0,
+                            curve: curves_of(row),
                         ),
                     )
                     by_id.put(if id == "" { name } else { id }, layer)
@@ -432,23 +537,45 @@ primary action open_artwork(lib: Library, file: File) -> Artwork (
                             // The adjustments and the blend the file kept, on every kind of mark.
                             kept.group = text_field(row, "group")
                             kept.blend = nested_text(row, "style", "blend")
-                            kept.exposure = nested_number(row, "style", "exposure") ?? 0.0
-                            kept.contrast = nested_number(row, "style", "contrast") ?? 0.0
-                            kept.highlights = nested_number(row, "style", "highlights") ?? 0.0
-                            kept.shadows = nested_number(row, "style", "shadows") ?? 0.0
-                            kept.saturation = nested_number(row, "style", "saturation") ?? 0.0
-                            kept.vibrance = nested_number(row, "style", "vibrance") ?? 0.0
-                            kept.hue = nested_number(row, "style", "hue") ?? 0.0
-                            kept.temperature = nested_number(row, "style", "temperature") ?? 0.0
-                            kept.tint = nested_number(row, "style", "tint") ?? 0.0
-                            kept.grayscale = nested_flag(row, "style", "grayscale") ?? false
-                            kept.invert = nested_flag(row, "style", "invert") ?? false
-                            kept.blur = nested_number(row, "style", "blur") ?? 0.0
-                            kept.sharpen = nested_number(row, "style", "sharpen") ?? 0.0
-                            kept.vignette = nested_number(row, "style", "vignette") ?? 0.0
+                            let style = nested_object(row, "style")
+                            let adjust = nested_object(style, "adjust")
+                            kept.exposure = number_field(adjust, "exposure") ?? 0.0
+                            kept.contrast = number_field(adjust, "contrast") ?? 0.0
+                            kept.highlights = number_field(adjust, "highlights") ?? 0.0
+                            kept.shadows = number_field(adjust, "shadows") ?? 0.0
+                            kept.saturation = number_field(adjust, "saturation") ?? 0.0
+                            kept.vibrance = number_field(adjust, "vibrance") ?? 0.0
+                            kept.hue = number_field(adjust, "hue") ?? 0.0
+                            kept.temperature = number_field(adjust, "temperature") ?? 0.0
+                            kept.tint = number_field(adjust, "tint") ?? 0.0
+                            kept.grayscale = flag_field(adjust, "grayscale") ?? false
+                            kept.invert = flag_field(adjust, "invert") ?? false
+                            kept.blur = number_field(adjust, "blur") ?? 0.0
+                            kept.sharpen = number_field(adjust, "sharpen") ?? 0.0
+                            kept.vignette = number_field(adjust, "vignette") ?? 0.0
+                            kept.curve = curves_of(adjust)
                             kept.flip_h = axis_negative(row, 0)
                             kept.flip_v = axis_negative(row, 3)
-                            kept.wet = nested_flag(row, "style", "wet") ?? false
+                            kept.wet = flag_field(style, "wet") ?? false
+                            kept.transform = numbers_at(row, "transform")
+                            kept.clip = text_field(row, "clip")
+                            kept.pixelated = flag_field(style, "pixelated") ?? false
+                            kept.grain = number_field(style, "grain") ?? 0.0
+                            kept.feather = number_field(style, "feather") ?? 0.0
+                            if let shadow = object_field(style, "shadow") {
+                                let offset = numbers_at(shadow, "offset")
+                                kept.shadow_x = offset.at(0) ?? 0.0
+                                kept.shadow_y = offset.at(1) ?? 0.0
+                                kept.shadow_blur = number_field(shadow, "blur") ?? 0.0
+                                kept.shadow_colour = text_field(shadow, "colour")
+                            }
+                            if let shadow = object_field(style, "inner_shadow") {
+                                let offset = numbers_at(shadow, "offset")
+                                kept.inner_shadow_x = offset.at(0) ?? 0.0
+                                kept.inner_shadow_y = offset.at(1) ?? 0.0
+                                kept.inner_shadow_blur = number_field(shadow, "blur") ?? 0.0
+                                kept.inner_shadow_colour = text_field(shadow, "colour")
+                            }
                             let params = nested_params(row, "style", "params")
                             for key in params.keys() {
                                 kept.params.put(key, params.get(key) ?? 0.0)
@@ -499,6 +626,13 @@ primary action open_artwork(lib: Library, file: File) -> Artwork (
                         Area(
                             d: text_field(area, "d"),
                             feather: number_field(area, "feather") ?? 0.0,
+                            matte_src: if let matte = object_field(area, "matte") {
+                                text_field(matte, "src")
+                            } else { "" },
+                            matte_x: matte_at(area, 0),
+                            matte_y: matte_at(area, 1),
+                            matte_width: matte_at(area, 2),
+                            matte_height: matte_at(area, 3),
                         ),
                     )
                 }
@@ -933,6 +1067,21 @@ action duplicate_layer(a: Artwork, layer: Layer) -> Layer (
             invert: layer.invert,
             clip: layer.clip,
             unlinked: layer.unlinked,
+            exposure: layer.exposure,
+            contrast: layer.contrast,
+            highlights: layer.highlights,
+            shadows: layer.shadows,
+            saturation: layer.saturation,
+            vibrance: layer.vibrance,
+            hue: layer.hue,
+            temperature: layer.temperature,
+            tint: layer.tint,
+            adjust_grayscale: layer.adjust_grayscale,
+            adjust_invert: layer.adjust_invert,
+            blur: layer.blur,
+            sharpen: layer.sharpen,
+            vignette: layer.vignette,
+            curve: layer.curve,
         ),
     )
     for m in a.marks.filter(m -> m.layer == layer) {
@@ -991,6 +1140,20 @@ action duplicate_layer(a: Artwork, layer: Layer) -> Layer (
                 tracking: m.tracking,
                 text_path: m.text_path,
                 wet: m.wet,
+                transform: m.transform,
+                clip: m.clip,
+                pixelated: m.pixelated,
+                grain: m.grain,
+                feather: m.feather,
+                shadow_x: m.shadow_x,
+                shadow_y: m.shadow_y,
+                shadow_blur: m.shadow_blur,
+                shadow_colour: m.shadow_colour,
+                inner_shadow_x: m.inner_shadow_x,
+                inner_shadow_y: m.inner_shadow_y,
+                inner_shadow_blur: m.inner_shadow_blur,
+                inner_shadow_colour: m.inner_shadow_colour,
+                curve: m.curve,
             ),
         )
         for key in m.params.keys() {
@@ -1404,9 +1567,9 @@ action select_subject(a: Artwork, refine: Float = 0.0) -> Option<Text> uses imag
     require refine >= 0.0 and refine <= 200.0 "A refine is 0 to 200 units"
     let ask = FindAsk(subject: .some(true), refine: optional(refine), feather: .some(0.0))
     match canvas.find(artwork_json(a), json.encode(ask), picture_addresses(a)) {
-        .ok(d) => {
-            a.selection = .some(Area(d: d, feather: 0.0))
-            return .some(d)
+        .ok(answer) => {
+            a.selection = selection_of(answer)
+            return .some(answer)
         }
         .err(why) => {
             a.notice = why
@@ -1425,9 +1588,9 @@ action refine_selection(a: Artwork, refine: Float = 6.0) -> Option<Text> uses im
     require refine > 0.0 and refine <= 200.0 "A refine is over 0 and at most 200 units"
     let ask = FindAsk(refine: .some(refine), feather: .some(0.0))
     match canvas.find(artwork_json(a), json.encode(ask), picture_addresses(a)) {
-        .ok(d) => {
-            a.selection = .some(Area(d: d, feather: 0.0))
-            return .some(d)
+        .ok(answer) => {
+            a.selection = selection_of(answer)
+            return .some(answer)
         }
         .err(why) => {
             a.notice = why
@@ -1493,6 +1656,42 @@ type MeasureAsk {
     ids: List<Text>
 }
 
+/// What a selection asks the device's drawing engine for: a shape, a lasso, marks, and how it
+/// meets the area there is. What the engine's own `select` takes.
+type SelectAsk {
+    rect: Option<List<Float>> = .none
+    ellipse: Option<List<Float>> = .none
+    points: Option<List<List<Float>>> = .none
+    d: Option<Text> = .none
+    marks: Option<List<Text>> = .none
+    mode: Option<Text> = .none
+    feather: Option<Float> = .none
+    grow: Option<Float> = .none
+    invert: Option<Bool> = .none
+}
+
+/// What inspecting the artwork asks for: its layers and newest marks.
+type InspectAsk {
+    palette: Option<Bool> = .none
+    region: Option<List<Float>> = .none
+    layer: Option<Text> = .none
+    limit: Option<Int> = .none
+}
+
+/// What removing marks along a path asks for.
+type RemoveAsk {
+    along: List<List<Float>>
+    layer: Option<Text> = .none
+}
+
+/// What comparing two versions asks for.
+type DiffAsk {
+    from: Text
+    to: Option<Text> = .none
+    look: Option<Bool> = .none
+    overlay: Option<Bool> = .none
+}
+
 /// What a comparison with the reference asks for.
 type CompareAsk {
     region: Option<List<Float>> = .none
@@ -1508,9 +1707,10 @@ action combine_marks(a: Artwork, marks: List<Mark>, op: Text = "union") -> Optio
     label: "Combine shapes",
     did: "combined shapes",
 ) {
-    require marks.len() >= 2 "Name two or more marks to combine"
+    require marks.len() >= 2 or marks.len() == 0 and a.picked.len() >= 2 "Name two or more marks to combine, or pick them"
     require op == "union" or op == "subtract" or op == "intersect" or op == "exclude" "Shapes unite, subtract, intersect or exclude"
-    let ids = marks.map(m -> "mark-{a.marks.index_of(m) ?? 0}")
+    let chosen = if marks.len() == 0 { a.picked } else { marks }
+    let ids = chosen.map(m -> "mark-{a.marks.index_of(m) ?? 0}")
     match canvas.combine(artwork_json(a), json.encode(CombineAsk(ids: ids, op: op))) {
         .ok(answer) => match json.parse(answer) {
             .ok(held) => {
@@ -1521,18 +1721,19 @@ action combine_marks(a: Artwork, marks: List<Mark>, op: Text = "union") -> Optio
                 }
                 // The bottom of them takes the combined outline; the others go.
                 let kept = if let found = a.marks
-                        .filter(m -> marks.find(n -> n == m) != .none)
+                        .filter(m -> chosen.find(n -> n == m) != .none)
                         .first() {
                     found
-                } else if let named = marks.first() {
+                } else if let named = chosen.first() {
                     named
                 } else {
                     a.marks.insert(Mark(layer: top_layer(a)))
                 }
                 let fill = text_field(held, "fill")
-                for m in marks {
+                for m in chosen {
                     if m != kept { a.marks.remove(m) }
                 }
+                a.picked = []
                 kept.kind = "path"
                 kept.d = d
                 if fill != "" {
@@ -1560,8 +1761,9 @@ action measure_marks(a: Artwork, marks: List<Mark>) -> Option<Text> uses image (
     icon: .sliders_horizontal,
     label: "Measure ink",
 ) {
-    require marks.len() > 0 "Name the marks to measure"
-    let ids = marks.map(m -> "mark-{a.marks.index_of(m) ?? 0}")
+    require marks.len() > 0 or a.picked.len() > 0 "Name the marks to measure, or pick them"
+    let chosen = if marks.len() == 0 { a.picked } else { marks }
+    let ids = chosen.map(m -> "mark-{a.marks.index_of(m) ?? 0}")
     match canvas.measure(artwork_json(a), json.encode(MeasureAsk(ids: ids)), picture_addresses(a)) {
         .ok(answer) => {
             a.notice = measure_said(answer)
@@ -1662,6 +1864,791 @@ action compare_reference(
     }
 }
 
+/// Compares the artwork with the version history names, overlaid on the surface: what changed
+/// between the two, and the changed region as it now stands where it stands.
+action compare_versions(a: Artwork, change: Text) -> Option<Text> uses image (
+    icon: .history,
+    label: "Compare versions",
+    did: "compared versions",
+) {
+    let before = record_at(a, change)
+    match past_artwork_json(before) {
+        .some(older) => {
+            let after = artwork_json(a)
+            let ask = json.encode(DiffAsk(from: change, look: .none, overlay: .none))
+            match canvas.diff(older, after, ask, picture_addresses(a)) {
+                .ok(info) => {
+                    a.version_note = diff_said(info)
+                    a.version_region = changed_region(info)
+                    let with_picture = json.encode(
+                        DiffAsk(from: change, look: .some(true), overlay: .some(true)),
+                    )
+                    match canvas.diff_picture(older, after, with_picture, picture_addresses(a)) {
+                        .ok(file) => {
+                            a.version_overlay = file.url
+                            a.notice = ""
+                        }
+                        .err(why) => {
+                            a.notice = why
+                        }
+                    }
+                    return .some(info)
+                }
+                .err(why) => {
+                    a.notice = why
+                    return .none
+                }
+            }
+        }
+        .none => {
+            a.notice = "That version of the artwork cannot be read"
+            return .none
+        }
+    }
+}
+
+/// Takes the version comparison away from the surface.
+action clear_comparison(a: Artwork) (label: "Clear the comparison", did: "cleared a comparison") {
+    a.version_overlay = ""
+    a.version_note = ""
+    a.version_region = []
+}
+
+/// What comparing two versions found, in a line a person reads.
+fn diff_said(info: Text) -> Text {
+    match json.parse(info) {
+        .ok(held) => {
+            if flag_field(held, "same") ?? false {
+                return "Those versions are the same"
+            }
+            let marks = array_field(held, "marks").len()
+            let layers = array_field(held, "layers").len()
+            let media = array_field(held, "media").len()
+            let artwork = array_field(held, "artwork").len()
+            "Changed {marks} marks, {layers} layers, {media} media and {artwork} artwork fields"
+        }
+        .err(_) => "Compared versions",
+    }
+}
+
+/// The region comparing two versions changed, `[x, y, width, height]`.
+fn changed_region(info: Text) -> List<Float> {
+    match json.parse(info) {
+        .ok(held) => numbers_at(held, "changed_region"),
+        .err(_) => [],
+    }
+}
+
+/// A version's record as the engine's artwork JSON: each field by name, its collection items
+/// inline with their own fields. The store read the state; the artwork's shape is the app's.
+fn past_artwork_json(record: Text) -> Option<Text> {
+    match json.parse(record) {
+        .ok(held) => {
+            let fields = object_field(held, "fields") ?? held
+            let layers = array_field(fields, "layers")
+            let layer_names: Map<Text> = Map<Text>()
+            for row in layers {
+                layer_names.put(text_field(row, "id"), layer_name_of(row))
+            }
+            json.encode(
+                ArtworkJson(
+                    title: text_field(fields, "title"),
+                    width: number_field(fields, "width") ?? 1024.0,
+                    height: number_field(fields, "height") ?? 768.0,
+                    ground_texture: text_field(fields, "ground_texture"),
+                    ground_colour: text_field(fields, "ground_colour"),
+                    layers: layers.map(row -> layer_json_of(row)),
+                    marks: array_field(fields, "marks").map(row -> mark_json_of(row, layer_names)),
+                    media: array_field(fields, "media").map(row -> medium_json_of(row)),
+                    selection: area_json_of(fields),
+                    reference: reference_json_of(fields),
+                ),
+            )
+        }
+        .err(_) => .none,
+    }
+}
+
+fn past_fields(row: json.Value) -> json.Value {
+    object_field(row, "fields") ?? row
+}
+
+fn layer_name_of(row: json.Value) -> Text {
+    text_field(past_fields(row), "name")
+}
+
+fn layer_json_of(row: json.Value) -> LayerJson {
+    let f = past_fields(row)
+    LayerJson(
+        name: text_field(f, "name"),
+        medium: text_field(f, "medium"),
+        opacity: number_field(f, "opacity") ?? 1.0,
+        visible: flag_field(f, "visible") ?? true,
+        locked: flag_field(f, "locked") ?? false,
+        texture: number_field(f, "texture") ?? 0.0,
+        group: text_field(f, "group"),
+        mask_of: text_field(f, "mask_of"),
+        base: number_field(f, "base") ?? 1.0,
+        invert: flag_field(f, "invert") ?? false,
+        clip: flag_field(f, "clip") ?? false,
+        unlinked: flag_field(f, "unlinked") ?? false,
+        exposure: number_field(f, "exposure") ?? 0.0,
+        contrast: number_field(f, "contrast") ?? 0.0,
+        highlights: number_field(f, "highlights") ?? 0.0,
+        shadows: number_field(f, "shadows") ?? 0.0,
+        saturation: number_field(f, "saturation") ?? 0.0,
+        vibrance: number_field(f, "vibrance") ?? 0.0,
+        hue: number_field(f, "hue") ?? 0.0,
+        temperature: number_field(f, "temperature") ?? 0.0,
+        tint: number_field(f, "tint") ?? 0.0,
+        grayscale: flag_field(f, "adjust_grayscale") ?? false,
+        invert_adjust: flag_field(f, "adjust_invert") ?? false,
+        blur: number_field(f, "blur") ?? 0.0,
+        sharpen: number_field(f, "sharpen") ?? 0.0,
+        vignette: number_field(f, "vignette") ?? 0.0,
+        curve: curves_of(f),
+    )
+}
+
+fn mark_json_of(row: json.Value, layer_names: Map<Text>) -> MarkJson {
+    let f = past_fields(row)
+    let layer_ref = object_field(f, "layer") ?? f
+    let layer = LayerJson(
+        name: layer_names.get(text_field(layer_ref, "ref")) ?? "",
+        medium: "",
+        opacity: 1.0,
+        visible: true,
+        locked: false,
+        texture: 0.0,
+        group: "",
+        mask_of: "",
+        base: 1.0,
+        invert: false,
+        clip: false,
+        unlinked: false,
+    )
+    MarkJson(
+        name: text_field(f, "name"),
+        layer: layer,
+        kind: text_field(f, "kind"),
+        group: text_field(f, "group"),
+        points: numbers_at(f, "points"),
+        d: text_field(f, "d"),
+        size: number_field(f, "size") ?? 6.0,
+        colour: text_field(f, "colour"),
+        brush: text_field(f, "brush"),
+        opacity: number_field(f, "opacity") ?? 1.0,
+        src: text_field(f, "src"),
+        x: number_field(f, "x") ?? 0.0,
+        y: number_field(f, "y") ?? 0.0,
+        width: number_field(f, "width") ?? 0.0,
+        height: number_field(f, "height") ?? 0.0,
+        blend: text_field(f, "blend"),
+        crop_x: number_field(f, "crop_x") ?? 0.0,
+        crop_y: number_field(f, "crop_y") ?? 0.0,
+        crop_width: number_field(f, "crop_width") ?? 1.0,
+        crop_height: number_field(f, "crop_height") ?? 1.0,
+        straighten: number_field(f, "straighten") ?? 0.0,
+        flip_h: flag_field(f, "flip_h") ?? false,
+        flip_v: flag_field(f, "flip_v") ?? false,
+        exposure: number_field(f, "exposure") ?? 0.0,
+        contrast: number_field(f, "contrast") ?? 0.0,
+        highlights: number_field(f, "highlights") ?? 0.0,
+        shadows: number_field(f, "shadows") ?? 0.0,
+        saturation: number_field(f, "saturation") ?? 0.0,
+        vibrance: number_field(f, "vibrance") ?? 0.0,
+        hue: number_field(f, "hue") ?? 0.0,
+        temperature: number_field(f, "temperature") ?? 0.0,
+        tint: number_field(f, "tint") ?? 0.0,
+        grayscale: flag_field(f, "grayscale") ?? false,
+        invert: flag_field(f, "invert") ?? false,
+        blur: number_field(f, "blur") ?? 0.0,
+        sharpen: number_field(f, "sharpen") ?? 0.0,
+        vignette: number_field(f, "vignette") ?? 0.0,
+        gradient_kind: text_field(f, "gradient"),
+        gradient_x0: number_field(f, "gradient_x0") ?? 0.0,
+        gradient_y0: number_field(f, "gradient_y0") ?? 0.0,
+        gradient_x1: number_field(f, "gradient_x1") ?? 0.0,
+        gradient_y1: number_field(f, "gradient_y1") ?? 0.0,
+        gradient_offsets: numbers_at(f, "gradient_offsets"),
+        gradient_colours: texts_at(f, "gradient_colours"),
+        text: text_field(f, "text"),
+        font: text_field(f, "font"),
+        weight: int_field(f, "weight"),
+        italic: flag_field(f, "italic") ?? false,
+        align: text_field(f, "align"),
+        line_height: number_field(f, "line_height") ?? 0.0,
+        tracking: number_field(f, "tracking") ?? 0.0,
+        text_path: text_field(f, "text_path"),
+        wet: flag_field(f, "wet") ?? false,
+        params: params_of(f),
+        transform: numbers_at(f, "transform"),
+        clip: text_field(f, "clip"),
+        pixelated: flag_field(f, "pixelated") ?? false,
+        grain: number_field(f, "grain") ?? 0.0,
+        feather: number_field(f, "feather") ?? 0.0,
+        shadow_x: number_field(f, "shadow_x") ?? 0.0,
+        shadow_y: number_field(f, "shadow_y") ?? 0.0,
+        shadow_blur: number_field(f, "shadow_blur") ?? 0.0,
+        shadow_colour: text_field(f, "shadow_colour"),
+        inner_shadow_x: number_field(f, "inner_shadow_x") ?? 0.0,
+        inner_shadow_y: number_field(f, "inner_shadow_y") ?? 0.0,
+        inner_shadow_blur: number_field(f, "inner_shadow_blur") ?? 0.0,
+        inner_shadow_colour: text_field(f, "inner_shadow_colour"),
+        curve: curves_of(f),
+    )
+}
+
+fn medium_json_of(row: json.Value) -> MediumJson {
+    let f = past_fields(row)
+    MediumJson(
+        id: text_field(f, "key"),
+        label: text_field(f, "label"),
+        engine: text_field(f, "engine"),
+        description: text_field(f, "description"),
+        ground: text_field(f, "ground"),
+        params: params_of(f),
+        palette: array_field(f, "palette").map(p -> pigment_json_of(p)),
+    )
+}
+
+fn pigment_json_of(row: json.Value) -> PigmentJson {
+    let held = past_fields(row)
+    PigmentJson(
+        name: text_field(held, "name"),
+        colour: text_field(held, "colour"),
+        granulation: number_field(held, "granulation") ?? 0.0,
+        strength: number_field(held, "strength") ?? 1.0,
+    )
+}
+
+fn area_json_of(fields: json.Value) -> Option<AreaJson> {
+    if let held = object_field(fields, "selection") {
+        if as_object(held) != .none {
+            return .some(
+                AreaJson(
+                    d: text_field(held, "d"),
+                    feather: number_field(held, "feather") ?? 0.0,
+                    matte: if let matte = object_field(held, "matte") {
+                        .some(
+                            MatteJson(
+                                src: text_field(matte, "src"),
+                                rect: numbers_at(matte, "rect"),
+                            ),
+                        )
+                    } else { .none },
+                ),
+            )
+        }
+    }
+    .none
+}
+
+fn reference_json_of(fields: json.Value) -> Option<ReferenceJson> {
+    if let held = object_field(fields, "reference") {
+        if as_object(held) != .none {
+            let width = number_field(held, "width") ?? 0.0
+            let height = number_field(held, "height") ?? 0.0
+            return .some(
+                ReferenceJson(
+                    image: text_field(held, "image"),
+                    frame: if width > 0.0 and height > 0.0 {
+                        .some(
+                            [
+                                number_field(held, "x") ?? 0.0,
+                                number_field(held, "y") ?? 0.0,
+                                width,
+                                height,
+                            ],
+                        )
+                    } else { .none },
+                    opacity: number_field(held, "opacity") ?? 1.0,
+                    visible: flag_field(held, "visible") ?? true,
+                ),
+            )
+        }
+    }
+    .none
+}
+
+fn numbers_at(value: json.Value, key: Text) -> List<Float> {
+    if let held = object_field(value, key) {
+        (as_array(held) ?? []).map(item -> as_number(item) ?? 0.0)
+    } else { [] }
+}
+
+fn texts_at(value: json.Value, key: Text) -> List<Text> {
+    if let held = object_field(value, key) {
+        (as_array(held) ?? []).map(item -> as_text(item) ?? "")
+    } else { [] }
+}
+
+/// The `at`th number of the matte a selection keeps, when it keeps one.
+fn matte_at(area: json.Value, at: Int) -> Float {
+    if let matte = object_field(area, "matte") { number_at(matte, "rect", at) } else { 0.0 }
+}
+
+/// The JSON object `key` of the object `of` holds, else `of` itself.
+fn nested_object(value: json.Value, key: Text) -> json.Value {
+    object_field(value, key) ?? value
+}
+
+/// The tone curve a record keeps, read from JSON.
+fn curves_of(value: json.Value) -> List<List<Float>> {
+    array_field(value, "curve").map(pair -> curve_point_of(pair))
+}
+
+fn curve_point_of(pair: json.Value) -> List<Float> {
+    match as_array(pair) {
+        .some(items) => items.map(item -> as_number(item) ?? 0.0),
+        .none => [],
+    }
+}
+
+/// Moves a mark by `dx`, `dy` artwork units.
+action move_mark(m: Mark, dx: Float, dy: Float) (
+    icon: .move,
+    label: "Move the mark",
+    did: "moved a mark",
+) {
+    m.transform = composed(m.transform, [1.0, 0.0, 0.0, 1.0, dx, dy])
+}
+
+/// Scales a mark about `cx`, `cy` by `factor`.
+action scale_mark(m: Mark, cx: Float, cy: Float, factor: Float) (
+    icon: .maximize,
+    label: "Scale the mark",
+    did: "scaled a mark",
+) {
+    require factor > 0.0 "A scale is larger than nothing"
+    m.transform = composed(
+        m.transform,
+        [factor, 0.0, 0.0, factor, cx - factor * cx, cy - factor * cy],
+    )
+}
+
+/// Turns a mark about `cx`, `cy` by `degrees`.
+action rotate_mark(m: Mark, cx: Float, cy: Float, degrees: Float) (
+    icon: .rotate_cw,
+    label: "Turn the mark",
+    did: "turned a mark",
+) {
+    let radians = degrees * 3.141592653589793 / 180.0
+    let cos = radians.cos()
+    let sin = radians.sin()
+    m.transform = composed(
+        m.transform,
+        [cos, sin, -sin, cos, cx - cos * cx + sin * cy, cy - sin * cx - cos * cy],
+    )
+}
+
+/// `next` after `current`: one affine `[a, b, c, d, e, f]`, identity when empty.
+fn composed(current: List<Float>, next: List<Float>) -> List<Float> {
+    if current.len() < 6 {
+        return next
+    }
+    let a1 = current.at(0) ?? 1.0
+    let b1 = current.at(1) ?? 0.0
+    let c1 = current.at(2) ?? 0.0
+    let d1 = current.at(3) ?? 1.0
+    let e1 = current.at(4) ?? 0.0
+    let f1 = current.at(5) ?? 0.0
+    let a2 = next.at(0) ?? 1.0
+    let b2 = next.at(1) ?? 0.0
+    let c2 = next.at(2) ?? 0.0
+    let d2 = next.at(3) ?? 1.0
+    let e2 = next.at(4) ?? 0.0
+    let f2 = next.at(5) ?? 0.0
+    [
+        a1 * a2 + c1 * b2,
+        b1 * a2 + d1 * b2,
+        a1 * c2 + c1 * d2,
+        b1 * c2 + d1 * d2,
+        a1 * e2 + c1 * f2 + e1,
+        b1 * e2 + d1 * f2 + f1,
+    ]
+}
+
+/// Cuts a mark to the shape of another mark or a group, or lets it stand whole.
+action clip_mark(m: Mark, by: Text) (
+    icon: .scissors,
+    label: "Clip the mark",
+    did: "clipped a mark",
+) {
+    m.clip = by.trim()
+}
+
+/// Sets how a mark is finished: nearest-neighbour pixels, grain, a feathered edge, and its
+/// shadows. A parameter left out stays as it is.
+action finish_mark(
+    m: Mark,
+    pixelated: Bool = m.pixelated,
+    grain: Float = m.grain,
+    feather: Float = m.feather,
+    shadow_x: Float = m.shadow_x,
+    shadow_y: Float = m.shadow_y,
+    shadow_blur: Float = m.shadow_blur,
+    shadow_colour: Text = m.shadow_colour,
+    inner_shadow_x: Float = m.inner_shadow_x,
+    inner_shadow_y: Float = m.inner_shadow_y,
+    inner_shadow_blur: Float = m.inner_shadow_blur,
+    inner_shadow_colour: Text = m.inner_shadow_colour,
+) (icon: .sparkles, label: "Finish the mark", did: "finished a mark") {
+    require grain >= 0.0 and grain <= 1.0 "Grain is 0 to 1"
+    require feather >= 0.0 and feather <= 200.0 "A feather is 0 to 200 units"
+    m.pixelated = pixelated
+    m.grain = grain
+    m.feather = feather
+    m.shadow_x = shadow_x
+    m.shadow_y = shadow_y
+    m.shadow_blur = shadow_blur
+    m.shadow_colour = shadow_colour
+    m.inner_shadow_x = inner_shadow_x
+    m.inner_shadow_y = inner_shadow_y
+    m.inner_shadow_blur = inner_shadow_blur
+    m.inner_shadow_colour = inner_shadow_colour
+}
+
+/// Sets a mark's tone curve, `[[in, out], …]` from 0 to 1.
+action set_curve(m: Mark, curve: List<List<Float>>) (
+    label: "Set the tone curve",
+    did: "set a tone curve",
+) {
+    require curve.all(point -> point.len() >= 2) "A curve point is in and out"
+    m.curve = curve
+}
+
+/// Adjusts everything on a layer, after each mark's own adjustments.
+action adjust_layer(
+    layer: Layer,
+    exposure: Float = layer.exposure,
+    contrast: Float = layer.contrast,
+    highlights: Float = layer.highlights,
+    shadows: Float = layer.shadows,
+    saturation: Float = layer.saturation,
+    vibrance: Float = layer.vibrance,
+    hue: Float = layer.hue,
+    temperature: Float = layer.temperature,
+    tint: Float = layer.tint,
+    grayscale: Bool = layer.adjust_grayscale,
+    invert: Bool = layer.adjust_invert,
+    blur: Float = layer.blur,
+    sharpen: Float = layer.sharpen,
+    vignette: Float = layer.vignette,
+) (icon: .sliders_horizontal, label: "Adjust the layer", did: "adjusted a layer") {
+    layer.exposure = exposure
+    layer.contrast = contrast
+    layer.highlights = highlights
+    layer.shadows = shadows
+    layer.saturation = saturation
+    layer.vibrance = vibrance
+    layer.hue = hue
+    layer.temperature = temperature
+    layer.tint = tint
+    layer.adjust_grayscale = grayscale
+    layer.adjust_invert = invert
+    layer.blur = blur
+    layer.sharpen = sharpen
+    layer.vignette = vignette
+}
+
+/// What the engine answered about a selection, as the artwork's selection.
+fn selection_of(answer: Text) -> Option<Area> {
+    match json.parse(answer) {
+        .ok(held) => {
+            let matte = numbers_at(held, "matte_rect")
+            let area = Area(
+                d: text_field(held, "d"),
+                feather: number_field(held, "feather") ?? 0.0,
+                matte_src: text_field(held, "matte_src"),
+                matte_x: matte.at(0) ?? 0.0,
+                matte_y: matte.at(1) ?? 0.0,
+                matte_width: matte.at(2) ?? 0.0,
+                matte_height: matte.at(3) ?? 0.0,
+            )
+            let kept: Option<Area> = .some(area)
+            kept
+        }
+        .err(_) => .none,
+    }
+}
+
+/// Asks the engine for a selection, and keeps the area it answers.
+action ask_selection(a: Artwork, ask: Text) -> Option<Text> uses image {
+    match canvas.select(artwork_json(a), ask) {
+        .ok(answer) => {
+            a.selection = selection_of(answer)
+            return .some(answer)
+        }
+        .err(why) => {
+            a.notice = why
+            return .none
+        }
+    }
+}
+
+/// Selects a rectangle or an ellipse from one corner of a drag to the other, meeting the area
+/// there is by `mode` (`replace`, `add`, `subtract` or `intersect`).
+action select_shape(
+    a: Artwork,
+    kind: Text,
+    from: List<Float>,
+    to: List<Float>,
+    mode: Text = "replace",
+    feather: Float = 0.0,
+    grow: Float = 0.0,
+    invert: Bool = false,
+) -> Option<Text> uses image (icon: .circle_dashed, label: "Select a shape") {
+    require kind == "rect" or kind == "ellipse" "A selection shape is a rectangle or an ellipse"
+    require from.len() >= 2 and to.len() >= 2 "A selection drag has two corners"
+    require mode == "replace" or mode == "add" or mode == "subtract" or mode == "intersect" "A selection meets the one there is by replace, add, subtract or intersect"
+    let x0 = from.at(0) ?? 0.0
+    let y0 = from.at(1) ?? 0.0
+    let x1 = to.at(0) ?? 0.0
+    let y1 = to.at(1) ?? 0.0
+    let ask = if kind == "rect" {
+        SelectAsk(
+            rect: .some([x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs()]),
+            mode: .some(mode),
+            feather: .some(feather),
+            grow: .some(grow),
+            invert: .some(invert),
+        )
+    } else {
+        SelectAsk(
+            ellipse: .some(
+                [(x0 + x1) / 2.0, (y0 + y1) / 2.0, (x1 - x0).abs() / 2.0, (y1 - y0).abs() / 2.0],
+            ),
+            mode: .some(mode),
+            feather: .some(feather),
+            grow: .some(grow),
+            invert: .some(invert),
+        )
+    }
+    ask_selection(a, json.encode(ask))
+}
+
+/// Selects the area a lasso traces, closed, meeting the area there is by `mode`.
+action select_lasso(
+    a: Artwork,
+    points: List<List<Float>>,
+    mode: Text = "replace",
+    feather: Float = 0.0,
+    grow: Float = 0.0,
+    invert: Bool = false,
+) -> Option<Text> uses image (icon: .circle_dashed, label: "Select by lasso") {
+    require points.len() >= 3 "A lasso goes round an area"
+    let ask = SelectAsk(
+        points: .some(points),
+        mode: .some(mode),
+        feather: .some(feather),
+        grow: .some(grow),
+        invert: .some(invert),
+    )
+    ask_selection(a, json.encode(ask))
+}
+
+/// Selects the area an outline names, meeting the area there is by `mode`.
+action select_outline(
+    a: Artwork,
+    d: Text,
+    mode: Text = "replace",
+    feather: Float = 0.0,
+    grow: Float = 0.0,
+    invert: Bool = false,
+) -> Option<Text> uses image (icon: .circle_dashed, label: "Select an outline") {
+    require d.trim() != "" "A selection has an outline"
+    let ask = SelectAsk(
+        d: .some(d),
+        mode: .some(mode),
+        feather: .some(feather),
+        grow: .some(grow),
+        invert: .some(invert),
+    )
+    ask_selection(a, json.encode(ask))
+}
+
+/// Grows (or shrinks, when negative) the selection's edge by `by` units.
+action grow_selection(a: Artwork, by: Float) -> Option<Text> uses image (
+    icon: .circle_dashed,
+    label: "Grow the selection",
+) {
+    if let area = a.selection {
+        let ask = SelectAsk(
+            d: .some(area.d),
+            mode: .some("replace"),
+            grow: .some(by),
+            feather: .some(area.feather),
+        )
+        return ask_selection(a, json.encode(ask))
+    }
+    a.notice = "Select an area first"
+    return .none
+}
+
+/// Turns the selection inside out: everything in the artwork but what it held.
+action invert_selection(a: Artwork) -> Option<Text> uses image (
+    icon: .circle_dashed,
+    label: "Invert the selection",
+) {
+    if let area = a.selection {
+        let ask = SelectAsk(
+            d: .some(area.d),
+            mode: .some("replace"),
+            invert: .some(true),
+            feather: .some(area.feather),
+        )
+        return ask_selection(a, json.encode(ask))
+    }
+    a.notice = "Select an area first"
+    return .none
+}
+
+/// Selects the shape of the marks or groups `ids` name, meeting the area there is by `mode`.
+action select_marks(
+    a: Artwork,
+    ids: List<Text>,
+    mode: Text = "replace",
+) -> Option<Text> uses image (icon: .circle_dashed, label: "Select marks") {
+    require ids.len() > 0 "Name the marks to select"
+    let ask = SelectAsk(marks: .some(ids), mode: .some(mode))
+    ask_selection(a, json.encode(ask))
+}
+
+/// Picks a mark, or lets it go: combine and measure act on the picked marks.
+action pick_mark(a: Artwork, m: Mark, on: Bool = true) (
+    icon: .check,
+    label: "Pick the mark",
+    did: "picked a mark",
+) {
+    if on {
+        if a.picked.find(p -> p == m) == .none {
+            a.picked = a.picked + [m]
+        }
+    } else {
+        a.picked = a.picked.filter(p -> p != m)
+    }
+}
+
+/// Picks the marks, adding any that were not picked.
+action pick_marks(a: Artwork, marks: List<Mark>) (label: "Pick the marks", did: "picked marks") {
+    for m in marks {
+        if a.picked.find(p -> p == m) == .none {
+            a.picked = a.picked + [m]
+        }
+    }
+}
+
+/// Lets every picked mark go.
+action clear_picked(a: Artwork) (label: "Clear the picked marks") {
+    a.picked = []
+}
+
+/// Removes the brush strokes a path crosses, on `layer` or every layer: what a stroke eraser
+/// does. Answers how many went.
+action remove_along(a: Artwork, points: List<List<Float>>, layer: Option<Layer>) -> Int uses image (
+    icon: .eraser,
+    label: "Remove the strokes along a path",
+    did: "removed strokes along a path",
+) {
+    require points.len() >= 2 "A path has two points"
+    let ask = json.encode(
+        RemoveAsk(along: points, layer: if let l = layer { .some(l.name) } else { .none }),
+    )
+    match canvas.remove_along(artwork_json(a), ask) {
+        .ok(answer) => match json.parse(answer) {
+            .ok(held) => match as_array(held) {
+                .some(items) => {
+                    let indices = items
+                        .map(item -> as_text(item) ?? "")
+                        .map(id -> id.slice(5, id.len()).to_int() ?? -1)
+                    let gone = a.marks.filter(m -> indices.contains(a.marks.index_of(m) ?? -1))
+                    let count = gone.len()
+                    for m in gone {
+                        a.marks.remove(m)
+                    }
+                    a.notice = ""
+                    count
+                }
+                .none => 0,
+            },
+            .err(_) => 0,
+        },
+        .err(why) => {
+            a.notice = why
+            0
+        }
+    }
+}
+
+/// Lists what the artwork holds: its layers and newest marks, with ids, bounds and colours,
+/// and with `palette` the colours it paints with. The answer is the engine's JSON.
+action inspect_artwork(
+    a: Artwork,
+    palette: Bool = false,
+    limit: Int = 100,
+    layer: Text = "",
+    region: List<Float> = [],
+) -> Option<Text> uses image (icon: .search, label: "Inspect the artwork") {
+    require limit >= 0 and limit <= 400 "An inspection lists 0 to 400 marks"
+    let ask = json.encode(
+        InspectAsk(
+            palette: .some(palette),
+            region: optional_at(region),
+            layer: optional_text(layer),
+            limit: .some(limit),
+        ),
+    )
+    match canvas.inspect(artwork_json(a), ask) {
+        .ok(info) => {
+            a.notice = inspect_said(info)
+            return .some(info)
+        }
+        .err(why) => {
+            a.notice = why
+            return .none
+        }
+    }
+}
+
+fn inspect_said(info: Text) -> Text {
+    match json.parse(info) {
+        .ok(held) => {
+            let layers = array_field(held, "layers").len()
+            let marks = array_field(held, "marks").len()
+            "{layers} layers, {marks} marks listed"
+        }
+        .err(_) => "Inspected",
+    }
+}
+
+/// Sets how the brush lays a mark: its flow, hardness, spacing, smoothing and taper, each 0 to
+/// 1. A parameter left out stays as it is.
+action set_dynamics(
+    m: Mark,
+    flow: Float = -1.0,
+    hardness: Float = -1.0,
+    spacing: Float = -1.0,
+    smoothing: Float = -1.0,
+    taper: Float = -1.0,
+) (icon: .sliders_horizontal, label: "Set the brush dynamics", did: "set brush dynamics") {
+    if flow >= 0.0 {
+        m.params.put("flow", flow.clamp(0.0, 1.0))
+    }
+    if hardness >= 0.0 {
+        m.params.put("hardness", hardness.clamp(0.0, 1.0))
+    }
+    if spacing >= 0.0 {
+        m.params.put("spacing", spacing.clamp(0.0, 1.0))
+    }
+    if smoothing >= 0.0 {
+        m.params.put("smoothing", smoothing.clamp(0.0, 1.0))
+    }
+    if taper >= 0.0 {
+        m.params.put("taper", taper.clamp(0.0, 1.0))
+    }
+}
+
 /// Selects an area, its outline as SVG path data.
 action select_area(a: Artwork, d: Text, feather: Float = 0.0) (
     icon: .circle_dashed,
@@ -1741,6 +2728,21 @@ fn layer_json(l: Layer) -> LayerJson {
         invert: l.invert,
         clip: l.clip,
         unlinked: l.unlinked,
+        exposure: l.exposure,
+        contrast: l.contrast,
+        highlights: l.highlights,
+        shadows: l.shadows,
+        saturation: l.saturation,
+        vibrance: l.vibrance,
+        hue: l.hue,
+        temperature: l.temperature,
+        tint: l.tint,
+        grayscale: l.adjust_grayscale,
+        invert_adjust: l.adjust_invert,
+        blur: l.blur,
+        sharpen: l.sharpen,
+        vignette: l.vignette,
+        curve: l.curve,
     )
 }
 
@@ -1833,6 +2835,20 @@ fn mark_json(m: Mark) -> MarkJson {
         text_path: m.text_path,
         wet: m.wet,
         params: m.params,
+        transform: m.transform,
+        clip: m.clip,
+        pixelated: m.pixelated,
+        grain: m.grain,
+        feather: m.feather,
+        shadow_x: m.shadow_x,
+        shadow_y: m.shadow_y,
+        shadow_blur: m.shadow_blur,
+        shadow_colour: m.shadow_colour,
+        inner_shadow_x: m.inner_shadow_x,
+        inner_shadow_y: m.inner_shadow_y,
+        inner_shadow_blur: m.inner_shadow_blur,
+        inner_shadow_colour: m.inner_shadow_colour,
+        curve: m.curve,
     )
 }
 
@@ -1843,7 +2859,27 @@ fn blend_of(blend: Text) -> Text {
 
 fn area_json(a: Artwork) -> Option<AreaJson> {
     if let area = a.selection {
-        return .some(AreaJson(d: area.d, feather: area.feather))
+        return .some(
+            AreaJson(
+                d: area.d,
+                feather: area.feather,
+                matte: if area.matte_src == "" {
+                    .none
+                } else {
+                    .some(
+                        MatteJson(
+                            src: area.matte_src,
+                            rect: [
+                                area.matte_x,
+                                area.matte_y,
+                                area.matte_width,
+                                area.matte_height,
+                            ],
+                        ),
+                    )
+                },
+            ),
+        )
     }
     .none
 }
@@ -2235,6 +3271,8 @@ view artwork(a: Artwork) {
     // Where the drag a shape is drawn with began, as `[x, y]`: the new stroke's start while a
     // brush is out, and the first corner of the shape while a shape tool is.
     state shape_from: List<Float> = []
+    // The points a lasso has traced, `[x, y]` each, closed when the hand lifts.
+    state lasso: List<List<Float>> = []
     state zoom: Float = 1.0
     state pan_x: Float = 0.0
     state pan_y: Float = 0.0
@@ -2254,6 +3292,9 @@ view artwork(a: Artwork) {
             stack(gap: .none, fill) {
                 ui.PaintSurface(
                     picture: a.look,
+                    overlay: a.version_overlay,
+                    overlay_rect: a.version_region,
+                    overlay_opacity: 0.7,
                     width: a.width,
                     height: a.height,
                     brush: paint_brush(tool, brush),
@@ -2267,31 +3308,29 @@ view artwork(a: Artwork) {
                         .then(
                             start_paint(a, tool, paint_brush(tool, brush), chosen, p, size, colour),
                         )
-                    on stroke(p: List<Float>): continue_paint(
-                        a,
-                        tool,
-                        paint_brush(tool, brush),
-                        p,
-                        size,
-                        colour,
-                    )
+                    on stroke(p: List<Float>): set(lasso, lasso_through(tool, lasso, p))
+                        .then(
+                            continue_paint(a, tool, paint_brush(tool, brush), p, size, colour),
+                        )
                     on stroke_end(p: List<Float>): finish_paint(
-                        a,
-                        tool,
-                        brush,
-                        chosen,
-                        shape_from,
-                        p,
-                        size,
-                        colour,
-                    )
+                            a,
+                            tool,
+                            brush,
+                            chosen,
+                            shape_from,
+                            p,
+                            size,
+                            colour,
+                            lasso,
+                        )
+                        .then(set(lasso, []))
                     // The wheel and a pinch zoom about the view, and a middle-button drag pans it.
                     on wheel(delta): set(zoom, zoomed(zoom, delta))
                     on pinch(scale): set(zoom, (zoom * scale).clamp(0.05, 64.0))
                     on panned(delta): set(pan_x, pan_x + (delta.at(0) ?? 0.0))
                         .then(set(pan_y, pan_y + (delta.at(1) ?? 0.0)))
                 }
-                well(a, tool, brush, size, colour, pan_x, pan_y, zoom)
+                well(a, tool, brush, size, colour, chosen, pan_x, pan_y, zoom)
             }
         }
     }
@@ -2328,6 +3367,9 @@ view artwork_head(
         }
         ui.ToolbarButton("Select", icon: .circle_dashed, toggled: tool == "select") {
             on press: set(tool, "select")
+        }
+        ui.ToolbarButton("Lasso", icon: .lasso, toggled: tool == "lasso") {
+            on press: set(tool, "lasso")
         }
         ui.ToolbarButton("Wand", icon: .wand_sparkles, toggled: tool == "wand") {
             on press: set(tool, "wand")
@@ -2460,6 +3502,49 @@ view layers_rail(a: Artwork, chosen: State<Option<Layer>>) {
                 ui.Button("Measure", icon: .sliders_horizontal) {
                     on press: measure_marks(a, marks)
                 }
+                ui.Button("Pick", icon: .check) {
+                    on press: pick_marks(a, marks)
+                }
+            }
+            if a.picked.len() > 0 {
+                ui.Text("{a.picked.len()} picked", role: .caption, secondary: true)
+                ui.Button("Let the picks go", icon: .x) {
+                    on press: clear_picked(a)
+                }
+            }
+        }
+        if let m = a.marks.last() {
+            ui.Section("Brush dynamics") {
+                ui.Slider(value: m.params.get("flow") ?? 1.0, label: "Flow", min: 0.0, max: 1.0) {
+                    on change(v): set_dynamics(m, flow: v)
+                }
+                ui.Slider(
+                    value: m.params.get("hardness") ?? 1.0,
+                    label: "Hardness",
+                    min: 0.0,
+                    max: 1.0,
+                ) {
+                    on change(v): set_dynamics(m, hardness: v)
+                }
+                ui.Slider(
+                    value: m.params.get("spacing") ?? 0.0,
+                    label: "Spacing",
+                    min: 0.0,
+                    max: 1.0,
+                ) {
+                    on change(v): set_dynamics(m, spacing: v)
+                }
+                ui.Slider(
+                    value: m.params.get("smoothing") ?? 0.0,
+                    label: "Smoothing",
+                    min: 0.0,
+                    max: 1.0,
+                ) {
+                    on change(v): set_dynamics(m, smoothing: v)
+                }
+                ui.Slider(value: m.params.get("taper") ?? 0.0, label: "Taper", min: 0.0, max: 1.0) {
+                    on change(v): set_dynamics(m, taper: v)
+                }
             }
         }
         if a.media.len() > 0 {
@@ -2489,6 +3574,12 @@ view text_panel(t: Mark) {
         ui.TextInput(bind: t.text)
         ui.Text("Size", role: .caption, secondary: true)
         ui.Slider(bind: t.size, label: "Size", min: 4.0, max: 400.0)
+        ui.Text("Line height", role: .caption, secondary: true)
+        ui.Slider(bind: t.line_height, label: "Line height", min: 0.0, max: 4.0)
+        ui.Text("Tracking", role: .caption, secondary: true)
+        ui.Slider(bind: t.tracking, label: "Tracking", min: -1.0, max: 10.0)
+        ui.Text("Set along a path, as SVG path data", role: .caption, secondary: true)
+        ui.TextInput(bind: t.text_path)
         ui.ColorPicker(bind: t.colour, swatches: inks(), columns: 7, label: "Text colour")
         row(gap: .tight) {
             ui.Button("Light", toggled: t.weight == 300) {
@@ -2581,6 +3672,7 @@ view well(
     brush: State<Text>,
     size: State<Float>,
     colour: State<Text>,
+    chosen: State<Option<Layer>>,
     pan_x: State<Float>,
     pan_y: State<Float>,
     zoom: State<Float>,
@@ -2596,6 +3688,19 @@ view well(
         ui.Text(paint_brush(tool, brush), role: .caption, secondary: true)
         ui.Slider(bind: size, label: "Size", min: 1.0, max: 128.0, fill)
         ui.ColorPicker(bind: colour, swatches: inks(), columns: 7, label: "Paint")
+        if let layer = chosen {
+            if let medium = a.media.find(m -> m.key == layer.medium) {
+                if medium.palette.len() > 0 {
+                    ui.MenuButton("Pigment", icon: .droplet) {
+                        for p in medium.palette {
+                            ui.MenuItem(p.name) {
+                                on choose: set(colour, p.colour)
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if tool == "select" {
             ui.Button("Fill the selection", icon: .paint_bucket) {
                 on press: fill_selection(a, .none, colour)
@@ -2619,6 +3724,16 @@ view well(
             }
             ui.MenuItem("SVG") {
                 on choose: file.save(export_svg(a), name: "Artwork.svg")
+            }
+        }
+        ui.MenuButton("Versions", icon: .history) {
+            for v in history(a).sort_by(v -> v.at, desc).take(8) {
+                ui.MenuItem("{v.at} — {v.what}") {
+                    on choose: compare_versions(a, change_of(v))
+                }
+            }
+            ui.MenuItem("Clear the comparison") {
+                on choose: clear_comparison(a)
             }
         }
         if let shape = last_shape(a) {
@@ -2670,6 +3785,9 @@ view well(
         }
         if a.comparison != "" {
             ui.ImageViewer(a.comparison, alt: "The artwork against its reference", aspect: 1.5)
+        }
+        if a.version_note != "" {
+            ui.Text(a.version_note, role: .caption, secondary: true)
         }
         ui.Text("{zoomed_said(zoom)}", role: .caption, secondary: true)
         ui.Button("Fit the view", icon: .maximize, icon_only: true) {
@@ -2741,6 +3859,9 @@ action start_paint(
         select_like(a, point, "", 0.15, false)
         return
     }
+    if tool == "lasso" {
+        return
+    }
     if tool == "text" {
         if let x = point.at(0), y = point.at(1) {
             add_text(a, .none, "Text", x, y, 32.0, colour, "", 0, false, "", 0.0, 0.0)
@@ -2788,7 +3909,12 @@ action finish_paint(
     point: List<Float>,
     size: Float,
     colour: Text,
+    lasso: List<List<Float>> = [],
 ) -> Option<Mark> {
+    if tool == "lasso" {
+        if lasso.len() >= 3 { select_lasso(a, lasso) }
+        return .none
+    }
     if paints_a_stroke(tool) {
         if let made = continue_paint(a, tool, brush, point, size, colour) {
             made.open = false
@@ -2812,6 +3938,13 @@ action finish_paint(
     }
     if tool == "select" and not same_place(from, point) { select_area(a, rect_path(from, point)) }
     .none
+}
+
+/// The lasso's points with `p` added while the lasso tool draws; unchanged for any other tool.
+fn lasso_through(tool: Text, lasso: List<List<Float>>, p: List<Float>) -> List<List<Float>> {
+    if tool == "lasso" {
+        lasso + [[p.at(0) ?? 0.0, p.at(1) ?? 0.0]]
+    } else { lasso }
 }
 
 fn same_place(from: List<Float>, to: List<Float>) -> Bool {

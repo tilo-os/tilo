@@ -122,6 +122,21 @@ impl Default for RecordLayer {
             clip: false,
             unlinked: false,
             medium: String::new(),
+            exposure: 0.0,
+            contrast: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            saturation: 0.0,
+            vibrance: 0.0,
+            hue: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+            grayscale: false,
+            invert_adjust: false,
+            blur: 0.0,
+            sharpen: 0.0,
+            vignette: 0.0,
+            curve: Vec::new(),
             opacity: one(),
             visible: yes(),
             locked: false,
@@ -155,6 +170,37 @@ struct RecordLayer {
     unlinked: bool,
     #[serde(default)]
     medium: String,
+    /// The layer's colour and tone adjustments, applied after each mark's own.
+    #[serde(default)]
+    exposure: f64,
+    #[serde(default)]
+    contrast: f64,
+    #[serde(default)]
+    highlights: f64,
+    #[serde(default)]
+    shadows: f64,
+    #[serde(default)]
+    saturation: f64,
+    #[serde(default)]
+    vibrance: f64,
+    #[serde(default)]
+    hue: f64,
+    #[serde(default)]
+    temperature: f64,
+    #[serde(default)]
+    tint: f64,
+    #[serde(default)]
+    grayscale: bool,
+    #[serde(default)]
+    invert_adjust: bool,
+    #[serde(default)]
+    blur: f64,
+    #[serde(default)]
+    sharpen: f64,
+    #[serde(default)]
+    vignette: f64,
+    #[serde(default)]
+    curve: Vec<Vec<f64>>,
     #[serde(default = "one")]
     opacity: f64,
     #[serde(default = "yes")]
@@ -260,6 +306,36 @@ struct RecordMark {
     wet: bool,
     #[serde(default)]
     params: BTreeMap<String, f64>,
+    /// The mark's affine transform `[a, b, c, d, e, f]`; empty for none.
+    #[serde(default)]
+    transform: Vec<f64>,
+    /// The mark or group whose shape this mark is cut to; empty for none.
+    #[serde(default)]
+    clip: String,
+    #[serde(default)]
+    pixelated: bool,
+    #[serde(default)]
+    grain: f64,
+    #[serde(default)]
+    feather: f64,
+    #[serde(default)]
+    shadow_x: f64,
+    #[serde(default)]
+    shadow_y: f64,
+    #[serde(default)]
+    shadow_blur: f64,
+    #[serde(default)]
+    shadow_colour: String,
+    #[serde(default)]
+    inner_shadow_x: f64,
+    #[serde(default)]
+    inner_shadow_y: f64,
+    #[serde(default)]
+    inner_shadow_blur: f64,
+    #[serde(default)]
+    inner_shadow_colour: String,
+    #[serde(default)]
+    curve: Vec<Vec<f64>>,
     /// A picture's bytes, by the address it is kept at, and the frame it is drawn in.
     #[serde(default)]
     src: String,
@@ -326,6 +402,16 @@ struct RecordArea {
     d: String,
     #[serde(default)]
     feather: f64,
+    /// The soft edge a refined selection keeps: its picture and frame.
+    #[serde(default)]
+    matte: Option<RecordMatte>,
+}
+#[derive(serde::Deserialize)]
+struct RecordMatte {
+    #[serde(default)]
+    src: String,
+    #[serde(default)]
+    rect: Vec<f64>,
 }
 fn wide() -> f64 {
     1024.0
@@ -376,7 +462,7 @@ fn adjust_of(mark: &RecordMark) -> Option<Adjust> {
         hue: set(mark.hue),
         temperature: set(mark.temperature),
         tint: set(mark.tint),
-        curve: None,
+        curve: curve_of(&mark.curve),
         grayscale: mark.grayscale.then_some(true),
         invert: mark.invert.then_some(true),
         blur: set(mark.blur),
@@ -392,6 +478,63 @@ fn adjust_of(mark: &RecordMark) -> Option<Adjust> {
         || adjust.hue.is_some()
         || adjust.temperature.is_some()
         || adjust.tint.is_some()
+        || adjust.curve.is_some()
+        || adjust.grayscale.is_some()
+        || adjust.invert.is_some()
+        || adjust.blur.is_some()
+        || adjust.sharpen.is_some()
+        || adjust.vignette.is_some())
+    .then_some(adjust)
+}
+/// A tone curve as the engine reads it.
+fn curve_of(curve: &[Vec<f64>]) -> Option<Vec<[f64; 2]>> {
+    let points: Vec<[f64; 2]> = curve
+        .iter()
+        .filter_map(|point| Some([*point.first()?, *point.get(1)?]))
+        .collect();
+    (points.len() >= 2).then_some(points)
+}
+/// A shadow, absent when it draws nothing.
+fn shadow_of((x, y): (f64, f64), blur: f64, colour: &str) -> Option<crate::model::Shadow> {
+    let draws = x.abs() > f64::EPSILON
+        || y.abs() > f64::EPSILON
+        || blur.abs() > f64::EPSILON
+        || !colour.is_empty();
+    draws.then(|| crate::model::Shadow {
+        offset: [x, y],
+        blur,
+        colour: (!colour.is_empty()).then(|| colour.to_owned()),
+    })
+}
+/// A layer's adjustments, absent when they do nothing.
+fn layer_adjust_of(layer: &RecordLayer) -> Option<Adjust> {
+    let adjust = Adjust {
+        exposure: set(layer.exposure),
+        contrast: set(layer.contrast),
+        highlights: set(layer.highlights),
+        shadows: set(layer.shadows),
+        saturation: set(layer.saturation),
+        vibrance: set(layer.vibrance),
+        hue: set(layer.hue),
+        temperature: set(layer.temperature),
+        tint: set(layer.tint),
+        curve: curve_of(&layer.curve),
+        grayscale: layer.grayscale.then_some(true),
+        invert: layer.invert_adjust.then_some(true),
+        blur: set(layer.blur),
+        sharpen: set(layer.sharpen),
+        vignette: set(layer.vignette),
+    };
+    (adjust.exposure.is_some()
+        || adjust.contrast.is_some()
+        || adjust.highlights.is_some()
+        || adjust.shadows.is_some()
+        || adjust.saturation.is_some()
+        || adjust.vibrance.is_some()
+        || adjust.hue.is_some()
+        || adjust.temperature.is_some()
+        || adjust.tint.is_some()
+        || adjust.curve.is_some()
         || adjust.grayscale.is_some()
         || adjust.invert.is_some()
         || adjust.blur.is_some()
@@ -424,6 +567,29 @@ fn flip_of(mark: &RecordMark) -> Option<[f64; 6]> {
     let cx = mark.x + mark.width / 2.0;
     let cy = mark.y + mark.height / 2.0;
     Some([sx, 0.0, 0.0, sy, cx - sx * cx, cy - sy * cy])
+}
+/// `outer` after `inner`, as one affine.
+fn compose(outer: [f64; 6], inner: [f64; 6]) -> [f64; 6] {
+    let [a1, b1, c1, d1, e1, f1] = outer;
+    let [a2, b2, c2, d2, e2, f2] = inner;
+    [
+        a1 * a2 + c1 * b2,
+        b1 * a2 + d1 * b2,
+        a1 * c2 + c1 * d2,
+        b1 * c2 + d1 * d2,
+        a1 * e2 + c1 * f2 + e1,
+        b1 * e2 + d1 * f2 + f1,
+    ]
+}
+/// The mark's transform: the one the records keep, with a flip about its middle applied
+/// first when it is flipped.
+fn transform_of(mark: &RecordMark) -> Option<[f64; 6]> {
+    let kept = <[f64; 6]>::try_from(mark.transform.as_slice()).ok();
+    match (kept, flip_of(mark)) {
+        (Some(kept), Some(flip)) => Some(compose(kept, flip)),
+        (Some(kept), None) => Some(kept),
+        (None, flip) => flip,
+    }
 }
 
 /// The ground the artwork paints on, the records' defaults filled in.
@@ -459,7 +625,7 @@ fn layers_of(records: &Records) -> Vec<Layer> {
             visible: layer.visible,
             texture: layer.texture.clamp(0.0, 1.0),
             locked: layer.locked,
-            adjust: None,
+            adjust: layer_adjust_of(layer),
             mask_of: slug(&layer.mask_of),
             base: layer.base.clamp(0.0, 1.0),
             invert: layer.invert,
@@ -541,6 +707,19 @@ fn mark_of(index: usize, mark: &RecordMark) -> Mark {
     style.wet = mark.wet;
     style.params = mark.params.clone();
     style.gradient = gradient_of(mark);
+    style.pixelated = mark.pixelated;
+    style.grain = set(mark.grain);
+    style.feather = set(mark.feather);
+    style.shadow = shadow_of(
+        (mark.shadow_x, mark.shadow_y),
+        mark.shadow_blur,
+        &mark.shadow_colour,
+    );
+    style.inner_shadow = shadow_of(
+        (mark.inner_shadow_x, mark.inner_shadow_y),
+        mark.inner_shadow_blur,
+        &mark.inner_shadow_colour,
+    );
     Mark {
         id: format!("mark-{index}"),
         layer: slug(&mark.layer.name),
@@ -548,9 +727,9 @@ fn mark_of(index: usize, mark: &RecordMark) -> Mark {
         name: mark.name.clone(),
         shape,
         style,
-        transform: flip_of(mark),
+        transform: transform_of(mark),
         group: mark.group.clone(),
-        clip: String::new(),
+        clip: mark.clip.clone(),
         area: String::new(),
     }
 }
@@ -642,10 +821,17 @@ fn gradient_of(mark: &RecordMark) -> Option<crate::model::Gradient> {
 /// The area the person selected, when the records keep one.
 fn selection_of(records: &Records) -> Option<Selection> {
     let area = records.selection.as_ref()?;
+    let matte = area.matte.as_ref().and_then(|matte| {
+        let rect = <[f64; 4]>::try_from(matte.rect.as_slice()).ok()?;
+        (!matte.src.is_empty()).then(|| crate::model::Matte {
+            src: matte.src.clone(),
+            rect,
+        })
+    });
     Some(Selection {
         d: area.d.clone(),
         feather: area.feather.clamp(0.0, 500.0),
-        matte: None,
+        matte,
     })
 }
 
@@ -662,6 +848,11 @@ pub fn artwork_of(file: &ArtworkFile) -> Result<Artwork, String> {
 
 /// Run `build` with `pictures` lent to the engine's content stores.
 fn lending<T>(pictures: &[(String, Vec<u8>)], build: impl FnOnce() -> T) -> T {
+    lending_with(pictures, |_| build())
+}
+
+/// [`lending`], with the store the engine keeps what it makes in (a matte, a picture) in hand.
+fn lending_with<T>(pictures: &[(String, Vec<u8>)], build: impl FnOnce(&ContentStore) -> T) -> T {
     let scope = tilo_wake::WakeScope::new();
     let store = ContentStore::memory();
     for (address, bytes) in pictures {
@@ -671,8 +862,8 @@ fn lending<T>(pictures: &[(String, Vec<u8>)], build: impl FnOnce() -> T) -> T {
     }
     tilo_resource::content::register(&scope.handle(), store.clone());
     let _entered = scope.enter();
-    tilo_ui::pictures::lend_content(Some(store));
-    let made = build();
+    tilo_ui::pictures::lend_content(Some(store.clone()));
+    let made = build(&store);
     tilo_ui::pictures::lend_content(None);
     made
 }
@@ -812,16 +1003,83 @@ pub fn find_area(
     art: &Artwork,
     request: &str,
     pictures: &[(String, Vec<u8>)],
-) -> Result<String, String> {
+) -> Result<(String, Option<(String, Vec<u8>, [f64; 4])>), String> {
     let select: crate::resource::FindArea = serde_json::from_str(request)
         .map_err(|error| format!("what to find cannot be read: {error}"))?;
-    lending(pictures, || {
+    lending_with(pictures, |store| {
         let mut renderer = Renderer::default();
         let mut text = TextRenderer::new();
-        let prepared = crate::subject::prepare(&select, &mut renderer, &mut text, art)?;
-        let (region, _matte, _found) = prepared.finish()?;
-        Ok(region.to_path().to_svg())
+        let prepared =
+            crate::subject::prepare_in(&select, &mut renderer, &mut text, art, store.clone())?;
+        let (region, matte, _found) = prepared.finish()?;
+        let soft = match matte {
+            Some(matte) => match store.read(&matte.src) {
+                Some(bytes) => Some((matte.src.clone(), bytes, matte.rect)),
+                None => return Err("the refined edge's picture went missing".to_owned()),
+            },
+            None => None,
+        };
+        Ok((region.to_path().to_svg(), soft))
     })
+}
+
+/// What `art` holds, as `request` asks: its layers and newest marks, with ids, bounds and
+/// colours, and with `palette` the colours it paints with.
+///
+/// # Errors
+///
+/// The engine's refusal, in words a person reads.
+pub fn inspect(art: &Artwork, request: &str) -> Result<String, String> {
+    let request: crate::resource::Inspect = serde_json::from_str(request)
+        .map_err(|error| format!("what to inspect cannot be read: {error}"))?;
+    let inspected = crate::view_ops::inspect(art, &request)?;
+    serde_json::to_string(&inspected)
+        .map_err(|error| format!("the inspection cannot be written: {error}"))
+}
+
+/// The selection `request` asks for, applied to `art` as it stands: a shape, a lasso, marks,
+/// grown, feathered, inverted or combined with the one there is. Answers the area's outline and
+/// feather.
+///
+/// # Errors
+///
+/// The engine's refusal, in words a person reads.
+pub fn select(art: &Artwork, request: &str) -> Result<String, String> {
+    let select: crate::selection::Select = serde_json::from_str(request)
+        .map_err(|error| format!("what to select cannot be read: {error}"))?;
+    let mut doc = art.clone();
+    select
+        .apply(&mut doc, art)
+        .map_err(|refusal| refusal.to_string())?;
+    let selection = doc.selection.unwrap_or_default();
+    Ok(serde_json::json!({
+        "d": selection.d,
+        "feather": selection.feather,
+    })
+    .to_string())
+}
+
+/// The ids of the brush strokes the path `request` names crosses, removed from a copy of `art`:
+/// what a record reader removes by id.
+///
+/// # Errors
+///
+/// The engine's refusal, in words a person reads.
+pub fn remove_along(art: &Artwork, request: &str) -> Result<String, String> {
+    let remove: crate::actions::RemoveMarks = serde_json::from_str(request)
+        .map_err(|error| format!("what to remove cannot be read: {error}"))?;
+    let mut doc = art.clone();
+    crate::actions::remove_marks(&mut doc, art, &remove).map_err(|refusal| refusal.to_string())?;
+    let kept: std::collections::HashSet<&str> =
+        doc.marks.iter().map(|mark| mark.id.as_str()).collect();
+    let removed: Vec<&str> = art
+        .marks
+        .iter()
+        .map(|mark| mark.id.as_str())
+        .filter(|id| !kept.contains(id))
+        .collect();
+    Ok(serde_json::to_string(&removed)
+        .map_err(|error| format!("what was removed cannot be written: {error}"))?)
 }
 
 /// Combines the marks `request` names into one path, as the path the bottom mark becomes: its
@@ -918,6 +1176,95 @@ pub fn compare(
         let info = serde_json::to_string(&info)
             .map_err(|error| format!("the comparison's answer cannot be written: {error}"))?;
         Ok((picture.bytes, info))
+    })
+}
+
+/// `before` and `after`, two states of one artwork, as `request` asks: what changed between
+/// them, and with `look`, a picture of the changed region before (left) and after (right).
+///
+/// # Errors
+///
+/// The engine's refusal, in words a person reads, or that this device cannot render the picture
+/// the comparison needs.
+pub fn diff(
+    before: &Artwork,
+    after: &Artwork,
+    request: &str,
+    pictures: &[(String, Vec<u8>)],
+) -> Result<(Option<Vec<u8>>, String), String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Ask {
+        /// The earlier version's name, as the reader names it.
+        from: String,
+        /// The later version's name; `now` when absent.
+        #[serde(default)]
+        to: Option<String>,
+        /// Also a picture of the changed region.
+        #[serde(default)]
+        look: Option<bool>,
+        /// The changed region as the artwork now stands, drawn at its own place so a surface
+        /// lays it over the artwork: what a person sees change rather than a before|after card.
+        #[serde(default)]
+        overlay: Option<bool>,
+    }
+    let ask: Ask = serde_json::from_str(request)
+        .map_err(|error| format!("a comparison's fields cannot be read: {error}"))?;
+    let versions = crate::view_ops::Versions {
+        before: before.clone(),
+        after: after.clone(),
+        from: ask.from,
+        to: ask.to.unwrap_or_else(|| "now".to_owned()),
+    };
+    lending(pictures, || {
+        let mut renderer = Renderer::default();
+        let mut text = TextRenderer::new();
+        let overlay = ask.overlay.unwrap_or(false);
+        let (picture, info) = crate::view_ops::diff(
+            &mut renderer,
+            &mut text,
+            &versions,
+            ask.look.unwrap_or(false) && !overlay,
+        )
+        .now()?;
+        let picture = if overlay {
+            let region = info
+                .get("changed_region")
+                .and_then(|region| region.as_array())
+                .and_then(|region| {
+                    let numbers: Vec<f64> = region
+                        .iter()
+                        .filter_map(serde_json::Value::as_f64)
+                        .collect();
+                    <[f64; 4]>::try_from(numbers).ok()
+                });
+            match region {
+                Some(region) => {
+                    let longest = region[2].abs().max(region[3].abs()).max(1.0);
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "a region's side, clamped to a picture's bounds, in pixels"
+                    )]
+                    let size = longest.clamp(64.0, 1536.0) as u32;
+                    let look = Look {
+                        region: Some(region),
+                        size: Some(size),
+                        format: Some("png".to_owned()),
+                        ..Look::default()
+                    };
+                    let (picture, _) =
+                        crate::view_ops::look(&mut renderer, &mut text, after, &look)?;
+                    Some(picture.bytes)
+                }
+                None => None,
+            }
+        } else {
+            picture.map(|picture| picture.bytes)
+        };
+        let info = serde_json::to_string(&info)
+            .map_err(|error| format!("the comparison's answer cannot be written: {error}"))?;
+        Ok((picture, info))
     })
 }
 
@@ -1063,6 +1410,8 @@ mod tests {
                 "invert": true,
                 "clip": true,
                 "unlinked": true,
+                "exposure": 0.5,
+                "curve": [[0.05, 0.0], [0.95, 1.0]],
             }],
             "media": [{
                 "id": "studio-oil",
@@ -1115,6 +1464,17 @@ mod tests {
                     "exposure": 1.5,
                     "contrast": 0.25,
                     "grayscale": true,
+                    "transform": [2.0, 0.0, 0.0, 2.0, 5.0, 6.0],
+                    "clip": "icons",
+                    "pixelated": true,
+                    "grain": 0.5,
+                    "feather": 4.0,
+                    "shadow_x": 2.0,
+                    "shadow_y": 3.0,
+                    "shadow_blur": 1.0,
+                    "shadow_colour": "#00000040",
+                    "inner_shadow_blur": 2.0,
+                    "curve": [[0.1, 0.0], [0.9, 1.0]],
                 },
             ],
             "selection": { "d": "M 0 0 L 5 5 Z", "feather": 2.0 },
@@ -1138,6 +1498,9 @@ mod tests {
         assert_eq!(layer.mask_of, base.id, "the mask names the layer it masks");
         assert!((layer.base - 0.4).abs() < f64::EPSILON);
         assert!(layer.invert && layer.clip && layer.unlinked);
+        let adjust = layer.adjust.as_ref().expect("the layer's adjustments");
+        assert_eq!(adjust.exposure, Some(0.5));
+        assert_eq!(adjust.curve, Some(vec![[0.05, 0.0], [0.95, 1.0]]));
 
         let mut marks = art.marks.iter();
         let stroke = marks.next().expect("the stroke");
@@ -1182,8 +1545,13 @@ mod tests {
                     picture.style.adjust.as_ref().and_then(|a| a.grayscale),
                     Some(true)
                 );
-                let flip = picture.transform.expect("a flipped picture");
-                assert!(flip[0] < 0.0, "the picture is mirrored across: {flip:?}");
+                let transform = picture.transform.expect("a transformed picture");
+                assert!(
+                    (transform[0] + 2.0).abs() < f64::EPSILON
+                        && (transform[3] - 2.0).abs() < f64::EPSILON
+                        && (transform[5] - 6.0).abs() < f64::EPSILON,
+                    "the record's transform composes with the flip: {transform:?}"
+                );
             }
             other => panic!("an image, not {other:?}"),
         }

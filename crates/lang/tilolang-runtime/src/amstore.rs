@@ -1165,6 +1165,43 @@ impl Store for AmStore {
         read_field(&before, &obj, field)
     }
 
+    fn read_at(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        change: &str,
+    ) -> Result<FieldValue, StoreError> {
+        let inner = self.inner.borrow();
+        let doc = inner.doc(&at.doc)?;
+        let committed = doc.committed_document();
+        let changes = committed.get_changes(&[]);
+        let n: usize = change
+            .parse()
+            .map_err(|_| not_found(format!("change {change}")))?;
+        let made = changes
+            .get(n)
+            .ok_or_else(|| not_found(format!("change {change}")))?;
+        let fork = committed.fork_at(&[made.hash()]).map_err(backend)?;
+        let at_version = AutoCommit::load(&fork.save()).map_err(backend)?;
+        if field.kind == FieldKind::Collection {
+            // A collection is its items' placements, resolved as they stood at the version.
+            return Ok(FieldValue::Items(
+                resolve_doc(&at_version)
+                    .children
+                    .get(&(at.item.clone(), field.id.to_string()))
+                    .map(|members| members.iter().map(|(_, id)| id.clone()).collect())
+                    .unwrap_or_default(),
+            ));
+        }
+        let obj = match &at.item {
+            None => ROOT,
+            Some(item) => {
+                item_obj(&at_version, item).ok_or_else(|| not_found(format!("item `{item}`")))?
+            }
+        };
+        read_field(&at_version, &obj, field)
+    }
+
     fn written(
         &self,
         at: &ResourceRef,

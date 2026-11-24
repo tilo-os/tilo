@@ -9,6 +9,9 @@
 //! their words are the engine's own catalogue. A window, a connector or a
 //! test drives them.
 
+// The record tests write a whole artwork as one `json!` literal, deeper than the default limit.
+#![recursion_limit = "256"]
+
 pub mod actions;
 pub mod adjust;
 pub mod answer;
@@ -20,9 +23,9 @@ pub mod content;
 pub mod content_geometry;
 pub mod detail;
 pub mod document;
+pub mod fonts;
 pub mod host;
 mod locales;
-pub mod fonts;
 pub mod media;
 pub mod model;
 pub mod palette;

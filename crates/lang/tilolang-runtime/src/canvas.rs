@@ -59,7 +59,8 @@ pub trait CanvasHost {
     fn wand(&self, picture: &[u8], request: &str) -> Result<String, String>;
 
     /// The area `request` names in the artwork as it shows, as SVG path data: the magic wand at
-    /// a point or a colour, a picture's subject, or the selection's edge refined.
+    /// a point or a colour, a picture's subject, or the selection's edge refined, and the soft
+    /// edge a refine keeps (its picture, bytes and frame) when there is one.
     ///
     /// # Errors
     ///
@@ -69,7 +70,7 @@ pub trait CanvasHost {
         artwork: &str,
         request: &str,
         pictures: &[(String, Vec<u8>)],
-    ) -> Result<String, String>;
+    ) -> Result<(String, Option<(String, Vec<u8>, [f64; 4])>), String>;
 
     /// The marks `request` names combined into one path, as the path's JSON: its outline and
     /// fill.
@@ -103,6 +104,43 @@ pub trait CanvasHost {
         request: &str,
         pictures: &[(String, Vec<u8>)],
     ) -> Result<(Vec<u8>, String), String>;
+
+    /// What changed between two versions of the artwork, as the engine's JSON, and with
+    /// `look`, a picture of the changed region before (left) and after (right).
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be compared or drawn.
+    fn diff(
+        &self,
+        before: &str,
+        after: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<(Option<Vec<u8>>, String), String>;
+
+    /// The selection `request` makes in the artwork (a shape, a lasso, an outline, the marks it
+    /// names, grown, shrunk, inverted or feathered, added to or taken from the one it holds), as
+    /// the selection's JSON.
+    ///
+    /// # Errors
+    ///
+    /// Why the selection cannot be made.
+    fn select(&self, artwork: &str, request: &str) -> Result<String, String>;
+
+    /// The strokes a path crosses taken out of the artwork, as the drawing's JSON.
+    ///
+    /// # Errors
+    ///
+    /// Why the path cannot be read.
+    fn remove_along(&self, artwork: &str, request: &str) -> Result<String, String>;
+
+    /// What the artwork holds (its layers, marks and palette) as the engine's JSON.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be read.
+    fn inspect(&self, artwork: &str, request: &str) -> Result<String, String>;
 
     /// The artwork, or the marks `request` names, as an SVG document.
     ///
@@ -171,7 +209,7 @@ impl CanvasHost for NoCanvas {
         _artwork: &str,
         _request: &str,
         _pictures: &[(String, Vec<u8>)],
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<(String, Vec<u8>, [f64; 4])>), String> {
         Err(unavailable())
     }
 
@@ -194,6 +232,28 @@ impl CanvasHost for NoCanvas {
         _request: &str,
         _pictures: &[(String, Vec<u8>)],
     ) -> Result<(Vec<u8>, String), String> {
+        Err(unavailable())
+    }
+
+    fn diff(
+        &self,
+        _before: &str,
+        _after: &str,
+        _request: &str,
+        _pictures: &[(String, Vec<u8>)],
+    ) -> Result<(Option<Vec<u8>>, String), String> {
+        Err(unavailable())
+    }
+
+    fn select(&self, _artwork: &str, _request: &str) -> Result<String, String> {
+        Err(unavailable())
+    }
+
+    fn remove_along(&self, _artwork: &str, _request: &str) -> Result<String, String> {
+        Err(unavailable())
+    }
+
+    fn inspect(&self, _artwork: &str, _request: &str) -> Result<String, String> {
         Err(unavailable())
     }
 
@@ -223,10 +283,22 @@ impl Core {
     #[expect(clippy::too_many_lines, reason = "one arm per canvas import")]
     pub(crate) fn canvas_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
-            Imp::CanvasLook | Imp::CanvasExport | Imp::CanvasGrade | Imp::CanvasCompare
+            Imp::CanvasLook
+            | Imp::CanvasExport
+            | Imp::CanvasGrade
+            | Imp::CanvasCompare
+            | Imp::CanvasDiffPicture
             | Imp::CanvasSave => self.canvas_picture(imp, a),
-            Imp::CanvasWand | Imp::CanvasFind | Imp::CanvasCombine | Imp::CanvasMeasure
-            | Imp::CanvasSvg | Imp::CanvasSvgImport => self.canvas_text(imp, a),
+            Imp::CanvasWand
+            | Imp::CanvasFind
+            | Imp::CanvasCombine
+            | Imp::CanvasMeasure
+            | Imp::CanvasDiff
+            | Imp::CanvasSelect
+            | Imp::CanvasInspect
+            | Imp::CanvasRemoveAlong
+            | Imp::CanvasSvg
+            | Imp::CanvasSvgImport => self.canvas_text(imp, a),
             Imp::CanvasOpen => self.canvas_open(a),
             _ => trap("not a canvas import"),
         }
@@ -263,6 +335,23 @@ impl Core {
                 let answer = self.canvas.borrow().compare(&artwork, &request, &pictures);
                 self.canvas_made(answer)
             }
+            Imp::CanvasDiffPicture => {
+                let before = self.text(a.h(0)?)?;
+                let after = self.text(a.h(1)?)?;
+                let request = self.text(a.h(2)?)?;
+                let pictures = self.file_pairs(a.h(3)?)?;
+                let answer = self
+                    .canvas
+                    .borrow()
+                    .diff(&before, &after, &request, &pictures);
+                match answer {
+                    Ok((Some(bytes), info)) => self.canvas_made(Ok((bytes, info))),
+                    Ok((None, _)) => {
+                        self.result(Err("the two versions draw the same region".to_owned()))
+                    }
+                    Err(why) => self.result(Err(why)),
+                }
+            }
             Imp::CanvasSave => {
                 let artwork = self.text(a.h(0)?)?;
                 let pictures = self.file_pairs(a.h(1)?)?;
@@ -295,7 +384,20 @@ impl Core {
                 let request = self.text(a.h(1)?)?;
                 let pictures = self.file_pairs(a.h(2)?)?;
                 let answer = self.canvas.borrow().find(&artwork, &request, &pictures);
-                self.result(answer.map(Value::text))
+                match answer {
+                    Ok((d, matte)) => {
+                        let mut held = serde_json::json!({ "d": d });
+                        if let Some((_, bytes, rect)) = matte {
+                            let file = self
+                                .keep_bytes("matte.png", "image/png", &bytes)
+                                .or_else(trap)?;
+                            held["matte_src"] = serde_json::Value::String(file.url());
+                            held["matte_rect"] = serde_json::json!(rect);
+                        }
+                        self.result(Ok(Value::text(held.to_string())))
+                    }
+                    Err(why) => self.result(Err(why)),
+                }
             }
             Imp::CanvasCombine => {
                 let artwork = self.text(a.h(0)?)?;
@@ -308,6 +410,35 @@ impl Core {
                 let request = self.text(a.h(1)?)?;
                 let pictures = self.file_pairs(a.h(2)?)?;
                 let answer = self.canvas.borrow().measure(&artwork, &request, &pictures);
+                self.result(answer.map(Value::text))
+            }
+            Imp::CanvasDiff => {
+                let before = self.text(a.h(0)?)?;
+                let after = self.text(a.h(1)?)?;
+                let request = self.text(a.h(2)?)?;
+                let pictures = self.file_pairs(a.h(3)?)?;
+                let answer = self
+                    .canvas
+                    .borrow()
+                    .diff(&before, &after, &request, &pictures);
+                self.result(answer.map(|(_, info)| Value::text(info)))
+            }
+            Imp::CanvasSelect => {
+                let artwork = self.text(a.h(0)?)?;
+                let request = self.text(a.h(1)?)?;
+                let answer = self.canvas.borrow().select(&artwork, &request);
+                self.result(answer.map(Value::text))
+            }
+            Imp::CanvasInspect => {
+                let artwork = self.text(a.h(0)?)?;
+                let request = self.text(a.h(1)?)?;
+                let answer = self.canvas.borrow().inspect(&artwork, &request);
+                self.result(answer.map(Value::text))
+            }
+            Imp::CanvasRemoveAlong => {
+                let artwork = self.text(a.h(0)?)?;
+                let request = self.text(a.h(1)?)?;
+                let answer = self.canvas.borrow().remove_along(&artwork, &request);
                 self.result(answer.map(Value::text))
             }
             Imp::CanvasSvg => {

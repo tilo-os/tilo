@@ -61,7 +61,7 @@ impl CanvasHost for Engine {
         artwork_json: &str,
         request: &str,
         pictures: &[(String, Vec<u8>)],
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<(String, Vec<u8>, [f64; 4])>), String> {
         let art = artwork(artwork_json)?;
         canvas_engine::host::find_area(&art, request, pictures)
     }
@@ -89,6 +89,33 @@ impl CanvasHost for Engine {
     ) -> Result<(Vec<u8>, String), String> {
         let art = artwork(artwork_json)?;
         canvas_engine::host::compare(&art, request, pictures)
+    }
+
+    fn diff(
+        &self,
+        before: &str,
+        after: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<(Option<Vec<u8>>, String), String> {
+        let before = artwork(before)?;
+        let after = artwork(after)?;
+        canvas_engine::host::diff(&before, &after, request, pictures)
+    }
+
+    fn select(&self, artwork_json: &str, request: &str) -> Result<String, String> {
+        let art = artwork(artwork_json)?;
+        canvas_engine::host::select(&art, request)
+    }
+
+    fn inspect(&self, artwork_json: &str, request: &str) -> Result<String, String> {
+        let art = artwork(artwork_json)?;
+        canvas_engine::host::inspect(&art, request)
+    }
+
+    fn remove_along(&self, artwork_json: &str, request: &str) -> Result<String, String> {
+        let art = artwork(artwork_json)?;
+        canvas_engine::host::remove_along(&art, request)
     }
 
     fn svg(&self, artwork_json: &str, request: &str) -> Result<String, String> {

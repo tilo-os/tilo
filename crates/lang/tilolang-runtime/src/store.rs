@@ -2052,6 +2052,25 @@ pub trait Store {
         )))
     }
 
+    /// The field `field` of `at` as it stood at the version the change `change` (a
+    /// [`Version::change`]) made: what a reader comparing past states reads. The change is
+    /// applied, unlike [`Self::read_before`]'s state before it.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for a change the store does not hold; a store that keeps no log says so.
+    fn read_at(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        change: &str,
+    ) -> Result<FieldValue, StoreError> {
+        let _ = (at, field);
+        Err(StoreError::Invalid(format!(
+            "this store keeps no log to read the state at the change {change} in"
+        )))
+    }
+
     /// What the changes from `first` to `last` (each a [`Version::change`], the same one for a
     /// single change) wrote to each of `fields` of `at`: the field's value just before `first`
     /// and just after `last`, read from the changes themselves, for each field they changed, in

@@ -5042,6 +5042,29 @@
           }
         },
         {
+          "name": "overlay",
+          "doc": "A picture laid over the artwork, such as a comparison's changed region.",
+          "type": {
+            "option": "picture"
+          }
+        },
+        {
+          "name": "overlay_rect",
+          "doc": "The frame the overlay fills, `[x, y, width, height]` in artwork units; the whole artwork when absent.",
+          "type": {
+            "option": {
+              "list": "float"
+            }
+          }
+        },
+        {
+          "name": "overlay_opacity",
+          "doc": "How strongly the overlay shows over the artwork, 0 to 1 (default 1).",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
           "name": "label",
           "doc": "What it shows, as assistive technology announces it.",
           "type": {

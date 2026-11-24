@@ -443,6 +443,16 @@ impl Core {
                 let value = self.host_list(call_inputs_key(&call_place(&target.target)));
                 self.ret_h(value)
             }
+            Imp::VersionChange => {
+                let value = self.val(a.h(0)?)?;
+                let Value::Tuple(items) = value else {
+                    return crate::core::trap("change_of takes a version");
+                };
+                let Some(Value::Text(change)) = items.last() else {
+                    return crate::core::trap("that version names no change");
+                };
+                self.ret_h(Value::Text(change.clone()))
+            }
             Imp::Versions
             | Imp::VersionEnd
             | Imp::FieldChanged
