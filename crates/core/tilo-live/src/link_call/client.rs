@@ -41,6 +41,9 @@ pub struct Call {
     device: [u8; 32],
     /// The capture the desktop publishes, by track name, as the daemon reads it.
     tracks: Mutex<BTreeMap<String, moq_net::track::Producer>>,
+    /// The broadcast itself, kept for as long as the link: a broadcast stops being announced
+    /// when its last producer goes.
+    _capture: moq_net::broadcast::Producer,
     /// Moves every timestamp written, so an object is never written at one before it.
     clock: AtomicU64,
     _connected: carrier::Connected,
@@ -129,21 +132,16 @@ impl Call {
         broadcast
             .announce(moq_net::origin::Route::default())
             .map_err(|error| error.to_string())?;
-        // The reader's view of what the daemon hands back exists before the link starts, so
-        // nothing the daemon announces at once is missed.
-        let Some(held_names) = crate::live::exact(&[HELD]) else {
-            return Err("the held broadcast is not a name".to_owned());
-        };
-        let handed = held
-            .consume()
-            .scope("", &held_names)
-            .map_err(|error| error.to_string())?;
         let connected = Self::connect(&open, &workspace, capture.consume(), held.clone()).await?;
+        // The reader's view of what the daemon hands back: the daemon announces its broadcast
+        // before the session starts, and a view made from the origin reads it as it is.
+        let handed = held.consume();
         let readers = vec![Task::spawn(read_held(handed, Arc::clone(&shared)))];
         Ok(Arc::new(Self {
             shared,
             device,
             tracks: Mutex::new(tracks),
+            _capture: broadcast,
             clock: AtomicU64::new(0),
             _connected: connected,
             _origins: (capture_task, held_task),
@@ -532,6 +530,7 @@ impl Shared {
         let Ok(wire) = postcard::from_bytes::<super::HeardWire>(body) else {
             return;
         };
+        let named = wire.track.clone();
         let Some(heard) = wire.into_heard() else {
             return;
         };

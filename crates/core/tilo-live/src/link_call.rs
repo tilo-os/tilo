@@ -216,16 +216,16 @@ where
         carrier::OriginTask::produce(carrier::origin_config(CAPTURE_BYTES, CAPTURE_RETAIN));
     let (held, held_task) =
         carrier::OriginTask::produce(carrier::origin_config(HELD_BYTES, HELD_RETAIN));
-    // What the desktop reads is this link's own view of what the daemon holds, which answers
-    // each track the session asks for: the origin itself only offers. Its broadcast and tracks
-    // exist before the session starts, so the session is told of them as it arrives.
-    let view = crate::mirror::Mirror::start(held.consume(), HELD_BYTES, HELD_RETAIN, None, None);
+    // What the desktop reads: its broadcast and tracks exist and are announced before the
+    // session starts, so the session is told of them as it arrives.
     let Some(handed) = held_tracks(&held) else {
         return Err(());
     };
+    // The broadcast stays announced for as long as the link serves it.
+    let kept_broadcast = handed.broadcast.clone();
     let server = moq_net::Server::new()
         .with_subscriber(capture.clone())
-        .with_publisher(view.consume());
+        .with_publisher(held.clone());
     let accepted = carrier::accept(
         transport,
         move |_grant| async move { Some((server, ())) },
@@ -235,7 +235,7 @@ where
     let Ok((accepted, ())) = accepted else {
         return Err(());
     };
-    let tasks = [
+    let mut tasks = vec![
         Task::spawn(take_capture(capture.consume(), Arc::clone(&live))),
         Task::spawn(hand_heard(Arc::clone(&live), handed.heard)),
         Task::spawn(say_demands(Arc::clone(&live), handed.demand)),
@@ -253,7 +253,8 @@ where
         _ = session.closed() => {}
         _ = &mut driver => {}
     }
-    drop((tasks, capture_task, held_task, view));
+    tasks.clear();
+    drop((capture_task, held_task, kept_broadcast));
     Ok(())
 }
 
@@ -265,15 +266,16 @@ async fn take_capture(from: moq_net::origin::Consumer, live: Arc<LiveSession>) {
     let names = [
         AUDIO, PRESENCE, ACTIVITY, SHARE, SHOW, HEARING, PICTURE, WINDOW, PAGE,
     ];
-    let readers = names.map(|name| {
-        Task::spawn(take_one(
+    let mut readers = Vec::new();
+    for name in names {
+        readers.push(Task::spawn(take_one(
             broadcast.clone(),
             name.to_owned(),
             Arc::clone(&live),
-        ))
-    });
+        )));
+    }
     let _ = broadcast.closed().await;
-    drop(readers);
+    readers.clear();
 }
 
 /// Read one track the desktop publishes and do each object in the live session.
@@ -498,6 +500,9 @@ async fn say_state(live: Arc<LiveSession>, track: moq_net::track::Producer) {
 
 /// What the desktop reads, opened and announced before the session starts.
 struct Handed {
+    /// The broadcast itself, kept for as long as the link: a broadcast stops being announced
+    /// when its last producer goes.
+    broadcast: moq_net::broadcast::Producer,
     heard: moq_net::track::Producer,
     demand: moq_net::track::Producer,
     state: moq_net::track::Producer,
@@ -515,6 +520,7 @@ fn held_tracks(held: &moq_net::origin::Producer) -> Option<Handed> {
             .ok()
     };
     let handed = Handed {
+        broadcast: broadcast.clone(),
         heard: track(HEARD)?,
         demand: track(DEMAND)?,
         state: track(STATE)?,
