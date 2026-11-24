@@ -43,6 +43,27 @@ pub fn std_identifier_call(e: &Expr) -> Option<&[ast::Arg]> {
     (ns == crate::stdlib::NS && name.name == "Identifier").then_some(args.as_slice())
 }
 
+/// The words `e` is written as, with its interpolation kept as `{count}`: `"wrote {count}
+/// messages"` keeps the number a history entry fills in (`did_many:`). `None` for text that is
+/// not a literal, or whose interpolation is not the count.
+#[must_use]
+pub fn counted_text(e: &Expr) -> Option<String> {
+    let ExprKind::Str(parts) = &e.kind else {
+        return None;
+    };
+    let mut out = String::new();
+    for part in parts {
+        match part {
+            ast::StrPart::Lit(text) => out.push_str(text),
+            ast::StrPart::Interp(inner) => match &inner.kind {
+                ExprKind::Ident(name) if name == "count" => out.push_str("{count}"),
+                _ => return None,
+            },
+        }
+    }
+    Some(out)
+}
+
 /// The text a `std.Identifier(...)` is made from, checked at compile time: the value is its text, so a value
 /// computed at run time would be one no reader knows.
 pub fn std_identifier_value(args: &[ast::Arg]) -> Result<String, String> {

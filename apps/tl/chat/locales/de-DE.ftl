@@ -177,6 +177,7 @@ d-peb7lz2j = Senden
         [one] schrieb eine Nachricht
        *[other] schrieb { $count } Nachrichten
     }
+    .w-type-a-message-first = Schreibe zuerst eine Nachricht
 
 d-qaa5kdra = Eine Ansicht senden
     .doc = Sendet eine Ansicht als Nachricht: ihren Titel als das, was die Nachricht sagt, ihre Definition, damit jeder, der sie liest, sie den eigenen Ansichten hinzufügen kann.

@@ -909,6 +909,7 @@ fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> Acti
         role: None,
         scenario: false,
         did: None,
+        did_many: None,
         present: None,
         toggles: None,
         key: None,

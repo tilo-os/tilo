@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use tilolang::cli::format_package;
 use tilolang::source::{
-    BuildError, Stamp, catalogue_current, compile_dirs, compile_package, dependency_order,
+    BuildError, Stamp, catalogue_path, compile_dirs, compile_package, dependency_order,
     ids_current, search_of,
 };
 use tilolang::{Compiled, Diagnostic, IdsLock, PackageSource, SeededEntropy};
@@ -360,8 +360,8 @@ fn the_example_packages_are_in_canonical_form() {
 const NEEDS_PUBLISHED_APPS: &[&str] = &["shell", "tube"];
 
 /// The files a package's sources derive — its ids lock and its source catalogue — are what the ones
-/// committed beside them say. A change to how they are derived fails here, in the crate the derivation
-/// lives in, and not on main once it has landed.
+/// committed beside them say, where a package still commits one. A change to how they are derived
+/// fails here, in the crate the derivation lives in, and not on main once it has landed.
 #[test]
 fn the_example_packages_hold_the_files_their_sources_write() {
     let dirs = example_dirs();
@@ -385,11 +385,35 @@ fn the_example_packages_hold_the_files_their_sources_write() {
                 "{package_dir}/app.ids is not what its sources write; write it with \
                  `tilolang check --write-ids {package_dir}` and commit it with them"
             );
-            assert!(
-                catalogue_current(package),
-                "{package_dir}/locales/en-US.ftl is not what its sources write; write it with \
-                 `tilolang check --write-ids {package_dir}` and commit it with them"
-            );
+            let source = tilolang::source::catalogue(package);
+            if let Ok(committed) = std::fs::read_to_string(catalogue_path(&package.dir)) {
+                assert_eq!(
+                    source, committed,
+                    "{package_dir}/locales/en-US.ftl is not what its sources write; the build \
+                     writes the source catalogue from the sources"
+                );
+            }
+            let source_keys = tilolang::messages::keys(&source);
+            for (locale, text) in tilolang::source::read_locales(&package.dir).unwrap() {
+                if locale == tilolang::messages::SOURCE_LOCALE {
+                    continue;
+                }
+                assert!(
+                    tilolang::messages::stale_keys(&source, &text).is_empty(),
+                    "{package_dir}/locales/{locale}.ftl translates words the source does not \
+                     have; `tilolang catalogue {package_dir}` prints the source's words"
+                );
+                let keys = tilolang::messages::keys(&text);
+                let missing: Vec<&String> = source_keys
+                    .iter()
+                    .filter(|key| !keys.contains(key))
+                    .collect();
+                assert!(
+                    missing.is_empty(),
+                    "{package_dir}/locales/{locale}.ftl lacks {missing:?}; `tilolang catalogue \
+                     {package_dir}` prints the source's words"
+                );
+            }
         }
         checked.push(name);
     }

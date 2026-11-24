@@ -246,22 +246,22 @@ tilo_test_env::scenario! {
         );
         assert_eq!(with.meta.module_hash, without.meta.module_hash);
         // The module carries the source catalogue its sources write, not the copy on disk beside
-        // them; a translation travels as it stands.
+        // them, and the source language comes first; a translation travels as it stands.
         let locales = tilolang::meta::locales_from_wasm(&with.wasm);
         assert_eq!(locales.len(), 2);
-        assert_eq!(
-            locales[0],
-            ("de-DE".to_owned(), "d-x = Zähler\n".to_owned())
-        );
-        assert_eq!(locales[1].0, "en-US");
+        assert_eq!(locales[0].0, "en-US");
         assert!(
-            locales[1]
+            locales[0]
                 .1
                 .contains(".doc = A counter that several people can bump at once."),
             "{}",
-            locales[1].1
+            locales[0].1
         );
-        assert!(!locales[1].1.contains("d-x = Counter"), "{}", locales[1].1);
+        assert!(!locales[0].1.contains("d-x = Counter"), "{}", locales[0].1);
+        assert_eq!(
+            locales[1],
+            ("de-DE".to_owned(), "d-x = Zähler\n".to_owned())
+        );
         assert!(tilolang::meta::locales_from_wasm(&without.wasm).is_empty());
     }
 

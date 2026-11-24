@@ -113,10 +113,25 @@ const USAGE: &[(&str, &str)] = &[
       the package's errors, its canonical form and its ids lock (check, fmt, ids); `use` also
       finds native apps and the platform's packages in --path",
     ),
+    (
+        "catalogue",
+        "\
+  tilolang catalogue [DIR] [--path DIR]...
+      print the source catalogue the build writes from the package's sources: every word it shows
+      in its source language, under the key its translations use, with the doc line saying what
+      each is for. Nothing is written.",
+    ),
 ];
 
 /// The commands only a package has: this half answers them whatever the directory holds.
-const PACKAGE_COMMANDS: [&str; 5] = ["describe", "profile", "repl", "fmt", "ids"];
+const PACKAGE_COMMANDS: [&str; 6] = [
+    "describe",
+    "profile",
+    "repl",
+    "fmt",
+    "ids",
+    "catalogue",
+];
 
 /// The commands a package and a Rust app both have, each its own way: the app named decides.
 const SHARED_COMMANDS: [&str; 5] = ["build", "package", "run", "dev", "check"];
@@ -171,6 +186,10 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("repl", "Type tilolang in one of your workspaces, as you."),
             ("fmt", "Write the package in its canonical form."),
             ("ids", "Check or write the package's ids lock (app.ids)."),
+            (
+                "catalogue",
+                "Print the source catalogue the build writes from the package's sources.",
+            ),
         ],
     ),
     ("Rust apps", &[]),

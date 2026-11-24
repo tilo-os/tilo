@@ -345,6 +345,13 @@ pub struct TypeMeta {
     /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub untitled: Option<String>,
+    /// `(label: "Notes")`: what a person reads the type as, where that is not its name in words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// `(noun: "notebook")`: what one of the type is called in a sentence, where its name in words
+    /// says something else. Several are its plural (`notebooks`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub noun: Option<String>,
     /// `(readers: author)`: who reads a record of the type, when not every member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readers: Option<ReaderRule>,
@@ -677,6 +684,10 @@ pub struct ActionMeta {
     /// attribute of the action's message (`d-<id>.did`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did: Option<String>,
+    /// `did_many: "moved {count} tasks"`: what it did when it changed several, which a history
+    /// entry reads with the count (`{ $count -> [one] … *[other] … }`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_many: Option<String>,
     /// The id of the view that presents the action's state for a target, when its label or icon
     /// follows the target or it declares `on:`. `label` and `icon` above are what shows without
     /// evaluating it.
@@ -890,18 +901,28 @@ impl ViewMeta {
 }
 
 impl TypeMeta {
-    /// What one is called in a sentence: its name in words, lower case, in the singular (`TodoList`
-    /// is a `todo list`).
+    /// What a person reads the type as: its `label:`, else its name in words.
     #[must_use]
-    pub fn noun(&self) -> String {
-        singular(&in_words(&self.name))
+    pub fn label(&self) -> String {
+        self.label
+            .clone()
+            .unwrap_or_else(|| crate::messages::label(&self.name))
     }
 
-    /// What several are called in a sentence, which a name that already names several leaves as it
+    /// What one is called in a sentence: its `noun:`, else its name in words, lower case, in the
+    /// singular (`TodoList` is a `todo list`).
+    #[must_use]
+    pub fn noun(&self) -> String {
+        self.noun
+            .clone()
+            .unwrap_or_else(|| singular(&in_words(&self.name)))
+    }
+
+    /// What several are called in a sentence, which a noun that already names several leaves as it
     /// is.
     #[must_use]
     pub fn plural(&self) -> String {
-        plural(&in_words(&self.name))
+        plural(&self.noun())
     }
 }
 

@@ -285,7 +285,7 @@ pub fn order_of(
     Ok(order)
 }
 
-fn same_dir(a: &Path, b: &Path) -> bool {
+pub fn same_dir(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
@@ -448,60 +448,19 @@ pub fn locale_path(dir: &Path, locale: &str) -> PathBuf {
         .join(format!("{locale}.ftl"))
 }
 
-/// Where a package keeps its source catalogue: `locales/en-US.ftl`.
+/// Where a package would keep its source catalogue if it committed one: `locales/en-US.ftl`. The
+/// build writes it from the sources into the module instead; this names the file a package that
+/// still carries one keeps it in, so a check can say it is not what the sources write.
 #[must_use]
 pub fn catalogue_path(dir: &Path) -> PathBuf {
     locale_path(dir, crate::messages::SOURCE_LOCALE)
 }
 
-fn committed_catalogue(dir: &Path) -> String {
-    std::fs::read_to_string(catalogue_path(dir)).unwrap_or_default()
-}
-
+/// The package's source catalogue, written from its compiled sources: the words its module carries,
+/// which a window reads in the source language.
 #[must_use]
 pub fn catalogue(built: &BuiltPackage) -> String {
-    let committed = committed_catalogue(&built.dir);
-    crate::messages::source_catalogue_keeping(&built.compiled.meta, &committed)
-}
-
-#[must_use]
-pub fn catalogue_current(built: &BuiltPackage) -> bool {
-    std::fs::read_to_string(catalogue_path(&built.dir)).is_ok_and(|old| old == catalogue(built))
-}
-
-/// Writes the package's source catalogue, and drops from its translations the words the source stopped
-/// saying (a translation has every word of its source and no more); `true` when the source catalogue
-/// changed.
-///
-/// # Errors
-/// A catalogue cannot be written.
-pub fn write_catalogue(built: &BuiltPackage) -> Result<bool, String> {
-    if catalogue_current(built) {
-        return Ok(false);
-    }
-    let path = catalogue_path(&built.dir);
-    let before = committed_catalogue(&built.dir);
-    let after = catalogue(built);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    }
-    std::fs::write(&path, &after).map_err(|e| format!("{}: {e}", path.display()))?;
-    let gone = crate::messages::gone_keys(&before, &after);
-    if gone.is_empty() {
-        return Ok(true);
-    }
-    for (locale, text) in read_locales(&built.dir)? {
-        if locale == crate::messages::SOURCE_LOCALE {
-            continue;
-        }
-        let kept = crate::messages::pruned(&text, &gone);
-        if kept == text {
-            continue;
-        }
-        let path = locale_path(&built.dir, &locale);
-        std::fs::write(&path, kept).map_err(|e| format!("{}: {e}", path.display()))?;
-    }
-    Ok(true)
+    crate::messages::source_catalogue(&built.compiled.meta)
 }
 
 /// Whether the package's committed ids lock is what this build writes: the same entries, in the order the

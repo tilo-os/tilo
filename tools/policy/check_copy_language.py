@@ -192,6 +192,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import derived_catalogue  # noqa: E402
 import rust_source  # noqa: E402
 
 
@@ -202,6 +203,13 @@ SAVE_EXCEPTIONS = HERE / "copy_save_exceptions.toml"
 SOURCE_LITERALS = HERE / "copy_source_literals.toml"
 
 SOURCE_LOCALE = "en-US"
+
+# The compiler a tilolang package's source catalogue is read from, named by `--tilolang` or
+# `$TILOLANG`; `None` looks for the tree's own built tool.
+TILOLANG: str | None = None
+
+# The unit a tilolang package's words are read as.
+PACKAGE_SOURCE = derived_catalogue.PACKAGE_SOURCE
 
 # A separator glyph between two values, and unicode symbols used as icons.
 GLYPH_JOIN = re.compile(r"\S\s+[·•|—–›»]\s+\S|\S\s/\s\S|^\s*[·•]\s|\s[·•]\s*$")
@@ -2505,7 +2513,9 @@ def unit_of(root: Path, catalogue: Path) -> str:
 
 
 def scan(root: Path, glossary: list[Term]) -> dict[str, list[tuple[str, Message, str, str, Path]]]:
-    """Per unit, every (locale, message, rule, detail, catalogue) violation."""
+    """Per unit, every (locale, message, rule, detail, catalogue) violation of the catalogues a
+    crate ships. A tilolang package's source language is not a file; [`package_violations`] reads
+    it."""
     found: dict[str, list[tuple[str, Message, str, str, Path]]] = {}
     for catalogue in catalogues(root):
         locale = catalogue.stem
@@ -2513,6 +2523,26 @@ def scan(root: Path, glossary: list[Term]) -> dict[str, list[tuple[str, Message,
         for message in messages(catalogue.read_text()):
             for rule, detail in violations(locale, message, glossary):
                 found.setdefault(unit, []).append((locale, message, rule, detail, catalogue))
+    return found
+
+
+def package_violations(root: Path, glossary: list[Term]) -> list[tuple[str, str, Message, str, str]]:
+    """Per (unit, where, message, rule, detail), the copy of a tilolang package's own words: the
+    compiler writes its source catalogue from the package's sources, so it is read here."""
+    found: list[tuple[str, str, Message, str, str]] = []
+    for package in derived_catalogue.packages(root):
+        relative = package.relative_to(root)
+        if "tests" in relative.parts:
+            continue
+        unit = relative.as_posix().replace("/", "-")
+        try:
+            source = derived_catalogue.catalogue(package, TILOLANG, root=ROOT)
+        except derived_catalogue.CannotRead as error:
+            print(error, file=sys.stderr)
+            continue
+        for message in messages(source):
+            for rule, detail in violations(SOURCE_LOCALE, message, glossary):
+                found.append((unit, relative.as_posix(), message, rule, detail))
     return found
 
 
@@ -2539,6 +2569,13 @@ def check(root: Path, glossary_path: Path,
                     used.add(exception)
                     continue
             errors.append(f"{named(root, catalogue)}:{message.line}: {message.key} {detail} [{rule}]")
+    for unit, where, message, rule, detail in package_violations(root, glossary):
+        if rule == "save-status":
+            exception = SaveException(unit, message.key.split(".")[0], None, None)
+            if exception in exceptions:
+                used.add(exception)
+                continue
+        errors.append(f"{where}: {message.key} {detail} [{rule}]")
     for file, line, text in routine_save_literals(root):
         exception = SaveException(None, None, file, text)
         if exception in exceptions:
@@ -2619,7 +2656,20 @@ def written_labels(root: Path) -> list[tuple[str, int, str]]:
 
 
 def main() -> int:
-    errors = check(ROOT, GLOSSARY, SAVE_EXCEPTIONS, SOURCE_LITERALS)
+    global TILOLANG
+    try:
+        TILOLANG, arguments = derived_catalogue.take_flag(sys.argv[1:])
+    except derived_catalogue.Unread as error:
+        print(error, file=sys.stderr)
+        return 2
+    if arguments:
+        print("usage: check_copy_language.py [--tilolang PATH]", file=sys.stderr)
+        return 2
+    try:
+        errors = check(ROOT, GLOSSARY, SAVE_EXCEPTIONS, SOURCE_LITERALS)
+    except derived_catalogue.Unread as error:
+        print(error, file=sys.stderr)
+        return 1
     if errors:
         print("\n".join(errors))
         return 1

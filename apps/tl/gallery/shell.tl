@@ -9,7 +9,7 @@ enum Kind {
 }
 
 /// One app on a dock: what it stands for and its name.
-type Pinned {
+type Pinned (noun: "pinned app") {
     title: Text
     kind: Kind = .notes
 }

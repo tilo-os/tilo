@@ -406,6 +406,8 @@ impl Env {
                 origin: t.origin.clone(),
                 title: t.title.clone(),
                 untitled: t.untitled.clone(),
+                label: t.label.clone(),
+                noun: t.noun.clone(),
                 readers: t.readers.clone(),
                 live: t.live.clone(),
             });
@@ -484,6 +486,7 @@ impl Env {
                 key: a.key.clone(),
                 group: a.group.clone(),
                 did: a.did.clone(),
+                did_many: a.did_many.clone(),
                 search: a.search.clone(),
                 opens: a.opens.clone(),
                 shows: a.shows.clone(),
@@ -2083,6 +2086,7 @@ impl Resolver<'_> {
             key: None,
             group: None,
             did: None,
+            did_many: None,
             search: None,
             opens: Vec::new(),
             shows: Vec::new(),
@@ -2179,6 +2183,16 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`did:` takes words in quotes, without `{ }`: `did: \"moved this\"`",
                 ),
+                // `did_many: "moved {count} tasks"`: what it did when it changed several, which a
+                // history entry reads in place of `did:` and a count beside it.
+                ("did_many", _) => match counted_text(&opt.value) {
+                    Some(said) if !said.trim().is_empty() => out.did_many = Some(said),
+                    _ => self.err(
+                        "E090",
+                        opt.value.span,
+                        "`did_many:` takes words in quotes, with `{count}` where the number goes: `did_many: \"moved {count} tasks\"`",
+                    ),
+                },
                 // `search: Found`: the action answers the system's search over its remote
                 // service, and the records of the type `Found` it writes are what the search
                 // places.

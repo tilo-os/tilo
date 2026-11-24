@@ -35,6 +35,12 @@ pub fn declarations(meta: &PackageMeta) -> String {
         if let Some(untitled) = &t.untitled {
             options.push(format!("untitled: {}", quoted(untitled)));
         }
+        if let Some(label) = &t.label {
+            options.push(format!("label: {}", quoted(label)));
+        }
+        if let Some(noun) = &t.noun {
+            options.push(format!("noun: {}", quoted(noun)));
+        }
         if let Some(readers) = &t.readers {
             options.push(format!("readers: {readers}"));
         }

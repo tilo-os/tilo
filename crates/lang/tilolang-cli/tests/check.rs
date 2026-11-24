@@ -88,75 +88,54 @@ fn a_check_refuses_an_id_a_package_beside_it_holds() {
     assert!(passed, "an id no other package holds checks:\n{said}");
 }
 
-/// A message leaves the catalogue when its declaration leaves the source, so writing the catalogue
-/// has to prune it: what `--write-ids` writes is what a check calls current, and the id of what
-/// went is retired, never reused.
+/// A word the source stops saying is reported in every translation of it, and writing the ids lock
+/// writes no catalogue: the build writes the source catalogue from the sources, and a translation is
+/// its translator's to edit.
 #[test]
-fn writing_the_source_catalogue_prunes_the_messages_its_source_no_longer_has() {
+fn a_word_the_source_dropped_is_reported_until_its_translation_drops_it() {
     let scratch = tempfile::tempdir().unwrap();
     let dir = scratch.path().join("counter");
     copy_package(&packages().join("counter"), &dir);
     drop_decrement(&dir);
+    // A package commits no source catalogue: its words are its sources' alone.
+    let source = dir.join("locales/en-US.ftl");
+    std::fs::remove_file(&source).expect("the package ships a catalogue to drop");
     let key = format!("d-{}", id_of(&dir, "decrement@Counter"));
-    let catalogue = dir.join("locales/en-US.ftl");
-    let stale = std::fs::read_to_string(&catalogue).unwrap();
-    assert!(
-        stale.contains(&key),
-        "the catalogue has decrement's message:\n{stale}"
-    );
 
     let (passed, stderr) = check(&dir, false);
-    assert!(!passed, "the catalogue left decrement's message:\n{stderr}");
+    assert!(!passed, "the German translation still says it:\n{stderr}");
     assert!(
-        stderr.contains("the source catalogue (locales/en-US.ftl) is out of date"),
+        stderr.contains(&format!(
+            "locales/de-DE.ftl translates words the source does not have: {key}"
+        )),
         "{stderr}"
     );
-    assert!(stderr.contains("decrement"), "{stderr}");
 
+    // Writing the ids lock retires the action's id and writes no catalogue.
     let (passed, stderr) = check(&dir, true);
-    assert!(passed, "{stderr}");
-    let written = std::fs::read_to_string(&catalogue).unwrap();
-    assert!(!written.contains(&key), "writing prunes it:\n{written}");
+    assert!(!passed, "the translation still says it:\n{stderr}");
     assert!(
-        !written.contains("Decrement"),
-        "writing prunes it:\n{written}"
-    );
-    assert!(
-        written.contains(&format!("d-{}", id_of(&dir, "increment@Counter"))),
-        "{written}"
+        !source.exists(),
+        "writing writes no source catalogue:\n{stderr}"
     );
 
-    // A translation has every word of its source and no more, so writing the source catalogue drops
-    // the word the source stopped saying from the German one, and keeps the German words of the
-    // messages the source still has.
+    // Its translator drops the word, and every word left is the source's.
     let german = dir.join("locales/de-DE.ftl");
     let translated = std::fs::read_to_string(&german).unwrap();
-    assert!(
-        !translated.contains(&key),
-        "writing prunes it:\n{translated}"
-    );
-    assert!(
-        !translated.contains("Verringern"),
-        "writing prunes it:\n{translated}"
-    );
-    assert!(
-        translated.contains("# Zähler auf Deutsch"),
-        "the translator's own words stay:\n{translated}"
-    );
-    assert!(
-        translated.contains(&format!("d-{} = Erhöhen", id_of(&dir, "increment@Counter"))),
-        "the messages the source still has stay translated:\n{translated}"
-    );
-
+    let dropped: String = translated
+        .split("\n\n")
+        .filter(|block| !block.lines().any(|line| line.starts_with(&key)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    std::fs::write(&german, dropped).unwrap();
     let (passed, stderr) = check(&dir, false);
-    assert!(passed, "what writing leaves is current:\n{stderr}");
+    assert!(passed, "every translated word is the source's:\n{stderr}");
 }
 
-/// A word no message of the source has ever had is its translator's own mistake, not one the source
-/// dropped, so writing the catalogue cannot take it away: it stays reported until its translator
-/// removes it.
+/// A word no message of the source has ever had is its translator's own mistake: writing the ids
+/// lock leaves it where its translator put it, and it stays reported until they remove it.
 #[test]
-fn writing_the_source_catalogue_keeps_a_translations_own_word_reported() {
+fn writing_the_ids_lock_keeps_a_translations_own_word_reported() {
     let scratch = tempfile::tempdir().unwrap();
     let dir = scratch.path().join("counter");
     copy_package(&packages().join("counter"), &dir);

@@ -480,12 +480,14 @@ tl_packages=$(GIT_INDEX_FILE="$full_index" git diff --cached --name-only \
         (apps/tl/*/*.tl) printf '%s\n' "${f%/*}" ;;
       esac
     done | sort -u)
-# A package's ids lock (`app.ids`) and source catalogue (`locales/en-US.ftl`) are
-# written from its sources, and nothing reads them back until the package is
-# compiled: a rename done by replacing text leaves them stale or in another
-# order, and every later build then rewrites them, which breaks the build's
-# provenance. Writing them is not a judgement call, so do it below with the same
-# binary that formats, and stage what it wrote.
+# A package's ids lock (`app.ids`) is written from its sources, and nothing reads
+# it back until the package is compiled: a rename done by replacing text leaves
+# it stale or in another order, and every later build then rewrites it, which
+# breaks the build's provenance. Writing it is not a judgement call, so do it
+# below with the same binary that formats, and stage what it wrote. A package's
+# source catalogue is not a file at all: the compiler writes it from the sources
+# into the module, and `check_catalogue_coverage.py` reads it through the same
+# compiler when a commit changes words.
 tl_locked_packages=$(GIT_INDEX_FILE="$full_index" git diff --cached --name-only \
     --diff-filter=ACMR -- '*.tl' '*/app.ids' '*/locales/*.ftl' \
   | while IFS= read -r f; do
@@ -612,8 +614,8 @@ except ValueError:
     fi
   fi
 
-  # The locks and catalogues of the packages above: refreshed with a binary
-  # from this tree, as the formatter was. A package whose sources have unstaged
+  # The ids locks of the packages above: refreshed with a binary from this
+  # tree, as the formatter was. A package whose sources have unstaged
   # edits is left alone, since they would be written into this commit; one whose
   # generator cannot run now keeps what it has, and the compiler's own test,
   # which compares every package under apps/tl with its sources, still holds it
@@ -621,7 +623,7 @@ except ValueError:
   # are whatever the sources give.
   if [ -n "$tl_locked_packages" ] && [ "${#tl_candidates[@]}" -eq 0 ]; then
     note "tilolang ids: no generator for the staged packages; run \
-'tilolang check --write-ids <dir>' on each and stage its app.ids and locales/en-US.ftl"
+'tilolang check --write-ids <dir>' on each and stage its app.ids"
   elif [ -n "$tl_locked_packages" ]; then
     tl_lock_wrote=0
     tl_lock_left=""
@@ -644,13 +646,12 @@ except ValueError:
         note "tilolang ids: $d: $tl_lock_why"
         continue
       fi
-      for f in "$d/app.ids" "$d/locales/en-US.ftl"; do
-        [ -f "$root/$f" ] || continue
-        if ! GIT_INDEX_FILE="$full_index" git diff --quiet -- "$f"; then
-          GIT_INDEX_FILE="$full_index" git add -- "$f"
-          tl_lock_wrote=$((tl_lock_wrote + 1))
-        fi
-      done
+      f="$d/app.ids"
+      [ -f "$root/$f" ] || continue
+      if ! GIT_INDEX_FILE="$full_index" git diff --quiet -- "$f"; then
+        GIT_INDEX_FILE="$full_index" git add -- "$f"
+        tl_lock_wrote=$((tl_lock_wrote + 1))
+      fi
     done <<< "$tl_locked_packages"
     if [ "$tl_lock_wrote" -gt 0 ]; then
       note "tilolang ids: wrote $tl_lock_wrote generated file(s) from the staged sources and staged them"

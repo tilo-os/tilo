@@ -2,14 +2,21 @@
 """Every catalogue a unit ships says every word its source catalogue says,
 and nothing its source does not.
 
-A unit's source language is `en-US`, the file its crate or package is written
-in; the files beside it are translations. A message a translation lacks reads
-in the source language for that string alone, which is the fallback every
-lookup has (docs/designs/app-language/i18n.md) — one string, never a surface.
-What this check finds is both shapes of drift: a catalogue that is partly
-translated, so one window reads in two languages at once, and a translation
-that adds a word its source has no original for, which reads in a translation
-inside a window speaking the source language.
+A unit's source language is `en-US`, the words its crate or package is written
+in; the files beside it are translations. A crate commits its source catalogue
+(`locales/en-US.ftl`); a tilolang package does not: the compiler writes one from
+the package's sources, so the check asks the compiler for it (`tilolang
+catalogue`, which the command line names with `--tilolang` or `$TILOLANG`, or
+the tree's own built tool). A message a translation lacks reads in the source
+language for that string alone, which is the fallback every lookup has
+(docs/designs/app-language/i18n.md) — one string, never a surface. What this
+check finds is both shapes of drift: a catalogue that is partly translated, so
+one window reads in two languages at once, and a translation that adds a word
+its source has no original for, which reads in a translation inside a window
+speaking the source language.
+
+A tilolang package that still commits `locales/en-US.ftl` is drift too: its
+words are its sources', and a second copy is one that can go stale.
 
 A locale may add messages of its own: the arrival screen's German jokes are
 written for German speakers and have no English source. Those are not drift —
@@ -24,8 +31,8 @@ registers the app's catalogs, and an unregistered one never loads: a window
 that ships it reads in the source language. `tilolang check` only compares
 the app it is pointed at, so every generated registry is compared here too.
 
-  check_catalogue_coverage.py            fail on every drifted or repeated key
-  check_catalogue_coverage.py --list     print the drift, `unit locale key`, and pass
+  check_catalogue_coverage.py [--tilolang PATH] [--list]
+                                         fail on every drifted or repeated key
   check_catalogue_coverage.py --staged   fail on the drift this commit's catalogues add
   check_catalogue_coverage.py --range BASE..HEAD
                                          fail on the drift this range's catalogues add
@@ -36,14 +43,21 @@ from __future__ import annotations
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import derived_catalogue  # noqa: E402
 from check_copy_language import messages  # noqa: E402
+from derived_catalogue import (CannotRead, PACKAGE_SOURCE, SOURCE_LOCALE, Unread,  # noqa: E402
+                               is_package)
 from judged import STAGED_FLAG, git, judged  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE_LOCALE = "en-US"
+IDS = "app.ids"
+# The compiler this run derives a package's source catalogue with, from `--tilolang` or
+# `$TILOLANG`; `None` looks for the tree's own built tool.
+TILOLANG: str | None = None
 # The generated registry `tilolang` owns, and the header that marks it: a
 # registry without it is the app's own setup, which this check leaves alone.
 REGISTRY = "src/locales.rs"
@@ -86,6 +100,19 @@ def keys_of(catalogue: Path) -> dict[str, int]:
     return keys_in(catalogue.read_text())
 
 
+def source_of(root: Path, unit: str, locales: dict[str, Path]) -> tuple[Path, dict[str, int]]:
+    """The unit's source catalogue and its keys: the file a crate commits, or the words the compiler
+    writes from a package's sources."""
+    directory = root / unit
+    if is_package(directory):
+        return directory / PACKAGE_SOURCE, keys_in(
+            derived_catalogue.catalogue(directory, TILOLANG, root=ROOT))
+    path = locales.get(SOURCE_LOCALE)
+    if path is None:
+        return root / unit, {}
+    return path, keys_of(path)
+
+
 def duplicated(root: Path) -> list[tuple[Path, str, int, int]]:
     """Per (catalogue, key, first line, repeated line), the keys it defines twice.
 
@@ -104,6 +131,18 @@ def duplicated(root: Path) -> list[tuple[Path, str, int, int]]:
     return found
 
 
+def committed_source(root: Path) -> list[Path]:
+    """The source catalogues a tilolang package commits: its words are its sources', so a second
+    copy beside them can only go stale."""
+    return [
+        path
+        for path in catalogues(root)
+        if path.stem == SOURCE_LOCALE
+        and is_package(path.parents[1])
+        and "tests" not in path.relative_to(root).parts
+    ]
+
+
 def untranslated(root: Path) -> list[tuple[str, str, Path, str, int]]:
     """Per (unit, locale, catalogue, key, source line), the keys a translation lacks."""
     units: dict[str, dict[str, Path]] = {}
@@ -111,14 +150,18 @@ def untranslated(root: Path) -> list[tuple[str, str, Path, str, int]]:
         units.setdefault(unit_of(root, catalogue), {})[catalogue.stem] = catalogue
     missing = []
     for unit, locales in sorted(units.items()):
-        defined = {locale: keys_of(path) for locale, path in locales.items()}
-        source = defined.get(SOURCE_LOCALE)
-        if source is None:
+        try:
+            where, source = source_of(root, unit, locales)
+        except CannotRead as error:
+            print(error, file=sys.stderr)
+            continue
+        if not source:
             continue
         for key, line in source.items():
-            for locale, keys in sorted(defined.items()):
-                if locale != SOURCE_LOCALE and key not in keys:
-                    missing.append((unit, locale, locales[locale], key, line))
+            for locale, keys in sorted((l, keys_of(p)) for l, p in locales.items()
+                                       if l != SOURCE_LOCALE):
+                if key not in keys:
+                    missing.append((unit, locale, where, key, line))
     return missing
 
 
@@ -129,17 +172,20 @@ def unnamed(root: Path) -> list[tuple[str, str, Path, str, int]]:
         units.setdefault(unit_of(root, catalogue), {})[catalogue.stem] = catalogue
     extra = []
     for unit, locales in sorted(units.items()):
-        defined = {locale: keys_of(path) for locale, path in locales.items()}
-        source = defined.get(SOURCE_LOCALE)
-        if source is None:
+        try:
+            _, source = source_of(root, unit, locales)
+        except CannotRead as error:
+            print(error, file=sys.stderr)
             continue
-        for locale, keys in sorted(defined.items()):
+        if not source:
+            continue
+        for locale, path in sorted(locales.items()):
             if locale == SOURCE_LOCALE:
                 continue
             allowed = LOCALE_ONLY.get((unit, locale), set())
-            for key, line in keys.items():
+            for key, line in keys_of(path).items():
                 if key not in source and key not in allowed:
-                    extra.append((unit, locale, locales[locale], key, line))
+                    extra.append((unit, locale, path, key, line))
     return extra
 
 
@@ -224,8 +270,29 @@ def tree_catalogues(root: Path, revision: str, units: list[Path]) -> list[Path]:
     )
 
 
-def drift_in(touched: list[Path], catalogues: list[Path],
-             after: dict[Path, str], before: dict[Path, str]) -> list[str]:
+def package_at(root: Path, unit: Path, revision: str) -> dict[str, int]:
+    """The keys of the source catalogue `unit`'s sources write at `revision`, through the compiler."""
+    listing = git(root, "ls-tree", "-r", "--name-only", "-z", revision, "--",
+                  unit.as_posix()).split(b"\0")
+    relatives = [Path(os.fsdecode(name)) for name in listing if name]
+    relatives = [relative for relative in relatives
+                 if relative.suffix == ".tl" or relative.name == IDS]
+    if not relatives:
+        return {}
+    texts = tree_texts(root, revision, relatives)
+    with tempfile.TemporaryDirectory(prefix="catalogue-") as scratch:
+        held = scratch / "package"
+        for relative in relatives:
+            path = held / relative.name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(texts.get(relative, ""))
+        return keys_in(
+            derived_catalogue.catalogue(root / unit, TILOLANG, sources=held, root=ROOT))
+
+
+def drift_in(root: Path, touched: list[Path], units: list[Path], catalogues: list[Path],
+             after: dict[Path, str], before: dict[Path, str],
+             base: str, head: str | None) -> list[str]:
     """The drift `touched` introduces, judged in what `after` and `before` hold.
 
     `after` is the tree the change leaves and `before` the one it finds; only
@@ -234,7 +301,10 @@ def drift_in(touched: list[Path], catalogues: list[Path],
     and a key `after` adds to a translation with no source original. A key
     `after` defines twice is not a word to translate but a broken file, so it
     fails here as it does in the whole tree.
-    """
+
+    A tilolang package's source catalogue is not a file, so its keys are read
+    from the compiler: at `head` (the sources on disk when that is `None`) and
+    at `base`, rather than from `after` and `before`."""
     problems: list[str] = []
     for relative in touched:
         first: dict[str, int] = {}
@@ -247,14 +317,27 @@ def drift_in(touched: list[Path], catalogues: list[Path],
             else:
                 first[message.key] = message.line
 
-    for unit in sorted({relative.parents[1] for relative in touched}):
+    for unit in sorted(units):
         files = [catalogue for catalogue in catalogues if catalogue.parents[1] == unit]
         now = {catalogue.stem: keys_in(after.get(catalogue, "")) for catalogue in files}
         was = {catalogue.stem: keys_in(before.get(catalogue, "")) for catalogue in files}
+        if is_package(root / unit):
+            try:
+                if head is None:
+                    now[SOURCE_LOCALE] = keys_in(
+                        derived_catalogue.catalogue(root / unit, TILOLANG, root=ROOT))
+                else:
+                    now[SOURCE_LOCALE] = package_at(root, unit, head)
+                was[SOURCE_LOCALE] = package_at(root, unit, base)
+            except CannotRead as error:
+                print(error, file=sys.stderr)
+                continue
+            source_name = f"{unit.as_posix()}/{PACKAGE_SOURCE}"
+        else:
+            source_name = f"{unit.as_posix()}/locales/{SOURCE_LOCALE}.ftl"
         source = now.get(SOURCE_LOCALE)
         if source is None:
             continue
-        source_name = f"{unit.as_posix()}/locales/{SOURCE_LOCALE}.ftl"
         for key, line in sorted(source.items(), key=lambda item: item[1]):
             if key in was.get(SOURCE_LOCALE, {}):
                 continue
@@ -274,23 +357,34 @@ def drift_in(touched: list[Path], catalogues: list[Path],
     return problems
 
 
-def staged_drift(root: Path) -> list[str]:
-    """The drift a commit introduces in the catalogues it stages, in path order.
+def change_units(relative: Path, root: Path) -> list[Path]:
+    """The units a changed file is a word of: a catalogue's directory, or a tilolang package's
+    own sources."""
+    if relative.suffix == ".ftl" and relative.parent.name == "locales":
+        return [relative.parents[1]]
+    if relative.suffix == ".tl" and is_package(root / relative.parent):
+        return [relative.parent]
+    return []
 
-    Only the units whose `locales/*.ftl` files the commit stages are judged,
-    and each is judged as the commit leaves it: its index blob where it is
-    staged, HEAD where it is not. What the commit leaves alone was already
-    judged by CI.
-    """
+
+def staged_drift(root: Path) -> list[str]:
+    """The drift a commit introduces in the catalogues and package sources it stages, in path
+    order.
+
+    Only the units the commit stages a word of are judged, and each is judged as the commit
+    leaves it: its index blob where it is staged, HEAD where it is not. What the commit leaves
+    alone was already judged by CI. A tilolang package's source catalogue is written by the
+    compiler from the sources on disk, which is the tree the commit leaves."""
     staged = judged(root, staged=True)
-    touched = [
+    changed = [
         relative
-        for relative in staged.files(Path("."), suffixes=(".ftl",))
-        if relative.parent.name == "locales"
+        for relative in staged.files(Path("."), suffixes=(".ftl", ".tl"))
+        if change_units(relative, root)
     ]
-    if not touched:
+    if not changed:
         return []
-    units = sorted({relative.parents[1] for relative in touched})
+    touched = [relative for relative in changed if relative.suffix == ".ftl"]
+    units = sorted({unit for relative in changed for unit in change_units(relative, root)})
     catalogues = sorted({
         catalogue.relative_to(root)
         for unit in units
@@ -303,39 +397,40 @@ def staged_drift(root: Path) -> list[str]:
     }
     after.update(tree_texts(root, "HEAD", [c for c in catalogues if c not in after]))
     before = tree_texts(root, "HEAD", catalogues)
-    return drift_in(touched, catalogues, after, before)
+    return drift_in(root, touched, units, catalogues, after, before, "HEAD", None)
 
 
 def range_drift(root: Path, base: str, head: str) -> list[str]:
-    """The drift a range introduces in the catalogues it changes, in path order.
+    """The drift a range introduces in the catalogues and package sources it changes, in path
+    order.
 
     A cherry-pick or a rebase writes commits no hook sees its `--staged` run
     through, so a push judges the range as one change: only the units whose
-    `locales/*.ftl` files differ between `base` and `head` are judged, each as
-    `head` leaves it against `base`. What the range leaves alone was judged by
-    CI, and a key a commit of the range added and a later one fixed is not
-    drift.
-    """
+    catalogues or package sources differ between `base` and `head` are judged,
+    each as `head` leaves it against `base`. What the range leaves alone was
+    judged by CI, and a key a commit of the range added and a later one fixed is
+    not drift."""
     changed = git(root, "diff", "--name-only", "-z", "--diff-filter=ACMRT",
                   f"{base}..{head}", "--").split(b"\0")
-    touched = [
+    paths = [
         relative
         for relative in (Path(os.fsdecode(name)) for name in changed if name)
-        if relative.suffix == ".ftl" and relative.parent.name == "locales"
     ]
-    if not touched:
+    touched = [relative for relative in paths
+               if relative.suffix == ".ftl" and relative.parent.name == "locales"]
+    units = sorted({unit for relative in paths for unit in change_units(relative, root)})
+    if not units:
         return []
-    units = sorted({relative.parents[1] for relative in touched})
     catalogues = sorted(
         set(tree_catalogues(root, head, units)) | set(tree_catalogues(root, base, units))
     )
     after = tree_texts(root, head, catalogues)
     before = tree_texts(root, base, catalogues)
-    return drift_in(sorted(touched), catalogues, after, before)
+    return drift_in(root, touched, units, catalogues, after, before, base, head)
 
 
 def named(root: Path, path: Path) -> str:
-    return path.relative_to(root).as_posix()
+    return path.relative_to(root).as_posix() if path.is_relative_to(root) else path.name
 
 
 def report_change(problems: list[str], subject: str) -> int:
@@ -352,41 +447,64 @@ def report_change(problems: list[str], subject: str) -> int:
 
 
 def main(argv: list[str]) -> int:
-    arguments = argv[1:]
+    global TILOLANG
+    try:
+        TILOLANG, arguments = derived_catalogue.take_flag(list(argv[1:]))
+    except Unread as error:
+        print(error, file=sys.stderr)
+        return 2
     if arguments[:1] == ["--range"] and len(arguments) == 2:
         base, _, head = arguments[1].partition("..")
         if not base or not head:
             print(__doc__.split("\n\n")[-1].strip(), file=sys.stderr)
             return 2
-        return report_change(range_drift(ROOT, base, head), "this range")
+        try:
+            return report_change(range_drift(ROOT, base, head), "this range")
+        except Unread as error:
+            print(error, file=sys.stderr)
+            return 1
     if arguments not in ([], ["--list"], [STAGED_FLAG]):
         print(__doc__.split("\n\n")[-1].strip(), file=sys.stderr)
         return 2
-    if arguments == [STAGED_FLAG]:
-        return report_change(staged_drift(ROOT), "this commit")
-    missing = untranslated(ROOT)
-    extra = unnamed(ROOT)
+    try:
+        if arguments == [STAGED_FLAG]:
+            return report_change(staged_drift(ROOT), "this commit")
+        missing = untranslated(ROOT)
+        extra = unnamed(ROOT)
+    except Unread as error:
+        print(error, file=sys.stderr)
+        return 1
     twice = duplicated(ROOT)
     stale = stale_registries(ROOT)
-    listing = argv[1:] == ["--list"]
-    for unit, locale, _, key, line in missing:
+    committed = committed_source(ROOT)
+    listing = arguments == ["--list"]
+    for unit, locale, where, key, line in missing:
+        if listing:
+            print(unit, locale, key)
+        elif is_package(ROOT / unit):
+            print(f"{named(ROOT, where)}: {key} has no {locale} text")
+        else:
+            print(f"{named(ROOT, where)}:{line}: {key} has no {locale} text")
+    for unit, locale, where, key, line in extra:
         if listing:
             print(unit, locale, key)
         else:
-            print(f"{unit}/locales/{SOURCE_LOCALE}.ftl:{line}: {key} has no {locale} text")
-    for unit, locale, _, key, line in extra:
-        if listing:
-            print(unit, locale, key)
-        else:
-            print(f"{unit}/locales/{locale}.ftl:{line}: {key} has no {SOURCE_LOCALE} text")
+            print(f"{named(ROOT, where)}:{line}: {key} has no {SOURCE_LOCALE} text")
     for catalogue, key, first, line in twice:
         print(f"{named(ROOT, catalogue)}:{line}: {key} is defined again; line {first} "
               "already defines it", file=sys.stderr)
+    for catalogue in committed:
+        print(f"{named(ROOT, catalogue)}: a tilolang package's words are its sources'; the build "
+              "writes its source catalogue from them, so no copy of it is committed beside them",
+              file=sys.stderr)
     for _, registry, reason, fix in stale:
         print(f"{named(ROOT, registry)}: {reason}; run `{fix}`", file=sys.stderr)
     if twice:
         print(f"{len(twice)} keys are defined twice; a catalogue holds one message per key",
               file=sys.stderr)
+        return 1
+    if committed:
+        print(f"{len(committed)} tilolang package(s) commit a source catalogue", file=sys.stderr)
         return 1
     if stale:
         print(f"{len(stale)} generated locale "

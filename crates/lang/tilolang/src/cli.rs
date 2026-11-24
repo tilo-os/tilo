@@ -14,8 +14,8 @@ use crate::meta::PackageMeta;
 use crate::package::parse_package_files;
 use crate::print::print_file;
 use crate::source::{
-    BuildError, BuiltPackage, PackageSource, Stamp, apps_of, catalogue_current, compile_package,
-    dependency_order_with, ids_current, read_ids, search_of, write_catalogue, write_ids,
+    BuildError, BuiltPackage, PackageSource, Stamp, apps_of, compile_package,
+    dependency_order_with, ids_current, read_ids, search_of, write_ids,
 };
 
 /// Finds the published packages that are no tilolang package directory among the directories imports
@@ -25,6 +25,7 @@ pub type Published = fn(&[PathBuf]) -> Result<Vec<PackageMeta>, String>;
 
 pub const USAGE: &str = "usage:
   tilolang check [dir] [--json] [--watch] [--write-ids] [--path <dir>]...
+  tilolang catalogue [dir] [--path <dir>]...
   tilolang fmt [dir] [--check]
   tilolang ids [dir] [--rename <old> <new>]
 
@@ -32,6 +33,7 @@ pub const USAGE: &str = "usage:
 the package. `use` imports are found among the package's sibling directories and in each
 --path, which names a package directory or a directory of packages. `check` fails while the
 package's ids lock (app.ids) is out of date and says what changed; --write-ids writes it.
+`catalogue` prints the source catalogue the build writes from the package's sources.
 `tilolang build` compiles the package into a signed Tilo app.";
 
 #[derive(Debug, Default)]
@@ -132,18 +134,6 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
             }
             let mut current = true;
             for b in &built {
-                if !catalogue_current(b) {
-                    if o.write_ids {
-                        write_catalogue(b)?;
-                        eprintln!("{}: the source catalogue updated", b.dir.display());
-                    } else {
-                        eprintln!(
-                            "{}: the source catalogue (locales/en-US.ftl) is out of date; write it with `tilolang check --write-ids`, and commit it with the sources",
-                            b.dir.display()
-                        );
-                        current = false;
-                    }
-                }
                 // What the compiler writes into the catalogue is what a screen reader says: a name written as
                 // an identifier is read out one letter at a time.
                 for (name, words) in crate::messages::views_named_as_code(&b.compiled.meta) {
@@ -161,7 +151,7 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                     let stale = crate::messages::stale_keys(&source, &text);
                     if !stale.is_empty() {
                         eprintln!(
-                            "{}: locales/{locale}.ftl translates words the source does not have: {}; translate the words under the message's key (see locales/en-US.ftl) and remove these",
+                            "{}: locales/{locale}.ftl translates words the source does not have: {}; translate the words under the message's key and remove these",
                             b.dir.display(),
                             stale.join(", ")
                         );
@@ -371,8 +361,27 @@ fn fmt(dir: &Path, o: &Options) -> Result<bool, String> {
     Ok(ok)
 }
 
-fn ids(dir: &Path, o: &Options) -> Result<bool, String> {
-    let mut ids = read_ids(dir)?;
+/// Prints the source catalogue `dir`'s sources write: every word the package shows in its source
+/// language, with the doc line that says what each is for. A translator, an agent or a check reads
+/// it here; the build writes the same text into the package's module.
+fn catalogue(dir: &Path, o: &Options) -> Result<bool, String> {
+    let built = match build_all(dir, o, &mut SeededEntropy(0)) {
+        Ok(built) => built,
+        Err(error) => return failed(error, o.json),
+    };
+    for b in &built {
+        if crate::source::same_dir(&b.dir, dir) {
+            print!("{}", crate::source::catalogue(b));
+            return Ok(true);
+        }
+    }
+    Err(format!(
+        "{}: no package stands here; `catalogue` prints one package's source catalogue",
+        dir.display()
+    ))
+}
+
+fn ids(dir: &Path, o: &Options) -> Result<bool, String> {    let mut ids = read_ids(dir)?;
     if let Some((old, new)) = &o.rename {
         ids.rename(old, new).map_err(|e| e.to_string())?;
         std::fs::write(dir.join(crate::source::IDS_FILE), ids.to_text())
@@ -410,6 +419,7 @@ fn run(args: &[String], published: Option<Published>) -> ExitCode {
             "check" => check(&dir, &o),
             "fmt" => fmt(&dir, &o),
             "ids" => ids(&dir, &o),
+            "catalogue" => catalogue(&dir, &o),
             _ => Err(USAGE.to_string()),
         }
     })();

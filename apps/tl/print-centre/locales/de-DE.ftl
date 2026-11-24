@@ -482,6 +482,8 @@ d-dxj763u4 = Druckformular
     .w-print-a-document = Ein Dokument drucken
     .w-choose-what-to-print-then-the = Wähle, was gedruckt wird, dann den Drucker und wie er druckt.
     .w-choose-a-document = Ein Dokument wählen
+    .w-no-printer-is-added-on-this = Auf diesem Computer ist kein Drucker eingerichtet.
+    .w-printer = Drucker
 
 d-lua6ahaf = Druckbereich
     .w-print-a-document = Ein Dokument drucken

@@ -908,7 +908,12 @@ action send(
     attachments: List<File> = [],
     turn: Text = "",
     draft: Option<Draft> = .none,
-) -> Message uses notify (icon: .send, label: "Send", did: "wrote a message") {
+) -> Message uses notify (
+    icon: .send,
+    label: "Send",
+    did: "wrote a message",
+    did_many: "wrote {count} messages",
+) {
     require turn != "" or not empty_writing(draft, body) "Type a message first"
     let words = if let writing = draft { writing.body } else { body }
     // What the person chose for the message waits on their draft; what a program sends with it

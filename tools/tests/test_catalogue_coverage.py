@@ -201,6 +201,84 @@ class CatalogueCoverageTests(unittest.TestCase):
         self.assertIn("run `tilolang locale sync`", err)
 
 
+class PackageCatalogueCoverageTests(unittest.TestCase):
+    """A tilolang package commits no source catalogue: its words are the compiler's, written from
+    its sources."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        # A compiler that writes the package's words from a file beside its sources.
+        self.binary = self.root / "tilolang"
+        self.binary.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, sys\n"
+            "print((pathlib.Path(sys.argv[2]) / 'source.ftl').read_text(), end='')\n"
+        )
+        self.binary.chmod(0o755)
+        self.original = coverage.TILOLANG
+        coverage.TILOLANG = str(self.binary)
+
+    def tearDown(self):
+        coverage.TILOLANG = self.original
+        self.temporary.cleanup()
+
+    def package(self, source: str = SOURCE, german: str | None = None,
+                committed: bool = False) -> None:
+        files = {
+            "app/app.tl": 'app test.app "App"\n',
+            "app/app.ids": "App = aaaa\n",
+            "app/source.ftl": source,
+        }
+        if german is not None:
+            files["app/locales/de-DE.ftl"] = german
+        if committed:
+            files["app/locales/en-US.ftl"] = source
+        for name, text in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+
+    def test_a_source_word_its_translation_lacks_is_reported(self):
+        self.package(german="a = Titel\n    .doc = Was es ist.\n")
+        self.assertEqual(
+            [(unit, locale, key) for unit, locale, _, key, _ in coverage.untranslated(self.root)],
+            [("app", "de-DE", "b")])
+
+    def test_a_complete_translation_passes(self):
+        self.package(german="a = Titel\n    .doc = Was es ist.\n\nb = Einstellungen\n")
+        self.assertEqual(coverage.untranslated(self.root), [])
+
+    def test_a_translation_word_the_source_lacks_is_reported(self):
+        self.package(german="a = Titel\n    .doc = Was es ist.\n\nb = Einstellungen\n\n"
+                            "c = Nur auf Deutsch\n")
+        self.assertEqual(
+            [(unit, locale, key) for unit, locale, _, key, _ in coverage.unnamed(self.root)],
+            [("app", "de-DE", "c")])
+
+    def test_a_committed_source_catalogue_is_refused(self):
+        self.package(german="a = Titel\n    .doc = Was es ist.\n\nb = Einstellungen\n",
+                     committed=True)
+        self.assertEqual(
+            [path.relative_to(self.root).as_posix()
+             for path in coverage.committed_source(self.root)],
+            ["app/locales/en-US.ftl"])
+
+    def test_the_whole_tree_names_the_committed_catalogue_and_fails(self):
+        self.package(german="a = Titel\n    .doc = Was es ist.\n\nb = Einstellungen\n",
+                     committed=True)
+        original = coverage.ROOT
+        coverage.ROOT = self.root
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with redirect_stdout(out), redirect_stderr(err):
+                code = coverage.main(["check", "--tilolang", str(self.binary)])
+        finally:
+            coverage.ROOT = original
+        self.assertEqual(code, 1)
+        self.assertIn("a tilolang package's words are its sources'", err.getvalue())
+
+
 class StagedCatalogueCoverageTests(unittest.TestCase):
     """The drift a commit's own catalogues add, judged in the index it stages."""
 

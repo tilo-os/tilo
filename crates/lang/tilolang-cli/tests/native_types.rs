@@ -193,11 +193,6 @@ fn every_example_package_builds_from_its_directory_with_the_files_it_writes() {
                 "{dir}: app.ids is not what its sources write; write it with \
                  `tilolang check --write-ids {dir}` and commit it with them"
             );
-            assert!(
-                tilolang::source::catalogue_current(b),
-                "{dir}: locales/en-US.ftl is not what its sources write; write it with \
-                 `tilolang check --write-ids {dir}` and commit it with them"
-            );
         }
     }
 }

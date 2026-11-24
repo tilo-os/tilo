@@ -8,6 +8,7 @@
 //! English device. A word from a catalogue the window does not speak shows as a difference between
 //! the two.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use tilo_copy_lint::catalog;
@@ -39,7 +40,7 @@ static INDEX: EmbeddedCatalog =
 /// pack carries when the window has one installed.
 struct Window {
     name: &'static str,
-    source: &'static str,
+    source: Cow<'static, str>,
     /// The language pack's tag and text: `None` for a window translated by its own binary only
     /// (none here), or one whose pack is not installed.
     german: Option<(&'static str, &'static str)>,
@@ -51,53 +52,72 @@ macro_rules! catalogue {
     };
 }
 
+/// A tilolang package's source catalogue, as its build writes it: the compiler writes it from the
+/// package's own sources, so nothing of it is committed beside them.
+fn package_source(package: &str) -> String {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../apps/tl")
+        .join(package);
+    let bundles = tilolang_tilo::bundle::compiled(&dir, &[])
+        .unwrap_or_else(|error| panic!("apps/tl/{package} compiles: {error}"));
+    bundles
+        .last()
+        .and_then(|bundle| {
+            bundle
+                .catalogues()
+                .into_iter()
+                .find(|(locale, _)| locale == "en-US")
+        })
+        .map(|(_, text)| text)
+        .unwrap_or_else(|| panic!("apps/tl/{package} writes its source catalogue"))
+}
+
 /// The windows the person works in day to day.
-const WINDOWS: &[Window] = &[
-    Window {
-        name: "the session's menus and notices",
-        source: catalogue!("/locales/en-US.ftl"),
-        german: Some(("de-DE", catalogue!("/locales/de-DE.ftl"))),
-    },
-    Window {
-        name: "search",
-        source: catalogue!("/../desktop-search/locales/en-US.ftl"),
-        german: Some(("de-DE", catalogue!("/../desktop-search/locales/de-DE.ftl"))),
-    },
-    Window {
-        name: "the desktop's menus",
-        source: catalogue!("/../session-core/locales/en-US.ftl"),
-        german: Some(("de-DE", catalogue!("/../session-core/locales/de-DE.ftl"))),
-    },
-    Window {
-        name: "another device's window",
-        source: catalogue!("/../device-surfaces/locales/en-US.ftl"),
-        german: Some((
-            "de-DE",
-            catalogue!("/../device-surfaces/locales/de-DE.ftl"),
-        )),
-    },
-    Window {
-        name: "Tasks",
-        source: catalogue!("/../../../apps/tl/tasks/locales/en-US.ftl"),
-        german: Some((
-            "de-DE",
-            catalogue!("/../../../apps/tl/tasks/locales/de-DE.ftl"),
-        )),
-    },
-    Window {
-        name: "Settings",
-        source: catalogue!("/../../../apps/tl/settings/locales/en-US.ftl"),
-        german: Some((
-            "de-DE",
-            catalogue!("/../../../apps/tl/settings/locales/de-DE.ftl"),
-        )),
-    },
-];
+fn windows() -> Vec<Window> {
+    vec![
+        Window {
+            name: "the session's menus and notices",
+            source: catalogue!("/locales/en-US.ftl").into(),
+            german: Some(("de-DE", catalogue!("/locales/de-DE.ftl"))),
+        },
+        Window {
+            name: "search",
+            source: catalogue!("/../desktop-search/locales/en-US.ftl").into(),
+            german: Some(("de-DE", catalogue!("/../desktop-search/locales/de-DE.ftl"))),
+        },
+        Window {
+            name: "the desktop's menus",
+            source: catalogue!("/../session-core/locales/en-US.ftl").into(),
+            german: Some(("de-DE", catalogue!("/../session-core/locales/de-DE.ftl"))),
+        },
+        Window {
+            name: "another device's window",
+            source: catalogue!("/../device-surfaces/locales/en-US.ftl").into(),
+            german: Some((
+                "de-DE",
+                catalogue!("/../device-surfaces/locales/de-DE.ftl"),
+            )),
+        },
+        Window {
+            name: "Tasks",
+            source: package_source("tasks").into(),
+            german: Some(("de-DE", catalogue!("/../../../apps/tl/tasks/locales/de-DE.ftl"))),
+        },
+        Window {
+            name: "Settings",
+            source: package_source("settings").into(),
+            german: Some((
+                "de-DE",
+                catalogue!("/../../../apps/tl/settings/locales/de-DE.ftl"),
+            )),
+        },
+    ]
+}
 
 /// Every key a window can draw: its own words and the shared ones (the toolkit's labels, the
 /// index).
 fn keys(window: &Window) -> Vec<String> {
-    let mut keys: Vec<String> = catalog::messages(window.source).into_keys().collect();
+    let mut keys: Vec<String> = catalog::messages(&window.source).into_keys().collect();
     for shared in [TOOLKIT_EN, INDEX_EN] {
         for key in catalog::messages(shared).into_keys() {
             if !keys.contains(&key) {
@@ -133,7 +153,7 @@ fn resolved(
 
 /// The window ships its source only: the device's language pack for it is not installed.
 fn shipped_source(window: &Window) -> Vec<(&str, &str)> {
-    vec![("en-US", window.source)]
+    vec![("en-US", &*window.source)]
 }
 
 /// The window ships its source and the pack beside it.
@@ -148,7 +168,7 @@ tilo_test_env::scenario! {
 
     phase every_surface_reads_the_same_on_a_german_and_an_english_device;
     {
-        for window in WINDOWS {
+        for window in &windows() {
             let german_device = resolved(window, &shipped_source(window), "de-DE");
             let english_device = resolved(window, &shipped_source(window), "en-US");
             for (key, english) in &english_device {
@@ -167,13 +187,13 @@ tilo_test_env::scenario! {
     // A window that has the pack installed still reads German on a German device: the rule is the
     // window's own language, not dropping translations.
     {
-        for window in WINDOWS {
+        for window in &windows() {
             let Some(german) = window.german else {
                 continue;
             };
             let german_device = resolved(window, &with_pack(window), "de-DE");
             let english_device = resolved(window, &shipped_source(window), "en-US");
-            let own = catalog::messages(window.source);
+            let own = catalog::messages(&window.source);
             assert!(
                 own.keys()
                     .any(|key| german_device[key] != english_device[key]),
@@ -190,13 +210,14 @@ tilo_test_env::scenario! {
     // toolkit's — English on a German device. The same words are the package's own when the process is
     // that package's window, and then they are German.
     {
-        let tasks = WINDOWS
+        let all = windows();
+        let tasks = all
             .iter()
             .find(|window| window.name == "Tasks")
             .expect("Tasks is one of the windows");
         let (locale, german) = tasks.german.expect("Tasks ships German");
         let seed = [(locale.to_owned(), german.to_owned())];
-        let session = WINDOWS
+        let session = all
             .iter()
             .find(|window| window.name == "the session's menus and notices")
             .expect("the session is one of the windows");
@@ -220,7 +241,8 @@ tilo_test_env::scenario! {
     // The two strings a person read in German inside an English session, read where they were drawn.
     {
         let show_all = || INDEX.t_args("search-show-all", &[("count", ArgValue::from(13))]);
-        let window = WINDOWS
+        let all = windows();
+        let window = all
             .iter()
             .find(|window| window.name == "search")
             .expect("search is one of the windows");

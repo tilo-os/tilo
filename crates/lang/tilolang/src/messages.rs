@@ -1,13 +1,13 @@
 //! A package's words as a Fluent catalogue (docs/designs/app-language/i18n.md).
 //!
 //! Every word a package shows about what it declares is a message keyed by the declaration's stable
-//! id, so renaming a declaration keeps its translations as it keeps its data. The compiler writes
-//! the package's source catalogue, `locales/en-US.ftl`, the way it writes `app.ids`; translations
-//! sit beside it.
+//! id, so renaming a declaration keeps its translations as it keeps its data. The package's source
+//! catalogue is written from its sources at build time and travels in its module; a translation is
+//! a file, `locales/<language>.ftl`.
 
 use std::fmt::Write as _;
 
-use crate::meta::{PackageMeta, TypeMeta, in_words, plural};
+use crate::meta::{PackageMeta, TypeMeta, in_words};
 
 pub const SOURCE_LOCALE: &str = "en-US";
 
@@ -60,64 +60,6 @@ pub fn filter_key(ty: &str, key: &str) -> String {
 #[must_use]
 pub fn param_key(action: &str, param: &str) -> String {
     key_of(&format!("{action}-{param}"))
-}
-
-/// The comment that marks a message of the source catalogue as the author's own.
-pub const REFINED: &str = "# refined";
-
-/// The package's source catalogue as its source says it reads, keeping every message of `committed`
-/// that its author marked refined.
-#[must_use]
-pub fn source_catalogue_keeping(meta: &PackageMeta, committed: &str) -> String {
-    let refined = refined_blocks(committed);
-    let generated = source_catalogue(meta);
-    if refined.is_empty() {
-        return generated;
-    }
-    let blocks: Vec<&str> = generated
-        .split("\n\n")
-        .map(|block| {
-            message_key(block)
-                .and_then(|key| refined.iter().find(|(k, _)| k == key))
-                .map_or(block, |(_, kept)| kept.as_str())
-        })
-        .collect();
-    joined(&blocks)
-}
-
-/// `blocks` as one catalogue: a blank line between them, one newline at the end, nothing when no block
-/// is left.
-fn joined<S: AsRef<str>>(blocks: &[S]) -> String {
-    let mut out = String::new();
-    for block in blocks {
-        out.push_str(block.as_ref());
-        out.push_str("\n\n");
-    }
-    out.truncate(out.trim_end().len());
-    if !out.is_empty() {
-        out.push('\n');
-    }
-    out
-}
-
-fn message_key(block: &str) -> Option<&str> {
-    block
-        .lines()
-        .find(|line| line.starts_with("d-"))
-        .and_then(|line| line.split(" = ").next())
-}
-
-fn refined_blocks(catalogue: &str) -> Vec<(String, String)> {
-    catalogue
-        .split("\n\n")
-        .filter(|block| block.lines().any(|line| line.trim() == REFINED))
-        .filter_map(|block| {
-            Some((
-                message_key(block)?.to_owned(),
-                block.trim_matches('\n').to_owned(),
-            ))
-        })
-        .collect()
 }
 
 /// A declared name as a label: in words, its first letter upper case (`NoteOrder` is `Note order`).
@@ -202,57 +144,6 @@ pub fn stale_keys(source: &str, translation: &str) -> Vec<String> {
     keys_only_in(translation, source)
 }
 
-/// The keys `before` has that `after` does not: the words a package stopped saying.
-#[must_use]
-pub fn gone_keys(before: &str, after: &str) -> Vec<String> {
-    keys_only_in(before, after)
-}
-
-/// `translation` without the words `gone` names: a message goes whole, with its comments; an attribute
-/// goes from the message that keeps the rest. Every other word stays as its translator wrote it.
-#[must_use]
-pub fn pruned(translation: &str, gone: &[String]) -> String {
-    let mut blocks: Vec<String> = Vec::new();
-    for block in translation.split("\n\n") {
-        let message = message_key(block);
-        if message.is_some_and(|message| gone.iter().any(|key| key == message)) {
-            continue;
-        }
-        let mut kept: Vec<&str> = Vec::new();
-        let mut open = 0;
-        for line in block.lines() {
-            if open > 0 {
-                open += braces(line);
-                continue;
-            }
-            let attribute = line
-                .strip_prefix(char::is_whitespace)
-                .and_then(|rest| rest.trim_start().strip_prefix('.'))
-                .and_then(|attribute| attribute.split_once(" = "));
-            if let Some((attribute, _)) = attribute
-                && message.is_some_and(|message| gone.contains(&format!("{message}.{attribute}")))
-            {
-                open = braces(line);
-                continue;
-            }
-            kept.push(line);
-        }
-        if !kept.is_empty() {
-            blocks.push(kept.join("\n"));
-        }
-    }
-    joined(&blocks)
-}
-
-/// How many braces `line` opens: a value that opens a selector keeps its word until they close.
-fn braces(line: &str) -> i32 {
-    line.chars().fold(0, |open, c| match c {
-        '{' => open + 1,
-        '}' => open - 1,
-        _ => open,
-    })
-}
-
 /// Why `words` read as code rather than as words a person says, if they do: a name keeps what it was
 /// written with (`save_draft`, `notes.save()`, `store::notes`), and a one-letter word inside a phrase
 /// is the binding a name was built from.
@@ -298,7 +189,7 @@ pub fn views_named_as_code(meta: &PackageMeta) -> Vec<(String, String)> {
 #[must_use]
 pub fn source_catalogue(meta: &PackageMeta) -> String {
     let mut out = String::from(
-        "# tilolang messages: generated from the package's source, commit it. Translate in\n\
+        "# tilolang messages: generated from the package's source. Translate in\n\
          # locales/<language>.ftl beside it; edit the words in the source, not here.\n",
     );
     if !meta.title.is_empty() {
@@ -315,7 +206,7 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         );
     }
     for ty in &meta.types {
-        message(&mut out, &ty.id, &label(&ty.name), &ty.doc);
+        message(&mut out, &ty.id, &ty.label(), &ty.doc);
         attribute(&mut out, "noun", &noun(ty));
         // What a record of it is called while its title is empty, which every surface that names one
         // shows.
@@ -344,7 +235,11 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         message(&mut out, &action.id, &action.label, &action.doc);
         // What the action did, as a history entry says it after who did it.
         if let Some(did) = &action.did {
-            attribute(&mut out, "did", &pattern(did));
+            let words = match &action.did_many {
+                Some(many) => counted(&pattern(did), &pattern(many)),
+                None => pattern(did),
+            };
+            attribute(&mut out, "did", &words);
         }
         // What the person types where they answer its ask, each labelled.
         for (n, take) in action.takes.iter().enumerate() {
@@ -397,12 +292,13 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
 
 /// `{ $count -> [one] note *[other] notes }`: what one of the type is called, and several.
 fn noun(ty: &TypeMeta) -> String {
-    let one = ty.noun();
-    let many = plural(&one);
+    counted(&escape(&ty.noun()), &escape(&ty.plural()))
+}
+
+/// `one` and `several` as one Fluent message that picks by `$count`.
+fn counted(one: &str, several: &str) -> String {
     format!(
-        "{{ $count ->\n        [one] {}\n       *[other] {}\n    }}",
-        escape(&one),
-        escape(&many)
+        "{{ $count ->\n        [one] {one}\n       *[other] {several}\n    }}"
     )
 }
 
@@ -508,8 +404,8 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        gone_keys, pattern, pruned, reads_as_code, refined_blocks, source_catalogue, stale_keys,
-        summary, variable, views_named_as_code,
+        pattern, reads_as_code, source_catalogue, stale_keys, summary, variable,
+        views_named_as_code,
     };
     use crate::meta::{PackageMeta, ViewMeta};
 
@@ -612,21 +508,6 @@ mod tests {
             assert!(stale_keys(source, "# a comment\nd-b = Notizen\n").is_empty());
         }
 
-        phase pruning_a_translation_drops_the_words_its_source_stopped_saying;
-        {
-            let before = "d-a = Inbox\n    .doc = Mail.\n    .w-new = { $n } new\n\nd-b = Notes\n    .noun = { $count ->\n        [one] notebook\n       *[other] notebooks\n    }\n\nd-c = Title\n    .doc = A title.\n";
-            let after = "d-a = Inbox\n    .doc = Mail.\n\nd-c = Title\n";
-            let gone = gone_keys(before, after);
-            assert_eq!(gone, ["d-a.w-new", "d-b", "d-b.noun", "d-c.doc"]);
-            let translation = "# Deutsch\n\nd-a = Eingang\n    .doc = Post.\n    .w-new = { $n } neu\n\nd-b = Notizen\n    .noun = { $count ->\n        [one] Notizbuch\n       *[other] Notizbücher\n    }\n\nd-c = Titel\n    .doc = { $n ->\n        [one] Ein Titel\n       *[other] Titel\n}\n";
-            assert_eq!(
-                pruned(translation, &gone),
-                "# Deutsch\n\nd-a = Eingang\n    .doc = Post.\n\nd-c = Titel\n"
-            );
-            let own = "d-a = Eingang\n\nd-zzzzzzzz = Etwas\n";
-            assert_eq!(pruned(own, &gone), own);
-        }
-
         phase a_description_is_the_first_sentence_unwrapped;
         {
             assert_eq!(
@@ -638,15 +519,6 @@ mod tests {
                 "One dock item, e.g. a tile."
             );
             assert_eq!(summary(""), "");
-        }
-
-        phase a_refined_message_is_the_authors;
-        {
-            let committed = "# header\n\n# refined\nd-abc = Notes\n    .noun = { $count ->\n        [one] notebook\n       *[other] notebooks\n    }\n\nd-def = Title\n";
-            let kept = refined_blocks(committed);
-            assert_eq!(kept.len(), 1, "{kept:?}");
-            assert_eq!(kept[0].0, "d-abc");
-            assert!(kept[0].1.contains("notebooks"));
         }
 
         phase interpolation_becomes_a_named_variable_and_braces_stay_literal;

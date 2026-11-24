@@ -61,7 +61,9 @@ by `tools/policy/check_catalogue_coverage.py --range`: the commit hook judges
 each commit's own catalogues as it is made, and a cherry-pick or a rebase writes
 commits it never runs for. A key the range adds to a source catalogue with no
 line in a translation, a key it adds to a translation with no source original,
-or a catalogue it leaves holding one key twice refuses the push.
+or a catalogue it leaves holding one key twice refuses the push. A tilolang
+package's source catalogue is not a file: the check asks the tree's compiler
+for the words the package's sources write at each end of the range.
 
 There is no switch to skip the lint: `git push --no-verify` is Git's own
 escape, and CONTRIBUTING.md asks contributors never to use it.

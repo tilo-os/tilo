@@ -1,4 +1,4 @@
-# tilolang messages: generated from the package's source, commit it. Translate in
+# tilolang messages: generated from the package's source. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
 d-so-tilo-print-centre = Print Centre
@@ -482,6 +482,8 @@ d-dxj763u4 = Print form
     .w-print-a-document = Print a document
     .w-choose-what-to-print-then-the = Choose what to print, then the printer and how it prints.
     .w-choose-a-document = Choose a document
+    .w-no-printer-is-added-on-this = No printer is added on this computer.
+    .w-printer = Printer
 
 d-lua6ahaf = Print pane
     .w-print-a-document = Print a document

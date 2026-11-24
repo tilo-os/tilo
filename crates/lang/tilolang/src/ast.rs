@@ -148,6 +148,11 @@ pub struct TypeDecl {
     pub title: Option<TitleDecl>,
     /// `(untitled: "Untitled")`: what a record is called while its title is empty.
     pub untitled: Option<UntitledDecl>,
+    /// `(label: "Notes")`: what a person reads the type as, where that is not its name in words.
+    pub label: Option<String>,
+    /// `(noun: "notebook")`: what one of the type is called in a sentence, where its name in words
+    /// says something else.
+    pub noun: Option<String>,
     /// `(readers: author)`: who reads a record of the type, when not every member.
     pub readers: Option<ReadersDecl>,
     pub fields: Vec<FieldDecl>,

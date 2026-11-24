@@ -55,8 +55,10 @@ type Note (untitled: "Untitled") {
     }
 }
 
-/// The workspace's notebook: its notes, in the tree's order, and the tags those notes carry.
-type Notebook {
+/// The workspace's notes.
+///
+/// Its notes, in the tree's order, and the tags those notes carry.
+type Notebook (label: "Notes", noun: "notebook") {
     notes: Collection<Note>
     /// Notes carried over from the native Notes app that it no longer showed: a page whose
     /// parent was deleted, kept here rather than dropped, out of the tree.
@@ -119,9 +121,7 @@ fn place_under(nb: Notebook, parent: Option<Note>, made: Note) -> Option<Note> {
     if let p = parent {
         if let last = nb.notes.filter(x -> x.parent == parent and x != made).last() {
             .some(nb.notes.descendants(last, .parent).last() ?? last)
-        } else {
-            .some(p)
-        }
+        } else { .some(p) }
     } else { .none }
 }
 

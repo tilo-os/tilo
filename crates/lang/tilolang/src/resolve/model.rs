@@ -29,6 +29,10 @@ pub struct TypeInfo {
     pub origin: Option<String>,
     pub title: Option<String>,
     pub untitled: Option<String>,
+    /// `(label: "Notes")`: what a person reads the type as, where that is not its name in words.
+    pub label: Option<String>,
+    /// `(noun: "notebook")`: what one of the type is called in a sentence.
+    pub noun: Option<String>,
     pub readers: Option<crate::meta::ReaderRule>,
     /// `live when ...`, once its predicate is lowered and its `view live` found.
     pub live: Option<crate::meta::LiveMeta>,
@@ -225,6 +229,8 @@ pub struct Presentation {
     /// `did: "moved this"`: what the action did, as history's sentence reads it after who did it ("Ana
     /// moved this").
     pub did: Option<String>,
+    /// `did_many: "moved {count} tasks"`: what it did when it changed several.
+    pub did_many: Option<String>,
     /// `search: Found`: the type this action's answers are of, where it answers the system's
     /// search over a remote service.
     pub search: Option<String>,

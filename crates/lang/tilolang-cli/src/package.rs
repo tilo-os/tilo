@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::manifest::{AtspiAcceptance, Manifest};
 use tilo_app_package::pack::SigningIdentity;
-use tilolang::source::{write_catalogue, write_ids};
+use tilolang::source::write_ids;
 use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
@@ -772,10 +772,11 @@ fn publish_staged(
     Ok(built)
 }
 
-/// Compile the packages of `options` in dependency order, writing each one's ids lock and source
-/// catalogue when it changed: what every delivery starts from, so a build leaves the package's
-/// words where its sources say they are. # Errors A package does not compile (the message lists the
-/// errors by file), or an ids lock or a catalogue cannot be written.
+/// Compile the packages of `options` in dependency order, writing each one's ids lock when it
+/// changed: what every delivery starts from, so a build leaves the package's ids where its sources
+/// say they are. A package's source catalogue is written from the sources into the module, never as
+/// a file. # Errors A package does not compile (the message lists the errors by file), or an ids
+/// lock cannot be written.
 fn compiled(options: &BuildOptions) -> Result<Vec<tilolang::source::BuiltPackage>, String> {
     let (built, _) = crate::compile(&options.dir, &options.search, &mut OsEntropy::default())
         .map_err(|e| e.to_string())?;
@@ -787,34 +788,19 @@ fn compiled(options: &BuildOptions) -> Result<Vec<tilolang::source::BuiltPackage
         if write_ids(package)? {
             eprintln!("{}: ids lock updated", package.dir.display());
         }
-        if write_catalogue(package)? {
-            eprintln!("{}: the source catalogue updated", package.dir.display());
-        }
     }
     Ok(built)
 }
 
 /// `Err` naming what of `package` is not what its sources write, for a `--locked` build.
 fn refuse_stale(package: &tilolang::source::BuiltPackage) -> Result<(), String> {
-    let stale: Vec<&str> = [
-        (!tilolang::source::ids_current(package)).then_some("ids lock (app.ids)"),
-        (!tilolang::source::catalogue_current(package))
-            .then_some("source catalogue (locales/en-US.ftl)"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    if stale.is_empty() {
+    if tilolang::source::ids_current(package) {
         return Ok(());
     }
     let dir = package.dir.display();
-    let (what, verb, it) = match stale.as_slice() {
-        [one] => ((*one).to_owned(), "is", "it"),
-        _ => (stale.join(" and the "), "are", "them"),
-    };
     Err(format!(
-        "{dir}: the {what} {verb} out of date with its sources; write {it} with `tilolang check \
-         --write-ids {dir}` and commit {it} with them"
+        "{dir}: the ids lock (app.ids) is out of date with its sources; write it with `tilolang \
+         check --write-ids {dir}` and commit it with them"
     ))
 }
 

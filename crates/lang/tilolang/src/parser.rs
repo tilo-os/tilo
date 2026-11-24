@@ -1290,6 +1290,8 @@ impl<'a> Parser<'a> {
         let mut origin = None;
         let mut title = None;
         let mut untitled = None;
+        let mut label = None;
+        let mut noun = None;
         let mut readers = None;
         if self.eat(&Tok::LParen) {
             loop {
@@ -1297,7 +1299,8 @@ impl<'a> Parser<'a> {
                 if self.eat(&Tok::RParen) {
                     break;
                 }
-                let key = self.ident("`origin`, `title`, `untitled` or `readers`")?;
+                let key =
+                    self.ident("`origin`, `title`, `untitled`, `label`, `noun` or `readers`")?;
                 self.expect(&Tok::Colon)?;
                 match key.name.as_str() {
                     "origin" => origin = Some(self.type_origin()?),
@@ -1311,6 +1314,12 @@ impl<'a> Parser<'a> {
                         let words =
                             self.plain_string("what the type is called while its title is empty")?;
                         untitled = Some(UntitledDecl { words, span });
+                    }
+                    "label" => {
+                        label = Some(self.plain_string("the words a person reads the type as")?);
+                    }
+                    "noun" => {
+                        noun = Some(self.plain_string("what one of the type is called")?);
                     }
                     "readers" => {
                         let span = self.span();
@@ -1355,7 +1364,7 @@ impl<'a> Parser<'a> {
                         return self.fail(
                             key.span,
                             format!(
-                                "a type's options are `origin:`, `title:`, `untitled:` and `readers:`, not `{other}:`"
+                                "a type's options are `origin:`, `title:`, `untitled:`, `label:`, `noun:` and `readers:`, not `{other}:`"
                             ),
                         );
                     }
@@ -1457,6 +1466,8 @@ impl<'a> Parser<'a> {
             origin,
             title,
             untitled,
+            label,
+            noun,
             readers,
             fields,
             search,

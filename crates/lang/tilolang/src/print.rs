@@ -994,6 +994,12 @@ impl Printer<'_> {
                 if let Some(untitled) = &t.untitled {
                     options.push(format!("untitled: {}", quote(&untitled.words)));
                 }
+                if let Some(label) = &t.label {
+                    options.push(format!("label: {}", quote(label)));
+                }
+                if let Some(noun) = &t.noun {
+                    options.push(format!("noun: {}", quote(noun)));
+                }
                 if let Some(readers) = &t.readers {
                     options.push(format!("readers: {}", readers.rule));
                 }

@@ -125,13 +125,17 @@ LANGUAGE = session_language()
 
 
 def fluent(path: Path) -> dict[str, str]:
-    """The messages and attributes of the Fluent catalogue at `path` (`key`, `key.attr`), each its
+    """The messages and attributes of the Fluent catalogue at `path`, as [`fluent_text`] reads
+    them; none for a file the unit does not ship."""
+    return fluent_text(path.read_text()) if path.is_file() else {}
+
+
+def fluent_text(text: str) -> dict[str, str]:
+    """The messages and attributes of a Fluent catalogue in `text` (`key`, `key.attr`), each its
     pattern on one line, the default variant of a selector access for the selector."""
     found: dict[str, str] = {}
     key = base = None
-    if not path.is_file():
-        return found
-    for line in path.read_text().splitlines():
+    for line in text.splitlines():
         entry = re.fullmatch(r"([A-Za-z][\w-]*) =\s?(.*)", line)
         attribute = re.fullmatch(r"\s+\.([\w-]+) =\s?(.*)", line)
         default = re.fullmatch(r"\s+\*\[[^\]]*\]\s?(.*)", line)
@@ -146,6 +150,22 @@ def fluent(path: Path) -> dict[str, str]:
     return found
 
 
+def source_catalogue(unit: str) -> dict[str, str]:
+    """The words a unit's build writes in its source language: the catalogue a crate commits, or
+    the one a tilolang package's compiler writes from its sources."""
+    directory = REPO / unit
+    if (directory / "app.tl").is_file():
+        builder = BIN / "tilolang"
+        if not builder.is_file():
+            raise Failed(f"no tilolang at {builder} to read {unit}'s words")
+        result = subprocess.run([str(builder), "catalogue", str(directory)],
+                                capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise Failed(f"{unit}: {result.stderr.strip()}")
+        return fluent_text(result.stdout)
+    return fluent(directory / "locales" / "en-US.ftl")
+
+
 def say(unit: str, key: str, language: str | None = None, **args) -> str:
     """The words `key` reads in `language` (the session's) in the catalogues of `unit`, the
     directory holding its `locales/`: its translation, else its source, with `args` placed."""
@@ -154,7 +174,7 @@ def say(unit: str, key: str, language: str | None = None, **args) -> str:
     shipped = [language, *sorted(p.stem for p in locales.glob(f"{language.split('-')[0]}-*.ftl"))]
     words = next((fluent(locales / f"{each}.ftl")[key] for each in shipped
                   if key in fluent(locales / f"{each}.ftl")), None)
-    words = words if words is not None else fluent(locales / "en-US.ftl").get(key)
+    words = words if words is not None else source_catalogue(unit).get(key)
     if words is None:
         raise Failed(f"{unit}'s catalogues hold no {key!r}")
     for name, value in args.items():

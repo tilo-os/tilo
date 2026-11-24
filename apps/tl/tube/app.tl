@@ -229,9 +229,10 @@ type WatchEntry {
 }
 
 /// What the client holds: the channels, videos and playlists the service answered with, the
-/// person's subscriptions, the workspace's watch queue, each member's watch history and playback
-/// preferences, and how the last search stands.
-type YouTube {
+/// person's subscriptions, their watch history, and how the last search stands.
+///
+/// It keeps the workspace's watch queue, and each member's playback preferences.
+type YouTube (label: "YouTube", noun: "channel") {
     /// What the client is called. A root with no text of its own is named by the first text it
     /// holds, so without this the client would be called after the first channel it holds: the
     /// fetch actions and the scenarios write it once, and it names the client from then on.

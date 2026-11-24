@@ -1,4 +1,4 @@
-# tilolang messages: generated from the package's source, commit it. Translate in
+# tilolang messages: generated from the package's source. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
 d-so-tilo-chat = Chat
@@ -475,13 +475,13 @@ d-yfjnxpbn = Open direct
 d-hs67kfnp = Open thread
     .doc = {""}[`open_channel`] for a thread.
 
-# refined
 d-peb7lz2j = Send
     .doc = Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one.
     .did = { $count ->
         [one] wrote a message
        *[other] wrote { $count } messages
     }
+    .w-type-a-message-first = Type a message first
 
 d-peb7lz2j-to = To
 

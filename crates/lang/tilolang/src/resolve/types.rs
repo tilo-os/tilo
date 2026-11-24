@@ -148,6 +148,8 @@ impl Resolver<'_> {
                 origin: t.origin.as_ref().map(|o| o.name.clone()),
                 title: t.title.as_ref().map(|title| title.field.name.clone()),
                 untitled: t.untitled.as_ref().map(|u| u.words.clone()),
+                label: t.label.clone(),
+                noun: t.noun.clone(),
                 readers: t.readers.as_ref().map(|r| r.rule.clone()),
                 live: None,
             });

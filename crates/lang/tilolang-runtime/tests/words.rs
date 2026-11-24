@@ -4,8 +4,52 @@
 
 #[cfg(test)]
 mod cases {
+    use std::cell::RefCell;
+    use std::path::Path;
+    use std::rc::Rc;
+
     use crate::common::*;
+    use tilolang::source::compile_package;
     use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value, Words};
+
+    /// A reader who resolves a message from the catalogue of one language, and reads the source
+    /// text where the package has none: what a window's host does with the catalogues a package's
+    /// module carries.
+    struct Speaking {
+        language: &'static str,
+        held: RefCell<Vec<(String, String)>>,
+    }
+
+    impl Speaking {
+        fn new(language: &'static str) -> Rc<Self> {
+            Rc::new(Self {
+                language,
+                held: RefCell::new(Vec::new()),
+            })
+        }
+    }
+
+    impl Words for Speaking {
+        fn add(&self, catalogues: &[(String, String)]) {
+            *self.held.borrow_mut() = catalogues.to_vec();
+        }
+
+        fn add_used(&self, _: &[(String, String)]) {}
+
+        fn word(&self, key: &str, _args: &[(String, String)], source: &str) -> String {
+            self.held
+                .borrow()
+                .iter()
+                .find(|(locale, _)| locale == self.language)
+                .and_then(|(_, catalogue)| {
+                    let entry = format!("{key} = ");
+                    catalogue
+                        .lines()
+                        .find_map(|line| line.strip_prefix(&entry).map(str::to_owned))
+                })
+                .unwrap_or_else(|| source.to_owned())
+        }
+    }
 
     const SOURCE: &str = r#"app so.tilo.inbox "Inbox"
 
@@ -96,6 +140,44 @@ view editor_with_own_words(n: Note) {
 
     tilo_test_env::scenario! {
         fn words_read_in_the_readers_language;
+
+        phase a_real_packages_window_reads_the_english_or_german_its_catalogue_says;
+        // The catalogue a package's build writes from its sources is what its window reads: one
+        // package, one module, a German reader's window and an English one.
+        {
+            let dir =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/counter");
+            let built =
+                compile_package(&dir, &[], &[], &mut tilolang::SeededEntropy(0)).unwrap();
+            assert_eq!(built.last().map(|b| &b.dir), Some(&dir), "the root compiles last");
+            let compiled = &built.last().unwrap().compiled;
+            let counter = compiled
+                .meta
+                .views
+                .iter()
+                .find(|view| view.name == "counter" && view.row_of.is_none())
+                .expect("the counter's window view")
+                .id
+                .clone();
+            for (language, expected) in [("en-US", "Increment"), ("de-DE", "Erhöhen")] {
+                let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+                rt.set_words(Speaking::new(language));
+                rt.load_compiled(compiled).unwrap();
+                let c = rt.create("Counter").unwrap();
+                let mut view = rt
+                    .open_view(&me(), &counter, vec![Value::resource(&c)])
+                    .unwrap();
+                view.poll_patches().unwrap();
+                let labels: Vec<String> = of_kind(view.tree(), "ui.Button")
+                    .into_iter()
+                    .map(|button| text_prop(button, "label"))
+                    .collect();
+                assert!(
+                    labels.iter().any(|label| label == expected),
+                    "{language} reads {expected:?} among {labels:?}"
+                );
+            }
+        }
 
         phase a_types_untitled_words_read_in_the_readers_language;
         // A record with no title is called what its type says, in the reader's language, at every

@@ -156,20 +156,14 @@ pub const fn sources() -> &'static [(&'static str, &'static str)] {
     SHELL_FILES
 }
 
-/// The catalogues the shell package ships, by locale: its words in the languages a window may
-/// read them in, travelling in its module as an installed app's do.
+/// The shell package's translations, by locale, travelling in its module as an installed app's do.
+/// The source catalogue is not here: the compiler writes it from the package's own sources.
 #[must_use]
-pub const fn catalogues() -> [(&'static str, &'static str); 2] {
-    [
-        (
-            "en-US",
-            include_str!("../../../../apps/tl/shell/locales/en-US.ftl"),
-        ),
-        (
-            "de-DE",
-            include_str!("../../../../apps/tl/shell/locales/de-DE.ftl"),
-        ),
-    ]
+pub const fn catalogues() -> [(&'static str, &'static str); 1] {
+    [(
+        "de-DE",
+        include_str!("../../../../apps/tl/shell/locales/de-DE.ftl"),
+    )]
 }
 
 /// The shell package, compiled: what a shell's instance loads, over the session's and the

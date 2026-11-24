@@ -268,16 +268,26 @@ fn line_number(text: &str) -> u32 {
     u32::try_from(text.bytes().filter(|b| *b == b'\n').count() + 1).unwrap_or(u32::MAX)
 }
 
-/// The catalogues a module built from `source` carries: the source language's written from the compiled
-/// sources, and every other language as its catalogue beside the sources says.
+/// The source catalogue a package's module carries: its words written from what it declares.
+#[must_use]
+pub fn source_locale(meta: &PackageMeta) -> Vec<(String, String)> {
+    vec![(
+        crate::messages::SOURCE_LOCALE.to_owned(),
+        crate::messages::source_catalogue(meta),
+    )]
+}
+
+/// The catalogues a module built from `source` carries: the source language's, written from the
+/// compiled sources, and every other language as its catalogue beside the sources says.
 fn locales_of(source: &PackageSource, meta: &PackageMeta) -> Vec<(String, String)> {
-    let mut locales = source.locales.clone();
-    if let Some((_, text)) = locales
-        .iter_mut()
-        .find(|(locale, _)| locale == crate::messages::SOURCE_LOCALE)
-    {
-        *text = crate::messages::source_catalogue_keeping(meta, text);
-    }
+    let mut locales = source_locale(meta);
+    locales.extend(
+        source
+            .locales
+            .iter()
+            .filter(|(locale, _)| locale != crate::messages::SOURCE_LOCALE)
+            .cloned(),
+    );
     locales
 }
 
@@ -366,6 +376,7 @@ pub fn compile_package_with(
             })
             .collect();
     let mut compiled = emit_package(a);
+    crate::meta::append_locales(&mut compiled.wasm, &source_locale(&compiled.meta));
     crate::meta::append_lines(&mut compiled.wasm, &lines);
     Ok(compiled)
 }
@@ -667,6 +678,7 @@ fn build_meta(
                     role: None,
                     scenario: true,
                     did: None,
+                    did_many: None,
                     uses: uses_meta(&c.uses),
                     present: None,
                     toggles: None,
@@ -723,6 +735,8 @@ fn build_meta(
                     origin: info.origin.clone(),
                     title: info.title.clone(),
                     untitled: info.untitled.clone(),
+                    label: info.label.clone(),
+                    noun: info.noun.clone(),
                     readers: info.readers.clone(),
                     live: info.live.clone(),
                 });
@@ -761,6 +775,7 @@ fn build_meta(
                     role: c.present.role.clone(),
                     scenario: false,
                     did: c.present.did.clone(),
+                    did_many: c.present.did_many.clone(),
                     uses: uses_meta(&c.uses),
                     present: c.present.view.clone(),
                     toggles: toggled_field(env, a, &c.params),
@@ -1051,6 +1066,7 @@ pub fn compile_program_reading(
             role: None,
             scenario: false,
             did: None,
+            did_many: None,
             search: None,
             present: None,
             toggles: None,
