@@ -2549,31 +2549,41 @@ impl Checker<'_> {
         }
         let result = |held: Ty| Ty::Result(Box::new(held), Box::new(Ty::Text));
         let document_app = || super::platform::host_ty("DocumentApp");
-        let (imp, wanted, held, said) = match name.name.as_str() {
+        let (imp, wanted, held, said, reads_files) = match name.name.as_str() {
             "document_apps" => (
                 Imp::ToolDocumentApps,
                 1,
                 result(Ty::List(Box::new(document_app()))),
                 "`tool.document_apps(path)`: the apps that open the file at `path`, the one it opens with today first",
+                true,
             ),
             "open_with" => (
                 Imp::ToolOpenWith,
                 2,
                 result(Ty::Unit),
                 "`tool.open_with(path, app)`: the file at `path` opened in `app`, an id `tool.document_apps` answers",
+                true,
             ),
             "terminal" => (
                 Imp::ToolTerminal,
                 1,
                 result(Ty::Unit),
                 "`tool.terminal(folder)`: a terminal opened in the folder `folder`",
+                true,
+            ),
+            "context" => (
+                Imp::ToolContext,
+                0,
+                Ty::Text,
+                "`tool.context()`: what the shell opened this app with, as JSON, or empty text",
+                false,
             ),
             other => {
                 self.err(
                     "E026",
                     name.span,
                     format!(
-                        "`tool` has `document_apps`, `open_with` and `terminal`, not `{other}`"
+                        "`tool` has `document_apps`, `open_with`, `terminal` and `context`, not `{other}`"
                     ),
                 );
                 for a in args {
@@ -2598,11 +2608,13 @@ impl Checker<'_> {
                 );
             }
         }
-        self.reads(
-            crate::effects::Effect::Files,
-            span,
-            &format!("`tool.{}`", name.name),
-        );
+        if reads_files {
+            self.reads(
+                crate::effects::Effect::Files,
+                span,
+                &format!("`tool.{}`", name.name),
+            );
+        }
         let arguments: Vec<Ex> = args
             .iter()
             .map(|arg| self.expr_as(&arg.value, &Ty::Text))

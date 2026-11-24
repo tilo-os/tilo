@@ -293,6 +293,13 @@ pub trait FilesHost {
         Err(NO_FILES.to_owned())
     }
 
+    /// What the shell opened this app with, as the JSON its tool context holds (the folder a
+    /// terminal opens at, the file an app was asked to show), or empty text when it was opened
+    /// on its own: what `tool.context` answers.
+    fn launch_context(&self) -> String {
+        String::new()
+    }
+
     /// Open `file` in the app that opens its kind: the person's own view of a file, or an app
     /// whose own action takes that kind. The shell picks the app by the file's first bytes and its
     /// name and starts it, under the app's grants; the file `file` names is not read here.
@@ -395,6 +402,7 @@ impl Core {
                 let folder = self.text(a.h(0)?)?;
                 self.result(host.terminal_at(&folder).map(|()| Value::Unit))
             }
+            Imp::ToolContext => self.ret_h(Value::Text(host.launch_context())),
             Imp::FileCompress => {
                 let paths = self.with_val(a.h(0)?, |value| match value {
                     Value::List(items) => items

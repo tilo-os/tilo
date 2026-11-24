@@ -822,6 +822,22 @@ impl Platform for HostPlatform {
             .map(drop)
     }
 
+    /// What the shell opened this app with: the launcher hands it the tool context it was
+    /// started for (`TILO_TOOL_CONTEXT`), and an app opened on its own has none.
+    fn launch_context(&self) -> String {
+        const MAX_BYTES: usize = 16 * 1024;
+        let Ok(context) = std::env::var(runtime_portal::tools::TOOL_CONTEXT_ENV) else {
+            return String::new();
+        };
+        if context.len() > MAX_BYTES {
+            return String::new();
+        }
+        serde_json::from_str::<serde_json::Value>(&context)
+            .ok()
+            .map(|_| context)
+            .unwrap_or_default()
+    }
+
     fn extract_file(&self, from: &str, to: &str) -> Result<i64, String> {
         crate::files::extract(from, to)
     }

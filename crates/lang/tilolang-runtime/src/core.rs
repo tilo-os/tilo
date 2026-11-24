@@ -61,7 +61,7 @@ use Imp::{
     StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper,
     StrWords, Suggest, Take, TimeClock,
     TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan, TimeWall, Today,
-    ToolDocumentApps, ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
+    ToolContext, ToolDocumentApps, ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
     TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
     UiBindState, UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
     Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody,
@@ -632,7 +632,7 @@ impl Core {
             FileList | FileStat | FileReadPath | FileWatch | FileOpenPath | FileOpen
             | FileMkdir | FileWrite | FileRename | FileMove | FileCopy | FileRemove | FileTrash
             | FileTrashEntries | FileRestore | FileCompress | FileExtract | ToolDocumentApps
-            | ToolOpenWith | ToolTerminal => self.file_device_import(imp, a),
+            | ToolOpenWith | ToolTerminal | ToolContext => self.file_device_import(imp, a),
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }

@@ -585,6 +585,11 @@ pub trait Platform {
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
 
+    /// What the shell opened this app with, as JSON, or empty text: what `tool.context` asks.
+    fn launch_context(&self) -> String {
+        String::new()
+    }
+
     /// Open a terminal in the folder `folder`: what `tool.terminal` asks.
     ///
     /// # Errors
@@ -828,6 +833,10 @@ impl tilolang_runtime::files::FilesHost for PlatformFiles {
 
     fn terminal_at(&self, folder: &str) -> Result<(), String> {
         self.0.open_terminal_at(folder)
+    }
+
+    fn launch_context(&self) -> String {
+        self.0.launch_context()
     }
 
     fn extract(&self, from: &str, to: &str) -> Result<i64, String> {
