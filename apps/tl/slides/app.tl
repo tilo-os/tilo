@@ -1458,7 +1458,9 @@ view deck(d: Deck) {
             } else if overview {
                 overview_grid(d, current, overview)
             } else {
-                ui.NavShell(content_kind: .page, title: deck_name(d), sidebar_title: "Slides") {
+                // The content is a page a person works on, not a reading pane: a narrow window
+                // keeps the slide whole and lays the rail over it as a drawer.
+                ui.NavShell(content_kind: .canvas, title: deck_name(d), sidebar_title: "Slides") {
                     on drop(files: List<File>): import_files(d, files)
                     actions: {
                         // Search inside this deck: the same search, narrowed to its slides and

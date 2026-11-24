@@ -124,6 +124,30 @@
       ]
     },
     {
+      "id": "picture",
+      "said": "Put a picture from the person's folder on the slide",
+      "ops": [
+        {
+          "image": {
+            "name": "deck.png"
+          }
+        },
+        {
+          "press_any": [
+            "Picture"
+          ]
+        },
+        {
+          "choose": {
+            "name": "deck.png"
+          }
+        },
+        {
+          "wait_for": "Insert"
+        }
+      ]
+    },
+    {
       "id": "overview",
       "said": "See every slide at once",
       "ops": [

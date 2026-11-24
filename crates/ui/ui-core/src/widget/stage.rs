@@ -1874,3 +1874,7 @@ fn f32_of(v: f64) -> f32 {
 #[cfg(test)]
 #[path = "stage_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "stage_slide_box_tests.rs"]
+mod slide_box_tests;

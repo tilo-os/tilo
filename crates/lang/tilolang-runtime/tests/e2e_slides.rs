@@ -770,6 +770,14 @@ mod cases {
         let mut view = s.window();
         // The insert tool stands in the tools row a view of its own draws, inside the deck's
         // frame: a window presses it through the view it is shown through.
+        let names: Vec<String> = s
+            .app
+            .meta()
+            .views
+            .iter()
+            .map(|v| format!("{}:anchors={:?}:calls={:?}", v.name, v.anchors.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), v.calls))
+            .collect();
+        eprintln!("VIEWS {names:?}");
         let insert = s.app.anchor("deck", "insert_text");
         assert!(matches!(
             view.press(&insert).unwrap(),
