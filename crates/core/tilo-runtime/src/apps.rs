@@ -594,6 +594,7 @@ impl Apps {
     }
 
     /// Forget the launch recorded for `pid`, once its process ended.
+    #[cfg(test)]
     pub(crate) fn forget_started(&self, pid: u32) {
         self.launched.forget(pid);
     }

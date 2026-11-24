@@ -843,8 +843,6 @@ struct Inner {
     endpoint: Endpoint,
     /// Where this device enters its person's workspaces, on a device a ticket made.
     home: Option<Arc<super::home::Home>>,
-    /// The person's root, when this computer holds it: what approves a computer a ticket adds.
-    root: RootSource,
     /// The person's workspace here, on a computer no ticket made: the one a computer it adds
     /// enters, founded when one first does.
     first: Option<Arc<super::first_workspace::FirstWorkspace>>,
@@ -905,7 +903,7 @@ impl Tickets {
             cert: cert.clone(),
             endpoint: endpoint.clone(),
             home: home.clone(),
-            root: Arc::clone(&root),
+            root,
             first: first.clone(),
             workspaces: workspaces.clone(),
             service: service.clone(),
@@ -915,7 +913,6 @@ impl Tickets {
             cert,
             endpoint,
             home,
-            root,
             first,
             workspaces,
             place,

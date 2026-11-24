@@ -686,18 +686,6 @@ impl Daemon {
         Ok(Arc::clone(self.api.get_or_init(|| api)))
     }
 
-    /// The tree the person reaches in action frames at the daemon's native endpoint, and the
-    /// caller they are there: the workspace this daemon serves, and the account over the
-    /// login's one session.
-    ///
-    /// # Errors
-    /// The workspace cannot be admitted to now.
-    pub(crate) fn person_tree(
-        self: &Arc<Self>,
-    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
-        self.person_tree_in(&self.workspace)
-    }
-
     /// The tree the person reaches in `workspace`, one this device is a member of, and the
     /// caller they are there.
     ///
@@ -1270,7 +1258,6 @@ impl Daemon {
         tilo_workspace_service::agents::agent_keys::install_grants(std::sync::Arc::new(
             super::signing::GrantsOf {
                 workspaces: std::sync::Arc::downgrade(&workspaces),
-                keys: identity.place.keys().clone(),
             },
         ));
         // What the device's providers publish at fixed addresses is what an app's code calls them
@@ -4674,9 +4661,8 @@ pub(crate) mod tests;
 fn other_devices(
     workspaces: &Arc<ServiceWorkspaces>,
 ) -> Option<crate::other_devices::OtherDevices> {
-    let (_actions, endpoint, runtime) = workspaces.turn_action_service()?;
-    let cert = workspaces.device_cert().clone();
-    let signer = workspaces.signer();
+    let (_actions, _endpoint, runtime) = workspaces.turn_action_service()?;
+    let cert = workspaces.device_cert();
     let revocations = {
         let mut revocations = tilo_user_identity::RevocationList::new();
         for (_, _, peer) in workspaces.held() {
@@ -4688,10 +4674,8 @@ fn other_devices(
     };
     let keys = tilo_workspace_service::agents::agent_keys::this_device().ok()?;
     Some(crate::other_devices::OtherDevices::new(
-        endpoint,
         runtime,
         (cert.user_public_key, cert.device_public_key),
-        (cert, signer),
         revocations,
         keys,
         Arc::new(Known(Arc::downgrade(workspaces))),

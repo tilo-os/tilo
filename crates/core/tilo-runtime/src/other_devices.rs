@@ -10,15 +10,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use collab_types::signer::DeviceSigner;
-use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh::{EndpointAddr, EndpointId};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tilo_workspace_service::agents::agent_keys::{AgentKeys, AgentSigner};
 
 use crate::i18n::{t, t_args};
 
-/// How long one request of a forwarded client waits for the device's answer.
-const REPLY_DEADLINE: Duration = Duration::from_secs(60);
 /// How long a forwarded client's connection to the device may take to open.
 const CONNECT_DEADLINE: Duration = Duration::from_secs(20);
 
@@ -42,16 +40,10 @@ pub trait Whereabouts: Send + Sync {
 pub struct OtherDevices(Arc<Inner>);
 
 struct Inner {
-    /// The endpoint this device asks from.
-    endpoint: Endpoint,
     /// The runtime the connection to the other device opens on.
     runtime: tokio::runtime::Handle,
     /// The person this device is, and its own key.
     whose: ([u8; 32], [u8; 32]),
-    /// This device's certificate and the key that signs as it: the connection the agent's
-    /// requests travel on, which the other device admits as this device.
-    cert: DeviceCert,
-    signer: Arc<dyn DeviceSigner>,
     /// The person's revocations, as this device reads them.
     revocations: RevocationList,
     /// The keys this device makes for its person's agents.
@@ -60,24 +52,19 @@ struct Inner {
 }
 
 impl OtherDevices {
-    /// Ask through `actions` from `endpoint` on `runtime`, as the device `this` of `person`,
-    /// whose certificate `cert` and key `signer` are, reaching devices where `places` says.
+    /// Ask on `runtime` as the device `this` of `person`, through keys `keys` makes for the
+    /// person's agents, reaching devices where `places` says.
     #[must_use]
     pub fn new(
-        endpoint: Endpoint,
         runtime: tokio::runtime::Handle,
         (person, this): ([u8; 32], [u8; 32]),
-        (cert, signer): (DeviceCert, Arc<dyn DeviceSigner>),
         revocations: RevocationList,
         keys: Arc<dyn AgentKeys>,
         places: Arc<dyn Whereabouts>,
     ) -> Self {
         Self(Arc::new(Inner {
-            endpoint,
             runtime,
             whose: (person, this),
-            cert,
-            signer,
             revocations,
             keys,
             places,
@@ -171,8 +158,7 @@ impl OtherDevices {
             entering: None,
         };
         let opened = tokio::time::timeout(CONNECT_DEADLINE, async {
-            let session =
-                tilo_session_client::device::Device::over(config, agent_signer, client);
+            let session = tilo_session_client::device::Device::over(config, agent_signer, client);
             session
                 .enter_workspace(workspace, client)
                 .await

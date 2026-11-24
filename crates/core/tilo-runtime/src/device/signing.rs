@@ -401,19 +401,16 @@ pub fn answer_sign_in(
         .map_err(|error| io::Error::other(error.to_string()))?;
     let cert = tilo_device_identity::persist::read_device_cert(&keys.device_cert)
         .map_err(|error| io::Error::other(error.to_string()))?;
-    let signed =
-        block_on_owned(
-            async move {
-                let ask = SignInAsk {
-                    audience: &audience,
-                    challenge,
-                    client: &client,
-                    grant: grant_ask,
-                };
-                answer_sign_in(&root, &device, &cert.device_label, &ask).await
-            },
-        )
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let signed = block_on_owned(async move {
+        let ask = SignInAsk {
+            audience: &audience,
+            challenge,
+            client: &client,
+            grant: grant_ask,
+        };
+        answer_sign_in(&root, &device, &cert.device_label, &ask).await
+    })
+    .map_err(|error| io::Error::other(error.to_string()))?;
     Ok(json!({ "proof": signed.proof, "grant": signed.grant }))
 }
 
@@ -436,7 +433,6 @@ pub(crate) fn devices_seen(workspaces: &ServiceWorkspaces) -> tilo_identity::sou
 /// workspaces whose record it keeps the certificates in.
 pub(crate) struct GrantsOf {
     pub(crate) workspaces: Weak<ServiceWorkspaces>,
-    pub(crate) keys: tilo_device_identity::IdentityPaths,
 }
 
 impl tilo_workspace_service::agents::agent_keys::AgentGrants for GrantsOf {

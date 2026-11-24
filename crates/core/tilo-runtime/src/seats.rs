@@ -260,8 +260,6 @@ pub(crate) struct AppAt {
 pub(crate) struct Seat {
     pub(crate) uid: u32,
     pub(crate) admitted: Admitted,
-    /// The process at the other end, when the kernel says it.
-    pub(crate) pid: Option<u32>,
     /// The app the process was started as, when it is one the daemon started.
     pub(crate) app: Option<AppAt>,
 }
@@ -384,7 +382,6 @@ impl Seats {
                 return Seat {
                     uid: u32::MAX,
                     admitted: Admitted::Stranger,
-                    pid: None,
                     app: None,
                 };
             }
@@ -409,7 +406,6 @@ impl Seats {
         Seat {
             uid: peer.uid,
             admitted,
-            pid: peer.pid,
             app,
         }
     }
