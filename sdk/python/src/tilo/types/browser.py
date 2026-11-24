@@ -304,7 +304,7 @@ RevealDownloadArgs = TypedDict("RevealDownloadArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -365,7 +365,7 @@ class Notice(Resource):
 
 class Bookmark(Resource):
     """Bookmark — `tl.so.tilo.browser.Bookmark`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     @property
     def _44buv5tt(self) -> str:
         """url (`44buv5tt` on the wire)."""
@@ -408,7 +408,7 @@ class Bookmark(Resource):
 
 class Visit(Resource):
     """Visit — `tl.so.tilo.browser.Visit`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     k73mxvmp: str  # url
     qy6vtgjc: str  # title
     @property
@@ -444,7 +444,7 @@ class Visit(Resource):
 
 class ImportedVisit(Resource):
     """ImportedVisit — `tl.so.tilo.browser.ImportedVisit`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     my4dhx2s: str  # url
     @property
     def _43vnrbh6(self) -> str:
@@ -460,7 +460,7 @@ class ImportedVisit(Resource):
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.browser.Suggestion`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     zl6ois7x: SuggestionKind  # kind
     iwoez6ar: str  # title
     np2bxhf4: str  # url
@@ -469,7 +469,7 @@ class Suggestion(Resource):
 
 class RememberedForm(Resource):
     """RememberedForm — `tl.so.tilo.browser.RememberedForm`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     @property
     def _3wdvc5zt(self) -> str:
         """origin (`3wdvc5zt` on the wire)."""
@@ -507,7 +507,7 @@ class RememberedForm(Resource):
 
 class Question(Resource):
     """Question — `tl.so.tilo.browser.Question`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     @property
     def _2wlmb5rp(self) -> str:
         """name (`2wlmb5rp` on the wire)."""
@@ -524,7 +524,7 @@ class Question(Resource):
 
 class Address(Resource):
     """Address — `tl.so.tilo.browser.Address`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     fnyioh2y: str  # label
     @property
     def _3ewzn2z4(self) -> str:
@@ -557,7 +557,7 @@ class Address(Resource):
 
 class Page(Resource):
     """Page — `tl.so.tilo.browser.Page`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     hf6q2oo4: str  # url
     tyhunk32: str  # title
     @property
@@ -1542,7 +1542,7 @@ class Page(Resource):
 
 class PageStep(Resource):
     """PageStep — `tl.so.tilo.browser.PageStep`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     cpjp36fw: int  # at
     @property
     def _4mcq24cu(self) -> str | None:
@@ -1582,7 +1582,7 @@ class PageStep(Resource):
 
 class DialogAsk(Resource):
     """DialogAsk — `tl.so.tilo.browser.DialogAsk`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     trchguwk: int  # request
     plkldhkl: str  # kind
     ruephqmr: str  # origin
@@ -1599,7 +1599,7 @@ class DialogAsk(Resource):
 
 class MenuAsk(Resource):
     """MenuAsk — `tl.so.tilo.browser.MenuAsk`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     hjqv4o64: int  # request
     f2gbwl6v: str  # link
     @property
@@ -1614,7 +1614,7 @@ class MenuAsk(Resource):
 
 class MenuRow(Resource):
     """MenuRow — `tl.so.tilo.browser.MenuRow`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     kybyncey: int  # command
     cgfpo6b7: str  # label
     hn5vxavq: bool  # disabled
@@ -1631,7 +1631,7 @@ class MenuRow(Resource):
 
 class PageMedia(Resource):
     """PageMedia — `tl.so.tilo.browser.PageMedia`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     @property
     def _3rpnjayb(self) -> str:
         """element (`3rpnjayb` on the wire)."""
@@ -1645,7 +1645,7 @@ class PageMedia(Resource):
 
 class Download(Resource):
     """Download — `tl.so.tilo.browser.Download`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     anfisgsq: int  # transfer
     in525zqp: str  # state
     wz6wi2p3: str  # name
@@ -1659,7 +1659,7 @@ class Download(Resource):
 
 class SiteInfo(Resource):
     """SiteInfo — `tl.so.tilo.browser.SiteInfo`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     hrkhpkbd: str  # origin
     scje2sv3: int  # generation
     lyopffwi: int  # blocked
@@ -1681,7 +1681,7 @@ class SiteInfo(Resource):
 
 class HistoryEntry(Resource):
     """HistoryEntry — `tl.so.tilo.browser.HistoryEntry`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     eyk6uw4k: int  # entry
     @property
     def _2chmpqlt(self) -> str:
@@ -1696,7 +1696,7 @@ class HistoryEntry(Resource):
 
 class PageButton(Resource):
     """PageButton — `tl.so.tilo.browser.PageButton`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     t25qin6v: str  # ext
     pigtj7mb: str  # label
     dizhfbps: str  # badge
@@ -1713,7 +1713,7 @@ class PageButton(Resource):
 
 class ExtensionNotice(Resource):
     """ExtensionNotice — `tl.so.tilo.browser.ExtensionNotice`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     bmmxddfi: str  # ext
     @property
     def _7wjg3mlt(self) -> str:
@@ -1730,7 +1730,7 @@ class ExtensionNotice(Resource):
 
 class Panel(Resource):
     """Panel — `tl.so.tilo.browser.Panel`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     @property
     def _52ms3sap(self) -> str:
         """kind (`52ms3sap` on the wire)."""
@@ -1753,7 +1753,7 @@ class Panel(Resource):
 
 class Omnibox(Resource):
     """Omnibox — `tl.so.tilo.browser.Omnibox`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     yf5tqm24: str  # ext
     h6pi6u6y: str  # name
     tzxibbua: str  # text
@@ -1762,14 +1762,14 @@ class Omnibox(Resource):
 
 class OmniboxRow(Resource):
     """OmniboxRow — `tl.so.tilo.browser.OmniboxRow`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     wdpe6rh5: str  # title
     d662kmwa: str  # content
 
 
 class Addressed(Resource):
     """Addressed — `tl.so.tilo.browser.Addressed`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     mkrajvka: str  # ext
     @property
     def _7sy22uee(self) -> str:
@@ -1784,7 +1784,7 @@ class Addressed(Resource):
 
 class Extension(Resource):
     """Extension — `tl.so.tilo.browser.Extension`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     iymjskx5: str  # key
     vhst373v: str  # name
     @property
@@ -1812,7 +1812,7 @@ class Extension(Resource):
 
 class LoginForm(Resource):
     """LoginForm — `tl.so.tilo.browser.LoginForm`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     hdxbxfcl: str  # form
     enz3azev: str  # username
     kqqay3gr: str  # kind
@@ -1820,7 +1820,7 @@ class LoginForm(Resource):
 
 class LoginAccount(Resource):
     """LoginAccount — `tl.so.tilo.browser.LoginAccount`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     @property
     def _53raewop(self) -> str:
         """account (`53raewop` on the wire)."""
@@ -1843,7 +1843,7 @@ class LoginAccount(Resource):
 
 class Ask(Resource):
     """Ask — `tl.so.tilo.browser.Ask`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     fqvhxdyr: str  # op
     hfpnr6ua: str | None  # element
     tpz54oe5: str | None  # text
@@ -1969,7 +1969,7 @@ class Ask(Resource):
 
 class Answer(Resource):
     """Answer — `tl.so.tilo.browser.Answer`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     @property
     def _2ubdeo5l(self) -> bool:
         """ok (`2ubdeo5l` on the wire)."""
@@ -2009,7 +2009,7 @@ class Answer(Resource):
 
 class Browser(Resource):
     """Browser — `tl.so.tilo.browser.Browser`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     v73p6lyt: bool  # adblock
     @property
     def _4mcclqi3(self) -> bool:
@@ -2210,7 +2210,7 @@ class Browser(Resource):
 
 class TiloBrowser(Resource):
     """Browser — `tl.so.tilo.browser`."""
-    __surface__ = "so.tilo.browser@a477f41188dd8c52"
+    __surface__ = "so.tilo.browser@20b997efd54ce90c"
     def open_download(self,
         *,
         name: str,
