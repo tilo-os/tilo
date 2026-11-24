@@ -189,7 +189,12 @@ impl DesktopPass {
                         self.handle.float_over(strip, group, area);
                     }
                 }
-                RowOp::Open { strip, group, .. } | RowOp::Reveal(strip, group) => {
+                RowOp::Open { strip, group, .. } => {
+                    let mut shared = self.handle.shared.borrow_mut();
+                    share_with_neighbour(&mut shared, strip, group);
+                    shared.reveal_asked.push((strip, group));
+                }
+                RowOp::Reveal(strip, group) => {
                     self.handle
                         .shared
                         .borrow_mut()
@@ -941,5 +946,92 @@ impl DesktopPass {
         if let Some(admitted) = admitted {
             shared.queue.push(admitted);
         }
+    }
+}
+
+/// Make room for the window `group` that just opened in `strip`, beside the window before it on
+/// its display, else the one after it: two that don't fit share the display, and when no share
+/// leaves both usable the strip pans to the new window instead
+/// ([`tilo_desktop_model::width::share_beside`]). So the window the person was in stays on screen
+/// beside the new one rather than panning half out of view. A window the workspace holds floating
+/// takes no run of the strip and shares nothing.
+fn share_with_neighbour(shared: &mut super::Shared, strip: StripId, group: GroupId) {
+    if super::floats::holds(shared, strip, group) {
+        return;
+    }
+    let partitioned = shared.tree.is_partitioned();
+    let partition = &shared.tree.outputs;
+    // A window opened since the displays were last told stands on the display the person works
+    // on, where the pass homes it.
+    let display_of = |id: GroupId| {
+        partitioned.then(|| {
+            if partition.home_of(id).is_some() {
+                partition.display_of(id)
+            } else {
+                partition.focused_display()
+            }
+        })
+    };
+    let display = display_of(group);
+    let Some(held) = super::floats::workspace_with(&shared.tree, strip)
+        .and_then(|workspace| workspace.strips.iter().find(|held| held.id == strip))
+    else {
+        return;
+    };
+    let Some(index) = held.window_groups.iter().position(|held| held.id == group) else {
+        return;
+    };
+    let beside = |at: usize| {
+        held.window_groups.get(at).is_some_and(|next_to| {
+            !next_to.maximized
+                && !super::floats::holds(shared, strip, next_to.id)
+                && display_of(next_to.id) == display
+        })
+    };
+    let neighbour = match index.checked_sub(1) {
+        Some(left) if beside(left) => left,
+        _ if beside(index.saturating_add(1)) => index.saturating_add(1),
+        _ => return,
+    };
+    let (Some(opened), Some(next_to)) = (
+        held.window_groups.get(index),
+        held.window_groups.get(neighbour),
+    ) else {
+        return;
+    };
+    if opened.maximized {
+        return;
+    }
+    let area = super::shown::work_area(shared, display.flatten());
+    let usable = (area.width() - 2.0 * ui::widget::STRIP_EDGE_GUTTER_PX).max(1.0);
+    let Some((neighbour_width, opened_width)) = tilo_desktop_model::width::share_beside(
+        next_to.width,
+        opened.width,
+        usable,
+        area.width(),
+        ui::widget::HANDLE_SLOT_PX,
+    ) else {
+        return;
+    };
+    let Some(held) = shared
+        .tree
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.strips)
+        .find(|held| held.id == strip)
+    else {
+        return;
+    };
+    let mut changed = false;
+    for (at, width) in [(neighbour, neighbour_width), (index, opened_width)] {
+        if let Some(sized) = held.window_groups.get_mut(at)
+            && sized.width != width
+        {
+            sized.width = width;
+            changed = true;
+        }
+    }
+    if changed {
+        shared.changed();
     }
 }

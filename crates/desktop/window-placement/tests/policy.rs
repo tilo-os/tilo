@@ -14,6 +14,7 @@ use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::{DesktopPolicy, Placement, Window};
 use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect};
 use ui::kurbo::Rect;
+use ui::widget::{HANDLE_SLOT_PX, STRIP_EDGE_GUTTER_PX};
 
 const WIDTH: f64 = 1200.0;
 
@@ -535,6 +536,53 @@ fn each_display_holds_the_windows_opened_while_it_had_focus() {
     settle(&mut policy);
     assert_eq!(policy.display_of(1), Some(order[1]));
     assert_eq!(policy.focused(), Some(1));
+}
+
+#[test]
+fn a_window_opened_beside_another_shares_the_display_with_it() {
+    let mut policy = mount();
+    map(&mut policy, 1, "a");
+    let usable = WIDTH - 2.0 * STRIP_EDGE_GUTTER_PX;
+    let alone = shown_rect(&policy, 1);
+    assert!(
+        (alone.width() - usable).abs() < 0.5,
+        "a window alone takes the strip: {alone:?}"
+    );
+
+    map(&mut policy, 2, "b");
+    let ids: Vec<GroupId> = groups(&policy).iter().map(|(id, ..)| *id).collect();
+    assert_eq!(ids.len(), 2, "each window stands in a group of its own");
+    let (first, second) = (group_width(&policy, ids[0]), group_width(&policy, ids[1]));
+    // Two thirds of the strip for the window the person was in leaves too little beside it for
+    // the new one, so the two split the display evenly.
+    let half = (usable - HANDLE_SLOT_PX) / 2.0;
+    assert!(
+        matches!(first, WindowWidth::Share(_)) && first == second,
+        "the two share the strip equally: {first:?}, {second:?}"
+    );
+    assert!(
+        first.resolve(usable) <= half && first.resolve(usable) > half - 2.0,
+        "each takes half of the strip: {first:?} of {usable}"
+    );
+
+    let (left, right) = (shown_rect(&policy, 1), shown_rect(&policy, 2));
+    assert!(
+        (left.width() - first.resolve(usable)).abs() < 0.5
+            && (right.width() - second.resolve(usable)).abs() < 0.5,
+        "each is drawn at its share: {left:?} {right:?}"
+    );
+    assert!(
+        (left.x0 - STRIP_EDGE_GUTTER_PX).abs() < 0.5,
+        "the window the person was in stays where it stood: {left:?}"
+    );
+    assert!(
+        (right.x0 - left.x1 - HANDLE_SLOT_PX).abs() < 0.5,
+        "the new window opens right beside it: {left:?} {right:?}"
+    );
+    assert!(
+        right.x1 <= WIDTH - STRIP_EDGE_GUTTER_PX + 0.5,
+        "both stand whole on the display: {right:?}"
+    );
 }
 
 #[test]
