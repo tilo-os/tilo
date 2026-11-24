@@ -219,12 +219,16 @@ impl Boot {
         .unwrap()
     }
 
+    /// What `request` from this boot is known by: the digest a release is sealed against.
+    fn digest(&self, request: &UnlockRequest) -> [u8; 32] {
+        request.digest(&self.hello.boot_cert, &sibling()).unwrap()
+    }
+
     fn open(&self, request: &UnlockRequest, frame: &SiblingFrame) -> Half {
         let SiblingFrame::Released(release) = frame else {
             panic!("expected a release, got {frame:?}");
         };
-        let digest = request.digest(&self.hello.boot_cert, &sibling()).unwrap();
-        open_release(&self.ephemeral, &digest, release).unwrap()
+        open_release(&self.ephemeral, &self.digest(request), release).unwrap()
     }
 }
 
@@ -634,7 +638,7 @@ fn auto_approval_needs_the_owner_setting_and_an_attested_boot_chain() {
         &request,
         &boot.hello,
         &challenge.nonce,
-        &world.view(),
+        &world.view_for(&boot, &boot.digest(&request)),
         NOW + RATE_WINDOW_NS,
     );
     assert_eq!(boot.open(&request, &frame), half());
@@ -747,7 +751,7 @@ fn an_allowed_boot_that_reconnects_gets_a_half_for_its_own_key() {
             UnlockDecision::Approve {
                 approver: sibling(),
             },
-            &world.view(),
+            &world.view_for(&boot, &digest),
             NOW + 1,
         )
         .unwrap();
@@ -764,7 +768,7 @@ fn an_allowed_boot_that_reconnects_gets_a_half_for_its_own_key() {
         &request,
         &again.hello,
         &challenge.nonce,
-        &world.view(),
+        &world.view_for(&again, &again.digest(&request)),
         NOW + 2,
     );
     assert_eq!(again.open(&request, &frame), half());
