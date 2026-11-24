@@ -27,3 +27,8 @@ app-grant-detail = It may from now on in this workspace. You can revoke this und
 other-devices-none = None of your other devices is known here.
 other-devices-unknown = None of your devices here is called { $device }. Your devices here: { $devices }.
 other-devices-name-workspace = { $device } is in more than one of your workspaces here. Name one with --workspace.
+
+# The layout's own actions, as the window manager of a workspace reads them.
+so-tilo-layout-read = Read the layout: the workspaces, strips and windows on it, the app and record each window shows, and the other workspaces the caller reaches here.
+so-tilo-layout-place = Open a window of an app on the layout, as the caller's: beside the window in front, on the record it names or the app's own. A record a window shows already stays where it is.
+so-tilo-layout-close = Close a window on the layout, everywhere it is shown. Its record stays in the workspace.
