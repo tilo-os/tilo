@@ -40,6 +40,8 @@ mod e2e_browser;
 mod e2e_calculator;
 #[path = "e2e_call_fn.rs"]
 mod e2e_call_fn;
+#[path = "e2e_camera.rs"]
+mod e2e_camera;
 #[path = "e2e_canvas.rs"]
 mod e2e_canvas;
 #[path = "e2e_chip_design.rs"]

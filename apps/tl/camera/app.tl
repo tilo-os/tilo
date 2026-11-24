@@ -78,6 +78,10 @@ type CapturePreferences (readers: author) {
     lens: Facing = .back
     /// The camera this device uses, by its node; empty asks the platform's default.
     device: Text = ""
+    /// The cameras this device offered when it was last asked.
+    cameras: List<CameraDevice>
+    /// Whether this computer asks permission before an app may use its camera.
+    cameras_prompt: Bool = false
     /// The newest frame the camera showed, kept as a picture.
     preview: Text = ""
     /// The camera's moving picture, by its engine stream.
@@ -90,6 +94,8 @@ type CapturePreferences (readers: author) {
     found_h: Float = 0.0
     /// The clip being recorded, by its engine job.
     recording: Text = ""
+    /// The instant the recording began, while one is being recorded.
+    recording_since: Option<Time> = .none
     /// The moment the self-timer fires, while it counts down.
     shutter_at: Option<Time> = .none
     /// Why the last capture, recording or look failed.
@@ -252,7 +258,7 @@ fn kind_of(raw: Text) -> Text {
         "wifi"
     } else if lower.starts_with("begin:vcard") or lower.starts_with("mecard:") {
         "contact"
-    } else if lower.starts_with("mailto:") {
+    } else if lower.starts_with("mailto:") or lower.starts_with("matmsg:") {
         "email"
     } else if lower.starts_with("tel:") {
         "phone"
@@ -337,6 +343,65 @@ fn without_scheme(raw: Text, scheme: Text) -> Text {
     if raw.lower().starts_with(scheme) { raw.slice(scheme.len(), raw.len()) } else { raw }
 }
 
+/// The address an email code writes, and the subject it writes for the message.
+type Email {
+    address: Text
+    subject: Text
+}
+
+/// An email code's address and subject: a `MATMSG` payload's fields, or the `mailto:` address.
+fn email_of(raw: Text) -> Email {
+    let trimmed = raw.trim()
+    if trimmed.lower().starts_with("matmsg:") {
+        let fields = without_scheme(trimmed, "MATMSG:").split(";")
+        Email(address: field_value(fields, "TO"), subject: field_value(fields, "SUB"))
+    } else {
+        let rest = without_scheme(trimmed, "mailto:")
+        let address = rest.split("?").at(0) ?? ""
+        Email(address: address.trim(), subject: "")
+    }
+}
+
+/// A phone number as a `tel` link, whether or not the payload already wrote the scheme.
+fn tel_link(number: Text) -> Text {
+    "tel:{without_scheme(number.trim(), "tel:")}"
+}
+
+/// The address an email code opens: the `mailto:` link its address and subject make.
+fn email_link(raw: Text) -> Text {
+    let email = email_of(raw)
+    if email.address == "" {
+        return raw
+    }
+    if email.subject == "" {
+        "mailto:{email.address}"
+    } else {
+        "mailto:{email.address}?subject={escaped(email.subject)}"
+    }
+}
+
+/// Text as a link's query part writes it.
+fn escaped(text: Text) -> Text {
+    text
+        .replace("%", "%25")
+        .replace("&", "%26")
+        .replace("?", "%3F")
+        .replace("#", "%23")
+        .replace("+", "%2B")
+        .replace(" ", "%20")
+}
+
+/// What a code's action opens: the address that carries out the action, in the form a person's
+/// other apps understand — `tel:` for a contact card's phone, `mailto:` for an email code — or
+/// the payload itself where it is already the address to open.
+fn link_for(raw: Text) -> Text {
+    let kind = kind_of(raw)
+    if kind == "contact" {
+        let contact = contact_of(raw)
+        if contact.phone != "" { tel_link(contact.phone) } else { raw }
+    } else if kind == "email" { email_link(raw) } else { raw }
+}
+
 /// The payload's one main fact: a network's name, a person, an address.
 fn code_summary(raw: Text) -> Text {
     let kind = kind_of(raw)
@@ -345,7 +410,8 @@ fn code_summary(raw: Text) -> Text {
     } else if kind == "contact" {
         contact_of(raw).name
     } else if kind == "email" {
-        without_scheme(raw, "mailto:")
+        let email = email_of(raw)
+        if email.address != "" { email.address } else { raw }
     } else if kind == "phone" {
         without_scheme(raw, "tel:")
     } else if kind == "place" {
@@ -509,11 +575,32 @@ action use_camera(c: Camera, device: Text) {
     p.trouble = ""
 }
 
-/// Forgets the chosen camera and asks the engine for the cameras again.
+/// Forgets the chosen camera and asks this device for its cameras again.
 action retry_camera(c: Camera) {
     let p = prefs_of(c)
     p.device = ""
     p.trouble = ""
+    list_cameras(c)
+}
+
+/// Asks this device which cameras it has: the rows the settings page offers, one per camera.
+action list_cameras(c: Camera) {
+    let p = prefs_of(c)
+    match engine.call("cameras", "") {
+        .ok(text) => match json.decode<CamerasAnswer>(text) {
+            .ok(answer) => {
+                p.cameras = answer.devices
+                p.cameras_prompt = answer.prompt
+                p.trouble = ""
+            }
+            .err(why) => {
+                p.trouble = why
+            }
+        },
+        .err(why) => {
+            p.trouble = why
+        }
+    }
 }
 
 action set_resolution(c: Camera, resolution: Text) {
@@ -638,8 +725,9 @@ action read_codes(c: Camera, url: Text) {
     }
 }
 
-/// The shutter: takes a photo now, starts the self-timer, or records.
-action shutter(c: Camera) uses time {
+/// The shutter: takes a photo now, starts the self-timer, or records. Space presses it, as a
+/// camera's shutter button is pressed.
+action shutter(c: Camera) uses time (key: "Space") {
     let p = prefs_of(c)
     if p.recording != "" {
         stop_recording(c)
@@ -721,6 +809,7 @@ action start_recording(c: Camera) uses time {
         .ok(text) => match json.decode<JobAnswer>(text) {
             .ok(answer) => {
                 p.recording = answer.job
+                p.recording_since = .some(now)
                 p.trouble = ""
             }
             .err(why) => {
@@ -743,6 +832,8 @@ action stop_recording(c: Camera) {
         .ok(text) => match json.decode<RecordStopped>(text) {
             .ok(answer) => {
                 p.trouble = ""
+                p.recording = ""
+                p.recording_since = .none
             }
             .err(why) => {
                 p.trouble = why
@@ -751,6 +842,7 @@ action stop_recording(c: Camera) {
         .err(why) => {
             p.trouble = why
             p.recording = ""
+            p.recording_since = .none
         }
     }
 }
@@ -1075,10 +1167,14 @@ view viewfinder(c: Camera) {
     let p = prefs_read(c)
     let counting = p.shutter_at != .none
     let recording = p.recording != ""
+    // The seconds the self-timer has left, counted again in this window each second: the
+    // number a person sees and the shutter button's cancel sit beside.
+    state left: Int = 0
     stack(gap: .related, fill) {
         // The self-timer counts in the window the person looks at, on its device.
         if counting {
             after Duration(p.timer): shutter_due(c)
+            every 1s: set(left, if let due = p.shutter_at { (due - now).seconds() } else { 0 })
         }
         row(gap: .tight, wrap: true, align: .center) {
             ui.Chip("Photo", selected: p.mode == "photo") {
@@ -1097,7 +1193,7 @@ view viewfinder(c: Camera) {
                 on press: open_photos()
             }
             ui.Button("Settings", icon: .settings, icon_only: true) {
-                on press: stop_look(c).then(open(c, view: settings_page))
+                on press: stop_look(c).then(list_cameras(c)).then(open(c, view: settings_page))
             }
         }
         if live_picture(p) != "" {
@@ -1116,7 +1212,17 @@ view viewfinder(c: Camera) {
             ui.StatusLine(trouble, status: .error)
         }
         if recording {
-            ui.StatusLine("Recording", status: .active)
+            if let since = p.recording_since {
+                ui.Countdown(at: since, label: "Recording")
+            } else {
+                ui.StatusLine("Recording", status: .active)
+            }
+        }
+        if counting {
+            stack(gap: .tight, align: .center) {
+                ui.Text(if left > 0 { "{left}" } else { "{p.timer}" }, role: .display)
+                ui.Text("Tap the shutter to cancel.", role: .caption, secondary: true)
+            }
         }
         row(gap: .related, align: .center, wrap: true) {
             ui.Button(
@@ -1169,7 +1275,9 @@ fn shutter_words(p: CapturePreferences, counting: Bool, recording: Bool) -> Text
 }
 
 fn device_words(p: CapturePreferences) -> Text {
-    if p.device == "" { "this computer's default camera" } else { p.device }
+    if let camera = p.cameras.find(d -> d.id == p.device) {
+        camera.label
+    } else if p.device == "" { "this computer's default camera" } else { p.device }
 }
 
 fn no_picture_title(p: CapturePreferences) -> Text {
@@ -1202,6 +1310,8 @@ fn viewfinder_shapes(p: CapturePreferences) -> List<ui.Shape> {
     if p.level { with_grid + level } else { with_grid }
 }
 
+/// The code scanner, a place the window goes into: its Back leaves it for the viewfinder, and so
+/// does Escape.
 view scanner_page(c: Camera) {
     let p = prefs_read(c)
     let found = p.found
@@ -1257,12 +1367,11 @@ view scanner_page(c: Camera) {
                 )
                 row(gap: .tight, wrap: true) {
                     for choice in code_actions(found) {
-                        if choice == "Open link" {
-                            ui.Link(found, label: choice)
-                        } else if choice == "Open map"
+                        if choice == "Open link"
+                            or choice == "Open map"
                             or choice == "Write email"
                             or choice == "Call" {
-                            ui.Link(found, label: choice)
+                            ui.Link(link_for(found), label: choice)
                         } else if choice == "Copy password" {
                             ui.Button(choice, icon: .key) {
                                 on press: copy_code(c, "password")
@@ -1322,6 +1431,8 @@ fn scan_shapes(p: CapturePreferences, found: Text) -> List<ui.Shape> {
     if found != "" and p.found_w > 0.0 { frame + outline } else { frame }
 }
 
+/// The document scanner, a place the window goes into: its Back leaves it for the viewfinder, and
+/// so does Escape.
 view documents_page(c: Camera) {
     state cropping: Bool = false
     state crop_edges: List<Float> = [0.0, 0.0, 1.0, 1.0]
@@ -1509,6 +1620,47 @@ view settings_page(c: Camera) {
                 on press: open(c, view: viewfinder)
             }
         }
+        if p.trouble != "" {
+            ui.StatusLine(p.trouble, status: .error)
+        }
+        ui.Section("Camera") {
+            stack(gap: .tight) {
+                ui.ListRow(
+                    "This computer's default camera",
+                    secondary: "The one the system picks",
+                    selected: p.device == "",
+                    icon: .camera,
+                ) {
+                    on activate: use_camera(c, "")
+                }
+                for camera in p.cameras {
+                    ui.ListRow(
+                        camera.label,
+                        secondary: camera.id,
+                        selected: p.device == camera.id,
+                        icon: .camera,
+                    ) {
+                        on activate: use_camera(c, camera.id)
+                    }
+                }
+                if p.cameras.is_empty() {
+                    ui.Text(
+                        "No camera found. Connect one, then look again.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                } else if p.cameras_prompt {
+                    ui.Text(
+                        "Tilo asks this computer for permission the first time it uses a camera.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
+                ui.Button("Look for cameras", icon: .rotate_cw) {
+                    on press: retry_camera(c)
+                }
+            }
+        }
         ui.Section("Capture") {
             form {
                 field("Resolution") {
@@ -1546,7 +1698,7 @@ view settings_page(c: Camera) {
                         }
                     }
                 }
-                field("Default camera") {
+                field("Default lens") {
                     row(gap: .tight, wrap: true) {
                         ui.Chip("Rear", selected: p.default_lens == .back) {
                             on press: set_default_lens(c, .back)

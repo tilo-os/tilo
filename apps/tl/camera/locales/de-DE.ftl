@@ -77,6 +77,12 @@ d-cfihwt6m = Modus
     .doc = `photo` oder `video`: der Modus, in dem der Sucher öffnet.
 d-v5w2qmvn = Objektiv
     .doc = Das Objektiv, das der Sucher zeigt.
+
+d-zuizuamu = Kameras
+    .doc = Die Kameras, die dieses Gerät beim letzten Fragen angeboten hat.
+
+d-bckgp4bo = Kameranachfrage
+    .doc = Ob dieser Computer um Erlaubnis bittet, bevor eine App seine Kamera nutzt.
 d-zaeshfry = Gerät
     .doc = Die Kamera dieses Geräts, nach ihrem Knoten; leer fragt nach der Standardkamera.
 d-ffavn4zg = Vorschau
@@ -88,6 +94,9 @@ d-frttwlrr = Gefunden y
 d-di5cyk72 = Gefunden b
 d-3adwwuks = Gefunden h
 d-fnu3wna2 = Aufnahme läuft
+
+d-z6lzljr2 = Aufnahme seit
+    .doc = Der Zeitpunkt, an dem die Aufnahme begann, solange aufgezeichnet wird.
     .doc = Der Clip, der aufgenommen wird, nach seinem Engine-Auftrag.
 d-bkfl557v = Auslöser um
     .doc = Der Moment, in dem der Selbstauslöser auslöst, während er zählt.
@@ -112,6 +121,17 @@ d-czua3iyv = Gescannte Seite
         [one] scanned page
        *[other] scanned pages
     }
+
+d-suebyemt = E-Mail
+    .doc = Die Adresse, die ein E-Mail-Code schreibt, und der Betreff, den er für die Nachricht schreibt.
+    .noun = { $count ->
+        [one] E-Mail
+       *[other] E-Mails
+    }
+
+d-kdi6tquz = Adresse
+
+d-odqiiw2m = Betreff
 d-5tzdwbr2 = Datei
 d-noe6wvhn = Text
 d-a6zvslgh = Reihenfolge
@@ -453,6 +473,7 @@ d-mim6ysmz = Sucher
     .w-settings = Settings
     .w-the-viewfinder = The viewfinder
     .w-recording = Recording
+    .w-tap-the-shutter-to-cancel = Tippe auf den Auslöser, um abzubrechen.
     .w-grid = Grid
     .w-level = Level
     .w-hdr = HDR
@@ -511,8 +532,14 @@ d-c2oiqsed = Dokumentenseite
     .w-copy-text = Copy text
     .w-save-as-pdf = Save as PDF
 d-iswgtf4f = Einstellungsseite
-    .w-back-to-the-camera = Back to the camera
-    .w-capture = Capture
+    .w-back-to-the-camera = Zurück zur Kamera
+    .w-camera = Kamera
+    .w-this-computer-s-default-camera = Standardkamera dieses Computers
+    .w-the-one-the-system-picks = Die vom System gewählte
+    .w-no-camera-found-connect-one-then = Keine Kamera gefunden. Schließe eine an und suche erneut.
+    .w-tilo-asks-this-computer-for-permission = Tilo fragt diesen Computer beim ersten Zugriff auf eine Kamera um Erlaubnis.
+    .w-look-for-cameras = Nach Kameras suchen
+    .w-capture = Aufnahme
     .w-resolution = Resolution
     .w-photo-format = Photo format
     .w-jpeg = JPEG
@@ -521,7 +548,7 @@ d-iswgtf4f = Einstellungsseite
     .w-off = Off
     .w-3-seconds = 3 seconds
     .w-10-seconds = 10 seconds
-    .w-default-camera = Default camera
+    .w-default-lens = Standardobjektiv
     .w-rear = Rear
     .w-front = Front
     .w-ultra-wide = Ultra-wide
@@ -537,3 +564,6 @@ d-iswgtf4f = Einstellungsseite
     .w-save-location-with-photos = Save location with photos
     .w-tag-photos-with-where-they-were = Tag photos with where they were taken
 
+
+d-hhwoa3mc = Kameras auflisten
+    .doc = Fragt dieses Gerät nach seinen Kameras: die Zeilen, die die Einstellungsseite anbietet, eine je Kamera.
