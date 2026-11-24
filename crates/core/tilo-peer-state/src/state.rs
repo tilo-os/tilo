@@ -120,7 +120,7 @@ mod sealed_history;
 mod unsent_bases;
 pub use sealed_compaction::{
     HeldDocument, MergedDocument, OpenedDocument, OpenedHistory, OpenedWrite, SealCheckpoint,
-    UnmergedReason, UnmergedWrite, WaitingForUpdate,
+    UnmergedReason, UnmergedWrite,
 };
 /// The peer's own subjects: how a replica is built and who joins it, the
 /// authority a device holds there, the records it keeps, what it takes in and
@@ -252,12 +252,6 @@ impl Route {
     /// The route as `(app, document)`.
     fn named(&self) -> (String, String) {
         (self.app.clone(), self.record.clone())
-    }
-
-    /// Whether `op` is a write of this route sealed before reader sets
-    /// ([`collab_types::sealed_before_reader_sets`]).
-    fn sealed_before_reader_sets(&self, workspace: &str, op: &SignedOp) -> bool {
-        collab_types::sealed_before_reader_sets(&self.app, workspace, &self.record, op)
     }
 }
 // Documents a durable hash took again: those changed since it was last taken.
@@ -601,9 +595,6 @@ mod removal_tests;
 #[cfg(test)]
 #[path = "state/roster_beside_governance_tests.rs"]
 mod roster_beside_governance_tests;
-#[cfg(test)]
-#[path = "state/sealed_before_reader_sets/tests.rs"]
-mod sealed_before_reader_sets_tests;
 #[cfg(test)]
 #[path = "state/sealed_compaction_tests.rs"]
 mod sealed_compaction_tests;

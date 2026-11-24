@@ -241,11 +241,10 @@ impl GovernedWorkspace {
         if !self.peer().publication().is_sealed_document(app, document) {
             return Ok(None);
         }
-        let waiting = |fallback: String| self.waiting_for_update(app, document).unwrap_or(fallback);
         let device = self
             .device
             .as_ref()
-            .ok_or_else(|| waiting("this device holds no group keys".into()))?;
+            .ok_or_else(|| String::from("this device holds no group keys"))?;
         let scoped = self
             .peer()
             .requires_document_keys(app, document, tilo_clock::wall())?;
@@ -260,17 +259,6 @@ impl GovernedWorkspace {
         )
         .await
         .map(Some)
-        .map_err(waiting)
-    }
-
-    /// What a reader of `document` of `app` is told on this device while it holds no keys to
-    /// read it and the document waits for a key holder to seal what was written before reader
-    /// sets again ([`tilo_peer_state::WaitingForUpdate`]).
-    fn waiting_for_update(&self, app: &str, document: &str) -> Option<String> {
-        self.peer()
-            .publication()
-            .waiting_for_update(app, document)
-            .map(|waiting| waiting.to_string())
     }
 
     /// `record` of `app` as the governor reads it, saved: the record itself,
@@ -314,19 +302,12 @@ pub(super) async fn readable_now(
     if !sealed {
         return Ok(reading.replica.read(|peer| peer.document(app, resource)));
     }
-    let waiting = |missing: String| {
-        reading
-            .replica
-            .read(|peer| peer.publication().waiting_for_update(app, resource))
-            .map_or(missing, |waiting| waiting.to_string())
-    };
     let device = reading
         .device
         .as_ref()
-        .ok_or_else(|| waiting("this device holds no group keys".into()))?;
-    let keys = read_document_keys(device, &reading.workspace, (app, resource), scoped, false)
-        .await
-        .map_err(waiting)?;
+        .ok_or_else(|| String::from("this device holds no group keys"))?;
+    let keys =
+        read_document_keys(device, &reading.workspace, (app, resource), scoped, false).await?;
     // The document is taken as it stands and opened once the replica is let go: opening it
     // decrypts and merges every write of its history, which grows with what it holds, and every
     // policy read and commit of the workspace waited on it while a read held the replica.

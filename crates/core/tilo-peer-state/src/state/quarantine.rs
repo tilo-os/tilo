@@ -92,7 +92,6 @@ impl StatePeer {
         let mut history = document.kept_beside();
         history.extend(document.sealed.iter().cloned());
         document.sealed = SealedLog::default();
-        document.resealed = Arc::default();
         document.checkpoint_writes = Arc::default();
         set(route, document, reason.into(), history.into());
     }
@@ -150,7 +149,6 @@ pub(super) fn leave_once_whole(document: &mut StoredDocument) {
     for op in document
         .sealed
         .iter()
-        .chain(document.resealed.iter())
         .chain(document.checkpoint_writes.iter())
     {
         reach(*op.author.as_bytes(), op.seq);

@@ -927,7 +927,6 @@ impl StatePeer {
                     covered: document.covered,
                     covered_snapshot: document.covered_snapshot.map(AcceptedCheckpoint::new),
                     sealed: backend::SealedLog::default(),
-                    resealed: std::sync::Arc::default(),
                     checkpoint_writes: std::sync::Arc::default(),
                     quarantine: None,
                 }

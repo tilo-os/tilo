@@ -101,7 +101,7 @@ pub use state::{
     PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication, PeerPublicationMut,
     PeerWorkspace, PeerWorkspaceMut, ReceiveOutcome, Reseal, RowError, SCHEDULES_KEY,
     SealCheckpoint, SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason,
-    UnmergedWrite, WORKSPACE_KEEPING_DEVICES_KEY, WaitingForUpdate, committed_document_revision,
+    UnmergedWrite, WORKSPACE_KEEPING_DEVICES_KEY, committed_document_revision,
     decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,
     seed_workspace, seed_workspace_at, trigger_mark, unranked, workspace_grants_of,
     workspace_host_actor, workspace_seed,

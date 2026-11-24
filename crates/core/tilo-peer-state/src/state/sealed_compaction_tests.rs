@@ -1088,7 +1088,6 @@ tilo_test_env::scenario! {
                 .map(op)
                 .collect::<Vec<_>>()
                 .into(),
-            resealed: std::sync::Arc::default(),
             checkpoint_writes: std::sync::Arc::default(),
             quarantine: None,
         };
