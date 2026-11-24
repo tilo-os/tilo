@@ -140,6 +140,27 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
+    // The earlier build's workspace ran the app at its version: the changes it wrote name that
+    // version's surface, and the workspace lets its members write the app's records.
+    let release = tilo_peer_state::workspace_membership::AppRelease {
+        app: APP.into(),
+        version: "1.0.0".into(),
+        surface: hex::encode(earlier),
+        package: "00".repeat(32),
+        publisher: "00".repeat(32),
+        file: None,
+        dev: true,
+        pinned: false,
+        payload: tilo_peer_state::workspace_membership::AppPayload::Tapp,
+    };
+    workspaces
+        .commit_own_membership(
+            &workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::InstallApp(release),
+            None,
+        )
+        .await
+        .unwrap();
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: APP.into(),
         cluster_id: workspace.clone(),
