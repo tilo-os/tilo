@@ -27,13 +27,17 @@
     reason = "the descriptor transport hands the system's calls the message it filled"
 )]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+#[cfg(unix)]
+use std::collections::VecDeque;
 use std::fs::File;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use tilo_socket::Stream;
 
 use serde::{Deserialize, Serialize};
@@ -285,16 +289,41 @@ impl Filter {
 
 /// The most descriptors one message carries: the kernel's own bound leaves room for fewer, so a
 /// choice of ten thousand files arrives in several messages.
+#[cfg(unix)]
 const MAX_FDS_PER_MESSAGE: usize = 64;
 
 /// A descriptor handed with a reply: an open file or folder, whatever the app's sandbox did not
-/// let it reach by path. Only a Unix host hands one; elsewhere a choice is answered by its
-/// reference alone.
+/// let it reach by path. A Unix host hands the file descriptor itself; a Windows host its handle,
+/// carried over the connection the launcher made for the app. Both become the same file.
 #[cfg(unix)]
-pub(crate) type Descriptor = OwnedFd;
-#[cfg(not(unix))]
 #[derive(Debug)]
-pub(crate) struct Descriptor;
+pub(crate) struct Descriptor(std::os::fd::OwnedFd);
+
+#[cfg(windows)]
+#[derive(Debug)]
+pub(crate) struct Descriptor(std::os::windows::io::OwnedHandle);
+
+impl Descriptor {
+    /// The file this descriptor holds open.
+    #[must_use]
+    pub(crate) fn into_file(self) -> File {
+        File::from(self.0)
+    }
+}
+
+#[cfg(unix)]
+impl From<std::os::fd::OwnedFd> for Descriptor {
+    fn from(fd: std::os::fd::OwnedFd) -> Self {
+        Self(fd)
+    }
+}
+
+#[cfg(windows)]
+impl From<std::os::windows::io::OwnedHandle> for Descriptor {
+    fn from(handle: std::os::windows::io::OwnedHandle) -> Self {
+        Self(handle)
+    }
+}
 
 type Answer = Box<dyn FnOnce(Reply, Vec<Descriptor>) + Send>;
 
@@ -464,7 +493,11 @@ impl FrameReader {
     }
 
     #[cfg(not(unix))]
-    fn take_fds(&mut self, _wanted: usize) -> Vec<Descriptor> {
+    #[allow(
+        clippy::unused_self,
+        reason = "a pipe carries no handles beside a line, and the call is the same"
+    )]
+    fn take_fds(&self, _wanted: usize) -> Vec<Descriptor> {
         Vec::new()
     }
 
@@ -521,7 +554,8 @@ impl FrameReader {
                     // SAFETY: the control message holds `count` bytes of descriptors.
                     let fd = unsafe { *data.add(at) };
                     // SAFETY: the descriptor arrived with this message and nothing else owns it.
-                    self.fds.push_back(unsafe { OwnedFd::from_raw_fd(fd) });
+                    self.fds
+                        .push_back(Descriptor::from(unsafe { OwnedFd::from_raw_fd(fd) }));
                 }
             }
             // SAFETY: `header` is one of the message's control messages.
@@ -529,28 +563,6 @@ impl FrameReader {
         }
         Ok(true)
     }
-}
-
-/// The file a handed descriptor opens.
-#[cfg(unix)]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "a host that cannot hand a descriptor answers the same call with an error"
-)]
-fn handed_file(fd: Descriptor) -> std::io::Result<File> {
-    Ok(File::from(fd))
-}
-
-#[cfg(not(unix))]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "a host that cannot hand a descriptor answers the same call with an error"
-)]
-fn handed_file(_fd: Descriptor) -> std::io::Result<File> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "this host cannot hand a file",
-    ))
 }
 
 #[cfg(unix)]
@@ -562,7 +574,8 @@ fn cmsg_space(bytes: usize) -> usize {
 /// Write `line` as one frame, carrying `fds` as `SCM_RIGHTS`: the descriptors travel in the same
 /// message as the first bytes of the line, so the reader sees them in the order the line names
 /// the documents they open.
-pub(crate) fn send_frame(stream: &Stream, line: &[u8], fds: &[OwnedFd]) -> std::io::Result<()> {
+#[cfg(unix)]
+pub(crate) fn send_frame(stream: &Stream, line: &[u8], fds: &[Descriptor]) -> std::io::Result<()> {
     let pieces = fds.len().div_ceil(MAX_FDS_PER_MESSAGE).max(1);
     let size = line.len().div_ceil(pieces).max(1);
     let mut at = 0;
@@ -576,6 +589,23 @@ pub(crate) fn send_frame(stream: &Stream, line: &[u8], fds: &[OwnedFd]) -> std::
         write_piece(stream, &line[at..], &[])?;
     }
     Ok(())
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "the server that writes frames is built where a session serves a socket"
+)]
+pub(crate) fn send_frame(stream: &Stream, line: &[u8], fds: &[Descriptor]) -> std::io::Result<()> {
+    if !fds.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this connection cannot carry a chosen file",
+        ));
+    }
+    let mut writer = stream;
+    std::io::Write::write_all(&mut writer, line)?;
+    std::io::Write::flush(&mut writer)
 }
 
 #[cfg(unix)]
@@ -612,7 +642,7 @@ fn write_piece(stream: &Stream, bytes: &[u8], fds: &[Descriptor]) -> std::io::Re
             ) as usize;
             let data = libc::CMSG_DATA(header).cast::<RawFd>();
             for (at, fd) in fds.iter().enumerate() {
-                *data.add(at) = fd.as_raw_fd();
+                *data.add(at) = fd.0.as_raw_fd();
             }
         }
     }
@@ -725,7 +755,7 @@ impl ShellLink {
                     Reply::Handed { documents, .. } => {
                         match (documents.into_iter().next(), fds.into_iter().next()) {
                             (Some(document), Some(fd)) => {
-                                Ok((File::from(fd), document.reference, document.name))
+                                Ok((fd.into_file(), document.reference, document.name))
                             }
                             _ => Err(CHOOSER_OUT_OF_TURN.to_owned()),
                         }
@@ -981,22 +1011,13 @@ impl ShellChooser {
 }
 
 /// The file a save writes, and the commit that renames it over the file the person chose.
-fn keeping(
-    link: &ShellLink,
-    document: HandedDocument,
-    fd: Descriptor,
-) -> Result<OpenedFile, String> {
+fn keeping(link: &ShellLink, document: HandedDocument, fd: Descriptor) -> OpenedFile {
     let reference = document.reference.clone();
     let link = link.clone();
-    let file = handed_file(fd).map_err(|error| error.to_string())?;
-    Ok(OpenedFile::keeping(
-        file,
-        document.name,
-        reference.clone(),
-        move || {
-            commit(&link, &reference);
-        },
-    ))
+    let file = fd.into_file();
+    OpenedFile::keeping(file, document.name, reference.clone(), move || {
+        commit(&link, &reference);
+    })
 }
 
 /// Finish a save: rename the file beside the chosen one over it, and wait briefly for the
@@ -1238,7 +1259,7 @@ impl FilePicker for ShellChooser {
             deliver,
             |documents, fds| match (documents.into_iter().next(), fds.into_iter().next()) {
                 (Some(document), Some(fd)) => {
-                    OpenFileOutcome::Opened(OpenedFile::at(File::from(fd), &document.reference))
+                    OpenFileOutcome::Opened(OpenedFile::at(fd.into_file(), &document.reference))
                 }
                 _ => OpenFileOutcome::Failed(CHOOSER_OUT_OF_TURN.to_owned()),
             },
@@ -1268,10 +1289,7 @@ impl FilePicker for ShellChooser {
             request,
             deliver,
             move |documents, fds| match (documents.into_iter().next(), fds.into_iter().next()) {
-                (Some(document), Some(fd)) => match keeping(&link, document, fd) {
-                    Ok(opened) => OpenFileOutcome::Opened(opened),
-                    Err(reason) => OpenFileOutcome::Failed(reason),
-                },
+                (Some(document), Some(fd)) => OpenFileOutcome::Opened(keeping(&link, document, fd)),
                 _ => OpenFileOutcome::Failed(CHOOSER_OUT_OF_TURN.to_owned()),
             },
             OpenFileOutcome::Cancelled,
@@ -1304,7 +1322,7 @@ impl FilePicker for ShellChooser {
                     Reply::Handed { documents, .. } => {
                         match (documents.into_iter().next(), fds.into_iter().next()) {
                             (Some(document), Some(fd)) => {
-                                write_and_commit(&link, File::from(fd), &document.reference, &bytes)
+                                write_and_commit(&link, fd.into_file(), &document.reference, &bytes)
                             }
                             _ => SaveOutcome::Failed(CHOOSER_OUT_OF_TURN.to_owned()),
                         }
@@ -1344,7 +1362,7 @@ impl FilePicker for ShellChooser {
                     Reply::Handed { documents, .. } => {
                         match (documents.into_iter().next(), fds.into_iter().next()) {
                             (Some(document), Some(fd)) => {
-                                let first = Arc::new(Mutex::new(Some(File::from(fd))));
+                                let first = Arc::new(Mutex::new(Some(fd.into_file())));
                                 let reference = document.reference.clone();
                                 let name = document.name;
                                 let writer = {
@@ -1455,7 +1473,9 @@ fn reopen_and_write(link: &ShellLink, reference: &Path, bytes: &[u8]) -> SaveOut
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead as _, BufReader, Read as _};
+    #[cfg(unix)]
+    use std::io::Read as _;
+    use std::io::{BufRead as _, BufReader};
     use std::path::Path;
     use std::time::Duration;
 
@@ -1507,7 +1527,10 @@ mod tests {
                 let mut frame = serde_json::to_vec(&reply).unwrap();
                 frame.push(b'\n');
                 #[cfg(unix)]
-                let fds: Vec<Descriptor> = files.into_iter().map(OwnedFd::from).collect();
+                let fds: Vec<Descriptor> = files
+                    .into_iter()
+                    .map(|file| Descriptor::from(OwnedFd::from(file)))
+                    .collect();
                 #[cfg(not(unix))]
                 let fds: Vec<Descriptor> = {
                     drop(files);

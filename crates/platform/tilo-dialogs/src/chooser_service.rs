@@ -391,7 +391,7 @@ impl Connection {
         self.say_with(reply, &[]);
     }
 
-    fn say_with(&self, reply: &Reply, fds: &[OwnedFd]) {
+    fn say_with(&self, reply: &Reply, fds: &[crate::shell::Descriptor]) {
         let Ok(mut frame) = serde_json::to_vec(reply) else {
             return;
         };
@@ -475,7 +475,12 @@ impl Connection {
 
     /// The chosen items themselves: added to the app's documents store, and handed with a
     /// descriptor opened with the person's rights. Never a host path.
-    fn hand(&self, id: u64, paths: &[PathBuf], kind: Kind) -> (Reply, Vec<OwnedFd>) {
+    fn hand(
+        &self,
+        id: u64,
+        paths: &[PathBuf],
+        kind: Kind,
+    ) -> (Reply, Vec<crate::shell::Descriptor>) {
         let Some(key) = self.key() else {
             return (failed(id, CANNOT_HAND), Vec::new());
         };
@@ -501,7 +506,7 @@ impl Connection {
                         reference,
                         name: document.name().to_string_lossy().into_owned(),
                     });
-                    fds.push(fd);
+                    fds.push(crate::shell::Descriptor::from(fd));
                 }
                 Err(error) => {
                     tracing::debug!(%error, "a chosen item cannot be opened for the app");
@@ -640,7 +645,12 @@ impl Connection {
 
     /// Turn a reference back into an open descriptor: the file a window showed, or a file inside
     /// a folder the person chose. Only a document of this app is reached.
-    fn reopen(&self, id: u64, reference: &Path, write: bool) -> (Reply, Vec<OwnedFd>) {
+    fn reopen(
+        &self,
+        id: u64,
+        reference: &Path,
+        write: bool,
+    ) -> (Reply, Vec<crate::shell::Descriptor>) {
         let opened = (|| {
             let key = self.key().ok_or(NOT_CHOSEN)?;
             let (token, inner) = tilo_documents::split_sandbox_path(reference).ok_or(NOT_CHOSEN)?;
@@ -672,7 +682,7 @@ impl Connection {
                 |name| name.to_string_lossy().into_owned(),
             );
             Ok((
-                OwnedFd::from(file),
+                crate::shell::Descriptor::from(OwnedFd::from(file)),
                 HandedDocument {
                     reference: reference.to_path_buf(),
                     name,
