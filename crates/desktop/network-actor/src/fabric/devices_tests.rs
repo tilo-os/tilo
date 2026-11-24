@@ -1,12 +1,11 @@
-//! What a device says of itself while it is there, and the person's devices read as one list:
-//! their copies and their speakers.
+//! The person's devices read as one list: their copies and their speakers.
 
 use super::*;
 use crate::fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerGroupMember, SpeakerMembership,
     SpeakerRole, SpeakerTrim, StereoSide,
 };
-use crate::fabric::{ClipboardPayload, FabricStamp, WakeInterfaceKind};
+use crate::fabric::{ClipboardPayload, FabricStamp};
 
 fn id(value: &str) -> DeviceId {
     DeviceId::new(value).unwrap()
@@ -17,32 +16,6 @@ fn stamp(device: &str, counter: u64) -> FabricStamp {
         counter,
         device: id(device),
     }
-}
-
-#[test]
-fn a_device_says_only_wake_routes_it_could_have() {
-    let route = |mac: [u8; 6]| WakeRoute {
-        mac,
-        kind: WakeInterfaceKind::Ethernet,
-        magic_packet: true,
-        subnet: None,
-    };
-    let presence = DevicePresence {
-        wake_routes: vec![route([0x02; 6])],
-    };
-    assert_eq!(presence.validate(), Ok(()));
-
-    let mut crowded = presence.clone();
-    crowded.wake_routes = vec![route([0x02; 6]); MAX_WAKE_ROUTES + 1];
-    assert_eq!(crowded.validate(), Err(FabricError::TooLarge));
-
-    let mut multicast = presence.clone();
-    multicast.wake_routes = vec![route([0x01; 6])];
-    assert_eq!(multicast.validate(), Err(FabricError::InvalidWakeRoute));
-
-    let mut repeated = presence;
-    repeated.wake_routes = vec![route([0x02; 6]), route([0x02; 6])];
-    assert_eq!(repeated.validate(), Err(FabricError::DuplicateItem));
 }
 
 fn clipboard(text: &str, origin: &DeviceId, created_unix_ms: u64) -> ClipboardEntry {

@@ -51,7 +51,6 @@ pub use crate::run::{Backend, Reach};
 pub use crate::search::{AppActions, SearchOptions};
 pub use crate::setup::BeforeShell;
 pub use crate::vpn::Vpn;
-pub use crate::wake::{WakeInterfaces, WakeIo};
 pub use crate::workspace_keys::KeyLink;
 pub use tilo_service::{Service, Services};
 
@@ -1727,7 +1726,7 @@ impl Session {
             devices: crate::devices::press::Devices::default(),
             bluetooth: crate::bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
-            waking: crate::wake::Wake::new(&options.wake_io),
+            waking: crate::wake::Wake::new(),
             keyboard_and_pointer: shared_input,
             wake_handle: options.wake.handle(),
             workspace_settings,
@@ -1870,6 +1869,10 @@ impl Session {
                 .borrow_mut()
                 .add(Box::new(crate::devices::Served::new(
                     fabric,
+                    shared
+                        .owner_devices
+                        .as_ref()
+                        .map(|devices| devices.record().0),
                     shared.handle.clone(),
                     Rc::clone(&shared.readings),
                     Rc::clone(&shared.devices.chosen),

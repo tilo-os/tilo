@@ -309,7 +309,7 @@ async fn two_devices_keep_one_connection_for_their_session_both_ways() {
         .await;
         cmd.send(NetCmd::PublishPersonalFabric {
             user_public_key: root,
-            payload: PersonalFabricPayload::Presence(Box::default()),
+            payload: PersonalFabricPayload::Here,
         })
         .await
         .unwrap();
@@ -318,7 +318,7 @@ async fn two_devices_keep_one_connection_for_their_session_both_ways() {
                 event,
                 NetEvent::PersonalFabric {
                     peer,
-                    payload: PersonalFabricPayload::Presence(_),
+                    payload: PersonalFabricPayload::Here,
                     ..
                 } if *peer == from
             )
@@ -457,7 +457,7 @@ async fn a_device_asleep_past_the_idle_timeout_is_linked_again_on_waking() {
     b.cmd
         .send(NetCmd::PublishPersonalFabric {
             user_public_key: b.root,
-            payload: PersonalFabricPayload::Presence(Box::default()),
+            payload: PersonalFabricPayload::Here,
         })
         .await
         .unwrap();
@@ -466,7 +466,7 @@ async fn a_device_asleep_past_the_idle_timeout_is_linked_again_on_waking() {
             event,
             NetEvent::PersonalFabric {
                 peer,
-                payload: PersonalFabricPayload::Presence(_),
+                payload: PersonalFabricPayload::Here,
                 ..
             } if *peer == b_id
         )
@@ -526,7 +526,7 @@ async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
         .cmd
         .send(NetCmd::PublishPersonalFabric {
             user_public_key: a.root,
-            payload: PersonalFabricPayload::Presence(Box::default()),
+            payload: PersonalFabricPayload::Here,
         })
         .await
         .unwrap();
@@ -535,7 +535,7 @@ async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
             event,
             NetEvent::PersonalFabric {
                 peer,
-                payload: PersonalFabricPayload::Presence(_),
+                payload: PersonalFabricPayload::Here,
                 ..
             } if *peer == b_id
         )
@@ -572,7 +572,7 @@ async fn personal_fabric_unknown_extension_preserves_following_streams() {
     let connection = a.connect(b.addr(), FIXTURE_ALPN).await.unwrap();
     let frame = PersonalFabricWireFrame {
         user_public_key: [0xA5; 32],
-        payload: PersonalFabricPayload::Presence(Box::default()),
+        payload: PersonalFabricPayload::Here,
     };
     let valid = postcard::to_allocvec(&frame).unwrap();
     assert_eq!(valid[32], 0, "the first payload kind's tag stays fixed");
@@ -587,9 +587,13 @@ async fn personal_fabric_unknown_extension_preserves_following_streams() {
     let event = tilo_test_env::within("the frame after an unknown kind", events.recv())
         .await
         .unwrap();
-    assert!(matches!(event, InternalEvent::PersonalFabric {
-        payload: PersonalFabricPayload::Presence(presence), ..
-    } if presence.as_ref() == &crate::fabric::DevicePresence::default()));
+    assert!(matches!(
+        event,
+        InternalEvent::PersonalFabric {
+            payload: PersonalFabricPayload::Here,
+            ..
+        }
+    ));
     connection.close(0u32.into(), b"fixture complete");
     router.shutdown().await.unwrap();
     a.close().await;
@@ -614,9 +618,7 @@ async fn a_remote_action_bypasses_a_saturated_surface_frame_queue() {
             peer,
             connection_incarnation: 1,
             fingerprint: [0; 32],
-            msg: NeighbourMsg::RemoteAction {
-                frame: vec![11],
-            },
+            msg: NeighbourMsg::RemoteAction { frame: vec![11] },
         },
     )
     .await;
@@ -811,7 +813,7 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
         cmd_a
             .send(NetCmd::PublishPersonalFabric {
                 user_public_key: root,
-                payload: PersonalFabricPayload::Presence(Box::default()),
+                payload: PersonalFabricPayload::Here,
             })
             .await
             .unwrap();
@@ -823,10 +825,9 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
                 event,
                 NetEvent::PersonalFabric {
                     user_public_key,
-                    payload: PersonalFabricPayload::Presence(presence),
+                    payload: PersonalFabricPayload::Here,
                     ..
                 } if user_public_key == root
-                    && presence.as_ref() == &crate::fabric::DevicePresence::default()
             ) {
                 break;
             }

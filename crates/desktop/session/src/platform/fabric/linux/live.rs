@@ -1,7 +1,6 @@
 //! What the person's devices say live, as one session keeps it: which of their devices is on a
-//! session with this one and on which endpoint, what each last said of itself there
-//! ([`DevicePresence`]) and the copies each offers, what this device says of itself, and the
-//! actions addressed to it. Nothing here is kept beyond the session: a device that went away is
+//! session with this one and on which endpoint, whether each said it is there and the copies each
+//! offers, and the actions addressed to it. Nothing here is kept beyond the session: a device that went away is
 //! gone until it says itself again, and what lasts of the person's devices is in their store
 //! ([`super::store`]).
 //!
@@ -15,8 +14,8 @@ use iroh::EndpointId;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 use super::{
-    ClipboardEntry, DeviceAbout, DevicePresence, FabricError, PersonDevice, PersonDevices,
-    PersonalFabricAction, PersonalFabricActionEnvelope,
+    ClipboardEntry, DeviceAbout, FabricError, PersonDevice, PersonDevices, PersonalFabricAction,
+    PersonalFabricActionEnvelope,
 };
 use crate::platform::fabric::DeviceId;
 
@@ -33,8 +32,8 @@ struct Sibling {
     endpoint: Option<EndpointId>,
     /// Whether its session with this device is up.
     present: bool,
-    /// What it last said of itself, once it said anything.
-    presence: Option<DevicePresence>,
+    /// It said it is there on this session.
+    here: bool,
     /// The copies it offers.
     clipboard: Vec<ClipboardEntry>,
     /// When it last said anything.
@@ -48,8 +47,6 @@ struct Sibling {
 pub(crate) struct Live {
     /// This device.
     local: DeviceId,
-    /// What this device says of itself.
-    presence: DevicePresence,
     /// The copies this device offers.
     clipboard: Vec<ClipboardEntry>,
     /// The person's other devices heard on a session, by device id.
@@ -66,7 +63,6 @@ impl Live {
     pub(crate) fn new(local: DeviceId) -> Self {
         Self {
             local,
-            presence: DevicePresence::default(),
             clipboard: Vec::new(),
             siblings: BTreeMap::new(),
             delivered: VecDeque::new(),
@@ -112,38 +108,32 @@ impl Live {
         Some(device)
     }
 
-    /// The session with one of the person's devices ended: what it said of itself holds no
-    /// longer, so it is offline, keeping the endpoint an action to it leaves through until it is
+    /// The session with one of the person's devices ended: it is offline, keeping the endpoint an action to it leaves through until it is
     /// back.
     pub(crate) fn sibling_left(&mut self, peer: EndpointId) {
         for sibling in self.siblings.values_mut() {
             if sibling.endpoint == Some(peer) {
                 sibling.present = false;
-                sibling.presence = None;
+                sibling.here = false;
                 sibling.clipboard.clear();
                 tilo_workspace_service::workspaces::presence_changed();
             }
         }
     }
 
-    /// Take what the device behind `peer` says of itself. Returns whether it changed.
+    /// Take the word of the device behind `peer` that it is there. Returns whether it just
+    /// arrived.
     /// # Errors
-    /// Why it is not what one of the person's devices could say.
-    pub(crate) fn presence(
-        &mut self,
-        peer: EndpointId,
-        presence: DevicePresence,
-    ) -> Result<bool, FabricError> {
-        presence.validate()?;
+    /// The endpoint proved no device of the person's.
+    pub(crate) fn here(&mut self, peer: EndpointId) -> Result<bool, FabricError> {
         let sibling = self.heard(peer)?;
-        let changed = sibling.presence.as_ref() != Some(&presence);
-        // A device is online once it said itself: the first word it says brings it.
-        let arrived = sibling.presence.is_none();
-        sibling.presence = Some(presence);
+        // A device is online once it said it is there: the first word it says brings it.
+        let arrived = !sibling.here;
+        sibling.here = true;
         if arrived {
             tilo_workspace_service::workspaces::presence_changed();
         }
-        Ok(changed)
+        Ok(arrived)
     }
 
     /// Take the copies the device behind `peer` offers now, replacing what it offered before. A
@@ -207,28 +197,6 @@ impl Live {
         std::mem::take(&mut self.actions)
     }
 
-    /// What this device says of itself.
-    pub(crate) fn own_presence(&self) -> &DevicePresence {
-        &self.presence
-    }
-
-    /// Change what this device says of itself with `change`. Returns whether it changed.
-    /// # Errors
-    /// Why the result is not what a device could say of itself; nothing changes then.
-    pub(crate) fn say(
-        &mut self,
-        change: impl FnOnce(&mut DevicePresence),
-    ) -> Result<bool, FabricError> {
-        let mut presence = self.presence.clone();
-        change(&mut presence);
-        presence.validate()?;
-        if presence == self.presence {
-            return Ok(false);
-        }
-        self.presence = presence;
-        Ok(true)
-    }
-
     /// The copies this device offers.
     pub(crate) fn own_clipboard(&self) -> &[ClipboardEntry] {
         &self.clipboard
@@ -252,8 +220,7 @@ impl Live {
     }
 
     /// `kept`, the person's devices as their store holds them, with what each said live here put
-    /// in: this device as it says itself, the others as they last said themselves on a session
-    /// with this one. A device that was on a session here and that the store does not list yet is
+    /// in: this device as it is, the others as they last were on a session with this one. A device that was on a session here and that the store does not list yet is
     /// the person's all the same: it proved a certificate of theirs, under the name that names it.
     pub(crate) fn overlay(&self, kept: &mut PersonDevices) {
         let now = tilo_clock::unix_now_ms();
@@ -270,12 +237,10 @@ impl Live {
             if device.device == self.local {
                 device.online = true;
                 device.last_seen_unix_ms = now;
-                device.presence = self.presence.clone();
                 device.clipboard.clone_from(&self.clipboard);
             } else if let Some(sibling) = self.siblings.get(&device.device) {
-                device.online = sibling.present && sibling.presence.is_some();
+                device.online = sibling.present && sibling.here;
                 device.last_seen_unix_ms = sibling.last_seen_unix_ms;
-                device.presence = sibling.presence.clone().unwrap_or_default();
                 device.clipboard.clone_from(&sibling.clipboard);
             }
             kept.insert(device);
@@ -286,7 +251,7 @@ impl Live {
     pub(crate) fn online_device_ids(&self) -> BTreeSet<DeviceId> {
         self.siblings
             .iter()
-            .filter(|(_, sibling)| sibling.present && sibling.presence.is_some())
+            .filter(|(_, sibling)| sibling.present && sibling.here)
             .map(|(device, _)| device.clone())
             .collect()
     }

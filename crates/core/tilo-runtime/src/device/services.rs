@@ -1373,6 +1373,10 @@ impl Daemon {
         // shelf, and read by their shell as the resource it lists.
         let nearby = super::nearby::Nearby::new(&workspaces, personal.clone());
         nearby.register(&workspaces.copies().providers());
+        // The interfaces this computer wakes through are kept there too, and the wakes of the
+        // person's devices asked there are answered from here: the packets for a device on one
+        // of this computer's networks, and the word that this computer is back.
+        super::wake::Wake::start(personal.clone(), identity.cert.clone());
         apps.device_grants()
             .keep_in(std::sync::Arc::new(personal.clone()));
         // The person's devices, as the record of their own workspace holds them, each revocation

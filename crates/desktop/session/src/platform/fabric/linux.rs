@@ -10,6 +10,7 @@ pub use session::Continuity;
 pub(crate) use session::{Reach, SessionFabric, about};
 pub(crate) use store::{ABOUT, decoded, keep_own};
 
+pub use tilo_network_actor::fabric::clock;
 pub use tilo_network_actor::fabric::link::{
     FabricLink, NearbySpoolOffer, PersonalFabricSendError, SharedLink,
 };
@@ -24,14 +25,11 @@ pub use tilo_network_actor::fabric::unlock::{
     UnlockDecisionEntry, UnlockEnrolment, UnlockFabricState, UnlockSibling, UnlockView,
     decision_for, merged_unlock_state,
 };
-pub use tilo_network_actor::fabric::wake::WakeEvent;
 pub use tilo_network_actor::fabric::{
     CarriedDrag, CarriedOffer, ClipboardEntry, ClipboardPayload, DeviceAbout, DeviceKind,
-    DevicePresence, FabricCapabilities, FabricError, FabricInputEvent, InputLease, Ipv4Subnet,
-    MAX_CLIPBOARD_ITEMS, MAX_FABRIC_ACTION_AGE_MS, MAX_INPUT_LEASE_MS, MAX_WAKE_ROUTES,
-    MediaSourceLocator, PersonDevice, PersonDevices, PersonalFabricAction,
-    PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
-    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ, ScrollUnit, WakeInterfaceKind,
-    WakeOutcome, WakeRoute,
+    FabricCapabilities, FabricError, FabricInputEvent, InputLease, MAX_CLIPBOARD_ITEMS,
+    MAX_FABRIC_ACTION_AGE_MS, MAX_INPUT_LEASE_MS, MediaSourceLocator, PersonDevice, PersonDevices,
+    PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
+    REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
+    ScrollUnit,
 };
-pub use tilo_network_actor::fabric::{clock, wake};

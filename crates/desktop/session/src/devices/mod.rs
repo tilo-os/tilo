@@ -6,7 +6,8 @@
 //! audio service, the same reading the Quick Settings Devices section lists,
 //! the root page counts with and an accessory's page moves to. A device is
 //! what its own machine says of itself — its label, whether it is here, what
-//! it can show and play, whether it wakes to a magic packet — so the reading
+//! it can show and play, and, from the record of the person's devices, whether
+//! it wakes to a magic packet — so the reading
 //! is not anyone's personal content, and every app that may read the
 //! session's resources reads it as it reads what the displays show.
 //!
@@ -29,6 +30,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use crate::followed_resource::FollowedResource;
 use crate::hosted::{DevicesReading, MediaOffer, PersonalDevice};
 use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
@@ -39,6 +41,8 @@ use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_speaker_service::remote_audio::{self, RemoteAudioPhase};
+use tilo_workspace_service::workspaces::person_workspace::devices::Devices as DevicesRecord;
+use tilo_workspace_service::workspaces::person_workspace::wake;
 
 use crate::i18n::t;
 
@@ -75,6 +79,7 @@ pub fn resource() -> ResourceSpec {
 #[must_use]
 pub(crate) fn current(
     fabric: &SharedLink,
+    record: Option<&FollowedResource<DevicesRecord>>,
     readings: &crate::status::Shared,
     chosen: &RefCell<Option<u64>>,
     handoff: &RefCell<Option<MediaOffer>>,
@@ -85,7 +90,7 @@ pub(crate) fn current(
         .then(|| readings.borrow().handover())
         .flatten()
         .map(|handover| handover.title);
-    let devices = read(fabric);
+    let devices = read(fabric, record);
     let audio = remote_audio::snapshot(None);
     if chosen
         .borrow()
@@ -138,8 +143,13 @@ pub(crate) fn current(
     }
 }
 
-/// Read the person's devices off `fabric` : this machine first, then those here, then by name.
-fn read(fabric: &SharedLink) -> Vec<PersonalDevice> {
+/// Read the person's devices off `fabric` , with whether each wakes as `record` keeps it: this
+/// machine first, then those here, then by name.
+fn read(
+    fabric: &SharedLink,
+    record: Option<&FollowedResource<DevicesRecord>>,
+) -> Vec<PersonalDevice> {
+    let kept = record.map(FollowedResource::get);
     let local = fabric
         .local_device_fabric_identity()
         .map(|(device, _)| device);
@@ -155,11 +165,13 @@ fn read(fabric: &SharedLink) -> Vec<PersonalDevice> {
             nearby: nearby.contains(&device.device),
             local: local.as_ref() == Some(&device.device),
             display: device.about.capabilities.display,
-            wakeable: device
-                .presence
-                .wake_routes
-                .iter()
-                .any(|route| route.magic_packet),
+            wakeable: kept.as_ref().is_some_and(|kept| {
+                kept.devices
+                    .get(&tilo_resource::Id::from_raw(
+                        device.device.as_str().to_owned(),
+                    ))
+                    .is_some_and(wake::wakeable)
+            }),
             audio_output: device.about.capabilities.audio_output,
         })
         .collect();
@@ -176,6 +188,8 @@ fn read(fabric: &SharedLink) -> Vec<PersonalDevice> {
 /// The person's devices as the session's services publish them: read off the fabric every pass, so
 /// a device that comes or goes is one revision.
 pub(crate) struct Served {
+    /// The record of the person's devices, which says which of them wake to a magic packet.
+    record: Option<FollowedResource<DevicesRecord>>,
     fabric: SharedLink,
     /// The person's layout, whose workspaces the reading lists.
     handle: DesktopHandle,
@@ -218,6 +232,7 @@ impl Served {
     /// whose presses `pressed` carries to the loop.
     pub(crate) fn new(
         fabric: SharedLink,
+        record: Option<FollowedResource<DevicesRecord>>,
         handle: DesktopHandle,
         readings: crate::status::Shared,
         chosen: Rc<RefCell<Option<u64>>>,
@@ -228,6 +243,7 @@ impl Served {
     ) -> Self {
         Self {
             fabric,
+            record,
             handle,
             readings,
             chosen,
@@ -241,7 +257,13 @@ impl Served {
 
     /// The reading as it stands now.
     fn current(&self) -> DevicesReading {
-        let mut reading = current(&self.fabric, &self.readings, &self.chosen, &self.handoff);
+        let mut reading = current(
+            &self.fabric,
+            self.record.as_ref(),
+            &self.readings,
+            &self.chosen,
+            &self.handoff,
+        );
         // A device the fabric knows this session as is one a person's certificate names it: their
         // device, logged in.
         reading.signed_in = self.fabric.local_device_fabric_identity().is_some();

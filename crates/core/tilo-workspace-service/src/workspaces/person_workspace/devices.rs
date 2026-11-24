@@ -21,6 +21,11 @@
 //! ([`Devices::allow_unlock`], [`Devices::refuse_unlock`]), so their other devices answer the same
 //! boot the same way while it holds, and the record's history is the person's list of them.
 //!
+//! A wake of one of their devices that sleeps is asked in the record too ([`WakeAsk`],
+//! [`super::wake`]): the device that asks writes it, the devices on the sleeping one's LAN say
+//! they sent the packets, and the woken device says it is back, so any device of theirs reads how
+//! it went.
+//!
 //! What the person's root signs lives in their record: the mark of the device
 //! that keeps it ([`Devices::mark_root_holder`]) and the revocation of one it
 //! takes back ([`Devices::revoke_device`]), each a signature a reader checks
@@ -66,6 +71,25 @@ pub struct Devices {
     pub wifi: Collection<Network>,
     /// The answers to boots that still hold, by [`UnlockAnswer::key`].
     pub unlocks: Collection<UnlockAnswer>,
+    /// The latest wake of each device asked, by the key of the device to wake.
+    pub wakes: Collection<WakeAsk>,
+}
+
+/// One wake of a device of the person's that sleeps: who asked it and when, which device of theirs
+/// sent the magic packets and on which LAN, and when the device said it was back
+/// ([`super::wake::WakeState`]). Times are ns since the epoch, `0` while it did not happen.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
+pub struct WakeAsk {
+    /// The device that asked, by key (lowercase hex).
+    pub asked_by: String,
+    pub asked_ns: i64,
+    /// The device that sent the packets, by key, empty until one did.
+    pub sent_by: String,
+    /// The subnet it sent them on, `a.b.c.d/prefix`.
+    pub subnet: String,
+    pub sent_ns: i64,
+    /// When the woken device said it was back.
+    pub awake_ns: i64,
 }
 
 /// What the person answered one boot of theirs that asked to unlock its disk: on which device,
@@ -610,6 +634,83 @@ impl Devices {
             at_ns,
             until_ns,
         })
+    }
+
+    /// Wake `target`, one of the person's devices that sleeps, as `asked_by` asked at `asked_ns`:
+    /// replaces how an earlier wake of it went.
+    #[action]
+    pub fn wake_device(
+        &mut self,
+        target: String,
+        asked_by: String,
+        asked_ns: i64,
+    ) -> Result<(), Refusal> {
+        let target = Id::from_raw(target);
+        if !self.devices.contains(&target)
+            || !self.devices.contains(&Id::from_raw(asked_by.clone()))
+        {
+            return Err(Refusal::new("that key is not one of your devices"));
+        }
+        if asked_ns <= 0 {
+            return Err(Refusal::new("a wake is asked at a time since the epoch"));
+        }
+        let ask = WakeAsk {
+            asked_by,
+            asked_ns,
+            ..WakeAsk::default()
+        };
+        match self.wakes.get_mut(&target) {
+            Some(kept) => *kept = ask,
+            None => {
+                self.wakes.push(target, ask);
+            }
+        }
+        Ok(())
+    }
+
+    /// Say that `by` sent the packets for the wake of `target` asked at `asked_ns`, on `subnet`
+    /// at `at_ns`. The first device to send is the one kept; a later wake asked meanwhile is left
+    /// as it is.
+    #[action(housekeeping)]
+    pub fn wake_sent(
+        &mut self,
+        target: String,
+        asked_ns: i64,
+        by: String,
+        subnet: String,
+        at_ns: i64,
+    ) -> Result<(), Refusal> {
+        validate_key(&by)?;
+        if subnet.parse::<super::wake::Ipv4Subnet>().is_err() {
+            return Err(Refusal::new("a subnet is a.b.c.d/prefix in canonical form"));
+        }
+        if at_ns <= 0 {
+            return Err(Refusal::new("packets are sent at a time since the epoch"));
+        }
+        if let Some(kept) = self.wakes.get_mut(&Id::from_raw(target))
+            && kept.asked_ns == asked_ns
+            && kept.sent_ns == 0
+        {
+            kept.sent_by = by;
+            kept.subnet = subnet;
+            kept.sent_ns = at_ns;
+        }
+        Ok(())
+    }
+
+    /// Say that `target` is back, at `at_ns`, from the wake asked at `asked_ns`.
+    #[action(housekeeping)]
+    pub fn woke(&mut self, target: String, asked_ns: i64, at_ns: i64) -> Result<(), Refusal> {
+        if at_ns <= 0 {
+            return Err(Refusal::new("a device is back at a time since the epoch"));
+        }
+        if let Some(kept) = self.wakes.get_mut(&Id::from_raw(target))
+            && kept.asked_ns == asked_ns
+            && kept.awake_ns == 0
+        {
+            kept.awake_ns = at_ns;
+        }
+        Ok(())
     }
 
     /// Keep `credential` as the passphrase of the network `network`, replacing

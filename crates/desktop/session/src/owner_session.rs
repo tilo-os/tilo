@@ -32,10 +32,11 @@ use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::workspaces::person_workspace::devices::{
     DEVICES, Devices, KeyKind, OwnerSession,
 };
+use tilo_workspace_service::workspaces::person_workspace::wake;
 
 use crate::Session;
 use crate::followed_resource::FollowedResource;
-use crate::platform::fabric::{DeviceId, DevicePresence};
+use crate::platform::fabric::DeviceId;
 
 /// How long after their last input the person counts as using a device. Their other devices hear
 /// of it as they start and as they stop, never as they type.
@@ -227,27 +228,13 @@ pub fn latest_use_nearby(now_unix_ms: u64, others: &[Other]) -> Option<u64> {
         .max()
 }
 
-/// Whether two devices were last seen on a common IPv4 subnet.
-#[must_use]
-pub fn shares_network(own: &DevicePresence, other: &DevicePresence) -> bool {
-    own.wake_routes
-        .iter()
-        .filter_map(|route| route.subnet)
-        .any(|subnet| {
-            other
-                .wake_routes
-                .iter()
-                .any(|route| route.subnet == Some(subnet))
-        })
-}
-
 /// The record of the person's devices in their own workspace, followed through the device's daemon:
 /// where this device reads how the person's session stands on their others, and says its own.
 pub(crate) struct OwnerDevices {
     record: FollowedResource<Devices>,
     cert: DeviceCert,
     /// The other devices' sessions as the record last read, by device, and the reading they are of.
-    others: RefCell<Option<(u64, Vec<(DeviceId, OwnerSession)>)>>,
+    others: RefCell<Option<(u64, Vec<(DeviceId, OwnerSession, Vec<wake::WakeRoute>)>)>>,
     /// When this device may say its session again, after its daemon did not take it.
     quiet_until: Cell<Option<Instant>>,
     /// What this device is ([`crate::platform::fabric::DeviceAbout`]), postcard in hex, and its
@@ -354,9 +341,35 @@ impl OwnerDevices {
         }
     }
 
+    /// Ask the person's devices to wake the device `name` names, by its key or its label.
+    ///
+    /// # Errors
+    /// Why it cannot be woken, in the person's words.
+    pub(crate) fn wake(&self, name: &str) -> Result<(), String> {
+        let (person, local) = self.who();
+        let now = i64::try_from(tilo_clock::unix_now_ns()).unwrap_or(i64::MAX);
+        let ask = wake::asking(&self.record.get(), &person, &local, name, now)
+            .map_err(|refusal| refusal.to_string())?;
+        self.record
+            .invoke(&ask)
+            .map_err(|error| format!("the wake did not reach this device's daemon: {error}"))
+    }
+
+    /// The interfaces this device keeps in the record, that it can be woken through.
+    fn own_routes(&self) -> Vec<wake::WakeRoute> {
+        self.record
+            .get()
+            .devices
+            .get(&tilo_resource::Id::from_raw(hex::encode(
+                self.cert.device_public_key,
+            )))
+            .map(wake::routes)
+            .unwrap_or_default()
+    }
+
     /// The person's other devices the record keeps, whose certificates their root signed and did
-    /// not take back, and how their session stands on each.
-    fn others(&self) -> Vec<(DeviceId, OwnerSession)> {
+    /// not take back, how their session stands on each and the interfaces each keeps.
+    fn others(&self) -> Vec<(DeviceId, OwnerSession, Vec<wake::WakeRoute>)> {
         let revision = self.record.revision();
         if let Some((at, others)) = self.others.borrow().as_ref()
             && *at == revision
@@ -364,7 +377,7 @@ impl OwnerDevices {
             return others.clone();
         }
         let person = self.cert.user_public_key;
-        let others: Vec<(DeviceId, OwnerSession)> = self
+        let others: Vec<(DeviceId, OwnerSession, Vec<wake::WakeRoute>)> = self
             .record
             .get()
             .listed(&person)
@@ -374,7 +387,13 @@ impl OwnerDevices {
                     && listed.device.kind == KeyKind::Device
                     && !listed.device.revoked(&listed.cert)
             })
-            .filter_map(|listed| Some((DeviceId::new(listed.key).ok()?, listed.device.session)))
+            .filter_map(|listed| {
+                Some((
+                    DeviceId::new(listed.key).ok()?,
+                    listed.device.session,
+                    wake::routes(&listed.device),
+                ))
+            })
             .collect();
         *self.others.borrow_mut() = Some((revision, others.clone()));
         others
@@ -421,24 +440,22 @@ impl Session {
         let using = since_input < USING_FOR_MS;
         let locked = self.compositor.locked();
         let in_use = self.compositor.in_use();
-        // Which of the devices are online and on a network with this one is live, from the fabric:
-        // without it none is, and only a lock is followed.
+        // Which of the devices are online is live, from the fabric: without it none is, and only a
+        // lock is followed. Which are on a network with this one is what each keeps in the record.
         let fabric = self.shared.fabric.as_ref().map(|fabric| fabric.devices());
-        let own = fabric.as_ref().and_then(|fabric| {
-            let local = DeviceId::new(hex::encode(devices.cert.device_public_key)).ok()?;
-            fabric.get(&local).map(|device| device.presence.clone())
-        });
+        let own = devices.own_routes();
         let others: Vec<Other> = devices
             .others()
             .into_iter()
-            .map(|(id, session)| {
-                let live = fabric.as_ref().and_then(|fabric| fabric.get(&id));
+            .map(|(id, session, routes)| {
+                let online = fabric
+                    .as_ref()
+                    .and_then(|fabric| fabric.get(&id))
+                    .is_some_and(|device| device.online);
                 Other {
                     session,
-                    online: live.is_some_and(|device| device.online),
-                    nearby: live
-                        .zip(own.as_ref())
-                        .is_some_and(|(device, own)| shares_network(own, &device.presence)),
+                    online,
+                    nearby: online && wake::shares_network(&own, &routes),
                 }
             })
             .collect();

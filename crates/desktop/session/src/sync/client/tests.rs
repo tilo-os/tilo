@@ -1713,7 +1713,7 @@ fn a_devices_session_and_what_it_sends_reach_the_session_in_the_order_they_were_
             peer,
             membership_epoch: epoch,
             user_public_key: cert.user_public_key,
-            payload: tilo_network_actor::PersonalFabricPayload::Presence(Box::default()),
+            payload: tilo_network_actor::PersonalFabricPayload::Here,
             received: std::time::Instant::now(),
         },
         NetEvent::SiblingLeft {

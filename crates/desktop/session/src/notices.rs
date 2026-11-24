@@ -164,23 +164,25 @@ pub fn announce_medium(notifications: &Notifications, medium: &Medium) -> u32 {
     tell_daemon(&medium_notice(medium), notifications)
 }
 
-/// The notice for how a wake of one of the person's devices ended; `None` while it is still going
-/// out.
+/// The notice for how a wake of `device`, one of the person's devices, stands; `None` while it is
+/// still going.
 #[must_use]
-pub fn wake_notice(event: &crate::platform::fabric::wake::WakeEvent) -> Option<Notice> {
-    use crate::platform::fabric::WakeOutcome;
-    let device = event.label.as_str();
-    let (title, body) = match event.outcome {
-        WakeOutcome::Sent { .. } => return None,
-        WakeOutcome::Rejoined => (
+pub fn wake_notice(
+    device: &str,
+    state: &tilo_workspace_service::workspaces::person_workspace::wake::WakeState,
+) -> Option<Notice> {
+    use tilo_workspace_service::workspaces::person_workspace::wake::WakeState;
+    let (title, body) = match state {
+        WakeState::Asked | WakeState::Sent { .. } => return None,
+        WakeState::Awake => (
             t_args("device-wake-rejoined", &[("device", device.into())]),
             String::new(),
         ),
-        WakeOutcome::NotRejoined => (
+        WakeState::NotAwake => (
             t_args("device-wake-not-rejoined", &[("device", device.into())]),
             t("device-wake-not-rejoined-body"),
         ),
-        WakeOutcome::NotOnTargetLan | WakeOutcome::SendFailed => (
+        WakeState::Unsent => (
             t_args("device-wake-failed", &[("device", device.into())]),
             t("device-wake-failed-body"),
         ),

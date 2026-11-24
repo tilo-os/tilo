@@ -191,3 +191,156 @@ async fn an_answer_on_one_device_reads_in_the_others_record_and_history() {
     );
     drop(desk);
 }
+
+/// The person wakes their sleeping laptop from their desktop: the desktop asks it in the record of
+/// their devices, the desktop's daemon finds itself on the laptop's LAN and sends the packets, and
+/// the laptop, once back, says so in the record, where the desktop reads that it woke.
+#[tokio::test]
+async fn a_device_woken_from_another_says_it_is_back_in_the_record() {
+    use std::collections::BTreeSet;
+
+    use super::super::person_workspace::wake::{
+        self, WAKE_FACT, WakeInterfaceKind, WakeRoute, WakeState,
+    };
+
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (desk, desk_cert, laptop, own) = desk_and_laptop(one.path(), two.path()).await;
+    let laptop_cert = laptop.workspaces().device_cert().clone();
+    let lan = "192.168.1.0/24".parse().unwrap();
+    let on_lan = |mac: u8, magic_packet: bool| WakeRoute {
+        mac: [0x02, 0, 0, 0, 0, mac],
+        kind: WakeInterfaceKind::Ethernet,
+        magic_packet,
+        subnet: Some(lan),
+    };
+    let keeps = |cert: &DeviceCert, routes: &[WakeRoute]| {
+        Devices::KEEP_FACT.with((
+            hex::encode(cert.device_public_key),
+            hex::encode(postcard::to_allocvec(cert).unwrap()),
+            WAKE_FACT.to_owned(),
+            wake::encoded(routes),
+        ))
+    };
+    apply_on(
+        laptop.workspaces(),
+        &own,
+        DEVICES,
+        keeps(&laptop_cert, &[on_lan(9, true)]),
+    )
+    .await
+    .expect("the laptop keeps the interface it wakes through");
+    apply_on(
+        desk.workspaces(),
+        &own,
+        DEVICES,
+        keeps(&desk_cert, &[on_lan(1, false)]),
+    )
+    .await
+    .expect("the desktop keeps its own");
+    reads(
+        desk.workspaces(),
+        &own,
+        "the laptop's interface reaches the desktop",
+        |devices| devices.devices.values().any(wake::wakeable),
+    )
+    .await;
+
+    let (desk_key, laptop_key) = (
+        hex::encode(desk_cert.device_public_key),
+        hex::encode(laptop_cert.device_public_key),
+    );
+    let asked_ns = 1_700_000_000_000_000_000;
+    let record = read_on::<Devices>(desk.workspaces(), &own, DEVICES)
+        .await
+        .unwrap();
+    let ask = wake::asking(
+        &record,
+        &desk_cert.user_public_key,
+        &desk_key,
+        "laptop",
+        asked_ns,
+    )
+    .expect("the laptop can be woken from the desktop's LAN");
+    apply_on(desk.workspaces(), &own, DEVICES, ask)
+        .await
+        .expect("the desktop asks the wake");
+
+    // The desktop's daemon reads the ask and sends the packets from here.
+    let record = read_on::<Devices>(desk.workspaces(), &own, DEVICES)
+        .await
+        .unwrap();
+    let mut sent = Vec::new();
+    let mut done = BTreeSet::new();
+    let writes = wake::answering(
+        &record,
+        &desk_key,
+        &[on_lan(1, false)],
+        asked_ns + 1,
+        &mut done,
+        |mac, subnet| {
+            sent.push((mac, subnet));
+            true
+        },
+    );
+    assert_eq!(
+        sent,
+        [([0x02, 0, 0, 0, 0, 9], lan)],
+        "one packet, for the laptop"
+    );
+    for write in writes {
+        apply_on(desk.workspaces(), &own, DEVICES, write)
+            .await
+            .expect("the desktop says it sent them");
+    }
+    assert!(
+        wake::answering(
+            &record,
+            &desk_key,
+            &[on_lan(1, false)],
+            asked_ns + 2,
+            &mut done,
+            |_, _| { panic!("a wake taken up is not sent again") }
+        )
+        .is_empty()
+    );
+
+    // The laptop is back: its daemon reads the ask of itself and says so.
+    reads(
+        laptop.workspaces(),
+        &own,
+        "the wake reaches the laptop",
+        |devices| devices.wakes.values().any(|ask| ask.sent_ns > 0),
+    )
+    .await;
+    let record = read_on::<Devices>(laptop.workspaces(), &own, DEVICES)
+        .await
+        .unwrap();
+    let writes = wake::answering(
+        &record,
+        &laptop_key,
+        &[on_lan(9, true)],
+        asked_ns + 3,
+        &mut BTreeSet::new(),
+        |_, _| panic!("the laptop does not wake itself"),
+    );
+    for write in writes {
+        apply_on(laptop.workspaces(), &own, DEVICES, write)
+            .await
+            .expect("the laptop says it is back");
+    }
+    reads(
+        desk.workspaces(),
+        &own,
+        "the laptop's word reaches the desktop",
+        |devices| devices.wakes.values().any(|ask| ask.awake_ns > 0),
+    )
+    .await;
+    let record = read_on::<Devices>(desk.workspaces(), &own, DEVICES)
+        .await
+        .unwrap();
+    let ask = record.wakes.get(&Id::from_raw(laptop_key)).unwrap();
+    assert_eq!(ask.asked_by, desk_key);
+    assert_eq!(ask.sent_by, desk_key, "the desktop sent the packets");
+    assert_eq!(ask.state(i64::MAX), WakeState::Awake);
+    drop(desk);
+}

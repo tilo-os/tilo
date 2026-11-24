@@ -4,7 +4,7 @@
 //! writes: what it is ([`DeviceAbout`]), the speaker groups it leads and joined
 //! ([`SpeakerFabricState`]), and its disk-unlock enrolments ([`UnlockFabricState`]).
 //! What holds only while a device is there is said on its session with each of the others and kept
-//! nowhere: how it is woken ([`DevicePresence`]), and what was copied on it.
+//! nowhere: that it is there, and what was copied on it.
 //!
 //! [`PersonDevices`] is the two read together: each device the person's store lists, with what it
 //! wrote there and what it last said live.
@@ -13,14 +13,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::fabric::model::unique;
 use crate::fabric::speaker_group::{
     SpeakerFabricState, SpeakerGroup, SpeakerGroupId, SpeakerMemberStatus,
 };
 use crate::fabric::unlock::UnlockFabricState;
 use crate::fabric::{
     ClipboardEntry, ClipboardHistory, DeviceId, DeviceKind, FabricCapabilities, FabricError,
-    MAX_WAKE_ROUTES, WakeRoute,
 };
 
 /// What a device says it is, in its own part of the person's store: the name the person knows it
@@ -54,28 +52,6 @@ impl DeviceAbout {
     }
 }
 
-/// What a device says of itself while it is there, on its session with each of the person's other
-/// devices. Nothing keeps it: once the session ends, the device is gone until it says it again.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DevicePresence {
-    /// How siblings on the same LAN can wake it.
-    pub wake_routes: Vec<WakeRoute>,
-}
-
-impl DevicePresence {
-    /// # Errors
-    /// Why this is not what a device could say of itself.
-    pub fn validate(&self) -> Result<(), FabricError> {
-        if self.wake_routes.len() > MAX_WAKE_ROUTES {
-            return Err(FabricError::TooLarge);
-        }
-        if !self.wake_routes.iter().all(WakeRoute::valid) {
-            return Err(FabricError::InvalidWakeRoute);
-        }
-        unique(self.wake_routes.iter().map(|route| route.mac))
-    }
-}
-
 /// One of the person's devices, as this one knows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersonDevice {
@@ -86,8 +62,6 @@ pub struct PersonDevice {
     pub online: bool,
     /// When it last said anything live.
     pub last_seen_unix_ms: u64,
-    /// What it last said live; empty for a device that said nothing yet.
-    pub presence: DevicePresence,
     /// The copies it offers, as it last offered them.
     pub clipboard: Vec<ClipboardEntry>,
     /// Its speaker groups, memberships, outputs and microphones.
@@ -105,7 +79,6 @@ impl PersonDevice {
             about,
             online: false,
             last_seen_unix_ms: 0,
-            presence: DevicePresence::default(),
             clipboard: Vec::new(),
             speakers: SpeakerFabricState::default(),
             unlock: UnlockFabricState::default(),

@@ -9,10 +9,9 @@ mod model;
 pub mod notification;
 pub mod speaker_group;
 pub mod unlock;
-pub mod wake;
 
 pub use carried::{CarriedDrag, CarriedOffer, MAX_CARRIED_OFFERS};
-pub use devices::{DeviceAbout, DevicePresence, PersonDevice, PersonDevices};
+pub use devices::{DeviceAbout, PersonDevice, PersonDevices};
 pub use model::*;
 
 use getrandom::SysRng;

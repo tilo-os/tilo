@@ -99,9 +99,9 @@ impl SurfaceWireFrame {
 /// `read_personal_fabric`), and leaves the legacy Postcard enum untouched.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum PersonalFabricPayload {
-    /// What the sending device says of itself while it is there: sent when its
-    /// session with a sibling starts and whenever it changes, and never kept.
-    Presence(Box<crate::fabric::DevicePresence>),
+    /// That the sending device is there: sent when its session with another device of the
+    /// person's starts, and never kept.
+    Here,
     /// The copies the sending device offers, as it offers them now: sent when
     /// its session with a sibling starts and whenever they change.
     Clipboard(Vec<crate::fabric::ClipboardEntry>),

@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use crate::NearbyTransferCheckpoint;
 use crate::fabric::DeviceId;
 
-use crate::fabric::{ClipboardEntry, PersonDevices, PersonalFabricAction, WakeRoute};
+use crate::fabric::{ClipboardEntry, PersonDevices, PersonalFabricAction};
 
 /// One of this device's files, staged in its private Nearby spool, on its way
 /// to one of the person's other devices: the checkpoint the stream resumes
@@ -85,11 +85,6 @@ pub trait FabricLink {
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         let _ = entries;
     }
-    /// Offer the ways this device's interfaces can be woken to the person's other
-    /// devices. A link whose transport does not carry wake routes yet ignores the offer.
-    fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
-        let _ = routes;
-    }
     /// Stream one of this device's staged spool objects to `target`: the bytes of an
     /// offer already sent to it, from the checkpoint it confirmed.
     /// # Errors
@@ -147,10 +142,6 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         (**self).share_clipboard(entries);
-    }
-
-    fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
-        (**self).share_wake_routes(routes);
     }
 
     fn share_nearby_spool(

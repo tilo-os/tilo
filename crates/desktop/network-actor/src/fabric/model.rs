@@ -23,8 +23,6 @@ pub struct PhysicalGamepadBinding {
 }
 
 pub const MAX_DEVICES: usize = 64;
-/// More network interfaces than any one device wakes through.
-pub const MAX_WAKE_ROUTES: usize = 8;
 pub const MAX_CLIPBOARD_ITEMS: usize = 50;
 pub const MAX_CLIPBOARD_ITEM_BYTES: usize = 256 * 1024;
 pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
@@ -88,83 +86,6 @@ pub struct FabricCapabilities {
     pub app_continuation: bool,
     /// The device can play as a member of a speaker group.
     pub audio_group: bool,
-}
-
-/// The kind of network interface a device can be woken through.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WakeInterfaceKind {
-    Ethernet,
-    WiFi,
-}
-
-/// An IPv4 network in canonical form: no host bits set beyond the prefix.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Ipv4Subnet {
-    pub network: [u8; 4],
-    pub prefix: u8,
-}
-
-impl Ipv4Subnet {
-    /// The subnet `address/prefix` lies in, or `None` for a prefix that names
-    /// no broadcast domain (wider than /8 or a single host).
-    #[must_use]
-    pub fn containing(address: std::net::Ipv4Addr, prefix: u8) -> Option<Self> {
-        if !(8..=30).contains(&prefix) {
-            return None;
-        }
-        let mask = u32::MAX.checked_shl(32_u32.checked_sub(u32::from(prefix))?)?;
-        Some(Self {
-            network: (u32::from(address) & mask).to_be_bytes(),
-            prefix,
-        })
-    }
-
-    #[must_use]
-    pub fn is_canonical(self) -> bool {
-        Self::containing(std::net::Ipv4Addr::from(self.network), self.prefix) == Some(self)
-    }
-
-    /// The subnet's directed broadcast address.
-    #[must_use]
-    pub fn broadcast(self) -> std::net::Ipv4Addr {
-        let host = u32::MAX.checked_shr(u32::from(self.prefix)).unwrap_or(0);
-        std::net::Ipv4Addr::from(u32::from_be_bytes(self.network) | host)
-    }
-}
-
-impl std::fmt::Display for Ipv4Subnet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}/{}",
-            std::net::Ipv4Addr::from(self.network),
-            self.prefix
-        )
-    }
-}
-
-/// One network interface of a device, as the network sees it: what a sibling
-/// on the same LAN needs to wake it with a magic packet. Only the person's
-/// own devices receive it, inside their certified presence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WakeRoute {
-    /// The MAC the network sees, which for Wi-Fi is the per-network one.
-    pub mac: [u8; 6],
-    pub kind: WakeInterfaceKind,
-    /// Whether the interface wakes the device on a magic packet.
-    pub magic_packet: bool,
-    /// The IPv4 subnet the interface was last seen on.
-    pub subnet: Option<Ipv4Subnet>,
-}
-
-impl WakeRoute {
-    pub(super) fn valid(&self) -> bool {
-        // A unicast, non-zero MAC; a multicast one cannot address a NIC.
-        self.mac != [0; 6]
-            && self.mac.first().is_some_and(|octet| octet & 1 == 0)
-            && self.subnet.is_none_or(Ipv4Subnet::is_canonical)
-    }
 }
 
 /// A locator usable on another Tilo device. Workspace paths hydrate through
@@ -543,25 +464,13 @@ pub enum PersonalFabricAction {
         views: Vec<WindowView>,
         decode: Vec<HardwareDecode>,
     },
-    /// Wake `target` with a magic packet on a LAN this device is on, then
-    /// watch for it to rejoin. The receiver reads the target's wake routes
-    /// from its own copy of the person's fabric, never from the request.
-    WakeDevice {
-        target: DeviceId,
-    },
-    /// The waker's account of one [`Self::WakeDevice`] request.
-    WakeReport {
-        target: DeviceId,
-        outcome: WakeOutcome,
-    },
-    /// The waker asking a device it woke whether it is back.
-    WakeProbe {
-        nonce: [u8; 16],
-    },
-    /// The woken device answering a [`Self::WakeProbe`].
-    WakeProbeReply {
-        nonce: [u8; 16],
-    },
+    // A wake of one of the person's devices, its outcome and the probes of who could send it are
+    // carried in the record of their devices now: no device sends one, and validation refuses one
+    // from an older device. Each holds its tag so the actions after it keep theirs.
+    RetiredWakeDevice,
+    RetiredWakeReport,
+    RetiredWakeProbe,
+    RetiredWakeProbeReply,
     /// Certify a device the sender paired: the devices that can approve it
     /// ask their person (the shell's device certification). The ask,
     /// postcard-encoded.
@@ -582,22 +491,6 @@ pub enum PersonalFabricAction {
         lease_nonce: [u8; 16],
         drag: CarriedDrag,
     },
-}
-
-/// What became of one request to wake a device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WakeOutcome {
-    /// The magic packet went out on this subnet; the waker now waits.
-    Sent { subnet: Ipv4Subnet },
-    /// The target is back on the person's device network.
-    Rejoined,
-    /// The target did not come back within the wait.
-    NotRejoined,
-    /// The waker shares no LAN with any wakeable interface of the target.
-    NotOnTargetLan,
-    /// The packet could not be sent.
-    SendFailed,
 }
 
 /// Upper bound on the windows one [`PersonalFabricAction::WindowViews`] lists:
@@ -834,21 +727,6 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::WakeDevice { target }
-            | PersonalFabricAction::WakeReport { target, .. } => {
-                // Neither end of the exchange is the device being woken.
-                if target == &self.source || target == &self.target {
-                    return Err(FabricError::InvalidAction);
-                }
-                if let PersonalFabricAction::WakeReport {
-                    outcome: WakeOutcome::Sent { subnet },
-                    ..
-                } = &self.action
-                    && !subnet.is_canonical()
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
             PersonalFabricAction::WindowViews { views, decode } => {
                 let mut tabs = BTreeSet::new();
                 let mut codecs = BTreeSet::new();
@@ -902,6 +780,12 @@ impl PersonalFabricActionEnvelope {
                 }
             }
             PersonalFabricAction::InputLeaseAsk => {}
+            PersonalFabricAction::RetiredWakeDevice
+            | PersonalFabricAction::RetiredWakeReport
+            | PersonalFabricAction::RetiredWakeProbe
+            | PersonalFabricAction::RetiredWakeProbeReply => {
+                return Err(FabricError::InvalidAction);
+            }
             PersonalFabricAction::DragCarried { lease_nonce, drag } => {
                 if lease_nonce == &[0; 16] || !drag.valid() {
                     return Err(FabricError::InvalidAction);
@@ -913,9 +797,7 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::WakeProbe { nonce }
-            | PersonalFabricAction::WakeProbeReply { nonce }
-            | PersonalFabricAction::FabricClockProbe { nonce, .. }
+            PersonalFabricAction::FabricClockProbe { nonce, .. }
             | PersonalFabricAction::InputLeaseRevoked { nonce } => {
                 if nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
@@ -1465,15 +1347,6 @@ fn valid_bluetooth_pairing_action(
     request_id != &[0; 16] && authorization != &[0; 16] && os_actions::bluez::valid_address(address)
 }
 
-pub(super) fn unique<T: Ord>(items: impl IntoIterator<Item = T>) -> Result<(), FabricError> {
-    let mut seen = BTreeSet::new();
-    if items.into_iter().all(|item| seen.insert(item)) {
-        Ok(())
-    } else {
-        Err(FabricError::DuplicateItem)
-    }
-}
-
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FabricError {
     #[error("what a device says of itself exceeds its bound")]
@@ -1510,8 +1383,6 @@ pub enum FabricError {
     IneligibleSpeakerMember,
     #[error("invalid disk-unlock enrolment or setting")]
     InvalidUnlockEnrolment,
-    #[error("invalid wake route")]
-    InvalidWakeRoute,
 }
 
 #[cfg(test)]

@@ -70,10 +70,7 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
     }
     // A device row's press is its body; the action named beside it is the same send, said in words.
     // The pointer row opens where driving a device is arranged, which is that device's settings.
-    if !matches!(
-        part,
-        RowPart::Row | RowPart::Action | RowPart::Control
-    ) {
+    if !matches!(part, RowPart::Row | RowPart::Action | RowPart::Control) {
         return;
     }
     let Ok(target) = DeviceId::new(row) else {
@@ -81,6 +78,11 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
     };
     let reading = devices::current(
         fabric,
+        shared
+            .owner_devices
+            .as_ref()
+            .map(|devices| devices.record().0)
+            .as_ref(),
         &shared.readings,
         &shared.devices.chosen,
         &shared.handoff,

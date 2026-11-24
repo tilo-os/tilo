@@ -26,16 +26,14 @@ use tilo_actions::remote::{RemoteActionTarget, application_action_target};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_session::hosted::{ASK_KEY, DevicesReading, HostedActions, ROUTE_KEY, RowPart, SOUND_KEY};
-use tilo_session::platform::fabric::wake::{self, MagicPackets};
 use tilo_session::platform::fabric::{
-    DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, Ipv4Subnet, MediaSourceLocator,
-    PersonDevice, PersonDevices, PersonalFabricAction, PersonalFabricActionEnvelope,
-    REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION,
-    REMOTE_AUDIO_SAMPLE_RATE_HZ, WakeInterfaceKind, WakeRoute,
+    DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, MediaSourceLocator, PersonDevice,
+    PersonDevices, PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
+    REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
 };
 use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::surfaces::Surface;
-use tilo_session::{AppActions, AppLists, Lists, Options, Session, WakeInterfaces, WakeIo};
+use tilo_session::{AppActions, AppLists, Lists, Options, Session};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -57,63 +55,6 @@ fn sleeping() -> DeviceId {
     DeviceId::new("session").expect("a device id")
 }
 
-/// An awake device of the person's on the sleeping one's network.
-fn server() -> DeviceId {
-    DeviceId::new("server").expect("a device id")
-}
-
-/// The network the sleeping device is on.
-const LAN: &str = "192.168.1.0/24";
-/// The network this machine is on, away from home.
-const AWAY: &str = "10.0.0.0/24";
-
-fn subnet(text: &str) -> Ipv4Subnet {
-    let (address, prefix) = text.split_once('/').expect("a subnet");
-    Ipv4Subnet::containing(
-        address.parse().expect("an address"),
-        prefix.parse().expect("a prefix"),
-    )
-    .expect("a subnet")
-}
-
-fn wake_route(mac: u8, on: &str) -> WakeRoute {
-    WakeRoute {
-        mac: [0x52, 0x54, 0, 0, 0, mac],
-        kind: WakeInterfaceKind::Ethernet,
-        magic_packet: true,
-        subnet: Some(subnet(on)),
-    }
-}
-
-/// The packets that left, as they went out.
-#[derive(Default)]
-struct Packets(Mutex<Vec<([u8; 102], Ipv4Subnet)>>);
-
-impl Packets {
-    fn taken(&self) -> Vec<([u8; 102], Ipv4Subnet)> {
-        self.0.lock().expect("the packets").clone()
-    }
-}
-
-impl MagicPackets for Packets {
-    fn send(&self, mac: [u8; 6], subnet: Ipv4Subnet) -> std::io::Result<()> {
-        self.0
-            .lock()
-            .expect("the packets")
-            .push((wake::magic_packet(mac), subnet));
-        Ok(())
-    }
-}
-
-/// This machine's interfaces, fixed so the test does not depend on the machine running it.
-struct FixedInterfaces(Vec<WakeRoute>);
-
-impl WakeInterfaces for FixedInterfaces {
-    fn routes(&self) -> Vec<WakeRoute> {
-        self.0.clone()
-    }
-}
-
 /// The person's devices as a stand-in transport keeps them, and what the session sent through it.
 #[derive(Default)]
 struct Fabric {
@@ -131,8 +72,6 @@ struct FakeLink {
     online: Arc<Mutex<BTreeSet<DeviceId>>>,
     /// The person's devices heard on this machine's local network.
     nearby: Arc<Mutex<BTreeSet<DeviceId>>>,
-    /// The wake routes this machine offered its devices.
-    routes: Arc<Mutex<Vec<WakeRoute>>>,
 }
 
 impl FakeLink {
@@ -147,35 +86,8 @@ impl FakeLink {
         link
     }
 
-    /// A device of the person's, awake now, reporting that `mac` on `on` wakes it.
-    fn joined_awake_device(&self, device: DeviceId, label: &str, mac: u8, on: &str) {
-        self.put_device(device, label, true, false, vec![wake_route(mac, on)]);
-    }
-
-    /// A device of the person's, asleep off the network, reporting that `mac` on `on` wakes it.
-    fn joined_sleeping_device(&self, device: DeviceId, label: &str, mac: u8, on: &str) {
-        self.put_device(device, label, false, false, vec![wake_route(mac, on)]);
-    }
-
-    /// The wake routes this machine offered its devices.
-    fn shared_routes(&self) -> Vec<WakeRoute> {
-        self.routes.lock().expect("the routes").clone()
-    }
-
     /// A device of the person's, as it said of itself.
     fn joined_device(&self, device: DeviceId, label: &str, online: bool, display: bool) {
-        self.put_device(device, label, online, display, Vec::new());
-    }
-
-    /// A device of the person's says of itself what it says now.
-    fn put_device(
-        &self,
-        device: DeviceId,
-        label: &str,
-        online: bool,
-        display: bool,
-        routes: Vec<WakeRoute>,
-    ) {
         if online {
             self.online
                 .lock()
@@ -195,7 +107,6 @@ impl FakeLink {
             },
         );
         known.online = online;
-        known.presence.wake_routes = routes;
         self.fabric
             .lock()
             .expect("the fabric")
@@ -245,10 +156,6 @@ impl FabricLink for FakeLink {
             .sent
             .push((target.clone(), action));
         Ok([0; 16])
-    }
-
-    fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
-        *self.routes.lock().expect("the routes") = routes;
     }
 
     fn require_media(&self) -> Result<(), String> {
@@ -335,17 +242,6 @@ struct Harness {
 }
 
 fn session(link: &FakeLink, host: Rc<Host>) -> Harness {
-    session_with(link, host, None, None)
-}
-
-/// The session, with what it sends its wake packets through and which interfaces it offers to be
-/// woken on.
-fn session_with(
-    link: &FakeLink,
-    host: Rc<Host>,
-    packets: Option<Arc<Packets>>,
-    interfaces: Option<Arc<FixedInterfaces>>,
-) -> Harness {
     let fabric: SharedLink = Arc::new(link.clone());
     let playing: Rc<RefCell<Option<serde_json::Value>>> = Rc::default();
     let moved: Rc<Cell<bool>> = Rc::default();
@@ -366,10 +262,6 @@ fn session_with(
             }),
             apps: Some(host),
             fabric: Some(fabric),
-            wake_io: WakeIo {
-                packets: packets.map(|packets| packets as Arc<dyn MagicPackets>),
-                interfaces: interfaces.map(|interfaces| interfaces as Arc<dyn WakeInterfaces>),
-            },
             user: "ada".to_owned(),
             verifier: std::sync::Arc::new(Sesame),
             surfaces: vec![
@@ -698,116 +590,12 @@ fn a_row_a_device_left_behind_is_a_press_on_nothing() {
 }
 
 #[test]
-fn a_sleeping_device_is_woken_by_the_device_sharing_its_network() {
-    let _settled = ui::motion::testing::settled();
-    let link = FakeLink::joined(false);
-    link.joined_sleeping_device(sleeping(), "Session", 0x0f, LAN);
-    let packets = Arc::new(Packets::default());
-    let interfaces = Arc::new(FixedInterfaces(vec![wake_route(0x03, LAN)]));
-    let mut harness = session_with(
-        &link,
-        Rc::new(Host::default()),
-        Some(Arc::clone(&packets)),
-        Some(interfaces),
-    );
-    for _ in 0..40 {
-        harness.step();
-        if harness.rows().iter().any(|row| row.key == "session") {
-            break;
-        }
-    }
-    let rows = harness.rows();
-    let row = rows
-        .iter()
-        .find(|row| row.key == "session")
-        .expect("the sleeping device's row");
-    assert_eq!(row.detail, "Offline");
-    assert_eq!(
-        row.actions,
-        HostedActions::Select("Wake".into()),
-        "a device that reports a way to be woken says what its press does"
-    );
-    assert_eq!(
-        link.shared_routes(),
-        vec![wake_route(0x03, LAN)],
-        "this machine offers its own interfaces to the person's devices"
-    );
-
-    harness.press("session", RowPart::Action);
-    let sent = packets.taken();
-    assert_eq!(sent.len(), 1, "one packet, not two: {sent:?}");
-    let (packet, on) = sent.first().expect("the packet");
-    assert_eq!(on, &subnet(LAN), "on the network the sleeping device is on");
-    assert_eq!(packet.len(), 102);
-    assert_eq!(packet.get(..6), Some(&[0xFF; 6][..]), "six bytes of ones");
-    assert!(
-        packet
-            .get(6..)
-            .expect("the rest")
-            .chunks(6)
-            .all(|chunk| chunk == [0x52, 0x54, 0, 0, 0, 0x0f]),
-        "then the device's address, sixteen times"
-    );
-    assert!(
-        link.sent()
-            .iter()
-            .any(|(target, action)| target == &sleeping()
-                && matches!(action, PersonalFabricAction::WakeProbe { .. })),
-        "and the device is asked whether it came back: {:?}",
-        link.sent()
-    );
-}
-
-#[test]
-fn a_device_on_the_sleeping_device_s_network_is_asked_when_this_one_is_away() {
-    let _settled = ui::motion::testing::settled();
-    let link = FakeLink::joined(false);
-    link.joined_awake_device(server(), "Server", 0x11, LAN);
-    link.joined_sleeping_device(sleeping(), "Session", 0x0f, LAN);
-    // This machine is on another network, so it shares nothing to broadcast on: the device that
-    // does sends the packet.
-    let packets = Arc::new(Packets::default());
-    let interfaces = Arc::new(FixedInterfaces(vec![wake_route(0x03, AWAY)]));
-    let mut harness = session_with(
-        &link,
-        Rc::new(Host::default()),
-        Some(Arc::clone(&packets)),
-        Some(interfaces),
-    );
-    harness.press("session", RowPart::Row);
-
-    assert!(
-        packets.taken().is_empty(),
-        "nothing this machine sends could reach it"
-    );
-    let sent = link.sent();
-    assert_eq!(
-        sent.len(),
-        1,
-        "one request, to the device that can: {sent:?}"
-    );
-    let (target, action) = sent.first().expect("the request");
-    assert_eq!(target, &server());
-    assert_eq!(
-        action,
-        &PersonalFabricAction::WakeDevice { target: sleeping() }
-    );
-}
-
-#[test]
 fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
     let _settled = ui::motion::testing::settled();
     let link = FakeLink::joined(false);
     link.joined_device(sleeping(), "Session", false, false);
-    let packets = Arc::new(Packets::default());
-    let interfaces = Arc::new(FixedInterfaces(vec![wake_route(0x03, LAN)]));
     let host = Rc::new(Host::default());
-    let mut harness = session_with(
-        &link,
-        Rc::clone(&host),
-        Some(Arc::clone(&packets)),
-        Some(interfaces),
-    );
+    let mut harness = session(&link, Rc::clone(&host));
     for _ in 0..40 {
         harness.step();
         if harness.rows().iter().any(|row| row.key == "session") {
@@ -822,11 +610,10 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
     assert_eq!(
         row.actions,
         HostedActions::None,
-        "no wake route of its own: nothing to offer"
+        "nothing says it wakes: nothing to offer"
     );
 
     harness.press("session", RowPart::Row);
-    assert!(packets.taken().is_empty());
     assert!(link.sent().is_empty());
     assert!(
         !host.invoked.borrow().is_empty(),

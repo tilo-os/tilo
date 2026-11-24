@@ -93,6 +93,7 @@ pub(crate) mod unclaimed;
 mod unclaimed_tests;
 #[cfg(unix)]
 mod vision;
+pub mod wake;
 pub mod wifi;
 mod window_follow;
 pub mod workspaces;

@@ -20,7 +20,7 @@ use super::store;
 use super::{
     ClipboardEntry, ContinuityNotificationProjection, DeviceAbout, DeviceKind, FabricCapabilities,
     FabricLink, MediaSourceLocator, NearbySpoolOffer, PersonDevices, PersonalFabricAction,
-    PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink, WakeRoute, clock,
+    PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink, clock,
 };
 use crate::platform::fabric::{DeviceId, FabricStamp, nonzero};
 /// Where this session's frames leave for the person's other devices.
@@ -117,9 +117,8 @@ pub(crate) struct SessionFabric {
     /// The person's devices as the workspace last read, and its change count then: read again
     /// only when it moved.
     kept: Mutex<Option<(u64, PersonDevices)>>,
-    /// Whether what this device says of itself, and the copies it offers, moved since the person's
-    /// other devices were last told.
-    said_moved: AtomicBool,
+    /// Whether the copies this device offers moved since the person's other devices were last
+    /// told.
     offered_moved: AtomicBool,
     label: String,
     outgoing: Outbox,
@@ -191,7 +190,6 @@ impl SessionFabric {
             live: Mutex::new(Live::new(device)),
             personal,
             kept: Mutex::new(None),
-            said_moved: AtomicBool::new(false),
             offered_moved: AtomicBool::new(false),
             label,
             outgoing: reach.outgoing,
@@ -226,17 +224,14 @@ impl SessionFabric {
         certs: &[tilo_user_identity::DeviceCert],
         revocations: &[tilo_user_identity::RevocationEntry],
     ) {
-        let (presence, clipboard) = {
+        let clipboard = {
             let mut live = self.live.lock_recover();
             if live.sibling(peer, certs, revocations).is_none() {
                 return;
             }
-            (live.own_presence().clone(), live.own_clipboard().to_vec())
+            live.own_clipboard().to_vec()
         };
-        self.publish(
-            Some(peer),
-            PersonalFabricPayload::Presence(Box::new(presence)),
-        );
+        self.publish(Some(peer), PersonalFabricPayload::Here);
         if !clipboard.is_empty() {
             self.publish(Some(peer), PersonalFabricPayload::Clipboard(clipboard));
         }
@@ -256,13 +251,9 @@ impl SessionFabric {
         received: Instant,
     ) {
         match payload {
-            PersonalFabricPayload::Presence(presence) => {
-                let taken = self
-                    .live
-                    .lock_recover()
-                    .presence(peer, (**presence).clone());
-                if let Err(error) = taken {
-                    tracing::warn!(%error, %peer, "a device said something of itself this session does not take");
+            PersonalFabricPayload::Here => {
+                if let Err(error) = self.live.lock_recover().here(peer) {
+                    tracing::warn!(%error, %peer, "an endpoint said it is there that proved no device of the person's");
                 }
             }
             PersonalFabricPayload::Clipboard(entries) => {
@@ -306,15 +297,11 @@ impl SessionFabric {
         }
     }
 
-    /// Tell the person's other devices what this device says of itself and the copies it offers,
-    /// when either moved since they were last told, and keep the speaker groups this device leads
+    /// Tell the person's other devices the copies this device offers, when they moved since they
+    /// were last told, and keep the speaker groups this device leads
     /// and joined in its part of the person's store when they moved: the session's pass calls this
     /// once it offered the clipboard, so a copy leaves on the pass that made it.
     pub(crate) fn announce(&self) {
-        if self.said_moved.swap(false, Ordering::Relaxed) {
-            let presence = self.live.lock_recover().own_presence().clone();
-            self.publish(None, PersonalFabricPayload::Presence(Box::new(presence)));
-        }
         if self.offered_moved.swap(false, Ordering::Relaxed) {
             let clipboard = self.live.lock_recover().own_clipboard().to_vec();
             self.publish(None, PersonalFabricPayload::Clipboard(clipboard));
@@ -360,24 +347,6 @@ impl SessionFabric {
     /// Media continuity is off: the session's loop calls this every pass.
     pub(crate) fn pump_clock(&self) {
         clock::pump(self, self.continuity.media_permitted());
-    }
-
-    /// Change what this device says of itself with `change`, telling the person's other devices on
-    /// the next announcement when it changed. Returns whether it did.
-    fn say(&self, what: &str, change: impl FnOnce(&mut super::DevicePresence)) -> bool {
-        let said = self.live.lock_recover().say(change);
-        match said {
-            Ok(changed) => {
-                if changed {
-                    self.said_moved.store(true, Ordering::Relaxed);
-                }
-                changed
-            }
-            Err(error) => {
-                tracing::warn!(%error, what, "this device's word to the others was not taken");
-                false
-            }
-        }
     }
 
     fn publish(&self, target: Option<EndpointId>, payload: PersonalFabricPayload) {
@@ -505,10 +474,6 @@ impl FabricLink for SessionFabric {
         self.continuity.notifications_permitted()
     }
 
-    fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
-        self.say("wake routes", |presence| presence.wake_routes = routes);
-    }
-
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         let offered = self.live.lock_recover().offer(entries);
         match offered {
@@ -589,6 +554,11 @@ impl crate::Session {
             | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
             | PersonalFabricAction::BluetoothHandoffCancel { .. }
+            // What validation refuses never reaches here.
+            | PersonalFabricAction::RetiredWakeDevice
+            | PersonalFabricAction::RetiredWakeReport
+            | PersonalFabricAction::RetiredWakeProbe
+            | PersonalFabricAction::RetiredWakeProbeReply
             | PersonalFabricAction::GamepadForwardRequest { .. }
             | PersonalFabricAction::GamepadForwardGrant { .. }
             | PersonalFabricAction::GamepadForwardEvent { .. }
@@ -597,10 +567,6 @@ impl crate::Session {
             // so nothing on this side routes one.
             | PersonalFabricAction::FabricClockProbe { .. }
             | PersonalFabricAction::FabricClockReport { .. }
-            | PersonalFabricAction::WakeDevice { .. }
-            | PersonalFabricAction::WakeReport { .. }
-            | PersonalFabricAction::WakeProbe { .. }
-            | PersonalFabricAction::WakeProbeReply { .. }
             | PersonalFabricAction::WindowViews { .. }
             // No device of the person certifies another over the fabric any more: an ask or an
             // answer from an older device is dropped.
@@ -628,17 +594,13 @@ impl crate::Session {
     }
 
     /// Whether one of this session's services took `envelope` 's action: a Bluetooth accessory's
-    /// move, a device to wake, a speaker service's, the person's keyboard and
+    /// move, a speaker service's, the person's keyboard and
     /// pointer. What they did not take is the
     /// session's own.
     fn service_took(&self, fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) -> bool {
         self.shared
             .bluetooth
             .arrived(&self.shared, fabric, envelope)
-            || self
-                .shared
-                .waking
-                .handle_action(&self.shared, fabric, envelope)
             || tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
             || tilo_speaker_service::groups::handle_action(fabric.as_ref(), envelope)
             || self

@@ -267,13 +267,10 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
 }
 
 #[test]
-fn a_wake_reaches_the_other_session() {
+fn an_action_reaches_the_other_session() {
     let person = person();
     let laptop = device(&person, 1, "Laptop");
     let session = device(&person, 2, "Session");
-    // Not in the session at all: a wake names a device of the person's by its fabric id, so the
-    // waker need not have a session with it.
-    let pod = device(&person, 3, "Pod");
     laptop.client.connect(session.client.endpoint_addr());
 
     assert!(
@@ -283,13 +280,8 @@ fn a_wake_reaches_the_other_session() {
 
     let request = laptop
         .fabric()
-        .try_send_personal_fabric_action(
-            &session.id,
-            PersonalFabricAction::WakeDevice {
-                target: pod.id.clone(),
-            },
-        )
-        .expect("the wake is sent to the session");
+        .try_send_personal_fabric_action(&session.id, PersonalFabricAction::InputLeaseAsk)
+        .expect("the ask is sent to the session");
 
     let mut heard: Vec<PersonalFabricActionEnvelope> = Vec::new();
     let arrived = until(&[&laptop, &session], || {
@@ -297,17 +289,17 @@ fn a_wake_reaches_the_other_session() {
         heard.iter().any(|envelope| envelope.request_id == request)
     });
 
-    assert!(arrived, "the wake reached the session");
+    assert!(arrived, "the ask reached the session");
     let envelope = heard
         .iter()
         .find(|envelope| envelope.request_id == request)
-        .expect("the wake the session heard");
-    assert_eq!(envelope.source, laptop.id, "the laptop sent the wake");
+        .expect("the ask the session heard");
+    assert_eq!(envelope.source, laptop.id, "the laptop sent the ask");
     assert_eq!(envelope.target, session.id, "the session was addressed");
     assert_eq!(
         envelope.action,
-        PersonalFabricAction::WakeDevice { target: pod.id },
-        "the wake still names the device to wake"
+        PersonalFabricAction::InputLeaseAsk,
+        "the action arrives as it was sent"
     );
 }
 
@@ -329,13 +321,8 @@ fn an_action_addressed_to_a_third_device_is_not_delivered() {
 
     let request = laptop
         .fabric()
-        .try_send_personal_fabric_action(
-            &pod.id,
-            PersonalFabricAction::WakeDevice {
-                target: session.id.clone(),
-            },
-        )
-        .expect("the wake is sent to the pod");
+        .try_send_personal_fabric_action(&pod.id, PersonalFabricAction::InputLeaseAsk)
+        .expect("the ask is sent to the pod");
 
     let mut at_shell: Vec<PersonalFabricActionEnvelope> = Vec::new();
     let mut at_pod: Vec<PersonalFabricActionEnvelope> = Vec::new();
