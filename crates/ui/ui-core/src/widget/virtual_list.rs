@@ -677,6 +677,7 @@ impl VirtualRows {
         };
         let now = crate::motion::frame_now();
         let width = self.rect.width();
+        let before = self.viewport.offset();
         match self
             .scroll
             .reveal(&mut self.viewport, index, width, self.motion, now)
@@ -684,7 +685,10 @@ impl VirtualRows {
             Some(target) => self.set_scroll_offset(target),
             None => self.follow_scroll_to(now),
         }
-        self.visible_window_changed();
+        // A row already in view moves nothing: the press that chose it is drawn, not laid out.
+        if (self.viewport.offset() - before).abs() > f64::EPSILON || self.reveal_in_progress(now) {
+            self.visible_window_changed();
+        }
         true
     }
 
@@ -1208,7 +1212,11 @@ impl VirtualRows {
     }
 
     pub fn set_scroll_offset(&mut self, offset: f64) {
+        let before = self.viewport.offset();
         self.viewport.set_offset(offset);
+        if (self.viewport.offset() - before).abs() <= f64::EPSILON {
+            return;
+        }
         self.note_scrolled();
         self.scroll_dirty = true;
         self.refresh_anchor();
