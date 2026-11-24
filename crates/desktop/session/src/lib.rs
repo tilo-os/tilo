@@ -153,6 +153,8 @@ pub mod comforts;
 #[cfg(target_os = "linux")]
 mod config;
 #[cfg(target_os = "linux")]
+pub(crate) mod confirmation;
+#[cfg(target_os = "linux")]
 pub mod connectors;
 #[cfg(target_os = "linux")]
 mod contacts;
@@ -288,6 +290,8 @@ mod look;
 mod machine_steps;
 #[cfg(target_os = "linux")]
 pub mod mcp_server;
+#[cfg(target_os = "linux")]
+mod mcp_service;
 pub mod mentions;
 #[cfg(target_os = "linux")]
 mod model_steps;
@@ -359,10 +363,10 @@ mod rotation;
 #[cfg(target_os = "linux")]
 pub mod run;
 #[cfg(target_os = "linux")]
+mod seat_services;
+#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 pub mod seeded_apps;
-#[cfg(target_os = "linux")]
-mod seat_services;
 #[cfg(target_os = "linux")]
 mod send_to;
 #[cfg(target_os = "linux")]

@@ -2162,6 +2162,11 @@ fn broker_services(
     // Everything this device publishes to the apps attached to it: each resource served by the
     // provider that keeps it, through one table; what the seat's services publish (the sound, the
     // network, the displays Quick Settings changes) is every other one.
+    // The person's MCP server: every agent it let in and the sessions open now, read where
+    // this device's workspace service keeps them. Its verbs stay the action API's, which the
+    // daemon already answers.
+    let mcp_server: Arc<dyn PublishedResources> =
+        Arc::new(super::mcp_server::Published::new(parts.workspaces));
     let published: Arc<dyn PublishedResources> = Arc::new(
         super::published::Published::new()
             .serving(
@@ -2173,6 +2178,7 @@ fn broker_services(
                 &[tilo_workspace_service::live::RESOURCE],
                 super::live::Published::of(parts.workspaces.copies()),
             )
+            .serving(&[super::mcp_server::SERVER], mcp_server)
             .serving_the_rest(Arc::new(
                 tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
             )),

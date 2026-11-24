@@ -48,6 +48,7 @@ mod keep;
 pub(crate) mod layout;
 mod live;
 pub(crate) mod local;
+mod mcp_server;
 pub(crate) mod migrate;
 mod offload_place;
 mod own_device;
@@ -71,9 +72,9 @@ pub mod services;
 #[cfg(unix)]
 mod shell;
 pub mod shortcuts;
+pub(crate) mod signing;
 #[cfg(not(windows))]
 mod styles;
-pub(crate) mod signing;
 pub mod take_work;
 #[cfg(target_os = "linux")]
 mod task_programs;

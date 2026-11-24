@@ -1315,6 +1315,26 @@ fn only_a_notice(message: &neighbour_wire::NeighbourMsg) -> bool {
 }
 
 impl Workspaces {
+    /// The MCP server as the person reads it: every agent it let in, the reach each was let in
+    /// for, and the sessions open now. A device's daemon publishes it to the apps attached to
+    /// it as `mcp.server` ([`tilo_actions::remote::mcp_server`]).
+    #[must_use]
+    pub fn mcp_reading(&self) -> serde_json::Value {
+        match serde_json::to_value(self.inner.mcp_server.server()) {
+            Ok(reading) => reading,
+            Err(error) => {
+                tracing::warn!(%error, "the MCP server's reading does not encode");
+                serde_json::Value::Null
+            }
+        }
+    }
+
+    /// Moves whenever the MCP server's reading may read differently.
+    #[must_use]
+    pub fn mcp_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.mcp_server.changes()
+    }
+
     /// What the workspaces kept here hold, read and written in process: what
     /// a service the embedder runs beside them reads and writes through.
     #[must_use]

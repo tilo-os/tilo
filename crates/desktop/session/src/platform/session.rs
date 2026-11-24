@@ -1221,7 +1221,10 @@ impl Session {
         )?;
         // The person's own line calls through the device's one dispatch, as their own click does,
         // so what it reads and changes is decided where it lands.
-        if let Some(dispatch) = app_wire.as_ref().and_then(|app_wire| app_wire.dispatch.clone()) {
+        if let Some(dispatch) = app_wire
+            .as_ref()
+            .and_then(|app_wire| app_wire.dispatch.clone())
+        {
             task_program_host.keep_state(dispatch);
         }
         // An action an app publishes, named by a search row, a link or a
@@ -1319,7 +1322,9 @@ impl Session {
         // The activity undoes an agent's run in the records it changed through the same API.
         let host = std::sync::Arc::new(
             crate::mcp_server::Host::new(
-                app_wire.as_ref().and_then(|app_wire| app_wire.dispatch.clone()),
+                app_wire
+                    .as_ref()
+                    .and_then(|app_wire| app_wire.dispatch.clone()),
                 std::sync::Arc::clone(&session_services),
             )
             .with_session_actions(Some(std::sync::Arc::clone(&session_actions))),
@@ -1350,13 +1355,17 @@ impl Session {
         if let Some(path) = options.api_server.as_deref() {
             crate::api_server::serve(
                 path,
-                app_wire.as_ref().and_then(|app_wire| app_wire.dispatch.clone()),
+                app_wire
+                    .as_ref()
+                    .and_then(|app_wire| app_wire.dispatch.clone()),
                 std::sync::Arc::clone(&session_services),
             );
         }
         let mcp_server = server.map(|server| {
             let mut server = server.serve(
-                app_wire.as_ref().and_then(|app_wire| app_wire.dispatch.clone()),
+                app_wire
+                    .as_ref()
+                    .and_then(|app_wire| app_wire.dispatch.clone()),
                 app_wire
                     .as_ref()
                     .map(|app_wire| std::sync::Arc::clone(&app_wire.layout)),
@@ -1368,6 +1377,9 @@ impl Session {
             );
             server
         });
+        // The person's MCP server, which this session publishes to its apps: read off the
+        // daemon the shell connection below reaches, kept past the point that takes it.
+        let mcp_link = daemon_link.as_ref().ok().cloned();
         let automation = crate::automation::Automation::new(
             handle.clone(),
             options.person.clone(),
@@ -1471,6 +1483,13 @@ impl Session {
             .add(Box::new(crate::activity_service::Served::new(
                 activity.requests(),
             )));
+        // The person's MCP server as the daemon publishes it: the agents that act here, which a
+        // window lists, and the two verbs that stop one or let it go on.
+        if let Some(link) = mcp_link {
+            services
+                .borrow_mut()
+                .add(Box::new(crate::mcp_service::Served::follow(link)));
+        }
         // The records the services keep themselves: the activity lists an agent's run in one and
         // undoes it through the record's own history, as it does an app's.
         activity.attach_services(Rc::clone(&services));

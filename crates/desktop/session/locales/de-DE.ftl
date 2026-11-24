@@ -666,6 +666,9 @@ so-tilo-desktop-power-menu-open = Ein/Aus-Menü öffnen
 so-tilo-desktop-power-menu-close = Ein/Aus-Menü schließen
 ## Die Aktivität des Arbeitsbereichs, einer App als `so.tilo.activity` gereicht.
 
+tilo-mcp-server-stop = Einen Agenten jetzt stoppen: seine laufenden Aufrufe werden abgebrochen und jeder nächste wird abgelehnt, in jedem Arbeitsbereich, in dem er arbeitet, bis er weiterlaufen darf
+tilo-mcp-server-go-on = Einen gestoppten Agenten weiterlaufen lassen: seine Aufrufe werden wieder beantwortet
+
 so-tilo-activity = Aktivität
 so-tilo-activity-mark-viewed = Die gezeigten Änderungen auf diesem Gerät als gesehen markieren
 so-tilo-activity-focused = Melden, dass die angeforderte Ansicht gezeigt wurde
