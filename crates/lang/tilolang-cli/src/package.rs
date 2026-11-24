@@ -209,23 +209,6 @@ fn uses_files(meta: &PackageMeta) -> bool {
         .any(|action| action.uses.iter().any(|effect| effect == "files"))
 }
 
-/// What an app offers while no window of it is open: the link its root opens.
-pub(crate) struct LinkOffer {
-    pub resource: String,
-    pub kind: String,
-}
-
-/// [`LinkOffer`] for `meta`, if its root opens a link: the resource its window stands on, and
-/// the kind it is.
-pub(crate) fn link_offer(meta: &PackageMeta) -> Option<LinkOffer> {
-    use tilolang_tilo::meta::MetaExt as _;
-    let root = tilolang_tilo::meta::open_link_root(meta)?;
-    Some(LinkOffer {
-        resource: format!("tl:{}:root-{}", meta.app, root.id),
-        kind: meta.kind_of(&root.name),
-    })
-}
-
 /// The kinds of file the package's actions open (`opens:`), each once: the media types first, as
 /// the manifest's `[providers] mime`, then the extensions, as its `ext`. An app that opens no files
 /// offers none, and Files opens none of them with it.
