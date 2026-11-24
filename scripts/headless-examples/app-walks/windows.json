@@ -1,0 +1,29 @@
+{
+  "app": "windows",
+  "said": "Windows Apps",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.windows",
+    "package": "windows"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Windows Apps on a computer whose Windows compatibility service is not running",
+      "ops": [
+        { "theme": false },
+        { "launch": true },
+        { "wait_for": "actions" },
+        { "targets": true },
+        { "must": { "see": ["Windows Apps", "The Windows compatibility service is not running"] } }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [{ "theme": true }, { "wait_for": "Windows Apps" }],
+      "dark": true
+    }
+  ]
+}
