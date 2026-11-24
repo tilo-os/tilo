@@ -46,7 +46,7 @@ pub const MAX_ITEM_WORDS_BYTES: usize = 2048;
 pub const MAX_ITEM_ORIGIN_BYTES: usize = 512;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum BrowserServiceSessionCommand {
     List {},
     Resolve {
@@ -584,9 +584,9 @@ mod tests {
                 })
             );
             for bytes in [
-                br#"{"kind":"forget","id":"selected-slack","setup_binding":"operation","person":"foreign"}"#.as_slice(),
-                br#"{"kind":"forget","id":"selected-slack","setup_binding":""}"#.as_slice(),
-                br#"{"kind":"forget","id":"../foreign","setup_binding":"operation"}"#.as_slice(),
+                br#"{"forget":{"id":"selected-slack","setup_binding":"operation","person":"foreign"}}"#.as_slice(),
+                br#"{"forget":{"id":"selected-slack","setup_binding":""}}"#.as_slice(),
+                br#"{"forget":{"id":"../foreign","setup_binding":"operation"}}"#.as_slice(),
             ] {
                 assert!(super::BrowserServiceSessionCommand::decode(bytes).is_err());
             }
@@ -620,7 +620,7 @@ mod tests {
         phase rejects_identity_injection_and_redacts_malformed_credentials;
         {
             assert!(
-                BrowserServiceSessionCommand::decode(br#"{"kind":"list","person":"someone"}"#).is_err()
+                BrowserServiceSessionCommand::decode(br#"{"list":{"person":"someone"}}"#).is_err()
             );
             let error = BrowserServiceSessionReply::decode(
                 br#"{"kind":"resolved","session":"private-synthetic-value"}"#,
@@ -725,7 +725,7 @@ mod tests {
             // As it is spelled on the wire, and with one word more than it names.
             let spelled = |more: &str| {
                 format!(
-                    r#"{{"kind":"use-item","invocation":"{}","item":"{ITEM}","origin":"{ORIGIN}"{more}}}"#,
+                    r#"{{"use-item":{{"invocation":"{}","item":"{ITEM}","origin":"{ORIGIN}"{more}}}}}"#,
                     invocation.0
                 )
             };
@@ -774,7 +774,7 @@ mod tests {
             let question = BrowserServiceSessionCommand::LendsItems {};
             assert!(question.browser_only());
             assert_eq!(
-                BrowserServiceSessionCommand::decode(br#"{"kind":"lends-items"}"#).unwrap(),
+                BrowserServiceSessionCommand::decode(br#"{"lends-items":{}}"#).unwrap(),
                 question
             );
             for lent in [true, false] {
