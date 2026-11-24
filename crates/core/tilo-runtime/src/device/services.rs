@@ -20,7 +20,7 @@ use super::ticket::Tickets;
 use super::workspaces::{MemberListGrants, Opening, ServiceWorkspaces, block_on_owned};
 use super::{host_runs, take_work};
 use crate::personal_devices::PersonalDevices;
-use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, host, profile};
+use crate::{RuntimeServices, apps, host, profile};
 use ed25519_dalek::SigningKey;
 use serde_json::{Map, Value, json};
 #[cfg(unix)]
@@ -1443,7 +1443,7 @@ impl Daemon {
             }
         };
         tilo_files::native::private::directory(root)?;
-        let sockets = &crate::daemon::sockets(root)?;
+        let sockets = crate::daemon::sockets(root)?;
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
         let joined = identity.joined();
@@ -1464,7 +1464,7 @@ impl Daemon {
             let founded = person_workspace(&identity.cert.user_public_key);
             (founded.to_string(), Some(founded))
         };
-        let apps = Arc::new(apps::Apps::from_env(root, sockets));
+        let apps = Arc::new(apps::Apps::from_env(root, &sockets));
         let brokers = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         // What apps may found records with here: the kinds their installed
@@ -1806,7 +1806,7 @@ impl Daemon {
         // What the device's providers publish at fixed addresses is what an app's code calls them
         // by: each instance is handed their packages.
         apps.read_provided_from(workspaces.copies().providers());
-        let identity_socket = sockets.join(IDENTITY_SOCKET);
+        let identity_socket = sockets.identity.clone();
         stage("starting the identity service");
         let identity_broker = identity_service(
             identity_socket.clone(),
@@ -1816,7 +1816,7 @@ impl Daemon {
             dev,
         )?;
         stage("opening the content store");
-        let media = profile::MediaHost::start(&root.join("content"), &sockets.join(BLOB_SOCKET))?;
+        let media = profile::MediaHost::start(&root.join("content"), &sockets.blobs)?;
         // The files daemons that mount this device's workspaces: their stores keep the files'
         // bytes, which the broker's record content reads and keeps through them.
         let files_daemons = Arc::new(tilo_workspace_service::files::socket::Daemons::default());
@@ -1849,7 +1849,7 @@ impl Daemon {
             BrokerParts {
                 shortcuts,
                 root,
-                sockets,
+                sockets: &sockets,
                 apps: &apps,
                 workspaces: &workspaces,
                 keys: &workspaces.keys(),
@@ -1902,7 +1902,7 @@ impl Daemon {
         // own: one copy each on this daemon's dispatch.
         super::capabilities::register(&super::capabilities::Mounting {
             providers: &workspaces.copies().providers(),
-            blob_socket: &sockets.join(BLOB_SOCKET),
+            blob_socket: &sockets.blobs,
             search: search
                 .search()
                 .map(|search| search as Arc<dyn tilo_actions::remote::ResourceSearch>),
@@ -2103,7 +2103,7 @@ impl Daemon {
             workspace: workspace_id,
             actor,
             identity_socket,
-            blob_socket: sockets.join(BLOB_SOCKET),
+            blob_socket: sockets.blobs,
             replicas,
             _media: media,
             _endpoint_router: endpoint_router,
@@ -2500,8 +2500,8 @@ fn take_work_action_service(
 /// What the broker's services are opened from: the device's workspaces and the apps.
 struct BrokerParts<'a> {
     root: &'a Path,
-    /// The directory the daemon's sockets are in.
-    sockets: &'a Path,
+    /// The daemon's sockets.
+    sockets: &'a crate::daemon::Sockets,
     apps: &'a Arc<apps::Apps>,
     workspaces: &'a Arc<ServiceWorkspaces>,
     keys: &'a tilo_workspace_service::apps::workspace_keys::KeyProvider,
@@ -2552,7 +2552,7 @@ fn start_broker(
 )> {
     let (policy_origin, policy_time) = execution_policy_clock()?;
     let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
-        parts.sockets.join(COLLAB_SOCKET),
+        parts.sockets.collab.clone(),
         Some(Arc::clone(parts.workspaces) as Arc<dyn WorkspaceAuthority>),
         PeerPublisher::with_commits(ServiceCommits::new(parts.workspaces)
             as Arc<dyn tilo_workspace_service::apps::workspace_commits::WorkspaceCommits>),
@@ -2573,7 +2573,7 @@ fn broker_services(
 ) -> io::Result<ProcessServices> {
     let document_content = super::content::document_content(
         parts.workspaces,
-        &parts.sockets.join(BLOB_SOCKET),
+        &parts.sockets.blobs,
         Arc::clone(&parts.files),
     );
     // Where this workspace's offloadable actions may run instead of here: the
@@ -2838,7 +2838,7 @@ fn broker_services(
         shell: Some(Arc::new(super::shell::services(
             parts.workspaces,
             parts.shell_links,
-            parts.sockets.join(COLLAB_SOCKET),
+            parts.sockets.collab.clone(),
             Arc::clone(parts.shell_dispatch),
             shell_published,
             shell_processes(parts.apps, parts.workspaces),

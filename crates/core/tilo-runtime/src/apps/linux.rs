@@ -8,7 +8,8 @@
 //! connects and authenticates each service itself, exactly as under the
 //! desktop session; nothing it checks is relaxed.
 
-use super::{Apps, Launch, Sockets};
+use super::{Apps, Launch};
+use crate::daemon::Sockets;
 use app_catalogue::apps::InstalledApp;
 use std::{
     io,

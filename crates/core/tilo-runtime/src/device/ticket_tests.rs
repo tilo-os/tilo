@@ -2044,6 +2044,7 @@ async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_devi
     let apps = Arc::new(crate::apps::Apps::new(
         None,
         state.path(),
+        crate::daemon::Sockets::in_dir(state.path()),
         std::path::PathBuf::new(),
         Vec::new(),
     ));

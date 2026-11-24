@@ -18,7 +18,8 @@
 //! the app's data (no collaboration connection), exactly as a Linux session's window.
 
 use super::verified::{installed_runtime, verify_installed, verify_package};
-use super::{Apps, Launch, Sockets};
+use super::{Apps, Launch};
+use crate::daemon::Sockets;
 use crate::host::{ServiceConnections, ServiceSockets};
 use app_catalogue::apps::InstalledApp;
 use runtime_portal::process_link::Packet as _;

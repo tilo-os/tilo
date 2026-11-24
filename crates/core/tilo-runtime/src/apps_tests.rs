@@ -175,6 +175,7 @@ fn installed(store: &Store, root: &Path, candidates: Vec<PathBuf>) -> Apps {
     Apps::new(
         Some(store.catalog()),
         root,
+        crate::daemon::Sockets::in_dir(root),
         root.join("support"),
         candidates,
     )
@@ -315,7 +316,13 @@ tilo_test_env::scenario! {
             .unwrap_err();
         assert!(err.contains("not installed"), "{err}");
 
-        let empty = Apps::new(None, &root, PathBuf::new(), Vec::new());
+        let empty = Apps::new(
+            None,
+            &root,
+            crate::daemon::Sockets::in_dir(&root),
+            PathBuf::new(),
+            Vec::new(),
+        );
         assert!(empty.applications().is_empty());
     }
 
@@ -1065,7 +1072,13 @@ tilo_test_env::scenario! {
     // workspace `open` learns which instance it started.
     {
         let root = std::env::temp_dir();
-        let apps = Apps::new(None, &root, PathBuf::new(), Vec::new());
+        let apps = Apps::new(
+            None,
+            &root,
+            crate::daemon::Sockets::in_dir(&root),
+            PathBuf::new(),
+            Vec::new(),
+        );
         let mut child = std::process::Command::new("/bin/sleep")
             .arg("30")
             .spawn_locked()
@@ -1109,7 +1122,13 @@ tilo_test_env::scenario! {
     // is: a process it did not start, below a recorded one included, is no app.
     {
         let root = std::env::temp_dir();
-        let apps = Apps::new(None, &root, PathBuf::new(), Vec::new());
+        let apps = Apps::new(
+            None,
+            &root,
+            crate::daemon::Sockets::in_dir(&root),
+            PathBuf::new(),
+            Vec::new(),
+        );
         let mut child = std::process::Command::new("/bin/sleep")
             .arg("30")
             .spawn_locked()
@@ -1361,7 +1380,11 @@ fn a_daemon_with_no_session_starts_an_apps_origin_connector_and_refuses_one_it_m
 fn a_launch_asks_the_launcher_for_the_installed_packages_own_program() {
     let (_temp, root) = canonical_temp();
     let mut store = Store::new(&root);
-    let installed = store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
+    let installed = store.install(
+        VIEWER,
+        &manifest(VIEWER, "gui", ""),
+        &[("probe", b"binary")],
+    );
     let asked = root.join("launched");
     // A stand-in launcher: it records what it was asked, reads its launch hold to the end, and
     // ends, as the connector test's does.
@@ -1384,7 +1407,10 @@ fn a_launch_asks_the_launcher_for_the_installed_packages_own_program() {
     assert!(
         asked.starts_with("run ")
             && asked.contains(&format!("--manifest {}", installed.manifest_path.display()))
-            && asked.contains(&format!("--payload-root {}", installed.payload_root.display()))
+            && asked.contains(&format!(
+                "--payload-root {}",
+                installed.payload_root.display()
+            ))
             && asked.contains(&format!("--app-id {VIEWER}"))
             && asked.contains(&format!("--workspace-id {WORKSPACE}")),
         "the launcher starts the installed package's own program: {asked}"
