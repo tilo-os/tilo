@@ -26,6 +26,17 @@ mod cases {
             let app = App::compile(APP, &[]);
             let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
+            // The person's devices, as the session publishes them: what an alarm rings on offers.
+            let devices = ResourceRef::parse_id("session:devices", "so.tilo.device#Devices")
+                .expect("the devices' address");
+            rt.set_reading(
+                &devices,
+                r#"{"devices":[
+                    {"id":"device-1","label":"This laptop","online":true,"nearby":true,"local":true,"display":true,"wakeable":true,"audio_output":true},
+                    {"id":"device-2","label":"The studio","online":true,"nearby":false,"local":false,"display":false,"wakeable":false,"audio_output":false}
+                ]}"#,
+            )
+            .expect("the person's devices read");
             let clocks = rt.create_root("Clocks").unwrap();
             Self { rt, app, clocks }
         }
@@ -46,13 +57,16 @@ mod cases {
         }
 
         fn view(&self) -> tilolang_runtime::ViewInstance {
-            self.rt
+            let mut view = self
+                .rt
                 .open_view(
                     &me(),
                     &self.app.view("clocks_page"),
                     vec![Value::resource(&self.clocks)],
                 )
-                .unwrap()
+                .unwrap();
+            view.set_lazy_rows(false).unwrap();
+            view
         }
 
         /// The window on its alarms place, where the alarms and the form that sets one stand.
@@ -65,6 +79,8 @@ mod cases {
                 .map(|item| item.key.clone())
                 .expect("the window offers its alarms");
             view.fire(&alarms, "select").unwrap();
+            view.poll_patches().unwrap();
+            view.set_lazy_rows(false).unwrap();
             view.poll_patches().unwrap();
             view
         }
