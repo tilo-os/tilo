@@ -189,6 +189,41 @@ impl MotionSpec {
     }
 }
 
+impl MotionSpec {
+    /// This motion's entrance as a stylesheet draws it: how long it runs from rest, and its progress
+    /// over that time passed through `shape` (a motion that draws a part of itself on its own curve,
+    /// as [`super::Appear::arriving`] does) as a CSS `linear()` curve. A page moves by the same
+    /// springs as the native toolkit; one that lands at once runs for no time.
+    #[must_use]
+    pub fn css_entrance(
+        self,
+        motion: EffectiveMotion,
+        shape: impl Fn(f64) -> f64,
+    ) -> (crate::time::Duration, String) {
+        let Timing::Spring(spring) = self.timing(Direction::Enter, motion, MotionSource::Pointer)
+        else {
+            return (crate::time::Duration::ZERO, "linear(0,1)".to_owned());
+        };
+        let run = settle_of(spring);
+        let points = (0..=CSS_SAMPLES)
+            .map(|i| {
+                if i == CSS_SAMPLES {
+                    return "1".to_owned();
+                }
+                let t = run.as_secs_f64() * f64::from(i) / f64::from(CSS_SAMPLES);
+                let progress = (1.0 - spring.state(1.0, 0.0, t).0).clamp(0.0, 1.0);
+                format!("{:.3}", shape(progress))
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        (run, format!("linear({points})"))
+    }
+}
+
+/// How many steps [`MotionSpec::css_entrance`] samples a spring at: enough that the straight lines
+/// between them read as the curve over a `fast` change.
+const CSS_SAMPLES: u16 = 16;
+
 /// A motion run once settles on a fraction's tolerance.
 const ONCE_TOLERANCE: f64 = 1e-3;
 

@@ -1361,30 +1361,6 @@ fn appear_style(layer: &Composed) -> String {
     )
 }
 
-/// A spring's progress over `duration` as a CSS `linear()` curve, each sample passed through
-/// `shape` (a motion that draws its progress eased, as [`crate::motion::Appear`] does).
-fn css_curve(
-    spring: crate::motion::SpringSpec,
-    duration: std::time::Duration,
-    shape: impl Fn(f64) -> f64,
-) -> String {
-    let points = (0..=SETTLE_SAMPLES)
-        .map(|i| {
-            if i == SETTLE_SAMPLES {
-                return "1".to_owned();
-            }
-            let t = duration.as_secs_f64() * f64::from(i) / f64::from(SETTLE_SAMPLES);
-            format!("{:.3}", shape(1.0 - spring.state(1.0, 0.0, t).0))
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("linear({points})")
-}
-
-/// How many steps the page's `--tilo-settle` curve samples the spring at: enough that the
-/// straight lines between them read as the curve over a `fast` change.
-const SETTLE_SAMPLES: u16 = 16;
-
 /// The theme as the page's custom properties (`--tilo-*`): its colours, its type roles, its
 /// corners, its motion, and the `color-scheme` the browser draws its own parts in.
 #[must_use]
@@ -1437,38 +1413,24 @@ pub fn theme_css(theme: &crate::Theme) -> String {
             style.letter_spacing / style.size.max(1.0)
         );
     }
-    // The page moves by the motion tokens the native controls move by. A control's tint and a
+    // The page moves by the named motions the native controls move by. A control's tint and a
     // checkbox's fill fade over `fast` (`--tilo-fade`), a switch's knob travels over it
-    // (`--tilo-move`), and both follow the critically damped spring `fast` means natively
-    // (`--tilo-settle`, sampled as a CSS `linear()` curve). Reduced motion keeps the fade and lands
-    // the travel; a theme that holds still does neither.
+    // (`--tilo-move`), and both follow `ControlChange`'s spring (`--tilo-settle`, a CSS `linear()`
+    // curve). A popover, menu or dialog arrives on `Appear`: its opacity and then its scale and
+    // reach each on the curve `Appear::arriving` draws them on natively (one `linear()` per property,
+    // in `--tilo-appear-props`' order); under reduced motion it only fades. Reduced motion keeps the
+    // fades and lands the travel; a theme that holds still does neither.
     let motion = theme.motion();
     let fast = motion.tokens().durations.fast();
-    let settle = css_curve(
-        crate::motion::SpringSpec::settling_within(fast),
-        fast,
-        |p| p,
-    );
-    // A popover, menu or dialog arriving: over `base`, its opacity and then its scale and reach
-    // each on the curve `Appear::arriving` draws them on natively (one `linear()` per property, in
-    // `--tilo-appear-props`' order); under reduced motion it only fades, over `fast`; a theme that
-    // holds still shows it at once.
-    let (appear_time, appear_curve, appear_props) = if motion.still() {
-        (std::time::Duration::ZERO, settle.clone(), "opacity")
-    } else if motion.reduced() {
-        (fast, settle.clone(), "opacity")
+    let (_, settle) = crate::motion::ControlChange::SHOW.css_entrance(motion, |p| p);
+    let appear = crate::motion::Appear::SPEC;
+    let (appear_time, appear_curve, appear_props) = if motion.still() || motion.reduced() {
+        let (time, curve) = appear.css_entrance(motion, |p| p);
+        (time, curve, "opacity")
     } else {
-        let base = motion.tokens().durations.base();
-        let spring = crate::motion::SpringSpec::settling_within(base);
-        (
-            base,
-            format!(
-                "{},{}",
-                css_curve(spring, base, |p| crate::motion::Appear::arriving(p).0),
-                css_curve(spring, base, |p| crate::motion::Appear::arriving(p).1),
-            ),
-            "opacity,transform",
-        )
+        let (time, opacity) = appear.css_entrance(motion, |p| crate::motion::Appear::arriving(p).0);
+        let (_, transform) = appear.css_entrance(motion, |p| crate::motion::Appear::arriving(p).1);
+        (time, format!("{opacity},{transform}"), "opacity,transform")
     };
     let motion_props = format!(
         "--tilo-fade:{}ms;--tilo-move:{}ms;--tilo-settle:{settle};--tilo-appear-time:{}ms;--tilo-appear-curve:{appear_curve};--tilo-appear-props:{appear_props};",
