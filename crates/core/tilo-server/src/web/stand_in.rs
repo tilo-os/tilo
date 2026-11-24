@@ -31,7 +31,6 @@ fn cert_path(dir: &Path, user: &[u8; 32]) -> PathBuf {
 /// # Errors
 ///
 /// The directory cannot be read or written, or the root would not sign it.
-#[cfg(any(test, feature = "agents"))]
 pub(crate) fn keep(dir: &Path, root: &SigningKey) -> Result<(), String> {
     let user = root.verifying_key().to_bytes();
     if kept(dir, &user).is_some() {
