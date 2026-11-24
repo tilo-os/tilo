@@ -223,6 +223,39 @@ class CheckBudget(unittest.TestCase):
         problems = ratchet.check(budget(), budget(huge=app_raise(added=1_000_001)), COLLECTION)
         self.assertTrue(any("more than doubles" in problem for problem in problems), problems)
 
+    def ported(self, x86_64: int, budgeted: int, engine: str = "libtilo_a_engine.so") -> tuple:
+        """`so.tilo.a` ported with its x86_64 tapp measured at `x86_64` bytes and budgeted at
+        `budgeted`, replacing the Rust engine library `engine`."""
+        port = f'{REASON}[ported."so.tilo.a"]\nx86_64 = {x86_64}\nengine = "{engine}"\n'
+        return budget(), budget(TEXT.replace("x86_64 = 1000000", f"x86_64 = {budgeted}"), port=port)
+
+    def test_a_ported_package_starts_again_from_its_measured_size_plus_headroom(self):
+        before, after = self.ported(2_500_000, ratchet.budget_for(2_500_000, 0.01))
+        self.assertEqual(ratchet.check(before, after, COLLECTION, {"so.tilo.a"}, set()), [])
+
+    def test_a_ported_package_gets_no_more_than_its_measured_size_plus_headroom(self):
+        before, after = self.ported(2_500_000, 6_000_000)
+        self.assertEqual(ratchet.check(before, after, COLLECTION, {"so.tilo.a"}, set()),
+                         ['[apps."so.tilo.a"] x86_64: a ported package\'s first budget is its measured '
+                          "2500000 bytes plus headroom, 2555904 bytes, not 6000000"])
+
+    def test_only_a_tilolang_package_is_ported(self):
+        before, after = self.ported(2_500_000, ratchet.budget_for(2_500_000, 0.01))
+        self.assertEqual(ratchet.check(before, after, COLLECTION, {"so.tilo.b"}, set()),
+                         ['raise port.toml: [ported."so.tilo.a"] is not a tilolang package'])
+
+    def test_a_ported_package_takes_its_engine_librarys_runtime_budget_with_it(self):
+        before, after = self.ported(2_500_000, ratchet.budget_for(2_500_000, 0.01))
+        problems = ratchet.check(before, after, COLLECTION, {"so.tilo.a"}, {"libtilo_a_engine.so"})
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("replaces libtilo_a_engine.so, which still has a runtime budget", problems[0])
+
+    def test_a_raise_file_from_before_ports_nothing_new(self):
+        port = f'{REASON}[ported."so.tilo.a"]\nx86_64 = 2500000\n'
+        before = budget(port=port)
+        after = budget(TEXT.replace("x86_64 = 1000000", "x86_64 = 2555904"), port=port)
+        self.assertEqual(len(ratchet.check(before, after, COLLECTION, {"so.tilo.a"}, set())), 1)
+
     def test_a_raised_fleet_ceiling_needs_a_raise_file(self):
         interim = HEADER + "\n[fleet.interim.x86_64]\np90 = 4500000\n" + APPS
         problems = ratchet.check(budget(), budget(interim), COLLECTION)

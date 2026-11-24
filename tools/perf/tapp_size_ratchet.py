@@ -27,7 +27,11 @@ pull request.
 `tools/perf/tapp-size-budget/budget.toml` holds the budgets. Each budget is a
 measurement plus `headroom`, rounded up to 64 KiB. `raises/<change>.toml`
 adds bytes to apps or fleet ceilings, one file per change, so concurrent
-changes never edit the same line. When an app shrinks, `measure` and `fleet`
+changes never edit the same line. A package that became a tilolang package
+gets a first budget again, as a new app does, from a raise file's
+`[ported."<app>"]` table: its measured bytes per architecture, and the Rust
+engine library it replaces (`engine`), whose runtime budget goes in the same
+change. When an app shrinks, `measure` and `fleet`
 print the lower budget to commit. docs/measurements/app-package-size.md says how
 to raise a budget.
 
@@ -59,6 +63,7 @@ sys.path.insert(0, str(HERE))
 import record  # noqa: E402
 
 DIRECTORY = "tools/perf/tapp-size-budget"
+RUNTIME_DIRECTORY = "tools/perf/runtime-size-budget"
 STATS = {"p50": 50.0, "p90": 90.0, "max": 100.0}
 # A budget this much lower than the current one is worth committing.
 SLACK = 0.01
@@ -119,6 +124,19 @@ class Budget:
                 totals[key] += value
         return totals
 
+    def ported(self, names: set[str] | None = None) -> dict[tuple[str, str], int]:
+        """Measured bytes of each ported package the raise files (or only `names`) name, by
+        (app, architecture)."""
+        measured: dict[tuple[str, str], int] = {}
+        for name, raised in self.raises.items():
+            if names is not None and name not in names:
+                continue
+            table = raised.get("ported", {})
+            for app, inner in (table.items() if isinstance(table, dict) else ()):
+                for arch, value in ints(inner).items():
+                    measured[(app, arch)] = value
+        return measured
+
     def fleet_ceilings(self) -> dict[tuple[str, str], int]:
         """Each (architecture, statistic) ceiling: the interim one where set, else the KPI target."""
         targets, interim = self.targets, self.interim
@@ -153,6 +171,21 @@ def load_at(revision: str, root: pathlib.Path = REPO) -> Budget | None:
         if path.endswith(".toml"):
             raises[pathlib.PurePosixPath(path).name] = git(root, "show", f"{revision}:{path}").stdout
     return Budget(shown.stdout, raises)
+
+
+def budgeted_engines(root: pathlib.Path = REPO) -> set[str]:
+    """Every engine library the runtime's budget or one of its raise files names."""
+    directory = root / RUNTIME_DIRECTORY
+    tables = [tomllib.loads((directory / "budget.toml").read_text())]
+    tables += [tomllib.loads(path.read_text()) for path in sorted((directory / "raises").glob("*.toml"))]
+    return {engine for table in tables for arch in table.get("engines", {}).values()
+            if isinstance(arch, dict) for engine in arch}
+
+
+def tilolang_packages(root: pathlib.Path = REPO) -> set[str]:
+    """Package ids of the tilolang packages."""
+    module = app_release(root)
+    return {app["id"] for app in module.app_catalog(root).values() if module.kind_of(app) == "tilolang"}
 
 
 def app_release(root: pathlib.Path = REPO) -> Any:
@@ -373,7 +406,7 @@ def raise_problems(name: str, raised: dict[str, Any], budget: Budget) -> list[st
     if not (isinstance(reason, str) and len(reason.strip()) >= MIN_REASON and measured):
         problems.append(f"raise {name} needs a reason of at least {MIN_REASON} characters "
                         "and the run that measured the growth")
-    unknown = set(raised) - {"reason", "run", "apps", "fleet"}
+    unknown = set(raised) - {"reason", "run", "apps", "fleet", "ported"}
     if unknown:
         problems.append(f"raise {name} has unknown keys {sorted(unknown)}")
     totals, targets = budget.app_totals(), budget.targets
@@ -392,8 +425,39 @@ def raise_problems(name: str, raised: dict[str, Any], budget: Budget) -> list[st
                     base = (budget.data["apps"][outer][key] if kind == "apps" else targets.get(key, 0))
                     if value > base:
                         problems.append(f"raise {name}: [{kind}.\"{outer}\"] {key} more than doubles its budget")
+    ported = raised.get("ported", {})
+    for app, inner in (ported.items() if isinstance(ported, dict) else ()):
+        adds += 1
+        measured = ints(inner)
+        if not isinstance(inner, dict) or not measured or any(value <= 0 for value in measured.values()):
+            problems.append(f'raise {name}: [ported."{app}"] needs its measured bytes for an architecture')
+        elif any((app, arch) not in totals for arch in measured):
+            problems.append(f'raise {name}: [ported."{app}"] names nothing with a budget')
+        engine = inner.get("engine") if isinstance(inner, dict) else None
+        if engine is not None and not isinstance(engine, str):
+            problems.append(f'raise {name}: [ported."{app}"] engine names the library it replaces')
+        if isinstance(inner, dict) and set(inner) - set(measured) - {"engine"}:
+            problems.append(f'raise {name}: [ported."{app}"] has unknown keys '
+                            f"{sorted(set(inner) - set(measured) - {'engine'})}")
     if adds == 0:
         problems.append(f"raise {name} adds nothing")
+    return problems
+
+
+def ported_problems(budget: Budget, new_raises: set[str], tilolang: set[str] | None,
+                    engines: set[str] | None) -> list[str]:
+    """A package ported in this change is a tilolang package now, and the engine library it
+    replaces has no runtime budget left beside its new one."""
+    problems = []
+    for name in sorted(new_raises):
+        ported = budget.raises[name].get("ported", {})
+        for app, inner in (ported.items() if isinstance(ported, dict) else ()):
+            if tilolang is not None and app not in tilolang:
+                problems.append(f'raise {name}: [ported."{app}"] is not a tilolang package')
+            engine = inner.get("engine") if isinstance(inner, dict) else None
+            if isinstance(engine, str) and engines is not None and engine in engines:
+                problems.append(f'raise {name}: [ported."{app}"] replaces {engine}, which still has a '
+                                f"runtime budget; remove it from {RUNTIME_DIRECTORY} in the same change")
     return problems
 
 
@@ -407,9 +471,16 @@ def increases(before: Budget, after: Budget, new_raises: set[str]) -> list[str]:
     for kind, old, new in (("apps", before.app_totals(), after.app_totals()),
                            ("fleet", before.fleet_ceilings(), after.fleet_ceilings())):
         allowance = after.added(kind, new_raises)
+        ported = after.ported(new_raises) if kind == "apps" else {}
         for key, total in sorted(new.items()):
             label = f'[apps."{key[0]}"] {key[1]}' if kind == "apps" else f"fleet {key[0]} {key[1]}"
-            if key in old:
+            if key in ported:
+                # A ported package starts again from what it measures, as a new app does.
+                first = budget_for(ported[key], after.headroom)
+                if total != first:
+                    problems.append(f"{label}: a ported package's first budget is its measured "
+                                    f"{ported[key]} bytes plus headroom, {first} bytes, not {total}")
+            elif key in old:
                 if total - old[key] > allowance.get(key, 0):
                     problems.append(f"{label}: raised from {old[key]} to {total} beyond the "
                                     f"{allowance.get(key, 0)} bytes its new raise files add")
@@ -419,11 +490,13 @@ def increases(before: Budget, after: Budget, new_raises: set[str]) -> list[str]:
     return problems
 
 
-def check(before: Budget | None, after: Budget, collection: set[str] | None) -> list[str]:
+def check(before: Budget | None, after: Budget, collection: set[str] | None,
+          tilolang: set[str] | None = None, engines: set[str] | None = None) -> list[str]:
     problems = shape_problems(after)
     new_raises = set(after.raises) - set(before.raises if before is not None else {})
     for name in sorted(new_raises):
         problems += raise_problems(name, after.raises[name], after)
+    problems += ported_problems(after, new_raises, tilolang, engines)
     if collection is not None:
         apps = after.apps()
         for app in sorted(collection - apps):
@@ -497,7 +570,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "seed":
             entries = json.loads(args.entries.read_text(encoding="utf-8"))
             return emit(0, seed(entries, current, default_collection()), None)
-        problems = check(load_at(args.base), current, default_collection())
+        problems = check(load_at(args.base), current, default_collection(), tilolang_packages(),
+                         budgeted_engines())
     except (ValueError, KeyError, OSError, tomllib.TOMLDecodeError) as error:
         print(f"tapp_size_ratchet.py: {error}", file=sys.stderr)
         return 1

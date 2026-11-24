@@ -1,0 +1,6 @@
+reason = "Settings is a tilolang package: the Rust app that ran from its engine library (libtilo_settings_engine.so) left, and with it the 64 KiB launcher package its budget measured, so the package's first budget is the tilolang tapp as t's app-sizes-x86_64 run measured it, plus headroom. The engine library and its runtime budget left with the Rust app. aarch64 keeps its budget until an aarch64 run measures the package."
+run = "r99e78f96a8"
+
+[ported."so.tilo.settings"]
+x86_64 = 970240
+engine = "libtilo_settings_engine.so"

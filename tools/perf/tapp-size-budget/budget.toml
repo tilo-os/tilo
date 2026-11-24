@@ -235,7 +235,7 @@ x86_64 = 131072
 aarch64 = 6000000  # not measured yet: the KPI max target
 
 [apps."so.tilo.settings"]
-x86_64 = 65536
+x86_64 = 983040
 aarch64 = 3211264
 
 [apps."so.tilo.sheets"]

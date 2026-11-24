@@ -74,7 +74,24 @@ numbers. Each architecture's job prints its own lines, so merge them. A raise
 may at most double a budget. When an app shrinks, both checks print the lower
 budget to commit (`[apps."<id>"] <arch> = <bytes>`), with the app removed from
 its raise files. They also print when an interim fleet ceiling can be lowered,
-or removed once its target holds. To re-seed the budgets from the registry,
+or removed once its target holds.
+
+A package that becomes a tilolang package (a Rust app ported) gets a first
+budget again, as a new app does, rather than a raise of the old one. Its raise
+file names it with what it measures, and the Rust engine library it replaces:
+
+```toml
+[ported."so.tilo.settings"]
+x86_64 = 970240                       # the measured tapp, in bytes
+engine = "libtilo_settings_engine.so" # the engine library it replaces
+```
+
+Its budget in `budget.toml` is then exactly that measurement plus headroom,
+rounded up to 64 KiB. The check refuses a package that is not a tilolang
+package, and an engine library that still has a budget under
+`tools/perf/runtime-size-budget/`: it leaves in the same change.
+
+To re-seed the budgets from the registry,
 run `python3 tools/perf/tapp_size_ratchet.py seed entries.json`, where
 `entries.json` is `https://apps.tilo.so/entries`.
 
