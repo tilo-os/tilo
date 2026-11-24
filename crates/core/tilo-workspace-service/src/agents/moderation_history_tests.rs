@@ -394,7 +394,17 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
         undone.len(),
         taken.len(),
         "each change is taken back: {undone:#?}, the undo answered {}",
-        asked.last().map(tool_results).unwrap_or_default()
+        asked
+            .last()
+            .into_iter()
+            .flat_map(|request| request.messages.iter())
+            .flat_map(|message| message.content.iter())
+            .filter_map(|content| match content {
+                Content::ToolResult(result) => Some(result.content.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     );
     let run = undone[0]["task"]["id"].as_str().unwrap_or_default();
     assert!(
