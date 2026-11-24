@@ -24,7 +24,6 @@ use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, LaunchChannel, LaunchOutcome, PickRequest,
 };
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -33,8 +32,7 @@ use ui::widget::{
     AppModel, Column, ModalDialog, ModelPath, NavPane, NavShell, Popover, PopoverSide,
     SidebarPlacement, TextInputKind, Widget,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -2381,32 +2379,56 @@ impl ui::widget::Decorator for FeedsApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         // Results land live, every frame, without a document in hand.
         self.core.borrow_mut().drain_fetches_live();
         self.take_toast();
-        ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme,&env);
+        ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme, &env);
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        Widget::draw_overlay(&mut self.shell, &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        Widget::draw_overlay(
+            &mut self.shell,
+            &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+        );
         if let Some(panel) = self.settings_panel.as_mut() {
-            panel.draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            panel.draw_overlay(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         }
         {
             let mut core = self.core.borrow_mut();
             if let Some(open) = core.menu.as_mut() {
                 open.menu.layout_within(text, theme);
-                Widget::draw_overlay(&mut open.menu, &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+                Widget::draw_overlay(
+                    &mut open.menu,
+                    &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+                );
             }
         }
         if let Some(modal) = self.modal.as_mut() {
-            modal
-                .dialog
-                .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            modal.dialog.draw_overlay(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         }
     }
 

@@ -6,15 +6,11 @@ use std::rc::Rc;
 
 #[cfg(test)]
 use automerge::AutoCommit;
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 
 use ui::tokens::TextRole;
 use winit::event::{Modifiers, WindowEvent};
 
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::{ModalDialog, Text, Widget};
 
 use crate::failure;
@@ -59,13 +55,22 @@ impl MapInfoSheet {
     }
 
     pub(crate) fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.current.is_none() {
             return;
         }
-        self.dialog
-            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.dialog.draw_overlay(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     pub(crate) fn handle_event(
@@ -130,6 +135,11 @@ fn dialog_for(info: MapInfo, close_requested: Rc<Cell<bool>>) -> ModalDialog<Tex
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use vello::kurbo::Affine;
     use winit::event::ElementState;
     use winit::keyboard::{Key, NamedKey};
 
@@ -173,7 +183,13 @@ mod tests {
             presence
                 .viewport
                 .set(Some(Rect::new(0.0, 0.0, 1000.0, 700.0)));
-            sheet.draw_overlay(&mut ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
+            sheet.draw_overlay(&mut ui::DrawCtx::new(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                presence.draw_env(),
+            ));
 
             assert!(sheet.modal_capture().is_some());
             let node = sheet.accessibility().expect("open dialog a11y node");

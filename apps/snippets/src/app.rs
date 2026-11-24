@@ -9,7 +9,6 @@ use ui::framework::TextControl;
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, Live, Submit, ViewCx};
 use ui::icons::Icon;
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Resource;
 use ui::widget::code_editor::CodeEditor;
@@ -18,8 +17,7 @@ use ui::widget::{
     AppModel, Element, ModelPath, NavItem, NavList, NavPane, NavSection, NavShell,
     SidebarPlacement, Widget,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -952,29 +950,50 @@ impl ui::widget::Decorator for SnippetsWindow {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.core
             .borrow_mut()
             .body
             .control_mut()
             .set_rect(Rect::ZERO);
-        ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme,&env);
+        ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme, &env);
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        Widget::draw_overlay(&mut self.shell, &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        Widget::draw_overlay(
+            &mut self.shell,
+            &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+        );
         let mut core = self.core.borrow_mut();
         let window = core.window;
         if let Some(modal) = core.expand.as_mut() {
             modal.draw(scene, transform, text, theme, window);
-            modal.draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            modal.draw_overlay(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         } else if core.body_available() {
-            core.body
-                .control_mut()
-                .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            core.body.control_mut().draw_overlay(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         }
     }
 

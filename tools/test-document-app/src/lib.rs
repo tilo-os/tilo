@@ -10,6 +10,7 @@
 use automerge::AutoCommit;
 use tilo_rich_text::RichTextViews;
 use ui::framework::{EffectAnswer, ResourceApp, ViewCx};
+use ui::tilo_resource;
 use ui::widget::Element;
 
 /// The record every window shows: the document model's rich text, which the shared editor

@@ -30,13 +30,11 @@ use ui::widget::{AppModel, ModelPath};
 
 use automerge::ObjId;
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::framework::{EffectReply, Setting};
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::ActionEmitter;
 use ui::widget::{CropSelection, Image, ImageCropEditor, ImageFit, Popover, TaffyTreeExt, Widget};
@@ -2763,7 +2761,11 @@ impl Widget for CameraApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, t, tr, theme, mut env) = ctx.parts();
         self.regions.clear();
         self.tooltip_targets.clear();
@@ -2774,7 +2776,10 @@ impl Widget for CameraApp {
             Screen::Camera | Screen::Settings => self.draw_camera(scene, t, tr, theme, full),
             Screen::Scanner => self.draw_scanner(scene, t, tr, theme, full),
             Screen::Document => {
-                self.draw_document_scanner(&mut ui::DrawCtx::new(scene, t, tr, theme, env.clone()), full);
+                self.draw_document_scanner(
+                    &mut ui::DrawCtx::new(scene, t, tr, theme, env.clone()),
+                    full,
+                );
             }
         }
         if self.screen == Screen::Settings {
@@ -3293,6 +3298,7 @@ mod tests {
     use crate::model::classify;
     use ui::framework::testing::TEST_WORKSPACE;
     use ui::headless::{Framed, viewport};
+    use ui::text_render::TextRenderer;
 
     #[test]
     fn a_sealed_capture_is_handed_over_by_the_address_of_its_bytes() {

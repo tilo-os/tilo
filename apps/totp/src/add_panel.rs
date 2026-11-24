@@ -8,15 +8,13 @@ use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
 use uuid::Uuid;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 use zeroize::Zeroize;
 
 use ui::LocalState;
 use ui::icons::Icon;
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::toggle_group::Segment;
@@ -403,10 +401,13 @@ impl Widget for AddForm {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.tree
-            .draw_child(scene, transform, text, theme,&env);
+        self.tree.draw_child(scene, transform, text, theme, &env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {

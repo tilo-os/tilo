@@ -13,8 +13,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, EmptyState, EmptyStateContent, ModelPath};
 
 use taffy::prelude::*;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -24,7 +23,6 @@ use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
 };
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
@@ -963,7 +961,11 @@ impl Widget for DiffMergeApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let status_h = if self.load_error.is_some() {
             0.0
@@ -1010,8 +1012,8 @@ impl Widget for DiffMergeApp {
             self.reveal_folder_row(self.folder_selection, row_h);
         } else {
             match self.mode {
-                Mode::Diff => self.diff.draw_child(scene, transform, tr, theme,&env),
-                Mode::Merge => self.merge.draw_child(scene, transform, tr, theme,&env),
+                Mode::Diff => self.diff.draw_child(scene, transform, tr, theme, &env),
+                Mode::Merge => self.merge.draw_child(scene, transform, tr, theme, &env),
             }
         }
 
@@ -1406,6 +1408,7 @@ mod tests {
     use crate::resource::DiffmergeShell;
     use ui::framework::testing::TestApp;
     use ui::headless::Framed;
+    use ui::text_render::TextRenderer;
     use ui::tilo_resource::{Replica, Resource as _};
 
     fn document_of(mut replica: Replica<Session>) -> ui::State {

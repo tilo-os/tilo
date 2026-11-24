@@ -12,7 +12,6 @@ use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
 use ui::tokens::TextRole;
@@ -20,7 +19,6 @@ use ui::widget::{
     AppModel, EmptyState, Interaction, ListRowFace, ModelPath, ProgressBar, RowAction,
     ScrollRegion, TaffyTreeExt, Widget,
 };
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -192,7 +190,11 @@ impl Core {
     }
 
     pub(crate) fn paint_list(&mut self, ctx: &mut ui::DrawCtx<'_>, area: Rect) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, t, text, theme, mut env) = ctx.parts();
         self.list.rows.clear();
         self.list.shown_drawing = None;
@@ -204,7 +206,10 @@ impl Core {
         let inset = f64::from(theme.tokens.spacing.s2);
         let settled = !self.refresh.visible();
         let top = if self.refresh.visible() {
-            self.paint_refresh(&mut ui::DrawCtx::new(scene, t, text, theme, env.clone()), area)
+            self.paint_refresh(
+                &mut ui::DrawCtx::new(scene, t, text, theme, env.clone()),
+                area,
+            )
         } else {
             area.y0
         };
@@ -446,7 +451,11 @@ impl Core {
     /// The refresh progress under the header: one sentence over the bar.
     /// Returns where the rows start.
     fn paint_refresh(&mut self, ctx: &mut ui::DrawCtx<'_>, area: Rect) -> f64 {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, t, text, theme, mut env) = ctx.parts();
         let spacing = &theme.tokens.spacing;
         let caption = theme.text(TextRole::Caption);
@@ -476,9 +485,7 @@ impl Core {
         };
         self.list.progress.set_progress(fraction as f32);
         self.list.progress.apply_layout_external(bar);
-        self.list
-            .progress
-            .draw_child(scene, t, text, theme,&env);
+        self.list.progress.draw_child(scene, t, text, theme, &env);
         let top = bar.y1 + f64::from(spacing.s3);
         ui::surface::separator(
             scene,
@@ -682,17 +689,24 @@ impl Widget for ListPane {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let viewport = {
             let mut core = self.core.borrow_mut();
-            core.paint_list(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()), self.rect);
+            core.paint_list(
+                &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+                self.rect,
+            );
             core.list.viewport
         };
         if let Some((_, empty)) = self.empty.as_mut() {
             // Centred in the rows' viewport, below any refresh progress.
             empty.apply_layout_external(viewport);
-            empty.draw_child(scene, transform, text, theme,&env);
+            empty.draw_child(scene, transform, text, theme, &env);
         }
     }
 

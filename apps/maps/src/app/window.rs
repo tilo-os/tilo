@@ -6,15 +6,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, Live, LiveRow, Publishes, ViewCx,
 };
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::MemberId;
 use ui::tilo_resource::Place;
@@ -330,10 +328,19 @@ impl FloatingSurfaceProvider for MapWindow {
     }
 
     fn draw_floating_surfaces(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.app()
-            .draw_floating_surfaces(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.app().draw_floating_surfaces(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn floating_surface_presentations(
@@ -402,12 +409,16 @@ impl Widget for MapWindow {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let fallback_presence = Default::default();
         let presence = env.presence.unwrap_or(&fallback_presence);
         let mut app = self.app.borrow_mut();
-        app.draw_child(scene, transform, text_renderer, theme,&env);
+        app.draw_child(scene, transform, text_renderer, theme, &env);
         let following = self.following.as_ref().map(|(member, _)| member);
         app.draw_presences(
             scene,
@@ -419,10 +430,19 @@ impl Widget for MapWindow {
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.app()
-            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.app().draw_overlay(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

@@ -11,8 +11,7 @@ use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -22,7 +21,6 @@ use ui::paint::PaintCtx;
 use ui::portal::{ContentsOutcome, FileFilter, PickRequest};
 
 use ui::secrets::SecretStore;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toast::ToastKind;
 use ui::widget::{Banner, BannerContent, BannerKind, TaffyTreeExt, Widget};
@@ -1040,7 +1038,11 @@ impl Widget for AuthenticatorApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         self.place(&mut ctx);

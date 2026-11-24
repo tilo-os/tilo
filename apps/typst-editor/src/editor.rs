@@ -14,7 +14,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use ui::framework::{Dispatcher, TextControl};
-use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Path;
@@ -273,7 +272,11 @@ impl SourceEditor {
     /// selection, text and caret; this adds the diagnostics: a severity mark in the
     /// gutter and a squiggle under each span, in the theme's status colours.
     pub fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>, diags: &[Diagnostic]) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let focused = self.focused;
         self.control_mut().set_focused(focused);
@@ -304,8 +307,13 @@ impl SourceEditor {
         self.control_mut().set_diagnostics(spans);
         let pointer = self.hover.filter(|p| self.rect.contains(*p));
         self.control_mut().set_pointer(pointer);
-        self.control_mut()
-            .draw_embedded(&mut ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.control_mut().draw_embedded(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            tr,
+            theme,
+            env.clone(),
+        ));
     }
 
     /// The editor's damage since the frame on screen, as part of `owner`, the
@@ -382,6 +390,7 @@ fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::presence::PresenceCtx;
     use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
 
     fn showing(text: &str) -> (AutoCommit, SourceEditor) {
@@ -475,7 +484,16 @@ mod tests {
             let mut ed = SourceEditor::new();
             ed.set_text("a\nbcdefg\n");
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-            ed.draw(&mut ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::empty().draw_env()), &[warn, err]);
+            ed.draw(
+                &mut ui::DrawCtx::new(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                    PresenceCtx::empty().draw_env(),
+                ),
+                &[warn, err],
+            );
             let severities: Vec<Severity> = ed
                 .control()
                 .diagnostics()
@@ -507,7 +525,16 @@ mod tests {
         .iter()
         .enumerate()
         {
-            editor.draw(&mut ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut tr, theme, PresenceCtx::empty().draw_env()), &[]);
+            editor.draw(
+                &mut ui::DrawCtx::new(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut tr,
+                    theme,
+                    PresenceCtx::empty().draw_env(),
+                ),
+                &[],
+            );
             let input = editor.control().inner();
             let line = input.body_line_height();
             let gutter = editor.control().gutter_width();

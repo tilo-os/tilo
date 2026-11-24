@@ -9,13 +9,11 @@ use ui::widget::ModelPath;
 use ui::widget::TaffyTreeExt;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 use winit::event::WindowEvent;
 
 use ui::a11y::{AccessNode, Action};
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
@@ -73,7 +71,11 @@ impl Widget for OverviewPane {
     ui::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // The core's paint, which other parts of the app move: current only until
         // the next input.
@@ -85,10 +87,22 @@ impl Widget for OverviewPane {
 
     /// The add-place suggestions and the menu, in the window's top layer.
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         ui::outside_paint::note();
-        self.core.borrow_mut().draw_overview_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.core
+            .borrow_mut()
+            .draw_overview_overlay(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -180,7 +194,11 @@ impl Widget for DetailPane {
     ui::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         ui::outside_paint::note();
         self.core

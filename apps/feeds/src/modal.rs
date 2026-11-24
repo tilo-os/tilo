@@ -10,11 +10,9 @@
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{AppModel, ModelPath, TaffyTreeExt, Text, TextInput, TextInputKind, Widget};
@@ -148,12 +146,15 @@ impl Widget for ModalBody {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.caption
-            .draw_child(scene, transform, text, theme,&env);
+        self.caption.draw_child(scene, transform, text, theme, &env);
         if let Some(input) = &mut self.input {
-            input.draw_child(scene, transform, text, theme,&env);
+            input.draw_child(scene, transform, text, theme, &env);
         }
     }
 

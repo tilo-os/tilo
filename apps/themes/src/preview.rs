@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use ui::advanced::{Affine, NodeId, Scene, TaffyTree};
+use ui::advanced::{Affine, NodeId, TaffyTree};
 use ui::prelude::*;
 use ui::taffy::style_helpers::{length, percent};
 use ui::taffy::{Size as TaffySize, Style};
@@ -144,7 +144,11 @@ impl Widget for ThemePreview {
     ui::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;

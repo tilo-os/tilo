@@ -11,15 +11,13 @@ use taffy::{NodeId, Style, TaffyTree};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
     AppModel, Button, ButtonRole, Chip, ChipLead, Column, ControlSize, Dropdown, Element,
     EmptyState, ModelPath, Row, TextInput, Widget,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 
 use crate::CATALOG;
 use crate::app::{Action, Core, Requests, Shared};
@@ -417,7 +415,11 @@ impl Widget for BodyWell {
     ui::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
             return;
@@ -432,7 +434,13 @@ impl Widget for BodyWell {
         );
         let mut core = self.core.borrow_mut();
         core.body.control_mut().set_rect(self.rect);
-        core.body.control_mut().draw_embedded(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        core.body.control_mut().draw_embedded(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn needs_redraw(&self) -> bool {

@@ -23,8 +23,7 @@ use ui::widget::{AppModel, ModelPath};
 use ui::window_toolbar::ToolbarNotice;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -34,8 +33,6 @@ use ui::icons::Icon;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
 };
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     ControlSize, EmptyState, FindMatch, Popover, PopoverPrompt, PopoverSide, SegmentedStyle,
@@ -709,7 +706,11 @@ impl Editor {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // The geometry is resolved with the renderer that paints it, then the frame
         // follows it.
@@ -717,7 +718,13 @@ impl Editor {
         // A key (Insert, Ctrl+I) changes what the bar shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
         self.relayout(text_renderer, theme, true);
-        self.paint(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.paint(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1298,10 +1305,20 @@ impl Widget for HexView {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let mut editor = self.editor.borrow_mut();
-        editor.draw(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        editor.draw(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         if self.goto.is_open() {
             self.goto.set_anchor(editor.goto_anchor());
         }
@@ -1418,6 +1435,10 @@ impl Widget for HexView {
 mod tests {
     use super::*;
     use crate::search;
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     /// Present the bundled sample as the scenario's open does, then stage `scenario`.
     fn staged(scenario: Option<&str>) -> HexView {
@@ -1599,9 +1620,19 @@ mod tests {
             &mut scene,
             Affine::IDENTITY,
             tr,
-            theme,&PresenceCtx::empty().draw_env(),
+            theme,
+            &PresenceCtx::empty().draw_env(),
         );
-        Widget::draw_overlay(view, &mut ui::DrawCtx::new(&mut scene, Affine::IDENTITY, tr, theme, PresenceCtx::empty().draw_env()));
+        Widget::draw_overlay(
+            view,
+            &mut ui::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                tr,
+                theme,
+                PresenceCtx::empty().draw_env(),
+            ),
+        );
     }
 
     /// The grid's pitches come from the renderer's measured advance, so paint and

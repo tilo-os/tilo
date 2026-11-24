@@ -197,7 +197,11 @@ impl TerminalWidget {
     /// its place in the scrollback so a scroll only moves it ([`ui::scroll_copy::PaintedFrames`]); then the
     /// cursor, the bar, the bands above the grid (`outside`) and members' marks.
     fn draw_grid(&mut self, ctx: &mut ui::DrawCtx<'_>, outside: Scene) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         use ui::scroll_copy::{Painted, Piece, piece_key};
         let frame = self.grid_frame();
@@ -234,7 +238,9 @@ impl TerminalWidget {
         self.draw_cursor_piece(&mut ctx, &frame, &mut pieces);
         let mut peers = Scene::new();
         let marks = transform * Affine::translate((0.0, -(self.view.sub + frame.give)));
-        self.draw_peer_marks(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        if let Some(presence) = env.presence {
+            self.draw_peer_marks(&mut peers, marks, theme, presence);
+        }
         scene.append(&peers, None);
         scene.pop_layer();
         let mut bar = Scene::new();

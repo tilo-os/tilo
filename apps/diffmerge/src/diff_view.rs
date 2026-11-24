@@ -3,12 +3,10 @@
 //! the scene itself and owns its scroll offset.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use taffy::prelude::*;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -16,7 +14,6 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -466,7 +463,11 @@ impl Widget for DiffView {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.collect_highlights();
         // One metric snapshot per frame: rows, gutter, header and scroll clamp
@@ -1127,7 +1128,10 @@ fn line_spans(spans: &[Arc<[Span]>], number: Option<usize>) -> &[Span] {
 pub(crate) mod performance_tests {
     use super::*;
     use std::time::Instant;
+    use ui::presence::PresenceCtx;
     use ui::widget::DrawChild;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     pub(crate) fn unique_sources() -> (String, String) {
         use std::fmt::Write as _;
@@ -1170,7 +1174,8 @@ pub(crate) mod performance_tests {
             &mut scene,
             Affine::IDENTITY,
             &mut text,
-            &theme,&PresenceCtx::empty().draw_env(),
+            &theme,
+            &PresenceCtx::empty().draw_env(),
         );
         let first = started.elapsed();
         let first_shapes = text.take_shape_stats();
@@ -1181,7 +1186,8 @@ pub(crate) mod performance_tests {
             &mut scene,
             Affine::IDENTITY,
             &mut text,
-            &theme,&PresenceCtx::empty().draw_env(),
+            &theme,
+            &PresenceCtx::empty().draw_env(),
         );
         let scroll = started.elapsed();
         let scroll_shapes = text.take_shape_stats();

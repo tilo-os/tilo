@@ -11,15 +11,10 @@ use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use ui::a11y::{AccessNode, Politeness, Role};
-use vello::Scene;
-use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use ui::framework::{EffectCx, EffectStatus, Effected, Live, Publishes, RunMode, ViewCx};
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::{Element, NavPane, NavShell, Widget};
 
 use crate::actions::WeatherEffect;
@@ -502,13 +497,17 @@ impl ui::widget::Decorator for WeatherApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.tick_network();
         self.keep_places_in_front_without_a_forecast();
         self.core.borrow_mut().side_by_side = self.nav.geometry().side_by_side;
         self.nav
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
         self.stage_pending_scenario();
     }
 
@@ -599,6 +598,11 @@ mod interaction_tests {
     use crate::interaction::EntryAction;
     use crate::net::Request;
     use ui::headless::Framed;
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use vello::kurbo::Affine;
     use vello::kurbo::Point as KPoint;
 
     use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
@@ -644,7 +648,8 @@ mod interaction_tests {
                 &mut scene,
                 Affine::IDENTITY,
                 &mut self.tr,
-                &theme,&presence.draw_env(),
+                &theme,
+                &presence.draw_env(),
             );
         }
 

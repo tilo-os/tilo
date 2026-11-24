@@ -14,8 +14,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 
 use ui::icons::Icon;
 
@@ -300,10 +299,14 @@ impl Chrome {
     }
 
     pub fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_child(scene, transform, tr, theme,&env);
+            child.draw_child(scene, transform, tr, theme, &env);
         }
     }
 

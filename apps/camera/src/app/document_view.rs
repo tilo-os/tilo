@@ -255,12 +255,16 @@ impl CameraApp {
     }
 
     pub(super) fn draw_document_scanner(&mut self, ctx: &mut ui::DrawCtx<'_>, full: Rect) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, t, tr, theme, mut env) = ctx.parts();
         let layout = Self::document_layout(full, theme);
         for (field, rect) in self.document_controls.fields.iter_mut().zip(layout.fields) {
             field.apply_layout_external(rect);
-            field.draw_child(scene, t, tr, theme,&env);
+            field.draw_child(scene, t, tr, theme, &env);
         }
         let busy = self.document_job.is_some();
         let can_scan = self.selected_scanner.is_some() && !busy;

@@ -6,8 +6,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::prelude::*;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -959,7 +958,15 @@ impl MergeView {
 
         let merged_body = Rect::new(merged.x0, header.y1, merged.x1, merged.y1);
         self.merged_editor.control_mut().set_rect(merged_body);
-        self.merged_editor.control_mut().draw_embedded(&mut ui::DrawCtx::new(ctx.scene, ctx.transform, ctx.text, theme, presence.draw_env()));
+        self.merged_editor
+            .control_mut()
+            .draw_embedded(&mut ui::DrawCtx::new(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+                presence.draw_env(),
+            ));
     }
 }
 
@@ -997,7 +1004,11 @@ impl Widget for MergeView {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let fallback_presence = Default::default();
         let presence = env.presence.unwrap_or(&fallback_presence);

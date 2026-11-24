@@ -14,12 +14,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::a11y::{AccessNode, AccessState, Role};
-use ui::advanced::{Affine, NodeId, Scene, TaffyTree, WindowEvent};
+use ui::advanced::{NodeId, TaffyTree, WindowEvent};
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, ResourceApp, ViewCx};
 use ui::icons::Icon;
 use ui::prelude::*;
 
-use ui::text_render::TextRenderer;
 use ui::widget::{ContextMenu, Element, MenuItem, PanelAlign, Press, TaffyTreeExt, Widget};
 
 use crate::SheetState as _;
@@ -535,14 +534,22 @@ impl Widget for PowerMenu {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_scene, _transform, _text_renderer, theme, mut env) = ctx.parts();
         self.margin = ui::widget::floating_surface::viewport_margin(theme);
         self.follow();
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.margin = ui::widget::floating_surface::viewport_margin(theme);
         self.follow();
@@ -550,8 +557,13 @@ impl Widget for PowerMenu {
             let (anchor, viewport) = self.anchor();
             self.menu.reanchor(anchor, viewport);
         }
-        self.menu
-            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.menu.draw_overlay(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         self.report();
     }
 

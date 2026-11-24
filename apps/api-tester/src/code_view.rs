@@ -14,8 +14,7 @@ use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{TaffyTreeExt, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::palette::token_color;
@@ -205,7 +204,11 @@ impl Widget for CodeView {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let metrics = self.resolve(theme, text_renderer);
         let colors = &theme.tokens.colors;

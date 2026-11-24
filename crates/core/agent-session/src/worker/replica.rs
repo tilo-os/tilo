@@ -385,13 +385,6 @@ impl ConfinedReplica {
         &self.app_id
     }
 
-    /// Whether an agent holds the record ([`ReplicaActor::Agent`]): only an
-    /// agent's renders go to the host's render service.
-    pub(crate) fn is_agents(&self) -> bool {
-        serde_json::from_str::<ReplicaActor>(&self.actor.lock_recover())
-            .is_ok_and(|actor| matches!(actor, ReplicaActor::Agent { .. }))
-    }
-
     /// Collaboration route of this record: [`crate::Replica::wire_document`].
     #[must_use]
     pub fn wire_document(&self) -> &str {
