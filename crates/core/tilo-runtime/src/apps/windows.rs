@@ -103,21 +103,13 @@ pub(super) fn launch(
 }
 
 /// Where the GStreamer the runtime package carries (its DLLs beside `tilolang-process.exe`, its
-/// plugins in `lib/gstreamer-1.0`, tools/ci/windows/build.sh) finds its plugins and its scanner:
-/// only in the runtime, which the container reads and nothing writes. Its registry goes where
-/// the window caches everything, its container's own folder.
+/// plugins in `lib/gstreamer-1.0`, tools/ci/windows/build.sh) finds its plugins and its scanner.
+/// Its registry goes where the window caches everything, its container's own folder.
 fn gstreamer_env(runtime: &std::path::Path) -> Vec<(&'static str, std::path::PathBuf)> {
     let plugins = runtime.join("lib/gstreamer-1.0");
     if !plugins.is_dir() {
         return Vec::new();
     }
     let scanner = runtime.join("lib/libexec/gstreamer-1.0/gst-plugin-scanner.exe");
-    vec![
-        ("GST_PLUGIN_SYSTEM_PATH_1_0", plugins.clone()),
-        ("GST_PLUGIN_SYSTEM_PATH", plugins),
-        ("GST_PLUGIN_PATH_1_0", std::path::PathBuf::new()),
-        ("GST_PLUGIN_PATH", std::path::PathBuf::new()),
-        ("GST_PLUGIN_SCANNER_1_0", scanner.clone()),
-        ("GST_PLUGIN_SCANNER", scanner),
-    ]
+    super::verified::gstreamer_env(plugins, scanner).into()
 }

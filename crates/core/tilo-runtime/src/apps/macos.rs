@@ -291,21 +291,16 @@ fn gstreamer_env(runtime: &std::path::Path) -> Vec<(OsString, OsString)> {
     let plugins = root.join("PlugIns");
     let scanner = root.join("Helpers/gst-plugin-scanner");
     let fonts = root.join("Resources/fontconfig");
-    [
-        ("GST_PLUGIN_SYSTEM_PATH_1_0", plugins.clone()),
-        ("GST_PLUGIN_SYSTEM_PATH", plugins),
-        ("GST_PLUGIN_PATH_1_0", std::path::PathBuf::new()),
-        ("GST_PLUGIN_PATH", std::path::PathBuf::new()),
-        ("GST_PLUGIN_SCANNER_1_0", scanner.clone()),
-        ("GST_PLUGIN_SCANNER", scanner),
-        ("FONTCONFIG_FILE", fonts.join("fonts.conf")),
-        ("FONTCONFIG_PATH", fonts),
-        ("PANGOCAIRO_BACKEND", "fontconfig".into()),
-        ("LIBTHAI_DICTDIR", root.join("Resources/libthai")),
-    ]
-    .into_iter()
-    .map(|(key, value)| (OsString::from(key), value.into_os_string()))
-    .collect()
+    super::verified::gstreamer_env(plugins, scanner)
+        .into_iter()
+        .chain([
+            ("FONTCONFIG_FILE", fonts.join("fonts.conf")),
+            ("FONTCONFIG_PATH", fonts),
+            ("PANGOCAIRO_BACKEND", "fontconfig".into()),
+            ("LIBTHAI_DICTDIR", root.join("Resources/libthai")),
+        ])
+        .map(|(key, value)| (OsString::from(key), value.into_os_string()))
+        .collect()
 }
 
 /// The file chooser a confined app asks for over its end of a socket pair:
