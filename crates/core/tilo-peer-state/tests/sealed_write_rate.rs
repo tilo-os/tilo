@@ -154,14 +154,15 @@ async fn run(linked: bool) -> (u64, u64) {
                 owner.sent(workspace, &frame).unwrap();
             }
         }
-        let touched = frames_touched() - before;
+        let touched = frames_touched().saturating_sub(before);
         if n < ENDS {
             first = first.max(touched);
         } else if n >= WRITES - ENDS {
             last = last.max(touched);
         }
     }
-    let rate = WRITES as f64 / began.elapsed().as_secs_f64();
+    let rate = f64::from(u32::try_from(WRITES).expect("a write count fits"))
+        / began.elapsed().as_secs_f64();
     let kept = owner.frames(workspace).len();
     assert_eq!(
         kept,
@@ -243,10 +244,11 @@ async fn writes_to_many_records_at_once_are_each_there_after_a_restart() {
             }
         })
     });
-    for writer in writers.collect::<Vec<_>>() {
+    for writer in writers {
         writer.await.unwrap();
     }
-    let rate = (RECORDS * EACH) as f64 / began.elapsed().as_secs_f64();
+    let rate = f64::from(u32::try_from(RECORDS * EACH).expect("a write count fits"))
+        / began.elapsed().as_secs_f64();
     eprintln!(
         "{} sealed writes to {RECORDS} records at once: {rate:.0} a second",
         RECORDS * EACH

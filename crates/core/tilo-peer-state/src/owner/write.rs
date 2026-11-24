@@ -623,7 +623,8 @@ impl NativeWorkspaceOwner {
         let bytes = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
         let ticket = self.0.due.lock().keep(workspace, bytes.into());
         let _turn = self.0.mutation.lock();
-        if let Some(published) = self.0.due.lock().published.remove(&ticket) {
+        let published = self.0.due.lock().published.remove(&ticket);
+        if let Some(published) = published {
             return published;
         }
         // Nobody published this frame yet, and the turn is this caller's: the frames waiting
@@ -678,13 +679,13 @@ impl NativeWorkspaceOwner {
             .remove(&workspace)
             .filter(|index| index.indexes(&record.frames))
             .unwrap_or_else(|| KeptIndex::of(&record.frames));
-        let mut changed = false;
+        let mut any_kept = false;
         for (_, change) in changes {
             match change {
                 // A kept frame publishes the replica that admitted its write, even one the record
                 // holds already.
                 FrameChange::Keep(bytes) => {
-                    changed = true;
+                    any_kept = true;
                     stored::touched(1);
                     if index.frames.insert(Arc::clone(bytes)) {
                         record.frames.push(stored::FrameToSend {
@@ -696,13 +697,13 @@ impl NativeWorkspaceOwner {
                     stored::touched(1);
                     if index.frames.remove(bytes) {
                         record.frames.remove(bytes);
-                        changed = true;
+                        any_kept = true;
                     }
                 }
             }
         }
         index.indexed(&record.frames);
-        if changed {
+        if any_kept {
             record.generation = record
                 .generation
                 .checked_add(1)
@@ -731,16 +732,23 @@ impl NativeWorkspaceOwner {
     /// publication, and no reader sees it in between.
     fn unsent(&self, workspace: WorkspaceId, kept: &stored::Frames) -> Vec<Arc<[u8]>> {
         stored::touched(kept.len());
-        let due = self.0.due.lock();
-        let carried = due.changes.get(&workspace);
-        kept.iter()
-            .filter(|frame| {
-                !carried.is_some_and(|changes| {
-                    changes.iter().any(|(_, change)| {
-                        matches!(change, FrameChange::Sent(bytes) if *bytes == frame.bytes)
-                    })
+        let sent: std::collections::HashSet<Arc<[u8]>> = {
+            let due = self.0.due.lock();
+            due.changes
+                .get(&workspace)
+                .map(|changes| {
+                    changes
+                        .iter()
+                        .filter_map(|(_, change)| match change {
+                            FrameChange::Sent(bytes) => Some(Arc::clone(bytes)),
+                            FrameChange::Keep(_) => None,
+                        })
+                        .collect()
                 })
-            })
+                .unwrap_or_default()
+        };
+        kept.iter()
+            .filter(|frame| !sent.contains(&frame.bytes))
             .map(|frame| Arc::clone(&frame.bytes))
             .collect()
     }

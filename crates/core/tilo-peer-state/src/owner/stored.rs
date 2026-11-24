@@ -181,12 +181,6 @@ impl Frames {
         self.len = self.len.saturating_add(1);
     }
 
-    /// Add `run`, a run another list holds, sharing it.
-    pub(crate) fn push_run(&mut self, run: &std::sync::Arc<Vec<FrameToSend>>) {
-        self.len = self.len.saturating_add(run.len());
-        self.runs.push(std::sync::Arc::clone(run));
-    }
-
     /// Take out the frame whose bytes are `bytes`, looking from the oldest, where a link takes
     /// them from: `false` when none is kept. The runs it does not hold stay shared.
     pub(crate) fn remove(&mut self, bytes: &[u8]) -> bool {
@@ -207,9 +201,9 @@ impl Frames {
     }
 }
 
-/// Frames this thread copied or compared to keep them: what a test reads to see that a write's
-/// work on its record's frames stays the same however many the record keeps. Built for tests
-/// alone.
+// Frames this thread copied or compared to keep them: what a test reads to see that a write's
+// work on its record's frames stays the same however many the record keeps. Built for tests
+// alone.
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static TOUCHED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };

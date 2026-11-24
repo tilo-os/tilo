@@ -1029,6 +1029,7 @@ impl ActionProvider for Described {
             description: None,
             locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::Effect,
+            effects: Vec::new(),
             contract: tilo_actions::contract::ActionContract {
                 kind,
                 ..tilo_actions::contract::ActionContract::default()

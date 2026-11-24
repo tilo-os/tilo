@@ -973,8 +973,7 @@ fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
         &edit_of(&receiver, None, "bare"),
         now,
     )
-    .err()
-    .expect("the writer signs no change that names no one");
+    .expect_err("the writer signs no change that names no one");
     assert!(
         matches!(&refused, crate::owner::WriteRefusal::Refused(why) if why.contains("names no one")),
         "{refused:?}"
