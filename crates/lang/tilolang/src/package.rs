@@ -525,7 +525,12 @@ fn build_meta(
         splash_budget: module.app.splash_budget,
         own_resources: module.app.own_resources,
         personal_windows: module.app.personal_windows,
-        each_document: module.app.document.iter().map(|root| root.name.clone()).collect(),
+        each_document: module
+            .app
+            .document
+            .iter()
+            .map(|root| root.name.clone())
+            .collect(),
         web: module.app.web.clone(),
         schemes: module.app.schemes.clone(),
         engine: module.app.engine.clone(),
@@ -553,6 +558,7 @@ fn build_meta(
     if env.app != crate::stdlib::APP {
         meta.uses.push(crate::stdlib::APP.to_string());
     }
+    meta.device_roots = env.device_roots.iter().map(|key| type_id(key)).collect();
     meta.named_roots = env
         .named_roots
         .iter()
@@ -560,6 +566,7 @@ fn build_meta(
             name: name.clone(),
             ty: type_id(key),
             published: None,
+            device: env.device_roots.contains(key),
         })
         .collect();
     let views_meta = |views: &[(crate::types::TypeKey, String)]| -> Vec<DefaultViewMeta> {

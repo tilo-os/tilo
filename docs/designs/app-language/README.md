@@ -24,7 +24,11 @@ native UI come from the system.
   is a connector to an outside service, written in tilolang or backed by Rust.
 - **Each app has a root:** one resource per workspace at the top of the tree, made when the app
   is first used. Opening the app opens it; what is made without a more specific place goes in
-  it. Resources can live anywhere else in the tree too: a note inside a project.
+  it. Resources can live anywhere else in the tree too: a note inside a project. A root each
+  device keeps its own is a `device root` (`device root readings: Readings`): it stands under
+  that device's resources (`devices/<device>/<app>/…`), so two devices of a person, and every
+  other member, read only their own. It is the app's own state, never a view a person opens,
+  and what people share stays in an ordinary root.
 - **Queries**: `T.all` and the type's declared filters (`Task.today`) are lazy and answered by
   the index; `in: r` narrows to a subtree. Nothing loads more than what is shown.
 - **Views** are functions of resources, plus each person's own view state, which shows as

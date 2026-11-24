@@ -317,17 +317,33 @@ pub fn is_chain(id: &str) -> bool {
 
 /// The child of the workspace root a path starts with, as it was written (`browser@4711`). A
 /// device's settings section (`devices/<id>/settings/power`) is the settings app's, as a person's
-/// (`settings/appearance`) is: no app is called `devices`.
+/// (`settings/appearance`) is; any other resource a device keeps of its own names its app right
+/// after the device (`devices/<id>/<app>/…`), as a root each device keeps its own does. No app is
+/// called `devices`.
 #[must_use]
 pub fn app_of(parsed: &Address) -> String {
     if device_section(parsed) {
         return tilo_app_id::apps::SETTINGS.to_owned();
+    }
+    if is_device_resource(parsed)
+        && let Some(app) = parsed.segments.get(2)
+    {
+        return app.written();
     }
     parsed
         .segments
         .first()
         .map(Segment::written)
         .unwrap_or_default()
+}
+
+/// Whether `parsed` is a resource a device keeps of its own (`devices/<id>/…`).
+#[must_use]
+pub fn is_device_resource(parsed: &Address) -> bool {
+    parsed
+        .segments
+        .first()
+        .is_some_and(|first| first.written() == "devices")
 }
 
 /// Whether `parsed` names a device's settings section, which its app finds by its whole address.

@@ -58,7 +58,7 @@ pub fn held_id(holder: &ResourceRef, field: &str) -> String {
 pub fn unmade(store: &dyn Store, target: &ResourceRef) -> bool {
     target.is_unmade_root()
         || (target.item.is_some()
-            && target.doc.starts_with("root-")
+            && crate::value::is_root_doc(&target.doc)
             && store
                 .type_of(&ResourceRef::root(target.doc.clone(), target.ty.clone()))
                 .is_err())

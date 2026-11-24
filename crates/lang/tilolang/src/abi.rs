@@ -191,6 +191,9 @@ imports! {
     // value is copied, so another name for it never sees the change; a stored resource is itself.
     RecOwn = "rec_own" ([H] -> [H]);
     RefLit = "ref_lit" ([H, H, H] -> [H]);
+    // The reference to a root each device keeps its own (`device root readings: Readings`): the
+    // same arguments as `ref_lit`, answered as this device's resource under `devices/`.
+    DeviceRefLit = "device_ref_lit" ([H, H, H] -> [H]);
     RefEq = "ref_eq" ([H, H] -> [I32]);
     RefIs = "ref_is" ([H, H] -> [I32]);
     RefId = "ref_id" ([H] -> [H]);

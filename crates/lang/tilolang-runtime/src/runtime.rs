@@ -773,6 +773,31 @@ impl Runtime {
         self.core.make(&new, Some(&id))
     }
 
+    /// Create the root of `ty` at the document `id`, which a caller names: the one a root each
+    /// device keeps its own stands at ([`Self::device_root_doc`]).
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for an unknown or ambiguous type; a store failure, or a root that exists.
+    pub fn create_root_at(&self, id: &str, ty: &str) -> Result<ResourceRef, RuntimeError> {
+        let new = self.made_as(ty)?;
+        self.core.make(&new, Some(id))
+    }
+
+    /// Where the root type `ty` of `app` stands when each device keeps its own: under the device
+    /// this host runs as (`devices/<device>/<app>/root-<type id>`). Two devices of a person, or of
+    /// a workspace, never read each other's.
+    #[must_use]
+    pub fn device_root_doc(&self, app: &str, ty: &str) -> String {
+        format!("devices/{}/{app}/root-{ty}", self.core.device_name())
+    }
+
+    /// The device this host runs as (`devices/<device>/…`): the one the host was opened for, or
+    /// `local` for a host that is a device of its own.
+    pub fn set_device(&self, device: Option<&str>) {
+        *self.core.device.borrow_mut() = device.map(str::to_owned);
+    }
+
     /// What a new resource of a type starts as, by id or by a name one loaded package declares.
     fn made_as(&self, ty: &str) -> Result<crate::store::NewResource, RuntimeError> {
         let reg = self.core.registry.borrow();

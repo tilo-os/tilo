@@ -95,7 +95,13 @@ impl Package {
     /// first root type (`root T`) and the default view declared for it.
     #[must_use]
     pub fn main(&self) -> Option<(String, String)> {
-        let root = self.meta.roots.first()?;
+        // The app's window opens over the root people share: a root each device keeps its own
+        // (`device root readings: Readings`) is the app's own state, never what its window is of.
+        let root = self
+            .meta
+            .roots
+            .iter()
+            .find(|ty| !self.meta.is_device_root(ty))?;
         let view = self.meta.default_view(root)?;
         Some((view.to_owned(), root.clone()))
     }
@@ -446,6 +452,8 @@ fn union_label(keys: &[tilolang_runtime::meta::TypeKey]) -> String {
 /// (`root-<type id>`) by its published id. A root it names already is left as it is.
 fn published_roots(meta: &Meta) -> Meta {
     let mut meta = meta.clone();
+    let device_roots = meta.device_roots.clone();
+    meta.roots.retain(|ty| !device_roots.contains(ty));
     for ty in meta.roots.clone() {
         let published = crate::publish::resource_id(&meta.app, &format!("root-{ty}"));
         if let Some(named) = meta.named_roots.iter_mut().find(|root| root.ty == ty) {
@@ -462,6 +470,7 @@ fn published_roots(meta: &Meta) -> Meta {
                 name,
                 ty,
                 published: Some(published),
+                device: false,
             });
         }
     }
@@ -1030,7 +1039,6 @@ impl Host {
         device: Option<&str>,
         access: impl Fn() -> Option<MemberAccess> + 'static,
     ) -> Result<Self, HostError> {
-        let _ = device;
         // The host's own record types (`Invocation`) are stored like any other resource.
         let host_meta = tilolang::host_meta();
         host_meta.register_schemas();
@@ -1048,6 +1056,7 @@ impl Host {
         runtime.set_clock(system_time);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         let triggers = crate::triggers::Schedule::new(store.watch());
+        runtime.set_device(device);
         let inner = Rc::new(HostInner {
             handle,
             runtime,
@@ -1548,7 +1557,29 @@ impl Host {
         if !app_is_loaded {
             return Err(HostError::NotFound(format!("package {app}")));
         }
-        let id = format!("root-{ty}");
+        let device_root = self
+            .find_in_packages(|package| {
+                (package.meta.app == app && package.meta.is_device_root(ty)).then_some(())
+            })
+            .is_some();
+        // Opening an app makes what this device keeps of it (`device root readings: Readings`):
+        // its window is never of those roots, so this is when they are wanted.
+        if !device_root {
+            let device_roots: Vec<String> = self
+                .find_in_packages(|package| (package.meta.app == app).then(|| package.clone()))
+                .map(|package| package.meta.device_roots.clone())
+                .unwrap_or_default();
+            for device_ty in device_roots {
+                if let Err(error) = self.root_resource(app, &device_ty) {
+                    tracing::warn!(app, %error, "a root this device keeps of its own could not be made");
+                }
+            }
+        }
+        let id = if device_root {
+            self.inner.runtime.device_root_doc(app, ty)
+        } else {
+            format!("root-{ty}")
+        };
         let root = ResourceRef::root(id, ty.to_owned());
         if self.inner.store.contains(&root) {
             return Ok(root);
@@ -1556,7 +1587,7 @@ impl Host {
         // Made with what its type starts with, in one change that is nobody's: what a package
         // fills its first start with is there before the window that asked for the root is
         // drawn, and nothing about it is anyone's to catch up on.
-        Ok(self.inner.runtime.create_root(ty)?)
+        Ok(self.inner.runtime.create_root_at(&root.doc, ty)?)
     }
 
     /// The type id of the root `chosen` names in `app`: the named root, or a root by its type's

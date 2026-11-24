@@ -74,7 +74,8 @@ type Air {
     ozone: Option<Float> = .none
 }
 
-/// One place a person follows, and what this device last read of it.
+/// One place a person follows. What it is belongs to the workspace; what any device read of it is
+/// the device's own ([`PlaceReading`]).
 type Place (title: name) {
     name: Text
     /// The administrative region, when the search named one.
@@ -85,7 +86,24 @@ type Place (title: name) {
     longitude: Float
     /// The place's IANA zone, or `auto` when the search named none.
     timezone: Text = "auto"
-    /// Whether this device has read the place: what the readings below hold until it has.
+
+    search {
+        sort name a_z
+        hide latitude
+        hide longitude
+        hide timezone
+    }
+}
+
+/// What this device last read of one place: the sky, the hours and the week ahead, the air, and
+/// how the read stands. Two devices keep their own, so a slow service on one never holds the
+/// person's other devices, and no one else in the workspace sees another's readings.
+type PlaceReading {
+    /// The place's name when this device read it: what the reading is called in its history.
+    name: Text = ""
+    /// The place this reading is of, by its id.
+    place: Text = ""
+    /// Whether this device has read the place: the fields below hold until it has.
     read: Bool = false
     /// What the sky is doing there now.
     current: Reading
@@ -103,16 +121,6 @@ type Place (title: name) {
     stale: Bool = false
     /// Why the last read failed, in words; empty while the place stands well.
     trouble: Text = ""
-
-    search {
-        sort name a_z
-        hide latitude
-        hide longitude
-        hide timezone
-        hide fetched
-        hide stale
-        hide trouble
-    }
 }
 
 /// How far an update has got, and how the last one ended.
@@ -153,12 +161,11 @@ type Searching (readers: author) {
     note: Text = ""
 }
 
-/// The places a person follows, the one a window shows first, and how each read stands.
+/// The places people follow together, the one a window shows first, and each person's search.
 type Locations {
     places: Collection<Place>
     /// The place a window shows first; none for the first in the list.
     default: Option<Place> = .none
-    refresh: Refresh
     /// Each person's own search here.
     searches: Collection<Searching>
     /// Today where the person is, `2026-06-30`: what a day of a forecast is named by.
@@ -167,9 +174,36 @@ type Locations {
     tomorrow: Text = ""
 }
 
+/// What this device read of the places, and how its last update went. A device keeps its own:
+/// reading a forecast costs the service and a wait, and it is this computer's connection that
+/// paid for it, never one another member waits on.
+type Readings {
+    /// One place's reading, this device's own.
+    of: Collection<PlaceReading>
+    refresh: Refresh
+}
+
 root weather: Locations
 
+device root readings: Readings
+
 default view weather_window for Locations
+
+/// What this device read of `place`, or the empty reading a place has before it is read.
+fn reading_of(r: Readings, place: Place) -> PlaceReading {
+    if let found = r.of.find(reading -> reading.place == place.id()) {
+        return found
+    }
+    PlaceReading(name: place.name, place: place.id())
+}
+
+/// What this device read of `place`, made the first time something writes it.
+action reading_for(r: Readings, place: Place) -> PlaceReading {
+    if let found = r.of.find(reading -> reading.place == place.id()) {
+        return found
+    }
+    r.of.insert(PlaceReading(name: place.name, place: place.id()))
+}
 
 /// Saves a place a person follows. A place near one already saved is that place, not a second
 /// entry, and a new place is the one windows show first.
@@ -227,6 +261,8 @@ destructive action remove_place(w: Locations, place: Place) (
     did: "removed a place",
 ) {
     let was_default = w.default == .some(place)
+    let mine = readings
+    if let here = mine.of.find(reading -> reading.place == place.id()) { mine.of.remove(here) }
     w.places.remove(place)
     if was_default {
         w.default = .none
@@ -243,25 +279,28 @@ action refresh(w: Locations, place: Option<Place> = .none) uses web, time (
     did: "updated the forecasts",
 ) {
     require not w.places.is_empty() "There are no places to update"
-    require w.refresh.state != "running" "An update is already running"
+    require readings.refresh.state != "running" "An update is already running"
+    let mine = readings
     let places: List<Place> = if let one = place { [one] } else { w.places.map(p -> p) }
     for p in places {
-        p.trouble = ""
+        let here = reading_for(mine, p)
+        here.trouble = ""
     }
-    w.refresh.waiting = places.map(p -> p.id())
-    w.refresh.state = "running"
-    w.refresh.done -= w.refresh.done
-    w.refresh.total = places.len()
+    mine.refresh.waiting = places.map(p -> p.id())
+    mine.refresh.state = "running"
+    mine.refresh.done -= mine.refresh.done
+    mine.refresh.total = places.len()
     // What the last update added up to goes back to nothing for this one.
-    w.refresh.failed -= w.refresh.failed
-    w.refresh.note = ""
+    mine.refresh.failed -= mine.refresh.failed
+    mine.refresh.note = ""
     read_next(w)
 }
 
 /// Stops an update that is running; the places it had not read keep what they had.
 action stop_refresh(w: Locations) (icon: .x, label: "Stop updating") {
-    w.refresh.state = "done"
-    w.refresh.waiting = []
+    let mine = readings
+    mine.refresh.state = "done"
+    mine.refresh.waiting = []
 }
 
 /// Updates a place whose last read failed, once the person asks again.
@@ -270,60 +309,63 @@ action retry_place(w: Locations, place: Place) uses web, time (
     label: "Try again",
     did: "asked for a forecast again",
 ) {
-    place.trouble = ""
+    let here = reading_for(readings, place)
+    here.trouble = ""
     refresh(w, place: .some(place))
 }
 
 /// Reads one place an update has still to read, and says when the update has read them all.
 // ---------------------------------------------------------------- reading the forecasts
 action read_next(w: Locations) uses web, time {
-    if w.refresh.state != "running" {
+    let mine = readings
+    if mine.refresh.state != "running" {
         return
     }
-    if let id = w.refresh.waiting.first() {
-        w.refresh.waiting = w.refresh.waiting.filter(x -> x != id)
+    if let id = mine.refresh.waiting.first() {
+        mine.refresh.waiting = mine.refresh.waiting.filter(x -> x != id)
         if let place = w.places.find(p -> p.id() == id) {
-            let read = read_place(place)
-            w.refresh.done += 1
+            let read = read_place(mine, place)
+            mine.refresh.done += 1
             if not read {
-                w.refresh.failed += 1
+                mine.refresh.failed += 1
             }
         }
     }
-    if w.refresh.waiting.is_empty() {
-        w.refresh.state = "done"
+    if mine.refresh.waiting.is_empty() {
+        mine.refresh.state = "done"
     }
 }
 
 /// Reads one place's forecast and air quality. One failing leaves the other's answer standing,
 /// and a place the service did not answer keeps what it had and says why.
-action read_place(place: Place) -> Bool uses web, time {
+action read_place(r: Readings, place: Place) -> Bool uses web, time {
+    let here = reading_for(r, place)
     let answer = web.get(forecast_address(place.latitude, place.longitude))
     if not answer.ok {
-        place.trouble = refusal(answer)
+        here.trouble = refusal(answer)
         return false
     }
-    if not apply_forecast(place, answer.text()) {
-        place.trouble = "The answer wasn't a forecast"
+    if not apply_forecast(here, answer.text()) {
+        here.trouble = "The answer wasn't a forecast"
         return false
     }
-    place.has_air = false
+    here.has_air = false
     let air = web.get(air_address(place.latitude, place.longitude))
     if air.ok {
         if let reading = read_air(air.text()) {
-            place.air.at = reading.at
-            place.air.european = reading.european
-            place.air.us = reading.us
-            place.air.pm2_5 = reading.pm2_5
-            place.air.pm10 = reading.pm10
-            place.air.no2 = reading.no2
-            place.air.ozone = reading.ozone
-            place.has_air = true
+            here.air.at = reading.at
+            here.air.european = reading.european
+            here.air.us = reading.us
+            here.air.pm2_5 = reading.pm2_5
+            here.air.pm10 = reading.pm10
+            here.air.no2 = reading.no2
+            here.air.ozone = reading.ozone
+            here.has_air = true
         }
     }
-    place.read = true
-    place.trouble = ""
-    place.fetched = .some(now)
+    here.read = true
+    here.trouble = ""
+    here.fetched = .some(now)
     true
 }
 
@@ -338,9 +380,10 @@ fn refusal(answer: Response) -> Text {
     }
 }
 
-/// The forecast a service answered, written into the place: its current reading, a day of hours
-/// and a week of days. False when the body is not a forecast the service could have sent.
-action apply_forecast(place: Place, body: Text) -> Bool {
+/// The forecast a service answered, written into this device's reading of the place: its
+/// current reading, a day of hours and a week of days. False when the body is not a forecast
+/// the service could have sent.
+action apply_forecast(here: PlaceReading, body: Text) -> Bool {
     let root = match json.parse(body) {
         .ok(value) => value,
         .err(why) => {
@@ -352,34 +395,34 @@ action apply_forecast(place: Place, body: Text) -> Bool {
     let daily = field_of(root, "daily")
     if let cur = current, hours = hourly, days = daily {
         let at = text_of(cur, "time")
-        place.current.at = at
-        place.current.temperature = number_at(cur, "temperature_2m")
-        place.current.apparent = number_at(cur, "apparent_temperature")
-        place.current.humidity = number_at(cur, "relative_humidity_2m")
-        place.current.precipitation = number_at(cur, "precipitation")
-        place.current.code = number_at(cur, "weather_code").to_int()
-        place.current.wind = number_at(cur, "wind_speed_10m")
-        place.current.wind_from = number_at(cur, "wind_direction_10m")
-        place.current.pressure = number_at(cur, "pressure_msl")
-        place.current.day = number_at(cur, "is_day") != 0.0
-        place.current.icon = glyph(place.current.code, place.current.day)
+        here.current.at = at
+        here.current.temperature = number_at(cur, "temperature_2m")
+        here.current.apparent = number_at(cur, "apparent_temperature")
+        here.current.humidity = number_at(cur, "relative_humidity_2m")
+        here.current.precipitation = number_at(cur, "precipitation")
+        here.current.code = number_at(cur, "weather_code").to_int()
+        here.current.wind = number_at(cur, "wind_speed_10m")
+        here.current.wind_from = number_at(cur, "wind_direction_10m")
+        here.current.pressure = number_at(cur, "pressure_msl")
+        here.current.day = number_at(cur, "is_day") != 0.0
+        here.current.icon = glyph(here.current.code, here.current.day)
         // The reading's own uv is today's highest: the service gives no current one.
         let uv = numbers_of(list_at(days, "uv_index_max"))
-        place.current.uv = uv.first() ?? 0.0
+        here.current.uv = uv.first() ?? 0.0
         let hour_at = texts_of(list_at(hours, "time"))
         let hour_temp = numbers_of(list_at(hours, "temperature_2m"))
         let hour_chance = numbers_of(list_at(hours, "precipitation_probability"))
         let hour_code = counts_of(list_at(hours, "weather_code"))
         let hour_day = flags_of(list_at(hours, "is_day"))
         let start = start_at(hour_at, at)
-        for old in place.hours.map(hour -> hour) {
-            place.hours.remove(old)
+        for old in here.hours.map(hour -> hour) {
+            here.hours.remove(old)
         }
         for i in hour_at.map((time, i) -> i) {
             if i >= start and i < start + 24 {
                 let code = hour_code.at(i) ?? 0
                 let day = hour_day.at(i) ?? true
-                place.hours.insert(
+                here.hours.insert(
                     Hour(
                         at: hour_at.at(i) ?? "",
                         temperature: hour_temp.at(i) ?? 0.0,
@@ -400,12 +443,12 @@ action apply_forecast(place: Place, body: Text) -> Bool {
         let day_uv = numbers_of(list_at(days, "uv_index_max"))
         let day_rise = texts_of(list_at(days, "sunrise"))
         let day_set = texts_of(list_at(days, "sunset"))
-        for old in place.days.map(day -> day) {
-            place.days.remove(old)
+        for old in here.days.map(day -> day) {
+            here.days.remove(old)
         }
         for i in day_date.map((date, i) -> i) {
             let code = day_code.at(i) ?? 0
-            place.days.insert(
+            here.days.insert(
                 Day(
                     date: day_date.at(i) ?? "",
                     weekday: weekday(day_date.at(i) ?? ""),
@@ -667,14 +710,15 @@ action poll_weather(w: Locations) uses time, web {
         w.today = day
         w.tomorrow = (now + 1d).day().iso()
     }
-    if w.refresh.state == "running" {
+    let mine = readings
+    if mine.refresh.state == "running" {
         // A few places a second, side by side as a service likes: enough that a handful finishes
         // together, few enough that a large library never holds the window for long.
         read_next(w)
-        if w.refresh.state == "running" { read_next(w) }
-        if w.refresh.state == "running" { read_next(w) }
-        if w.refresh.state == "running" { read_next(w) }
-    } else if w.refresh.note == "" and w.places.any(p -> not p.read and p.trouble == "") {
+        if mine.refresh.state == "running" { read_next(w) }
+        if mine.refresh.state == "running" { read_next(w) }
+        if mine.refresh.state == "running" { read_next(w) }
+    } else if mine.refresh.note == "" and w.places.any(p -> unread(mine, p)) {
         // A place nothing has been read of yet is read the first time the app runs here, unless
         // its last read failed: a service that refused stays refused until a person asks again.
         refresh(w)
@@ -710,10 +754,10 @@ action poll_weather(w: Locations) uses time, web {
         }
     }
     // A reading that has stood for hours says so, so the page never calls it current.
-    for place in w.places {
-        let stale = if let read = place.fetched { (now - read).seconds() >= 7200 } else { false }
-        if place.stale != stale {
-            place.stale = stale
+    for here in mine.of {
+        let stale = if let read = here.fetched { (now - read).seconds() >= 7200 } else { false }
+        if here.stale != stale {
+            here.stale = stale
         }
     }
 }
@@ -728,16 +772,27 @@ fn near(place: Place, latitude: Float, longitude: Float) -> Bool {
 
 /// Whether a place's reading is missing or old enough to fetch again: the service keeps to its
 /// hour, and a reading of two hours is no longer the current one.
-fn needs_update(place: Place, moment: Time) -> Bool {
-    if place.trouble != "" {
+fn needs_update(r: Readings, place: Place, moment: Time) -> Bool {
+    let here = reading_of(r, place)
+    if here.trouble != "" {
         false
-    } else if let read = place.fetched { (moment - read).seconds() >= 7200 } else { true }
+    } else if let read = here.fetched { (moment - read).seconds() >= 7200 } else { true }
+}
+
+/// Whether this device has read nothing of `place` yet, and its last read did not fail: what the
+/// first run here reads.
+fn unread(r: Readings, place: Place) -> Bool {
+    let here = reading_of(r, place)
+    not here.read and here.trouble == ""
 }
 
 /// Opening the window reads the places whose forecast is missing or no longer current. Nothing
 /// is read while it stands, so opening a window again costs nothing.
 opened action arrive(w: Locations) uses web, time {
-    if w.refresh.state != "running" and w.places.any(p -> needs_update(p, now)) { refresh(w) }
+    let mine = readings
+    if mine.refresh.state != "running" and w.places.any(p -> needs_update(mine, p, now)) {
+        refresh(w)
+    }
 }
 
 /// Looks for places by name: the window asks the service once per query as it is typed.
@@ -1042,13 +1097,13 @@ view hour_tile(hour: Hour, imperial: Bool, now_at: Text) {
 }
 
 /// The hours ahead as a strip that scrolls sideways, one column an hour.
-view hours_strip(place: Place, imperial: Bool, now_at: Text) {
-    if place.hours.is_empty() {
+view hours_strip(here: PlaceReading, imperial: Bool, now_at: Text) {
+    if here.hours.is_empty() {
         ui.Text("No hour-by-hour forecast yet.", role: .caption, secondary: true)
     } else {
         scroll(axis: .horizontal) {
             row(gap: .related) {
-                for hour in place.hours {
+                for hour in here.hours {
                     hour_tile(hour, imperial, now_at)
                 }
             }
@@ -1095,14 +1150,14 @@ view day_row(day: Day, low: Float, high: Float, imperial: Bool, today: Text, tom
 
 /// The hero: the sky, the temperature, what it is doing, the day's span, where this is, and how
 /// old the reading is.
-view hero(place: Place, imperial: Bool) {
-    let reading = place.current
+view hero(place: Place, here: PlaceReading, imperial: Bool) {
+    let reading = here.current
     row(gap: .group, align: .center) {
         ui.Icon(reading.icon, size: .large, description: condition(reading.code))
         stack(gap: .tight) {
             ui.Text(degree_words(reading.temperature, imperial), role: .display, numeric: true)
             ui.Text(condition(reading.code), role: .heading)
-            if let today = place.days.first() {
+            if let today = here.days.first() {
                 ui.Text(
                     "High {degrees(today.high, imperial)}° · low {degrees(today.low, imperial)}°",
                     role: .body,
@@ -1111,10 +1166,10 @@ view hero(place: Place, imperial: Bool) {
             }
             ui.Text(subtitle(place), role: .caption, secondary: true)
             row(gap: .tight, align: .center) {
-                if let fetched = place.fetched {
+                if let fetched = here.fetched {
                     ui.Time(fetched, role: .caption, secondary: true)
                 }
-                if place.stale {
+                if here.stale {
                     ui.Icon(.triangle_alert, size: .small, tone: .warning)
                     ui.Text("Out of date", role: .caption)
                 }
@@ -1179,7 +1234,7 @@ view air_quality(air: Air) {
 
 /// How far an update has got, over the forecast.
 view update_bar(w: Locations) {
-    let job = w.refresh
+    let job = readings.refresh
     if job.state == "running" {
         stack(padding: .group, gap: .tight) {
             ui.Text(
@@ -1242,14 +1297,15 @@ view place_bar(w: Locations, place: Place) {
 /// One place's forecast: its hero, its readings, the hours, the week and the air, or what stands
 /// in their place while the device reads it.
 view forecast(w: Locations, place: Place, imperial: Bool) {
+    let here = reading_of(readings, place)
     page {
         stack(gap: .group) {
             update_bar(w)
             place_bar(w, place)
-            if place.trouble != "" {
+            if here.trouble != "" {
                 ui.Banner(
                     "Couldn't update this forecast",
-                    message: place.trouble,
+                    message: here.trouble,
                     kind: .warning,
                     icon: .cloud_off,
                     action: "Try again",
@@ -1257,11 +1313,11 @@ view forecast(w: Locations, place: Place, imperial: Bool) {
                     on act: retry_place(w, place)
                 }
             }
-            if place.read {
-                hero(place, imperial)
-                readings(place.current, imperial)
-                if let today = place.days.first() {
-                    if let fraction = daylight_fraction(place.current.at, today) {
+            if here.read {
+                hero(place, here, imperial)
+                readings(here.current, imperial)
+                if let today = here.days.first() {
+                    if let fraction = daylight_fraction(here.current.at, today) {
                         ui.BarGauge(
                             fraction,
                             label: "Daylight",
@@ -1272,25 +1328,25 @@ view forecast(w: Locations, place: Place, imperial: Bool) {
                     }
                 }
                 ui.Section("Next 24 hours") {
-                    hours_strip(place, imperial, place.current.at)
+                    hours_strip(here, imperial, here.current.at)
                 }
                 ui.Section("The week ahead") {
-                    let lows = place.days.map(d -> d.low).sort_by(x -> x)
-                    let highs = place.days.map(d -> d.high).sort_by(x -> x)
+                    let lows = here.days.map(d -> d.low).sort_by(x -> x)
+                    let highs = here.days.map(d -> d.high).sort_by(x -> x)
                     let low = lows.first() ?? 0.0
                     let high = highs.last() ?? 1.0
                     stack(gap: .related) {
-                        for day in place.days {
+                        for day in here.days {
                             day_row(day, low, high, imperial, w.today, w.tomorrow)
                         }
                     }
                 }
-                if place.has_air {
+                if here.has_air {
                     ui.Section("Air quality") {
-                        air_quality(place.air)
+                        air_quality(here.air)
                     }
                 }
-            } else if place.trouble == "" {
+            } else if here.trouble == "" {
                 stack(gap: .group) {
                     ui.Skeleton(shape: .page)
                     ui.Text("Reading the forecast…", role: .caption, secondary: true)
@@ -1305,8 +1361,9 @@ view forecast(w: Locations, place: Place, imperial: Bool) {
 view places_side(w: Locations, shown: Option<Place>, chosen: State<Option<Place>>) {
     ui.NavList(selected: shown_key(w, shown), title: "Places") {
         for place in w.places {
-            if place.read {
-                ui.NavItem(place.id(), place.name, icon: place.current.icon, item: place) {
+            let here = reading_of(readings, place)
+            if here.read {
+                ui.NavItem(place.id(), place.name, icon: here.current.icon, item: place) {
                     on select: set(chosen, place)
                 }
             } else {
@@ -1410,20 +1467,21 @@ scenario "a week in three places" -> Locations {
             timezone: "Europe/Amsterdam",
         ),
     )
-    amsterdam.current.at = "2026-11-24T09:00"
-    amsterdam.current.temperature = 7.4
-    amsterdam.current.apparent = 4.8
-    amsterdam.current.humidity = 82.0
-    amsterdam.current.precipitation = 0.4
-    amsterdam.current.code = 61
-    amsterdam.current.wind = 18.0
-    amsterdam.current.wind_from = 210.0
-    amsterdam.current.pressure = 1012.0
-    amsterdam.current.uv = 1.0
-    amsterdam.current.day = true
-    amsterdam.current.icon = "cloud_rain"
-    amsterdam.read = true
-    amsterdam.fetched = .some(2026-11-24T07:20Z)
+    let here_a = readings.of.insert(PlaceReading(name: amsterdam.name, place: amsterdam.id()))
+    here_a.current.at = "2026-11-24T09:00"
+    here_a.current.temperature = 7.4
+    here_a.current.apparent = 4.8
+    here_a.current.humidity = 82.0
+    here_a.current.precipitation = 0.4
+    here_a.current.code = 61
+    here_a.current.wind = 18.0
+    here_a.current.wind_from = 210.0
+    here_a.current.pressure = 1012.0
+    here_a.current.uv = 1.0
+    here_a.current.day = true
+    here_a.current.icon = "cloud_rain"
+    here_a.read = true
+    here_a.fetched = .some(2026-11-24T07:20Z)
     for hour in [
         Hour(
             at: "2026-11-24T09:00",
@@ -1506,7 +1564,7 @@ scenario "a week in three places" -> Locations {
             icon: "cloud_rain",
         ),
     ] {
-        amsterdam.hours.insert(hour)
+        here_a.hours.insert(hour)
     }
     for day in [
         Day(
@@ -1562,15 +1620,15 @@ scenario "a week in three places" -> Locations {
             icon: "cloud_sun",
         ),
     ] {
-        amsterdam.days.insert(day)
+        here_a.days.insert(day)
     }
-    amsterdam.air.at = "2026-11-24T09:00"
-    amsterdam.air.european = 32.0
-    amsterdam.air.us = 41.0
-    amsterdam.air.pm2_5 = 8.4
-    amsterdam.air.pm10 = 14.2
-    amsterdam.air.no2 = 18.0
-    amsterdam.has_air = true
+    here_a.air.at = "2026-11-24T09:00"
+    here_a.air.european = 32.0
+    here_a.air.us = 41.0
+    here_a.air.pm2_5 = 8.4
+    here_a.air.pm10 = 14.2
+    here_a.air.no2 = 18.0
+    here_a.has_air = true
     w.default = .some(amsterdam)
     let reykjavik = w.places.insert(
         Place(
@@ -1583,19 +1641,20 @@ scenario "a week in three places" -> Locations {
             timezone: "Atlantic/Reykjavik",
         ),
     )
-    reykjavik.current.at = "2026-11-24T08:00"
-    reykjavik.current.temperature = -1.6
-    reykjavik.current.apparent = -7.0
-    reykjavik.current.humidity = 74.0
-    reykjavik.current.code = 71
-    reykjavik.current.wind = 42.0
-    reykjavik.current.wind_from = 20.0
-    reykjavik.current.pressure = 998.0
-    reykjavik.current.day = false
-    reykjavik.current.icon = "moon"
-    reykjavik.read = true
-    reykjavik.fetched = .some(2026-11-24T07:20Z)
-    reykjavik.days.insert(
+    let here_r = readings.of.insert(PlaceReading(name: reykjavik.name, place: reykjavik.id()))
+    here_r.current.at = "2026-11-24T08:00"
+    here_r.current.temperature = -1.6
+    here_r.current.apparent = -7.0
+    here_r.current.humidity = 74.0
+    here_r.current.code = 71
+    here_r.current.wind = 42.0
+    here_r.current.wind_from = 20.0
+    here_r.current.pressure = 998.0
+    here_r.current.day = false
+    here_r.current.icon = "moon"
+    here_r.read = true
+    here_r.fetched = .some(2026-11-24T07:20Z)
+    here_r.days.insert(
         Day(
             date: "2026-11-24",
             weekday: 1,

@@ -34,6 +34,8 @@ pub struct Import {
     pub app: String,
     /// The ids of the package's root types: what a scenario may reach with `root alias.T`.
     pub roots: Vec<String>,
+    /// The ids among them each device keeps its own: its app's to read, never another package's.
+    pub device_roots: Vec<String>,
     /// Its named roots (`root notes: Notes`) and their type ids: `alias.notes` reaches one.
     pub named_roots: Vec<(String, String)>,
     /// The names among them of which the package keeps one for each document and none for the
@@ -58,6 +60,8 @@ pub struct Env {
     pub anchors: HashMap<String, String>,
     pub enums: Vec<EnumInfo>,
     pub roots: Vec<TypeKey>,
+    /// The roots each device keeps its own (`device root readings: Readings`), among [`Self::roots`].
+    pub device_roots: Vec<TypeKey>,
     pub named_roots: Vec<(String, TypeKey)>,
     /// `type Name = T` naming a type that is not a container, as its written form.
     pub aliases: Vec<(TypeKey, Ty)>,
@@ -176,6 +180,7 @@ impl Env {
                 alias: crate::stdlib::NS.to_string(),
                 app: self.app.clone(),
                 roots: Vec::new(),
+                device_roots: Vec::new(),
                 named_roots: Vec::new(),
                 each_document: Vec::new(),
                 previously: Vec::new(),
@@ -289,6 +294,7 @@ impl Env {
             alias: crate::toolkit::UI_ALIAS.to_string(),
             app: crate::toolkit::UI_APP.to_string(),
             roots: Vec::new(),
+            device_roots: Vec::new(),
             named_roots: Vec::new(),
             each_document: Vec::new(),
             previously: Vec::new(),
@@ -315,6 +321,7 @@ impl Env {
             alias: alias.to_string(),
             app: meta.app.clone(),
             roots: meta.roots.clone(),
+            device_roots: meta.device_roots.clone(),
             named_roots: meta
                 .named_roots
                 .iter()
@@ -2645,6 +2652,9 @@ impl Resolver<'_> {
                         );
                         continue;
                     }
+                    if r.device {
+                        self.env.device_roots.push(key.clone());
+                    }
                     self.env.roots.push(key);
                 }
                 Item::RowView(d) => self.row_view_decl(d),
@@ -2709,10 +2719,13 @@ impl Resolver<'_> {
         for (span, what) in unnamed {
             self.err("E018", span, what);
         }
+        // A root each device keeps its own (`device root readings: Readings`) is the app's own
+        // state: its window is never of it, so it is no view of a person's to open.
         let missing: Vec<TypeKey> = self
             .env
             .roots
             .iter()
+            .filter(|k| !self.env.device_roots.contains(k))
             .filter(|k| !self.env.default_views.iter().any(|(d, _)| d == *k))
             .cloned()
             .collect();
@@ -2747,7 +2760,12 @@ impl Resolver<'_> {
         let Some(document) = &app.document else {
             return;
         };
-        if self.env.named_roots.iter().any(|(n, _)| *n == document.name) {
+        if self
+            .env
+            .named_roots
+            .iter()
+            .any(|(n, _)| *n == document.name)
+        {
             return;
         }
         let unnamed = self

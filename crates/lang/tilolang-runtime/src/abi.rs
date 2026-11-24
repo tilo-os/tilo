@@ -166,6 +166,7 @@ imports! {
     (RecSetH, "rec_set_h", "iii", ""),
     (RecOwn, "rec_own", "i", "i"),
     (RefLit, "ref_lit", "iii", "i"),
+    (DeviceRefLit, "device_ref_lit", "iii", "i"),
     (RefEq, "ref_eq", "ii", "i"),
     (RefIs, "ref_is", "ii", "i"),
     (RefId, "ref_id", "i", "i"),

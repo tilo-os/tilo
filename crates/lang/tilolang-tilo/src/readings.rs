@@ -122,7 +122,9 @@ pub fn resource_at(host: &Host, app: &str, path: &str) -> Option<ResourceRef> {
         .map(|entry| entry.id.clone());
     types.find_map(|ty| {
         let at = ResourceRef::parse_id(path, ty)?;
-        let unmade_root = at.is_unmade_root() && at.doc == format!("root-{}", at.ty);
+        let root_doc = format!("root-{}", at.ty);
+        let unmade_root = at.is_unmade_root()
+            && (at.doc == root_doc || at.doc.ends_with(&format!("/{root_doc}")));
         (unmade_root || host.store().contains(&at)).then_some(at)
     })
 }

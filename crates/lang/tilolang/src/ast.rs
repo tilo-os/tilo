@@ -281,6 +281,10 @@ pub struct RootDecl {
     pub node: NodeId,
     /// `root notes: Notes`: the name code reaches the root by (`notes`, `alias.notes`).
     pub name: Option<Ident>,
+    /// `device root readings: Readings`: one root for each device (`devices/<device>/<app>/…`)
+    /// rather than one for the workspace. What a device reads and keeps of its own goes here;
+    /// what people share goes in an ordinary root.
+    pub device: bool,
     pub ty: TypeExpr,
     pub span: Span,
 }

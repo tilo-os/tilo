@@ -148,6 +148,10 @@ pub struct PackageMeta {
     pub uses: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub named_roots: Vec<NamedRootMeta>,
+    /// The ids of the root types each device keeps its own (`device root readings: Readings`):
+    /// the app's root of one lives at `devices/<device>/<app>/root-<id>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub device_roots: Vec<String>,
     /// The names among [`Self::named_roots`] of which the app keeps one for each document (a
     /// workbook of Sheets) and none for the workspace: `app.name` alone names none of them, and
     /// one is named by its own id (`@app.Type:id`).
@@ -225,6 +229,10 @@ pub struct NamedRootMeta {
     /// (`sound`): what `device.sound` names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published: Option<String>,
+    /// `device root readings: Readings`: one root for each device, kept under that device's
+    /// resources (`devices/<device>/<app>/…`), rather than one for the workspace.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub device: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -949,6 +957,19 @@ impl PackageMeta {
     #[must_use]
     pub fn windows_are_personal(&self) -> bool {
         self.personal_windows || self.own_resources
+    }
+
+    /// Whether the root of the type `ty` (a type id) is one each device keeps its own.
+    #[must_use]
+    pub fn is_device_root(&self, ty: &str) -> bool {
+        self.device_roots.iter().any(|root| root == ty)
+    }
+
+    /// The ids of the package's root types people share, the device roots left out: what a
+    /// window of the app opens.
+    #[must_use]
+    pub fn shared_roots(&self) -> impl Iterator<Item = &String> {
+        self.roots.iter().filter(|ty| !self.is_device_root(ty))
     }
 
     /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.

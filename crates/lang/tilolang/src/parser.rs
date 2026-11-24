@@ -240,7 +240,7 @@ const TYPE_ARGS: &[&str] = &[
     "Result",
     "State",
 ];
-const ITEM_EXPECTED: &str = "`use`, `type`, `enum`, `root`, `default view`, `row view`, `action`, `view`, `template view`, `fn`, `scenario` or `trigger`";
+const ITEM_EXPECTED: &str = "`use`, `type`, `enum`, `root`, `device root`, `default view`, `row view`, `action`, `view`, `template view`, `fn`, `scenario` or `trigger`";
 
 impl<'a> Parser<'a> {
     fn new(toks: Vec<Token>, src: &'a str) -> Self {
@@ -783,6 +783,7 @@ impl<'a> Parser<'a> {
         matches!(self.peek(), Tok::Doc(_))
             || ITEM_KWS.iter().any(|k| self.is_kw(k))
             || self.at_root_decl()
+            || self.at_device_root_decl()
             || self.at_default_view()
             || self.at_row_view()
             || self.at_place_view()
@@ -887,6 +888,14 @@ impl<'a> Parser<'a> {
     fn at_root_decl(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "root")
             && matches!(self.peek_at(1), Tok::Ident(_))
+    }
+
+    /// `device root T` or `device root name: T` at the start of an item: a root each device
+    /// keeps its own.
+    fn at_device_root_decl(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "device")
+            && matches!(self.peek_at(1), Tok::Ident(n) if n == "root")
+            && matches!(self.peek_at(2), Tok::Ident(_))
     }
 
     fn at_default_view(&self) -> bool {
@@ -1070,7 +1079,11 @@ impl<'a> Parser<'a> {
     fn item(&mut self) -> PResult<Item> {
         let doc = self.docs();
         let start = self.span();
-        if self.at_root_decl() {
+        if self.at_root_decl() || self.at_device_root_decl() {
+            let device = self.at_device_root_decl();
+            if device {
+                self.bump();
+            }
             self.bump();
             let node = self.node();
             let name = if matches!(self.peek_at(1), Tok::Colon) {
@@ -1084,6 +1097,7 @@ impl<'a> Parser<'a> {
             return Ok(Item::Root(RootDecl {
                 node,
                 name,
+                device,
                 ty,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }));
@@ -2496,7 +2510,10 @@ impl<'a> Parser<'a> {
             // A UI call's named block is the view's part of that name, read as its block's
             // content: `std.page(x, header: { ... })` fills `header` as `{ header: { ... } }`
             // does.
-            if ui && self.is(&Tok::LBrace) && let Some(name) = name {
+            if ui
+                && self.is(&Tok::LBrace)
+                && let Some(name) = name
+            {
                 let body = self.ui_block()?;
                 self.ui_parts.push((name, body));
                 if !self.eat(&Tok::Comma) {

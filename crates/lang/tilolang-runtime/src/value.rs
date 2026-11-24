@@ -26,7 +26,7 @@ impl ResourceRef {
     /// the first time it is opened; until then it reads as it would start.
     #[must_use]
     pub fn is_unmade_root(&self) -> bool {
-        self.item.is_none() && self.doc.starts_with("root-")
+        self.item.is_none() && is_root_doc(&self.doc)
     }
 
     pub fn root(doc: impl Into<DocId>, ty: impl Into<TypeId>) -> Self {
@@ -82,6 +82,20 @@ impl ResourceRef {
 /// as the path a reference held before items were stored by id (its last step's item).
 #[must_use]
 pub fn split_id(text: &str) -> Option<(&str, Option<&str>)> {
+    // A device's resource is kept under the device (`devices/<device>/<app>/…`), so its document
+    // is every step up to its last: an item of it follows that. Any other document is one step.
+    if text.starts_with("devices/") {
+        let (head, tail) = text.rsplit_once('/')?;
+        if head.is_empty() || tail.is_empty() {
+            return None;
+        }
+        // The document itself, a root a device keeps its own, has no item after it.
+        if tail.starts_with("root-") {
+            return Some((text, None));
+        }
+        let item = tail.split_once(':').map_or(tail, |(_, item)| item);
+        return (!item.is_empty()).then_some((head, Some(item)));
+    }
     let Some((doc, rest)) = text.split_once('/') else {
         return (!text.is_empty()).then_some((text, None));
     };
@@ -92,6 +106,17 @@ pub fn split_id(text: &str) -> Option<(&str, Option<&str>)> {
     // A path's step is `field:item`; the field is never part of the item's id.
     let item = last.split_once(':').map_or(last, |(_, item)| item);
     (!item.is_empty()).then_some((doc, Some(item)))
+}
+
+/// Whether `doc` is a package's root document: `root-<type id>`, at the top of the tree or under
+/// a device (`devices/<device>/<app>/root-<type id>`, a root each device keeps its own).
+#[must_use]
+pub fn is_root_doc(doc: &str) -> bool {
+    doc.starts_with("root-")
+        || doc
+            .rsplit('/')
+            .next()
+            .is_some_and(|last| last.starts_with("root-"))
 }
 
 /// A resource written as [`ResourceRef::id_string`], or as an older path to it, in the one form:

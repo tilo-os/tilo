@@ -286,6 +286,41 @@ impl Replica {
         Self::following(name, doc, packages, move || access.clone())
     }
 
+    /// A replica of `doc` for `name` running as the device `device`: the device whose roots a
+    /// package keeps one of its own for (`device root readings: Readings`) it reads and writes.
+    pub fn on_device(
+        name: &str,
+        device: &str,
+        doc: Workspace,
+        packages: &[(&str, &str)],
+    ) -> (Self, Vec<Package>) {
+        let store = doc.store();
+        let watch = store.watch();
+        let host = Host::open(
+            store,
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name)),
+            Some(device),
+            || None,
+        )
+        .unwrap();
+        host.runtime().set_foreign_invoker(Dispatch);
+        let loaded = packages
+            .iter()
+            .map(|(source, ids)| host.load_builtin(source, ids).unwrap())
+            .collect();
+        let _ = watch.take();
+        (
+            Self {
+                name: name.to_owned(),
+                role: std::cell::Cell::new(None),
+                doc,
+                host,
+                watch,
+            },
+            loaded,
+        )
+    }
+
     /// As [`Self::access`], deciding by what `access` answers when the host asks: the access the
     /// person has now, which a test may change.
     pub fn following(

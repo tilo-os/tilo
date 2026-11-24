@@ -1202,12 +1202,19 @@ impl Core {
 
     /// `@app.Type:id` or a root: the reference, checked against the store; a root nobody
     /// opened yet is still the root and reads as it would start.
-    fn ref_lit(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let (_app, ty, id) = (
+    fn ref_lit(&self, a: &Args<'_>, device: Option<()>) -> HResult<Option<Wasm>> {
+        let (app, ty, id) = (
             self.text(a.h(0)?)?,
             self.text(a.h(1)?)?,
             self.text(a.h(2)?)?,
         );
+        // A device root is this device's own: its document stands under the device's resources,
+        // so two devices of a person or of a workspace never read each other's readings. A host
+        // that is a device of its own (the tests) reads `devices/local`.
+        let id = match device {
+            Some(()) => format!("devices/{}/{app}/{id}", self.device_name()),
+            None => id,
+        };
         let (pkg, info) = self.type_of_ref(&ty)?;
         // A task's host reads every app's records through its store while the program runs
         // (`Runtime::set_reader`), an app it runs no code of too: a resource of such an app is
@@ -1245,8 +1252,19 @@ impl Core {
                 author,
             }));
         }
-        let Some(target) = ResourceRef::parse_id(&id, ty) else {
-            return trap(format!("`{id}` is not a reference id"));
+        let target = if device.is_some() {
+            // A device root's document is kept under the device, with no item: built here rather
+            // than parsed, since a document's id holds steps of its own.
+            ResourceRef {
+                doc: id,
+                item: None,
+                ty,
+            }
+        } else {
+            let Some(parsed) = ResourceRef::parse_id(&id, ty) else {
+                return trap(format!("`{id}` is not a reference id"));
+            };
+            parsed
         };
         // Another app's resource is its app's to know (`resource(id, of: T)`); a root nobody
         // opened yet is still the root: it reads as it would start.
@@ -1356,6 +1374,7 @@ impl Core {
             Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
             Imp::RecOwn
             | Imp::RefLit
+            | Imp::DeviceRefLit
             | Imp::RefEq
             | Imp::RefIs
             | Imp::RefId
@@ -1428,7 +1447,8 @@ impl Core {
                     None => ret_i32(h),
                 }
             }
-            Imp::RefLit => self.ref_lit(a),
+            Imp::RefLit => self.ref_lit(a, None),
+            Imp::DeviceRefLit => self.ref_lit(a, Some(())),
             Imp::RefEq => {
                 let (x, y) = (self.ref_arg(a.h(0)?)?, self.ref_arg(a.h(1)?)?);
                 ret_i32(i32::from(x.target == y.target))

@@ -384,6 +384,9 @@ impl Checker<'_> {
             .map(|(_, k)| k.clone())
             && let Some(info) = self.env.type_info(&key)
         {
+            if self.env.device_roots.contains(&key) {
+                return Self::device_root_ref(&info.key.app, &info.id, &key);
+            }
             return Self::root_ref(&info.key.app, &info.id, &key);
         }
         if name == "space" {
@@ -641,7 +644,42 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
+        if info.key.app != env.app
+            && env
+                .imports
+                .iter()
+                .any(|import| import.app == info.key.app && import.device_roots.contains(&info.id))
+        {
+            // A device's root is its own app's to read: what it holds is that device's, reached
+            // through the actions that app publishes, never another package's to name.
+            self.err(
+                "E094",
+                t.span,
+                format!(
+                    "`{}` is a device root of `{}`, which only that app reads",
+                    info.key.name, info.key.app
+                ),
+            );
+            return Ex::error();
+        }
+        if env.device_roots.contains(&info.key) {
+            return Self::device_root_ref(&info.key.app, &info.id, &info.key);
+        }
         Self::root_ref(&info.key.app, &info.id, &info.key)
+    }
+
+    /// The resource of the root type `key` (id `ty_id`) each device keeps its own: the host
+    /// answers which device this code runs on (`devices/<device>/<app>/root-<type id>`).
+    fn device_root_ref(app: &str, ty_id: &str, key: &crate::types::TypeKey) -> Ex {
+        Ex::host(
+            Imp::DeviceRefLit,
+            vec![
+                Ex::str(app),
+                Ex::str(ty_id),
+                Ex::str(&format!("root-{ty_id}")),
+            ],
+            Ty::Record(key.clone()),
+        )
     }
 
     /// The workspace's resource of the root type `key` (id `ty_id`): `root-<type id>`.

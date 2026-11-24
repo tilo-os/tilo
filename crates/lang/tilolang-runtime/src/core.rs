@@ -25,7 +25,7 @@ use Imp::{
     ActorId, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength,
     CallFn, CallInputs, CallMembers, CanvasCombine, CanvasCompare, CanvasExport, CanvasFind,
     CanvasGrade, CanvasLook, CanvasMeasure, CanvasOpen, CanvasSave, CanvasSvg, CanvasSvgImport,
-    CanvasWand, ChangeView, ClipboardCopyImage, ClipboardCopySecret, ClipboardCopyText,
+    CanvasWand, DeviceRefLit, ChangeView, ClipboardCopyImage, ClipboardCopySecret, ClipboardCopyText,
     ClipboardPasteImage, ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert,
     CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace,
     CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart,
@@ -222,6 +222,10 @@ pub struct Core {
     /// How a day or a time of day named in a sentence reads, in the person's formats
     /// (`Runtime::set_sentence_by`).
     pub sentence_by: RefCell<Option<Box<SentenceBy>>>,
+    /// The device this host runs as (`Runtime::set_device`): whose resource each root a device
+    /// keeps its own (`device root readings: Readings`) is, at `devices/<device>/…`. `None` for a
+    /// host that is a device of its own, which keeps them under `devices/local`.
+    pub device: RefCell<Option<String>>,
     /// The workspace's members, as the host last gave them (`members(r)`).
     pub members: RefCell<crate::members::Members>,
     /// The workspace package's `members` root, when the host serves its reading from these
@@ -396,6 +400,16 @@ pub fn ordering_to_i32(o: Ordering) -> i32 {
     }
 }
 
+/// The device this host runs as, by the name of its resource branch: `local` for a host that is
+/// a device of its own.
+impl Core {
+    pub(crate) fn device_name(&self) -> String {
+        self.device
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| "local".to_owned())
+    }
+}
 impl Core {
     /// # Errors
     ///
@@ -433,6 +447,7 @@ impl Core {
             shown: RefCell::new(None),
             shown_by: RefCell::new(None),
             sentence_by: RefCell::new(None),
+            device: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
             members_root: RefCell::new(None),
             sink: RefCell::new(None),
@@ -662,9 +677,8 @@ impl Core {
             | CollMoveTo | CollMoveAmong | CollPlace | SetAdd | SetRemove | MapPut | MapRemove
             | MapSetAdd | MapSetRemove | MapGetH | MapGetValue | MapKeys | MapKeysValue
             | MapNew | MapPutValue | MapRemoveValue | RecNew | RecOwn | RecSetI | RecSetF
-            | RecSetH | RefLit | RefEq | RefIs | RefId | RowKey | ResourceRef | Earlier => {
-                self.resource_import(imp, a)
-            }
+            | RecSetH | RefLit | DeviceRefLit | RefEq | RefIs | RefId | RowKey | ResourceRef
+            | Earlier => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
             | OutsideAt | Withdraw | ModelCall | Notify | Notice | WindowState | Invoker
             | MadeFrom | ActorEq | ActorName | QueueBlock | Now | TimeShift | PersonNamed

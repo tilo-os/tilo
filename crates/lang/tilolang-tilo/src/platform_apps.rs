@@ -715,6 +715,7 @@ fn package(published: &Published) -> Result<PackageMeta, String> {
             name: (*name).to_owned(),
             ty: id,
             published: Some((*published_as).to_owned()),
+            device: false,
         });
     }
     if published.app == SECTIONS_APP {
@@ -740,6 +741,7 @@ fn name_settings(meta: &mut PackageMeta, surfaces: &[Surface]) -> Result<(), Str
             name,
             ty,
             published: Some(published),
+            device: false,
         });
     }
     for action in &mut meta.actions {

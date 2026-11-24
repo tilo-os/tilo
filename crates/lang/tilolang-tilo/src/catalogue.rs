@@ -385,6 +385,7 @@ fn document_root(
         name: snake_case(ty),
         ty: ids.id(app, ty),
         published: Some(kind.to_owned()),
+        device: false,
     })
 }
 
@@ -417,6 +418,7 @@ fn part_roots(
                 name: snake_case(ty),
                 ty: Ids::Record.id(app, ty),
                 published: Some(surface.kind.clone()),
+                device: false,
             })
         })
         .collect()

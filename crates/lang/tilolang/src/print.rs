@@ -1054,10 +1054,17 @@ impl Printer<'_> {
                 self.level -= 1;
                 self.line("}");
             }
-            Item::Root(r) => match &r.name {
-                Some(name) => self.line(&format!("root {}: {}", name.name, print_type(&r.ty))),
-                None => self.line(&format!("root {}", print_type(&r.ty))),
-            },
+            Item::Root(r) => {
+                let device = if r.device { "device " } else { "" };
+                match &r.name {
+                    Some(name) => self.line(&format!(
+                        "{device}root {}: {}",
+                        name.name,
+                        print_type(&r.ty)
+                    )),
+                    None => self.line(&format!("{device}root {}", print_type(&r.ty))),
+                }
+            }
             Item::Alias(a) => {
                 self.line(&format!("type {} = {}", a.name.name, print_type(&a.ty)));
             }

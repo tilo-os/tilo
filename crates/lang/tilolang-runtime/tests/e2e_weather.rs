@@ -199,6 +199,20 @@ mod cases {
             let app = App::compile(SOURCE, &[settings]);
             authority.trust(&app.load(&rt));
             let root = rt.create_root("Locations").unwrap();
+            // What this device keeps of its own, as opening the app makes it.
+            let readings_ty = app
+                .meta()
+                .types
+                .iter()
+                .find(|declared| declared.name == "Readings")
+                .expect("the readings type")
+                .id
+                .clone();
+            rt.create_root_at(
+                &format!("devices/local/{}/root-{readings_ty}", app.meta().app),
+                &readings_ty,
+            )
+            .expect("the device's readings");
             let locale = tilolang_runtime::ResourceRef::parse_id(
                 "settings/locale",
                 "so.tilo.settings.sections#Locale",
@@ -295,6 +309,58 @@ mod cases {
                         .project_owned()
                 })
                 .collect()
+        }
+
+        /// The document this device keeps its readings in: each device has one of its own.
+        fn readings(&self) -> ResourceRef {
+            let meta = self.app.meta();
+            let ty = meta
+                .types
+                .iter()
+                .find(|declared| declared.name == "Readings")
+                .expect("the readings type")
+                .id
+                .clone();
+            ResourceRef::root(format!("devices/local/{}/root-{ty}", meta.app), ty)
+        }
+
+        /// The reading `place` has on this device: its item in the device's readings, once it was
+        /// read.
+        fn here(&self, place: &ResourceRef) -> ResourceRef {
+            self.finding(place).unwrap_or_else(|| {
+                panic!("{} was read here, and has no reading", place.id_string())
+            })
+        }
+
+        fn finding(&self, place: &ResourceRef) -> Option<ResourceRef> {
+            let Value::List(items) = self
+                .rt
+                .read(&self.readings(), "of")
+                .unwrap_or(Value::List(Vec::new()))
+            else {
+                panic!("the readings are a list")
+            };
+            items.into_iter().find_map(|item| {
+                let Value::Ref(held) = item else { return None };
+                let at = (*held.target).clone();
+                let Ok(Value::Text(written)) = self.rt.read(&at, "place") else {
+                    return None;
+                };
+                (written == place.id_string() || Some(&written) == place.item.as_ref())
+                    .then_some(at)
+            })
+        }
+
+        /// A field of `place`'s reading on this device, or what stands before it is read.
+        fn reading(&self, place: &ResourceRef, field: &str) -> Json {
+            match self.finding(place) {
+                Some(at) => self.field(&at, field),
+                None => match field {
+                    "read" | "stale" | "has_air" => json!(false),
+                    "trouble" => json!(""),
+                    _ => Json::Null,
+                },
+            }
         }
 
         /// The window's Add place, pressed, and the field it opens.
@@ -454,11 +520,11 @@ mod cases {
             let place = weather.save("Amsterdam", 52.374, 4.8897);
             weather.step("refresh");
             assert_eq!(
-                weather.field(&place, "read"),
+                weather.reading(&place, "read"),
                 json!(true),
                 "the first place is read in the same call: trouble {:?} note {:?}",
-                weather.field(&place, "trouble"),
-                weather.inner(&weather.root, "refresh", "note")
+                weather.reading(&place, "trouble"),
+                weather.inner(&weather.readings(), "refresh", "note")
             );
             assert_eq!(
                 weather.services.urls().len(),
@@ -467,21 +533,21 @@ mod cases {
                 weather.services.urls()
             );
             assert_eq!(
-                weather.inner(&place, "current", "temperature"),
+                weather.inner(&weather.here(&place), "current", "temperature"),
                 json!(20.0)
             );
-            assert_eq!(weather.inner(&place, "current", "code"), json!(3));
-            assert_eq!(weather.inner(&place, "current", "icon"), json!("cloud_sun"));
-            assert_eq!(weather.listed(&place, "hours"), 24, "a day of hours from now");
-            assert_eq!(weather.listed(&place, "days"), 2);
-            assert_eq!(weather.inner(&place, "air", "european"), json!(32.0));
-            assert_eq!(weather.field(&place, "has_air"), json!(true));
-            assert_eq!(weather.field(&place, "stale"), json!(false));
+            assert_eq!(weather.inner(&weather.here(&place), "current", "code"), json!(3));
+            assert_eq!(weather.inner(&weather.here(&place), "current", "icon"), json!("cloud_sun"));
+            assert_eq!(weather.listed(&weather.here(&place), "hours"), 24, "a day of hours from now");
+            assert_eq!(weather.listed(&weather.here(&place), "days"), 2);
+            assert_eq!(weather.inner(&weather.here(&place), "air", "european"), json!(32.0));
+            assert_eq!(weather.reading(&place, "has_air"), json!(true));
+            assert_eq!(weather.reading(&place, "stale"), json!(false));
             // The window's second asks the day where the person is, for the names of its days.
             weather.step("poll_weather");
             assert_eq!(weather.field(&weather.root, "today"), json!("2026-11-24"));
             assert_eq!(
-                weather.inner(&weather.root, "refresh", "state"),
+                weather.inner(&weather.readings(), "refresh", "state"),
                 json!("done")
             );
 
@@ -524,34 +590,34 @@ mod cases {
                 .serve_forecast(200, &forecast_body(30, 2, 21.4));
             let place = weather.save("Berlin", 52.52, 13.405);
             weather.refresh();
-            assert_eq!(weather.inner(&place, "current", "at"), json!("2026-11-24T02:00"));
-            assert_eq!(weather.inner(&place, "current", "temperature"), json!(21.4));
-            assert_eq!(weather.inner(&place, "current", "apparent"), json!(18.0));
+            assert_eq!(weather.inner(&weather.here(&place), "current", "at"), json!("2026-11-24T02:00"));
+            assert_eq!(weather.inner(&weather.here(&place), "current", "temperature"), json!(21.4));
+            assert_eq!(weather.inner(&weather.here(&place), "current", "apparent"), json!(18.0));
             assert_eq!(
-                weather.inner(&place, "current", "uv"),
+                weather.inner(&weather.here(&place), "current", "uv"),
                 json!(5.0),
                 "the current uv is today's highest"
             );
             // The hours start at the current one, and a day of them follows.
-            let at: Vec<Json> = weather.items_of(&place, "hours", "at");
-            let temperature: Vec<Json> = weather.items_of(&place, "hours", "temperature");
-            let code: Vec<Json> = weather.items_of(&place, "hours", "code");
+            let at: Vec<Json> = weather.items_of(&weather.here(&place), "hours", "at");
+            let temperature: Vec<Json> = weather.items_of(&weather.here(&place), "hours", "temperature");
+            let code: Vec<Json> = weather.items_of(&weather.here(&place), "hours", "code");
             assert_eq!(at.len(), 24, "a day of hours from now");
             assert_eq!(at[0], json!("2026-11-24T02:00"));
             assert_eq!(temperature[0], json!(4.0));
             assert_eq!(code[0], json!(61));
-            let dates: Vec<Json> = weather.items_of(&place, "days", "date");
-            let highs: Vec<Json> = weather.items_of(&place, "days", "high");
-            let chance: Vec<Json> = weather.items_of(&place, "days", "chance");
-            let uv: Vec<Json> = weather.items_of(&place, "days", "uv");
-            let set: Vec<Json> = weather.items_of(&place, "days", "set");
+            let dates: Vec<Json> = weather.items_of(&weather.here(&place), "days", "date");
+            let highs: Vec<Json> = weather.items_of(&weather.here(&place), "days", "high");
+            let chance: Vec<Json> = weather.items_of(&weather.here(&place), "days", "chance");
+            let uv: Vec<Json> = weather.items_of(&weather.here(&place), "days", "uv");
+            let set: Vec<Json> = weather.items_of(&weather.here(&place), "days", "set");
             assert_eq!(dates.len(), 2);
             assert_eq!(highs, [json!(24.0), json!(19.0)]);
             assert_eq!(chance[1], json!(0.0), "a missing chance reads as none");
             assert_eq!(uv[1], json!(0.0));
             assert_eq!(set[0], json!("2026-11-24T21:34"));
             assert_eq!(
-                weather.items_of(&place, "days", "weekday"),
+                weather.items_of(&weather.here(&place), "days", "weekday"),
                 [json!(1), json!(2)],
                 "2026-11-24 is a Tuesday, and the day after a Wednesday"
             );
@@ -567,7 +633,7 @@ mod cases {
             let place = weather.save("Berlin", 52.52, 13.405);
             weather.refresh();
             assert_eq!(
-                weather.items_of(&place, "days", "weekday"),
+                weather.items_of(&weather.here(&place), "days", "weekday"),
                 [
                     json!(0),
                     json!(1),
@@ -585,12 +651,12 @@ mod cases {
             weather.services.serve_forecast(200, r#"{"current": 3}"#);
             let place = weather.save("Berlin", 52.52, 13.405);
             weather.refresh();
-            assert_eq!(weather.field(&place, "read"), json!(false));
+            assert_eq!(weather.reading(&place, "read"), json!(false));
             assert_eq!(
-                weather.field(&place, "trouble"),
+                weather.reading(&place, "trouble"),
                 json!("The answer wasn't a forecast")
             );
-            assert_eq!(weather.listed(&place, "hours"), 0);
+            assert_eq!(weather.listed(&weather.here(&place), "hours"), 0);
             let window = weather.weather_window();
             assert!(
                 of_kind(window.tree(), "ui.Banner")
@@ -604,10 +670,10 @@ mod cases {
             let weather = Weather::new(false);
             let place = weather.save("Berlin", 52.52, 13.405);
             weather.refresh();
-            assert_eq!(weather.inner(&place, "air", "european"), json!(32.0));
-            assert_eq!(weather.inner(&place, "air", "pm2_5"), json!(8.4));
+            assert_eq!(weather.inner(&weather.here(&place), "air", "european"), json!(32.0));
+            assert_eq!(weather.inner(&weather.here(&place), "air", "pm2_5"), json!(8.4));
             assert_eq!(
-                weather.inner(&place, "air", "ozone"),
+                weather.inner(&weather.here(&place), "air", "ozone"),
                 Json::Null,
                 "a null pollutant stays honestly absent"
             );
@@ -694,24 +760,24 @@ mod cases {
             }
             weather.step("refresh");
             assert_eq!(
-                weather.inner(&weather.root, "refresh", "done"),
+                weather.inner(&weather.readings(), "refresh", "done"),
                 json!(1),
                 "the first place is read at once"
             );
             assert_eq!(
-                weather.inner(&weather.root, "refresh", "state"),
+                weather.inner(&weather.readings(), "refresh", "state"),
                 json!("running")
             );
             weather.step("poll_weather");
             assert_eq!(
-                weather.inner(&weather.root, "refresh", "done"),
+                weather.inner(&weather.readings(), "refresh", "done"),
                 json!(5),
                 "four more places are read on the next second"
             );
             // Stopping leaves the place that had not been read as it was.
             weather.step("stop_refresh");
             assert_eq!(
-                weather.inner(&weather.root, "refresh", "state"),
+                weather.inner(&weather.readings(), "refresh", "state"),
                 json!("done")
             );
             assert_eq!(
@@ -726,17 +792,17 @@ mod cases {
             let weather = Weather::new(false);
             let place = weather.save("Reykjavík", 64.1466, -21.9426);
             weather.refresh();
-            let first = weather.rt.read(&place, "current").unwrap();
-            assert_eq!(weather.inner(&place, "current", "temperature"), json!(20.0));
+            let first = weather.rt.read(&weather.here(&place), "current").unwrap();
+            assert_eq!(weather.inner(&weather.here(&place), "current", "temperature"), json!(20.0));
 
             // The service refuses the next read: the place says why and keeps the reading it has.
             weather.services.serve_forecast(403, "forbidden");
             weather.refresh();
             assert_eq!(
-                weather.field(&place, "trouble"),
+                weather.reading(&place, "trouble"),
                 json!("The weather service refused the request (HTTP 403)")
             );
-            assert_eq!(weather.rt.read(&place, "current").unwrap(), first);
+            assert_eq!(weather.rt.read(&weather.here(&place), "current").unwrap(), first);
             let window = weather.weather_window();
             let banners: Vec<(String, String)> = of_kind(window.tree(), "ui.Banner")
                 .into_iter()
@@ -762,7 +828,7 @@ mod cases {
                 "{:?}",
                 drawn(&window)
             );
-            let failed = weather.rt.read(&weather.root, "refresh").unwrap();
+            let failed = weather.rt.read(&weather.readings(), "refresh").unwrap();
             assert_eq!(weather.rt.project(&failed)["fields"]["failed"], json!(1));
         }
 
@@ -771,12 +837,12 @@ mod cases {
             let weather = Weather::new(false);
             let place = weather.save("Amsterdam", 52.374, 4.8897);
             weather.refresh();
-            assert_eq!(weather.field(&place, "stale"), json!(false));
+            assert_eq!(weather.reading(&place, "stale"), json!(false));
             // The clock moves past the service's hour: the next poll says the reading is not
             // current.
             weather.rt.set_clock(|| "2026-11-24T12:00:00Z".to_owned());
             weather.step("poll_weather");
-            assert_eq!(weather.field(&place, "stale"), json!(true));
+            assert_eq!(weather.reading(&place, "stale"), json!(true));
             let window = weather.weather_window();
             assert!(
                 drawn(&window).contains(&"Out of date".to_owned()),

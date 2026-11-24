@@ -194,33 +194,6 @@ d-ewmohhie = Länge
 d-y5lbxwn7 = Zeitzone
     .doc = Die IANA-Zeitzone des Ortes, oder `auto`, wenn die Suche keine genannt hat.
 
-d-ikazv44r = Gelesen?
-    .doc = Ob dieses Gerät den Ort gelesen hat: was die Messungen darunter halten, bis es so ist.
-
-d-gbrotevm = Aktuell
-    .doc = Was der Himmel dort jetzt tut.
-
-d-qt6zc3me = Stunden
-    .doc = Die kommenden Stunden, wie das Gerät sie gelesen hat.
-
-d-fjbo2bs7 = Tage
-    .doc = Die Woche voraus.
-
-d-qz7n6v2n = Luft
-    .doc = Die Luft über dem Ort.
-
-d-uthtg3cy = Hat Luftmessung
-    .doc = Ob der Luftdienst geantwortet hat: seine Messung bleibt stehen, auch wenn dies falsch ist.
-
-d-42oai4b2 = Gelesen
-    .doc = Wann dieses Gerät den Ort zuletzt gelesen hat.
-
-d-lkrdcuut = Veraltet
-    .doc = Die Messung ist älter als die Stunde des Dienstes und nicht mehr aktuell.
-
-d-ckqlainl = Störung
-    .doc = Warum das letzte Lesen scheiterte, in Worten; leer, solange der Ort gut steht.
-
 d-goqo6yd3 = Aktualisierung
     .doc = Wie weit eine Aktualisierung gekommen ist und wie die letzte endete.
     .noun = { $count ->
@@ -302,8 +275,6 @@ d-b2qn6gqw = Orte
 d-vqfze2cq = Zuerst
     .doc = Der Ort, den ein Fenster zuerst zeigt; keiner für den ersten der Liste.
 
-d-esvv4ymu = Aktualisierung
-
 d-ms5dkio6 = Suchen
     .doc = Die eigene Suche jeder Person hier.
 
@@ -314,8 +285,6 @@ d-rusdri25 = Morgen
     .doc = Der Tag nach heute, wie `today`.
 
 d-sevkk4o7-filter-default = Zuerst
-
-d-sevkk4o7-filter-refresh = Aktualisierung
 
 d-46yntdob = Stundenkachel
     .w-now = Jetzt
@@ -533,13 +502,86 @@ d-vawmqqsv = Wartend
 d-mubgbm45 = Nächsten Ort lesen
     .doc = Liest einen Ort, den eine Aktualisierung noch lesen muss, und sagt, wenn alle gelesen sind.
 
-d-mjt2zbkr = Ort lesen
-    .doc = Liest die Vorhersage und die Luftqualität eines Ortes.
-
-d-wm5pv5it = Vorhersage übernehmen
-    .doc = Die Vorhersage eines Dienstes, in den Ort geschrieben: die aktuelle Messung, ein Tag Stunden und eine Woche Tage.
-
-d-wm5pv5it-body = Inhalt
-
 d-cnvt7jm5 = Ablehnung
     .w-the-weather-service-refused-the-request = Der Wetterdienst hat die Anfrage abgelehnt (HTTP { $status })
+
+d-ajd3uzuo = Messung
+    .doc = Was dieses Gerät zuletzt über einen Ort gelesen hat: den Himmel, die Stunden und die Woche voraus, die Luft, und wie die Messung steht.
+    .noun = { $count ->
+        [one] Messung
+       *[other] Messungen
+    }
+
+d-uzxnvv67 = Name
+    .doc = Der Name des Ortes, als dieses Gerät ihn gelesen hat: so steht die Messung in der Geschichte.
+
+d-hfv2phzu = Ort
+    .doc = Der Ort, zu dem diese Messung gehört, nach seiner Kennung.
+
+d-kgqshwck = Gelesen
+    .doc = Ob dieses Gerät den Ort gelesen hat: bis dahin stehen die Felder darunter.
+
+d-eecg6i33 = Aktuell
+    .doc = Was der Himmel dort gerade tut.
+
+d-yc3wt5yt = Stunden
+    .doc = Die Stunden voraus, wie dieses Gerät sie gelesen hat.
+
+d-7xtuywip = Tage
+    .doc = Die Woche voraus.
+
+d-7eu3357v = Luft
+    .doc = Die Luft über dem Ort.
+
+d-gqv7rwej = Hat Luftmessung
+    .doc = Ob der Luftdienst geantwortet hat: seine Messung steht auch, wenn dies falsch ist.
+
+d-caagd74f = Gelesen
+    .doc = Wann dieses Gerät den Ort zuletzt gelesen hat.
+
+d-juxtrvon = Veraltet
+    .doc = Die Messung ist älter als die Stunde des Dienstes und nicht mehr aktuell.
+
+d-losawnjy = Störung
+    .doc = Warum das letzte Lesen fehlschlug, in Worten; leer, solange der Ort gut steht.
+
+d-ajd3uzuo-filter-read = Gelesen
+
+d-ajd3uzuo-filter-current = Aktuell
+
+d-ajd3uzuo-filter-air = Luft
+
+d-ajd3uzuo-filter-has_air = Hat Luftmessung
+
+d-ajd3uzuo-filter-fetched = Gelesen
+
+d-ajd3uzuo-filter-stale = Veraltet
+
+d-kv5tujrf = Messungen
+    .doc = Was dieses Gerät von den Orten gelesen hat, und wie seine letzte Aktualisierung ausging.
+    .noun = { $count ->
+        [one] Messung
+       *[other] Messungen
+    }
+
+d-6fze2ppw = Je Ort
+    .doc = Die Messung eines Ortes, die dieses Gerät selbst hält.
+
+d-vf63zjb2 = Aktualisierung
+
+d-kv5tujrf-filter-refresh = Aktualisierung
+
+d-sx5veinh = Messung für
+    .doc = Was dieses Gerät von `place` gelesen hat, angelegt beim ersten Schreiben.
+
+d-sx5veinh-place = Ort
+
+d-qoqhnrrj = Ort lesen
+    .doc = Liest die Vorhersage und die Luftqualität eines Ortes.
+
+d-qoqhnrrj-place = Ort
+
+d-lklrcz7r = Vorhersage übernehmen
+    .doc = Die Vorhersage eines Dienstes, in die Messung dieses Geräts geschrieben: die aktuelle Messung, ein Tag Stunden und eine Woche Tage.
+
+d-lklrcz7r-body = Inhalt
