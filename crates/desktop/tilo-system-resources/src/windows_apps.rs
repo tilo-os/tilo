@@ -121,10 +121,6 @@ impl From<bool> for Allowed {
 }
 
 /// One Windows program a person can open.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each flag is one action the person may take, and each stands on its own"
-)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct WindowsApp {
     /// The entry's id, as the compatibility layer names it.
