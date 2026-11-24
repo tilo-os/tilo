@@ -12,7 +12,7 @@ mod cases {
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-    use tilolang_runtime::{InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
+    use tilolang_runtime::{EnumValue, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/photos/app.tl");
 
@@ -322,6 +322,59 @@ mod cases {
                 .map(|node| text_prop(node, "value"))
                 .collect()
         }
+
+        /// The case `name` of the app's `Change`, as a value: what a batch edit says about a
+        /// field.
+        fn change(&self, name: &str) -> Value {
+            let ids = &self.app.compiled.ids;
+            Value::Enum(EnumValue {
+                ty: ids
+                    .get("Change")
+                    .expect("the app declares Change")
+                    .to_owned(),
+                variant: ids
+                    .get(&format!("Change.{name}"))
+                    .unwrap_or_else(|| panic!("Change has no case {name}"))
+                    .to_owned(),
+                fields: std::collections::BTreeMap::new(),
+            })
+        }
+
+        /// Edits the details of the photos `ids`, naming only the fields the test changes: every
+        /// other field is left as each photo has it.
+        fn edit_selected(&self, ids: &[&ResourceRef], given: &[(&str, Value)]) -> InvokeOutcome {
+            let mut args = vec![
+                ("lib", Value::resource(&self.lib)),
+                (
+                    "ids",
+                    Value::List(ids.iter().map(|id| Value::text(id.id_string())).collect()),
+                ),
+            ];
+            args.extend(given.iter().map(|(name, value)| (*name, value.clone())));
+            let filled = self.app.args(&self.rt, "edit_selected", &args);
+            let id = self.app.action("edit_selected");
+            self.rt
+                .invoke_action(&me(), (id.as_str(), filled))
+                .unwrap_or_else(|why| panic!("edit_selected: {why}"))
+        }
+
+        /// The key of the control of `kind` whose `prop` says `text`.
+        fn control(&self, view: &ViewInstance, kind: &str, prop: &str, text: &str) -> String {
+            of_kind(view.tree(), kind)
+                .into_iter()
+                .find(|node| node.props.get(prop).and_then(Value::as_text) == Some(text))
+                .unwrap_or_else(|| panic!("no {kind} with {prop} `{text}`:\n{}", dump(view.tree())))
+                .key
+                .clone()
+        }
+
+        /// The titles of the picture cards the view shows, in order.
+        fn cards(&self, view: &ViewInstance) -> Vec<String> {
+            of_kind(view.tree(), "ui.MediaCard")
+                .into_iter()
+                .map(|card| text_prop(card, "title"))
+                .collect()
+        }
     }
 
     tilo_test_env::scenario! {
@@ -495,6 +548,294 @@ mod cases {
             let (mime, bytes) = copied.expect("the picture was copied");
             assert_eq!(mime, "image/png");
             assert_eq!(bytes, picture(), "the picture's own bytes are what was copied");
+        }
+
+        phase many_photos_details_say_mixed_and_change_only_what_is_edited;
+        {
+            let g = Gallery::new();
+            let dawn = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            let dunes = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Dunes.png")],
+            ));
+            let pines = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Pine.png")],
+            ));
+            g.call("tag", vec![Value::resource(&dawn), Value::text("sea")]);
+            g.call("tag", vec![Value::resource(&dunes), Value::text("sand")]);
+            g.call("tag", vec![Value::resource(&pines), Value::text("fog")]);
+            // One photo alone has a folder, so the selection differs in it.
+            g.edit_selected(
+                &[&dunes],
+                &[
+                    ("folder", g.change("set")),
+                    ("folder_text", Value::some(Value::text("Trips"))),
+                ],
+            );
+            // The person selects the three in the grid.
+            let mut page = g.open("library", vec![Value::resource(&g.lib)]);
+            let select = g.control(&page, "ui.Button", "label", "Select");
+            page.press(&select).unwrap();
+            page.poll_patches().unwrap();
+            let cards: Vec<String> = of_kind(page.tree(), "ui.MediaCard")
+                .into_iter()
+                .map(|card| card.key.clone())
+                .collect();
+            assert_eq!(cards.len(), 3, "the library shows the three photos");
+            for card in cards {
+                page.fire(&card, "activate").unwrap();
+            }
+            page.poll_patches().unwrap();
+            let edit = g.control(&page, "ui.Button", "label", "Edit details");
+            page.press(&edit).unwrap();
+            page.poll_patches().unwrap();
+            // The editor says where the photos differ, and where none of them holds a value.
+            let texts = g.texts(&page);
+            assert!(
+                texts.iter().any(|text| text == "Details of 3 photos"),
+                "the editor names the selection: {texts:?}"
+            );
+            assert!(
+                texts.iter().any(|text| text == "Tags: Mixed"),
+                "the photos' tags differ: {texts:?}"
+            );
+            assert!(
+                texts.iter().any(|text| text == "Folder: Mixed"),
+                "the photos' folders differ: {texts:?}"
+            );
+            assert!(
+                texts.iter().any(|text| text == "Place: None"),
+                "none of the photos has a place: {texts:?}"
+            );
+            assert!(
+                texts.iter().any(|text| text == "People: None"),
+                "none of the photos names a person: {texts:?}"
+            );
+            // The person adds one tag and saves, changing nothing else.
+            let add = g.control(&page, "ui.TextInput", "placeholder", "Tags to add, separated by commas");
+            page.edit(&add, &Value::text("holiday")).unwrap();
+            let save = g.control(&page, "ui.Button", "label", "Save");
+            page.press(&save).unwrap();
+            page.poll_patches().unwrap();
+            for (photo, own) in [(&dawn, "sea"), (&dunes, "sand"), (&pines, "fog")] {
+                let tags = g.ids_of(photo, "tags");
+                assert!(tags.contains(&own.to_owned()), "{photo:?} keeps {own}: {tags:?}");
+                assert!(tags.contains(&"holiday".to_owned()), "{photo:?} gains the tag: {tags:?}");
+            }
+            assert_eq!(
+                g.rt.read(&dunes, "folder").unwrap(),
+                Value::text("Trips"),
+                "a field the person did not touch keeps what each photo has"
+            );
+            assert!(
+                !g.texts(&page).iter().any(|text| text == "Details of 3 photos"),
+                "saving closes the editor:\n{}",
+                dump(page.tree())
+            );
+        }
+
+        phase saving_a_batch_edit_with_nothing_typed_changes_nothing;
+        {
+            let g = Gallery::new();
+            let harbour = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            let dunes = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Dunes.png")],
+            ));
+            let mut page = g.open("library", vec![Value::resource(&g.lib)]);
+            let select = g.control(&page, "ui.Button", "label", "Select");
+            page.press(&select).unwrap();
+            page.poll_patches().unwrap();
+            let cards: Vec<String> = of_kind(page.tree(), "ui.MediaCard")
+                .into_iter()
+                .map(|card| card.key.clone())
+                .collect();
+            for card in cards {
+                page.fire(&card, "activate").unwrap();
+            }
+            page.poll_patches().unwrap();
+            let edit = g.control(&page, "ui.Button", "label", "Edit details");
+            page.press(&edit).unwrap();
+            page.poll_patches().unwrap();
+            // Save with every field left alone says what is missing, and the editor stays open.
+            let save = g.control(&page, "ui.Button", "label", "Save");
+            let refused = page.press(&save);
+            assert!(
+                refused.is_err(),
+                "an edit with no field filled in is refused: {refused:?}"
+            );
+            page.poll_patches().unwrap();
+            assert!(
+                g.texts(&page).iter().any(|text| text == "Details of 2 photos"),
+                "the editor stays open to say why:\n{}",
+                dump(page.tree())
+            );
+            for photo in [&harbour, &dunes] {
+                assert_eq!(g.rt.read(photo, "folder").unwrap(), Value::text(""));
+                assert_eq!(g.rt.read(photo, "location").unwrap(), Value::text(""));
+                assert!(g.ids_of(photo, "tags").is_empty());
+            }
+        }
+
+        phase a_batch_edit_gives_every_photo_the_same_place_and_people;
+        {
+            let g = Gallery::new();
+            let harbour = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            let quay = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Quay.png")],
+            ));
+            let ava = returned_ref(g.call(
+                "new_person",
+                vec![
+                    Value::resource(&g.lib),
+                    Value::text("Ava"),
+                    Value::List(vec![Value::text(harbour.id_string())]),
+                ],
+            ));
+            g.edit_selected(
+                &[&harbour, &quay],
+                &[
+                    ("place", g.change("set")),
+                    ("place_name", Value::some(Value::text("Harbour"))),
+                    ("latitude", Value::Float(48.5)),
+                    ("longitude", Value::Float(-3.2)),
+                    ("people", g.change("add")),
+                    ("person_names", Value::List(vec![Value::text("Ava")])),
+                ],
+            );
+            for photo in [&harbour, &quay] {
+                assert_eq!(
+                    g.rt.read(photo, "location").unwrap(),
+                    Value::text("Harbour"),
+                    "every selected photo takes the place"
+                );
+                assert_eq!(g.rt.read(photo, "latitude").unwrap(), Value::Float(48.5));
+                assert_eq!(g.rt.read(photo, "longitude").unwrap(), Value::Float(-3.2));
+            }
+            assert_eq!(
+                g.ids_of(&ava, "photos").len(),
+                2,
+                "the person the photos name has both on their page"
+            );
+            // Taking everyone off every photo takes them off the person too.
+            g.edit_selected(&[&harbour, &quay], &[("people", g.change("clear"))]);
+            assert!(g.ids_of(&ava, "photos").is_empty(), "the person keeps nobody");
+            // Clearing the place empties what each photo's place was.
+            g.edit_selected(&[&harbour, &quay], &[("place", g.change("clear"))]);
+            for photo in [&harbour, &quay] {
+                assert_eq!(g.rt.read(photo, "location").unwrap(), Value::text(""));
+                assert_eq!(g.rt.read(photo, "latitude").unwrap(), Value::Float(0.0));
+                assert_eq!(g.rt.read(photo, "longitude").unwrap(), Value::Float(0.0));
+            }
+        }
+
+        phase one_photo_s_coordinates_are_typed_in_its_details;
+        {
+            let g = Gallery::new();
+            let photo = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            let mut details = g.open(
+                "details_fields",
+                vec![Value::resource(&g.lib), Value::resource(&photo)],
+            );
+            let latitude = g.control(&details, "ui.NumberInput", "label", "Latitude");
+            details.edit(&latitude, &Value::Float(48.5)).unwrap();
+            assert_eq!(
+                g.rt.read(&photo, "latitude").unwrap(),
+                Value::Float(48.5),
+                "a typed latitude is the photo's"
+            );
+            details.poll_patches().unwrap();
+            let longitude = g.control(&details, "ui.NumberInput", "label", "Longitude");
+            details.edit(&longitude, &Value::Float(-3.2)).unwrap();
+            assert_eq!(g.rt.read(&photo, "longitude").unwrap(), Value::Float(-3.2));
+        }
+
+        phase the_timeline_opens_a_month_and_a_day;
+        {
+            let g = Gallery::new();
+            let july12 = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            let july20 = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Dunes.png")],
+            ));
+            let august = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Pine.png")],
+            ));
+            for (photo, when) in [
+                (&july12, "2026-07-12T05:42Z"),
+                (&july20, "2026-07-20T17:10Z"),
+                (&august, "2026-08-03T07:15Z"),
+            ] {
+                g.edit_selected(
+                    &[photo],
+                    &[
+                        ("captured_at", g.change("set")),
+                        ("captured_text", Value::some(Value::text(when))),
+                    ],
+                );
+            }
+            let mut page = g.open("library", vec![Value::resource(&g.lib)]);
+            let timeline = of_kind(page.tree(), "ui.NavItem")
+                .into_iter()
+                .find(|item| item.props.get("key") == Some(&Value::text("timeline")))
+                .unwrap_or_else(|| panic!("no Timeline place:\n{}", dump(page.tree())))
+                .key
+                .clone();
+            page.fire(&timeline, "select").unwrap();
+            page.poll_patches().unwrap();
+            assert_eq!(
+                g.cards(&page),
+                ["Pine.png", "Dunes.png", "Harbour.png"],
+                "the timeline shows every photo, newest first"
+            );
+            // The person opens July.
+            g.control(&page, "ui.MenuButton", "label", "All months");
+            let july = of_kind(page.tree(), "ui.MenuItem")
+                .into_iter()
+                .find(|item| text_prop(item, "label") == "2026-07")
+                .unwrap_or_else(|| panic!("no July in the months menu:\n{}", dump(page.tree())))
+                .key
+                .clone();
+            page.fire(&july, "choose").unwrap();
+            page.poll_patches().unwrap();
+            assert_eq!(
+                g.cards(&page),
+                ["Dunes.png", "Harbour.png"],
+                "only July's photos are shown"
+            );
+            // And then a day of it.
+            g.control(&page, "ui.MenuButton", "label", "Every day");
+            let day = of_kind(page.tree(), "ui.MenuItem")
+                .into_iter()
+                .find(|item| text_prop(item, "label") == "2026-07-20")
+                .unwrap_or_else(|| panic!("no day in the days menu:\n{}", dump(page.tree())))
+                .key
+                .clone();
+            page.fire(&day, "choose").unwrap();
+            page.poll_patches().unwrap();
+            assert_eq!(
+                g.cards(&page),
+                ["Dunes.png"],
+                "only that day's photo is shown"
+            );
         }
     }
 }

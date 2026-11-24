@@ -117,7 +117,6 @@ d-xea2av67-filter-photos = Fotos
 
 d-xea2av67-filter-sent = Gesendet
 
-
 d-j45kskqf = Bibliothek
     .doc = Die Fotobibliothek des Arbeitsbereichs: jedes Foto, die Alben, die Menschen daraus machten, und die Menschen, die die Fotos zeigen.
     .noun = { $count ->
@@ -389,6 +388,38 @@ d-hfgcskel = Bibliothek
     .w-copy = Kopieren
     .w-map = Karte
     .w-list = Liste
+    .w-edit-details = Details bearbeiten
+    .w-details-of-photos = Details von { $len } Fotos
+    .w-only-the-fields-you-fill-in = Nur die Felder, die du ausfüllst, ändern sich; jedes Foto behält den Rest. Ein Feld, in dem sich die Fotos unterscheiden, zeigt Gemischt.
+    .w-organize = Organisieren
+    .w-folder = Ordner: { $shared_line }
+    .w-folder-to-give-every-photo = Ordner für alle Fotos
+    .w-captured = Aufgenommen: { $shared_line }
+    .w-captured-time-to-give-every-photo = Aufnahmezeit für alle Fotos
+    .w-description = Beschreibung: { $shared_line }
+    .w-description-to-give-every-photo = Beschreibung für alle Fotos
+    .w-tags-2 = Tags: { $shared_names_line }
+    .w-tags-to-add-separated-by-commas = Tags zum Hinzufügen, durch Kommas getrennt
+    .w-tags-to-take-off-separated-by = Tags zum Entfernen, durch Kommas getrennt
+    .w-people-2 = Personen: { $shared_names_line }
+    .w-people-to-add-separated-by-commas = Personen zum Hinzufügen, durch Kommas getrennt
+    .w-people-to-take-off-separated-by = Personen zum Entfernen, durch Kommas getrennt
+    .w-place = Ort
+    .w-place-2 = Ort: { $place_value }
+    .w-give-every-photo-the-same-place = Allen Fotos denselben Ort geben
+    .w-place-name = Ortsname
+    .w-latitude = Breite
+    .w-longitude = Länge
+    .w-save = Speichern
+    .w-clear = Leeren
+    .w-folder-on-every-photo = Ordner aller Fotos
+    .w-captured-time = Aufnahmezeit
+    .w-description-2 = Beschreibung
+    .w-all-tags = Alle Tags
+    .w-everyone = Alle Personen
+    .w-the-place = Den Ort
+    .w-all-months = Alle Monate
+    .w-every-day = Jeden Tag
 
 d-i4ssir2r = Personenzeile
     .w-photos = { $len } Fotos
@@ -423,6 +454,8 @@ d-dy2z5spw = Detailfelder
     .w-text-in-the-picture = Text im Bild
     .w-read-the-text = Text lesen
     .w-copy = Kopieren
+    .w-latitude = Breite
+    .w-longitude = Länge
 
 d-dho5ecc7 = Details
     .w-albums = Alben
@@ -466,3 +499,70 @@ d-tp7e7pzd = Gefundene Dateien
 d-j45kskqf-filter-import_found = Gefundene Dateien
 
 d-j45kskqf-filter-import_done = Importiert
+
+d-r6w2zb6b = Änderung
+    .doc = Was eine Bearbeitung mit einem Feld jedes ausgewählten Fotos tut: es behält, was jedes Foto hat, nimmt es allen weg, gibt allen einen Wert oder fügt Namen (Tags, Personen) hinzu oder nimmt sie weg.
+
+d-d3saeby7 = Jedes Foto behält seinen Wert
+    .doc = Jedes Foto behält seinen Wert.
+
+d-3eritqkv = Der Wert wird jedem Foto genommen
+    .doc = Der Wert wird jedem Foto genommen.
+
+d-7klkxalf = Jedes Foto bekommt denselben Wert
+    .doc = Jedes Foto bekommt denselben Wert.
+
+d-hvmemend = Jedes Foto bekommt diese Namen; was es schon hat, bleibt
+    .doc = Jedes Foto bekommt diese Namen; was es schon hat, bleibt.
+
+d-crqeyfqu = Diese Namen werden jedem Foto genommen; der Rest bleibt
+    .doc = Diese Namen werden jedem Foto genommen; der Rest bleibt.
+
+d-smn7av4u = Details bearbeiten
+    .doc = Ändert die Details jedes genannten Fotos als eine Änderung: ein Feld auf `keep` behält, was jedes Foto hat, `clear` nimmt es allen, `set` gibt allen einen Wert, und Tags und Personen werden über die Auswahl hinzugefügt oder weggenommen, sodass jedes Foto den Rest seines eigenen behält.
+    .did = hat die Details von Fotos geändert
+    .w-fill-in-a-field-to-change = Füll ein Feld aus, um etwas zu ändern
+
+d-smn7av4u-ids = IDs
+
+d-smn7av4u-tags = Tags
+
+d-smn7av4u-tag_names = Tag-Namen
+
+d-smn7av4u-tags_off = Tags entfernen
+
+d-smn7av4u-people = Personen
+
+d-smn7av4u-person_names = Personennamen
+
+d-smn7av4u-people_off = Personen entfernen
+
+d-smn7av4u-folder = Ordner
+
+d-smn7av4u-folder_text = Ordnertext
+
+d-smn7av4u-captured_at = Aufgenommen am
+
+d-smn7av4u-captured_text = Aufnahmezeit
+
+d-smn7av4u-description = Beschreibung
+
+d-smn7av4u-description_text = Beschreibungstext
+
+d-smn7av4u-place = Ort
+
+d-smn7av4u-place_name = Ortsname
+
+d-smn7av4u-latitude = Breite
+
+d-smn7av4u-longitude = Länge
+
+d-nu2l23l6 = Geteilte Zeile
+    .w-not-set = Nicht gesetzt
+    .w-mixed = Gemischt
+
+d-emafkrvf = Geteilte Namenszeile
+    .w-none = Keine
+    .w-mixed = Gemischt
+
+d-v2p3fpqt = Auswahl bearbeiten~present

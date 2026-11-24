@@ -77,6 +77,21 @@ type Suggestion (readers: author until sent) {
     sent: Bool = false
 }
 
+/// What an edit does to one field of every selected photo: keeps what each photo has, takes it
+/// off all of them, gives them all one value, or adds or takes off names (tags, people).
+enum Change {
+    /// Each photo keeps the value it has.
+    keep
+    /// The value is taken off every photo.
+    clear
+    /// Every photo is given the same value.
+    set
+    /// Every photo gains these names; what it already has stays.
+    add
+    /// These names are taken off every photo; what it keeps stays.
+    remove
+}
+
 /// The workspace's photo library: every photo, the albums people made of them, and the people
 /// the photos show.
 type Library {
@@ -374,6 +389,184 @@ action add_selected_to_album(a: Album, ids: List<Text>) (icon: .folder, label: "
     for id in ids {
         a.photos.add(id)
     }
+}
+
+/// Changes the details of every named photo as one change: a field left `keep` keeps what each
+/// photo has, `clear` takes it off all of them, `set` gives them all one value, and tags and
+/// people are added or taken off across the selection, so every photo keeps the rest of its own.
+/// The selection is names in a list, so a person's selection, an agent's and a program's are the
+/// same change, undone at once.
+action edit_selected(
+    lib: Library,
+    ids: List<Text>,
+    tags: Change = .keep,
+    tag_names: List<Text> = [],
+    tags_off: List<Text> = [],
+    people: Change = .keep,
+    person_names: List<Text> = [],
+    people_off: List<Text> = [],
+    folder: Change = .keep,
+    folder_text: Option<Text> = .none,
+    captured_at: Change = .keep,
+    captured_text: Option<Text> = .none,
+    description: Change = .keep,
+    description_text: Option<Text> = .none,
+    place: Change = .keep,
+    place_name: Option<Text> = .none,
+    latitude: Float = 0.0,
+    longitude: Float = 0.0,
+) (label: "Edit details", did: "changed the details of photos") {
+    require tags != .keep
+        or not tag_names.is_empty()
+        or not tags_off.is_empty()
+        or people != .keep
+        or not person_names.is_empty()
+        or not people_off.is_empty()
+        or folder != .keep
+        or captured_at != .keep
+        or description != .keep
+        or place != .keep "Fill in a field to change something"
+    let chosen = selected(lib, ids)
+    for p in chosen {
+        if tags == .clear or tags == .set {
+            for held in p.tags.map(t -> t) {
+                p.tags.remove(held)
+            }
+        }
+        if tags == .add or tags == .set {
+            for name in tag_names {
+                if name != "" { p.tags.add(name) }
+            }
+        }
+        if tags == .remove {
+            for name in tag_names {
+                p.tags.remove(name)
+            }
+        }
+        for name in tags_off {
+            p.tags.remove(name)
+        }
+        if people == .clear or people == .set {
+            for held in p.people.map(n -> n) {
+                p.people.remove(held)
+            }
+        }
+        if people == .add or people == .set {
+            for name in person_names {
+                if name != "" { p.people.add(name) }
+            }
+        }
+        if people == .remove {
+            for name in person_names {
+                p.people.remove(name)
+            }
+        }
+        for name in people_off {
+            p.people.remove(name)
+        }
+        if folder != .keep {
+            if folder == .clear {
+                p.folder = ""
+            } else {
+                p.folder = folder_text ?? ""
+            }
+        }
+        if captured_at != .keep {
+            if captured_at == .clear {
+                p.captured_at = ""
+            } else {
+                p.captured_at = captured_text ?? ""
+            }
+        }
+        if description != .keep {
+            if description == .clear {
+                p.description = ""
+            } else {
+                p.description = description_text ?? ""
+            }
+        }
+        if place == .clear {
+            p.location = ""
+            p.latitude = 0.0
+            p.longitude = 0.0
+        } else if place == .set {
+            p.location = place_name ?? ""
+            p.latitude = latitude
+            p.longitude = longitude
+        }
+    }
+    // The people the library knows keep the same photos as the photos name: a person added or
+    // taken off here shows on their page too.
+    if people == .clear {
+        for known in lib.people {
+            for id in ids {
+                known.photos.remove(id)
+            }
+        }
+    } else if people == .add or people == .set {
+        for name in person_names {
+            if let known = lib.people.find(x -> x.name == name) {
+                for id in ids {
+                    known.photos.add(id)
+                }
+            }
+        }
+    } else if people == .remove {
+        for name in person_names {
+            if let known = lib.people.find(x -> x.name == name) {
+                for id in ids {
+                    known.photos.remove(id)
+                }
+            }
+        }
+    }
+    for name in people_off {
+        if let known = lib.people.find(x -> x.name == name) {
+            for id in ids {
+                known.photos.remove(id)
+            }
+        }
+    }
+}
+
+/// The photos the library keeps under the names in `ids`, in the library's order.
+fn selected(lib: Library, ids: List<Text>) -> List<Photo> {
+    lib.photos.filter(p -> ids.contains(p.id))
+}
+
+/// The one value every photo holds for a field, and none where the photos differ or none is
+/// selected: what a batch editor reads to say Mixed.
+fn shared_value(values: List<Text>) -> Option<Text> {
+    if let first = values.first() {
+        if values.all(v -> v == first) { .some(first) } else { .none }
+    } else { .none }
+}
+
+/// What a field says over the selected photos: the value they all hold, the word for differing
+/// values where it differs between them, and the word for an empty one where it is empty.
+fn shared_line(values: List<Text>) -> Text {
+    if let one = shared_value(values) {
+        if one == "" { std.say("Not set") } else { one }
+    } else { std.say("Mixed") }
+}
+
+/// What a list of names on every photo says over the selection, the same way.
+fn shared_names_line(values: List<Text>) -> Text {
+    if let one = shared_value(values) {
+        if one == "" { std.say("None") } else { one }
+    } else { std.say("Mixed") }
+}
+
+/// The tags or people on a photo, sorted and read as one line, so two photos agree when they
+/// carry the same names.
+fn names_of(names: List<Text>) -> Text {
+    names.sort_by(n -> n).join(", ")
+}
+
+/// The names a person typed in a field, separated by commas: what a batch editor adds or takes
+/// off every selected photo.
+fn names_from(typed: Text) -> List<Text> {
+    typed.split(",").map(n -> n.trim()).filter(n -> n != "")
 }
 
 /// Gives a photo a tag.
@@ -686,6 +879,23 @@ view library(lib: Library) {
     state shared: Text = ""
     state cropping: Bool = false
     state crop_edges: List<Float> = [0.0, 0.0, 1.0, 1.0]
+    // The details of many photos at once: open while the person edits the selection, and what
+    // they typed in each field, empty for a field they left alone.
+    state editing_details: Bool = false
+    state details_tags_add: Text = ""
+    state details_tags_remove: Text = ""
+    state details_people_add: Text = ""
+    state details_people_remove: Text = ""
+    state details_folder: Text = ""
+    state details_captured: Text = ""
+    state details_description: Text = ""
+    state details_place: Text = ""
+    state details_setting_place: Bool = false
+    state details_latitude: Float = 0.0
+    state details_longitude: Float = 0.0
+    // The month and the day the timeline is opened at, empty for every month and every day.
+    state timeline_month: Text = ""
+    state timeline_day: Text = ""
     ui.NavShell(
         content_kind: .page,
         title: if let p = lib.photos.find(x -> x.id == viewing) {
@@ -705,6 +915,20 @@ view library(lib: Library) {
                     on press: set(selection, [])
                 }
                 if not selection.is_empty() {
+                    ui.Button("Edit details", icon: .pencil) {
+                        on press: set(details_tags_add, "")
+                            .then(set(details_tags_remove, ""))
+                            .then(set(details_people_add, ""))
+                            .then(set(details_people_remove, ""))
+                            .then(set(details_folder, ""))
+                            .then(set(details_captured, ""))
+                            .then(set(details_description, ""))
+                            .then(set(details_place, ""))
+                            .then(set(details_setting_place, false))
+                            .then(set(details_latitude, 0.0))
+                            .then(set(details_longitude, 0.0))
+                            .then(set(editing_details, true))
+                    }
                     ui.Button("Favorite selected", icon: .star) {
                         on press: favorite_selected(lib, selection)
                     }
@@ -836,6 +1060,24 @@ view library(lib: Library) {
                 }
                 if presenting {
                     present(lib, slide, presenting)
+                } else if editing_details {
+                    batch_details(
+                        lib,
+                        editing_details,
+                        selecting,
+                        selection,
+                        details_tags_add,
+                        details_tags_remove,
+                        details_people_add,
+                        details_people_remove,
+                        details_folder,
+                        details_captured,
+                        details_description,
+                        details_place,
+                        details_setting_place,
+                        details_latitude,
+                        details_longitude,
+                    )
                 } else if let p = lib.photos.find(x -> x.id == viewing) {
                     ui.PageSlide(level: 1) {
                         viewer(lib, p, viewing, zoom, confirming, shared, cropping, crop_edges)
@@ -845,7 +1087,7 @@ view library(lib: Library) {
                 } else if lib.photos.filter(p -> shown(lib, place, p)).is_empty() {
                     empty_place(lib, place)
                 } else if place == "timeline" {
-                    timeline_page(lib, viewing)
+                    timeline_page(lib, viewing, timeline_month, timeline_day)
                 } else if place == "places" {
                     places_page(lib, viewing)
                 } else {
@@ -966,6 +1208,203 @@ view person(p: Person) {
     }
 }
 
+/// What the selected photos' places say: the one place they all hold, the word for differing
+/// places where they were taken in different ones, and the word for an empty place where none
+/// of them has one.
+fn place_value(photos: List<Photo>) -> Text {
+    let values = photos.map(
+        p -> if p.location == "" and p.latitude == 0.0 and p.longitude == 0.0 {
+            ""
+        } else if p.location == "" {
+            "{p.latitude}, {p.longitude}"
+        } else {
+            "{p.location} ({p.latitude}, {p.longitude})"
+        },
+    )
+    shared_names_line(values)
+}
+
+/// The details of many photos at once: what the selected photos agree on, the word Mixed where
+/// they differ, and the one change the person makes to all of them. Only a field they fill in is
+/// changed; every other field keeps what each photo has.
+view batch_details(
+    lib: Library,
+    editing: State<Bool>,
+    selecting: State<Bool>,
+    selection: State<List<Text>>,
+    tags_add: State<Text>,
+    tags_remove: State<Text>,
+    people_add: State<Text>,
+    people_remove: State<Text>,
+    folder: State<Text>,
+    captured: State<Text>,
+    description: State<Text>,
+    place: State<Text>,
+    setting_place: State<Bool>,
+    latitude: State<Float>,
+    longitude: State<Float>,
+) {
+    let chosen = selected(lib, selection)
+    stack(padding: .group, gap: .related, max: 44rem) {
+        ui.Text("Details of {chosen.len()} photos", role: .title)
+        ui.Text(
+            "Only the fields you fill in change; every photo keeps the rest. A field the photos differ in says Mixed.",
+            role: .caption,
+            secondary: true,
+        )
+        ui.Section("Organize") {
+            stack(gap: .related) {
+                ui.Text(
+                    "Folder: {shared_line(chosen.map(p -> p.folder))}",
+                    role: .caption,
+                    secondary: true,
+                )
+                ui.TextInput(bind: folder, placeholder: "Folder to give every photo", fill)
+                ui.Text(
+                    "Captured: {shared_line(chosen.map(p -> p.captured_at))}",
+                    role: .caption,
+                    secondary: true,
+                )
+                ui.TextInput(bind: captured, placeholder: "Captured time to give every photo", fill)
+                ui.Text(
+                    "Description: {shared_line(chosen.map(p -> p.description))}",
+                    role: .caption,
+                    secondary: true,
+                )
+                ui.TextInput(
+                    bind: description,
+                    placeholder: "Description to give every photo",
+                    lines: 2,
+                    fill,
+                )
+            }
+        }
+        ui.Section("Tags") {
+            stack(gap: .related) {
+                ui.Text(
+                    "Tags: {shared_names_line(chosen.map(p -> names_of(p.tags.map(t -> t))))}",
+                    role: .caption,
+                    secondary: true,
+                )
+                row(gap: .related, wrap: true) {
+                    ui.TextInput(
+                        bind: tags_add,
+                        placeholder: "Tags to add, separated by commas",
+                        fill,
+                    )
+                    ui.TextInput(
+                        bind: tags_remove,
+                        placeholder: "Tags to take off, separated by commas",
+                        fill,
+                    )
+                }
+            }
+        }
+        ui.Section("People") {
+            stack(gap: .related) {
+                ui.Text(
+                    "People: {shared_names_line(chosen.map(p -> names_of(p.people.map(n -> n))))}",
+                    role: .caption,
+                    secondary: true,
+                )
+                row(gap: .related, wrap: true) {
+                    ui.TextInput(
+                        bind: people_add,
+                        placeholder: "People to add, separated by commas",
+                        fill,
+                    )
+                    ui.TextInput(
+                        bind: people_remove,
+                        placeholder: "People to take off, separated by commas",
+                        fill,
+                    )
+                }
+            }
+        }
+        ui.Section("Place") {
+            stack(gap: .related) {
+                ui.Text("Place: {place_value(chosen)}", role: .caption, secondary: true)
+                ui.Checkbox(bind: setting_place, label: "Give every photo the same place")
+                if setting_place {
+                    ui.TextInput(bind: place, placeholder: "Place name", fill)
+                    row(gap: .related, wrap: true) {
+                        ui.NumberInput(
+                            bind: latitude,
+                            min: -90.0,
+                            max: 90.0,
+                            precision: 6,
+                            label: "Latitude",
+                        )
+                        ui.NumberInput(
+                            bind: longitude,
+                            min: -180.0,
+                            max: 180.0,
+                            precision: 6,
+                            label: "Longitude",
+                        )
+                    }
+                }
+            }
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Save", icon: .check, role: .primary) {
+                on press: edit_selected(
+                        lib,
+                        selection,
+                        tags: if names_from(tags_add).is_empty() { .keep } else { .add },
+                        tag_names: names_from(tags_add),
+                        tags_off: names_from(tags_remove),
+                        people: if names_from(people_add).is_empty() { .keep } else { .add },
+                        person_names: names_from(people_add),
+                        people_off: names_from(people_remove),
+                        folder: if folder.trim() == "" { .keep } else { .set },
+                        folder_text: if folder.trim() == "" { .none } else { .some(folder.trim()) },
+                        captured_at: if captured.trim() == "" { .keep } else { .set },
+                        captured_text: if captured.trim() == "" {
+                            .none
+                        } else { .some(captured.trim()) },
+                        description: if description.trim() == "" { .keep } else { .set },
+                        description_text: if description.trim() == "" {
+                            .none
+                        } else { .some(description.trim()) },
+                        place: if setting_place { .set } else { .keep },
+                        place_name: if place.trim() == "" { .none } else { .some(place.trim()) },
+                        latitude: latitude,
+                        longitude: longitude,
+                    )
+                    .then(set(editing, false))
+                    .then(set(selecting, false))
+                    .then(set(selection, []))
+            }
+            ui.Button("Cancel") {
+                on press: set(editing, false)
+            }
+            ui.MenuButton("Clear", icon: .trash) {
+                ui.MenuItem("Folder on every photo") {
+                    on choose: edit_selected(lib, selection, folder: .clear)
+                }
+                ui.MenuItem("Captured time") {
+                    on choose: edit_selected(lib, selection, captured_at: .clear)
+                }
+                ui.MenuItem("Description") {
+                    on choose: edit_selected(lib, selection, description: .clear)
+                }
+                ui.MenuSeparator()
+                ui.MenuItem("All tags") {
+                    on choose: edit_selected(lib, selection, tags: .clear)
+                }
+                ui.MenuItem("Everyone") {
+                    on choose: edit_selected(lib, selection, people: .clear)
+                }
+                ui.MenuSeparator()
+                ui.MenuItem("The place") {
+                    on choose: edit_selected(lib, selection, place: .clear)
+                }
+            }
+        }
+    }
+}
+
 /// The library as a grid of pictures: each a card the person opens large. The grid builds only the
 /// cards it shows, so a library of ten thousand scrolls as one.
 view library_grid(
@@ -1008,17 +1447,60 @@ view library_grid(
     }
 }
 
+/// The month a capture time names, as `2026-07`: what the timeline opens a month at.
+fn capture_month(when: Text) -> Text {
+    day_word(capture_day(when)).slice(0, 7)
+}
+
 /// The library by the day each photograph was taken: newest first, a heading for each day and
-/// its photographs under it, and those the camera gave no time for at the end.
-view timeline_page(lib: Library, viewing: State<Text>) {
+/// its photographs under it, and those the camera gave no time for at the end. The month and the
+/// day a person picks narrow it to that month or that day, and picking none shows them all.
+view timeline_page(lib: Library, viewing: State<Text>, month: State<Text>, day: State<Text>) {
     let dated = lib.photos.filter(p -> p.captured_at != "").sort_by(p -> p.captured_at, desc)
     let undated = lib.photos.filter(p -> p.captured_at == "")
+    let months = dated
+        .group(p -> capture_month(p.captured_at))
+        .sort_by(g -> g.key, desc)
+        .map(g -> g.key)
+    let days = dated
+        .filter(p -> month == "" or capture_month(p.captured_at) == month)
+        .group(p -> day_word(capture_day(p.captured_at)))
+        .sort_by(g -> g.key, desc)
+        .map(g -> g.key)
+    let opened = dated.filter(
+        p -> (month == "" or capture_month(p.captured_at) == month)
+            and (day == "" or day_word(capture_day(p.captured_at)) == day),
+    )
     stack(gap: .section, fill) {
-        for day in dated.group(p -> capture_day(p.captured_at)).sort_by(g -> g.key, desc) {
+        row(gap: .tight, align: .center, wrap: true) {
+            ui.MenuButton(if month == "" { "All months" } else { month }, icon: .calendar) {
+                ui.MenuItem("All months") {
+                    on choose: set(month, "").then(set(day, ""))
+                }
+                for m in months {
+                    ui.MenuItem(m) {
+                        on choose: set(month, m).then(set(day, ""))
+                    }
+                }
+            }
+            if month != "" {
+                ui.MenuButton(if day == "" { "Every day" } else { day }, icon: .calendar) {
+                    ui.MenuItem("Every day") {
+                        on choose: set(day, "")
+                    }
+                    for d in days {
+                        ui.MenuItem(d) {
+                            on choose: set(day, d)
+                        }
+                    }
+                }
+            }
+        }
+        for d in opened.group(p -> capture_day(p.captured_at)).sort_by(g -> g.key, desc) {
             stack(gap: .related) {
-                ui.Text(day_word(day.key), role: .subheading)
+                ui.Text(day_word(d.key), role: .subheading)
                 ui.MediaGrid(size: .small, fill) {
-                    for p in day.items {
+                    for p in d.items {
                         ui.MediaCard(p, title: p.name, picture: card_picture(p)) {
                             on activate: set(viewing, p.id)
                         }
@@ -1026,7 +1508,7 @@ view timeline_page(lib: Library, viewing: State<Text>) {
                 }
             }
         }
-        if not undated.is_empty() {
+        if not undated.is_empty() and month == "" and day == "" {
             stack(gap: .related) {
                 ui.Text("No capture date", role: .subheading)
                 ui.MediaGrid(size: .small, fill) {
@@ -1332,6 +1814,16 @@ view details_fields(lib: Library, p: Photo) {
             ) {
                 ui.Text(p.name)
             }
+        }
+        row(gap: .related, wrap: true) {
+            ui.NumberInput(bind: p.latitude, min: -90.0, max: 90.0, precision: 6, label: "Latitude")
+            ui.NumberInput(
+                bind: p.longitude,
+                min: -180.0,
+                max: 180.0,
+                precision: 6,
+                label: "Longitude",
+            )
         }
         if p.recognized != "" {
             ui.Section("Text in the picture") {
