@@ -64,7 +64,7 @@ test-support = ["tilo-runtime/test-support"]
 # reaches its workspaces only through its device's daemon: what the tests that
 # land with the deletion of the session's own copy prove. Off until that copy
 # is gone; the commit that deletes it turns it on.
-no-replica = ["test-support"]
+no-workspace-copy = ["test-support"]
 
 [dependencies]
 # The device's published resources: their readings, verbs and surfaces.

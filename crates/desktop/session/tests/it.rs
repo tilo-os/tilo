@@ -175,8 +175,13 @@ mod network_unlock;
 mod network_unlock_enrolment;
 #[path = "no_locale_leaks.rs"]
 mod no_locale_leaks;
+// The session that holds nothing of its own: it turns on with the commit that deletes the
+// session's own copy of a workspace.
 #[path = "no_view_call.rs"]
 mod no_view_call;
+#[cfg(feature = "no-workspace-copy")]
+#[path = "no_workspace_copy.rs"]
+mod no_workspace_copy;
 #[path = "notification_agent.rs"]
 mod notification_agent;
 #[path = "notifications.rs"]
