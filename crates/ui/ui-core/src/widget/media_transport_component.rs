@@ -345,7 +345,6 @@ impl DeclaredTransport {
         // while it plays, and once more when it stops or ends. Never at zero, which reads as a
         // song heard whole.
         if let Some(duration) = duration.filter(|duration| *duration > 0.0) {
-            let step = |at: f64| (at / PROGRESS_STEP_MS).floor();
             let due = if playing {
                 self.told
                     .is_none_or(|was| progress_step(position) != progress_step(was))
