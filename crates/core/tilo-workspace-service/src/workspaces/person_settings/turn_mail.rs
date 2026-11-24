@@ -186,6 +186,7 @@ impl Workspaces {
         Ok((using, workspace, accounts))
     }
 
+    #[cfg(feature = "agents")]
     /// The mail actions `turn` is offered, as a catalogue lists them: each
     /// one it would not be refused. None for a turn this server does not carry out, for an agent
     /// that does not reach the workspace's mail and in a workspace that keeps no mail account; a

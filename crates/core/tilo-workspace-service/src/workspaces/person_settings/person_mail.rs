@@ -15,7 +15,9 @@ use tilo_actions::remote::person_accounts::{
 };
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
 
-use super::kept_sign_ins::{Signing, has_sign_in, sign_in_of};
+#[cfg(feature = "agents")]
+use super::kept_sign_ins::sign_in_of;
+use super::kept_sign_ins::{Signing, has_sign_in};
 use super::{add_mail_with, answer, argument, remove_mail};
 use crate::workspaces::Workspaces;
 use crate::workspaces::vault::VaultAt;

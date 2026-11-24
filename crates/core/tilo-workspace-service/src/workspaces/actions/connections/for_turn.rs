@@ -51,14 +51,17 @@ use crate::workspaces::workspace_stores::Store;
 /// The most arguments a question shows whole, as JSON: a call with more is
 /// refused before anybody is asked.
 const MAX_ASKED_BYTES: usize = 2 * 1024;
+#[cfg(feature = "agents")]
 /// The most of a service's own words about a command a listing repeats.
 const MAX_SAID_CHARS: usize = 240;
+#[cfg(feature = "agents")]
 /// The longest name of an argument a listing spells out.
 const MAX_ARGUMENT_NAME_BYTES: usize = 64;
 
 const TOO_LARGE_TO_ASK: &str = "Those arguments are larger than a question shows whole, so your person cannot be asked about this call";
 const CONNECTED: &str = "That service is connected already: it is in the list of connections";
 
+#[cfg(feature = "agents")]
 /// Proposing a connection: its person is asked, and nothing is added by the
 /// call.
 const PROPOSES: Verb = Verb {
@@ -123,6 +126,7 @@ fn names(turn: &HostedTurn<'_>, workspace: &str, id: &str) -> bool {
             == Answer::Allow
 }
 
+#[cfg(feature = "agents")]
 /// `said` on one line, as far as a listing repeats a service's own words.
 fn one_line(said: &str) -> String {
     let mut line = String::new();
@@ -139,6 +143,7 @@ fn one_line(said: &str) -> String {
     line
 }
 
+#[cfg(feature = "agents")]
 /// The arguments `schema` describes, as a listing spells them out: each by
 /// its name, its kind and whether a call must give it. A description this
 /// listing cannot spell out whole names none: the command's own schema is
@@ -187,6 +192,7 @@ fn params_of(schema: &Value) -> Vec<ActionParam> {
     params
 }
 
+#[cfg(feature = "agents")]
 /// The row of one command of `connection`, whose service is at `site`: what
 /// an agent's listing shows of it, with whether it asks first. What the
 /// service says of the command follows the system's own words, marked as
@@ -485,6 +491,7 @@ impl Workspaces {
         )
     }
 
+    #[cfg(feature = "agents")]
     /// What `turn` finds of its person's connections in its listing: what an
     /// agent does with them, and each command of each connection it
     /// reaches, with whether it asks first. Read anew at every listing.

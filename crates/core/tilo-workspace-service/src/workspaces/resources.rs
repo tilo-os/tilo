@@ -173,6 +173,7 @@ impl Resources {
         self.store.lock_recover().get(kind, id, &|_| true).is_some()
     }
 
+    #[cfg(any(feature = "apps", feature = "agents"))]
     /// Show this workspace's live resources in `rows`, as `reader` (a person's key in hex) may read
     /// them, from now on.
     pub(super) fn show_live(&mut self, rows: &crate::live::LiveRows, reader: String) {

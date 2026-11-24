@@ -887,6 +887,7 @@ impl super::Workspaces {
         self.inner.jobs.agents.read_recover().clone()
     }
 
+    #[cfg(feature = "agents")]
     /// A key of this device's own for `statement`: its device key signs a digest of the
     /// statement, and the key is made from that signature, so the device makes the same key every
     /// time and nothing secret is written down. The key never leaves the device; what it offers

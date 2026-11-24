@@ -108,6 +108,7 @@ impl Workspaces {
         .await
     }
 
+    #[cfg(feature = "agents")]
     /// `workspace`'s policy as this device reads it, off the replica its own reads answer from:
     /// what a record opened for a person is read by ([`Self::own_read`]).
     pub(crate) fn policy_now(

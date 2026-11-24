@@ -1052,6 +1052,7 @@ pub(crate) struct HolderClaim {
 
 struct WorkspacesInner {
     host: WorkspaceServices,
+    #[cfg(any(feature = "apps", feature = "agents"))]
     /// Where the workspaces' live resources are shown, once the session asks for them
     /// ([`Workspaces::show_live`]).
     live: std::sync::OnceLock<crate::live::LiveRows>,
@@ -1484,6 +1485,7 @@ impl Workspaces {
         let memberships = host.access.memberships();
         let this = Self {
             inner: Arc::new(WorkspacesInner {
+                #[cfg(any(feature = "apps", feature = "agents"))]
                 live: std::sync::OnceLock::new(),
                 #[cfg(test)]
                 link_heard_capacity: std::sync::atomic::AtomicUsize::new(0),
@@ -1918,6 +1920,7 @@ impl Workspaces {
         self.inner.action_service.clone()
     }
 
+    #[cfg(feature = "agents")]
     /// Answer one request for `workspace_id`'s records through the app action server this host
     /// serves, as `caller`: the same admission every request takes, so what the host writes for
     /// a person is kept, published and announced to whoever follows the record as any write is.

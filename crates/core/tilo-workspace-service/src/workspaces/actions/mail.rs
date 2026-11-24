@@ -317,6 +317,7 @@ impl super::super::Workspaces {
         row
     }
 
+    #[cfg(feature = "agents")]
     /// The rows an agent the workspace's policy lets read its mail is
     /// offered, for the entry a turn this holder carries out reaches the
     /// workspace's mail through: such a turn has no device behind it for the

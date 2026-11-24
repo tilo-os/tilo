@@ -57,7 +57,6 @@
 use std::path::Path;
 
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
-use serde::Serialize;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{ActionKind, Answer, Rule, TreePath};
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, UnknownAction};
@@ -314,6 +313,7 @@ impl Workspaces {
         })
     }
 
+    #[cfg(feature = "agents")]
     /// The actions of `provider` that `caller`'s turn is offered of what its workspace keeps
     /// for the person who asked it: each one it would not be refused before anything is opened,
     /// read anew at every listing, so a connection its person added a moment ago is in it. A
@@ -340,6 +340,7 @@ impl Workspaces {
         rows
     }
 
+    #[cfg(feature = "agents")]
     /// Whether `caller`'s turn may ask for a page's field to be filled from its workspace's
     /// vault at all: what [`Self::release_for`] refuses before the vault is opened, asked before
     /// any window is.
@@ -352,6 +353,7 @@ impl Workspaces {
         self.may_fill_pages(&kept.of(caller)).await
     }
 
+    #[cfg(feature = "agents")]
     /// Release what the item `fill` names keeps for the page at its site, for `caller`'s turn,
     /// which `request` asked, as [`Self::release_for_turn`] decides it for the turn the
     /// workspace's list of its agents keeps.
@@ -372,7 +374,7 @@ impl Workspaces {
 
 /// `value`, what a turn's call came to, as the dispatch answers it.
 #[cfg(feature = "agents")]
-fn answered(value: impl Serialize) -> Result<Value, ActionCallError> {
+fn answered(value: impl serde::Serialize) -> Result<Value, ActionCallError> {
     serde_json::to_value(value).map_err(|error| ActionCallError::refused(error.to_string()))
 }
 
@@ -612,6 +614,7 @@ impl Use {
     }
 }
 
+#[cfg(feature = "agents")]
 /// The item and the site a page fill names. A text is written only into a
 /// page that arrived over https.
 fn page_wanted(fill: &FillPage) -> Result<(ItemId, Place), String> {
@@ -624,6 +627,7 @@ fn page_wanted(fill: &FillPage) -> Result<(ItemId, Place), String> {
     Ok((item, site))
 }
 
+#[cfg(feature = "agents")]
 /// The kind of field an item of `kind` fills, when it fills one.
 fn page_field(kind: vault_items::ItemKind) -> Result<PageField, String> {
     match kind {
@@ -636,6 +640,7 @@ fn page_field(kind: vault_items::ItemKind) -> Result<PageField, String> {
     }
 }
 
+#[cfg(feature = "agents")]
 /// Hand out what the item `item` of `workspace`'s vault fills a page's field at `site` with, for
 /// `by`: a code generator's code of this moment, else what the item keeps. The use is written
 /// down first, as every use is.
@@ -771,6 +776,7 @@ fn use_asked(
 }
 
 impl Workspaces {
+    #[cfg(feature = "agents")]
     /// Who asked the turn `caller` works in `workspace`, where it is one this server carries
     /// out ([`Self::asked_turn`]): what a provider of the turn's own checks first.
     ///
@@ -922,6 +928,7 @@ impl Workspaces {
         Ok(using)
     }
 
+    #[cfg(feature = "agents")]
     /// The uses by reference `turn` is offered, as a catalogue lists them:
     /// each one it would not be refused before the vault is opened.
     pub(crate) async fn uses_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
@@ -941,6 +948,7 @@ impl Workspaces {
         offered
     }
 
+    #[cfg(feature = "agents")]
     /// The calls that send what a vault item keeps out with a request of
     /// the agent's own making, which `turn` is offered as a catalogue lists
     /// them: each one it would not be refused before the vault is opened.
@@ -1125,6 +1133,7 @@ impl Workspaces {
 }
 
 impl Workspaces {
+    #[cfg(feature = "agents")]
     /// Whether `turn` may ask for a page's field to be filled from its workspace's vault at
     /// all: what [`Self::release_for_turn`] refuses before the vault is opened, asked before
     /// any window is.
@@ -1141,6 +1150,7 @@ impl Workspaces {
             .map(drop)
     }
 
+    #[cfg(feature = "agents")]
     /// Release what the item `fill` names keeps, for the page at the site `fill` names, to
     /// whoever sends it on to that page's window, for `turn`, which `request` asked: at once
     /// where a grant of the workspace's lets this agent fill it there, or where its person

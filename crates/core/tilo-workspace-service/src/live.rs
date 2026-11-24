@@ -104,6 +104,7 @@ impl LiveRows {
         self.moved();
     }
 
+    #[cfg(any(feature = "apps", feature = "agents"))]
     /// This device is `device` (its key): what is live on it is live here whoever it reaches.
     pub(crate) fn here_is(&self, device: [u8; 32]) {
         let device = hex::encode(device);
@@ -118,7 +119,10 @@ impl LiveRows {
     /// Show `rows` as `workspace`'s live resources now.
     pub(crate) fn show(&self, workspace: &str, rows: Vec<LiveRow>) {
         let mut shown = self.0.rows.lock_recover();
-        if shown.get(workspace).map_or(rows.is_empty(), |held| *held == rows) {
+        if shown
+            .get(workspace)
+            .map_or(rows.is_empty(), |held| *held == rows)
+        {
             return;
         }
         if rows.is_empty() {
