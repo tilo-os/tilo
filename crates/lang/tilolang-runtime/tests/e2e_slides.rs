@@ -551,7 +551,7 @@ mod cases {
             "add_picture",
             &[
                 ("s", Value::resource(&slide)),
-                ("file", Value::File(picture)),
+                ("file", Value::File(std::rc::Rc::new(picture))),
             ],
         ));
         assert_eq!(
