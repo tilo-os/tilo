@@ -151,6 +151,62 @@ macro_rules! read_through_json_value {
     };
 }
 
+/// Serde for a type kept as JSON and in a binary format: in a human-readable
+/// format (JSON, a `serde_json::Value`, serde's buffered content) it is read
+/// and written through one `Value`, by functions compiled once in the crate
+/// that declares it; in any other (postcard) by its derived code, unchanged.
+///
+/// The type derives with `#[serde(remote = "Self")]`, as for
+/// [`read_through_json_value!`]. A crate that reads or writes the type as JSON
+/// then compiles only the `Value` step, not the type's whole serializer and
+/// deserializer (and, for an internally tagged or flattened type, its buffered
+/// copy) once per format it meets. The JSON is the same: a `Value`'s map keeps
+/// the order its fields were written in. `read` routes only reading, for a
+/// type whose `Serialize` is its own.
+#[macro_export]
+macro_rules! readable_through_json_value {
+    ($ty:ty) => {
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                if !serializer.is_human_readable() {
+                    return Self::serialize(self, serializer);
+                }
+                match self.to_readable_json() {
+                    Ok(value) => serde::Serialize::serialize(&value, serializer),
+                    Err(error) => Err(serde::ser::Error::custom(error)),
+                }
+            }
+        }
+
+        impl $ty {
+            #[inline(never)]
+            fn to_readable_json(&self) -> Result<serde_json::Value, serde_json::Error> {
+                Self::serialize(self, serde_json::value::Serializer)
+            }
+        }
+
+        $crate::readable_through_json_value!($ty, read);
+    };
+    ($ty:ty, read) => {
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                if !deserializer.is_human_readable() {
+                    return Self::deserialize(deserializer);
+                }
+                let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+                Self::from_readable_json(value).map_err(serde::de::Error::custom)
+            }
+        }
+
+        impl $ty {
+            #[inline(never)]
+            fn from_readable_json(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+                Self::deserialize(value)
+            }
+        }
+    };
+}
+
 pub mod action;
 pub mod agent_disclosure;
 pub mod api;

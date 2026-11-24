@@ -20,6 +20,7 @@ use crate::{
 
 /// One saved shortcut.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct Shortcut {
     /// Stable id; also the tail of the resource id the shortcut is published
     /// under ([`crate::shortcut_resource_id`]).
@@ -127,6 +128,7 @@ pub enum ShortcutChange {
 /// device commits its save. [`Step`] therefore writes the map itself, with
 /// its length known, and reads the flat form back through the fields.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(remote = "Self")]
 pub struct Step {
     /// Unique within the shortcut; ASCII letters, digits, `-` and `_`.
     pub id: String,
@@ -196,7 +198,7 @@ impl Step {
 /// step that is retried, sent into a fallback or passed over is never the
 /// same as one that worked.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "on_error", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "on_error", rename_all = "snake_case")]
 pub enum StepPolicy {
     /// Stop the invocation here.
     #[default]
@@ -254,7 +256,7 @@ const fn default_backoff_ms() -> u64 {
 
 /// What a step does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "step", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "step", rename_all = "snake_case")]
 pub enum StepKind {
     /// Invoke one published action: the app, the resource kind that
     /// publishes it and its public id, on the resource `resource` selects.
@@ -385,7 +387,7 @@ pub enum Selector {
 
 /// Where a value comes from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum Binding {
     /// A constant.
     Literal(serde_json::Value),
@@ -438,7 +440,7 @@ impl Binding {
 
 /// A branch condition.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum Condition {
     /// Neither null, false, zero, nor an empty string, array or object.
     Truthy(Binding),
@@ -565,7 +567,7 @@ tilo_resource::value_model!(
 /// What may start a shortcut. Data only: the session decides how to watch
 /// for each and starts an unattended invocation when one fires.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "trigger", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "trigger", rename_all = "snake_case")]
 pub enum TriggerSpec {
     /// A key chord in the shell's own notation, e.g. `Super+Shift+N`.
     Keyboard {
@@ -960,7 +962,7 @@ impl TriggerSpec {
 
 /// When a scheduled trigger fires.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "every", rename_all = "snake_case")]
+#[serde(remote = "Self", tag = "every", rename_all = "snake_case")]
 pub enum Schedule {
     /// A fixed period, counted from the Unix epoch so every device the
     /// shortcut reaches agrees on its fire times.
@@ -1008,3 +1010,15 @@ pub enum FocusTransition {
     Enter,
     Leave,
 }
+
+// Read and written as JSON through one `Value`, by code compiled once here, so
+// an app that keeps shortcuts compiles none of these types' serde code; the
+// host's binary encoding keeps the derived code.
+tilo_actions::readable_through_json_value!(Shortcut);
+tilo_actions::readable_through_json_value!(Step, read);
+tilo_actions::readable_through_json_value!(StepPolicy);
+tilo_actions::readable_through_json_value!(StepKind);
+tilo_actions::readable_through_json_value!(Binding);
+tilo_actions::readable_through_json_value!(Condition);
+tilo_actions::readable_through_json_value!(TriggerSpec);
+tilo_actions::readable_through_json_value!(Schedule);
