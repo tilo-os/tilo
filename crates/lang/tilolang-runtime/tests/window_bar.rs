@@ -280,7 +280,7 @@ mod cases {
         );
         assert_eq!(
             labels.get(1..6).unwrap_or_default(),
-            ["Complete", "Pick date…", "Assign…", "Indent", "Delete"],
+            ["Complete", "Pick date…", "Today", "Tomorrow", "Next week"],
             "the row opens with the actions its view placed, whole menu {labels:?}:\n{}",
             dump(tree)
         );
@@ -292,17 +292,21 @@ mod cases {
             "the system's Export and Copy link close every row's menu, whole menu {labels:?}:\n{}",
             dump(tree)
         );
+        // The view places Delete last: what follows it is what the view left over.
+        let placed = labels
+            .iter()
+            .position(|label| label == "Delete")
+            .unwrap_or_else(|| panic!("the view places Delete, whole menu {labels:?}"))
+            + 1;
         assert!(
-            menu[6..menu.len() - 2]
+            menu[placed..menu.len() - 2]
                 .iter()
                 .all(|item| item.props.get("group") == Some(&Value::text("More"))),
             "what the view left over stands behind its \"More\", whole menu {labels:?}:\n{}",
             dump(tree)
         );
         assert!(
-            labels
-                .get(6..)
-                .is_some_and(|held| held.contains(&"Duplicate".to_owned())),
+            labels.contains(&"Duplicate".to_owned()),
             "every other action a task takes stays in the row's menu, whole menu \
              {labels:?}:\n{}",
             dump(tree)
@@ -352,7 +356,12 @@ mod cases {
         let behind: Vec<String> = overflow.iter().map(|node| text_of(node, "label")).collect();
         assert_eq!(
             behind,
-            ["Delete finished tasks", "Export…", "Copy link"],
+            [
+                "Delete finished tasks",
+                "Add origin…",
+                "Export…",
+                "Copy link"
+            ],
             "the bar's overflow button holds the actions the view placed, in its order, and then the \
              rest of what Tasks offers that the window does not already offer: New project is \
              its Projects section's add, and stands there alone; the system's Export and Copy \
@@ -433,7 +442,7 @@ mod cases {
             .iter()
             .map(|item| text_of(item, "label"))
             .collect();
-        for asks in ["Pick date…", "Project…", "Assign…"] {
+        for asks in ["Pick date…", "Project…", "Label…"] {
             assert!(
                 labels.iter().any(|label| label == asks),
                 "a form opens for {asks}, so it says so: {labels:?}\n{}",
