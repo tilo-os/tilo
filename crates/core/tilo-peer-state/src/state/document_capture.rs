@@ -624,6 +624,19 @@ impl StatePeer {
                         *key == Ed25519PublicKey::from_bytes(author) && *floor >= sequence
                     })
                 })
+                // A write an earlier checkpoint folded is carried by the one that folded that
+                // checkpoint in turn, whose covers name only what it folded directly: the
+                // replica's marks keep every write a compaction it took in folded.
+                || self
+                    .core
+                    .exact_admissions
+                    .covers(&crate::admission::AdmissionKey {
+                        workspace: self.core.workspace.clone(),
+                        app: route.app.clone(),
+                        record: route.record.clone(),
+                        author,
+                        sequence,
+                    })
         };
         if self.core.exact_admissions.iter().any(|(key, _)| {
             key.app == route.app && key.record == route.record && !covered(key.author, key.sequence)
