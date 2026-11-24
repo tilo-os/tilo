@@ -163,6 +163,8 @@ pub enum Stream {
     Share,
     /// A low-rate note of what this device is doing.
     Activity,
+    /// The person's keyboard and pointer, to the device of theirs it drives.
+    Input,
 }
 
 impl Stream {
@@ -189,6 +191,7 @@ impl Stream {
             Self::Page => [LIVE_SESSION, 3],
             Self::Share => [LIVE_SESSION, 1],
             Self::Activity => [LIVE_SESSION, 2],
+            Self::Input => [LIVE_SESSION, 4],
         }
     }
 
@@ -206,6 +209,7 @@ impl Stream {
             Self::Presence => "presence",
             Self::Share => "share",
             Self::Activity => "activity",
+            Self::Input => "input",
         }
     }
 }

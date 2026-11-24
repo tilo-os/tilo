@@ -265,9 +265,6 @@ pub(crate) struct Local {
     commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
     /// What the peer actor and the fabric said that only this desktop keeps.
     desktop_events: std::sync::mpsc::Receiver<DesktopEvent>,
-    /// The actions of the person's devices that arrived ahead of the pass routing them: what the
-    /// session took at once ([`Client::fabric_actions_now`]) left these for it.
-    fabric_waiting: RefCell<Vec<crate::platform::fabric::PersonalFabricActionEnvelope>>,
     /// The call audio the workspaces' live sessions heard since the last call, each with the
     /// workspace it was heard in: what the calls playing it take ([`Self::take_call_audio`]).
     call_audio: RefCell<Vec<(String, Heard)>>,
@@ -704,11 +701,10 @@ impl Local {
     pub(crate) fn fabric_actions(
         &self,
     ) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
-        let mut actions = std::mem::take(&mut *self.fabric_waiting.borrow_mut());
-        if let Some(fabric) = &self.fabric {
-            actions.extend(fabric.take_actions());
-        }
-        actions
+        self.fabric
+            .as_ref()
+            .map(|fabric| fabric.take_actions())
+            .unwrap_or_default()
     }
 
     /// The workspaces' live session: what this session says into and hears from each of them, and the
@@ -1669,6 +1665,17 @@ impl Client {
         self.hosting.local.person_resources()
     }
 
+    /// The way to the person's other devices over the live link, and from them to this one;
+    /// `None` when this session holds no workspaces.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn own_devices(&self) -> Option<crate::live::OwnDevices> {
+        self.hosting
+            .local
+            .live()
+            .map(|live| live.own_devices())
+    }
+
     /// The person's presence as the surfaces here read it.
     pub fn here(&self) -> &Here {
         &self.hosting.roster.here
@@ -1693,23 +1700,6 @@ impl Client {
     pub fn fabric_actions(&self) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
         self.hosting.local.keep_desktop_events(&self.inner);
         self.hosting.local.fabric_actions()
-    }
-
-    /// Hand `take` each action one of the person's devices sent this one since the last look, the
-    /// moment it is here; what it does not take waits for [`Self::fabric_actions`] .
-    #[cfg(target_os = "linux")]
-    pub(crate) fn fabric_actions_now(
-        &self,
-        take: impl Fn(&crate::platform::fabric::PersonalFabricActionEnvelope) -> bool,
-    ) {
-        let local = &self.hosting.local;
-        local.keep_desktop_events(&self.inner);
-        let left: Vec<_> = local
-            .fabric_actions()
-            .into_iter()
-            .filter(|envelope| !take(envelope))
-            .collect();
-        local.fabric_waiting.borrow_mut().extend(left);
     }
 
     /// The member's devices the peer network heard at another peer protocol version.
@@ -1906,7 +1896,6 @@ impl Local {
                 session: RefCell::new(None),
                 commands,
                 desktop_events,
-                fabric_waiting: RefCell::default(),
                 call_audio: RefCell::new(Vec::new()),
                 call_pictures: RefCell::new(Vec::new()),
                 window_objects: RefCell::new(Vec::new()),
@@ -1941,7 +1930,6 @@ impl Local {
             session: RefCell::new(None),
             commands,
             desktop_events,
-            fabric_waiting: RefCell::default(),
             call_audio: RefCell::new(Vec::new()),
             call_pictures: RefCell::new(Vec::new()),
             window_objects: RefCell::new(Vec::new()),

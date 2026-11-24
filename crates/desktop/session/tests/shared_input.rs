@@ -1,9 +1,10 @@
 //! One keyboard and pointer for two of a person's devices side by side: the pointer
 //! pushed past the laptop's edge toward the phone's screen goes on there while the laptop's own
 //! waits out of sight, the keys typed on the laptop reach the phone, what was copied last pastes
-//! on whichever device they are on, and Ctrl+Alt+Escape on the laptop brings both back. Both devices run
-//! their real sessions, joined to one workspace as the same person, so the input travels the
-//! person's own device fabric and the phone's compositor takes it as it takes remote input.
+//! on whichever device they are on, and Ctrl+Alt+Escape on the laptop brings both back; once the
+//! phone turns Display & input off, nothing the laptop sends is taken there. Both devices run their
+//! real sessions and daemons as the same person, so the input travels the live link from the
+//! laptop's daemon to the phone's and the phone's compositor takes it as it takes remote input.
 
 #![cfg(target_os = "linux")]
 
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::common::people::{Device, show, two_devices_of_one_person, wait_shown};
+use crate::common::people::{Device, set_setting, show, two_devices_of_one_person, wait_shown};
 
 /// What `device` says of the person's one keyboard and pointer.
 fn shared(device: &Device) -> Value {
@@ -392,6 +393,55 @@ fn the_pointer_and_the_keyboard_cross_to_the_device_beside_this_one_and_come_bac
     assert_eq!(pointer(&phone), phone_now, "and no longer on the phone");
     picture(&laptop, "3-laptop-back");
     picture(&phone, "3-phone-after");
+
+    // The pointer crosses again under the hand-over the phone let in.
+    let injected = |device: &Device| shared(device)["injected"].as_u64().unwrap_or(0);
+    let before = injected(&phone);
+    move_to(&laptop, edge(0.0));
+    for _ in 0..3 {
+        move_to(&laptop, edge(10.0));
+    }
+    assert_eq!(
+        driving(&laptop).as_deref(),
+        Some(phone_id.as_str()),
+        "the pointer crossed to the phone again"
+    );
+    waited(
+        "the pointer arriving on the phone again",
+        &[&laptop, &phone],
+        || injected(&phone) > before,
+    );
+    let parked = pointer(&laptop);
+
+    // The person turns Display & input off on the phone: the hand-over it let in ends there at
+    // once, and what the laptop still sends under it is not taken, before the laptop hears so.
+    set_setting(&phone, "continuity", "display_input", &json!(false));
+    waited("the phone letting nobody drive it", &[&laptop, &phone], || {
+        shared(&phone)["let_in"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+    });
+    let taken = injected(&phone);
+    let phone_now = pointer(&phone);
+    for step in 1..=6 {
+        let offset = f64::from(step) * 20.0;
+        move_to(
+            &laptop,
+            (parked.0 + toward.0 * offset, parked.1 + toward.1 * offset),
+        );
+    }
+    waited(
+        "the laptop's keyboard and pointer coming back to it",
+        &[&laptop, &phone],
+        || driving(&laptop).is_none() && pointer_shown(&laptop),
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        injected(&phone),
+        taken,
+        "nothing the laptop sent after the phone ended its hand-over was taken there"
+    );
+    assert_eq!(pointer(&phone), phone_now, "the phone's pointer stays put");
 }
 
 /// A point on the bar of the window titled `title` on `device`'s screen: on the tab the bar

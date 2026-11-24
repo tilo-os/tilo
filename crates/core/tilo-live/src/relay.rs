@@ -821,11 +821,10 @@ async fn forward(
             Arc::clone(&authorization),
         ));
         let mut opaque = Vec::new();
-        for live_session_track in [
-            crate::live::Track::Presence,
-            crate::live::Track::Activity,
-            crate::live::Track::Share,
-        ] {
+        let scope = crate::live::Namespace::parse(name.as_str())
+            .map(|namespace| namespace.scope_id().to_owned())
+            .unwrap_or_default();
+        for &live_session_track in crate::live::opaque_tracks(&scope) {
             let name = crate::live::track(live_session_track);
             let Ok(output) = out.create_track(
                 name.as_str(),

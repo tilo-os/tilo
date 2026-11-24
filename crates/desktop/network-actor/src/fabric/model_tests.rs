@@ -1,31 +1,5 @@
 use super::*;
 
-#[test]
-fn a_scroll_says_its_unit_and_only_a_finger_scroll_may_be_empty() {
-    let scroll = |horizontal, vertical, unit| FabricInputEvent::Scroll {
-        horizontal,
-        vertical,
-        unit,
-    };
-    assert!(scroll(0, -30, ScrollUnit::Lines).validate());
-    assert!(
-        scroll(0, 0, ScrollUnit::Pixels).validate(),
-        "a finger scroll's end"
-    );
-    assert!(!scroll(0, 0, ScrollUnit::Lines).validate());
-    assert!(!scroll(2_000_000, 0, ScrollUnit::Pixels).validate());
-    let wire = serde_json::to_string(&scroll(0, -60, ScrollUnit::Lines)).unwrap();
-    assert_eq!(
-        wire,
-        r#"{"scroll":{"horizontal":0,"vertical":-60,"unit":"lines"}}"#
-    );
-    assert!(
-        serde_json::from_str::<FabricInputEvent>(r#"{"scroll":{"horizontal":0,"vertical":-2}}"#)
-            .is_err(),
-        "a scroll without a unit is not guessed at"
-    );
-}
-
 fn id(value: &str) -> DeviceId {
     DeviceId::new(value).unwrap()
 }
@@ -129,7 +103,6 @@ fn media_handoff_and_media_actions_are_capability_and_locator_checked() {
 }
 
 #[test]
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -182,68 +155,6 @@ fn clipboard_payloads_are_bounded_and_tamper_checked() {
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn remote_input_actions_require_exact_bound_leases() {
-    fn remote_input_requires_a_short_lived_explicit_lease() {
-        let lease = InputLease {
-            controller: id("laptop"),
-            target: id("tablet"),
-            issued_unix_ms: 100,
-            expires_unix_ms: 200,
-            nonce: [7; 16],
-            allow_keyboard: true,
-            allow_pointer: true,
-        };
-        assert_eq!(lease.validate_at(150), Ok(()));
-        assert_eq!(lease.validate_at(201), Err(FabricError::ExpiredInputLease));
-    }
-
-    fn input_actions_reject_unbound_or_malformed_events() {
-        let source = id("controller");
-        let target = id("target");
-        for (nonce, event) in [
-            ([0; 16], FabricInputEvent::PointerMotion { x: 10, y: 20 }),
-            (
-                [1; 16],
-                FabricInputEvent::PointerButton {
-                    button: 0,
-                    pressed: true,
-                },
-            ),
-            (
-                [1; 16],
-                FabricInputEvent::Key {
-                    keycode: 0x300,
-                    pressed: true,
-                    modifiers: 0,
-                },
-            ),
-        ] {
-            let envelope = PersonalFabricActionEnvelope {
-                request_id: [2; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10_000,
-                action: PersonalFabricAction::Input {
-                    lease_nonce: nonce,
-                    event,
-                },
-            };
-            assert_eq!(
-                envelope.validate_at(&source, &target, 10_100),
-                Err(FabricError::InvalidAction)
-            );
-        }
-    }
-
-    remote_input_requires_a_short_lived_explicit_lease();
-    input_actions_reject_unbound_or_malformed_events();
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
     fn ephemeral_actions_are_transport_bound_and_fresh() {
         let source = id("source");
@@ -282,12 +193,11 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
     }
 
     fn new_action_variants_do_not_renumber_existing_wire_actions() {
-        let input = postcard::to_allocvec(&PersonalFabricAction::Input {
-            lease_nonce: [1; 16],
-            event: FabricInputEvent::PointerMotion { x: 0, y: 0 },
+        let cancel = postcard::to_allocvec(&PersonalFabricAction::RemoteAudioCancel {
+            session_id: [1; 16],
         })
         .unwrap();
-        assert_eq!(input.first(), Some(&2));
+        assert_eq!(cancel.first(), Some(&6));
     }
 
     ephemeral_actions_are_transport_bound_and_fresh();

@@ -1629,6 +1629,9 @@ impl Daemon {
         // person's devices asked there are answered from here: the packets for a device on one
         // of this computer's networks, and the word that this computer is back.
         super::wake::Wake::start(personal.clone(), identity.cert.clone());
+        // The person's other devices drive this one's keyboard and pointer through its relay,
+        // admitted by the record of their devices.
+        live.follow_person(personal.clone());
         apps.device_grants()
             .keep_in(std::sync::Arc::new(personal.clone()));
         // The person's devices, as the record of their own workspace holds them, each revocation

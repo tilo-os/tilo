@@ -1,7 +1,6 @@
 //! Who a device is ([`DeviceId`]), the revision a fact carries ([`FabricStamp`]), the fresh ids
 //! that name one exchange, and where its screens are: the display facts the actor carries.
 
-pub mod carried;
 pub mod clock;
 pub mod devices;
 pub mod link;
@@ -9,7 +8,6 @@ mod model;
 pub mod speaker_group;
 pub mod unlock;
 
-pub use carried::{CarriedDrag, CarriedOffer, MAX_CARRIED_OFFERS};
 pub use devices::{DeviceAbout, PersonDevice, PersonDevices};
 pub use model::*;
 
