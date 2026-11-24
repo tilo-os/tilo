@@ -127,7 +127,6 @@ view library(lib: Library) {
 
 default view artwork for Artwork
 
-
 /// Opens a saved artwork from the file a person, Files or another app hands over.
 primary action open_artwork(lib: Library, file: File) -> Artwork (
     icon: .file_plus,
@@ -142,7 +141,14 @@ primary action open_artwork(lib: Library, file: File) -> Artwork (
                     Artwork(title: opened.title, width: opened.width, height: opened.height),
                 )
                 for row in opened.layers {
-                    made.layers.insert(Layer(name: row.name, medium: row.medium, opacity: row.opacity, visible: row.visible))
+                    made.layers.insert(
+                        Layer(
+                            name: row.name,
+                            medium: row.medium,
+                            opacity: row.opacity,
+                            visible: row.visible,
+                        ),
+                    )
                 }
                 if made.layers.is_empty() {
                     made.layers.insert(Layer(name: "Layer 1"))
@@ -234,15 +240,18 @@ action add_stroke(
     size: Float,
     colour: Text,
     brush: Text,
-) -> Mark (
-    icon: .pencil,
-    label: "Paint",
-    did: "painted a stroke",
-) {
+) -> Mark (icon: .pencil, label: "Paint", did: "painted a stroke") {
     require point.len() >= 2 "A stroke point is x and y"
     let on = if let chosen = layer { chosen } else { top_layer(a) }
     let made = a.marks.insert(
-        Mark(layer: on, kind: "stroke", points: point, size: size.clamp(0.25, 512.0), colour: colour, brush: brush),
+        Mark(
+            layer: on,
+            kind: "stroke",
+            points: point,
+            size: size.clamp(0.25, 512.0),
+            colour: colour,
+            brush: brush,
+        ),
     )
     made.name = "painting"
     made
@@ -260,9 +269,7 @@ action extend_stroke(a: Artwork, m: Mark, point: List<Float>) (
 action top_layer(a: Artwork) -> Layer {
     if let top = a.layers.filter(l -> l.visible).last() {
         top
-    } else {
-        a.layers.insert(Layer(name: "Layer 1"))
-    }
+    } else { a.layers.insert(Layer(name: "Layer 1")) }
 }
 
 /// Draws a shape, its SVG path data in artwork units.
@@ -281,7 +288,10 @@ destructive action remove_mark(a: Artwork, m: Mark) (icon: .trash, label: "Remov
 }
 
 /// Recolours a mark.
-action recolour(a: Artwork, m: Mark, colour: Text) (label: "Change a mark's colour", did: "recoloured a mark") {
+action recolour(a: Artwork, m: Mark, colour: Text) (
+    label: "Change a mark's colour",
+    did: "recoloured a mark",
+) {
     m.colour = colour
 }
 
@@ -360,7 +370,11 @@ action export_picture(a: Artwork, format: Text = "png", scale: Float = 1.0) -> O
 }
 
 /// Writes the artwork as an SVG document.
-action export_svg(a: Artwork) -> Text (icon: .download, label: "Export SVG", did: "exported an SVG") {
+action export_svg(a: Artwork) -> Text (
+    icon: .download,
+    label: "Export SVG",
+    did: "exported an SVG",
+) {
     match canvas.svg(artwork_json(a), json.encode(SvgRequest(ids: .none, outline_text: .none))) {
         .ok(markup) => {
             a.notice = ""
@@ -394,7 +408,10 @@ action import_svg(a: Artwork, markup: Text) -> Text (
     label: "Import an SVG",
     did: "imported an SVG",
 ) {
-    match canvas.svg_import(markup, json.encode(PlaceRequest(layer: .none, group: .none, fit: .none))) {
+    match canvas.svg_import(
+        markup,
+        json.encode(PlaceRequest(layer: .none, group: .none, fit: .none)),
+    ) {
         .ok(drawn) => {
             a.notice = "Imported the SVG's shapes"
             drawn
@@ -427,14 +444,20 @@ type OpenedLayer {
 }
 
 // ---- the window ----
-
 view artwork(a: Artwork) {
     state brush: Text = "round"
     state size: Float = 6.0
     state colour: Text = "#1d1b19"
     state chosen: Option<Layer> = .none
     state show_layers: Bool = true
-    std.page(a, canvas: true, fill: true, header: { artwork_head(a, brush, size, colour, show_layers) }) {
+    std.page(
+        a,
+        canvas: true,
+        fill: true,
+        header: {
+            artwork_head(a, brush, size, colour, show_layers)
+        },
+    ) {
         if a.notice != "" {
             ui.Banner(a.notice, kind: .warning) {
                 on act: clear_notice(a)
@@ -522,7 +545,20 @@ view well(a: Artwork, brush: Text, size: State<Float>, colour: State<Text>) {
 
 /// The inks a person reaches for, without opening a colour wheel.
 fn inks() -> List<Text> {
-    ["#1d1b19", "#ffffff", "#d24b3a", "#e39a2f", "#e2c33a", "#3f9a52", "#2f7fb8", "#2f4fa8", "#7a4fb8", "#c2479a", "#8a5a32", "#6b6b6b"]
+    [
+        "#1d1b19",
+        "#ffffff",
+        "#d24b3a",
+        "#e39a2f",
+        "#e2c33a",
+        "#3f9a52",
+        "#2f7fb8",
+        "#2f4fa8",
+        "#7a4fb8",
+        "#c2479a",
+        "#8a5a32",
+        "#6b6b6b",
+    ]
 }
 
 /// Paints the point the hand is at: the stroke being painted takes the next point, else a
@@ -535,4 +571,3 @@ action paint_point(a: Artwork, point: List<Float>, size: Float, colour: Text, br
         add_stroke(a, .none, point, size, colour, brush)
     }
 }
-
