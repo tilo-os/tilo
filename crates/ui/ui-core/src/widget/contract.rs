@@ -486,7 +486,8 @@ pub trait Widget {
 
     /// One-shot (reading MUST clear it): the test id of the control this subtree asks to take the
     /// keyboard once the runner laid it out, such as the first field of a view a person's press just
-    /// opened, so what they type next lands there.
+    /// opened, so what they type next lands there. An empty id asks for no control at all: the
+    /// keyboard leaves the field it is in (an editor rebuilt for another record, a view's `blur()`).
     fn take_focus_request(&mut self) -> Option<String> {
         defaults::take_focus_request(self.children_mut())
     }

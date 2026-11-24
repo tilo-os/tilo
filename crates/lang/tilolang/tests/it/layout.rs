@@ -75,6 +75,49 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_split_drawer_and_the_shell_s_narrow_form_compile;
+    {
+        let c = compile_body(
+            "view v() {\n    state shown: Bool = false\n    split(collapse: .drawer, drawer: shown) {\n        primary(min: 10rem) { text(\"a\") }\n        secondary(min: 10rem) { text(\"b\") }\n    }\n}",
+        );
+        validate(&c.wasm);
+        let c = compile_body(
+            "view v() {\n    ui.NavShell(sidebar_collapse: .drawer, inspector_collapse: .drawer, sidebar_open: true, inspector_open: false) {\n        content: { text(\"x\") }\n    }\n}",
+        );
+        validate(&c.wasm);
+    }
+
+    phase blur_is_a_view_action_that_ends_an_edit;
+    {
+        // An action a control runs, as `set` is: the field the keyboard is in lets it go.
+        let c = compile_body(
+            "view v() {\n    button(label: \"Done\", on: blur())\n}",
+        );
+        validate(&c.wasm);
+        let imports: Vec<String> = {
+            let mut names = Vec::new();
+            for p in wasmparser::Parser::new(0).parse_all(&c.wasm) {
+                if let wasmparser::Payload::ImportSection(r) = p.expect("parses") {
+                    names.extend(
+                        r.into_imports()
+                            .map(|i| i.expect("import").name.to_string()),
+                    );
+                }
+            }
+            names
+        };
+        assert!(
+            imports.iter().any(|name| name == "act_blur"),
+            "a view's blur() reaches the host: {imports:?}"
+        );
+        // It needs a view, and it takes no argument: it ends the edit it is in.
+        assert_eq!(codes("fn f() {\n    blur()\n}"), vec!["E066"]);
+        assert_eq!(
+            codes("view v() {\n    button(label: \"Done\", on: blur(1))\n}"),
+            vec!["E022"]
+        );
+    }
+
     phase options_are_dot_literals_of_the_primitives_enums;
     // USER REQUIREMENT (2026-10-20): "layout/UI arguments become typed enums declared by the
     // primitives (`gap: .section`, `align: .center`, ...); bare words are no longer accepted there

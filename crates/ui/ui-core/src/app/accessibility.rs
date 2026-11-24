@@ -851,6 +851,12 @@ impl App {
         if self.accessibility.focus_trap_active {
             return false;
         }
+        // No control: the tree ends the keyboard's place in an editor (a bound editor the view
+        // rebuilt for another record, or a view asking for none).
+        if id.is_empty() {
+            self.set_focused_node(None);
+            return true;
+        }
         let target = self.focusable_order.iter().copied().find(|&node| {
             self.inspect_node(node, |widget| widget.test_id() == Some(id.as_str()))
                 .unwrap_or(false)

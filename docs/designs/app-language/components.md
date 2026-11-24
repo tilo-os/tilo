@@ -69,6 +69,10 @@ view contact_row(c: Contact) {
   `row(t.title, checkbox: t.done, check: check(t))` show the field and run the app's action,
   so completing a task completes what is under it in the same step, one undo, and history
   records the flag the app's action set.
+- The keyboard stays with the field the person put it in until the view moves it. `blur()` is an
+  action that ends that field's edit (`on press: blur()`), and an editor the view rebuilds for
+  another record — a deck's next slide in its notes editor — lets the keyboard go on its own,
+  so what the person types next never lands in a record they did not choose.
 - A document's running text is placed like any other component:
   `ui.BlockEditor(bind: doc.body, placeholder: "Write")`. It declares a binding to the field as
   a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same

@@ -14,7 +14,7 @@ use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
-    ANSWER_ACTION, CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION,
+    ANSWER_ACTION, BLUR_ACTION, CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION,
     CHOOSE_FOLDER_ACTION, COPY_LINK_ACTION, EXPORT_ACTION, KEEP_ACTION, MARK_SEEN_ACTION,
     OPEN_ACTION, REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION,
     THEN_ACTION, UNDO_ACTION,
@@ -64,6 +64,9 @@ pub enum ViewEvent {
     /// Export was chosen on `target`, a resource of `app`: the window's host saves it as a file
     /// where the person says ([`crate::export`]).
     Export { target: ResourceRef, app: String },
+    /// `blur()` was applied: the field the keyboard is in ends its edit, as closing its editor
+    /// does, so what the person types next goes nowhere until they choose another field.
+    EndEdit,
 }
 
 /// A step of the person's own in the system's call held on a resource.
@@ -1026,6 +1029,10 @@ impl ViewInstance {
             CHOOSE_ACTION => self.platform_choose(aref, false),
             CHOOSE_FOLDER_ACTION => self.platform_choose(aref, true),
             SAVE_ACTION => self.platform_save(aref),
+            BLUR_ACTION => {
+                self.events.borrow_mut().push(ViewEvent::EndEdit);
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
             CALL_INPUT_ACTION => self.call_input(aref),
             CALL_VOLUME_ACTION => self.call_volume(aref),
             CALL_ACTION => self.call_step(aref),

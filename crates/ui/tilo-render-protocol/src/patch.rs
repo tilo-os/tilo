@@ -684,6 +684,10 @@ pub enum ToUi {
         shown: Vec<CallShown>,
         pictures: Vec<CallPicture>,
     },
+    /// Where the keyboard goes, as the app asks: `Some(key)` moves it to the control with that
+    /// test id, `None` ends its place in an editor (the `blur()` a view applies), as closing the
+    /// editor does. The window answers through the same focus request a widget builds with.
+    Focus { key: Option<String> },
 }
 
 /// Which of a person's pictures a call tile shows.
