@@ -21,7 +21,7 @@ sources = [
     "crates/integrations/tilo-messaging/src/router.rs",
     "crates/integrations/tilo-messaging/src/sending.rs",
     "crates/integrations/tilo-messaging/src/setup.rs",
-    "crates/integrations/tilo-contact-directory/src/routing.rs",
+    "crates/core/tilo-contact-directory/src/routing.rs",
     "crates/integrations/accounts/src/secrets.rs",
 ]
 roots = ["Handoff", "Frame", "Call", "Reply", "Event"]

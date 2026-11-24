@@ -268,7 +268,7 @@ accounts = { package = "tilo-accounts", path = "../../integrations/accounts", fe
 account-credentials = { path = "../../integrations/account-credentials" }
 # The workspace's contact directory, which Contacts keeps and the session publishes as
 # `contacts:tilo.contacts.identities`, one record every member reads and changes (contacts.rs).
-tilo-contact-directory = { path = "../../integrations/tilo-contact-directory" }
+tilo-contact-directory = { path = "../../core/tilo-contact-directory" }
 # The sign-ins and calendar look-ups adding an account makes, made here for Settings, whose
 # sandbox has no network (services::accounts).
 tilo-account-probe = { path = "../../integrations/account-probe" }

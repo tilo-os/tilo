@@ -52,7 +52,7 @@ signal-profile-native-test = []
 accounts = { package = "tilo-accounts", path = "../accounts", features = ["person"] }
 serde.workspace = true
 serde_json.workspace = true
-tilo-contact-directory = { path = "../tilo-contact-directory" }
+tilo-contact-directory = { path = "../../core/tilo-contact-directory" }
 tilo-messaging = { path = "../tilo-messaging", features = ["service-client"] }
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true

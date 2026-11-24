@@ -584,7 +584,7 @@ fn the_directory_surface_file_is_what_this_crate_publishes() {
     assert_eq!(
         committed.as_deref(),
         Some(text.as_str()),
-        "crates/integrations/tilo-contact-directory/surface.json is not what this crate publishes; \
+        "crates/core/tilo-contact-directory/surface.json is not what this crate publishes; \
          regenerate it with UPDATE_SNAPSHOTS=1"
     );
 }

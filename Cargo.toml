@@ -75,7 +75,7 @@ members = [
     "apps/poker-model",
     "apps/poker-model-wasm",
     "crates/import/browser-continuity",
-    "crates/engines/browser-continuity-core",
+    "crates/core/browser-continuity-core",
     "crates/engines/page-engine",
     "crates/engines/code-engine",
     "crates/engines/disk-usage",
@@ -315,9 +315,9 @@ members = [
     "crates/platform/tilo-face",
     "crates/platform/tilo-mime",
     "crates/platform/tilo-wake",
-    "crates/integrations/tilo-contact-directory",
+    "crates/core/tilo-contact-directory",
     "crates/sdk/tilo-workspace-agent",
-    "crates/sdk/tilo-workspace-emoji",
+    "crates/core/tilo-workspace-emoji",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
     "crates/engines/tilo-archive",
@@ -636,7 +636,7 @@ must_use_candidate = "allow"
 
 [workspace.dependencies]
 browser-continuity = { path = "crates/import/browser-continuity", version = "0.1.0" }
-browser-continuity-core = { package = "tilo-browser-continuity-core", path = "crates/engines/browser-continuity-core", version = "0.1.0" }
+browser-continuity-core = { package = "tilo-browser-continuity-core", path = "crates/core/browser-continuity-core", version = "0.1.0" }
 tilo-app-id = { path = "crates/core/tilo-app-id", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------

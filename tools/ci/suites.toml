@@ -866,7 +866,7 @@ inputs = [
   "crates/desktop/settings-sections/published.toml",
   "apps/contacts/surface.toml",
   "crates/services/vision/surface.json",
-  "crates/integrations/tilo-contact-directory/surface.json",
+  "crates/core/tilo-contact-directory/surface.json",
   "crates/core/tilo-workspace-service/workspace-surface.toml",
 ]
 readers = [
@@ -1270,7 +1270,7 @@ inputs = [
   "crates/ui/tilo-render-protocol/",
   "crates/sdk/tilo-view/",
   "crates/sdk/tilo-workspace-agent/",
-  "crates/sdk/tilo-workspace-emoji/",
+  "crates/core/tilo-workspace-emoji/",
   "crates/sdk/zone-globe/",
   "crates/platform/search/",
   "crates/engines/tilo-page-raster/",
@@ -1291,7 +1291,7 @@ inputs = [
   "crates/integrations/mail-engine/",
   "crates/integrations/mail-session/",
   "crates/integrations/tilo-cloud-files/",
-  "crates/integrations/tilo-contact-directory/",
+  "crates/core/tilo-contact-directory/",
   "crates/integrations/tilo-host-search/",
   "crates/integrations/tilo-innertube/",
   "crates/integrations/tilo-messaging/",

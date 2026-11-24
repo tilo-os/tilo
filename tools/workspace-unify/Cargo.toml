@@ -1051,7 +1051,7 @@ doc = false
 "tilo-bounded-command" = { path = "../../crates/platform/bounded-command", default-features = false, features = [] }
 "tilo-bounded-zip" = { path = "../../crates/engines/bounded-zip", default-features = false, features = ["default", "epub"] }
 "tilo-broker-core" = { path = "../../crates/core/broker-core", default-features = false, features = [] }
-"tilo-browser-continuity-core" = { path = "../../crates/engines/browser-continuity-core", default-features = false, features = [] }
+"tilo-browser-continuity-core" = { path = "../../crates/core/browser-continuity-core", default-features = false, features = [] }
 "tilo-browser-runtime" = { path = "../../crates/core/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../crates/import/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../crates/engines/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
@@ -1079,7 +1079,7 @@ doc = false
 "tilo-compositor" = { path = "../../crates/desktop/compositor", default-features = false, features = ["test-support"] }
 "tilo-connectivity-service" = { path = "../../crates/os/connectivity-service", default-features = false, features = [] }
 "tilo-connector" = { path = "../../crates/integrations/connector", default-features = false, features = [] }
-"tilo-contact-directory" = { path = "../../crates/integrations/tilo-contact-directory", default-features = false, features = [] }
+"tilo-contact-directory" = { path = "../../crates/core/tilo-contact-directory", default-features = false, features = [] }
 "tilo-content" = { path = "../../crates/core/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-blocker" = { path = "../../crates/engines/content-blocker", default-features = false, features = [] }
 "tilo-content-device" = { path = "../../crates/core/content-device", default-features = false, features = [] }
@@ -1314,7 +1314,7 @@ doc = false
 "tilo-words" = { path = "../../crates/core/tilo-words", default-features = false, features = [] }
 "tilo-workspace-agent" = { path = "../../crates/sdk/tilo-workspace-agent", default-features = false, features = [] }
 "tilo-workspace-directory" = { path = "../../crates/core/workspace-directory", default-features = false, features = [] }
-"tilo-workspace-emoji" = { path = "../../crates/sdk/tilo-workspace-emoji", default-features = false, features = [] }
+"tilo-workspace-emoji" = { path = "../../crates/core/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../crates/core/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../crates/core/workspace-keys", default-features = false, features = ["test-support"] }
 "tilo-workspace-service" = { path = "../../crates/core/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "session-pages", "test-support"] }
@@ -2279,7 +2279,7 @@ doc = false
 "tilo-automerge-isolate" = { path = "../../crates/core/tilo-automerge-isolate", default-features = false, features = [] }
 "tilo-bounded-command" = { path = "../../crates/platform/bounded-command", default-features = false, features = [] }
 "tilo-bounded-zip" = { path = "../../crates/engines/bounded-zip", default-features = false, features = ["default", "epub"] }
-"tilo-browser-continuity-core" = { path = "../../crates/engines/browser-continuity-core", default-features = false, features = [] }
+"tilo-browser-continuity-core" = { path = "../../crates/core/browser-continuity-core", default-features = false, features = [] }
 "tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-cli-kit" = { path = "../../crates/sdk/cli", default-features = false, features = [] }
@@ -2352,7 +2352,7 @@ doc = false
 "tilo-wgpu-29_0_3" = { package = "tilo-wgpu", path = "../../vendor/wgpu", default-features = false, features = ["custom", "default", "dx12", "gles", "metal", "noop", "parking_lot", "std", "vulkan", "web", "webgpu", "wgpu-core", "wgsl"] }
 "tilo-wire-frame" = { path = "../../crates/platform/wire-frame", default-features = false, features = ["postcard", "tokio"] }
 "tilo-words" = { path = "../../crates/core/tilo-words", default-features = false, features = [] }
-"tilo-workspace-emoji" = { path = "../../crates/sdk/tilo-workspace-emoji", default-features = false, features = [] }
+"tilo-workspace-emoji" = { path = "../../crates/core/tilo-workspace-emoji", default-features = false, features = [] }
 "tilolang" = { path = "../../crates/lang/tilolang", default-features = false, features = [] }
 "tilolang-lex" = { path = "../../crates/lang/tilolang-lex", default-features = false, features = [] }
 "tilolang-runtime" = { path = "../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
@@ -3547,7 +3547,7 @@ doc = false
 "tilo-bounded-command" = { path = "../../crates/platform/bounded-command", default-features = false, features = [] }
 "tilo-bounded-zip" = { path = "../../crates/engines/bounded-zip", default-features = false, features = ["default", "epub"] }
 "tilo-broker-core" = { path = "../../crates/core/broker-core", default-features = false, features = [] }
-"tilo-browser-continuity-core" = { path = "../../crates/engines/browser-continuity-core", default-features = false, features = [] }
+"tilo-browser-continuity-core" = { path = "../../crates/core/browser-continuity-core", default-features = false, features = [] }
 "tilo-browser-runtime" = { path = "../../crates/core/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../crates/import/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../crates/engines/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
@@ -3574,7 +3574,7 @@ doc = false
 "tilo-compositor" = { path = "../../crates/desktop/compositor", default-features = false, features = ["test-support"] }
 "tilo-connectivity-service" = { path = "../../crates/os/connectivity-service", default-features = false, features = [] }
 "tilo-connector" = { path = "../../crates/integrations/connector", default-features = false, features = [] }
-"tilo-contact-directory" = { path = "../../crates/integrations/tilo-contact-directory", default-features = false, features = [] }
+"tilo-contact-directory" = { path = "../../crates/core/tilo-contact-directory", default-features = false, features = [] }
 "tilo-content" = { path = "../../crates/core/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-blocker" = { path = "../../crates/engines/content-blocker", default-features = false, features = [] }
 "tilo-content-device" = { path = "../../crates/core/content-device", default-features = false, features = [] }
@@ -3790,7 +3790,7 @@ doc = false
 "tilo-words" = { path = "../../crates/core/tilo-words", default-features = false, features = [] }
 "tilo-workspace-agent" = { path = "../../crates/sdk/tilo-workspace-agent", default-features = false, features = [] }
 "tilo-workspace-directory" = { path = "../../crates/core/workspace-directory", default-features = false, features = [] }
-"tilo-workspace-emoji" = { path = "../../crates/sdk/tilo-workspace-emoji", default-features = false, features = [] }
+"tilo-workspace-emoji" = { path = "../../crates/core/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../crates/core/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../crates/core/workspace-keys", default-features = false, features = ["test-support"] }
 "tilo-workspace-service" = { path = "../../crates/core/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "fixture-servers", "session-pages", "test-support"] }
@@ -4801,7 +4801,7 @@ doc = false
 "tilo-bounded-command" = { path = "../../crates/platform/bounded-command", default-features = false, features = [] }
 "tilo-bounded-zip" = { path = "../../crates/engines/bounded-zip", default-features = false, features = ["default", "epub"] }
 "tilo-broker-core" = { path = "../../crates/core/broker-core", default-features = false, features = [] }
-"tilo-browser-continuity-core" = { path = "../../crates/engines/browser-continuity-core", default-features = false, features = [] }
+"tilo-browser-continuity-core" = { path = "../../crates/core/browser-continuity-core", default-features = false, features = [] }
 "tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-cli-kit" = { path = "../../crates/sdk/cli", default-features = false, features = [] }

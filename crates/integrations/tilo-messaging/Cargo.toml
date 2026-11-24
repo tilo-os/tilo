@@ -15,7 +15,7 @@ wire = ["dep:serde", "zeroize/serde"]
 service-client = ["wire", "dep:serde_json", "dep:wire-frame", "dep:tokio", "dep:tracing"]
 
 [dependencies]
-tilo-contact-directory = { path = "../tilo-contact-directory" }
+tilo-contact-directory = { path = "../../core/tilo-contact-directory" }
 zeroize.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

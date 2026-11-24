@@ -188,7 +188,7 @@ app-cli = { path = "../../os/app-cli", optional = true }
 # The admin workspace's record of the person's servers, and its actions.
 tilo-resource = { path = "../tilo-resource" }
 # The workspace's emoji, which a bot's program may be told of.
-tilo-workspace-emoji = { path = "../../sdk/tilo-workspace-emoji", optional = true }
+tilo-workspace-emoji = { path = "../tilo-workspace-emoji", optional = true }
 # Who the agents a workspace's host runs are (the workspace's record of its agents), and the
 # tools an agent on a machine of the workspace acts through (the MCP server's agent surface).
 tilo-workspace-agent = { path = "../../sdk/tilo-workspace-agent", optional = true }

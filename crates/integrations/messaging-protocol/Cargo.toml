@@ -14,7 +14,7 @@ sms-dbus = ["dep:zbus", "dep:tokio", "dep:jiff", "dep:futures-util"]
 
 [dependencies]
 tilo-messaging = { path = "../tilo-messaging", optional = true }
-tilo-contact-directory = { path = "../tilo-contact-directory", optional = true }
+tilo-contact-directory = { path = "../../core/tilo-contact-directory", optional = true }
 tilo-resource = { path = "../../core/tilo-resource", optional = true }
 accounts = { package = "tilo-accounts", path = "../accounts", features = ["person"] }
 serde.workspace = true

@@ -354,7 +354,7 @@ const PUBLISHED: &[Published] = &[
         kinds: &[CONTACTS_DIRECTORY_KIND],
         roots: CONTACTS_ROOTS,
         files: &[include_str!(
-            "../../../integrations/tilo-contact-directory/surface.json"
+            "../../../core/tilo-contact-directory/surface.json"
         )],
         described: false,
         listed: &[],

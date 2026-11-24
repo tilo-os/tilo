@@ -86,7 +86,7 @@ tilo-history = { version = "0.1.0", path = "../tilo-history" }
 # The workspace's own emoji and its agents, which every window opens and
 # offers its views.
 tilo-workspace-agent = { version = "0.1.0", path = "../tilo-workspace-agent" }
-tilo-workspace-emoji = { version = "0.1.0", path = "../tilo-workspace-emoji" }
+tilo-workspace-emoji = { version = "0.1.0", path = "../../core/tilo-workspace-emoji" }
 # The default search provider over a resource's entries.
 tilo-search = { version = "0.1.0", path = "../../platform/search" }
 # Merging a member's change in tests, the way sync does.
