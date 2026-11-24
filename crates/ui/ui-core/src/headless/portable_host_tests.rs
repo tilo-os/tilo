@@ -1019,7 +1019,12 @@ fn a_window_that_drew_a_frame_asks_for_none_until_something_changes() {
             animate: Rc::clone(&animate),
             deadline: Rc::clone(&deadline),
         }),
-        |_| vec![MenuEntry::new("Action", || {})],
+        |_| {
+            vec![MenuEntry::bound(
+                "Action",
+                crate::testing::bound_press("test:menu", "action"),
+            )]
+        },
     )));
     frame.relayout();
     let schedule = frame.frame_schedule();

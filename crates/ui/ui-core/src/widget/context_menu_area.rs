@@ -3,9 +3,12 @@
 //! opens with the commands its owner offers there and then.
 //!
 //! The entries are built when the menu opens, so they reflect what is
-//! true at that moment (what is selected, which layer the row is), and
-//! each runs a closure on the UI thread: an app dispatches its actions
-//! from there, the same actions its buttons and keys use.
+//! true at that moment (what is selected, which layer the row is). Each is a typed action: the
+//! action the owner bound to the row ([`MenuEntry::bound`]), which the window runs on the app's
+//! record, or an action the widget under the pointer declares as its own
+//! ([`Widget::own_actions`]). A person clicks the row, an assistive technology or an agent
+//! activates its node ([`ContextMenuArea::perform_semantic_action`]), and both run that one
+//! action: never a press where the row is drawn.
 
 use std::rc::Rc;
 
@@ -30,18 +33,10 @@ pub struct MenuEntry {
 }
 
 impl MenuEntry {
-    /// A command: `label` shown, `run` called when it is chosen.
-    pub fn new(label: impl Into<String>, run: impl Fn() + 'static) -> Self {
-        Self {
-            item: MenuItem::selection(label),
-            run: Some(Rc::new(run)),
-            press: crate::widget::Press::default(),
-            more: None,
-        }
-    }
-
     /// A command that presses what the view bound to it (`press`): the row runs the action
-    /// itself, and the menu names it as the row's binding.
+    /// itself, and the menu names it as the row's binding. Every command row is one of these —
+    /// an app's action — or a widget's own action ([`Self::own`]): a row an agent is offered
+    /// always has the action behind it.
     #[must_use]
     pub fn bound(label: impl Into<String>, press: crate::widget::Press) -> Self {
         Self {
@@ -61,16 +56,6 @@ impl MenuEntry {
         Self {
             item: MenuItem::selection(label),
             run: None,
-            press: crate::widget::Press::default(),
-            more: None,
-        }
-    }
-
-    /// A command that takes something away, styled as such.
-    pub fn destructive(label: impl Into<String>, run: impl Fn() + 'static) -> Self {
-        Self {
-            item: MenuItem::destructive_selection(label),
-            run: Some(Rc::new(run)),
             press: crate::widget::Press::default(),
             more: None,
         }
@@ -677,22 +662,50 @@ impl ContextMenuArea {
         self.menu.close();
     }
 
-    /// Run the chosen entry, then let the content see the pointer where
-    /// it is, so what the command asked of it happens now.
-    fn run(&mut self, index: usize, ctx: &mut EventCtx<'_>) {
-        let place = self.menu.get_rect();
+    /// Run the entry at `index` on the action behind it, and close the menu: the owner's action
+    /// the row is bound to, the widget's own action where the widget stands (which changes it,
+    /// so it runs with the document the choosing event carries), or the row the menu adds
+    /// itself. Whether one of those ran it.
+    fn activate(
+        &mut self,
+        index: usize,
+        state: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
         if let Some(Some(choice)) = self.own.get(index).cloned() {
             self.menu.close();
             if let Some(widget) = widget_at(self.content.as_mut(), &choice.path) {
                 widget.perform_action(
                     &crate::a11y::Action::Activate,
                     &choice.action.key_path,
-                    &mut ctx.state.reborrow(),
-                    ctx.path,
+                    state,
+                    path,
                 );
             }
-        } else {
-            self.choose(index);
+            return true;
+        }
+        if let Some(press) = self.presses.get(index).filter(|press| !press.is_none()) {
+            self.menu.close();
+            press.run();
+            return true;
+        }
+        if let Some(Some(run)) = self.runs.get(index) {
+            self.menu.close();
+            let run = Rc::clone(run);
+            run();
+            return true;
+        }
+        false
+    }
+
+    /// Run the chosen entry, then let the content see the pointer where
+    /// it is, so what the command asked of it happens now.
+    fn run(&mut self, index: usize, ctx: &mut EventCtx<'_>) {
+        let place = self.menu.get_rect();
+        if !self.activate(index, &mut ctx.state.reborrow(), ctx.path) {
+            // A row the menu adds itself (asking what is typed) runs its own.
+            self.menu.click_item(index);
+            self.menu.close();
         }
         // An emoji bar's last cell opens the picker where the menu was.
         if let Some((_, pick)) = self.more.iter().find(|(wanted, _)| wanted.replace(false)) {
@@ -746,7 +759,7 @@ pub(crate) fn keyboard_anchor(widget: &dyn Widget) -> Option<Rect> {
 }
 
 /// An operation goes to the content, as it would without the menu, then to
-/// the open menu: a row an agent chooses is pressed where it is drawn.
+/// the open menu: a row an agent chooses runs the action it names.
 impl super::ResourceOperations for ContextMenuArea {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         super::local_resource_operation_handlers(self.content.as_ref())
@@ -1058,6 +1071,36 @@ impl super::Decorator for ContextMenuArea {
         children.extend(over_content!(self, mut));
         children
     }
+
+    /// A row of the open menu is the owner's command: an assistive technology, a script or an
+    /// agent that activates the row's node runs the action the row names — the app's, or the
+    /// widget's own — and the menu closes on it. It is never a press where the row is drawn, so
+    /// what an agent chooses is the action behind the row, decided by that action's own
+    /// permissions and confirmation.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        if matches!(action, crate::a11y::Action::Activate)
+            && self.menu.is_open()
+            && let Some(index) = target
+                .strip_prefix("context-menu:item:")
+                .and_then(|index| index.parse::<usize>().ok())
+            && self
+                .menu
+                .items()
+                .get(index)
+                .is_some_and(MenuItem::is_enabled)
+        {
+            return self.activate(index, state, path);
+        }
+        // Every other target is the content's, as it is without the menu.
+        self.content
+            .perform_semantic_action(target, action, state, path)
+    }
 }
 
 impl crate::widget::controls::ActionControls for ContextMenuArea {
@@ -1115,23 +1158,27 @@ mod tests {
         crate::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right)
     }
 
-    fn opening_menu() -> (ContextMenuArea, Rc<Cell<usize>>, Point) {
-        let chosen = Rc::new(Cell::new(0));
-        let mut area = ContextMenuArea::new(Box::new(Spacer::fixed(10.0)), {
-            let chosen = Rc::clone(&chosen);
-            move |_| {
-                (1..=4)
-                    .map(|index| {
-                        let chosen = Rc::clone(&chosen);
-                        MenuEntry::new(format!("Action {index}"), move || chosen.set(index))
-                    })
-                    .collect()
-            }
+    /// What the entry just chosen ran: the typed action it names, taken from the press the area
+    /// keeps for it.
+    fn chosen_action(area: &mut ContextMenuArea) -> Option<String> {
+        crate::widget::controls::take_control_invocation(area).map(|ran| ran.address.action.clone())
+    }
+
+    fn opening_menu() -> (ContextMenuArea, Point) {
+        let mut area = ContextMenuArea::new(Box::new(Spacer::fixed(10.0)), |_| {
+            (1..=4)
+                .map(|index| {
+                    MenuEntry::bound(
+                        format!("Action {index}"),
+                        crate::testing::bound_press("test:menu", &format!("action-{index}")),
+                    )
+                })
+                .collect()
         });
         let at = Point::new(20.0, 20.0);
         crate::testing::dispatch(&mut area, &moved(at));
         assert!(area.open_at(at, true));
-        (area, chosen, at)
+        (area, at)
     }
 
     fn named_key(key: NamedKey) -> WindowEvent {
@@ -1142,7 +1189,7 @@ mod tests {
     fn movement_during_opening_keeps_the_pointer_row_for_enter() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        let (mut area, chosen, _) = opening_menu();
+        let (mut area, _) = opening_menu();
         let Some(row) = area.menu().item_rect(1) else {
             panic!("the second action must have a hit target");
         };
@@ -1150,21 +1197,21 @@ mod tests {
         crate::testing::dispatch(&mut area, &right_release());
         assert_eq!(area.menu().hovered(), Some(1));
         crate::testing::dispatch(&mut area, &named_key(NamedKey::Enter));
-        assert_eq!(chosen.get(), 2);
+        assert_eq!(chosen_action(&mut area).as_deref(), Some("action-2"));
     }
 
     #[test]
     fn keyboard_choice_before_opening_release_survives_stationary_replay() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        let (mut area, chosen, at) = opening_menu();
+        let (mut area, at) = opening_menu();
         crate::testing::dispatch(&mut area, &named_key(NamedKey::ArrowDown));
         assert_eq!(area.menu().hovered(), Some(1));
         crate::testing::dispatch(&mut area, &moved(at));
         crate::testing::dispatch(&mut area, &right_release());
         assert_eq!(area.menu().hovered(), Some(1));
         crate::testing::dispatch(&mut area, &named_key(NamedKey::Enter));
-        assert_eq!(chosen.get(), 2);
+        assert_eq!(chosen_action(&mut area).as_deref(), Some("action-2"));
     }
 
     #[test]
@@ -1173,7 +1220,10 @@ mod tests {
             Box::new(Spacer::fixed(10.0).with_id("rows")),
             |content, at| {
                 let named = content.test_id().unwrap_or_default().to_owned();
-                vec![MenuEntry::new(format!("{named} {}", at.is_some()), || {})]
+                vec![MenuEntry::bound(
+                    format!("{named} {}", at.is_some()),
+                    crate::testing::bound_press("test:menu", "rows"),
+                )]
             },
         );
         assert!(area.open_at(Point::new(5.0, 5.0), false));
@@ -1188,17 +1238,17 @@ mod tests {
     fn entries_are_built_when_it_opens_and_choosing_runs_one() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        let chosen = Rc::new(Cell::new(0));
         let offered = Rc::new(Cell::new(1));
         let mut area = ContextMenuArea::new(Box::new(Spacer::fixed(10.0)), {
-            let chosen = Rc::clone(&chosen);
             let offered = Rc::clone(&offered);
             move |_| {
                 let n = offered.get();
-                let chosen = Rc::clone(&chosen);
                 vec![
-                    MenuEntry::new(format!("Take {n}"), move || chosen.set(n))
-                        .with_shortcut("Ctrl+T"),
+                    MenuEntry::bound(
+                        format!("Take {n}"),
+                        crate::testing::bound_press("test:menu", &format!("take-{n}")),
+                    )
+                    .with_shortcut("Ctrl+T"),
                     MenuEntry::separator(),
                 ]
             }
@@ -1215,50 +1265,105 @@ mod tests {
             Some(&crate::platform::Shortcut::from("Ctrl+T"))
         );
         area.choose(0);
-        assert_eq!(chosen.get(), 7);
+        assert_eq!(chosen_action(&mut area).as_deref(), Some("take-7"));
         assert!(!area.is_open());
     }
 
-    /// A row an assistive technology or an agent names is the entry the area runs, not a command
-    /// the menu runs and nobody hears: the menu declines it, the press the caller makes where the
-    /// row is drawn takes it, and the entry runs once.
+    /// The other kind of entry: a row that is the widget's own declared action. An agent
+    /// activating it runs that action where the widget stands and the menu closes — the copy is
+    /// the link's own, not a press on the row.
+    #[test]
+    fn an_agent_chooses_a_widgets_own_action_from_its_row() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
+        use crate::clipboard::{ClipboardBackend as _, ClipboardTarget, InProcessClipboard};
+        let clipboard = std::sync::Arc::new(InProcessClipboard::default());
+        let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        crate::process::scoped(&services, || {
+            let area = ContextMenuArea::new(
+                Box::new(
+                    crate::widget::Link::new("https://example.org/page").with_label("The page"),
+                ),
+                |_| {
+                    vec![MenuEntry::bound(
+                        "Open",
+                        crate::testing::bound_press("test:menu", "open"),
+                    )]
+                },
+            );
+            let mut harness = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                area,
+                (400, 120),
+                crate::theme::Theme::dark(),
+            );
+            harness.relayout();
+            let page = harness
+                .root::<ContextMenuArea>()
+                .content()
+                .get_rect()
+                .center();
+            harness.send(&crate::synthetic_input::cursor_moved(page.x, page.y));
+            right_click(&mut harness);
+            let target = crate::a11y_child_route::encode(
+                &[harness.root::<ContextMenuArea>().content().children().len()],
+                Some("context-menu:item:1"),
+            );
+            harness
+                .perform_semantic_named("Link", Some(&target), &crate::a11y::Action::Activate)
+                .expect("the link's copy row is reachable");
+            assert_eq!(
+                clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+                Some("https://example.org/page"),
+                "the row ran the link's own action where the link stands"
+            );
+            assert!(
+                !harness.root::<ContextMenuArea>().is_open(),
+                "the menu closed on its choice"
+            );
+        });
+    }
+
+    /// A row an assistive technology or an agent names is the entry the area runs through the
+    /// action the row names: the menu leaves its owner's rows to the area, which runs the app's
+    /// action once and closes the menu. No press lands where the row is drawn.
     #[test]
     fn a_row_a_tool_names_is_the_entry_the_area_runs() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        let (mut area, chosen, _) = opening_menu();
+        let (mut area, _) = opening_menu();
         let mut doc = automerge::AutoCommit::new();
         let target = crate::a11y_child_route::encode(&[0], Some("context-menu:item:1"));
         assert!(
-            !crate::a11y_child_route::perform(
+            crate::a11y_child_route::perform(
                 &mut area,
                 &target,
                 &crate::a11y::Action::Activate,
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ),
-            "the menu runs none of the owner's rows"
+            "the area runs the row its menu offers"
         );
-        assert_eq!(chosen.get(), 0, "nothing ran while the menu stood");
-        assert!(area.is_open(), "the row waits for the press it asks for");
-        let Some(row) = area.menu().item_rect(1) else {
-            panic!("the second action must have a hit target");
-        };
-        crate::testing::dispatch(&mut area, &moved(row.center()));
-        crate::testing::dispatch(&mut area, &crate::synthetic_input::mouse_press());
-        crate::testing::dispatch(&mut area, &crate::synthetic_input::mouse_release());
-        assert_eq!(chosen.get(), 2, "the press runs the entry it stands on");
-        assert!(!area.is_open(), "the menu closed on it");
+        assert_eq!(
+            chosen_action(&mut area).as_deref(),
+            Some("action-2"),
+            "the row ran the action it names"
+        );
+        assert!(
+            chosen_action(&mut area).is_none(),
+            "an activation runs the entry once"
+        );
+        assert!(!area.is_open(), "the menu closed on the row");
     }
 
-    type Chosen = Rc<std::cell::RefCell<Vec<&'static str>>>;
+    type Chosen = Rc<std::cell::RefCell<Vec<String>>>;
 
     /// The picker an emoji bar opened stands over the menu, so it is one of the children a
     /// route reaches by index — in the list the walk reads and in the one an action is
     /// dispatched through, at the same place.
     #[test]
     fn the_emoji_picker_over_the_menu_is_a_child_a_route_reaches() {
-        let (mut area, _, _) = opening_menu();
+        let (mut area, _) = opening_menu();
         let mut picker = crate::widget::EmojiPicker::framed();
         picker.open_at(None, Rect::new(0.0, 0.0, 400.0, 400.0), &Theme::dark());
         let place = picker.rect();
@@ -1298,88 +1403,26 @@ mod tests {
         );
     }
 
-    /// Content that a right-click changes, as a canvas picking the mark
-    /// under it does: the next frame rebuilds the tree.
-    struct PicksOnRightPress {
-        inner: Spacer,
-        picked: bool,
-    }
+    const MENU_LABELS: [&str; 4] = ["First", "Second", "Third", "Fourth"];
 
-    impl Widget for PicksOnRightPress {
-        fn build_layout(
-            &mut self,
-            taffy: &mut taffy::TaffyTree<()>,
-            theme: &Theme,
-            node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
-        ) -> taffy::NodeId {
-            self.inner.build_layout(taffy, theme, node_map)
-        }
-        fn apply_layout(
-            &mut self,
-            taffy: &taffy::TaffyTree<()>,
-            node: taffy::NodeId,
-            origin: Point,
-        ) {
-            self.inner.apply_layout(taffy, node, origin);
-        }
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-            #[allow(
-                unused_variables,
-                unused_mut,
-                reason = "a draw binds only the parts it uses"
-            )]
-            let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-            self.inner.draw(&mut crate::draw::DrawCtx::new(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                env.clone(),
-            ));
-        }
-        fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut EventCtx<'_>) {
-            if matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Right,
-                    ..
-                }
-            ) {
-                self.picked = true;
-            }
-        }
-        fn take_structure_dirty(&mut self) -> bool {
-            std::mem::take(&mut self.picked)
-        }
-        fn get_rect(&self) -> Rect {
-            self.inner.get_rect()
-        }
-        fn name(&self) -> &'static str {
-            "PicksOnRightPress"
-        }
-    }
-
-    /// A 300 px area offering First to Fourth, in a window whose host
-    /// replays a still pointer after the widgets change, the pointer resting
-    /// at (100, 100).
+    /// A 300 px area over an app whose record offers the four rows, in a window whose host
+    /// replays a still pointer after the widgets change, the pointer resting at (100, 100).
     fn four_entries() -> (crate::headless::FrameHarness, Chosen) {
         let chosen = Chosen::default();
-        let content = PicksOnRightPress {
-            inner: Spacer::fixed(300.0),
-            picked: false,
-        };
-        let area = ContextMenuArea::new(Box::new(content), {
-            let chosen = Rc::clone(&chosen);
-            move |_| {
-                ["First", "Second", "Third", "Fourth"]
-                    .into_iter()
-                    .map(|label| {
-                        let chosen = Rc::clone(&chosen);
-                        MenuEntry::new(label, move || chosen.borrow_mut().push(label))
-                    })
-                    .collect()
-            }
+        let content = crate::testing::MenuRows::new(&MENU_LABELS, Rc::clone(&chosen));
+        let area = ContextMenuArea::new(Box::new(content), |_| {
+            MENU_LABELS
+                .into_iter()
+                .map(|label| {
+                    MenuEntry::bound(
+                        label,
+                        crate::testing::bound_press(
+                            crate::testing::MENU_ROW_RESOURCE,
+                            &crate::testing::MenuRows::action_of(label),
+                        ),
+                    )
+                })
+                .collect()
         });
         let mut harness = crate::headless::FrameHarness::for_root(
             crate::State::new(),
@@ -1463,34 +1506,64 @@ mod tests {
         assert!(!harness.root::<ContextMenuArea>().is_open());
     }
 
-    /// An open menu's entries are its published controls: an agent chooses
-    /// one as a person does, and the area runs the entry it read from the
-    /// menu's choice.
+    /// An open menu's entries are the typed actions behind them: the row names the app's action,
+    /// an agent chooses it by activating the row's node as a screen reader does, and the app's
+    /// action runs on its record and the menu closes. An agent's choice is the action, never a
+    /// press where the row is drawn.
     #[test]
-    fn an_agent_chooses_a_menu_entry_through_its_published_control() {
+    fn an_agent_chooses_a_menu_entry_through_the_action_its_row_names() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let (mut harness, chosen) = four_entries();
-        assert!(
-            !harness
-                .resources()
-                .iter()
-                .any(|resource| resource.id.0.starts_with("tilo.control:menu.")),
-            "a closed menu offers nothing"
-        );
         right_click(&mut harness);
-        let resources = harness.resources();
-        let third = resources
+        let address = harness
+            .root::<ContextMenuArea>()
+            .menu()
+            .items()
+            .get(2)
+            .and_then(MenuItem::action_address)
+            .expect("the third entry names the action it runs");
+        assert_eq!(
+            address,
+            tilo_actions::ActionAddress::new(crate::testing::MENU_ROW_RESOURCE, "third")
+        );
+        assert_eq!(
+            harness
+                .root::<ContextMenuArea>()
+                .menu()
+                .items()
+                .get(2)
+                .and_then(MenuItem::label),
+            Some("Third")
+        );
+        let record = harness
+            .resources()
+            .into_iter()
+            .find(|resource| resource.id.0 == crate::testing::MENU_ROW_RESOURCE)
+            .expect("the app publishes the record its rows act on");
+        let third = record
+            .actions
             .iter()
-            .find(|resource| resource.id.0 == "tilo.control:menu.2")
-            .expect("the third entry is published");
-        assert_eq!(third.label, "Third");
-        assert_eq!(third.actions[0].kind, tilo_actions::OperationKind::Effect);
+            .find(|action| action.id == "third")
+            .expect("the third action");
+        assert_eq!(third.kind, tilo_actions::OperationKind::Effect);
+        // The row node an agent reaches, under the area the menu stands over.
+        let target = crate::a11y_child_route::encode(
+            &[harness.root::<ContextMenuArea>().content().children().len()],
+            Some("context-menu:item:2"),
+        );
         harness
-            .invoke_published("tilo.control:menu.2", "invoke", &serde_json::Map::new())
+            .perform_semantic_named("MenuRows", Some(&target), &crate::a11y::Action::Activate)
             .expect("the entry is reachable");
-        assert_eq!(*chosen.borrow(), vec!["Third"]);
-        assert!(!harness.root::<ContextMenuArea>().is_open());
+        assert_eq!(
+            *chosen.borrow(),
+            vec!["Third".to_owned()],
+            "the app's action ran on its record"
+        );
+        assert!(
+            !harness.root::<ContextMenuArea>().is_open(),
+            "the menu closed on its choice"
+        );
     }
 
     /// Content that holds items, one of which has the keyboard: a list whose
@@ -1559,7 +1632,12 @@ mod tests {
                     inner: Spacer::fixed(300.0),
                     anchor,
                 }),
-                |_| vec![MenuEntry::new("First", || {})],
+                |_| {
+                    vec![MenuEntry::bound(
+                        "First",
+                        crate::testing::bound_press("test:menu", "first"),
+                    )]
+                },
             );
             let mut harness = crate::headless::FrameHarness::for_root(
                 crate::State::new(),
@@ -1594,7 +1672,12 @@ mod tests {
                 inner: Spacer::fixed(300.0),
                 anchor,
             }),
-            |_| vec![MenuEntry::new("First", || {})],
+            |_| {
+                vec![MenuEntry::bound(
+                    "First",
+                    crate::testing::bound_press("test:menu", "first"),
+                )]
+            },
         );
         let mut harness = crate::headless::FrameHarness::for_root(
             crate::State::new(),
@@ -1633,7 +1716,12 @@ mod tests {
                 Box::new(
                     crate::widget::Link::new("https://example.org/page").with_label("The page"),
                 ),
-                |_| vec![MenuEntry::new("Open", || {})],
+                |_| {
+                    vec![MenuEntry::bound(
+                        "Open",
+                        crate::testing::bound_press("test:menu", "open"),
+                    )]
+                },
             );
             let mut harness = crate::headless::FrameHarness::for_root(
                 crate::State::new(),
@@ -1738,7 +1826,10 @@ mod tests {
             let arrived = Rc::clone(&arrived);
             move |_| {
                 if arrived.get() {
-                    vec![MenuEntry::new("Delete", || {})]
+                    vec![MenuEntry::bound(
+                        "Delete",
+                        crate::testing::bound_press("test:menu", "delete"),
+                    )]
                 } else {
                     Vec::new()
                 }

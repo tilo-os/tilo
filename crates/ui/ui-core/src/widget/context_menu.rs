@@ -2174,8 +2174,20 @@ impl Widget for ContextMenu {
                     });
                 }
                 if let Some((_, menu)) = open_here
-                    && let Some(nested) = Widget::accessibility(menu.as_ref())
+                    && let Some(mut nested) = Widget::accessibility(menu.as_ref())
                 {
+                    // A nested row's address says which row it hangs off: the owner runs its
+                    // own rows, and a row of a submenu is one the submenu stands open.
+                    for child in &mut nested.children {
+                        if let Some(inner) = child
+                            .action_target
+                            .as_deref()
+                            .and_then(|target| target.strip_prefix("context-menu:item:"))
+                        {
+                            child.action_target =
+                                Some(format!("context-menu:item:{index}.{inner}"));
+                        }
+                    }
                     node.children.push(nested);
                 }
                 Some(node)

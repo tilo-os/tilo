@@ -86,6 +86,10 @@ fn descend_ref<'w>(widget: &'w dyn Widget, path: &[usize]) -> Option<&'w dyn Wid
 
 /// Perform `action` addressed to `owner` by `target`: a child route acts on the widget it reaches, any
 /// other target is the owner ([`Widget::perform_semantic_action`]).
+///
+/// A named element the reached child leaves to the widget that laid it out is offered there: a
+/// context menu's row is its owner's command, which the owner keeps, so a tool activating the row
+/// reaches the action behind it and never a press where the row is drawn.
 pub(crate) fn perform(
     owner: &mut dyn Widget,
     target: &str,
@@ -96,13 +100,20 @@ pub(crate) fn perform(
     let Some((route, inner)) = decode(target) else {
         return owner.perform_semantic_action(target, action, state, path);
     };
-    let Some(widget) = descend(owner, &route) else {
-        return false;
-    };
+    if let Some(widget) = descend(owner, &route) {
+        match inner {
+            Inner::Widget => return widget.perform_action(action, &[], state, path),
+            Inner::Keys(keys) => return widget.perform_action(action, &keys, state, path),
+            Inner::Semantic(target) => {
+                if widget.perform_semantic_action(target, action, state, path) {
+                    return true;
+                }
+            }
+        }
+    }
     match inner {
-        Inner::Widget => widget.perform_action(action, &[], state, path),
-        Inner::Semantic(target) => widget.perform_semantic_action(target, action, state, path),
-        Inner::Keys(keys) => widget.perform_action(action, &keys, state, path),
+        Inner::Semantic(target) => owner.perform_semantic_action(target, action, state, path),
+        Inner::Widget | Inner::Keys(_) => false,
     }
 }
 

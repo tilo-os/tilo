@@ -2,12 +2,12 @@
 //! own as in the frame harness: the press stays the pressed widget's until it is released.
 
 use super::*;
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use vello::kurbo::Point;
 
-use crate::widget::{ContextMenuArea, MenuEntry, Spacer};
+use crate::widget::{ContextMenuArea, MenuEntry};
 
 struct Window;
 impl AppSurface for Window {
@@ -21,13 +21,21 @@ impl AppSurface for Window {
     fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
 }
 
-fn area(chosen: &Rc<Cell<usize>>) -> ContextMenuArea {
-    let chosen = Rc::clone(chosen);
-    ContextMenuArea::new(Box::new(Spacer::fixed(300.0)), move |_| {
-        (1..=4)
-            .map(|index| {
-                let chosen = Rc::clone(&chosen);
-                MenuEntry::new(format!("Action {index}"), move || chosen.set(index))
+const LABELS: [&str; 4] = ["Action 1", "Action 2", "Action 3", "Action 4"];
+
+fn area(chosen: &Rc<RefCell<Vec<String>>>) -> ContextMenuArea {
+    let content = crate::testing::MenuRows::new(&LABELS, Rc::clone(chosen));
+    ContextMenuArea::new(Box::new(content), |_| {
+        LABELS
+            .into_iter()
+            .map(|label| {
+                MenuEntry::bound(
+                    label,
+                    crate::testing::bound_press(
+                        crate::testing::MENU_ROW_RESOURCE,
+                        &crate::testing::MenuRows::action_of(label),
+                    ),
+                )
             })
             .collect()
     })
@@ -87,16 +95,20 @@ fn release(app: &mut App) {
 
 #[test]
 fn a_menu_row_pressed_in_a_window_runs_when_the_button_comes_up() {
-    let chosen = Rc::new(Cell::new(0));
+    let chosen = Rc::new(RefCell::new(Vec::new()));
     let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(area(&chosen)));
     frames(&mut app);
     right_click(&mut app, Point::new(100.0, 100.0));
     let at = menu_row(&app, 1);
     press(&mut app, at);
-    assert_eq!(chosen.get(), 0, "the press alone runs nothing");
+    assert!(chosen.borrow().is_empty(), "the press alone runs nothing");
     frames(&mut app);
     release(&mut app);
-    assert_eq!(chosen.get(), 2, "the release on the row runs it");
+    assert_eq!(
+        *chosen.borrow(),
+        vec!["Action 2".to_owned()],
+        "the release on the row runs the action it names"
+    );
 }
 
 #[test]
@@ -106,7 +118,12 @@ fn a_right_click_on_a_row_sends_about_that_row_and_the_typing_is_the_message() {
     let rows = crate::widget::Column::new()
         .push(Box::new(row("a", "Agenda")))
         .push(Box::new(row("b", "Budget")));
-    let area = ContextMenuArea::new(Box::new(rows), |_| vec![MenuEntry::new("Open", || {})]);
+    let area = ContextMenuArea::new(Box::new(rows), |_| {
+        vec![MenuEntry::bound(
+            "Open",
+            crate::testing::bound_press("test:menu", "open"),
+        )]
+    });
     let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(area));
     frames(&mut app);
     app.refresh_semantic_tree();

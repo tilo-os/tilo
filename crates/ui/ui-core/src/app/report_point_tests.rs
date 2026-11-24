@@ -28,7 +28,10 @@ fn pointed_at_window() -> App {
             Button::new("send", "Send message").on_click(|| {}),
         ));
     let area = ContextMenuArea::new(Box::new(content), |_| {
-        vec![MenuEntry::new("Report a problem", || {})]
+        vec![MenuEntry::bound(
+            "Report a problem",
+            crate::testing::bound_press("test:menu", "report"),
+        )]
     });
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(area));
     app.init_layout();

@@ -960,7 +960,10 @@ mod tests {
         };
         let _ = take_send_to();
         let mut area = crate::widget::ContextMenuArea::new(Box::new(editor()), |_| {
-            vec![crate::widget::MenuEntry::new("Copy", || {})]
+            vec![crate::widget::MenuEntry::bound(
+                "Copy",
+                crate::testing::bound_press("test:menu", "copy"),
+            )]
         });
         set_send_host_available(false);
         crate::widget::context_menu::note_input(&right_press());

@@ -8,6 +8,8 @@ mod dispatch;
 #[cfg(all(test, unix))]
 mod executable;
 mod layout;
+#[cfg(test)]
+mod menu_rows;
 mod own_process;
 #[cfg(test)]
 mod owned_text;
@@ -19,6 +21,8 @@ pub use dispatch::{Dispatch, Dispatched, dispatch};
 #[cfg(all(test, unix))]
 pub use executable::write_executable;
 pub use layout::{lay_out, lay_out_in};
+#[cfg(test)]
+pub(crate) use menu_rows::{MENU_ROW_RESOURCE, MenuRows, bound_press};
 #[cfg(test)]
 pub(crate) use own_process::{in_own_process, test_path};
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! An open menu's rows as the host reaches them: a row that runs a published action
 //! ([`MenuItem::for_action`]) is bound to that action under the target its accessibility
-//! node names. Every other row is pressed where it is drawn, by a person or through its
-//! accessibility action.
+//! node names, and the widget that opened the menu runs the action behind the row when the row
+//! is chosen, by a person or through its accessibility action.
 
 use super::{ContextMenu, MenuItem};
 
