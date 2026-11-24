@@ -27,6 +27,10 @@ type MenuChosen<K> = Box<dyn FnMut(Option<K>, usize)>;
 pub(super) struct ListMenu {
     items: MenuItems,
     chosen: MenuChosen<ListKey>,
+    /// Which rows offer the menu, when not every row does
+    /// ([`VirtualList::with_context_menu_offered_by`]): assistive technology announces a menu
+    /// only where one opens.
+    offers: Option<RowOffersMenu>,
     menu: ContextMenu,
     /// The row the menu is about: its row's key, or `None` for the list itself.
     target: Option<ListKey>,
@@ -81,7 +85,8 @@ impl RowMenus {
     pub(super) fn row_offers(&self, model: &dyn AnyModel, key: &ListKey) -> bool {
         match self {
             Self::None => false,
-            Self::Owned(_) | Self::Reported(_) => true,
+            Self::Owned(menu) => menu.offers.as_ref().is_none_or(|offers| offers(model, key)),
+            Self::Reported(_) => true,
             Self::Around(offers) => offers(model, key),
         }
     }
@@ -117,9 +122,24 @@ impl VirtualRows {
         self.menus = RowMenus::Owned(ListMenu {
             items: Box::new(items),
             chosen: Box::new(chosen),
+            offers: None,
             menu: ContextMenu::new(),
             target: None,
         });
+        self
+    }
+
+    /// Say which rows offer the menu the list owns
+    /// ([`Self::with_context_menu`]): a row `offers` does not name opens none, and assistive
+    /// technology announces none for it. A list with no menu of its own keeps none.
+    #[must_use]
+    pub fn offering_rows(
+        mut self,
+        offers: impl Fn(&dyn AnyModel, &ListKey) -> bool + 'static,
+    ) -> Self {
+        if let RowMenus::Owned(menu) = &mut self.menus {
+            menu.offers = Some(Box::new(offers));
+        }
         self
     }
 

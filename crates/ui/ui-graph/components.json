@@ -10476,6 +10476,18 @@
       ],
       "parts": [
         {
+          "name": "menu",
+          "doc": "The group's own menu (a right click on its heading, the Menu key, a long press): what is done to the group itself (renaming it, moving it, removing it), as the places under it carry theirs. A group whose view places none offers none.",
+          "accepts": {
+            "one_of": [
+              "MenuItem",
+              "MenuSeparator",
+              "EmojiBar"
+            ]
+          },
+          "many": true
+        },
+        {
           "name": "items",
           "doc": "The places, in order.",
           "accepts": {
@@ -10515,6 +10527,13 @@
           "doc": "Its glyph.",
           "type": {
             "option": "icon"
+          }
+        },
+        {
+          "name": "secondary",
+          "doc": "A quieter line under the name: what the place holds as it stands (the line half-written in its draft, where a conversation last left off).",
+          "type": {
+            "option": "text"
           }
         },
         {
@@ -10563,6 +10582,20 @@
           "type": {
             "option": "text"
           }
+        }
+      ],
+      "parts": [
+        {
+          "name": "menu",
+          "doc": "The place's own menu (a right click, the Menu key, a long press): what is done to the place itself, in the order the view writes it. A place whose view places none offers none — unless the host gives the list a menu of its own, which then answers every row.",
+          "accepts": {
+            "one_of": [
+              "MenuItem",
+              "MenuSeparator",
+              "EmojiBar"
+            ]
+          },
+          "many": true
         }
       ],
       "events": [

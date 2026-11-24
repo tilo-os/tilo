@@ -2556,3 +2556,97 @@ fn a_zero_count_is_no_count() {
         None
     );
 }
+
+// USER REQUIREMENT: a place's own commands stand on the place (`ui.NavItem(menu: …)`, a
+// category's `ui.NavSection(menu: …)`): a right click opens them where the row stands, and
+// choosing one runs what the view bound, without the host's menu.
+#[test]
+fn a_rows_own_menu_opens_where_it_stands_and_runs_its_command() {
+    use crate::component::{Event, Intent};
+    use crate::widget::MenuItemProps;
+    use crate::widget::attached::MenuPart;
+    use winit::event::MouseButton;
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct Fired {
+        key: String,
+        event: String,
+    }
+    let queue = crate::Intents::<Fired>::default();
+    let mut menus = std::collections::HashMap::new();
+    menus.insert(
+        "item:travel".to_owned(),
+        vec![
+            MenuPart::Item(MenuItemProps {
+                label: "Rename".into(),
+                choose: Event::View(Intent::new(&queue, "travel", "rename")),
+                ..MenuItemProps::default()
+            }),
+            MenuPart::Separator,
+            MenuPart::Item(MenuItemProps {
+                label: "Delete".into(),
+                destructive: true,
+                choose: Event::View(Intent::new(&queue, "travel", "delete")),
+                ..MenuItemProps::default()
+            }),
+        ],
+    );
+    let mut list = NavList::new(mailboxes());
+    list.set_row_menus(&menus);
+    let mut h = harness(list, Theme::dark());
+    let travel = h.root::<NavList>().row_rect("travel").expect("travel");
+    point(&mut h, travel.center().x, travel.center().y);
+    press(&mut h, MouseButton::Right);
+
+    let labels: Vec<String> = h
+        .root::<NavList>()
+        .list()
+        .menu_owned()
+        .expect("the row's menu opened")
+        .items()
+        .iter()
+        .filter_map(|item| item.label().map(str::to_owned))
+        .collect();
+    assert_eq!(labels, ["Rename", "Delete"], "the parts the view placed");
+
+    // Choosing a command runs what the view bound to it, and closes the menu.
+    {
+        let deleted = h
+            .root_mut::<NavList>()
+            .list
+            .menu_owned_mut()
+            .expect("the menu")
+            .items()
+            .len()
+            - 1;
+        h.root_mut::<NavList>()
+            .list
+            .menu_owned_mut()
+            .expect("the menu")
+            .click_item(deleted);
+    }
+    assert_eq!(
+        queue.take(),
+        [Fired {
+            key: "travel".to_owned(),
+            event: "delete".to_owned(),
+        }],
+        "the command the view bound ran"
+    );
+
+    // A row the view gave no menu opens none, and the host is asked instead, as before.
+    let asked = Rc::new(Cell2::new(Vec::new()));
+    let seen = Rc::clone(&asked);
+    let mut list = NavList::new(mailboxes())
+        .on_context_menu(move |id, _, _| seen.borrow_mut().push(id.to_owned()));
+    list.set_row_menus(&menus);
+    let mut h = harness(list, Theme::dark());
+    let inbox = h.root::<NavList>().row_rect("inbox").expect("inbox");
+    point(&mut h, inbox.center().x, inbox.center().y);
+    press(&mut h, MouseButton::Right);
+    assert_eq!(
+        asked.borrow().as_slice(),
+        ["inbox"],
+        "the host opens the menu of a row that places none"
+    );
+}

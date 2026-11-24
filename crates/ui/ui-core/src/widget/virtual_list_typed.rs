@@ -597,6 +597,22 @@ impl<M: ListModel + 'static> VirtualList<M> {
         self
     }
 
+    /// [`Self::with_context_menu`], where `offers` says which rows offer it: a row it does not
+    /// name opens none, and assistive technology announces none for it.
+    #[must_use]
+    pub fn with_context_menu_offered_by(
+        mut self,
+        offers: impl Fn(&M, &M::Key) -> bool + 'static,
+        items: impl FnMut(&M, Option<&M::Key>) -> Vec<MenuItem> + 'static,
+        chosen: impl FnMut(Option<M::Key>, usize) + 'static,
+    ) -> Self {
+        self = self.with_context_menu(items, chosen);
+        self.rows = self.rows.offering_rows(move |rows, key: &ListKey| {
+            key.get().is_some_and(|key| offers(model(rows), key))
+        });
+        self
+    }
+
     #[must_use]
     pub fn with_menu_around(mut self, offers: impl Fn(&M, &M::Key) -> bool + 'static) -> Self {
         self.rows = self.rows.with_menu_around(move |rows, key: &ListKey| {

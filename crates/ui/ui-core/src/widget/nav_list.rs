@@ -14,6 +14,7 @@ use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::widget::DrawChild;
+use crate::widget::attached::MenuPart;
 use crate::widget::{
     AppModel, FilterCount, Filterable, ListModel, ModelPath, RowStatus, Theme, Tone, VirtualList,
 };
@@ -750,6 +751,10 @@ pub struct NavList {
     /// A drag staged for a capture, shown once the rows stand placed
     /// ([`Self::stage_drag`]).
     staged_drag: Option<(String, String)>,
+    /// The menu each row offers, by row key (`item:<key>`, `section:<id>`): the parts its view
+    /// placed ([`NavList::set_row_menus`]). The list paints the menu itself, so a row's commands
+    /// run where the row stands rather than through the host's menu.
+    row_menus: Rc<RefCell<HashMap<String, Vec<MenuPart>>>>,
 }
 
 /// What a followed list reads: the sections and the chosen destination, or
@@ -816,6 +821,28 @@ impl NavList {
                 callback(id);
             }
         });
+        // A row's own menu is the list's: it opens where the row stands and paints over the
+        // rows, with the parts its view placed. A list the host gives a menu reporter replaces
+        // this one ([`Self::on_context_menu`]).
+        let row_menus: Rc<RefCell<HashMap<String, Vec<MenuPart>>>> = Rc::default();
+        let reading = Rc::clone(&row_menus);
+        let offering = Rc::clone(&row_menus);
+        let list = list.with_context_menu_offered_by(
+            move |_model: &NavModel, key: &String| offering.borrow().contains_key(key),
+            move |_model: &NavModel, key: Option<&String>| {
+                let Some(parts) = key.and_then(|key| {
+                    reading
+                        .borrow()
+                        .get(key)
+                        .map(|parts| parts.iter().map(MenuPart::again).collect::<Vec<_>>())
+                }) else {
+                    return Vec::new();
+                };
+                let entries = crate::widget::attached::menu_entries(parts);
+                entries.iter().map(|entry| entry.item().clone()).collect()
+            },
+            |_, _| {},
+        );
         let list = Self {
             list: Box::new(list),
             shared,
@@ -831,6 +858,7 @@ impl NavList {
             row_actions: Vec::new(),
             key: String::new(),
             staged_drag: None,
+            row_menus,
         };
         list.refresh_shared();
         list
@@ -1381,6 +1409,19 @@ impl NavList {
             && !self.list.stage_reorder(&source, &before)
         {
             self.staged_drag = Some((source, before));
+        }
+    }
+
+    /// The menu each row offers on its own, by row key (`item:<key>`, `section:<id>`): the
+    /// parts a view placed (`ui.NavItem(menu: …)`, `ui.NavSection(menu: …)`). A right click, the
+    /// Menu key or a long press opens it where the row stands, and a row named in none offers
+    /// none. A list the host gives its own menu reporter keeps that instead
+    /// ([`Self::on_context_menu`]).
+    pub fn set_row_menus(&mut self, menus: &HashMap<String, Vec<MenuPart>>) {
+        let mut held = self.row_menus.borrow_mut();
+        held.clear();
+        for (key, parts) in menus {
+            held.insert(key.clone(), parts.iter().map(MenuPart::again).collect());
         }
     }
 

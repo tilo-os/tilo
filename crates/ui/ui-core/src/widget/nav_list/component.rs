@@ -1,7 +1,10 @@
 //! [`NavList`] and its items as described components.
 
+use std::collections::HashMap;
+
 use crate::component::{Component, Described, Event, OfferedAction, Person, ResourceId, Value};
 use crate::icons::Icon;
+use crate::widget::attached::MenuPart;
 
 use super::{NavItem, NavList, NavSection};
 
@@ -38,6 +41,11 @@ pub struct NavSectionProps {
     /// The action that makes another place in the group ("New project"), drawn at the end of
     /// the heading.
     pub add: Option<OfferedAction>,
+    /// The group's own menu (a right click on its heading, the Menu key, a long press): what
+    /// is done to the group itself (renaming it, moving it, removing it), as the places under
+    /// it carry theirs. A group whose view places none offers none.
+    #[component(part)]
+    pub menu: Vec<MenuPart>,
     /// The places, in order.
     #[component(part(default))]
     pub items: Vec<NavItemProps>,
@@ -72,6 +80,9 @@ pub struct NavItemProps {
     pub label: String,
     /// Its glyph.
     pub icon: Option<Icon>,
+    /// A quieter line under the name: what the place holds as it stands (the line half-written
+    /// in its draft, where a conversation last left off).
+    pub secondary: Option<String>,
     /// How many things it has: a quiet count in tertiary ink.
     pub count: Option<i64>,
     /// How many things wait for attention (unread, mentions): the list's one filled badge in
@@ -93,6 +104,11 @@ pub struct NavItemProps {
     /// that names no place of the list leaves the place at its own level, as a row whose parent
     /// is gone does.
     pub parent: Option<String>,
+    /// The place's own menu (a right click, the Menu key, a long press): what is done to the
+    /// place itself, in the order the view writes it. A place whose view places none offers
+    /// none — unless the host gives the list a menu of its own, which then answers every row.
+    #[component(part)]
+    pub menu: Vec<MenuPart>,
     /// The place was chosen: what choosing it does, beside the list's `select`.
     #[component(event(press))]
     pub select: Event,
@@ -106,6 +122,9 @@ impl From<NavItemProps> for NavItem {
         }
         if let Some(icon) = props.icon {
             item = item.icon(icon);
+        }
+        if let Some(secondary) = props.secondary {
+            item = item.secondary(secondary);
         }
         if let Some(person) = props.person {
             item = item.person(person.identity, None, false);
@@ -199,6 +218,7 @@ impl Described for NavList {
         } = props;
         let placed = place(key, title, items, select);
         let mut list = Self::new(placed.sections.clone()).with_id(key);
+        list.set_row_menus(&placed.menus);
         if let Some(selected) = selected {
             list = list.selected(&selected);
         }
@@ -221,6 +241,7 @@ impl Described for NavList {
             select,
         } = props;
         let placed = place(&self.key, title, items, select);
+        self.set_row_menus(&placed.menus);
         self.set_sections(placed.sections.clone());
         self.set_selected(selected.as_deref());
         self.set_rail_rows(rail);
@@ -231,6 +252,8 @@ impl Described for NavList {
 
 struct Placed {
     sections: Vec<NavSection>,
+    /// Each row's own menu, by row key (`item:<key>`, `section:<id>`).
+    menus: HashMap<String, Vec<MenuPart>>,
     select: Event,
     chosen: std::collections::HashMap<String, Event>,
     bound: std::collections::HashMap<String, Event>,
@@ -243,7 +266,14 @@ struct Placed {
 fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) -> Placed {
     let mut chosen: std::collections::HashMap<String, Event> = std::collections::HashMap::new();
     let mut bound: std::collections::HashMap<String, Event> = std::collections::HashMap::new();
+    let mut menus: HashMap<String, Vec<MenuPart>> = HashMap::new();
     for item in items.iter().flat_map(NavEntry::places) {
+        if !item.menu.is_empty() {
+            menus.insert(
+                format!("item:{}", item.key),
+                item.menu.iter().map(MenuPart::again).collect(),
+            );
+        }
         match item.select {
             Event::None => {}
             Event::Action(_) => {
@@ -276,6 +306,12 @@ fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) 
             NavEntry::Section(section) => {
                 flush(&mut loose, &mut sections);
                 let id = format!("{key}/{}", sections.len());
+                if !section.menu.is_empty() {
+                    menus.insert(
+                        format!("section:{id}"),
+                        section.menu.iter().map(MenuPart::again).collect(),
+                    );
+                }
                 let places = nested(section.items);
                 let mut built = NavSection::new(id.clone(), section.title, places);
                 if section.collapsible {
@@ -303,6 +339,7 @@ fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) 
     }
     Placed {
         sections,
+        menus,
         select,
         chosen,
         bound,

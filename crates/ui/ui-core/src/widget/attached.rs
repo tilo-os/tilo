@@ -43,6 +43,14 @@ impl std::fmt::Debug for MenuPart {
     }
 }
 
+impl Clone for MenuPart {
+    /// The same part again, its events shared: a menu is built anew each time it opens, from
+    /// the one the view placed.
+    fn clone(&self) -> Self {
+        self.again()
+    }
+}
+
 impl MenuPart {
     /// The same part again, its events shared: a menu is built anew each time it opens.
     #[must_use]

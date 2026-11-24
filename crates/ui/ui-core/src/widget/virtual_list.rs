@@ -484,6 +484,18 @@ pub struct VirtualRows {
 }
 
 impl VirtualRows {
+    /// The menu the list owns and paints, for a test of what a row offers.
+    #[cfg(test)]
+    pub(crate) fn menu_owned(&self) -> Option<&crate::widget::ContextMenu> {
+        self.menus.owned().map(|menu| &menu.menu)
+    }
+
+    /// The menu the list owns and paints, for a test that chooses one of its commands.
+    #[cfg(test)]
+    pub(crate) fn menu_owned_mut(&mut self) -> Option<&mut crate::widget::ContextMenu> {
+        self.menus.owned_mut().map(|menu| &mut menu.menu)
+    }
+
     /// Take what the model says changed since it was last asked, and follow it. Whether
     /// anything did.
     fn take_model_changes(&mut self) -> bool {
