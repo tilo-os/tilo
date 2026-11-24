@@ -366,10 +366,11 @@ fn settle_all(
         }
         assert!(
             began.elapsed() < SETTLE_LIMIT,
-            "the host owes work after {}s: {} opening, {} running",
+            "the host owes work after {}s: {} opening, {} running; owed {:?}, changed {changed}, woken {woken}",
             began.elapsed().as_secs(),
             host.opening(),
-            host.instances().count()
+            host.instances().count(),
+            host.owed(),
         );
         if !changed {
             // Nothing moved: what the host owes is work off its frame, which wakes it.

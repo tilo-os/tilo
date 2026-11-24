@@ -3,7 +3,7 @@
 
 use super::*;
 
-const CHAT: &str = "so.tilo.lang.chat";
+const CHAT: &str = "so.tilo.chat";
 
 /// Chat's instance in a workspace of its own.
 fn chatting() -> (TilolangProcess, Window, Sent, Inbox, RouteSpec) {
