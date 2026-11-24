@@ -585,9 +585,9 @@ view snippet_page(snippet: Snippet) {
                 gutter: true,
                 min_lines: 8,
                 max_lines: 24,
-                // Each language a snippet is written in is coloured as itself: the editor knows
-                // every one of them, so no body reads as plain text.
                 language: if snippet.language == .shell {
+                    // Each language a snippet is written in is coloured as itself: the editor knows
+                    // every one of them, so no body reads as plain text.
                     .shell
                 } else if snippet.language == .rust {
                     .rust

@@ -897,11 +897,7 @@ view print_form(p: PrintCentre, printers: device.Printers) {
     } else {
         ui.Section("Printer") {
             for queue in printers.queues {
-                ui.ListRow(
-                    queue.name,
-                    secondary: queue_words(queue.state),
-                    icon: .printer,
-                ) {
+                ui.ListRow(queue.name, secondary: queue_words(queue.state), icon: .printer) {
                     on activate: choose_printer(p, queue.name)
                 }
             }

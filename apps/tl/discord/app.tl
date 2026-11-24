@@ -462,9 +462,8 @@ fn may_configure(who: Actor) -> Bool {
 }
 
 // ---- the page ---------------------------------------------------------------------------
-
-/// The bridge's window: the connected server, or the empty state that connects one.
 default view accounts_view for Accounts
+
 view accounts_view(accounts: Accounts) {
     if let d = accounts.accounts.first() {
         account(d)
@@ -731,9 +730,8 @@ fn step_words(d: Discord) -> Text {
 }
 
 /// What the account calls a linked account: the name it shows, else its Discord user name.
-// ---- helpers ----------------------------------------------------------------------------
-
 /// Whether an op names no Discord object: one that is made afresh.
+// ---- helpers ----------------------------------------------------------------------------
 fn fresh(value: Option<Text>) -> Bool {
     match value {
         .none => true,
@@ -1409,9 +1407,8 @@ action finish_import(d: Discord, tilo_only: List<Text>) {
     }
 }
 
-// ---- the app it was ----
-
 /// The kind a mapping the app of old kept names.
+// ---- the app it was ----
 fn mapped_kind(name: Text) -> MappedKind {
     if name == "category" {
         .category
@@ -1631,7 +1628,9 @@ action arrange_channels(d: Discord, op: ArrangeOp) {
     require d.ownership == .adopted "The server is adopted first"
     require op.categories.all(place -> knows_channel(d, place.category)) "There is no such channel in the server"
     require op.channels.all(place -> knows_channel(d, place.channel)) "There is no such channel in the server"
-    require op.channels.all(place -> place.parent == .none or knows_channel(d, or_empty(place.parent))) "There is no such channel in the server"
+    require op.channels.all(
+        place -> place.parent == .none or knows_channel(d, or_empty(place.parent)),
+    ) "There is no such channel in the server"
     require op.channels.all(place -> not moves_bridged(d, place)) "The bridge moves only the channels it bridges to another category"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }

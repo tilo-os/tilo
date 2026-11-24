@@ -1054,12 +1054,12 @@ action resume(t: Task, cause: Text = "") uses time (
             worked_ms: w.worked_ms,
             sessions: w.sessions,
             session_since: w.session_since,
-            // Its person said go on: the sessions lost before that no longer stand in a row.
             lost: 0,
             stopped: w.stopped,
             resumed: .some(Resumed(cause: cause, at: now)),
             pieces_at_once: w.pieces_at_once,
         )
+        // Its person said go on: the sessions lost before that no longer stand in a row.
     }
     t.waiting_for = ""
     t.waiting_until = .none
@@ -1204,13 +1204,13 @@ action session_ended(t: Task, spent_micros: Int = 0, worked_ms: Int = 0) uses ti
         worked_ms: w.worked_ms + worked_ms,
         sessions: w.sessions,
         session_since: .none,
-        // A session that ended finished its work: what was lost before it no longer stands in a
-        // row with anything.
         lost: 0,
         stopped: w.stopped,
         resumed: w.resumed,
         pieces_at_once: w.pieces_at_once,
     )
+    // A session that ended finished its work: what was lost before it no longer stands in a
+    // row with anything.
 }
 
 /// Says a task's work stopped, and why, in the words its person reads.

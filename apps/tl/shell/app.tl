@@ -329,9 +329,7 @@ view bar_part(part: BarPart) {
                     std.say("{device.overlays.ask}: open your card")
                 } else if layout.person != "" {
                     std.say("{layout.person}: open your card")
-                } else {
-                    std.say("You: open your card")
-                },
+                } else { std.say("You: open your card") },
                 faces: [invoker],
                 dot: device.overlays.ask != "",
                 role: .bar,

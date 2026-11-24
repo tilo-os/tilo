@@ -1085,7 +1085,11 @@ view this_window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool
                 permille: wider_than(strip_width(w)),
             )
         }
-        ui.MenuItem("Narrower", disabled: strip_width(w) <= 333, description: "As narrow as it gets") {
+        ui.MenuItem(
+            "Narrower",
+            disabled: strip_width(w) <= 333,
+            description: "As narrow as it gets",
+        ) {
             on choose: session.resize(
                 strip: the_strip(layout_strip(w)),
                 permille: narrower_than(strip_width(w)),

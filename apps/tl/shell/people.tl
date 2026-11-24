@@ -78,10 +78,7 @@ fn is_follower(p: device.Person) -> Bool {
 view people() {
     let board = device.people
     row(fill, distribute: .end, padding: .related) {
-        ui.FloatingPanel(
-            width: if not space.compact { 400.0 },
-            fill: space.compact,
-        ) {
+        ui.FloatingPanel(width: if not space.compact { 400.0 }, fill: space.compact) {
             header: {
                 row(gap: .related, align: .center, wrap: true) {
                     ui.Text(
@@ -407,11 +404,7 @@ view follow_chip() {
                         on press: device.show_person(device.people, person: who.key)
                     }
                 } else {
-                    ui.Button(
-                        std.say("Following {name}"),
-                        icon: .eye,
-                        role: .bar,
-                    ) {
+                    ui.Button(std.say("Following {name}"), icon: .eye, role: .bar) {
                         on press: device.show_person(device.people, person: who.key)
                     }
                 }

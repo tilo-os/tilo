@@ -161,7 +161,16 @@ fn tree_rows(
                             ),
                         ),
                     ],
-                    tree_rows(all, process.pid, depth + 1, left - 1, key, descending, kernel, query),
+                    tree_rows(
+                        all,
+                        process.pid,
+                        depth + 1,
+                        left - 1,
+                        key,
+                        descending,
+                        kernel,
+                        query,
+                    ),
                 ]
                     .flat_map(one -> one)
             } else {
