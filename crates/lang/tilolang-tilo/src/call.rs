@@ -692,12 +692,19 @@ fn declared_value(
                 .iter()
                 .find(|declared| declared.id.eq(&key.name) || declared.name.eq(&key.name))
                 .ok_or_else(|| format!("{} declares no enum {}", key.app, key.name))?;
-            let variant = json
+            let case = json
                 .as_str()
                 .ok_or_else(|| format!("{} is not a case name", declared.name))?;
+            // The value carries the case's id, the one the code comparing it with `.{case}`
+            // built: the name a reading writes is only how the workspace spells it.
+            let variant = declared
+                .variants
+                .iter()
+                .find(|variant| variant.name == case || variant.id == case)
+                .ok_or_else(|| format!("`{case}` is not a case of {}", declared.name))?;
             Ok(Value::Enum(EnumValue {
                 ty: declared.id.clone(),
-                variant: variant.to_owned(),
+                variant: variant.id.clone(),
                 fields: BTreeMap::new(),
             }))
         }
@@ -761,7 +768,8 @@ mod tests {
     }
 
     /// What the dispatch answers a call with is the invocation record, read as the package
-    /// declares it: its status a case, its output any value.
+    /// declares it: its status a case by the id the code comparing it with `.{case}` builds,
+    /// its output any value.
     #[test]
     fn a_call_answers_the_invocation_record_the_workspace_keeps() {
         let invocation = action(
@@ -791,13 +799,39 @@ mod tests {
         let Some(Value::Enum(status)) = record.fields.get("Invocation.status") else {
             panic!("the status is the record's: {:?}", record.fields);
         };
-        assert_eq!(status.variant, "waiting");
+        assert_eq!(status.variant, "Status.waiting");
         assert!(
             matches!(
                 record.fields.get("Invocation.output"),
                 Some(Value::Opt(Some(_)))
             ),
             "the output is the action's answer: {:?}",
+            record.fields
+        );
+        // A call the dispatch answered ended reads as the case `answer.status == .ended`
+        // builds, so the comparison matches.
+        let ended = callees().answered(
+            &invocation,
+            Answered::Done(json!({
+                "value": {
+                    "id": "inv-2",
+                    "status": "ended",
+                    "action": "notes.note:1#write",
+                    "started_ms": 1,
+                    "ended_ms": 2,
+                },
+                "resources": [],
+            })),
+        );
+        let Invoked::Done(Value::Rec(record)) = ended else {
+            panic!("the record is a call's answer: {ended:?}");
+        };
+        assert!(
+            matches!(
+                record.fields.get("Invocation.status"),
+                Some(Value::Enum(status)) if status.variant == "Status.ended"
+            ),
+            "the ended status is the case the code names: {:?}",
             record.fields
         );
     }
