@@ -193,7 +193,7 @@ impl Said {
     ///
     /// [`Refusal::Primitive`] when it cannot be encoded.
     pub fn encode(&self) -> Result<Vec<u8>, Refusal> {
-        postcard::to_stdvec(self).map_err(|_| Refusal::Primitive)
+        postcard::to_allocvec(self).map_err(|_| Refusal::Primitive)
     }
 
     /// The control a heard share object's body carries ([`crate::live_session::Heard`]),
