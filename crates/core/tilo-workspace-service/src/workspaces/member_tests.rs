@@ -1742,3 +1742,69 @@ impl crate::apps::services::PublishedResources for NoStanding {
         tokio::sync::oneshot::channel().1
     }
 }
+
+/// A computer whose person's workspace another device serves (their server, say) holds a member
+/// copy of it: the agent a program of theirs connects as is listed in the workspace's record of
+/// its agents all the same, written on that copy and taken by the serving device: the record that
+/// admits the agent's session names it on both. Another person's agent is never listed there.
+#[cfg(feature = "agents")]
+#[tokio::test]
+async fn a_member_copy_lists_its_persons_computer_agent() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Theirs", 23).await;
+    let (person, computer) = (device.1.user_public_key, device.1.device_public_key);
+    let member = member_service(member_state.path(), device).await;
+    let workspace = member
+        .workspaces()
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    assert_eq!(workspace.to_string(), created.workspace);
+    assert!(
+        member.workspaces().governed_copy(workspace).await.is_none(),
+        "the computer holds the workspace as a member copy, governed elsewhere"
+    );
+
+    let name = "mcp";
+    let agent_id = tilo_actions::remote::device_agent_id(&person, name);
+    let agent = tilo_actions::remote::Caller::delegated_agent(agent_id.clone(), person, [77; 32])
+        .in_workspace(created.workspace.clone())
+        .named(name);
+    let as_person = tilo_actions::remote::Caller::authenticated(person, computer)
+        .in_workspace(created.workspace.clone());
+    crate::agents::workspace_agent(member.workspaces(), workspace, &agent, &as_person).await;
+    assert_eq!(
+        member
+            .workspaces()
+            .agent_name(&created.workspace, &agent_id)
+            .await
+            .as_deref(),
+        Some(name),
+        "the member copy lists the computer's agent"
+    );
+    let serving = serving.workspaces().clone();
+    let (listed, agent_id) = (created.workspace.clone(), agent_id.clone());
+    tilo_test_env::within("the serving device lists the agent", async move {
+        while serving.agent_name(&listed, &agent_id).await.is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+
+    // Another person's agent is never listed through this person's copy.
+    let stranger = tilo_actions::remote::device_agent_id(&[99; 32], name);
+    let theirs =
+        tilo_actions::remote::Caller::delegated_agent(stranger.clone(), [99; 32], [78; 32])
+            .in_workspace(created.workspace.clone())
+            .named(name);
+    crate::agents::workspace_agent(member.workspaces(), workspace, &theirs, &as_person).await;
+    assert!(
+        member
+            .workspaces()
+            .agent_name(&created.workspace, &stranger)
+            .await
+            .is_none(),
+        "another person's agent is not listed"
+    );
+}

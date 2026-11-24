@@ -2355,7 +2355,9 @@ async fn keep_agents(
 /// `person`: the list starts with it where the workspace has none yet. The write is the record's
 /// own change, asked as `person` of the workspace's governance and admitted by the record's
 /// grants as every change of theirs is, so what follows the record sees it land and every later
-/// read of the list names it. Nothing when another arrival added it first.
+/// read of the list names it. It is written on this device's copy as any member's write is, also
+/// where another device (the person's server) holds the workspace and this one keeps a member
+/// copy, and reaches that device from there. Nothing when another arrival added it first.
 async fn list_agent(
     workspaces: &Workspaces,
     workspace: &str,
@@ -2363,9 +2365,6 @@ async fn list_agent(
     person: &Caller,
 ) -> Result<(), String> {
     let name = tilo_resource::NonBlank::parse(name.trim()).ok_or("the agent has no name")?;
-    // A workspace whose people made no agent yet has no list of them: it starts with the genesis
-    // every device makes of it, as the roster copy does, and the agent joins it there.
-    workspaces.author_agents(workspace, |_| Ok(())).await?;
     let mut arguments = Map::new();
     arguments.insert("name".into(), serde_json::json!(name.as_str()));
     arguments.insert("id".into(), serde_json::json!(agent));
