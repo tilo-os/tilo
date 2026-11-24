@@ -1,7 +1,7 @@
 //! search.md, "What a type declares" and "Types, references and paths": a type's `search` block,
 //! its defaults, identifiers, and `query(T, ...)` checked against the type's filters.
 
-use crate::common::{codes, compile_body, compile_with};
+use crate::common::{codes, codes_with, compile_body, compile_with};
 use tilolang::meta::{FilterKind, SortOrder, TypeMeta};
 use tilolang::pred::{CmpOp, Lit, Operand, Pred};
 use tilolang::{parse, print_module};
@@ -920,6 +920,47 @@ type Quiet {{
             quiet.search.filter("assignee").is_none(),
             "a hidden member field is no filter"
         );
+    }
+
+    // A bare type name in a query means the package's own before one it uses, and two packages'
+    // of one name are no guess: the query names one.
+    phase a_bare_query_type_is_the_packages_own_before_one_it_uses;
+    {
+        const NOTE_PACKAGE: &str = "app t.platform \"Platform\"\ntype Note {\n    title: Text\n}\n";
+        let platform = compile_with(NOTE_PACKAGE, &[])
+            .unwrap_or_else(|d| panic!("{d:#?}"))
+            .meta;
+        let agent = tilolang::agent::meta().clone();
+        let own = r#"app t.query "Query"
+use t.platform as platform
+use tilo.agent as agent
+type Note {
+    title: Text
+}
+fn found() -> List<Note> {
+    agent.find("Note launch")
+}
+"#;
+        // Were the platform's the type the query names, its answer would be a
+        // `List<t.platform.Note>` where the function answers this package's.
+        compile_with(own, &[platform.clone(), agent.clone()])
+            .unwrap_or_else(|d| panic!("the package's own Note is the one it means: {d:#?}"));
+        // Two packages of one name, neither the writer's: the query has to say which.
+        let other = compile_with(
+            "app t.other \"Other\"\ntype Note {\n    title: Text\n}\n",
+            &[],
+        )
+        .unwrap_or_else(|d| panic!("{d:#?}"))
+        .meta;
+        let two = r#"use t.platform as platform
+use t.other as other
+use tilo.agent as agent
+fn found() -> List<Text> {
+    agent.find("Note launch")
+}
+"#;
+        let got = codes_with(two, &[platform, other, agent]);
+        assert!(got.iter().any(|c| c == "E105"), "{got:?}");
     }
 }
 

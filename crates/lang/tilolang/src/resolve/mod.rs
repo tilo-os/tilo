@@ -65,6 +65,10 @@ pub struct Env {
     /// finds its own by this and never by its name.
     pub actions: HashMap<ast::NodeId, usize>,
     pub imports: Vec<Import>,
+    /// The apps the module names with `use`: an unqualified type name one of them declares is what
+    /// the module means before one a package the platform put in scope declares, and one of the
+    /// module's own is what it means before either.
+    pub named_imports: BTreeSet<String>,
     /// `view#anchor` to id.
     pub anchors: HashMap<String, String>,
     pub enums: Vec<EnumInfo>,
@@ -153,6 +157,44 @@ impl Env {
 
     pub fn type_info(&self, key: &TypeKey) -> Option<&TypeInfo> {
         self.types.iter().find(|t| &t.key == key)
+    }
+
+    /// The types `name` names, the ones the module means first: its own, then those of the packages
+    /// it names with `use`, then those of the packages in scope without being named (the library's,
+    /// the toolkit's, a session's agent words). A caller that needs the one type a bare name means
+    /// takes the first layer that holds any: several in it are still several.
+    #[must_use]
+    pub fn types_named(&self, name: &str) -> Vec<&TypeInfo> {
+        self.types_matching(name, true)
+    }
+
+    /// [`Self::types_named`], matched by case too when `exact` is not set.
+    fn types_matching(&self, name: &str, exact: bool) -> Vec<&TypeInfo> {
+        let matches = |t: &&TypeInfo| {
+            if exact {
+                t.key.name == name
+            } else {
+                t.key.name.eq_ignore_ascii_case(name)
+            }
+        };
+        let all: Vec<&TypeInfo> = self.types.iter().filter(matches).collect();
+        let own: Vec<&TypeInfo> = all
+            .iter()
+            .copied()
+            .filter(|t| t.key.app == self.app)
+            .collect();
+        if !own.is_empty() {
+            return own;
+        }
+        let named: Vec<&TypeInfo> = all
+            .iter()
+            .copied()
+            .filter(|t| self.named_imports.contains(&t.key.app))
+            .collect();
+        if !named.is_empty() {
+            return named;
+        }
+        all
     }
 
     pub fn enum_info(&self, key: &TypeKey) -> Option<&EnumInfo> {
@@ -321,6 +363,14 @@ impl Env {
                     t.key.name.eq_ignore_ascii_case(ty)
                 }
         };
+        if want_app.is_none() {
+            // A bare type is the module's own where it has one, then a package's it names.
+            return self
+                .types_matching(ty, true)
+                .into_iter()
+                .next()
+                .or_else(|| self.types_matching(ty, false).into_iter().next());
+        }
         self.types
             .iter()
             .find(|t| matches_name(t, true))
@@ -778,6 +828,7 @@ impl Resolver<'_> {
                 continue;
             }
             self.env.add_import(&alias, meta);
+            self.env.named_imports.insert(meta.app.clone());
         }
     }
 
