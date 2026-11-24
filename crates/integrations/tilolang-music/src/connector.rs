@@ -139,7 +139,7 @@ fn asked(service: &dyn Service, ask: &Ask) -> Result<FromConnector, String> {
             let reply = service.spotify(op).map_err(failed)?;
             Ok(FromConnector::Spotify {
                 request: *request,
-                reply,
+                reply: Box::new(reply),
             })
         }
     }

@@ -178,7 +178,7 @@ impl Spotify {
             SpotifyOp::Previous { device } => self.step("previous", device),
             SpotifyOp::Now => self.now(),
             SpotifyOp::Search { query } => self.search(query),
-            SpotifyOp::Home => self.home(),
+            SpotifyOp::Home => Ok(self.home()),
             SpotifyOp::Album { key } => self.album(key),
             SpotifyOp::Artist { key } => self.artist(key),
             SpotifyOp::Playlist { key } => self.playlist(key),
@@ -342,7 +342,7 @@ impl Spotify {
         })
     }
 
-    fn home(&self) -> Result<SpotifyReply, ServiceError> {
+    fn home(&self) -> SpotifyReply {
         let mut sections = Vec::new();
         if let Ok(saved) = self.get("me/tracks", &[("limit", "20")])
             && let Some(items) = saved.get("items").and_then(Value::as_array)
@@ -371,10 +371,10 @@ impl Spotify {
                     .collect(),
             });
         }
-        Ok(SpotifyReply {
+        SpotifyReply {
             home: Some(HomePage { sections }),
             ..SpotifyReply::default()
-        })
+        }
     }
 
     fn album(&self, key: &str) -> Result<SpotifyReply, ServiceError> {
@@ -389,7 +389,7 @@ impl Spotify {
                     .filter_map(|track| {
                         let mut song = track_of(track)?;
                         song.album = text_of(&album, "name").unwrap_or_default();
-                        song.album_key = key.to_owned();
+                        key.clone_into(&mut song.album_key);
                         Some(song)
                     })
                     .collect()
@@ -455,7 +455,7 @@ impl Spotify {
                     key: playlist.key.clone(),
                     title: playlist.title.clone(),
                     artist: playlist.subtitle.clone(),
-                    cover: playlist.cover.clone(),
+                    cover: playlist.cover,
                     ..AlbumItem::default()
                 },
                 tracks: songs,

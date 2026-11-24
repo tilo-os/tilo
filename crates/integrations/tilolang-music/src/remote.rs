@@ -184,7 +184,7 @@ impl Service for RemoteService {
                 op: op.clone(),
             },
             |answer| match answer {
-                FromConnector::Spotify { reply, .. } => Some(reply),
+                FromConnector::Spotify { reply, .. } => Some(*reply),
                 _ => None,
             },
         )

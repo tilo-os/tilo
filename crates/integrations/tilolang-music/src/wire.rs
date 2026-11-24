@@ -112,7 +112,7 @@ pub enum FromConnector {
     /// What Spotify answered.
     Spotify {
         request: u64,
-        reply: SpotifyReply,
+        reply: Box<SpotifyReply>,
     },
     /// The catalogue could not answer, or refused: why.
     Failed {

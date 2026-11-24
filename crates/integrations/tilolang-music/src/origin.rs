@@ -73,7 +73,7 @@ enum Answered {
     Stream(String),
     Lyrics { title: String, lyrics: Lyrics },
     Pinned { url: String, address: String },
-    Spotify(SpotifyOp, SpotifyReply),
+    Spotify(SpotifyOp, Box<SpotifyReply>),
 }
 
 struct Waiting {
@@ -262,7 +262,7 @@ fn answer(service: &dyn Service, pending: &Pending) -> Result<Answered, ServiceE
         }),
         Pending::Spotify(op) => service
             .spotify(op)
-            .map(|reply| Answered::Spotify(op.clone(), reply)),
+            .map(|reply| Answered::Spotify(op.clone(), Box::new(reply))),
     }
 }
 
