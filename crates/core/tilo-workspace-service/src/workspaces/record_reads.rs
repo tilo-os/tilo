@@ -57,9 +57,6 @@ pub type Admitted = Arc<dyn Fn(&Caller, &str) -> Result<(), ActionCallError> + S
 enum Route {
     /// A workspace this device holds, the read decided by its governance already.
     Held(Workspaces),
-    /// A caller inside this device, by its grants.
-    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    Inside(Arc<Broker>),
     /// The app action server this host was given.
     Served(Arc<dyn ResourceReads>),
 }
@@ -364,10 +361,6 @@ impl RecordReads {
             self.may_read(&state, caller, address)?;
             return Ok(Route::Held(workspaces));
         }
-        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        if let Some(broker) = self.broker() {
-            return Ok(Route::Inside(broker));
-        }
         self.served.clone().map(Route::Served).ok_or_else(refused)
     }
 
@@ -383,8 +376,6 @@ impl RecordReads {
                 super::PresentDevices::attach(&workspaces, &address.workspace, &mut here);
                 Some(here)
             }
-            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-            Route::Inside(broker) => broker.here(&caller.clone().in_workspace(&address.workspace)),
             Route::Served(served) => return served.read(caller, address),
         };
         let here = here.ok_or_else(refused)?;
@@ -403,8 +394,6 @@ impl RecordReads {
     ) -> Result<ResourceCopy, ActionCallError> {
         let workspaces = match route {
             Route::Held(workspaces) => workspaces,
-            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-            Route::Inside(broker) => return broker.read_record(caller, address),
             Route::Served(served) => return served.read(caller, address),
         };
         let (workspace, record) = (address.workspace.clone(), address.record.clone());
@@ -485,8 +474,6 @@ impl ResourceReads for RecordReads {
         }
         let workspaces = match route {
             Route::Held(workspaces) => workspaces,
-            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-            Route::Inside(broker) => return broker.read_record(caller, address),
             Route::Served(served) => return served.read(caller, address),
         };
         let (held, workspace, app, record) = (
@@ -564,11 +551,16 @@ impl ResourceReads for RecordReads {
         read: serde_json::Value,
     ) -> Result<serde_json::Value, ActionCallError> {
         match self.route(caller, address)? {
-            Route::Held(_) => Err(ActionCallError::Unavailable {
-                reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
-            }),
-            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-            Route::Inside(broker) => broker.store_read_record(caller, address, read),
+            Route::Held(_) => {
+                // Decided already: the apps' store answers the read.
+                #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+                if let Some(broker) = self.broker() {
+                    return broker.store_read_record(caller, address, read);
+                }
+                Err(ActionCallError::Unavailable {
+                    reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+                })
+            }
             Route::Served(served) => served.store_read(caller, address, read),
         }
     }
@@ -594,22 +586,10 @@ impl ResourceReads for RecordReads {
             // Nothing is written when someone comes or goes: presence says when it moves, and the
             // roster when its membership does.
             super::personal::on_presence_change(wake);
-            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-            if let Route::Inside(broker) = route
-                && let Some(changed) = broker.changed(
-                    &caller.clone().in_workspace(&address.workspace),
-                    tilo_actions::remote::WatchScope::Here,
-                )
-            {
-                let wake = wake.clone();
-                changed.then(move |_| wake.wake());
-            }
             return Ok(());
         }
         let workspaces = match route {
             Route::Held(workspaces) => workspaces,
-            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-            Route::Inside(broker) => return broker.watch_record(caller, address, wake),
             Route::Served(served) => return served.watch(caller, address, wake),
         };
         let runtime =

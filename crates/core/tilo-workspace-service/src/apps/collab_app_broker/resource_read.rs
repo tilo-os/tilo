@@ -1,20 +1,13 @@
-//! Record reads outside their app: the API an agent reads a workspace's records through
-//! (`docs/designs/app-language/agents.md`, "Reading records outside their app").
+//! Who a caller inside this device reads records outside their app as, and the decisions every
+//! read of a resource makes beside the record's own (`docs/designs/app-language/agents.md`,
+//! "Reading records outside their app").
 //!
-//! The caller is the agent acting for the person who admitted it ([`Caller::acting_for`]),
-//! never one a person's device handed its session to, and holds no app's route. Each read is
-//! decided at the record's node with that actor, the lesser of the agent's grants and the
-//! person's ([`BrokerActor::answer_in`]), then captured by the workspace's document owner under the
-//! person's device certificate, whose own check ([`NativeDocumentReads::authorize`]) is the
-//! person's read of the record. The capture's revalidation decides the agent's read again
-//! before every chunk it hands out. What leaves the broker is the record's committed content,
-//! read-only: the record channel's keys stay here, and nothing in a read writes to the record.
-//!
-//! A record's address names its workspace, and the read is decided there: the workspace a
-//! caller's connection was admitted to widens nothing. Before anyone signs in on this device,
-//! the device itself reads the records of the workspace founded on it, under its own device
-//! certificate ([`CertificateAuthority::own_device`]), decided by that workspace's grants for
-//! the person the certificate names, as any other read is.
+//! The record itself is read by the device's one reader ([`crate::workspaces::RecordReads`]),
+//! decided by the workspace the record is in. A caller inside this device that the workspace did
+//! not admit as a device reads there as [`AppBrokerState::reading_caller`] names it: the person
+//! signed in here, an app or an agent acting for them, never one a person's device handed its
+//! session to. Before anyone signs in, the device itself reads the records of the workspace
+//! founded on it, as the person its own certificate ([`CertificateAuthority::own_device`]) names.
 //!
 //! [`CertificateAuthority::own_device`]: crate::apps::certificate_authority::CertificateAuthority::own_device
 
@@ -23,21 +16,10 @@ use std::sync::{Arc, Weak};
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeRequest, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS,
-    ResourceAddress, ResourceChange, ResourceChanges, ResourceCopy, ResourceWake,
+    ResourceAddress, ResourceChange, ResourceChanges,
 };
 
-use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
-
-use super::committed_document::{NativeDocumentRead, NativeDocumentReadContext, ResourceRead};
-use super::{AppBrokerState, CrdtRoute};
-
-/// Whose device certificate captures a read.
-enum Reader {
-    /// The person a caller reads for: their device certificate in the workspace.
-    Person(String),
-    /// This device itself, before anyone signs in on it: its own certificate.
-    Device(Box<tilo_user_identity::DeviceCert>),
-}
+use super::AppBrokerState;
 
 impl AppBrokerState {
     /// The certificate this device acts under itself, when it does.
@@ -45,52 +27,41 @@ impl AppBrokerState {
         self.certificate_authority.get()?.own_device()
     }
 
-    /// Who reads `workspace`'s records for `caller`: the caller as the read is decided in that
-    /// workspace, and whose device certificate captures it.
+    /// Who `caller`, a caller inside this device, reads `workspace`'s records as: the caller as
+    /// the read is decided in that workspace, for the person signed in here, or before anyone
+    /// signs in, this device in the workspace it founded. Its execution must still run.
     ///
     /// The workspace a caller's connection was admitted to decides nothing about another one it
-    /// names: the read is decided there, for the caller's actor as it is in that workspace, and a
-    /// caller the workspace grants nothing is refused as for any record it may not read.
-    fn reader(
-        &self,
-        caller: &Caller,
-        workspace: &str,
-    ) -> Result<(Caller, Reader), ActionCallError> {
-        if self.services.local_person.is_none() {
-            return self.device_reader(caller, workspace);
-        }
-        let person = person_reading(caller).ok_or_else(|| ActionCallError::Refused {
-            reason: RESOURCE_READS_FOR_AGENTS.into(),
-        })?;
-        let decided = match caller.workspace() {
-            Some(admitted) if admitted != workspace => caller.clone().in_workspace(workspace),
-            _ => caller.clone(),
-        };
-        Ok((decided, Reader::Person(person.to_owned())))
-    }
-
-    /// Who `caller`, a caller inside this device, reads `workspace`'s records as: the person
-    /// signed in here, or before anyone signs in, this device in the workspace it founded.
+    /// names: the read is decided there, for the caller's actor as it is in that workspace.
     ///
     /// # Errors
-    /// A caller that reads no records here, as [`Self::reader`] refuses it.
+    /// A caller that reads no records here: one that reads for nobody, or before sign-in, one
+    /// that is not this device's own.
     pub(crate) fn reading_caller(
         &self,
         caller: &Caller,
         workspace: &str,
     ) -> Result<Caller, ActionCallError> {
-        self.reader(caller, workspace).map(|(decided, _)| decided)
+        super::action_provider::check_execution(caller)?;
+        if self.services.local_person.is_none() {
+            return self.device_reader(caller, workspace);
+        }
+        if person_reading(caller).is_none() {
+            return Err(ActionCallError::Refused {
+                reason: RESOURCE_READS_FOR_AGENTS.into(),
+            });
+        }
+        Ok(match caller.workspace() {
+            Some(admitted) if admitted != workspace => caller.clone().in_workspace(workspace),
+            _ => caller.clone(),
+        })
     }
 
     /// The device as the reader, with nobody signed in here: what runs on this device reads the
     /// records of the workspace founded on it, decided as the person its own certificate names,
     /// and through its app when an app asks. Another device, an agent or a bot reads nothing as
     /// this device, and no other workspace's record is read before sign-in.
-    fn device_reader(
-        &self,
-        caller: &Caller,
-        workspace: &str,
-    ) -> Result<(Caller, Reader), ActionCallError> {
+    fn device_reader(&self, caller: &Caller, workspace: &str) -> Result<Caller, ActionCallError> {
         let refused = || ActionCallError::Refused {
             reason: RESOURCE_READ_REFUSED.into(),
         };
@@ -136,62 +107,7 @@ impl AppBrokerState {
             Some(lease) => decided.in_execution(lease),
             None => decided,
         };
-        Ok((decided, Reader::Device(Box::new(certificate))))
-    }
-
-    /// The device certificate `reader` captures `workspace`'s records under.
-    fn certificate_of(
-        &self,
-        reader: Reader,
-        workspace: &str,
-    ) -> Result<tilo_user_identity::DeviceCert, ActionCallError> {
-        let unavailable = |reason: String| ActionCallError::Unavailable { reason };
-        match reader {
-            Reader::Device(certificate) => Ok(*certificate),
-            Reader::Person(person) => self
-                .services
-                .local_person
-                .as_ref()
-                .ok_or_else(|| {
-                    unavailable(tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into())
-                })?
-                .certificate(workspace, &person)
-                .map_err(unavailable),
-        }
-    }
-
-    /// Whether `caller` may read `address` now by the grants the apps here decide for it, as
-    /// [`Self::reader`] names it in the workspace the address names: what every read of a record
-    /// on this device is decided by beside the workspace's own governance.
-    pub(crate) fn may_read_record(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<(), ActionCallError> {
-        let (decided, _) = self.reader(caller, &address.workspace)?;
-        self.may_read_document(&decided, address)
-    }
-
-    /// Whether `caller`, as [`Self::reader`] decides for it, may read `address` now: decided at
-    /// the record's node in the workspace the address names, with the caller's actor, an agent's
-    /// bounded by its person's authority.
-    fn may_read_document(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<(), ActionCallError> {
-        super::action_provider::check_execution(caller)?;
-        let workspace = address.workspace.as_str();
-        let node = collab_types::document_node(workspace, &address.app, &address.record);
-        match self.decide_for(caller, workspace, |workspace, actor, now| {
-            actor.answer_in(workspace, &node, ActionKind::Read, now) == Answer::Allow
-        }) {
-            Some(true) => Ok(()),
-            Some(false) => Err(ActionCallError::Refused {
-                reason: RESOURCE_READ_REFUSED.into(),
-            }),
-            None => Err(ActionCallError::NotPermitted),
-        }
+        Ok(decided)
     }
 }
 
@@ -387,29 +303,8 @@ fn person_reading(caller: &Caller) -> Option<&str> {
 }
 
 impl AppBrokerState {
-    /// `address` read for `caller` inside this device: decided by who it is
-    /// ([`Self::reader`]), at the record's node, and again before every chunk.
-    pub(crate) fn read_record(
-        self: Arc<Self>,
-        caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError> {
-        let (decided, reader) = self.reader(caller, &address.workspace)?;
-        self.may_read_document(&decided, address)?;
-        let checked = (Arc::downgrade(&self), decided, address.clone());
-        let revalidate = Arc::new(move || {
-            let (state, decided, address) = &checked;
-            let state = state.upgrade().ok_or("record read broker ended")?;
-            state
-                .may_read_document(decided, address)
-                .map_err(|_| "record read no longer allowed".to_owned())
-        });
-        let certificate = self.certificate_of(reader, &address.workspace)?;
-        read_resource(self, certificate, address, revalidate)
-    }
-
-    /// A store read of `address` for `caller` inside this device, decided as
-    /// [`Self::read_record`] is: it reads, and writes nothing.
+    /// A store read of `address` for `caller` inside this device, the read decided already by
+    /// the workspace the address names: it reads, and writes nothing.
     pub(crate) fn store_read_record(
         &self,
         caller: &Caller,
@@ -417,14 +312,13 @@ impl AppBrokerState {
         read: serde_json::Value,
     ) -> Result<serde_json::Value, ActionCallError> {
         let invalid = |reason: String| ActionCallError::InvalidRequest { reason };
-        let (decided, _) = self.reader(caller, &address.workspace)?;
+        let decided = self.reading_caller(caller, &address.workspace)?;
         let command: tilo_resource_store::wire::Command = serde_json::from_value(read)
             .map_err(|error| invalid(format!("not a store command: {error}")))?;
         // A reader reads: what it changes goes through the app's actions, decided there.
         if command.writes() {
             return Err(invalid("a read of resources writes nothing".into()));
         }
-        self.may_read_document(&decided, address)?;
         let resources =
             self.services
                 .resources
@@ -441,94 +335,6 @@ impl AppBrokerState {
         let reply = futures::executor::block_on(resources.command(&context, command))
             .map_err(|reason| ActionCallError::Unavailable { reason })?;
         serde_json::to_value(reply).map_err(|error| invalid(error.to_string()))
-    }
-
-    /// Wake `wake` on the next write to `address`, for `caller` inside this
-    /// device as [`Self::read_record`] decides it.
-    pub(crate) fn watch_record(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-        wake: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        self.may_read_record(caller, address)?;
-        self.follow_document_writes(
-            &CrdtRoute::record(
-                address.app.clone(),
-                &address.workspace,
-                address.record.clone(),
-            ),
-            wake,
-        );
-        Ok(())
-    }
-}
-
-/// Read `address` in the workspace it names as the device holding `certificate` captures it,
-/// admitted already; `revalidate` decides the read again before every chunk.
-fn read_resource(
-    state: Arc<AppBrokerState>,
-    certificate: tilo_user_identity::DeviceCert,
-    address: &ResourceAddress,
-    revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-) -> Result<ResourceCopy, ActionCallError> {
-    let unavailable = |reason: String| ActionCallError::Unavailable { reason };
-    let workspace = address.workspace.as_str();
-    {
-        let Some(owner) = state.services.committed_documents.clone() else {
-            return Err(unavailable(
-                tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
-            ));
-        };
-        drop(state);
-        let context = NativeDocumentReadContext::for_agent(
-            CrdtRoute::record(address.app.clone(), workspace, address.record.clone()),
-            certificate,
-            revalidate,
-        );
-        context
-            .revalidate()
-            .map_err(|reason| ActionCallError::Refused { reason })?;
-        if owner.resource_read(workspace, &address.app, &address.record) == ResourceRead::Own {
-            // A record this device holds nothing of may still arrive: with its host's replay, or
-            // from a host that sends records when they are opened. Once all of it came, one this
-            // device holds nothing of is one the workspace has none of. This read runs on a thread
-            // of its own, which the wait holds.
-            if let Some(history) = owner.await_arriving_document(&context) {
-                futures::executor::block_on(history);
-            }
-            if owner.resource_read(workspace, &address.app, &address.record) == ResourceRead::Own {
-                if !owner.seals_documents(workspace) {
-                    return Err(unavailable(
-                        "this device holds none of the workspace's records outside their apps"
-                            .into(),
-                    ));
-                }
-                if owner.holds_resource(workspace, &address.app, &address.record) {
-                    return Err(unavailable(
-                        "the writes this device holds of the record build on changes it does \
-                         not hold"
-                            .into(),
-                    ));
-                }
-                return Ok(ResourceCopy::Absent);
-            }
-        }
-        match owner
-            .capture(&context, None, MAX_DOCUMENT_BYTES)
-            .map_err(|reason| ActionCallError::Refused { reason })?
-        {
-            NativeDocumentRead::Captured { body, .. } => {
-                Ok(ResourceCopy::Document(body.bytes().to_vec()))
-            }
-            NativeDocumentRead::Absent => Ok(ResourceCopy::Absent),
-            NativeDocumentRead::Pending => Err(unavailable(
-                "the record is still arriving from the workspace".into(),
-            )),
-            NativeDocumentRead::Unchanged(_) | NativeDocumentRead::Changes { .. } => Err(
-                unavailable("the workspace's owner answered a whole read with a part".into()),
-            ),
-        }
     }
 }
 

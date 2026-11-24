@@ -196,26 +196,6 @@ pub(super) async fn sleep_until(deadline: Option<std::time::Instant>) {
     }
 }
 
-/// Have a change of this device's group keys wake the resource readers that wait: one waiting
-/// on a resource sealed under keys this device had not taken yet reads again once they arrive,
-/// and nothing is written to the resource for that, so no write wakes it.
-fn wake_resource_readers_on_new_keys(state: &Arc<AppBrokerState>) {
-    let Some(keys) = state.services.group_keys.clone() else {
-        return;
-    };
-    let readers = Arc::downgrade(state);
-    tokio::task::spawn_local(async move {
-        let mut after = keys.generation();
-        loop {
-            after = keys.changed(after).await;
-            let Some(state) = readers.upgrade() else {
-                return;
-            };
-            state.wake_resource_readers();
-        }
-    });
-}
-
 /// One run of the broker thread: start the broker's own services, then
 /// accept and drive connections until asked to quit.
 #[expect(
@@ -239,7 +219,6 @@ pub(super) async fn serve_broker_thread(
             return;
         }
     };
-    wake_resource_readers_on_new_keys(&state);
     // Membership surfaces and native context subscribers are re-checked when
     // an input announces a change or a registered expiry comes due, not on a
     // clock. The watch wakes this turn for the first announcement

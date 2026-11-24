@@ -33,22 +33,6 @@ mod changes_tests;
 #[path = "committed_document/service_session_tests.rs"]
 mod service_session_tests;
 impl NativeDocumentReadContext {
-    /// A read of `route` by an agent acting for the person whose device certificate is
-    /// `certificate` (`resource_read`): no launcher ownership, only `revalidate`,
-    /// which decides the agent's read of the record again. Only the broker can make one.
-    pub(super) fn for_agent(
-        route: CrdtRoute,
-        certificate: tilo_user_identity::DeviceCert,
-        revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-    ) -> Self {
-        Self {
-            route,
-            certificate,
-            resource_type: None,
-            revalidate,
-        }
-    }
-
     /// A read of `route` by `certificate`'s device with nothing else to check: what a test of a
     /// document owner outside this crate reads with.
     #[cfg(any(test, feature = "test-support"))]
@@ -1207,28 +1191,6 @@ impl super::AppBrokerState {
         });
     }
 
-    /// This device's group keys changed: wake every resource reader waiting
-    /// for a resource's next write. A resource sealed under keys the device
-    /// had not taken yet answered as still arriving, and opens now with
-    /// nothing written to it; a reader whose resource did not change reads it
-    /// again and waits once more. A held committed read follows the keys
-    /// itself.
-    pub(super) fn wake_resource_readers(&self) {
-        let Ok(mut waits) = self.committed_waits.lock() else {
-            return;
-        };
-        waits.retain(|_, held| {
-            held.retain(|wake| match wake {
-                LandedWake::Held(_) => true,
-                LandedWake::Once(wake) => {
-                    wake.wake();
-                    false
-                }
-            });
-            !held.is_empty()
-        });
-    }
-
     /// Have writes on `channel_id`'s route wake `wake`, a held committed
     /// read's, for as long as the wait holds it.
     pub(super) fn follow_committed_writes(
@@ -1237,16 +1199,6 @@ impl super::AppBrokerState {
         wake: &Arc<tokio::sync::Notify>,
     ) {
         self.follow_writes(channel_id, LandedWake::Held(Arc::downgrade(wake)));
-    }
-
-    /// Have the next write on `route` wake `wake`, a record reader's
-    /// ([`tilo_actions::remote::ResourceReads::watch`]).
-    pub(super) fn follow_document_writes(
-        &self,
-        route: &CrdtRoute,
-        wake: &tilo_actions::remote::ResourceWake,
-    ) {
-        self.follow_writes(&route.channel_key(), LandedWake::Once(wake.clone()));
     }
 
     fn follow_writes(&self, channel_id: &str, wake: LandedWake) {
@@ -1260,8 +1212,6 @@ impl super::AppBrokerState {
 pub(super) enum LandedWake {
     /// A held committed read, for as long as it holds its wait.
     Held(Weak<tokio::sync::Notify>),
-    /// A record reader, once.
-    Once(tilo_actions::remote::ResourceWake),
 }
 
 impl LandedWake {
@@ -1277,12 +1227,6 @@ impl LandedWake {
                     wake.notify_one();
                 }
                 true
-            }
-            Self::Once(wake) => {
-                if delivers {
-                    wake.wake();
-                }
-                wake.waiting()
             }
         }
     }
