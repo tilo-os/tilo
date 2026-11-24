@@ -183,7 +183,7 @@ view controls(r: T) {
         let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).expect("a runtime");
         app.load(&rt);
         let root = rt.create_root("T").expect("a root");
-        let mut view = rt
+        let view = rt
             .open_view(&me(), &app.view("t"), vec![Value::resource(&root)])
             .expect("the view opens");
         let press = app.anchor("t", "press");
