@@ -31,7 +31,8 @@ use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use super::support::{
-    durable, enrol, enter_page, holder, start_workspace_host_relaying, wait_keyed, written,
+    commit_native, durable, enrol, enter_page, holder, start_workspace_host_relaying, wait_keyed,
+    written,
 };
 use tilo_peer_state::workspace_documents::DeviceDocuments as _;
 
@@ -76,7 +77,7 @@ async fn arrive(
 fn write(doc: &mut AutoCommit, edit: impl FnOnce(&mut AutoCommit)) -> DocumentMutation {
     let before = doc.get_heads();
     edit(doc);
-    doc.commit();
+    commit_native(doc);
     if before.is_empty() {
         DocumentMutation::Snapshot(doc.save())
     } else {

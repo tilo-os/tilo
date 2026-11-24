@@ -6,7 +6,9 @@ use collab_types::DocumentMutation;
 use tilo_session_client::{Cmd, Event, Outbox as _, SyncState, WorkspaceState};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{WORKSPACE, enrol, enter, entry_grant, route, start_host_plain, workspace};
+use crate::support::{
+    WORKSPACE, commit_native, enrol, enter, entry_grant, route, start_host_plain, workspace,
+};
 
 /// The next state event on `events` that `wanted` takes, waited for as the session wakes it.
 async fn told<T>(
@@ -98,6 +100,7 @@ async fn a_joined_workspace_and_a_write_are_told_by_their_states() {
     .unwrap();
     let mut doc = automerge::AutoCommit::new();
     automerge::transaction::Transactable::put(&mut doc, automerge::ROOT, "note", "hello").unwrap();
+    commit_native(&mut doc);
     peer.write(route.clone(), &DocumentMutation::Snapshot(doc.save()))
         .unwrap();
     let behind = told(&peer, &events, |event| match event {

@@ -28,7 +28,9 @@ use tilo_server::workspaces::WorkspaceContent;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::native::NativeDevice;
-use crate::support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
+use crate::support::{
+    WORKSPACE, commit_native, enrol, ready, start_host, start_peer, wait_for, workspace,
+};
 
 /// The surface the laptop's write names: an app's own `surface.toml` in the
 /// form it is kept by, a version of it this page does not run.
@@ -143,7 +145,7 @@ fn write_history(
     let issues = document
         .put_object(automerge::ROOT, "issues", automerge::ObjType::Map)
         .unwrap();
-    document.commit();
+    commit_native(&mut document);
     let mut writes = vec![(
         DocumentMutation::Snapshot(document.save()),
         None,

@@ -611,12 +611,23 @@ pub fn route() -> DocumentRoute {
     }
 }
 
+/// Commit what `doc` changed, as production commits an edit no action named: the framework's
+/// own native change, decided and recorded as the signing device's person. A receiver refuses a
+/// change that names no one, so every write a test makes through a document is committed here.
+pub fn commit_native(doc: &mut AutoCommit) {
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+    );
+}
+
 /// A change to `doc` noting `text`, as the mutation a peer publishes of it: a real
 /// Automerge change, since a replica applies what it keeps. The first change of a
 /// document is the whole record, which founds it.
 pub fn say(doc: &mut AutoCommit, text: &str) -> DocumentMutation {
     let founds = doc.get_heads().is_empty();
     doc.put(ROOT, text, true).unwrap();
+    commit_native(doc);
     if founds {
         DocumentMutation::Snapshot(doc.save())
     } else {
