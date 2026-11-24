@@ -97,7 +97,7 @@ struct Ada {
 
 impl Ada {
     async fn new() -> Self {
-        Self::signing_in_as("ada").await
+        Box::pin(Self::signing_in_as("ada")).await
     }
 
     /// Ada, whose calendar account signs in as `user`.
@@ -171,7 +171,20 @@ impl Ada {
     /// What `caller` is answered when it asks `action` of the calendars. A call that waits for
     /// her yes is answered as she answers ([`Self::answer_with`]): approved, it is admitted
     /// again as her approve admits it; declined, its caller hears so; unanswered, it waits.
+    ///
+    /// Each call is its own boxed future: a test asks dozens of times, and a test that awaited
+    /// every call in place would hold the futures of all of them on its thread's stack.
     async fn ask(
+        &self,
+        caller: &Caller,
+        action: &str,
+        argument: Value,
+    ) -> Result<Value, ActionError> {
+        Box::pin(self.asking(caller, action, argument)).await
+    }
+
+    /// [`Self::ask`], awaited in place.
+    async fn asking(
         &self,
         caller: &Caller,
         action: &str,
