@@ -147,7 +147,7 @@ view bar() {
                         .trailing
                     } else if part.kind == .spacer { .space } else { .leading },
                 ) {
-                    bar_part(part)
+                    bar_part(part, phone: space.compact, wide: space.width_class == .wide)
                 }
             }
         }
@@ -211,7 +211,7 @@ fn bar_is_narrow(width: Float) -> Bool {
 /// and the person's own face at the far end. On a compact bar the tray items and the sound give
 /// way: what a glance needs — the clock, the workspace, the connection, the charge, the
 /// notifications and the person's own face — keeps its room.
-view bar_part(part: BarPart) {
+view bar_part(part: BarPart, phone: Bool, wide: Bool) {
     if part.kind == .spacer {
         spacer
     } else if part.kind == .clock {
@@ -293,7 +293,7 @@ view bar_part(part: BarPart) {
         row(gap: .related, align: .center) {
             // What is live now — a video playing, a timer running — by its own view, on every
             // bar, compact or not: it is what a glance at the bar is for while it lasts.
-            live_pill()
+            live_pill(phone: phone, wide: wide)
             if not space.compact and not device.tray.items.is_empty() {
                 row(gap: .related, align: .center) {
                     for item in device.tray.items {

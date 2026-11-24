@@ -83,26 +83,6 @@ fn changed(before: &[u8], after: &[u8], width: u32, from: u32, to: u32) -> usize
     count
 }
 
-/// A left click in the middle of the bar, where the pill stands.
-fn click_the_bar(session: &mut Session, width: u32) {
-    session
-        .compositor()
-        .input(InputEvent::PointerMotion {
-            x: f64::from(width / 2),
-            y: f64::from(BAR / 2),
-        })
-        .expect("the pointer moves");
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(InputEvent::PointerButton {
-                button: 0x110,
-                pressed,
-            })
-            .expect("the pointer presses");
-    }
-}
-
 /// A session on a display `width` wide, for the shell a phone shows.
 fn session_wide(width: i32) -> Session {
     crate::common::headless_on(
@@ -129,6 +109,7 @@ fn the_bar_names_the_running_timer_and_its_card_opens_from_the_pill() {
     show(&session, CLOCKS, tea(), false);
     settle(&mut session, 8);
     let (named, _) = shot(&mut session);
+    super::shell::capture_to(&mut session, &dir, "bar-pill");
     assert!(
         changed(&empty, &named, width, 0, BAR) > 100,
         "the bar names the timer: {} pixels of it moved",
@@ -139,9 +120,8 @@ fn the_bar_names_the_running_timer_and_its_card_opens_from_the_pill() {
         0,
         "nothing stands over the shell yet"
     );
-    super::shell::capture_to(&mut session, &dir, "bar-pill");
 
-    click_the_bar(&mut session, width);
+    crate::common::press(&mut session, "Show as a card");
     settle(&mut session, 8);
     let (opened, _) = shot(&mut session);
     assert!(
@@ -166,6 +146,7 @@ fn a_narrow_shell_keeps_its_cards_in_the_pill() {
     show(&session, CLOCKS, tea(), true);
     settle(&mut session, 8);
     let (named, _) = shot(&mut session);
+    super::shell::capture_to(&mut session, &dir, "phone-pill");
     assert!(
         changed(&empty, &named, width, 0, BAR) > 100,
         "the bar names the timer on a phone too"
@@ -175,7 +156,6 @@ fn a_narrow_shell_keeps_its_cards_in_the_pill() {
         0,
         "no card stands on a phone's shell"
     );
-    super::shell::capture_to(&mut session, &dir, "phone-pill");
 }
 
 /// What `app` was pressed for since the session began: each press as its app reads it.
@@ -238,12 +218,12 @@ fn a_floating_timer_stands_in_the_corner_and_is_paused_and_ended_from_its_card()
     settle(&mut session, 8);
     show(&session, CLOCKS, tea(), true);
     let (x, y, w, h) = standing(&mut session, "A minute more");
+    super::shell::capture_to(&mut session, &shots_dir(), "card-corner");
     assert!(
         x + w > f64::from(WIDTH) * 0.75 && y + h > f64::from(HEIGHT) * 0.75,
         "the card stands in the bottom trailing corner: {:?}",
         (x, y, w, h)
     );
-    super::shell::capture_to(&mut session, &shots_dir(), "card-corner");
 
     crate::common::press(&mut session, "Pause");
     crate::common::press(&mut session, "A minute more");
@@ -334,6 +314,57 @@ fn the_cards_dock_in_the_corner_the_person_chose_three_at_most() {
     super::shell::capture_to(&mut session, &shots_dir(), "cards-top-left");
 }
 
+/// The cards are drawn in the person's theme: the same three cards docked in the corner read dark
+/// on the dark palette and light on the light one, each written as a picture.
+#[test]
+fn the_cards_follow_the_persons_theme() {
+    let _settled = ui::motion::testing::settled();
+    let _clock = super::shell::held_clock();
+    let card = |presentation: fn() -> ui::application::ComponentRunnerInputs, theme: &str| {
+        let mut session = Session::headless(
+            Options {
+                presentation,
+                collab: false,
+                ..Options::default()
+            },
+            &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        )
+        .expect("session");
+        settle(&mut session, 8);
+        show(&session, "so.tilo.calls", call(), true);
+        show(&session, "so.tilo.capture", recording(), true);
+        show(&session, CLOCKS, tea(), true);
+        crate::common::wait_for(&mut session, "three cards", |session| {
+            (session.shell_controls("Back to the bar").len() == 3).then_some(())
+        });
+        let (x, y, w, h) = standing(&mut session, "End");
+        settle(&mut session, 8);
+        super::shell::capture_to(&mut session, &shots_dir(), &format!("cards-{theme}"));
+        let shot = session
+            .compositor()
+            .screenshot("HEADLESS-1")
+            .expect("the display is shown");
+        let scale = f64::from(shot.width) / f64::from(WIDTH);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a control's place on the drawn frame"
+        )]
+        let at = |v: f64| (v * scale) as usize;
+        super::shell::region_luminance(
+            &shot.rgba,
+            (shot.width, shot.height),
+            (at(x), at(y), at(w), at(h)),
+        )
+    };
+    let dark = card(ui::headless::fixture_runner_inputs, "dark");
+    let light = card(super::shell::light_runner_inputs, "light");
+    assert!(
+        light > dark + 50.0,
+        "a card's header follows the theme: light {light:.0}, dark {dark:.0}"
+    );
+}
+
 /// A phone's bar pulls what went live out as one card, full width under the bar, and folds it
 /// back.
 #[test]
@@ -351,20 +382,25 @@ fn a_phone_drops_the_card_from_under_the_bar() {
     );
 
     crate::common::press_at(&mut session, "Tea, live", 420, HEIGHT);
-    let (x, y, w, _) = crate::common::wait_for(&mut session, "the card", |session| {
+    let (x, y, w, h) = crate::common::wait_for(&mut session, "the card", |session| {
         at(session, "Back to the bar")?;
-        at(session, "A minute more")
+        at(session, "A minute more")?;
+        at(session, "Tea card")
     });
+    super::shell::capture_to(&mut session, &shots_dir(), "phone-card");
     assert!(
         y > f64::from(BAR) && y < f64::from(HEIGHT) / 2.0,
         "under the bar: {y}"
     );
     assert!(
         x < 100.0 && x + w > 300.0,
-        "the card's row spans the phone: {:?}",
+        "the card spans the phone: {:?}",
         (x, w)
     );
-    super::shell::capture_to(&mut session, &shots_dir(), "phone-card");
+    assert!(
+        h < f64::from(HEIGHT) / 2.0,
+        "the card is as tall as what it holds, not the phone: {h}"
+    );
 
     crate::common::press_at(&mut session, "Fold Tea back", 420, HEIGHT);
     crate::common::wait_for(&mut session, "the card to fold", |session| {

@@ -258,7 +258,7 @@ pub(super) fn capture_to(session: &mut Session, dir: &std::path::Path, name: &st
 }
 
 /// A session whose presentation is the fixture's, in the light theme.
-fn light_runner_inputs() -> ui::application::ComponentRunnerInputs {
+pub(super) fn light_runner_inputs() -> ui::application::ComponentRunnerInputs {
     let mut inputs = ui::headless::fixture_runner_inputs();
     inputs.theme = ui::Theme::light();
     inputs
@@ -654,7 +654,7 @@ fn the_shell_draws_the_persons_theme() {
 
 /// The mean luminance of the `w` by `h` pixels at `(x, y)` of `frame` on a `size` physical frame, 0
 /// to 255.
-fn region_luminance(frame: &[u8], size: (u32, u32), rect: (usize, usize, usize, usize)) -> f64 {
+pub(super) fn region_luminance(frame: &[u8], size: (u32, u32), rect: (usize, usize, usize, usize)) -> f64 {
     let (width, height) = (size.0 as usize, size.1 as usize);
     let (x0, y0, w, h) = rect;
     let (x1, y1) = ((x0 + w).min(width), (y0 + h).min(height));

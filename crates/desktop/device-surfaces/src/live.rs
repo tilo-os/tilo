@@ -111,14 +111,15 @@ pub struct LiveControl {
     pub ends: bool,
 }
 
-/// What the rows offer beside their reading.
+/// What the rows offer beside their reading: each action is the resource's own and names the row
+/// it acts on by its key, since the reading publishes its rows as data, not as resources.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.session.live")]
 pub enum LiveEffect {
     /// Press a control of something live here that no resource holds: a player's play or pause,
     /// a Rust app's timer's stop
     #[effect(kind = "outside")]
-    #[effect(row, label = "session-live-press")]
+    #[effect(label = "session-live-press")]
     PressLive {
         /// The row's key, as the reading lists it.
         key: String,
@@ -129,14 +130,14 @@ pub enum LiveEffect {
     /// end it, and one that cannot be stopped from outside is put away until it shows something
     /// else. A live resource ends by its type's own action.
     #[effect(kind = "outside")]
-    #[effect(row, label = "session-live-close")]
+    #[effect(label = "session-live-close")]
     EndLive {
         /// The row's key, as the reading lists it.
         key: String,
     },
     /// Keep a row off this device's bar, or bring it back: quick settings shows it either way.
     #[effect(kind = "outside")]
-    #[effect(row, label = "session-live-collapse")]
+    #[effect(label = "session-live-collapse")]
     KeepOffBar {
         /// The row's key, as the reading lists it.
         key: String,
@@ -146,14 +147,14 @@ pub enum LiveEffect {
     /// Pull a row out of the bar's pill as a card over the windows; on a phone-width display it
     /// drops from under the bar.
     #[effect(kind = "outside")]
-    #[effect(row, label = "session-live-expand")]
+    #[effect(label = "session-live-expand")]
     ExpandLive {
         /// The row's key, as the reading lists it.
         key: String,
     },
     /// Fold a row's card back into the bar's pill.
     #[effect(kind = "outside")]
-    #[effect(row, label = "session-live-fold")]
+    #[effect(label = "session-live-fold")]
     FoldLive {
         /// The row's key, as the reading lists it.
         key: String,
@@ -161,7 +162,7 @@ pub enum LiveEffect {
     /// Take something live here that no resource holds to a point along it: the song the player
     /// here plays, an app's activity that has a length.
     #[effect(kind = "outside")]
-    #[effect(row, label = "session-live-seek")]
+    #[effect(label = "session-live-seek")]
     SeekLive {
         /// The row's key, as the reading lists it.
         key: String,
@@ -171,7 +172,7 @@ pub enum LiveEffect {
     /// Leave a row's card at a place of its own on its display, or dock it in the corner column
     /// again when no place is said.
     #[effect(kind = "outside")]
-    #[effect(row, label = "session-live-move")]
+    #[effect(label = "session-live-move")]
     MoveLive {
         /// The row's key, as the reading lists it.
         key: String,
