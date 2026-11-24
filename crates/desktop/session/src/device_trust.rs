@@ -2,22 +2,29 @@
 //! through the record API, answered by one [`DevicesTrust`] every admission in this process asks.
 //!
 //! The session keeps none of their devices itself. A session a daemon started reads the record
-//! from that daemon on its shell link, as every app's read of it is decided there; a session the
-//! host placed in a workspace's VM reads it from the host that certified it; and a session that
-//! keeps the workspaces itself ([`ServiceSlot`]) answers from their service, which is where its
-//! record lives. Each fills the same source, so a device is admitted here wherever the host that
-//! holds the record says it is, and refused when that host cannot be asked.
+//! from that daemon on its shell link, as every app's read of it is decided there, and asks it
+//! for the revocations the person's root signed, which a record's mark cannot say; a session the
+//! host placed in a workspace's VM reads the record from the host that certified it; and a
+//! session that keeps the workspaces itself ([`ServiceSlot`]) answers from their service, which
+//! is where its record lives. Each fills the same source, so a device is admitted here wherever
+//! the host that holds the record says it is, and refused when that host cannot be asked.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::Value;
-use tilo_actions::remote::{ReadAnswer, ResourceReadRequest};
+use tilo_actions::remote::{
+    InvokeArgument, InvokeRequest, ReadAnswer, RemoteActionMessage, RemoteActionTarget,
+    ResourceReadRequest,
+};
+use tilo_actions::{ActionAddress, InvocationId};
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity::sources::{DeviceTrust, DevicesSeen, DevicesTrust, install_device_trust};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_session_client::daemon_documents::{DaemonShell, document_read};
+use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::apps::services::DeviceDaemon;
 use tilo_workspace_service::service::ServiceSlot;
 use tilo_workspace_service::workspaces::Workspaces;
@@ -119,6 +126,9 @@ fn answer_from_daemon(trust: &Arc<DevicesTrust>, shell: DaemonShell, person: [u8
     if let Ok(readings) = shell.read_blocking(record_read(person, None)) {
         cache.lock_recover().take(person, &readings);
     }
+    if let Some(seen) = personal_devices_blocking(&shell, person) {
+        cache.lock_recover().seen = Some(seen);
+    }
     let after = cache.lock_recover().revision.clone();
     shell.runtime().clone().spawn(async move {
         follow(cache, person, after, Follow::Daemon(shell)).await;
@@ -144,6 +154,21 @@ enum Follow {
 }
 
 impl Follow {
+    /// The person's devices and the revocations their root signed, as the daemon that holds their
+    /// record answers them: what the record alone cannot say, since a revocation is the root's
+    /// signature and a record's mark is not one. `None` where this session has no daemon to ask.
+    async fn personal_devices(&self, person: [u8; 32]) -> Option<DevicesSeen> {
+        let Self::Daemon(shell) = self else {
+            return None;
+        };
+        let workspace = workspace_id(person).to_string();
+        shell
+            .dispatch(Some(&workspace), &personal_devices_message())
+            .await
+            .ok()
+            .and_then(|answer| seen_of_personal_devices(&answer))
+    }
+
     /// The person's devices record, once it moves past `after`.
     async fn read(&self, person: [u8; 32], after: Option<String>) -> Result<Value, String> {
         let read = record_read(person, after);
@@ -179,7 +204,13 @@ async fn follow(
             Ok(readings) => {
                 let moved = cache.lock_recover().take(person, &readings);
                 after = readings["revision"].as_str().map(str::to_owned);
-                if !moved {
+                if moved {
+                    // The record moved: the daemon's answer holds the revocations its root
+                    // signed, which the record's marks alone cannot say.
+                    if let Some(seen) = feed.personal_devices(person).await {
+                        cache.lock_recover().seen = Some(seen);
+                    }
+                } else {
                     tokio::time::sleep(ASK_AGAIN).await;
                 }
             }
@@ -191,6 +222,73 @@ async fn follow(
             }
         }
     }
+}
+
+/// The daemon's `devices#personalDevices` answer, asked of `shell` from a thread that is not a
+/// runtime's: the person's devices and the revocations their root signed, as the daemon holds
+/// them.
+fn personal_devices_blocking(shell: &DaemonShell, person: [u8; 32]) -> Option<DevicesSeen> {
+    let workspace = workspace_id(person).to_string();
+    shell
+        .dispatch_blocking(Some(&workspace), &personal_devices_message())
+        .ok()
+        .and_then(|answer| seen_of_personal_devices(&answer))
+}
+
+/// The invocation of the daemon's `devices#personalDevices` action.
+fn personal_devices_message() -> RemoteActionMessage {
+    use tilo_device_identity::login::{PERSONAL_DEVICES, PROVIDER, RESOURCE};
+    RemoteActionMessage::Invoke(InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: ActionAddress::new(RESOURCE, PERSONAL_DEVICES),
+        },
+        argument: InvokeArgument::Json(serde_json::Map::new()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    })
+}
+
+/// What the daemon's `devices#personalDevices` answer says: the person's devices, the marks their
+/// records hold, and the revocations their root signed.
+fn seen_of_personal_devices(answer: &Value) -> Option<DevicesSeen> {
+    let person = decode_key(answer.get("person")?.as_str()?)?;
+    let mut certified = BTreeSet::new();
+    let mut revoked = BTreeSet::new();
+    for listed in answer.get("devices")?.as_array()? {
+        let certificate = listed.get("certificate")?.as_str()?;
+        let cert: DeviceCert = postcard::from_bytes(&hex::decode(certificate).ok()?).ok()?;
+        certified.insert(cert.device_public_key);
+        if listed.get("revoked").and_then(Value::as_bool) == Some(true) {
+            revoked.insert(cert.device_public_key);
+        }
+    }
+    let revocations = answer
+        .get("revocations")?
+        .as_array()?
+        .iter()
+        .filter_map(|entry| {
+            let bytes = hex::decode(entry.as_str()?).ok()?;
+            postcard::from_bytes(&bytes).ok()
+        })
+        .collect();
+    Some(DevicesSeen::of_host(
+        person,
+        certified,
+        revoked,
+        revocations,
+    ))
+}
+
+/// `text` as 32 bytes in lowercase hex, or `None`.
+fn decode_key(text: &str) -> Option<[u8; 32]> {
+    hex::decode(text).ok()?.try_into().ok()
 }
 
 /// The person's devices record, read whole once it moved past `after`.
@@ -235,9 +333,9 @@ fn seen_of_record(person: [u8; 32], record: &Devices) -> DevicesSeen {
             .iter()
             .filter(|listed| listed.device.revoked)
             .map(|listed| listed.cert.device_public_key),
-        // The revocations their root signed are the hosts' to keep, not the record's: this
-        // session answers for the keys the record holds and refuses, which is what admission
-        // reads.
+        // A revocation is the root's signature, and the record holds only the mark: the daemon's
+        // own answer beside this reading carries the entries, and a session with no daemon to
+        // ask answers for the keys the record holds and refuses, which is what admission reads.
         Vec::new(),
     )
 }
@@ -319,6 +417,12 @@ mod tests {
         tilo_test_env::wait_until("the session refuses the revoked device", || {
             !tilo_identity::certificates::admitted(&person, &cert)
         });
+        let trust = tilo_identity::sources::device_trust().expect("the session's answer");
+        assert_eq!(
+            trust.revoked(&person, &cert.device_public_key),
+            Some(true),
+            "the record's mark is what the session refuses the device by"
+        );
         assert!(
             !tilo_identity::certificates::enrolled(&person, &cert),
             "a revoked device does not join either"

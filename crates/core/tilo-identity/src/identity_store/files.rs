@@ -59,7 +59,15 @@ impl IdentityStore for Files {
         if registry.identity_of(&cert.user_public_key).is_none() {
             return Err("this device has no identity to sign in with".into());
         }
-        let revocations = crate::sources::device_trust()
+        let trust = crate::sources::device_trust();
+        // The record of the person's devices marks this one taken back: it signs nothing more as
+        // them, whether or not its root's signed entry reached this host.
+        if trust.and_then(|trust| trust.revoked(&cert.user_public_key, &cert.device_public_key))
+            == Some(true)
+        {
+            return Err("this device has been revoked for the selected identity".into());
+        }
+        let revocations = trust
             .map(|trust| trust.revocations(&cert.user_public_key))
             .unwrap_or_default();
         Ok((cert, revocations))
