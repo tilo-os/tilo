@@ -1072,6 +1072,7 @@ kind = "undoable"
             &self,
             _: &str,
             _: &str,
+            _: &str,
         ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, String> {
             Ok(Vec::new())
         }

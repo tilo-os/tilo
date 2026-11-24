@@ -574,7 +574,7 @@ fn part_action(edit: &PartEdit) -> Result<PartHistoryEditAction, String> {
             part,
         },
         HistoryEdit::Restore { step: Some(_), .. } => {
-            return Err("a part's history restores no single step".into());
+            return Err("one step is restored in a whole document's history, not a part's".into());
         }
         HistoryEdit::Checkpoint { name } => PartHistoryEditAction::Checkpoint {
             name: name.clone(),

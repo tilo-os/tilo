@@ -311,7 +311,7 @@ mod tests {
     use tilo_lock::MutexRecover as _;
     use tilo_resource::search_index::IndexEntry;
 
-    use super::{DocumentSource, RecordIndex, RecordReader, StoreReader, Unread};
+    use super::{RecordIndex, RecordReader, StoreReader, Unread};
     use crate::search::{AppContentIndex, IndexSearch};
 
     const WORKSPACE: &str = "w-team";
@@ -333,24 +333,6 @@ mod tests {
             resource: format!("notes/{n}/{i}"),
             title: format!("word{n:02}x{i:02}"),
             ..IndexEntry::default()
-        }
-    }
-
-    /// A device whose workspaces hold no record of their own: what it holds is its store's
-    /// documents.
-    struct Documents;
-
-    impl DocumentSource for Documents {
-        fn workspaces(&self) -> Vec<String> {
-            vec![WORKSPACE.to_owned()]
-        }
-
-        fn records(&self, _: &str) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
-        }
-
-        fn record(&self, _: &str, _: &str, _: &str) -> Result<Option<Vec<u8>>, String> {
-            Ok(None)
         }
     }
 
@@ -400,7 +382,21 @@ mod tests {
         }
     }
 
+    /// A device whose workspace holds no record of an app's own: what it holds is its store's
+    /// documents.
     impl StoreReader for Store {
+        fn workspaces(&self) -> Vec<String> {
+            vec![WORKSPACE.to_owned()]
+        }
+
+        fn records(&self, _: &str) -> Result<Vec<(String, String)>, String> {
+            Ok(Vec::new())
+        }
+
+        fn record(&self, _: &str, _: &str, _: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(None)
+        }
+
         fn reads(&self, app: &str) -> bool {
             app == NOTES
         }
@@ -429,7 +425,6 @@ mod tests {
         let content = Arc::new(AppContentIndex::in_memory());
         // An index no worker drives: the test reads a pass at a time, and counts them.
         let index = RecordIndex {
-            source: Arc::new(Documents),
             reader: Arc::new(Records),
             stores: Arc::clone(&store) as Arc<dyn StoreReader>,
             content: Arc::clone(&content),

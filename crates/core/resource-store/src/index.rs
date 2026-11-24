@@ -1147,8 +1147,6 @@ impl Index {
             .map(|(kind, _)| kind.clone())
     }
 
-    /// The kind of the resource `id`, wherever it is held.
-    #[must_use]
     /// The ids of every resource of `kind`, in whichever documents they are.
     pub fn ids_of<'a>(&'a self, kind: &str) -> impl Iterator<Item = &'a str> + 'a {
         self.kinds
@@ -1158,6 +1156,8 @@ impl Index {
             .flat_map(|table| table.rows.keys().map(String::as_str))
     }
 
+    /// The kind of the resource `id`, wherever it is held.
+    #[must_use]
     pub fn kind_anywhere(&self, id: &str) -> Option<String> {
         self.kinds
             .iter()
