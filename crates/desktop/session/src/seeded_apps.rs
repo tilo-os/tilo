@@ -39,7 +39,7 @@ pub const SEEDED_BY_THIS_BUILD: bool = cfg!(any(debug_assertions, feature = "dev
 pub const APPS: [&str; 5] = [
     "so.tilo.notes",
     "so.tilo.tasks",
-    "so.tilo.lang.chat",
+    "so.tilo.chat",
     "so.tilo.mail",
     "so.tilo.tube",
 ];
