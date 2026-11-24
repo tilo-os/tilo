@@ -2834,3 +2834,147 @@ async fn answers_are_kept(
     );
     lease_held_by(asking, &lease, None).await;
 }
+
+/// Where the host's copy of the workspace lists `device`: a certificate it holds, or a
+/// device in its access.
+async fn listed_by_workspace(fixture: &Fixture, device: [u8; 32]) -> Vec<&'static str> {
+    let state = fixture
+        .server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .state(WS_NAME)
+        .await
+        .expect("the server holds the workspace");
+    let certified = state
+        .certificates()
+        .iter()
+        .any(|cert| cert.device_public_key == device);
+    let in_access = state
+        .governance()
+        .governed_access(tilo_clock::wall())
+        .expect("the host reads the workspace's access")
+        .member_devices
+        .contains(&device);
+    [(certified, "its certificates"), (in_access, "its access")]
+        .into_iter()
+        .filter_map(|(listed, by)| listed.then_some(by))
+        .collect()
+}
+
+/// The device the host placed for a Browser environment carries a certificate of the host's
+/// person, and is still none of their devices: asking the host to enter the workspace is refused
+/// as every operation the host does not offer a device is (as unknown), and redeeming an
+/// invitation a device of the person's issued for their person is refused, saying why.
+#[tokio::test]
+async fn an_environment_enters_no_workspace_and_redeems_no_invitation() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let material = fixture.environments.material();
+    let environment = DeviceIdentity::of(&material);
+    let refusal = tilo_server::environment::JoinsNothing.to_string();
+    let not_offered = ActionCallError::UnknownAction.to_string();
+
+    let client = ServerClient::connect(
+        client_endpoint().await,
+        fixture.server.server.node_addr(),
+        fixture.user.user_pk,
+        environment.cert.clone(),
+        environment.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .expect("the environment's device dials its host");
+    let entered = tilo_server::workspaces::enter_invitation(&client, WS_NAME, 600).await;
+    match &entered {
+        Err(reason) => assert!(
+            reason.contains(&not_offered),
+            "the host offers the environment no entry: {reason}"
+        ),
+        Ok(_) => panic!(
+            "the host answered the environment's entry with an invitation; the workspace lists it \
+             in {:?}",
+            listed_by_workspace(&fixture, material.device.device_public_key).await
+        ),
+    }
+
+    let workspaces = fixture
+        .server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces");
+    let issued = crate::common::invitation(
+        workspaces,
+        &fixture.agent,
+        WS_NAME,
+        tilo_peer_state::join::Role::Editor,
+        &environment,
+    )
+    .await;
+    match crate::common::redeem(&environment, &issued).await {
+        Err(reason) => assert!(
+            reason.contains(&refusal),
+            "the host says why it lets the environment into nothing: {reason}"
+        ),
+        Ok(()) => panic!(
+            "the host admitted the environment by an invitation; the workspace lists it in {:?}",
+            listed_by_workspace(&fixture, material.device.device_public_key).await
+        ),
+    }
+
+    assert_eq!(
+        listed_by_workspace(&fixture, material.device.device_public_key).await,
+        Vec::<&str>::new(),
+        "the workspace lists the environment's device nowhere"
+    );
+}
+
+/// None of the host's administration is the environment's either: making a workspace, asked as
+/// a device of the host's person asks it, is not offered to it, as it is not to a stranger.
+#[tokio::test]
+async fn an_environment_does_none_of_the_hosts_administration() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let environment = DeviceIdentity::of(&fixture.environments.material());
+    let client = ServerClient::connect(
+        client_endpoint().await,
+        fixture.server.server.node_addr(),
+        fixture.user.user_pk,
+        environment.cert.clone(),
+        environment.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .expect("the environment's device dials its host");
+    let request = InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: tilo_server::workspaces::HOST_ACTIONS_PROVIDER.to_owned(),
+            address: ActionAddress::new(
+                tilo_server::workspaces::HOST_WORKSPACES_RESOURCE.to_owned(),
+                tilo_server::workspaces::CREATE_WORKSPACE,
+            ),
+        },
+        argument: InvokeArgument::Json(serde_json::Map::from_iter([(
+            "name".to_owned(),
+            "Elsewhere".into(),
+        )])),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let answer = tilo_server::workspaces::ask_host(&client, request)
+        .await
+        .expect("the host answers");
+    assert!(
+        matches!(
+            answer,
+            ReceiptStatus::Rejected {
+                error: ActionCallError::UnknownAction
+            }
+        ),
+        "the host offers the environment none of its administration: {answer:?}"
+    );
+}

@@ -77,6 +77,17 @@ pub trait JoinWorkspaces: Send + Sync {
     /// Fresh randomness for a challenge.
     fn nonce(&self) -> Result<[u8; 32], JoinError>;
 
+    /// Refuse `device`, at `now`, any part of the exchange, before anything of
+    /// its request is decided: a device this host knows joins no workspace,
+    /// whatever invitation or membership it presents. Nothing is refused by
+    /// default.
+    ///
+    /// # Errors
+    /// The device joins nothing here.
+    fn refuse_joining(&self, _device: &[u8; 32], _now: u64) -> Result<(), JoinError> {
+        Ok(())
+    }
+
     /// Run `decide` on `workspace`, locked, then make what it staged durable
     /// and send what it committed, and only then answer what `decide`
     /// answered.
@@ -209,8 +220,20 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
         request: JoinTransportRequest,
         now: u64,
     ) -> Result<JoinTransportResponse, JoinError> {
-        let workspace = requested_workspace(&request, now)?.to_string();
         let store = &self.0;
+        store.refuse_joining(&remote_endpoint, now)?;
+        let named = match &request {
+            JoinTransportRequest::Challenge(request) => Some(&request.device_cert),
+            JoinTransportRequest::MembershipChallenge(request) => Some(&request.device_cert),
+            JoinTransportRequest::ResolveInvitation { device_cert, .. } => Some(device_cert),
+            JoinTransportRequest::Inspect { .. }
+            | JoinTransportRequest::Complete(_)
+            | JoinTransportRequest::MembershipComplete(_) => None,
+        };
+        if let Some(cert) = named {
+            store.refuse_joining(&cert.device_public_key, now)?;
+        }
+        let workspace = requested_workspace(&request, now)?.to_string();
         Ok(match request {
             JoinTransportRequest::ResolveInvitation {
                 reference,

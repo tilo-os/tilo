@@ -27,6 +27,17 @@ impl Admit for Workspaces {
                 entering, access, ..
             } = entry;
             let device = cert.device_public_key;
+            // A device this host placed for a Browser environment enters nothing, whichever
+            // way it asks: not as a member's further device, not as one already listed, not by
+            // an invitation.
+            if let Err(refusal) = self
+                .inner
+                .host
+                .environments
+                .refuse_joining(&device, tilo_clock::unix_now_ns())
+            {
+                return Entered::Refused(refused(refusal.to_string()));
+            }
             // A device asking again under an entry the workspace already
             // admitted (its answer was lost with its connection) is in.
             if let Ok(governed) = self.workspace(&entering.workspace).await {
@@ -250,6 +261,14 @@ impl Workspaces {
             return None;
         }
         let now = tilo_clock::unix_now_ns();
+        if let Err(refusal) = self
+            .inner
+            .host
+            .environments
+            .refuse_joining(&cert.device_public_key, now)
+        {
+            return Some(JoinReply::Refused(refusal.to_string()));
+        }
         let governed = self.workspace(workspace).await.ok()?;
         let reply = {
             let mut governed = governed.lock().await;

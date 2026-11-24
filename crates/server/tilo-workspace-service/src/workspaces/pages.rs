@@ -1365,6 +1365,12 @@ impl Workspaces {
         token: Option<&[u8]>,
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
+        // A device this host placed for a Browser environment redeems no invitation, by
+        // whomever it was issued: it serves its one record and joins nothing.
+        self.inner
+            .host
+            .environments
+            .refuse_joining(&presented.device(), now)?;
         let proving = crate::timing::start();
         let (invitation, person) = (presented.invitation.clone(), presented.cert.user_public_key);
         let cert = presented.cert.clone();

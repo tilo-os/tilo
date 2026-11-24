@@ -180,6 +180,21 @@ impl Environment {
     }
 }
 
+/// What a device this server placed for a Browser environment is told when it
+/// asks to enter a workspace, redeems an invitation or asks for any of the
+/// host's administration: it is no member and never becomes one, so the workspace
+/// never lists it and no key of the workspace's goes to it. Its one record is
+/// all it reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("a Browser environment joins nothing; it serves its one record")]
+pub struct JoinsNothing;
+
+impl From<JoinsNothing> for tilo_peer_state::join_log::JoinError {
+    fn from(refusal: JoinsNothing) -> Self {
+        Self::new(refusal.to_string())
+    }
+}
+
 /// The environment devices this server certified, by device key
 /// ([`Environment`]), kept across restarts when it has a path.
 #[derive(Clone)]
@@ -343,6 +358,22 @@ impl EnvironmentRegistry {
             // A register that cannot be read confines every device it might
             // hold to nothing: refusal, never membership.
             Err(_) => Some(Environment::Stopped { until_ns: u64::MAX }),
+        }
+    }
+
+    /// Refuse `device`, at `now_ns`, entering a workspace, redeeming an
+    /// invitation into one or doing any of the host's administration, when this
+    /// register knows it: placed or stopped, an environment's device joins
+    /// nothing. A register that cannot be read knows every device as stopped,
+    /// so this refuses rather than lets in.
+    ///
+    /// # Errors
+    ///
+    /// The device is an environment's.
+    pub fn refuse_joining(&self, device: &[u8; 32], now_ns: u64) -> Result<(), JoinsNothing> {
+        match self.of(device, now_ns) {
+            Some(_) => Err(JoinsNothing),
+            None => Ok(()),
         }
     }
 

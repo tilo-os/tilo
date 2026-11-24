@@ -409,6 +409,10 @@ impl Workspaces {
         device: &DeviceCert,
         now: u64,
     ) -> Result<bool, CollaborationError> {
+        self.inner
+            .host
+            .environments
+            .refuse_joining(&device.device_public_key, now)?;
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
         // A key whose grant this workspace records as revoked never enters it
@@ -1751,6 +1755,16 @@ impl JoinWorkspaces for Workspaces {
 
     fn nonce(&self) -> Result<[u8; 32], CollaborationError> {
         random()
+    }
+
+    /// A device this host placed for a Browser environment redeems no invitation and is
+    /// admitted as no member's device over the join exchange: it serves its one record.
+    fn refuse_joining(&self, device: &[u8; 32], now: u64) -> Result<(), CollaborationError> {
+        self.inner
+            .host
+            .environments
+            .refuse_joining(device, now)
+            .map_err(Into::into)
     }
 
     async fn with_workspace<T: Send>(
