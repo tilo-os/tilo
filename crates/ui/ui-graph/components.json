@@ -2503,37 +2503,6 @@
       }
     },
     {
-      "name": "Labelled",
-      "doc": "A control a view composed of its own parts (a chooser, a field holding parts of its own), named by the caption the view places beside it: a screen reader and an agent reach it by the words the person reads there. A control that names itself keeps its own name.",
-      "props": [
-        {
-          "name": "label",
-          "doc": "The caption the view shows beside the control, which names it.",
-          "type": "text",
-          "positional": true
-        },
-        {
-          "name": "description",
-          "doc": "A line that explains the control, read after its name.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "parts": [
-        {
-          "name": "content",
-          "doc": "The control it names.",
-          "accepts": "view",
-          "default": true
-        }
-      ],
-      "semantics": {
-        "role": "Group",
-        "label": "label"
-      }
-    },
-    {
       "name": "FunnelChart",
       "doc": "How many reach each stage of a sequence: the steps of a sign-up, a checkout, a build. Stages narrow as fewer arrive, each with the share of the one before it, or widen as a pyramid; each takes the next colour of the theme's palette.",
       "props": [
@@ -2979,6 +2948,37 @@
       }
     },
     {
+      "name": "Labelled",
+      "doc": "A control a view composed of its own parts (a chooser, a field holding parts of its own), named by the caption the view places beside it: a screen reader and an agent reach it by the words the person reads there. A control that names itself keeps its own name.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "The caption the view shows beside the control, which names it.",
+          "type": "text",
+          "positional": true
+        },
+        {
+          "name": "description",
+          "doc": "A line that explains the control, read after its name.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "parts": [
+        {
+          "name": "content",
+          "doc": "The control it names.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
       "name": "LevelMeter",
       "doc": "How loud an audio input is right now, as a bar that follows the sound and keeps a falling peak: the component opens the device's meter itself while it runs.",
       "props": [
@@ -3311,6 +3311,11 @@
           "type": "bool"
         },
         {
+          "name": "world",
+          "doc": "Whether it is a map of the world: a pin stands centred on the place it names and keeps the size the view gave it on screen at every zoom, and the camera draws back until the whole world fits.",
+          "type": "bool"
+        },
+        {
           "name": "outline",
           "doc": "A rectangle the view points at, in canvas pixels (`x`, `y`, width, height), drawn as the light outline a drag across the canvas draws: the rectangle the person dragged, kept while they say what fills it.",
           "type": {
@@ -3459,6 +3464,15 @@
           },
           "many": true,
           "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "select",
+          "doc": "A range of its cards was taken: carries the cards it stood on, each by the item it shows, in the order they stand. A press with shift takes the cards from the one pressed last to the one pressed now; a press held and dragged over the cards takes the ones it sweeps.",
+          "value": {
+            "list": "resource"
+          }
         }
       ],
       "semantics": {
@@ -4104,6 +4118,128 @@
       ],
       "semantics": {
         "role": "Group"
+      }
+    },
+    {
+      "name": "PaintSurface",
+      "doc": "A surface a person paints on: the artwork beneath, the stroke under the hand previewed over it.",
+      "props": [
+        {
+          "name": "picture",
+          "doc": "The artwork as it stands, its layers composited: the picture under the paint.",
+          "type": {
+            "option": "picture"
+          }
+        },
+        {
+          "name": "width",
+          "doc": "The artwork's width in its own units.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "height",
+          "doc": "The artwork's height in its own units.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "brush",
+          "doc": "The brush that lays a stroke; the round ink brush when none is named.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "size",
+          "doc": "The brush's width in artwork units.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "colour",
+          "doc": "The colour a stroke lays, `#rrggbb` or `#rrggbbaa`; ink when none is named.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "zoom",
+          "doc": "How far the view is zoomed in; 1 fits the artwork in the surface.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "pan",
+          "doc": "The artwork unit at the surface's top left: where the view looks.",
+          "type": {
+            "option": {
+              "list": "float"
+            }
+          }
+        },
+        {
+          "name": "label",
+          "doc": "What it shows, as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "stroke_start",
+          "doc": "A stroke began, at `[x, y, pressure]` in the artwork's units.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "stroke",
+          "doc": "A stroke went on, at `[x, y, pressure]` in the artwork's units.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "stroke_end",
+          "doc": "A stroke ended where the hand lifted, at `[x, y, pressure]`.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "hover",
+          "doc": "The pointer moved over the surface, at `[x, y]` in the artwork's units.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "wheel",
+          "doc": "The wheel turned over the surface: `[across, down]` in logical pixels.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "pinch",
+          "doc": "A pinch over the surface: the scale factor the fingers ask for, 1 for none.",
+          "value": "float"
+        },
+        {
+          "name": "panned",
+          "doc": "A middle-button drag panned the view by `[dx, dy]` artwork units.",
+          "value": {
+            "list": "float"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "label"
       }
     },
     {
@@ -5180,6 +5316,162 @@
       "semantics": {
         "role": "StaticText",
         "label": "text"
+      }
+    },
+    {
+      "name": "Sheet",
+      "doc": "A sheet drawn as a grid: its column and row headers, its cells as they show, the cells the person chose, the cells a search found and a comment's mark in the corner.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the sheet is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "columns",
+          "doc": "How many columns it shows.",
+          "type": "int"
+        },
+        {
+          "name": "rows",
+          "doc": "How many rows it shows.",
+          "type": "int"
+        },
+        {
+          "name": "column_width",
+          "doc": "A column's width in pixels where the person did not size it.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "row_height",
+          "doc": "A row's height in pixels where the person did not size it.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "sizes",
+          "doc": "The columns and rows the person sized.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "SheetSize"
+              }
+            }
+          }
+        },
+        {
+          "name": "cells",
+          "doc": "The cells that show anything; an empty cell takes no room here.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "SheetCell"
+              }
+            }
+          }
+        },
+        {
+          "name": "selection",
+          "doc": "The cells chosen, as `A1` or `A1:B2`.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "found",
+          "doc": "The cells the window's search found.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "commented",
+          "doc": "The cells a comment is on.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "answered",
+          "doc": "The cells a resolved comment is on.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "peers",
+          "doc": "Who else is in the sheet, where they are.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "SheetPeer"
+              }
+            }
+          }
+        },
+        {
+          "name": "editable",
+          "doc": "It takes edits; read-only when not.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "select",
+          "doc": "The cells chosen changed: carries them, as `A1` or `A1:B2`.",
+          "value": "text"
+        },
+        {
+          "name": "edit",
+          "doc": "Cells were written: carries pairs of reference and input, in order; an empty input clears its cell.",
+          "value": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "resized_column",
+          "doc": "A column was resized: carries its letter and its new width in pixels.",
+          "value": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "resized_row",
+          "doc": "A row was resized: carries its number and its new height in pixels.",
+          "value": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "fill",
+          "doc": "The fill handle was dragged: carries the cells it copies from and the cells it fills.",
+          "value": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "copy",
+          "doc": "The chosen cells were asked to be copied: carries them as a table, a line per row and a tab between columns. The app's action writes it to the person's clipboard.",
+          "value": "text"
+        },
+        {
+          "name": "cut",
+          "doc": "The chosen cells were asked to be cut: carries them as `copy` does, and the app copies them and clears the cells.",
+          "value": "text"
+        },
+        {
+          "name": "paste",
+          "doc": "The person asked to paste: the app reads the person's clipboard and writes the cells from the selection's top left."
+        }
+      ],
+      "semantics": {
+        "role": "Table",
+        "label": "name"
       }
     },
     {
@@ -10038,6 +10330,117 @@
               "name": "value",
               "ty": "float",
               "doc": "How many reach it; nothing at or below zero is drawn."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SheetCell",
+      "doc": "One cell of a sheet as it shows: its reference, the text it shows and how it reads.",
+      "cases": [
+        {
+          "name": "cell",
+          "doc": "A cell at its A1 reference, showing `text`.",
+          "fields": [
+            {
+              "name": "cell",
+              "ty": "text",
+              "doc": "Its A1 reference, such as `A1`."
+            },
+            {
+              "name": "text",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "What it shows, already through its format."
+            },
+            {
+              "name": "kind",
+              "ty": {
+                "choice": {
+                  "name": "SheetCellKind",
+                  "cases": [
+                    "text",
+                    "number",
+                    "bool",
+                    "error"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "text"
+              },
+              "doc": "How it reads: a number sits at its right edge and a word at its left."
+            },
+            {
+              "name": "bold",
+              "ty": "bool",
+              "default": {
+                "bool": false
+              },
+              "doc": "Set heavier than its neighbours."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SheetPeer",
+      "doc": "Another person at work in the sheet: the cells they chose and who they are.",
+      "cases": [
+        {
+          "name": "peer",
+          "doc": "A person's selection, drawn in their colour.",
+          "fields": [
+            {
+              "name": "area",
+              "ty": "text",
+              "doc": "Their selection, as `A1` or `A1:B2`."
+            },
+            {
+              "name": "who",
+              "ty": "actor",
+              "doc": "Whose selection it is."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SheetSize",
+      "doc": "A column's width or a row's height, as the person set it.",
+      "cases": [
+        {
+          "name": "column",
+          "doc": "A column made wider or narrower than the rest.",
+          "fields": [
+            {
+              "name": "column",
+              "ty": "text",
+              "doc": "Its letter, such as `A`."
+            },
+            {
+              "name": "width",
+              "ty": "float",
+              "doc": "Its width in pixels."
+            }
+          ]
+        },
+        {
+          "name": "row",
+          "doc": "A row made taller or shorter than the rest.",
+          "fields": [
+            {
+              "name": "row",
+              "ty": "float",
+              "doc": "Its number, counting from 1."
+            },
+            {
+              "name": "height",
+              "ty": "float",
+              "doc": "Its height in pixels."
             }
           ]
         }
