@@ -1,19 +1,12 @@
 //! A built-in app's root, made on a device that writes its record with no window of the app
 //! open: the language runtime the daemon links makes it, through the package the build carries.
 
-use std::sync::Arc;
-
 use tilo_actions::MemberId;
 use tilo_actions::remote::CatalogueQuery;
 use tilo_resource_store::wire::Command;
 use tilo_resource_store::{Cell, Resource, Stamp, Value};
-use tilo_workspace_service::workspaces::MemberDevice;
-use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, declare_app, governor_with, test_host_holding,
-};
+use tilo_workspace_service::workspaces::fixtures::declare_app;
 use tilolang_workspace::records::{built_in, member, with_tl_record};
-
-use super::mount;
 
 /// Tasks, the built-in app whose record this test roots.
 const APP: &str = "so.tilo.tasks";
@@ -25,24 +18,18 @@ const KIND: &str = "tl.so.tilo.tasks.Task";
 /// made once rather than attempted again every time a page is read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_built_in_apps_root_is_made_where_the_workspace_runs_the_app() {
-    let dir = tempfile::tempdir().unwrap();
-    let keys = Arc::new(TestGroupKeys::default());
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
-    let workspaces = server.workspaces().clone();
-    mount(&workspaces);
-    workspaces.set_member_device(Arc::new(MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key.clone()),
-    }));
-    let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+    let device = super::Device::start("Tasks", None).await;
+    let cert = &device.cert;
+    let workspaces = device.workspaces();
+    let workspace = device.workspace.clone();
+    let server = device.host();
     let surface = built_in(APP)
         .unwrap()
         .expect("Tasks is built into this build")
         .surface(APP)
         .expect("Tasks declares its surface");
     // Tasks' types are declared so this device's write of a task is judged by them.
-    declare_app(&server, APP, &surface);
+    declare_app(server, APP, &surface);
     let (_, canonical) =
         collab_types::surface::SurfaceFile::kept(&surface).expect("the built-in surface reads");
     // The version the workspace runs names its surface by the hash of the file it keeps, as an
@@ -138,6 +125,5 @@ async fn a_built_in_apps_root_is_made_where_the_workspace_runs_the_app() {
             .is_some(),
         "the record reads back once its root is made"
     );
-    drop(workspaces);
-    server.shutdown().await;
+    device.shutdown().await;
 }

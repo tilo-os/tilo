@@ -31,7 +31,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, Revoca
 use tilo_workspace_agent::{Agent, OWNER, WorkspaceAgents};
 
 use super::own_agent_tests::{
-    Answers, PLAN_READY, SCOUT, Started, argument, ask_agents, chat_writes, mentioning, settled,
+    Answers, PLAN_READY, SCOUT, argument, ask_agents, chat_writes, mentioning, settled,
 };
 use tilo_workspace_service::agents::agent_keys::AgentKeys;
 use tilo_workspace_service::agents::ticketed_keys::{
@@ -41,6 +41,7 @@ use tilo_workspace_service::agents::triggered::{CHAT, MESSAGE};
 use tilo_workspace_service::agents::{Model, ServerAgents};
 use tilo_workspace_service::apps::triggers::{Runner, StartRun};
 use tilo_workspace_service::work::{Actor, Ineligible, NotTaken, Order, Turn};
+use tilo_workspace_service::workspaces::fixtures::Started;
 use tilo_workspace_service::workspaces::fixtures::invited;
 use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, TestHost, device_cert, governor, test_host_holding,
