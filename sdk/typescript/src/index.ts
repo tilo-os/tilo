@@ -4,30 +4,52 @@
  * ```ts
  * import { Tilo } from "tilo-sdk";
  *
- * const tilo = new Tilo();                    // key: TILO_API_KEY, API: TILO_API_URL
- * const ws = tilo.workspace("jane-doe");
+ * const tilo = new Tilo();                    // this computer's daemon
+ * const ws = tilo.workspace();                // the workspace the daemon serves
  * const page = await ws.read("notes/Todo");
  * page.title = "Done";                        // a field edit
  * await page.flush();
  * ```
  *
- * Every call is one route of Tilo's `/v1` API (`docs/developers/api.md`).
+ * Every call is one tool of Tilo's agent surface (`tilo_ls`, `tilo_read`,
+ * `tilo_do`, …), carried by this computer's daemon through the native addon,
+ * or by a key to the hosted server (`new Tilo({ key })`).
  */
 
 export {
+  DEFAULT_URL,
+  RETRY_DEADLINE_MS,
   Keys,
-  SignIn,
   Tilo,
   type TiloOptions,
   Workspaces,
   keyFrom,
   urlFrom,
 } from "./client.ts";
-export { Workspace, Files, Members, WorkspaceKeys, type FileBytes } from "./workspace.ts";
+export {
+  Workspace,
+  Files,
+  Members,
+  Vault,
+  WorkspaceKeys,
+  type FileBytes,
+  type VaultAsk,
+  type WebCallAnswer,
+  type WebCallOptions,
+} from "./workspace.ts";
 export { resourceProxy, kebab, made, segments } from "./resource.ts";
 export type { Resource, Step, Surface, Entry } from "./resource.ts";
 export { Invocation } from "./invocation.ts";
-export { DEFAULT_URL, Endpoint, InvocationGroup, VERSION, withinInvocation, type Reply, type RequestOptions } from "./endpoint.ts";
+export { Endpoint, InvocationGroup, withinInvocation } from "./endpoint.ts";
+export {
+  DaemonCarrier,
+  KeyCarrier,
+  NATIVE_PACKAGE,
+  VERSION,
+  type Carrier,
+  type FetchLike,
+  type Group,
+} from "./carrier.ts";
 export {
   AskPending,
   KeyExpired,
@@ -37,12 +59,10 @@ export {
   Refused,
   SurfaceChanged,
   Unreachable,
-  UnsupportedVersion,
 } from "./errors.ts";
 export {
   type Action,
   type ActionAnswer,
-  type ApiInfo,
   type Event,
   type Hit,
   type Invitation,
@@ -56,23 +76,9 @@ export {
   type Row,
   type InvocationInfo,
   InvocationList,
-  type Upload,
   type Usage,
   type WorkspaceInfo,
   type WorkspaceUsage,
   WorkspaceList,
   type WorkspaceExport,
 } from "./models.ts";
-export {
-  HttpTransport,
-  NativeTransport,
-  HeaderMap,
-  NATIVE_PACKAGE,
-  type FetchLike,
-  type HeadersLike,
-  type HostOptions,
-  type Transport,
-  type TransportReply,
-  type TransportRequest,
-} from "./transport.ts";
-export { API_VERSION, encodePath, routes, splitAction } from "./routes.ts";

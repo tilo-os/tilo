@@ -1,25 +1,38 @@
 /** What the SDK raises: a refusal, an ask, or a call that broke on the way. */
 
+import { intOf, recordOf } from "./models.ts";
+
 /** The code of a call made through generated types for another surface. */
 export const SURFACE_CHANGED = "surface_changed";
-export const API_VERSION_UNSUPPORTED = "api_version_unsupported";
 export const KEY_REVOKED = "key_revoked";
 export const KEY_EXPIRED = "key_expired";
 export const INVALID_TOKEN = "invalid_token";
 
 /**
- * The host refused the call: `code` is the app's or the API's own, `message`
- * its words for people, and `nextSteps` the calls that would work.
+ * The host refused the call: `code` is the app's own word for why, `message`
+ * its words for people, `nextSteps` the calls that would work, and
+ * `retryAfterMs` how long it asked to wait first. `action` is the refused
+ * action's row, with what it takes, when the call named one.
  */
 export class Refused extends Error {
   readonly code: string;
   readonly nextSteps: string[];
+  readonly retryAfterMs: number | null;
+  readonly action: unknown;
 
-  constructor(code: string, message = "", nextSteps: string[] = []) {
+  constructor(
+    code: string,
+    message = "",
+    nextSteps: string[] = [],
+    retryAfterMs: number | null = null,
+    action: unknown = null,
+  ) {
     super(message || code);
     this.name = "Refused";
     this.code = code;
     this.nextSteps = nextSteps;
+    this.retryAfterMs = retryAfterMs;
+    this.action = action;
   }
 }
 
@@ -30,11 +43,7 @@ export class Refused extends Error {
  */
 export class SurfaceChanged extends Refused {
   constructor(message: string, nextSteps: string[] = []) {
-    super(
-      SURFACE_CHANGED,
-      `${message}; run \`tilo sdk gen\` to write these types again`,
-      nextSteps,
-    );
+    super(SURFACE_CHANGED, message, nextSteps);
     this.name = "SurfaceChanged";
   }
 }
@@ -42,8 +51,7 @@ export class SurfaceChanged extends Refused {
 /**
  * The call waits for the person to allow it. `url` is where they answer it
  * when the host names one; `wait()` follows the invocation until they decide
- * and
- * answers what it finished with (a `Key` for a key that was created).
+ * and answers what it finished with.
  */
 export class AskPending extends Error {
   readonly url: string | null;
@@ -78,20 +86,19 @@ export class AskPending extends Error {
   }
 }
 
-/** The call was malformed, or the answer was not the one the API promises. */
+/** The call was malformed, or the answer was not the one the host promises. */
 export class ProtocolError extends Error {
-  readonly status: number | null;
-  readonly code: number | string | null;
+  /** A stable code, when the break has one (`invalid_token`, `key_revoked`). */
+  readonly code: string | null;
 
-  constructor(message: string, status: number | null = null, code: number | string | null = null) {
+  constructor(message: string, code: string | null = null) {
     super(message);
     this.name = "ProtocolError";
-    this.status = status;
     this.code = code;
   }
 }
 
-/** The API server could not be reached, or its answer was cut short: worth asking again. */
+/** The daemon or the server could not be reached, or its answer was cut short: worth asking again. */
 export class Unreachable extends ProtocolError {
   constructor(message: string) {
     super(message);
@@ -100,37 +107,16 @@ export class Unreachable extends ProtocolError {
 }
 
 /**
- * The server speaks another major version of the API than this SDK does.
- * `version` is what its `Tilo-Api-Version` header said; `speaking` is the
- * major version this SDK speaks.
- */
-export class UnsupportedVersion extends ProtocolError {
-  readonly version: string;
-  readonly speaking: string;
-
-  constructor(version: string, speaking = "1") {
-    super(
-      `this SDK speaks Tilo API ${speaking}; the server answers ${version}: update tilo-sdk`,
-      null,
-      API_VERSION_UNSUPPORTED,
-    );
-    this.name = "UnsupportedVersion";
-    this.version = version;
-    this.speaking = speaking;
-  }
-}
-
-/**
- * The host turned the key away (HTTP 401): it reaches nothing. `code` says
- * why, the API's own word: `invalid_token` for a key the API server never
- * issued (mistyped, or from another host), `key_revoked` (`KeyRevoked`) and
- * `key_expired` (`KeyExpired`). `nextSteps` are what would work.
+ * The host turned the key away: it reaches nothing. `code` says why, the
+ * host's own word: `invalid_token` for a key it never issued (mistyped, or
+ * from another host), `key_revoked` (`KeyRevoked`) and `key_expired`
+ * (`KeyExpired`). `nextSteps` are what would work.
  */
 export class KeyRefused extends ProtocolError {
   readonly nextSteps: string[];
 
-  constructor(message: string, code = INVALID_TOKEN, status: number | null = 401, nextSteps: string[] = []) {
-    super(message, status, code);
+  constructor(message: string, code = INVALID_TOKEN, nextSteps: string[] = []) {
+    super(message, code);
     this.name = "KeyRefused";
     this.nextSteps = nextSteps;
   }
@@ -144,8 +130,8 @@ export class KeyRefused extends ProtocolError {
 export class KeyRevoked extends KeyRefused {
   readonly revokedAtMs: number | null;
 
-  constructor(message = "this key was revoked", revokedAtMs: number | null = null, status: number | null = 401, nextSteps: string[] = []) {
-    super(message, KEY_REVOKED, status, nextSteps);
+  constructor(message = "this key was revoked", revokedAtMs: number | null = null, nextSteps: string[] = []) {
+    super(message, KEY_REVOKED, nextSteps);
     this.name = "KeyRevoked";
     this.revokedAtMs = revokedAtMs;
   }
@@ -159,49 +145,63 @@ export class KeyRevoked extends KeyRefused {
 export class KeyExpired extends KeyRefused {
   readonly expiredAtMs: number | null;
 
-  constructor(message = "this key expired", expiredAtMs: number | null = null, status: number | null = 401, nextSteps: string[] = []) {
-    super(message, KEY_EXPIRED, status, nextSteps);
+  constructor(message = "this key expired", expiredAtMs: number | null = null, nextSteps: string[] = []) {
+    super(message, KEY_EXPIRED, nextSteps);
     this.name = "KeyExpired";
     this.expiredAtMs = expiredAtMs;
   }
 }
 
-/** The `error` body every refusal of the API carries. */
-export interface RefusalBody {
-  code?: unknown;
-  message?: unknown;
-  next_steps?: unknown;
-  revoked_at_ms?: unknown;
-  expired_at_ms?: unknown;
-}
-
 /**
- * The refusal an answer of `status` was, from its one JSON shape:
- * `{"error": {code, message, next_steps, retry_after_ms, …}}`.
+ * The refusal a body was, from its one shape:
+ * `{"error": {code, message, next_steps, retry_after_ms, action}}`.
  */
-export function refusalOf(status: number, body: Record<string, unknown> | null): Error {
-  const error = body?.error;
-  if (!error || typeof error !== "object" || Array.isArray(error)) {
-    return new ProtocolError(`the API answered ${status}`, status);
+export function refusalOf(body: unknown): Error {
+  const error = recordOf(body).error;
+  if (error === null || typeof error !== "object" || Array.isArray(error)) {
+    return new ProtocolError("the host refused the call and said nothing more");
   }
-  const detail = error as RefusalBody;
+  const detail = error as Record<string, unknown>;
   const code = typeof detail.code === "string" ? detail.code : "failed";
   const message = typeof detail.message === "string" ? detail.message : code;
   const steps = Array.isArray(detail.next_steps) ? detail.next_steps.map(String) : [];
   switch (code) {
     case KEY_REVOKED:
-      return new KeyRevoked(message, intOf(detail.revoked_at_ms), status, steps);
+      return new KeyRevoked(message, intOf(detail.revoked_at_ms), steps);
     case KEY_EXPIRED:
-      return new KeyExpired(message, intOf(detail.expired_at_ms), status, steps);
+      return new KeyExpired(message, intOf(detail.expired_at_ms), steps);
     case INVALID_TOKEN:
-      return new KeyRefused(message, INVALID_TOKEN, status, steps);
+      return new KeyRefused(message, INVALID_TOKEN, steps);
     case SURFACE_CHANGED:
       return new SurfaceChanged(message, steps);
     default:
-      return new Refused(code, message, steps);
+      return new Refused(
+        code,
+        message,
+        steps,
+        intOf(detail.retry_after_ms),
+        detail.action ?? null,
+      );
   }
 }
 
-function intOf(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+/** The refusal a `{error}` body is, for a key the host turned away. */
+export function keyRefusalOf(
+  detail: { code?: unknown; message?: unknown; next_steps?: unknown; revoked_at_ms?: unknown; expired_at_ms?: unknown },
+  fallback: string,
+): KeyRefused {
+  const message = typeof detail.message === "string" && detail.message !== "" ? detail.message : fallback;
+  const steps = Array.isArray(detail.next_steps) ? detail.next_steps.map(String) : [];
+  switch (detail.code) {
+    case KEY_REVOKED:
+      return new KeyRevoked(message, intOf(detail.revoked_at_ms), steps);
+    case KEY_EXPIRED:
+      return new KeyExpired(message, intOf(detail.expired_at_ms), steps);
+    default:
+      return new KeyRefused(
+        message,
+        typeof detail.code === "string" ? detail.code : INVALID_TOKEN,
+        steps,
+      );
+  }
 }

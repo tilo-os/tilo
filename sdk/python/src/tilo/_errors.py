@@ -3,30 +3,44 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from typing import Any, Callable
 
 
 class Refused(Exception):
-    """The server refused the call.
+    """The call was refused.
 
-    `code` is the stable code the API gives it (`invalid_arguments`,
-    `unknown_action`, `not_found`, …), `message` its words for people, and
-    `next_steps` the calls that would work, each a sentence naming a route.
+    `code` is the stable code the workspace gives it (`invalid_arguments`,
+    `unknown_action`, `not_found`, …), `message` its words for people,
+    `next_steps` the calls that would work, each a sentence. `retry_after_ms`
+    is how long the refusal asks to wait before the same call works, and
+    `action` what refused it, with what it takes.
     """
 
     def __init__(
-        self, code: str, message: str = "", next_steps: list[str] | None = None
+        self,
+        code: str,
+        message: str = "",
+        next_steps: list[str] | None = None,
+        *,
+        retry_after_ms: int | None = None,
+        action: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message or code)
         self.code = code
         self.message = message or ""
         self.next_steps = list(next_steps or [])
+        self.retry_after_ms = retry_after_ms
+        self.action = action
 
     def __str__(self) -> str:
         text = f"{self.code}: {self.message}" if self.message else self.code
         if self.next_steps:
             text = text + "\n" + "\n".join(self.next_steps)
         return text
+
+
+SURFACE_CHANGED = "surface_changed"
 
 
 class SurfaceChanged(Refused):
@@ -38,23 +52,17 @@ class SurfaceChanged(Refused):
     """
 
     def __init__(self, message: str, next_steps: list[str] | None = None) -> None:
-        stamp = "run `tilo sdk gen` to write the types again"
-        told = message if "tilo sdk gen" in message else f"{message}: {stamp}"
-        super().__init__(SURFACE_CHANGED, told, next_steps)
-
-
-SURFACE_CHANGED = "surface_changed"
+        super().__init__(SURFACE_CHANGED, message, next_steps)
 
 
 class AskPending(Exception):
     """The call waits for the person to allow it.
 
     `invocation_id` is the invocation they are answering, `url` where they
-    answer it
-    when the API names one, and `question` what they are asked.
-    `ask.wait()` follows the invocation until they decide, and returns its
-    answer: the
-    answer itself from the sync client, a coroutine to await from the async one.
+    answer it when the workspace names one, and `question` what they are
+    asked. `ask.wait()` follows the invocation until they decide, and returns
+    its answer: the answer itself from the sync client, a coroutine to await
+    from the async one.
     """
 
     def __init__(
@@ -110,31 +118,12 @@ class AskPending(Exception):
 
 
 class ProtocolError(Exception):
-    """The call itself was malformed, or the server answered something else."""
+    """The call itself was malformed, or the other side answered something else."""
 
-    def __init__(
-        self, message: str, *, status: int | None = None, code: int | str | None = None
-    ) -> None:
+    def __init__(self, message: str, *, code: int | str | None = None) -> None:
         super().__init__(message)
         self.message = message
-        self.status = status
         self.code = code
-
-
-class UnsupportedVersion(ProtocolError):
-    """The server speaks another major version of the API than this SDK does.
-
-    `version` is what its `Tilo-Api-Version` header said; this SDK speaks
-    major `1`.
-    """
-
-    def __init__(self, version: str, speaking: str = "1") -> None:
-        super().__init__(
-            f"this server speaks Tilo API {version}, and this SDK speaks {speaking}: "
-            "upgrade tilo-sdk, or use the version that matches the server"
-        )
-        self.version = version
-        self.speaking = speaking
 
 
 class Unreachable(ProtocolError):
@@ -142,7 +131,7 @@ class Unreachable(ProtocolError):
 
 
 class KeyRefused(ProtocolError):
-    """The API turned the key away (HTTP 401): it reaches nothing.
+    """The API turned the key away: it reaches nothing.
 
     `code` says why, the API's own word: `invalid_token` for a key it never
     issued (mistyped, or from another host), `key_revoked` (`KeyRevoked`) and
@@ -155,10 +144,9 @@ class KeyRefused(ProtocolError):
         message: str,
         *,
         code: str = "invalid_token",
-        status: int | None = 401,
         next_steps: list[str] | None = None,
     ) -> None:
-        super().__init__(message, status=status, code=code)
+        super().__init__(message, code=code)
         self.next_steps = list(next_steps or [])
 
 
@@ -187,21 +175,53 @@ KEY_EXPIRED = "key_expired"
 INVALID_TOKEN = "invalid_token"
 
 
-def key_refusal(error: Any, status: int | None = 401) -> KeyRefused | None:
-    """The `KeyRefused` the API's typed refusal `error` (`{code, message,
-    next_steps, revoked_at_ms?, expired_at_ms?}`) is, if it is about the key."""
-    if not isinstance(error, dict):
+def key_refusal(error: Any) -> KeyRefused | None:
+    """The `KeyRefused` the refusal body `error`
+    (`{code, message, next_steps, revoked_at_ms?, expired_at_ms?}`) is, if it
+    is about the key."""
+    if not isinstance(error, Mapping):
         return None
     code = error.get("code")
     message = str(error.get("message") or code or "")
     steps = [str(step) for step in error.get("next_steps") or []]
     if code == KEY_REVOKED:
-        return KeyRevoked(message, revoked_at_ms=_ms(error.get("revoked_at_ms")), status=status, next_steps=steps)
+        return KeyRevoked(message, revoked_at_ms=_ms(error.get("revoked_at_ms")), next_steps=steps)
     if code == KEY_EXPIRED:
-        return KeyExpired(message, expired_at_ms=_ms(error.get("expired_at_ms")), status=status, next_steps=steps)
+        return KeyExpired(message, expired_at_ms=_ms(error.get("expired_at_ms")), next_steps=steps)
     if code == INVALID_TOKEN:
-        return KeyRefused(message, code=INVALID_TOKEN, status=status, next_steps=steps)
+        return KeyRefused(message, code=INVALID_TOKEN, next_steps=steps)
     return None
+
+
+def refusal_of(body: Any) -> Exception:
+    """What the refusal body `{error: {...}}` raises.
+
+    A refusal about the key is the key's own error, a surface that moved on is
+    `SurfaceChanged`, and anything else is a `Refused` carrying the code, the
+    words, the calls that would work and the wait it asks for.
+    """
+    error = body.get("error") if isinstance(body, Mapping) else None
+    error = error if isinstance(error, Mapping) else {}
+    typed = key_refusal(error)
+    if typed is not None:
+        return typed
+    code = str(error.get("code") or "failed")
+    message = str(error.get("message") or "")
+    steps = [str(step) for step in error.get("next_steps") or []]
+    if code == SURFACE_CHANGED:
+        return SurfaceChanged(message, steps)
+    # A tool's typed refusal names the action beside the error; the API's owns
+    # body keeps it inside it.
+    action = error.get("action")
+    if not isinstance(action, Mapping) and isinstance(body, Mapping):
+        action = body.get("action")
+    return Refused(
+        code,
+        message,
+        steps,
+        retry_after_ms=_ms(error.get("retry_after_ms")),
+        action=action if isinstance(action, Mapping) else None,
+    )
 
 
 def _ms(value: Any) -> int | None:

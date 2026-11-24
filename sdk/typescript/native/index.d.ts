@@ -1,43 +1,43 @@
-/** A key file's contents: the host it reaches, its name, its key and certificate (hex). */
-export interface KeyFile {
-  host: string;
-  name: string;
-  key: string;
-  cert: string;
+/** The invocation group a call is a step of: what History lists it under. */
+export interface Group {
+  id: string;
+  title: string;
 }
 
-/** An answer of the API: the body whole, or a `text/event-stream` answer's chunks. */
-export interface Reply {
-  status: number;
-  /** A name's values joined with `, `. */
-  headers: Record<string, string>;
-  body: Uint8Array | AsyncIterable<Uint8Array>;
+/** The refusal body a call may answer instead of a result. */
+export interface Refusal {
+  error: {
+    code?: string;
+    message?: string;
+    next_steps?: string[];
+    retry_after_ms?: number;
+    revoked_at_ms?: number;
+    expired_at_ms?: number;
+    action?: unknown;
+  };
 }
 
-/** A Tilo host reached directly with the key a key file holds. */
-export declare class Host {
-  /** `keyFile`: the path of a key file, or its contents. */
-  constructor(keyFile: string | KeyFile | object);
-  /** Answer `method` on `path` (with its query) as the API does. */
-  request(
-    method: string,
-    path: string,
-    headers: Record<string, string>,
-    body: Uint8Array,
-  ): Promise<Reply>;
+/** One call's answer: what it answered, or the refusal it was. */
+export type CallAnswer = { answer: unknown } | { refused: Refusal };
+
+/** A connection to this computer's daemon. */
+export interface Daemon {
+  /** The workspace this connection acts in when a call names none. */
+  readonly workspace: string | null;
+  /** Call `tool` with `args` in `workspace` (`null`: the one the daemon serves), in `group`. */
+  call(
+    workspace: string | null,
+    tool: string,
+    args: object,
+    group: Group | null,
+  ): Promise<CallAnswer>;
 }
 
-/** How tilo-sdk's `Tilo.host()` opens a host: a key file, or a key and its certificate. */
-export interface OpenOptions {
-  /** The host's origin; with a key file, it takes the place of the file's. */
-  url?: string;
-  keyFile?: string;
-  /** The key's 32-byte secret and its certificate, hex or bytes. */
-  key?: string | Uint8Array;
-  cert?: string | Uint8Array;
-  /** What the host's people see the key as, when it comes without a key file. */
-  name?: string;
-}
-
-/** The host `options` name, opened. */
-export declare function open(options: OpenOptions): Promise<Host>;
+/**
+ * Connect to the daemon's native endpoint: the connection the launcher handed an app it
+ * started, else `socket`, else this computer's daemon. Throws when no daemon answers.
+ */
+export declare function connect(
+  socket: string | null,
+  workspace: string | null,
+): Promise<Daemon>;

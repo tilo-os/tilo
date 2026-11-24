@@ -3,7 +3,7 @@ name = "tilo-sdk-node-native"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "The TypeScript SDK's native part: Tilo's API in process as a key the program holds, reaching a Tilo host directly as a device of the person (the npm package tilo-sdk-native)."
+description = "The TypeScript SDK's native part: this computer's daemon reached over its native endpoint, in action frames, as whoever connects (the npm package tilo-sdk-native)."
 license = "MIT OR Apache-2.0"
 
 [lib]

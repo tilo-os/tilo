@@ -19,7 +19,6 @@ import json
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from typing import Any, Generic, TypeVar, TypedDict
 
-from ._endpoint import SURFACE_HEADER, segments as resource_path
 from ._errors import ProtocolError
 from ._models import Event
 
@@ -176,7 +175,7 @@ class Resource:
 
     async def _load(self) -> Resource:
         await self._flush()
-        answer = await self._workspace._read(self.path)
+        answer = await self._workspace._read(self.path, surface=self._surface())
         object.__setattr__(self, "_answer", answer)
         children = answer.get("children")
         object.__setattr__(
@@ -288,21 +287,18 @@ class Resource:
 
     async def _grouped(self, endpoint: Any, members: list[dict[str, Any]]) -> list[dict[str, Any]]:
         surface = self._surface()
-        headers = {SURFACE_HEADER: surface} if surface is not None else None
+        path = f"{self.path}#group"
         answers: list[dict[str, Any]] = []
         for chunk in _chunks(members):
-            answer = await endpoint.json(
-                "POST",
-                endpoint.path("resources", resource_path(self.path), "actions", "group"),
-                json={"actions": chunk},
-                headers=headers,
+            answer = await endpoint.do_answer(
+                path, {"actions": chunk}, surface=surface
             )
             # Names the run on the workspace's record; a person's ask is raised here.
-            endpoint.follow(answer, f"{self.path}#group")
+            endpoint.follow(answer, path)
             if answer.get("status") == "pending":
                 invocation = answer.get("invocation")
                 if isinstance(invocation, str) and invocation:
-                    answer = dict(await endpoint.wait(invocation))
+                    answer = await endpoint.wait(invocation)
             answers.append(dict(answer))
         return answers
 

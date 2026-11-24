@@ -37,6 +37,13 @@ use crate::v1::errors::ApiError;
 /// Names a key file a command acts as, as `--key-file` does.
 pub const KEY_FILE_ENV: &str = "TILO_KEY_FILE";
 
+/// Names the descriptor of the connection to the daemon's native endpoint the launcher opened for
+/// an app it started, which the daemon admits as that app.
+pub const NATIVE_FD_ENV: &str = "TILO_SVC_NATIVE_FD";
+
+/// Names the workspace an app the launcher started acts in.
+pub const WORKSPACE_ENV: &str = "TILO_WORKSPACE_ID";
+
 /// Names the desktop's own API socket, as `TILO_MCP_SERVER` names the agent socket: a program of
 /// a login whose runtime directory is not the one the desktop was started in finds it here.
 pub const DESKTOP_ENV: &str = "TILO_API_SOCKET";
@@ -289,6 +296,71 @@ impl Calls {
         })
     }
 
+    /// A program's connection to this computer's daemon, as the SDKs make it: the stream the
+    /// launcher connected for an app it started ([`NATIVE_FD_ENV`], admitted as that app in the
+    /// workspace [`WORKSPACE_ENV`] names), else `socket`, else this computer's daemon
+    /// ([`daemon_socket`]), admitted as the account connecting. `workspace` names the one
+    /// workspace the connection acts in when it knows it; without it, an app's comes from
+    /// [`WORKSPACE_ENV`] and a person's daemon is asked where this account enters.
+    ///
+    /// # Errors
+    /// No daemon answers, or it serves this account no workspace.
+    pub async fn connect(socket: Option<&Path>, workspace: Option<&str>) -> Result<Self> {
+        /// Whether this process took the descriptor the launcher handed it: it is taken once.
+        static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let handed = std::env::var(NATIVE_FD_ENV)
+            .ok()
+            .and_then(|fd| fd.trim().parse::<std::os::fd::RawFd>().ok());
+        let (stream, workspace) = match (socket, handed) {
+            (None, Some(fd)) => {
+                if TAKEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    bail!(
+                        "this app's one connection to the daemon is open already: share the \
+                         client that holds it"
+                    );
+                }
+                // SAFETY: the launcher opened `fd` for this process alone, and `TAKEN` makes
+                // this the one owner of it.
+                #[expect(unsafe_code, reason = "the launcher hands the connection as a descriptor")]
+                let stream = unsafe {
+                    <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fd)
+                };
+                let workspace = workspace
+                    .map(str::to_owned)
+                    .or_else(|| std::env::var(WORKSPACE_ENV).ok().filter(|ws| !ws.is_empty()))
+                    .ok_or_else(|| {
+                        anyhow!("an app's connection names its workspace in {WORKSPACE_ENV}")
+                    })?;
+                (stream, Some(workspace))
+            }
+            _ => (connected(socket)?, workspace.map(str::to_owned)),
+        };
+        let line = Arc::new(LineClient::of_stream(stream)?);
+        match workspace {
+            Some(workspace) => Ok(Self::in_workspace(line, &workspace)),
+            None => Self::over(line).await,
+        }
+    }
+
+    /// The actions `line` reaches in `workspace`, which the connection already knows it acts in:
+    /// an app the daemon started, admitted in the one workspace it was started in, which asks the
+    /// daemon nothing but frames. Its calls name no person: the daemon decides who they are by
+    /// the connection.
+    #[must_use]
+    pub fn in_workspace(line: Arc<LineClient>, workspace: &str) -> Self {
+        let provider: Provider = line.clone();
+        Self {
+            at: At::Daemon {
+                server: Box::new(served(provider, workspace, "")),
+                line,
+                workspace: workspace.to_owned(),
+                person: String::new(),
+                again: false,
+                elsewhere: Elsewhere::default(),
+            },
+        }
+    }
+
     /// The actions of the Tilo desktop serving its own API socket at `socket`: a nested
     /// session's, which [`desktop_socket`] does not find.
     #[must_use]
@@ -349,6 +421,36 @@ impl Calls {
         arguments: Value,
         group: Option<Value>,
     ) -> Result<Value> {
+        self.answered(workspace, tool, arguments, group)
+            .await
+            .map_err(|refused| anyhow::Error::new(Refusal::said(&refused)))
+    }
+
+    /// [`Self::typed`], its refusal answered as a program reads one: `{"error": {"code",
+    /// "message", "next_steps", "retry_after_ms", ...}}`, the shape every SDK raises its typed
+    /// refusals from.
+    ///
+    /// # Errors
+    /// The call was refused, or could not be made: its refusal's body.
+    pub async fn call(
+        &self,
+        workspace: Option<&str>,
+        tool: &str,
+        arguments: Value,
+        group: Option<Value>,
+    ) -> Result<Value, Value> {
+        self.answered(workspace, tool, arguments, group)
+            .await
+            .map_err(|refused| refused.json())
+    }
+
+    async fn answered(
+        &self,
+        workspace: Option<&str>,
+        tool: &str,
+        arguments: Value,
+        group: Option<Value>,
+    ) -> Result<Value, ApiError> {
         let until = Instant::now().checked_add(READY_DEADLINE);
         loop {
             // Boxed: each way's call nests deep, and a command's futures are laid out whole.
@@ -365,7 +467,7 @@ impl Calls {
                         .map_or(PAUSE, Duration::from_millis);
                     tokio::time::sleep(pause).await;
                 }
-                Err(refused) => return Err(anyhow::Error::new(Refusal::said(&refused))),
+                Err(refused) => return Err(refused),
             }
         }
     }
@@ -1162,6 +1264,21 @@ async fn founded(provider: &Provider) -> Result<Value> {
             .receipt()
             .status;
     }
+}
+
+/// A connection to the daemon at `socket`, else this computer's.
+fn connected(socket: Option<&Path>) -> Result<tilo_files::native::socket::Stream> {
+    let socket = match socket {
+        Some(socket) => socket.to_owned(),
+        None => daemon_socket().map_err(anyhow::Error::msg)?,
+    };
+    tilo_files::native::socket::connect(&socket).map_err(|error| {
+        anyhow!(
+            "this computer's daemon does not answer at {} ({error}): run `tilo status` to start \
+             it",
+            socket.display()
+        )
+    })
 }
 
 /// The agent surface over `provider` in `workspace`, as `person`. It starts no task's host of

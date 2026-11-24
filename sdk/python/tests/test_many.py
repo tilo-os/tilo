@@ -2,101 +2,135 @@
 
 from __future__ import annotations
 
-import json
-
-import pytest
+from collections.abc import Mapping
+from typing import Any
 
 from tilo import AsyncTilo, Tilo, made
 
-from tilo.types.tasks import Issues
-
-from fake_api import TASKS, FakeApi
-
-URL = "https://api.test"
+TRACKER = "tasks/tracker"
 
 
-@pytest.fixture
-def api() -> FakeApi:
-    return FakeApi()
+class Recording:
+    """A carrier that records each tool call and answers as the test says."""
+
+    def __init__(self, answer: Any) -> None:
+        self.workspace = "workspace-1"
+        self.calls: list[dict[str, Any]] = []
+        self._answer = answer
+
+    async def call(
+        self,
+        workspace: str | None,
+        tool: str,
+        arguments: Mapping[str, Any],
+        group: Mapping[str, Any] | None = None,
+    ) -> Any:
+        self.calls.append(
+            {
+                "workspace": workspace,
+                "tool": tool,
+                "arguments": dict(arguments),
+                "group": None if group is None else dict(group),
+            }
+        )
+        return self._answer(tool, arguments) if callable(self._answer) else self._answer
+
+    async def aclose(self) -> None:
+        return None
 
 
-@pytest.fixture
-async def tilo(api: FakeApi):
-    client = AsyncTilo(key=api.key, url=URL, http=api.client(URL))
-    yield client
-    await client.aclose()
+def applied(tool: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    """What the workspace answers a bulk call that applied every member."""
+    actions = arguments.get("args", {}).get("actions", [])
+    return {"status": "ok", "invocation": "inv-1", "result": {"applied": len(actions)}}
 
 
-@pytest.fixture
-def workspace(tilo):
-    return tilo.workspace("jane-doe")
+async def test_a_bulk_call_sends_five_hundred_members_a_call() -> None:
+    carrier = Recording(applied)
+    async with AsyncTilo(carrier=carrier) as tilo:
+        items = [{"title": f"Issue {index}"} for index in range(1200)]
+        answers = await tilo.workspace().resource(TRACKER).many("create", items)
 
-
-async def test_create_many_sends_a_few_bulk_calls_of_one_invocation(workspace, api):
-    issues = await Issues(workspace, TASKS).load()
-    items = [{"title": f"Issue {index}", "status": "todo"} for index in range(1200)]
-
-    answers = await issues.create_many(items)
-
-    calls = api.asked("POST", "/actions/group")
-    assert len(calls) == 3
-    assert len({call["headers"]["tilo-invocation"] for call in calls}) == 1
-    assert len({call["headers"]["tilo-invocation-title"] for call in calls}) == 1
+    assert len(carrier.calls) == 3
+    assert all(call["tool"] == "tilo_do" for call in carrier.calls)
+    assert all(call["arguments"]["path"] == f"{TRACKER}#group" for call in carrier.calls)
+    assert [len(call["arguments"]["args"]["actions"]) for call in carrier.calls] == [500, 500, 200]
     members = [
-        member for call in calls for member in json.loads(call["body"])["actions"]
+        member for call in carrier.calls for member in call["arguments"]["args"]["actions"]
     ]
     assert members == [{"action": "create", "args": item} for item in items]
     assert [answer["result"]["applied"] for answer in answers] == [500, 500, 200]
 
 
-async def test_a_bulk_call_names_an_item_an_earlier_one_makes(workspace, api):
-    issues = await Issues(workspace, TASKS).load()
+async def test_every_call_of_a_bulk_run_is_one_invocation_group() -> None:
+    carrier = Recording(applied)
+    async with AsyncTilo(carrier=carrier) as tilo:
+        items = [{"title": f"Issue {index}"} for index in range(1200)]
+        await tilo.workspace().resource(TRACKER).many("create", items)
 
-    await issues.create_many(
-        [{"title": "Parent"}, {"title": "Child", "parent": made(0)}]
-    )
+    groups = [call["group"] for call in carrier.calls]
+    assert groups[0] is not None
+    assert all(group == groups[0] for group in groups)
 
-    call = api.asked("POST", "/actions/group")[-1]
-    members = json.loads(call["body"])["actions"]
+
+async def test_a_bulk_call_names_an_item_an_earlier_one_makes() -> None:
+    carrier = Recording(applied)
+    async with AsyncTilo(carrier=carrier) as tilo:
+        await tilo.workspace().resource(TRACKER).many(
+            "create", [{"title": "Parent"}, {"title": "Child", "parent": made(0)}]
+        )
+
+    members = carrier.calls[0]["arguments"]["args"]["actions"]
     assert members[1]["args"]["parent"] == {"$made": {"member": 0, "item": 0}}
 
 
-async def test_an_empty_bulk_call_sends_nothing(workspace, api):
-    issues = await Issues(workspace, TASKS).load()
-    sent = len(api.requests)
-
-    assert await issues.create_many([]) == []
-    assert len(api.requests) == sent
-
-
-async def test_a_plain_bulk_call_is_a_step_of_the_invocation_it_is_in(workspace, api):
-    issues = await Issues(workspace, TASKS).load()
-
-    async with workspace.invocation("Import the backlog"):
-        await issues.many("create", [{"title": "One"}, {"title": "Two"}])
-
-    calls = api.asked("POST", "/actions/group")
-    assert len(calls) == 1
-    # The caller's own invocation names it: the bulk call does not open a second one.
-    assert calls[0]["headers"]["tilo-invocation-title"] == "Import the backlog"
+async def test_an_empty_bulk_call_sends_nothing() -> None:
+    carrier = Recording(applied)
+    async with AsyncTilo(carrier=carrier) as tilo:
+        assert await tilo.workspace().resource(TRACKER).many("create", []) == []
+    assert carrier.calls == []
 
 
-def test_the_sync_client_runs_a_bulk_call_too(api):
-    with Tilo(key=api.key, url=URL, http=api.client(URL)) as tilo:
-        issues = Issues(tilo.workspace("jane-doe"), TASKS).load()
-        answers = issues.create_many([{"title": "One"}, {"title": "Two"}])
+async def test_a_bulk_call_inside_a_group_joins_it() -> None:
+    carrier = Recording(applied)
+    async with AsyncTilo(carrier=carrier) as tilo:
+        workspace = tilo.workspace()
+        async with workspace.invocation("Import the backlog"):
+            await workspace.resource(TRACKER).many("create", [{"title": "One"}])
 
-    calls = api.asked("POST", "/actions/group")
-    assert len(calls) == 1
-    assert len({call["headers"]["tilo-invocation"] for call in calls}) == 1
+    assert carrier.calls[0]["group"]["title"] == "Import the backlog"
+
+
+def test_the_sync_client_runs_a_bulk_call_too() -> None:
+    carrier = Recording(applied)
+    with Tilo(carrier=carrier) as tilo:
+        answers = tilo.workspace().resource(TRACKER).many(
+            "create", [{"title": "One"}, {"title": "Two"}]
+        )
+
+    assert len(carrier.calls) == 1
+    assert carrier.calls[0]["arguments"]["args"]["actions"] == [
+        {"action": "create", "args": {"title": "One"}},
+        {"action": "create", "args": {"title": "Two"}},
+    ]
     assert answers[0]["result"] == {"applied": 2}
 
 
-async def test_a_bulk_call_answered_later_is_waited_for(workspace, api):
-    issues = await Issues(workspace, TASKS).load()
-    api.group_pending = True
+async def test_a_bulk_call_answered_later_is_waited_for() -> None:
+    pending: Mapping[str, Any] = {
+        "status": "pending",
+        "invocation": "inv-9",
+        "result": {"applied": 2},
+    }
 
-    answers = await issues.many("create", [{"title": "One"}])
+    def answer(tool: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        if tool == "tilo_status":
+            return {"status": "ok", "result": {"applied": 2}}
+        return pending
 
-    assert len(answers) == 1
-    assert answers[0]["status"] != "pending"
+    carrier = Recording(answer)
+    async with AsyncTilo(carrier=carrier) as tilo:
+        answers = await tilo.workspace().resource(TRACKER).many("create", [{"title": "One"}])
+
+    assert answers[0]["status"] == "ok"
+    assert [call["tool"] for call in carrier.calls] == ["tilo_do", "tilo_status"]

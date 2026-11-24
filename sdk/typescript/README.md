@@ -1,9 +1,9 @@
 # tilo-sdk
 
 Drive Tilo workspaces from JavaScript and TypeScript: the same resources,
-actions, invocations, undo and attribution a person clicking or an agent gets. No
-second API: every call is one route of Tilo's `/v1` JSON API
-([the API](../../docs/developers/api.md)), with your key.
+actions, invocations, undo and attribution a person clicking or an agent gets.
+Every call is one tool of Tilo's agent surface (`tilo_ls`, `tilo_read`,
+`tilo_do`, …), carried by one of two carriers.
 
 ```sh
 bun add tilo-sdk            # or: npm install tilo-sdk
@@ -12,70 +12,42 @@ bun add tilo-sdk            # or: npm install tilo-sdk
 ```ts
 import { Tilo } from "tilo-sdk";
 
-const tilo = new Tilo();                          // key: TILO_API_KEY, API: TILO_API_URL
-const applicant = await tilo.workspaces.create("Applicant: Jane Doe");
-const ws = tilo.workspace(applicant.id);
+const tilo = new Tilo();                          // this computer's daemon
+const ws = tilo.workspace();                      // the workspace it serves
 
-const passport = await ws.files.upload(await Bun.file("jane-passport.jpg").bytes());
-const application = await ws.files.upload(await Bun.file("visa-form.pdf").bytes());
-await ws.do("pdf-viewer#import-pdf-content", { content: application, name: "visa-form.pdf" });
+const note = await ws.do("notes#new-note", { title: "Todo" });
+console.log(note);                                // its result, or an Invocation to follow
 
-const key = await ws.keys.mint("jane's agent");    // a key that reaches this one workspace
-console.log(key.mcpUrl, key.token);                // hand it to the applicant's agent
-
-await ws.invocation("Fill Jane's application", async () => {
-  const document = await ws.read("pdf-viewer/visa-form.pdf");
-  (document.formValues as Record<string, unknown>).surname = "Doe";
-  await document.flush();                          // assignments are sent at once; this waits
-});
-
-for await (const event of ws.watch("pdf-viewer/visa-form.pdf")) {
-  if (event.kind !== "change") continue;
-  console.log(event.sentence, "by", event.by ?? event.invocation);   // a change, as it lands
-  if (event.invocation !== null) break;             // one the applicant's agent made
+for await (const event of ws.watch()) {           // changes, invocations and who is there
+  console.log(event.kind, event.sentence ?? event.phase);
+  break;
 }
 ```
 
-## How it works
+## The two carriers
 
-- **One key.** `new Tilo({ url, key })` reads `TILO_API_URL` and
-  `TILO_API_KEY` (`https://api.tilo.sh` when neither says). The key goes with
-  every call as `Authorization: Bearer`.
-- **One API.** Every call is a `/v1` route: `/v1/resources/account/…`,
-  `/v1/workspaces/{workspace}/resources/{path}`, `…/actions/{action}`,
-  `…/invocations/{invocation}`, `…/events`. Nothing else is spoken.
-- **A host in process.** `await Tilo.host(origin, { keyFile })` (or
-  `{ key, cert }`) serves the same routes from a Tilo host directly, through
-  the `tilo-sdk-native` addon: `bun add tilo-sdk-native`, or point a client at
-  an API server instead.
-- **Actions are invocations.** `await ws.do("notes/Todo#append-paragraph",
-  { text: "Buy milk" })` answers the result, or an `Invocation` if the host
-  has not finished: `await invocation.result()`, `invocation.output()`,
-  `await invocation.cancel()`, `await invocation.undo()`.
-- **A refusal throws.** `Refused(code, message, nextSteps)` says what the host
-  said and which calls would work; a call that waits for the person throws
-  `AskPending(url, invocationId)` and `await ask.wait()` answers once they
-  decide. A key the host turns away throws `KeyRevoked`, `KeyExpired` or
-  `KeyRefused`; a server on another API major version throws
-  `UnsupportedVersion`, an unreachable server throws `Unreachable`, and any
-  other wire failure throws `ProtocolError`.
-- **Every change is idempotent.** Each POST, PUT or DELETE carries an
-  `Idempotency-Key`, and a retry carries the same one: a call the server says
-  it cannot take just now, or one that never arrived, is asked again until the
-  client's retry deadline, and the host runs it once.
-- **Invocations group calls.** `await ws.invocation("Fill Jane's application",
-  async (invocation) => …)` puts every call inside into one group: one undo step
-  per app, named in
-  history.
-- **Links for people.** An invocation keeps the link to each record its calls
-  changed: `invocation.links`, and `invocation.link` when it changed one record.
-  `await ws.link(path)`
-  answers the link to anything a path names. It opens the record in its app
-  for the workspace's members and carries no secret.
-- **Reads are snapshots, watches are live.** `await ws.read(path)` is a
-  snapshot; `for await (const event of ws.watch(path))` follows changes,
-  invocations
-  and presence as they happen, its cursor kept (`Last-Event-ID`).
+- **This computer's daemon** (default). `new Tilo()` reaches the daemon over
+  its native endpoint through the `tilo-sdk-native` addon. The daemon admits
+  the connection as whoever connects: the person, or an app process the
+  launcher started (it hands that process a connected descriptor, which the
+  addon reads itself). An app's `tilo.workspace()` with no argument is the one
+  workspace it was started in. `bun add tilo-sdk-native` installs the addon.
+- **A key, for a caller with no daemon.** `new Tilo({ key })` (or
+  `TILO_API_KEY`) sends the same tool calls to the hosted server
+  (`TILO_API_URL` or `https://api.tilo.sh`) as MCP `tools/call` over HTTPS.
+  That is the only HTTP the SDK speaks, and it is not `/v1`. A key's client
+  serves no workspace: `tilo.workspace("name")` names one.
+
+```ts
+const backend = new Tilo({ key: process.env.TILO_API_KEY });
+const ws = backend.workspace("jane-doe");
+const key = await ws.keys.mint("jane's agent");
+console.log(key.mcpUrl, key.token);               // hand it to the applicant's agent
+```
+
+`new Tilo({ carrier })` takes your own `Carrier`: anything with
+`workspace(): Promise<string | null>` and
+`call(workspace, tool, args, group): Promise<object>`.
 
 ## Resources as objects
 
@@ -91,31 +63,51 @@ A method is the resource's action, its name in camelCase from the app's
 kebab-case id (`readFormFields()` runs `read-form-fields`). A field is
 either spelling: `formValues` and `form_values` both name the app's
 `form_values`. An assignment (or `document.edit(["form_values", "surname"],
-"Doe")`) is the generic `field-edit` action every resource publishes:
-`{ edit: { path: [{ field: "form_values" }, { key: "surname" }], op: "set",
-value: "Doe" } }`. Items are named as steps too:
-`document.edit(["blocks", { item: "c01e" }, "text"], "Buy oat milk")`.
+"Doe")`) is the generic `field-edit` action every resource publishes.
 
-The types of the built-in apps ship with the package: one module per app,
-declaring one class or interface per resource kind over these carriers
-(`pdfViewer.Document`). `tilo sdk gen --lang ts -w <workspace>` writes a
-workspace's own apps' types, and `--out` names the directory they go in.
-A generated type names the app's surface, and a call through one sends it as
-`Tilo-Surface`: a workspace whose app publishes another surface refuses it
-(`SurfaceChanged`) rather than running it into the wrong shape, and
-`tilo sdk gen` writes the types again. Without generated types everything
-still works through `ws.resource(path)` and `ws.do(path, args)`.
+The types of the built-in apps ship with the package: one module per app
+under `tilo-sdk/types`. `tilo sdk gen --lang ts -w <workspace>` writes a
+workspace's own apps' types. A generated type names the app's surface, and a
+call through one checks it: a workspace whose app publishes another surface
+refuses it (`SurfaceChanged`) rather than running it into the wrong shape.
+
+## What else the client does
+
+- **Actions are invocations.** `await ws.do("notes/Todo#append-paragraph",
+  { text: "Buy milk" })` answers the result, or an `Invocation` if the host
+  has not finished: `await invocation.result()`, `invocation.output()`,
+  `await invocation.cancel()`, `await invocation.undo()`.
+- **Invocations group calls.** `await ws.invocation("Fill Jane's application",
+  async (invocation) => …)` puts every call inside into one group: one undo
+  step per app, named in history. `invocation.links` (and `link` when one
+  record changed) are the links to what it changed.
+- **A refusal throws.** `Refused(code, message, nextSteps)` says what the host
+  said and which calls would work. A call that waits for the person throws
+  `AskPending`; `await ask.wait()` answers once they decide. A key the host
+  turns away throws `KeyRevoked`, `KeyExpired` or `KeyRefused`; an unreachable
+  host throws `Unreachable`, and any other wire failure `ProtocolError`.
+- **Files.** `await ws.files.upload(bytes)` answers a `tilo.content:<hash>`
+  reference an action takes; `await ws.files.download(reference)` gives the
+  bytes back.
+- **Watches are live.** `for await (const event of ws.watch(path))` follows
+  changes, invocations and presence, its cursor kept across reconnects.
+- **The vault.** `ws.vault.webCall({ url, key })` makes a request with a key
+  the vault keeps, by `vault.item:` reference, and answers the reply with the
+  key struck out. `ws.vault.ask({ kind, belongsTo })` asks the person for a
+  secret and answers the reference it is kept under. No secret comes back to
+  the program.
 
 ## Tests
 
 ```sh
-bun test                       # against an in-process fake /v1 server
-bunx tsc --noEmit              # types
+bun test                       # the SDK's logic, without a daemon
+bun run typecheck              # types
 ```
 
-`docs/tilo-sh/` documents each round trip as a whole program this repository's
-example runner (`t test docs-examples`) runs against a real API server.
+`test/daemon.test.ts` is the end-to-end suite: it runs against a real daemon
+and skips unless `TILO_RUNTIME_PROFILE` names one (`tools/ci/sdk-native.sh`
+starts it in a profile of its own).
 
-`examples/visa_proof.ts` is the whole story against a real server: a workspace
-per applicant, an agent that fills a form and writes a letter, a reviewer who
-undoes it, and no VM time for any of it.
+`examples/visa_proof.ts` is the whole story against a hosted server or a local
+one: a workspace per applicant, an agent that fills a form and writes a letter,
+a reviewer who undoes it, and no VM time for any of it.

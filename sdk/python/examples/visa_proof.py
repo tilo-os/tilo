@@ -40,7 +40,7 @@ import zipfile
 import zlib
 from typing import Any, Mapping
 
-from tilo import AsyncTilo, ProtocolError, Refused
+from tilo import AsyncTilo, KeyRefused, ProtocolError, Refused
 from tilo.types.pdf_viewer import Document, FormFieldRow
 
 APPLICANTS = int(os.environ.get("VISA_APPLICANTS", "200"))
@@ -189,11 +189,13 @@ def acted_for(actor: Mapping[str, Any]) -> set[str]:
 
 
 async def refused(call: Any) -> str:
-    """How the API refused `call`: an HTTP status, or a refusal's code."""
+    """How the call was refused: a key's own error, the wire's, or a refusal's code."""
     try:
         await call
+    except KeyRefused as error:
+        return f"key: {error.code}"
     except ProtocolError as error:
-        return str(error.status or error.code or error.message)
+        return f"protocol: {error.code or error.message}"
     except Refused as error:
         return f"{error.code}: {error.message}"
     return "allowed"
@@ -282,7 +284,10 @@ async def main() -> int:
     say("   minted", f"{minted.name!r} for {minted.workspace}, mcp_url {minted.mcp_url}")
     check(minted.workspace == jane.id, "the key names Jane's workspace")
     check(minted.mcp_url.endswith(f"/w/{jane.id}/mcp"), "its MCP URL is that workspace's")
-    check(minted.token and minted.token != backend.transport.key, "it is a key of its own")
+    check(
+        minted.token and minted.token != os.environ.get("TILO_API_KEY"),
+        "it is a key of its own",
+    )
 
     say("3. Jane's agent, with only the minted key, fills the form and writes the letter")
     agent = AsyncTilo(key=minted.token, url=url)
@@ -428,17 +433,17 @@ async def main() -> int:
     say("4f. Revoking ends what it reached")
     await backend.keys.revoke(minted.grant)
     gone = await refused(aws.ls())
-    check(gone in ("401", "403"), f"the agent's open session ends with its key ({gone})")
+    check(gone.startswith("key: "), f"the agent's open session ends with its key ({gone})")
     if REVOKE_SERVER_KEY:
         second = await ws.keys.mint(name="Jane Doe's second agent")
         sws = AsyncTilo(key=second.token, url=url).workspace(jane.id)
         await sws.ls()
         own = (await backend.keys.list())[0]
         await backend.keys.revoke(own.grant)
-        check(await refused(backend.workspaces.list()) == "401", "the server key is refused")
-        check(await refused(sws.ls()) == "401", "the session of a key it minted ended with it")
+        check((await refused(backend.workspaces.list())).startswith("key: "), "the server key is refused")
+        check((await refused(sws.ls())).startswith("key: "), "the session of a key it minted ended with it")
         fresh = AsyncTilo(key=second.token, url=url).workspace(jane.id)
-        check(await refused(fresh.ls()) == "401", "the key it minted is refused")
+        check((await refused(fresh.ls())).startswith("key: "), "the key it minted is refused")
 
     for client in (agent, reviewer, backend):
         try:

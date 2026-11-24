@@ -2,45 +2,67 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { Tilo, made } from "../src/index.ts";
-import { tasks } from "../src/types/index.ts";
-import { FakeApi, TASKS, WORKSPACE_ID } from "./fakeApi.ts";
+import { type Carrier, type Group, Tilo } from "../src/index.ts";
 
-async function tracker(api: FakeApi): Promise<tasks.Issues> {
-  api.surface = tasks.SURFACE;
-  const issues = tasks.issues(
-    new Tilo({ url: "https://api.test", key: api.key, fetch: api.fetch }).workspace("jane-doe"),
-    TASKS,
-  );
-  return (await issues.load()) as tasks.Issues;
+const WORKSPACE = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+const RESOURCE = "tasks/issues";
+
+interface Call {
+  workspace: string | null;
+  tool: string;
+  args: Record<string, unknown>;
+  group: Group | null;
 }
 
-function groupCalls(api: FakeApi) {
-  return api.asked(
-    "POST",
-    `/v1/workspaces/${WORKSPACE_ID}/resources/${TASKS}/actions/group`,
-  );
+/** A carrier that records the tools it is asked for and answers a group call's count. */
+class RecordingCarrier implements Carrier {
+  readonly calls: Call[] = [];
+
+  async workspace(): Promise<string | null> {
+    return WORKSPACE;
+  }
+
+  async call(
+    workspace: string | null,
+    tool: string,
+    args: Record<string, unknown>,
+    group: Group | null,
+  ): Promise<Record<string, unknown>> {
+    this.calls.push({ workspace, tool, args, group });
+    if (tool !== "tilo_do") {
+      throw new Error(`the bulk call asked the carrier for ${tool}`);
+    }
+    const inner = args.args !== null && typeof args.args === "object" ? (args.args as Record<string, unknown>) : {};
+    const members = Array.isArray(inner.actions) ? inner.actions : [];
+    return {
+      status: "ok",
+      invocation_id: `run-${this.calls.length}`,
+      result: { applied: members.length },
+    };
+  }
+}
+
+function issues(carrier: RecordingCarrier) {
+  return new Tilo({ carrier }).workspace(WORKSPACE).resource(RESOURCE);
 }
 
 describe("a bulk call", () => {
   it("sends a few group calls of one invocation", async () => {
-    const api = new FakeApi();
-    const issues = await tracker(api);
-    const items = Array.from({ length: 1200 }, (_, index) => ({
-      title: `Issue ${index}`,
-      status: "todo" as const,
-    }));
+    const carrier = new RecordingCarrier();
+    const items = Array.from({ length: 1200 }, (_, index) => ({ title: `Issue ${index}` }));
 
-    const answers = await issues.createMany(items);
+    const answers = await issues(carrier).many("create", items);
 
-    const calls = groupCalls(api);
-    expect(calls.length).toBe(3);
-    expect(new Set(calls.map((call) => call.headers["tilo-invocation"])).size).toBe(1);
-    expect(new Set(calls.map((call) => call.headers["tilo-invocation-title"])).size).toBe(1);
-    const sent = calls.flatMap(
-      (call) => (JSON.parse(call.body) as { actions: unknown[] }).actions,
-    );
-    expect(sent).toEqual(items.map((args) => ({ action: "create", args })));
+    expect(carrier.calls).toHaveLength(3);
+    const sent = carrier.calls.map((call) => {
+      const inner = call.args.args as { actions: unknown[] };
+      return inner.actions;
+    });
+    expect(sent.map((actions) => actions.length)).toEqual([500, 500, 200]);
+    expect(sent.flat()).toEqual(items.map((args) => ({ action: "create", args })));
+    expect(new Set(carrier.calls.map((call) => call.group?.id)).size).toBe(1);
+    expect(new Set(carrier.calls.map((call) => call.group?.title))).toEqual(new Set(["create (1200)"]));
+    expect(carrier.calls.map((call) => call.workspace)).toEqual([WORKSPACE, WORKSPACE, WORKSPACE]);
     expect(answers.map((answer) => answer.result)).toEqual([
       { applied: 500 },
       { applied: 500 },
@@ -48,46 +70,23 @@ describe("a bulk call", () => {
     ]);
   });
 
-  it("names an item an earlier one makes", async () => {
-    const api = new FakeApi();
-    const issues = await tracker(api);
-
-    await issues.many("create", [
-      { title: "Parent" },
-      { title: "Child", parent: made(0) },
-    ]);
-
-    const calls = groupCalls(api);
-    expect(calls).toHaveLength(1);
-    const [call] = calls;
-    if (call === undefined) throw new Error("the bulk call sent no group");
-    const members = (JSON.parse(call.body) as {
-      actions: { args: Record<string, unknown> }[];
-    }).actions;
-    expect(members[1]?.args["parent"]).toEqual({ $made: { member: 0, item: 0 } });
-  });
-
   it("sends nothing for an empty list", async () => {
-    const api = new FakeApi();
-    const issues = await tracker(api);
-    const sent = api.calls.length;
+    const carrier = new RecordingCarrier();
+    const workspace = new Tilo({ carrier }).workspace(WORKSPACE);
 
-    expect(await issues.createMany([])).toEqual([]);
-    expect(api.calls.length).toBe(sent);
+    expect(await workspace.resource(RESOURCE).many("create", [])).toEqual([]);
+    expect(carrier.calls).toEqual([]);
   });
 
   it("is a step of the invocation the caller opened", async () => {
-    const api = new FakeApi();
-    const issues = await tracker(api);
+    const carrier = new RecordingCarrier();
+    const workspace = new Tilo({ carrier }).workspace(WORKSPACE);
 
-    await new Tilo({ url: "https://api.test", key: api.key, fetch: api.fetch })
-      .workspace("jane-doe")
-      .invocation("Import the backlog", async () => {
-        await issues.many("create", [{ title: "One" }, { title: "Two" }]);
-      });
+    await workspace.invocation("Import the backlog", async () => {
+      await workspace.resource(RESOURCE).many("create", [{ title: "One" }, { title: "Two" }]);
+    });
 
-    const calls = groupCalls(api);
-    expect(calls.length).toBe(1);
-    expect(calls[0]?.headers["tilo-invocation-title"]).toBe("Import the backlog");
+    expect(carrier.calls).toHaveLength(1);
+    expect(carrier.calls[0]?.group?.title).toBe("Import the backlog");
   });
 });

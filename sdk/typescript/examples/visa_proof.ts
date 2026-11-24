@@ -2,7 +2,7 @@
  * A visa startup's backend, one agent per applicant, end to end.
  *
  * The backend holds one server key (`TILO_API_KEY`, all workspaces, no
- * expiry) at an API server (`TILO_API_URL`). It makes a workspace per
+ * expiry) at a server (`TILO_API_URL`). It makes a workspace per
  * applicant, puts an applicant's passport and application form into theirs
  * and mints a key that reaches that workspace alone. The applicant's agent,
  * with only that key, fills the form in PDF Viewer and writes a cover letter
@@ -25,7 +25,7 @@
 import { deflateSync } from "node:zlib";
 import { createInterface } from "node:readline/promises";
 
-import { ProtocolError, Refused, Tilo, type Workspace, type WorkspaceInfo } from "tilo-sdk";
+import { ProtocolError, Refused, Tilo, urlFrom, type Workspace, type WorkspaceInfo } from "tilo-sdk";
 
 const APPLICANTS = Number(process.env.VISA_APPLICANTS ?? "3");
 const INVOCATION_TITLE = "Fill Jane Doe's visa application";
@@ -183,13 +183,13 @@ async function fieldsOf(workspace: Workspace): Promise<FormField[]> {
   return read.fields;
 }
 
-/** How the API refused `call`: an HTTP status, or a refusal's code. */
+/** How the host refused `call`: a refusal's code, or the words it broke with. */
 async function refused(call: Promise<unknown>): Promise<string> {
   try {
     await call;
   } catch (error) {
     if (error instanceof ProtocolError) {
-      return String(error.status ?? error.code ?? error.message);
+      return String(error.code ?? error.message);
     }
     if (error instanceof Refused) {
       return `${error.code}: ${error.message}`;
@@ -255,9 +255,8 @@ async function makeWorkspaces(backend: Tilo): Promise<WorkspaceInfo[]> {
 }
 
 async function main(): Promise<number> {
-  say("API", process.env.TILO_API_URL ?? "");
   const backend = new Tilo();
-  say("API says", `${(await backend.info()).server}, version ${(await backend.info()).apiVersion}`);
+  say("API", urlFrom());
 
   const made = await makeWorkspaces(backend);
   const jane = made[0] as WorkspaceInfo;
@@ -445,7 +444,7 @@ async function main(): Promise<number> {
   say("4f. Revoking ends what it reached");
   await backend.keys.revoke(minted.grant);
   const gone = await refused(agentWorkspace.ls());
-  check(gone === "401" || gone === "403", `the agent's next call is refused (${gone})`);
+  check(gone === "key_revoked", `the agent's next call is refused (${gone})`);
 
   agent.close();
   reviewer.close();

@@ -1,6 +1,6 @@
 //! Tilo's API (`docs/developers/api.md`) for the person sitting here, at
 //! `$XDG_RUNTIME_DIR/tilo-session/api.sock`: what their own programs on this computer (the REPL,
-//! scripts, the SDKs) reach this desktop with, as them. It is the API server's own code
+//! scripts, the `tilo` command) reach this desktop with, as them. It is the API server's own code
 //! ([`tilo_api::direct::Direct::here`]) acting as this device's key, and this session answers each
 //! workspace itself, through the device's one dispatch, as the person. Only this account's programs
 //! are served: the socket sits in the login's private directory, and a connection from another

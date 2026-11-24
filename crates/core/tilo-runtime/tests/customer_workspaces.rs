@@ -65,8 +65,8 @@ async fn listed(key: &host::Key, labels: Value) -> Vec<String> {
     ids(&answer["result"])
 }
 
-/// A key certified for `workspace` alone, calling the daemon's API in process as the SDKs'
-/// native part does: what a backend mints for one customer's agent.
+/// A key certified for `workspace` alone, calling the daemon's API in process: what a backend
+/// mints for one customer's agent.
 struct Customer {
     direct: tilo_api::direct::Direct,
 }
@@ -94,22 +94,17 @@ impl Customer {
     }
 
     async fn send(&self, method: &str, path: &str, body: &[u8]) -> (u16, Value) {
-        let answer = self
-            .direct
-            .answer(
-                method,
-                path,
-                &[("content-type".into(), "application/json".into())],
-                body,
-            )
-            .await;
-        let value = match answer.body {
-            tilo_api::direct::AnswerBody::Whole(bytes) if bytes.is_empty() => Value::Null,
-            tilo_api::direct::AnswerBody::Whole(bytes) => serde_json::from_slice(&bytes)
-                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())),
-            tilo_api::direct::AnswerBody::Stream(_) => Value::Null,
-        };
-        (answer.status, value)
+        host::json_of(
+            self.direct
+                .request(
+                    method,
+                    path,
+                    &[("content-type".into(), "application/json".into())],
+                    body,
+                )
+                .await,
+        )
+        .await
     }
 }
 

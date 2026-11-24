@@ -6,13 +6,10 @@ import builtins
 import dataclasses
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
-from urllib.parse import quote
 
-import blake3
-
-from ._endpoint import CURRENT, Endpoint, InvocationGroup, result_of, segments
+from ._endpoint import CURRENT, Endpoint, InvocationGroup, result_of
 from ._errors import AskPending, ProtocolError, Refused
 from ._models import (
     Event,
@@ -30,8 +27,6 @@ from ._models import (
 from ._resource import Resource
 
 INVOCATION_PREFIX = "sdk:"
-# How many bytes one piece of a content put carries, within the API's limit.
-PUT_PIECE = 8 * 1024 * 1024
 
 
 def _bytes_of(data: Any) -> bytes:
@@ -45,11 +40,21 @@ def _bytes_of(data: Any) -> bytes:
         return file.read()
 
 
-def _content_of(answer: Mapping[str, Any]) -> str:
-    content = answer.get("content")
-    if not isinstance(content, str) or not content:
-        raise ProtocolError("the put answered no content reference")
-    return content
+def _reference_of(value: Any) -> str | None:
+    """The `vault.item:…` reference an ask answered, or `None` when the person declined."""
+    if isinstance(value, Mapping) and isinstance(value.get("result"), Mapping):
+        value = value["result"]
+    reference = value.get("reference") if isinstance(value, Mapping) else None
+    return reference if isinstance(reference, str) else None
+
+
+async def _settled(answer: Any) -> Any:
+    """An action's answer, waiting for a run still under way."""
+    from ._invocation import Invocation
+
+    if isinstance(answer, Invocation):
+        return await answer._result(None)
+    return answer
 
 
 class Files:
@@ -80,6 +85,60 @@ class WorkspaceKeys:
     def mint(self, name: str | None = None, expires_in: int | None = None) -> Any:
         """A key for an agent to act in this workspace, narrower than your own."""
         return self.workspace.client.handoff(self.workspace._mint(name, expires_in))
+
+
+class Vault:
+    """The workspace's vault: secrets it keeps, used without being read.
+
+    No secret leaves the vault: `web_call` sends one it keeps as the key of a
+    request, and `ask` has the person type a new one into a field the system
+    writes, on their own device.
+    """
+
+    def __init__(self, workspace: Workspace) -> None:
+        self.workspace = workspace
+
+    def web_call(
+        self,
+        url: str,
+        key: str,
+        *,
+        method: str | None = None,
+        headers: Mapping[str, str] | None = None,
+        body: str | None = None,
+        reason: str | None = None,
+    ) -> Any:
+        """Call a service with a key the vault keeps, by its `vault.item:…` reference.
+
+        The vault adds the key where its item says the service takes it, and
+        only to the service the item belongs to. Answers `{status, headers,
+        body}` with the key struck out. The person may be asked to allow the
+        call: it raises `AskPending`, and `ask.wait()` answers it once they do.
+        """
+        return self.workspace.client.handoff(
+            self.workspace._vault_web_call(url, key, method, headers, body, reason)
+        )
+
+    def ask(
+        self,
+        kind: str,
+        belongs_to: Sequence[str],
+        *,
+        username: str | None = None,
+        sent_in: str | None = None,
+    ) -> Any:
+        """Ask the person for a secret of `kind` that belongs to `belongs_to`.
+
+        `belongs_to` names each site or server (`https://example.com`,
+        `imap://mail.example.com:993`) the secret is ever handed to, and
+        `sent_in` says where a key rides in a request (`basic`,
+        `header:<name>`, `query:<name>`) when not as a bearer token. Answers
+        the `vault.item:…` reference it is kept under, or `None` when they
+        declined.
+        """
+        return self.workspace.client.handoff(
+            self.workspace._vault_ask(kind, belongs_to, username, sent_in)
+        )
 
 
 class Members:
@@ -185,19 +244,21 @@ def _invocation_id(title: str) -> str:
 
 
 class Workspace:
-    """One workspace, named by its id or by its name.
+    """One workspace, named by its id, by its name, or by neither.
 
-    Its calls answer directly with the sync client, and are awaitable with
-    the async one.
+    Named by neither, it is the one this computer's daemon serves. Its calls
+    answer directly with the sync client, and are awaitable with the async
+    one.
     """
 
-    def __init__(self, client: Any, ref: str) -> None:
+    def __init__(self, client: Any, ref: str | None = None) -> None:
         self.client = client
         self.ref = ref
         self._info: WorkspaceInfo | None = None
         self.files = Files(self)
         self.keys = WorkspaceKeys(self)
         self.members = Members(self)
+        self.vault = Vault(self)
 
     # -- identity --------------------------------------------------------
 
@@ -250,11 +311,7 @@ class Workspace:
         cursor: str | None = None,
     ) -> Listing:
         endpoint = await self._endpoint()
-        answer = await endpoint.json(
-            "GET",
-            endpoint.path("resources"),
-            query={"path": path, "kind": kind, "limit": limit, "cursor": cursor},
-        )
+        answer = await endpoint.ls(path, kind, limit, cursor)
         return Listing.of(
             answer,
             self.client,
@@ -269,9 +326,11 @@ class Workspace:
         """A resource as a typed object: fields, actions and field edits."""
         return Resource(self, path)
 
-    async def _read(self, path: str) -> Mapping[str, Any]:
+    async def _read(self, path: str, *, surface: str | None = None) -> Mapping[str, Any]:
         endpoint = await self._endpoint()
-        return await endpoint.json("GET", endpoint.path("resources", segments(path)))
+        if surface is not None:
+            await endpoint.check_surface(path, surface)
+        return await endpoint.read_raw(path)
 
     def find(self, query: str, app: str | None = None, limit: int | None = None) -> Any:
         """Search the workspace by words, best first: its `search#find` action."""
@@ -397,19 +456,7 @@ class Workspace:
     async def _view(
         self, path: str, picture: bool, scale: float | None
     ) -> Mapping[str, Any]:
-        endpoint = await self._endpoint()
-        answer = await endpoint.json(
-            "GET",
-            endpoint.path("views"),
-            query={
-                "path": path,
-                "picture": "true" if picture else None,
-                "scale": scale,
-            },
-        )
-        if not isinstance(answer.get("text"), str):
-            raise ProtocolError(f"the workspace answered no view for {path}")
-        return answer
+        return await (await self._endpoint()).view(path, picture, scale)
 
     def export(self) -> Any:
         """Everything the workspace holds, read whole: a `WorkspaceExport`.
@@ -434,13 +481,13 @@ class Workspace:
             cursor = None
             while True:
                 try:
-                    listing = await endpoint.json(
-                        "GET", endpoint.path("resources"), query={"path": path, "cursor": cursor}
-                    )
+                    listing = await endpoint.ls(path, None, None, cursor)
                 except Refused as refused:
                     unread.append({"path": path or "", "error": refused.message or refused.code})
                     break
                 for row in listing.get("rows") or []:
+                    if not isinstance(row, Mapping):
+                        continue
                     at = row.get("path")
                     if not isinstance(at, str) or at in seen:
                         continue
@@ -469,9 +516,7 @@ class Workspace:
         whole: dict[str, Any] | None = None
         cursor = None
         while True:
-            page = await endpoint.json(
-                "GET", endpoint.path("resources", segments(path)), query={"cursor": cursor}
-            )
+            page = await endpoint.read_raw(path, cursor)
             if whole is None:
                 whole = dict(page)
             else:
@@ -516,10 +561,9 @@ class Workspace:
 
     async def _unattended(self, on: bool) -> Any:
         endpoint = await self._endpoint()
-        answer = await endpoint.json(
-            "POST",
-            endpoint.path("resources", "account", "workspaces", "actions", "unattended"),
-            json={"workspace": endpoint.workspace, "on": on},
+        answer = await endpoint.do_answer(
+            "account/workspaces#unattended",
+            {"workspace": endpoint.workspace, "on": on},
             grouped=False,
         )
         try:
@@ -531,45 +575,58 @@ class Workspace:
         """Group the calls inside into one invocation: one undo step per app."""
         return InvocationOpening(self, title)
 
-    # -- files and keys ---------------------------------------------------
+    # -- files, keys and the vault ----------------------------------------
 
     async def _upload(self, data: bytes) -> str:
-        endpoint = await self._endpoint()
-        hash = blake3.blake3(data).hexdigest()
-        route = endpoint.path("contents", hash)
-        headers = {"content-type": "application/octet-stream"}
-        if len(data) <= PUT_PIECE:
-            answer = await endpoint.json("PUT", route, data=data, headers=headers)
-            return _content_of(answer)
-        offset = 0
-        while offset < len(data):
-            piece = data[offset : offset + PUT_PIECE]
-            answer = await endpoint.json(
-                "PUT",
-                route,
-                data=piece,
-                headers={
-                    **headers,
-                    "content-range": f"bytes {offset}-{offset + len(piece) - 1}/{len(data)}",
-                },
-            )
-            content = answer.get("content")
-            if isinstance(content, str) and content:
-                return content
-            offset = int(answer.get("offset", offset + len(piece)))
-        raise ProtocolError("the host took every piece of the file without naming its content")
+        return await (await self._endpoint()).put(data)
 
     async def _download(self, content: str) -> bytes:
-        endpoint = await self._endpoint()
-        prefix = "tilo.content:"
-        hash = content.removeprefix(prefix)
-        answer = await endpoint.call(
-            "GET", endpoint.path("contents", quote(hash, safe="")), grouped=False
-        )
-        return answer.body
+        return await (await self._endpoint()).get(content)
 
     async def _mint(self, name: str | None, expires_in: int | None) -> MintedKey:
         return await self.client._mint(await self._id(), name, expires_in)
+
+    async def _vault_web_call(
+        self,
+        url: str,
+        key: str,
+        method: str | None,
+        headers: Mapping[str, str] | None,
+        body: str | None,
+        reason: str | None,
+    ) -> Mapping[str, Any]:
+        args: dict[str, Any] = {"url": url, "key": key}
+        if method is not None:
+            args["method"] = method
+        if headers is not None:
+            args["headers"] = dict(headers)
+        if body is not None:
+            args["body"] = body
+        if reason is not None:
+            args["reason"] = reason
+        try:
+            answer = await (await self._endpoint()).act("vault/vault#web-call", args)
+        except AskPending as ask:
+            raise ask._then(result_of) from None
+        return await _settled(answer)
+
+    async def _vault_ask(
+        self,
+        kind: str,
+        belongs_to: Sequence[str],
+        username: str | None,
+        sent_in: str | None,
+    ) -> str | None:
+        args: dict[str, Any] = {"kind": kind, "belongsTo": list(belongs_to)}
+        if username is not None:
+            args["username"] = username
+        if sent_in is not None:
+            args["sentIn"] = sent_in
+        try:
+            answer = await (await self._endpoint()).act("vault/vault#ask", args)
+        except AskPending as ask:
+            raise ask._then(_reference_of) from None
+        return _reference_of(await _settled(answer))
 
     def __repr__(self) -> str:
         return f"Workspace({self._info.name if self._info else self.ref!r})"
@@ -583,6 +640,7 @@ __all__ = [
     "ProgramAnswer",
     "Row",
     "InvocationOpening",
+    "Vault",
     "Workspace",
     "WorkspaceKeys",
 ]

@@ -36,8 +36,8 @@ TYPES = "sdk/python/src/tilo/types"
 # The order a reader meets the SDK in: a name no group holds is an error, so a
 # new export cannot reach the page without a place to sit.
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Client", ("Tilo", "AsyncTilo", "SignIn")),
-    ("Transports", ("Transport", "HttpTransport", "NativeTransport")),
+    ("Client", ("Tilo", "AsyncTilo")),
+    ("Carriers", ("Carrier", "DaemonCarrier", "KeyCarrier")),
     ("Workspaces", ("Workspaces", "Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport")),
     ("Resources", ("Resource", "Entry", "FieldMap", "Listing", "Row", "Hit", "made")),
     ("Invocations", (
@@ -45,13 +45,13 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "ProgramAnswer", "Event",
     )),
     ("Files", ("Files",)),
+    ("Vault", ("Vault",)),
     ("Keys", ("AccountKeys", "WorkspaceKeys", "Key", "MintedKey")),
     ("Members", ("Members", "Member", "Invitation", "Person")),
     ("Usage", ("Usage", "WorkspaceUsage")),
     ("Errors", (
         "Refused", "AskPending", "ProtocolError",
-        "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged", "UnsupportedVersion",
-        "Unreachable",
+        "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged", "Unreachable",
     )),
 )
 

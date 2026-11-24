@@ -13,10 +13,6 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/sdk-typescript.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 # node_modules is not part of the tree; an install from the image's cache fills the copy.
 tar -C "$source_tree" --exclude=node_modules -cf - . | tar -C "$work" -xf -
-# The suite holds the fake API to the documented API; hand the copy the spec
-# beside the tree rather than a path out of it.
-cp "$root/docs/api/openapi.json" "$work/openapi.json"
-export TILO_OPENAPI=$work/openapi.json
 cd "$work"
 export BUN_INSTALL_CACHE_DIR=/opt/tilo-sdk/bun-cache
 bun install --frozen-lockfile --offline

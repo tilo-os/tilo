@@ -1,22 +1,37 @@
-"""The SDK's native part: Tilo's API in process, as a key the program holds.
+"""The SDK's native part: this computer's daemon, reached in its action frames.
 
 Built from ``sdk/python/native`` into every wheel; absent when ``tilo`` runs
-from a checkout that did not build it.
+from a checkout that did not build it, in which case a key over HTTPS is the
+way to a workspace.
 """
 
-from collections.abc import AsyncIterator
-from typing import Any
+class Daemon:
+    """A connection to this computer's daemon, admitted as whoever makes it."""
 
-class Host:
-    """A Tilo host reached directly with the key a key file holds."""
+    @property
+    def workspace(self) -> str | None:
+        """The workspace this connection acts in when a call names none."""
 
-    def __init__(self, key_file: str | dict[str, Any]) -> None:
-        """``key_file``: the path of a key file, or its contents
-        (``{"host", "name", "key", "cert"}``)."""
+    async def call(
+        self,
+        workspace: str | None,
+        tool: str,
+        args: str,
+        group: str | None = None,
+    ) -> str:
+        """Call ``tool`` with ``args`` (JSON text) in ``workspace`` (``None``: the
+        account's own tree), as a step of ``group`` (JSON text of ``{id, title}``)
+        when one is named.
 
-    async def request(
-        self, method: str, path: str, headers: dict[str, str], body: bytes
-    ) -> tuple[int, dict[str, str], bytes | AsyncIterator[bytes]]:
-        """Answer ``method`` on ``path`` (with its query) as the API does: the
-        body is ``bytes``, or an async iterator of chunks for a
-        ``text/event-stream`` answer."""
+        Answers JSON text: ``{"answer": ...}`` for a call that ran, and
+        ``{"refused": {"error": {...}}}`` for one that was refused.
+        """
+
+async def connect(socket: str | None = None, workspace: str | None = None) -> Daemon:
+    """Connect to the daemon's native endpoint.
+
+    The connection the launcher handed an app it started comes first, then
+    ``socket``, then this computer's own daemon. ``workspace`` names the one
+    workspace the connection acts in when it knows it. Raises
+    ``ConnectionError`` when no daemon answers.
+    """

@@ -1,32 +1,32 @@
 /** The client: the account's workspaces and keys, and where every call goes. */
 
-import { AskPending, ProtocolError, Refused, refusalOf } from "./errors.ts";
-import { DEFAULT_URL, Endpoint, RETRY_DEADLINE_MS } from "./endpoint.ts";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
+
+import { DaemonCarrier, KeyCarrier, type Carrier, type FetchLike } from "./carrier.ts";
+import { Endpoint } from "./endpoint.ts";
+import { AskPending, ProtocolError, Refused } from "./errors.ts";
+import { Invocation } from "./invocation.ts";
 import {
-  actionAnswerOf,
-  type ApiInfo,
-  apiInfoOf,
   type Key,
   keyGranted,
   keyOf,
   type MintedKey,
   mintedKeyOf,
-  resultOf,
+  arrayOf,
+  recordOf,
   type Usage,
   usageOf,
   type WorkspaceInfo,
   WorkspaceList,
   workspaceOf,
 } from "./models.ts";
-import { query as queryOf, routes, splitAction } from "./routes.ts";
-import {
-  type FetchLike,
-  type HostOptions,
-  HttpTransport,
-  NativeTransport,
-  type Transport,
-} from "./transport.ts";
 import { Workspace } from "./workspace.ts";
+
+/** The hosted server a key reaches when none is named. */
+export const DEFAULT_URL = "https://api.tilo.sh";
+/** How long a key's call keeps asking again while the server is busy, in ms. */
+export const RETRY_DEADLINE_MS = 60_000;
 
 /**
  * The keys a workspace admitted, each a record of its own: listing it names the grants this key
@@ -35,25 +35,29 @@ import { Workspace } from "./workspace.ts";
 const KEYS_RECORD = "record:tilo.grants";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** How a client is made: where it calls, with which key, and how long it retries. */
+/** How a client is made: how it reaches Tilo, and how long it retries. */
 export interface TiloOptions {
-  /** The API server: `TILO_API_URL` when not given, else `https://api.tilo.sh`. */
-  url?: string | null;
-  /** The key: `TILO_API_KEY` when not given. */
+  /** A key: `TILO_API_KEY` when not given. With one, calls go to the hosted server. */
   key?: string | null;
-  /** How it reaches the API: `fetch` unless you bring your own. */
+  /** The hosted server: `TILO_API_URL` when not given, else `https://api.tilo.sh`. */
+  url?: string | null;
+  /** The daemon's native socket: this computer's daemon when not given. */
+  socket?: string | null;
+  /** The workspace an app's connection acts in, when the daemon serves more than one. */
+  workspace?: string | null;
+  /** The boundary under the SDK: the daemon, or a key's server, unless you bring one. */
+  carrier?: Carrier;
+  /** How the key carrier reaches the server: `fetch` unless you bring your own. */
   fetch?: FetchLike;
   /**
-   * How long a call keeps asking again while the server is briefly
+   * How long a key's call keeps asking again while the server is briefly
    * unavailable or unreachable, in ms (60 000 by default; 0 throws its
    * refusal at once).
    */
   retryDeadlineMs?: number;
-  /** The boundary under the API: an API server over `fetch` unless you pass one. */
-  transport?: Transport;
 }
 
-/** The API server a call goes to: the one named, else `TILO_API_URL`, else the default. */
+/** The hosted server a call goes to: the one named, else `TILO_API_URL`, else the default. */
 export function urlFrom(url?: string | null): string {
   return (url ?? process.env.TILO_API_URL ?? DEFAULT_URL).replace(/\/+$/, "");
 }
@@ -61,49 +65,6 @@ export function urlFrom(url?: string | null): string {
 /** The key a call goes with: the one named, else `TILO_API_KEY`. */
 export function keyFrom(key?: string | null): string | null {
   return key ?? process.env.TILO_API_KEY ?? null;
-}
-
-/** A key being approved: the link to show, and the wait for it. */
-export class SignIn {
-  readonly client: Tilo;
-  readonly url: string;
-  readonly poll: string;
-  readonly intervalSeconds: number;
-  readonly expiresInSeconds: number;
-
-  constructor(
-    client: Tilo,
-    url: string,
-    poll: string,
-    intervalSeconds: number,
-    expiresInSeconds: number,
-  ) {
-    this.client = client;
-    this.url = url;
-    this.poll = poll;
-    this.intervalSeconds = intervalSeconds;
-    this.expiresInSeconds = expiresInSeconds;
-  }
-
-  /** Follow the approval until the person decides, then the `Key`. */
-  async wait(): Promise<Key> {
-    const deadline = Date.now() + this.expiresInSeconds * 1000;
-    for (;;) {
-      const reply = await this.client
-        .account()
-        .request("POST", routes.pollKey(), { json: { poll: this.poll }, idempotent: false });
-      if (reply.status === 200) {
-        return keyOf(reply.body ?? {});
-      }
-      if (reply.status !== 202) {
-        throw refusalOf(reply.status, reply.body);
-      }
-      if (Date.now() >= deadline) {
-        throw new Refused("expired", "nothing approved the key in time");
-      }
-      await new Promise((resolve) => setTimeout(resolve, this.intervalSeconds * 1000));
-    }
-  }
 }
 
 /** The person's workspaces: list them, make one, delete one. */
@@ -223,9 +184,8 @@ export class Keys {
    * workspace lasts at most 89 days. `browserPages` (on unless you say no)
    * lets the key operate web pages in its workspace's Browser — navigating,
    * filling in, selecting and clicking — without asking the person each
-   * time; submitting a page still asks them. Throws `AskPending` with the
-   * link they approve it at; `await ask.wait()` answers the `Key` once they
-   * do.
+   * time; submitting a page still asks them. Throws `AskPending` while they
+   * have not decided; `await ask.wait()` answers the `Key` once they do.
    */
   async create(
     name: string,
@@ -254,111 +214,61 @@ export class Keys {
 /**
  * The account: `await tilo.workspaces.list()`, `await ws.do(...)`.
  *
- * Every call is one of Tilo's `/v1` routes (`docs/developers/api.md`), with
- * the key as `Authorization: Bearer`; a host in process serves the same
- * routes (`Tilo.host(…)`).
+ * Every call is one tool of Tilo's agent surface, carried by this computer's
+ * daemon through the native addon, or by a key to the hosted server
+ * (`new Tilo({ key })`). Nothing speaks `/v1`.
  */
 export class Tilo {
-  readonly transport: Transport;
+  readonly carrier: Carrier;
   readonly workspaces: Workspaces;
   readonly keys: Keys;
   readonly retryDeadlineMs: number;
+  /** The surfaces this client has checked, by `${workspace}:${app}`. */
+  readonly surfaces = new Map<string, string>();
   catalog: WorkspaceList | null = null;
   readonly #streams = new AbortController();
 
   constructor(options: TiloOptions = {}) {
     this.retryDeadlineMs = options.retryDeadlineMs ?? RETRY_DEADLINE_MS;
-    this.transport =
-      options.transport ??
-      new HttpTransport(
-        urlFrom(options.url),
-        keyFrom(options.key),
-        options.fetch ?? globalThis.fetch,
-      );
+    const key = keyFrom(options.key);
+    this.carrier =
+      options.carrier ??
+      (key !== null
+        ? new KeyCarrier(urlFrom(options.url), key, {
+            fetch: options.fetch ?? globalThis.fetch,
+            retryDeadlineMs: this.retryDeadlineMs,
+            signal: this.#streams.signal,
+          })
+        : new DaemonCarrier(options.socket ?? null, options.workspace ?? null));
     this.workspaces = new Workspaces(this);
     this.keys = new Keys(this);
   }
 
   /**
-   * A Tilo host in process, as one of the person's devices: the same `/v1`
-   * routes without a socket, through the native addon. Its key is the file
-   * the host keeps, or the key and certificate given.
-   *
-   * ```ts
-   * const tilo = await Tilo.host("https://eu1.tilo.sh", { keyFile: "~/.local/state/tilo/key" });
-   * ```
+   * One workspace, by its id or by its name; with none, the one the
+   * daemon's connection acts in, which is how an app finds its workspace.
    */
-  static async host(origin: string, options: HostOptions = {}): Promise<Tilo> {
-    return new Tilo({
-      url: origin,
-      transport: await NativeTransport.open(origin, options),
-    });
-  }
-
-  /** One workspace, by its id or by its name. */
-  workspace(idOrName: string): Workspace {
-    return new Workspace(this, idOrName);
+  workspace(ref: string | null = null): Workspace {
+    return new Workspace(this, ref);
   }
 
   /** @internal The account's calls, or one workspace's. */
   account(): Endpoint {
-    return new Endpoint(this.transport, null, this.retryDeadlineMs, this.#streams.signal);
+    return new Endpoint(this.carrier, null, this.surfaces, this.#streams.signal);
   }
 
   /** @internal One workspace's calls. */
   at(workspace: string): Endpoint {
-    return new Endpoint(this.transport, workspace, this.retryDeadlineMs, this.#streams.signal);
-  }
-
-  /** The API's version and build, and what this key reaches. */
-  async info(): Promise<ApiInfo> {
-    return apiInfoOf(await this.account().info());
+    return new Endpoint(this.carrier, workspace, this.surfaces, this.#streams.signal);
   }
 
   /** The person's plan, and per workspace what it keeps and the VM time it ran. */
   async usage(): Promise<Usage> {
-    const read = await this.account().answer("GET", routes.accountResource("account/usage"), {
-      idempotent: false,
-    });
-    const fields = read.fields;
-    return usageOf(fields !== null && typeof fields === "object" ? (fields as Record<string, unknown>) : {});
+    const read = await this.account().read("account/usage");
+    return usageOf(recordOf(read.fields));
   }
 
-  /**
-   * A key this machine does not have yet: show the link, wait for approval.
-   * It reaches every workspace unless `workspace` names one, and lasts until
-   * revoked unless `expiresIn` (seconds) says otherwise.
-   */
-  async signIn(
-    name: string,
-    workspace: string | null = null,
-    expiresIn: number | null = null,
-    browserPages = true,
-  ): Promise<SignIn> {
-    const json: Record<string, unknown> = { name };
-    if (workspace !== null) {
-      json.workspace = await this.workspaceId(workspace);
-    }
-    if (expiresIn !== null) {
-      json.expires_in = expiresIn;
-    }
-    if (!browserPages) {
-      json.browser_pages = false;
-    }
-    const answer = await this.account().answer("POST", routes.newKey(), {
-      json,
-      idempotent: false,
-    });
-    return new SignIn(
-      this,
-      String(answer.approve_url ?? ""),
-      String(answer.poll ?? ""),
-      Number(answer.interval ?? 2),
-      Number(answer.expires_in ?? 300),
-    );
-  }
-
-  /** End the streams this client opened; the calls it made are done already. */
+  /** End the watches this client opened; the calls it made are done already. */
   close(): void {
     this.#streams.abort();
   }
@@ -374,51 +284,45 @@ export class Tilo {
 
   /**
    * @internal An action of the account (`account/workspaces#create`), as every action is run:
-   * what it answered.
+   * what it answered. `idempotencyKey` names the invocation, so a retry with the same one runs
+   * once.
    */
   async accountAction(
     path: string,
     json: Record<string, unknown> = {},
     idempotencyKey: string | null = null,
   ): Promise<Record<string, unknown>> {
-    const { resource, action } = splitAction(path);
-    const answer = actionAnswerOf(
-      await this.account().answer("POST", routes.accountAction(resource, action), {
-        json,
-        ...(idempotencyKey === null ? {} : { idempotencyKey }),
-      }),
-    );
-    const result = resultOf(answer);
-    return result !== null && typeof result === "object" ? (result as Record<string, unknown>) : {};
+    const invocationId = idempotencyKey === null ? null : invocationIdOf(idempotencyKey);
+    const result = await this.account().action(path, json, null, invocationId);
+    const settled = result instanceof Invocation ? await result.result() : result;
+    return recordOf(settled);
   }
 
   /** @internal The workspace an action of the account answered. */
   private static made(answer: Record<string, unknown>): WorkspaceInfo {
-    const workspace = answer.workspace;
-    return workspaceOf(
-      workspace !== null && typeof workspace === "object"
-        ? (workspace as Record<string, unknown>)
-        : {},
-    );
+    return workspaceOf(recordOf(answer.workspace));
   }
 
-  /** @internal */
-  async workspaceInfo(ref: string): Promise<WorkspaceInfo> {
-    let listing: WorkspaceList;
-    try {
-      listing = await this.workspaceList();
-    } catch (error) {
-      if ((error instanceof Refused || error instanceof ProtocolError) && UUID.test(ref)) {
-        return { id: ref, name: "", host: "", role: "", labels: {}, unattended: false };
+  /**
+   * @internal The workspace `ref` names: one the daemon serves, a workspace's id, or a name the
+   * account lists.
+   */
+  async workspaceInfo(ref: string | null): Promise<WorkspaceInfo> {
+    // An id needs no listing — and an app may not list the account's workspaces.
+    if (ref !== null && UUID.test(ref)) {
+      return blank(ref);
+    }
+    const served = await this.carrier.workspace();
+    if (ref === null) {
+      if (served === null) {
+        throw new ProtocolError("name a workspace: this client's carrier serves none");
       }
-      throw error;
+      return blank(served);
     }
-    const found = listing.named(ref);
-    // A workspace the listing does not name still answers to its id, as the
-    // host decides.
-    if (found === undefined && UUID.test(ref)) {
-      return { id: ref, name: "", host: "", role: "", labels: {}, unattended: false };
+    if (ref === served) {
+      return blank(ref);
     }
+    const found = (await this.workspaceList()).named(ref);
     if (found === undefined) {
       throw new Refused("not_found", `no workspace ${ref}`, [
         "await tilo.workspaces.list() names them",
@@ -489,24 +393,17 @@ export class Tilo {
     const seen = new Set<string>();
     for (const workspace of (await this.workspaceList(true)).workspaces) {
       const endpoint = this.at(workspace.id);
-      const listed = await endpoint.answer(
-        "GET",
-        `${routes.resources(workspace.id)}${queryOf({ path: KEYS_RECORD })}`,
-        { idempotent: false },
-      );
-      for (const row of Array.isArray(listed.rows) ? listed.rows : []) {
-        const path = row !== null && typeof row === "object" ? (row as Record<string, unknown>).path : null;
+      const listed = await endpoint.call("tilo_ls", { path: KEYS_RECORD });
+      for (const row of arrayOf(listed.rows)) {
+        const path = String(row.path ?? "");
         // A record is named by its grant: one read in another workspace is read already.
-        if (typeof path !== "string" || seen.has(path)) {
+        if (path === "" || seen.has(path)) {
           continue;
         }
         seen.add(path);
-        const read = await endpoint.answer("GET", routes.resource(workspace.id, path), {
-          idempotent: false,
-        });
-        const grant = read.fields;
-        if (grant !== null && typeof grant === "object" && (grant as Record<string, unknown>).revoked_ms == null) {
-          const key = keyGranted(grant as Record<string, unknown>);
+        const grant = recordOf((await endpoint.read(path)).fields);
+        if (grant.revoked_ms == null && Object.keys(grant).length > 0) {
+          const key = keyGranted(grant);
           keys.set(key.grant, key);
         }
       }
@@ -542,20 +439,40 @@ export class Tilo {
     expiresIn: number | null = null,
     browserPages = true,
   ): Promise<Key> {
-    const signIn = await this.signIn(
-      name,
-      workspace === null ? null : await this.workspaceId(workspace),
-      expiresIn,
-      browserPages,
-    );
-    throw new AskPending(signIn.url, idOf(signIn.url), { name }, async () => {
-      return (await signIn.wait()) as unknown as Record<string, unknown>;
-    });
+    const json: Record<string, unknown> = { name, browser_pages: browserPages };
+    if (workspace !== null) {
+      json.workspace = await this.workspaceId(workspace);
+    }
+    if (expiresIn !== null) {
+      json.expires_in = expiresIn;
+    }
+    const result = await this.account().action("account/keys#create", json);
+    // The person approves a new key on a device of their own: a call still
+    // pending is one waiting for them, not a key.
+    if (result instanceof Invocation) {
+      throw new AskPending(null, result.invocationId, {}, async () => {
+        const key = keyOf(recordOf(await result.result()));
+        return key as unknown as Record<string, unknown>;
+      });
+    }
+    return keyOf(recordOf(result));
   }
 }
 
-/** The last segment of an approval link: the id of the ask it names. */
-function idOf(url: string): string {
-  const parts = url.split("/").filter((part) => part !== "");
-  return parts[parts.length - 1] ?? "";
+/** A workspace named by its id alone: its name and host are not read. */
+function blank(id: string): WorkspaceInfo {
+  return { id, name: "", host: "", role: "", labels: {}, unattended: false };
+}
+
+/**
+ * The invocation a caller's idempotency key names: the same key is the same
+ * invocation, so a retry runs once. A key already written as a UUID is one;
+ * any other is hashed into the UUID the tools name an invocation by.
+ */
+function invocationIdOf(idempotencyKey: string): string {
+  if (UUID.test(idempotencyKey)) {
+    return idempotencyKey;
+  }
+  const hex = bytesToHex(sha256(new TextEncoder().encode(`tilo-sdk/${idempotencyKey}`))).slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }

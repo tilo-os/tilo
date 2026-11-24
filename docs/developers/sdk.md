@@ -15,7 +15,7 @@ is `tilo`: plain `tilo` on PyPI is another project's name, so only the distribut
 | | Who uses it | What it sends | What comes back |
 |---|---|---|---|
 | MCP tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`, `tilo`) | agents | paths and arguments | compact text, priced per token |
-| SDK (Python, TypeScript) | your code | the same calls | typed values (JSON on the wire) |
+| SDK (Python, TypeScript) | your code and apps | the same tool calls, in action frames to the daemon | typed values |
 | tilolang (`tilo` tool, `tilo run`) | agents and scripts | programs | values, pasteable as input |
 | CLI (`tilo do`, `tilo ls`, `tilo files`) | shells | the API's `/v1` routes | text, or `--json` |
 
@@ -151,9 +151,9 @@ and carries no secret: invite the person first (`ws.members.invite`).
 
 ## Errors
 
-A refusal is an exception carrying the API's reason and its next steps (`Refused`,
+A refusal is an exception carrying the workspace's reason and its next steps (`Refused`,
 `.next_steps`). An action that asks the person first raises `AskPending` with a link to
-the ask. A wrong path or argument names what's valid, as tilolang's errors do. A call the API
+the ask. A wrong path or argument names what's valid, as tilolang's errors do. A call the SDK
 will not run because the workspace's app publishes another surface than the generated types were
 written for raises `SurfaceChanged`, which says to run `tilo sdk gen`.
 
@@ -166,14 +166,25 @@ the caller's. Revoking a key ends every key minted from it.
 
 ## Wire
 
-The SDKs speak Tilo's `/v1` JSON API, [`api.md`](api.md): an action is
-`POST …/resources/{path}/actions/{action}`, an invocation is followed at
-`…/invocations/{invocation}`, and a watch is the workspace's event stream (`…/events`, resumed
-with `Last-Event-ID`). Each call carries an `Idempotency-Key`, so a retry runs nothing twice,
-and a group's calls carry `Tilo-Invocation` and `Tilo-Invocation-Title`. They can also reach a Tilo host in process, through the same
-Rust client the API server runs: no second implementation, no socket. File bytes go through
-`PUT …/contents/{hash}` and come back from `GET …/contents/{hash}`, then the Files app's
-actions.
+A program on a computer that runs Tilo connects to that computer's daemon, the way `tilo`'s
+workspace commands do: action frames (`RemoteActionFrame`), one per line, on the daemon's native
+endpoint. The SDK's native part (`tilo._native`, the npm package `tilo-sdk-native`) is the line
+wire's one Rust client, and a call is one of the tools an agent calls (`tilo_ls`, `tilo_read`,
+`tilo_do`, `tilo_status`, `tilo_watch`, `tilo_put_*`, `tilo_get`, `tilo`), walked in the program's
+process. The daemon admits the connection as whoever makes it: the person whose program it is,
+or an app the daemon started, which the launcher hands an open connection
+(`TILO_SVC_NATIVE_FD`) and its workspace (`TILO_WORKSPACE_ID`). An app's calls are decided by its
+own grants, in that one workspace.
+
+A program with no daemon beside it holds a key instead (`TILO_API_KEY`) and sends the same tool
+calls to the API server's MCP endpoint (`TILO_API_URL`, `https://api.tilo.sh` by default). Every
+action is invoked under an id of its own, so a call asked again runs nothing twice, and a group's
+calls name the group they are steps of.
+
+A secret never leaves the vault: a program signs in somewhere with a vault item through the
+vault's `web-call` (`ws.vault.web_call` / `ws.vault.webCall`), which adds the item on the way out
+to the service it belongs to and answers the response with it struck out, and comes by an item
+through `ask` (`ws.vault.ask`), which the person answers on a device of theirs.
 
 ## tilolang
 

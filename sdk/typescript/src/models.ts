@@ -140,7 +140,15 @@ export function textOf(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function arrayOf(value: unknown): Record<string, unknown>[] {
+/** An object's fields, or an empty one when the value is no object. */
+export function recordOf(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/** The objects in a value's array, each once, without the rest. */
+export function arrayOf(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value)
     ? value.filter((row): row is Record<string, unknown> => row !== null && typeof row === "object")
     : [];
@@ -743,37 +751,3 @@ export function usageOf(raw: Record<string, unknown>): Usage {
   };
 }
 
-function recordOf(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-/** What `GET /v1` answers: the API's version, and what the key reaches. */
-export interface ApiInfo {
-  apiVersion: string;
-  server: string;
-  key: Key | null;
-  raw: Record<string, unknown>;
-}
-
-export function apiInfoOf(raw: Record<string, unknown>): ApiInfo {
-  const key = recordOf(raw.key);
-  return {
-    apiVersion: String(raw.api_version ?? ""),
-    server: String(raw.server ?? ""),
-    key: Object.keys(key).length === 0 ? null : keyOf(key),
-    raw,
-  };
-}
-
-/** A file's bytes, as they went up. */
-export interface Upload {
-  /** `tilo.content:<hash>`: what an action takes the file as. */
-  content: string;
-  size: number;
-}
-
-export function uploadOf(raw: Record<string, unknown>): Upload {
-  return { content: String(raw.content ?? ""), size: intOf(raw.size) ?? 0 };
-}

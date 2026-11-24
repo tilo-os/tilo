@@ -10,7 +10,8 @@
  *    URL and token to the customer's agent;
  * 3. the agent connects over MCP with only that token: it lists, reads, runs
  *    an action and puts a file in its own workspace, and nothing it calls,
- *    over MCP or the REST API, reaches any other customer's workspace;
+ *    over MCP directly or through the SDK, reaches any other customer's
+ *    workspace;
  * 4. revokes some customers' keys, which stop working at once, mid-session;
  * 5. exports each workspace, then deletes them all, which revokes every key
  *    still minted for them.
@@ -409,7 +410,7 @@ async function works(customer: Customer): Promise<void> {
 
 /**
  * Nothing the customer's token calls reaches `other`'s workspace: not its MCP
- * URL, not a tool naming it, not a REST route under it, not the account.
+ * URL, not a tool naming it, not the SDK, not the account.
  */
 async function isolated(customer: Customer, other: Customer, url: string): Promise<void> {
   const what = `${customer.id}'s token, at ${other.id}'s workspace`;
@@ -439,7 +440,7 @@ async function isolated(customer: Customer, other: Customer, url: string): Promi
     !JSON.stringify(own.body).includes(other.id),
     `${what}: its own session listed the other's: ${JSON.stringify(own.body).slice(0, 300)}`,
   );
-  // The REST API, as the customer's token.
+  // The SDK, as the customer's token: the same tools over MCP.
   const api = new Tilo({ url, key: customer.key.token, retryDeadlineMs: 0 });
   const visible = await api.workspaces.list();
   check(
@@ -459,7 +460,7 @@ async function isolated(customer: Customer, other: Customer, url: string): Promi
       () => "ran",
       (error) => (error instanceof Refused ? error.code : String(error)),
     );
-    check(answer !== "ran", `${what}: REST ${route} ran`);
+    check(answer !== "ran", `${what}: the SDK's ${route} ran`);
   }
 }
 
@@ -517,7 +518,7 @@ async function main(): Promise<void> {
   timings.agents_failed = failures("agents", working.results);
   const active = customers.filter((_, index) => working.results[index] === null);
 
-  say("isolating", "each token against its neighbour's workspace, over MCP and REST");
+  say("isolating", "each token against its neighbour's workspace, over MCP directly and through the SDK");
   const isolation = await timed(active, (customer) =>
     attempt(() => isolated(customer, customers[(customer.index + 1) % customers.length] as Customer, url)),
   );

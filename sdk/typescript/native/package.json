@@ -1,7 +1,7 @@
 {
   "name": "tilo-sdk-native",
   "version": "0.1.0",
-  "description": "The Tilo SDK's native part: Tilo's API in process, as a key the program holds, reaching a Tilo host directly as a device of the person. Loaded by tilo-sdk's Tilo.host().",
+  "description": "The Tilo SDK's native part: this computer's daemon, reached over its native endpoint as the person or as an app the launcher started. Loaded by tilo-sdk's daemon carrier.",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./index.js",

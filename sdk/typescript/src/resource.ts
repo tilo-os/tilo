@@ -8,8 +8,8 @@
  * down.
  *
  * A resource made through generated types names its app's surface, and every
- * call it makes sends `Tilo-Surface` with it: a workspace whose app publishes
- * another surface refuses the call (`SurfaceChanged`) instead of running it.
+ * call it makes checks it: a workspace whose app publishes another surface
+ * refuses the call (`SurfaceChanged`) instead of running it.
  */
 
 import { currentGroup } from "./endpoint.ts";
@@ -68,7 +68,6 @@ export interface Resource {
  */
 export type Surface = string | { surface?: string | null } | null;
 
-/** `read_form_fields` or `readFormFields` as an action id: `read-form-fields`. */
 /**
  * A reference to an item an earlier item of the same `many` call makes:
  * `{"$made": {"member": 0, "item": 0}}`, by the item's place in the call and
@@ -289,7 +288,7 @@ class ResourceImpl {
 
   async load(): Promise<unknown> {
     await this.flush();
-    this.#answer = await this.workspace.readRaw(this.path);
+    this.#answer = await this.workspace.readRaw(this.path, { surface: this.surface });
     return this.self ?? this;
   }
 

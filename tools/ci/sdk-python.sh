@@ -14,9 +14,6 @@ export UV_OFFLINE=1
 export UV_PYTHON_DOWNLOADS=never
 export UV_CACHE_DIR=$scratch/uv-cache
 export UV_PROJECT_ENVIRONMENT=$scratch/python-venv
-# The suite holds the fake API to the documented API, whose schema lives
-# beside the tree.
-export TILO_OPENAPI=$root/docs/api/openapi.json
 cp -a /opt/tilo-sdk/uv-cache "$UV_CACHE_DIR"
 cp -a /opt/tilo-sdk/python-venv "$UV_PROJECT_ENVIRONMENT"
 # The suite writes nothing beside the sources.

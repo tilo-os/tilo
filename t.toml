@@ -1030,9 +1030,8 @@ default = false
 # TypeScript SDK's packages from sdk/typescript/bun.lock, both baked into the image this check
 # builds. They run offline. That image is built for these checks and not published, so the
 # dependencies a suite runs against are always the tree's locks: a bump changes the image's
-# inputs and with it the image. Each suite's fake API holds every exchange it answers to
-# docs/api/openapi.json, so the spec and the SDKs cannot drift apart: a route, a body or an
-# answer either side stops describing fails the suite.
+# inputs and with it the image. These run what needs no daemon; sdk-native runs each SDK against
+# one.
 [[check]]
 name = "sdk-python"
 run = "bash tools/ci/sdk-python.sh"
@@ -1045,13 +1044,13 @@ run = "bash tools/ci/sdk-typescript.sh"
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 
-# The SDKs' native part (tools/ci/sdk-native.sh): the Python extension and the Node addon that
-# bind the one Rust client of Tilo's API, so a program reaches a Tilo host directly as a device
-# of its person. The first check builds both beside the api-on-server harness; the second drives
-# each SDK's native test through them against that harness's server, in the SDKs' image. What the
-# build writes is mostly the compiler cache: about 120 MB with every unit cached, and about 2 GB
-# in the run after a vendor patch or a dependency bump, which compiles the client and the harness
-# again. The same commit writes both, so a run past this check's disk envelope says what was stale.
+# The SDKs' native part (tools/ci/sdk-native.sh): the Python extension and the Node addon, each
+# the line wire's client of this computer's daemon, so a program's calls are action frames on the
+# daemon's native endpoint, admitted as whoever connects. The first check builds both beside the
+# daemon and its harness; the second runs each SDK's end-to-end suite against a daemon the
+# harness starts in a profile of its own, in the SDKs' image. It runs in a micro-VM: the daemon
+# answers root as the device itself, so the suites run as an ordinary account, which a job's
+# root, holding no capability, cannot switch to.
 [[check]]
 name = "sdk-native-build"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -1066,6 +1065,7 @@ run = "bash tools/ci/sdk-native.sh test /target/sdk-native"
 needs = ["sdk-native-build"]
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
+isolation = "vm"
 
 # The developer docs' code examples, run the way a reader runs them: every block of an example
 # is a whole program that reaches the API with TILO_API_URL and TILO_API_KEY (tools/docs/

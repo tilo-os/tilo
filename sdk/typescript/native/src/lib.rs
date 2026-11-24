@@ -1,104 +1,73 @@
-//! `tilo-sdk-native`: Tilo's API in process for the TypeScript SDK, as a key
-//! the program holds ([`tilo_api::direct`]), so `Tilo.host(...)` reaches a
-//! Tilo host directly as a device of the person, with no API server between.
+//! `tilo-sdk-native`: the TypeScript SDK's way into Tilo, the device daemon's native endpoint.
 //!
-//! Every request runs on napi's tokio runtime and settles a promise; a
-//! streamed answer (server-sent events) is handed over as [`Chunks`], which
-//! the package's `index.js` turns into an async iterable. The Automerge bytes
-//! the host sends are decoded in sandboxed workers, started as the
-//! `tilo-automerge-worker` program beside the addon.
+//! A program connects to this computer's daemon as `tilo`'s workspace commands do
+//! ([`tilo_api::calls::Calls`]): action frames ([`tilo_actions::remote::RemoteActionFrame`]),
+//! one per line, carried by the line wire's one client, walked as the agent surface's tools in
+//! this process. The daemon admits the connection as whoever makes it: the person's own
+//! account, or an app process the daemon started, in the one workspace it was started in.
+//!
+//! Every call settles a promise on napi's tokio runtime with `{answer}` or `{refused}`, the
+//! refusal's body as the SDK raises its typed errors from. The Automerge bytes a call reads are
+//! decoded in sandboxed workers, started as the `tilo-automerge-worker` program beside the addon.
 
-// The direct API's futures nest deeply enough (the network actor's netlink types among
-// them) that proving them `Send` passes the default limit of 128.
+// The calls' futures nest deeply enough (the MCP walk among them) that proving them `Send`
+// passes the default limit of 128.
 #![recursion_limit = "256"]
 
-use napi::bindgen_prelude::{Either, Uint8Array};
 use napi_derive::napi;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tilo_api::direct::{AnswerBody, Direct, KeyFile};
+use tilo_api::calls::Calls;
 
-/// Start the client's Automerge workers as `program`, the
-/// `tilo-automerge-worker` program the platform package carries beside the
-/// addon: Node cannot be started again as one. `index.js` names it before the
-/// first [`Host`].
+/// Start the client's Automerge workers as `program`, the `tilo-automerge-worker` program the
+/// platform package carries beside the addon: Node cannot be started again as one. `index.js`
+/// names it before the first connection.
 #[napi]
 pub fn serve_workers_from(program: String) {
     tilo_automerge_isolate::serve_workers_from(program.into());
 }
 
-/// A Tilo host reached directly with the key a key file holds.
+/// A connection to this computer's daemon.
 #[napi]
-pub struct Host {
-    direct: Arc<Direct>,
+pub struct Daemon {
+    calls: Arc<Calls>,
+}
+
+/// Connect to the daemon's native endpoint ([`Calls::connect`]): the connection the launcher
+/// handed an app it started, else `socket`, else this computer's daemon. `workspace` names the one
+/// workspace the connection acts in when it knows it.
+#[napi]
+pub async fn connect(socket: Option<String>, workspace: Option<String>) -> napi::Result<Daemon> {
+    let socket = socket.map(std::path::PathBuf::from);
+    let calls = Calls::connect(socket.as_deref(), workspace.as_deref())
+        .await
+        .map_err(|error| napi::Error::from_reason(format!("{error:#}")))?;
+    Ok(Daemon {
+        calls: Arc::new(calls),
+    })
 }
 
 #[napi]
-impl Host {
-    /// `key_file`: the path of a key file, or its contents
-    /// (`{host, name, key, cert}`).
-    #[napi(constructor)]
-    pub fn new(key_file: serde_json::Value) -> napi::Result<Self> {
-        let file = match key_file {
-            serde_json::Value::String(path) => KeyFile::read(std::path::Path::new(&path)),
-            contents => {
-                serde_json::from_value(contents).map_err(|error| format!("not a key file: {error}"))
-            }
-        }
-        .map_err(napi::Error::from_reason)?;
-        let direct = Direct::new(&file).map_err(napi::Error::from_reason)?;
-        Ok(Self {
-            direct: Arc::new(direct),
-        })
+impl Daemon {
+    /// The workspace this connection acts in when it names none.
+    #[napi(getter)]
+    pub fn workspace(&self) -> Option<String> {
+        self.calls.served_workspace().map(str::to_owned)
     }
 
-    /// Answer `method` on `path` (with its query) as the API does.
+    /// Call `tool` with `args` in `workspace` (`null`: the account's own tree), as a step of
+    /// `group` (`{id, title}`) when one is named: `{answer}`, or `{refused: {error: {...}}}`.
     #[napi]
-    pub async fn request(
+    pub async fn call(
         &self,
-        method: String,
-        path: String,
-        headers: HashMap<String, String>,
-        body: Uint8Array,
-    ) -> Reply {
-        let headers: Vec<(String, String)> = headers.into_iter().collect();
-        let answer = self.direct.answer(&method, &path, &headers, &body).await;
-        Reply {
-            status: u32::from(answer.status),
-            headers: answer.headers.into_iter().collect(),
-            body: match answer.body {
-                AnswerBody::Whole(bytes) => Either::A(Uint8Array::from(bytes.to_vec())),
-                AnswerBody::Stream(chunks) => Either::B(Chunks {
-                    chunks: Arc::new(chunks),
-                }),
-            },
+        workspace: Option<String>,
+        tool: String,
+        args: serde_json::Value,
+        group: Option<serde_json::Value>,
+    ) -> serde_json::Value {
+        let calls = Arc::clone(&self.calls);
+        match calls.call(workspace.as_deref(), &tool, args, group).await {
+            Ok(answer) => serde_json::json!({ "answer": answer }),
+            Err(refused) => serde_json::json!({ "refused": refused }),
         }
-    }
-}
-
-/// An answer: its status, its headers (a name's values joined with `, `) and
-/// its body, whole or streamed.
-#[napi(object, object_from_js = false)]
-pub struct Reply {
-    pub status: u32,
-    pub headers: HashMap<String, String>,
-    pub body: Either<Uint8Array, Chunks>,
-}
-
-/// A streamed answer's chunks, in order.
-#[napi]
-pub struct Chunks {
-    chunks: Arc<tilo_api::direct::Chunks>,
-}
-
-#[napi]
-impl Chunks {
-    /// The next chunk, or `null` once the stream has ended.
-    #[napi]
-    pub async fn next(&self) -> Option<Uint8Array> {
-        self.chunks
-            .next()
-            .await
-            .map(|chunk| Uint8Array::from(chunk.to_vec()))
     }
 }

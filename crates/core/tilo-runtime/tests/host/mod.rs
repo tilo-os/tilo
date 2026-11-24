@@ -536,7 +536,7 @@ impl Host {
     }
 }
 
-/// A key of the person's, calling the daemon's API in process, as the SDKs' native part does.
+/// A key of the person's, calling the daemon's API in process.
 pub struct Key {
     direct: tilo_api::direct::Direct,
 }
@@ -555,17 +555,9 @@ impl Key {
 
     /// `GET path`: the status and the bytes answered whole.
     pub async fn bytes(&self, path: &str) -> (u16, Vec<u8>) {
-        let answer = self.direct.answer("GET", path, &[], b"").await;
-        match answer.body {
-            tilo_api::direct::AnswerBody::Whole(bytes) => (answer.status, bytes.to_vec()),
-            tilo_api::direct::AnswerBody::Stream(chunks) => {
-                let mut whole = Vec::new();
-                while let Some(chunk) = chunks.next().await {
-                    whole.extend_from_slice(&chunk);
-                }
-                (answer.status, whole)
-            }
-        }
+        let answer = self.direct.request("GET", path, &[], b"").await;
+        let status = answer.status().as_u16();
+        (status, whole(answer).await)
     }
 
     /// `method path` as a stream of server-sent events, a chunk at a time.
@@ -575,22 +567,27 @@ impl Key {
         path: &str,
         headers: &[(&str, &str)],
         body: &[u8],
-    ) -> tilo_api::direct::Chunks {
+    ) -> Chunks {
         let mut all = vec![("accept".to_owned(), "text/event-stream".to_owned())];
         all.extend(
             headers
                 .iter()
                 .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
         );
-        let answer = self.direct.answer(method, path, &all, body).await;
-        match answer.body {
-            tilo_api::direct::AnswerBody::Stream(chunks) => chunks,
-            tilo_api::direct::AnswerBody::Whole(bytes) => panic!(
-                "{} is not a stream: {}",
-                answer.status,
-                String::from_utf8_lossy(&bytes)
-            ),
+        let answer = self.direct.request(method, path, &all, body).await;
+        let streams = answer
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream"));
+        if !streams {
+            let status = answer.status();
+            panic!(
+                "{status} is not a stream: {}",
+                String::from_utf8_lossy(&whole(answer).await)
+            );
         }
+        Chunks(tokio::sync::Mutex::new(Some(answer.into_body())))
     }
 
     /// `method path` with `headers` and `body`: the status and the JSON answered.
@@ -609,14 +606,7 @@ impl Key {
                 .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
                 .collect()
         };
-        let answer = self.direct.answer(method, path, &headers, body).await;
-        let value = match answer.body {
-            tilo_api::direct::AnswerBody::Whole(bytes) if bytes.is_empty() => Value::Null,
-            tilo_api::direct::AnswerBody::Whole(bytes) => serde_json::from_slice(&bytes)
-                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())),
-            tilo_api::direct::AnswerBody::Stream(_) => Value::Null,
-        };
-        (answer.status, value)
+        json_of(self.direct.request(method, path, &headers, body).await).await
     }
 
     /// The MCP tool `name` with `arguments` (naming the `workspace` it acts in), as the key's
@@ -993,5 +983,57 @@ pub fn call(provider: &str, address: ActionAddress, arguments: &Value) -> Invoke
         wait_ms: None,
         appearance: None,
         signed: None,
+    }
+}
+
+/// An answer of the API whole: its bytes, read to its end.
+pub async fn whole(answer: tilo_api::Reply) -> Vec<u8> {
+    use http_body_util::BodyExt as _;
+    let Ok(whole) = answer.into_body().collect().await;
+    whole.to_bytes().to_vec()
+}
+
+/// An answer of the API: its status, and the JSON it answered (`null` for none, a string for a
+/// body that is no JSON, `null` for a stream of events).
+pub async fn json_of(answer: tilo_api::Reply) -> (u16, Value) {
+    let status = answer.status().as_u16();
+    let streams = answer
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"));
+    if streams {
+        return (status, Value::Null);
+    }
+    let bytes = whole(answer).await;
+    let value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+    };
+    (status, value)
+}
+
+/// A stream of server-sent events the API answered, its chunks of data in order.
+pub struct Chunks(tokio::sync::Mutex<Option<tilo_api::Body>>);
+
+impl Chunks {
+    /// The next chunk of data, or `None` once the stream ended.
+    pub async fn next(&self) -> Option<Vec<u8>> {
+        use http_body_util::BodyExt as _;
+        let mut body = self.0.lock().await;
+        loop {
+            let Some(frame) = body.as_mut()?.frame().await else {
+                *body = None;
+                return None;
+            };
+            let Ok(frame) = frame;
+            if let Ok(data) = frame.into_data()
+                && !data.is_empty()
+            {
+                return Some(data.to_vec());
+            }
+        }
     }
 }

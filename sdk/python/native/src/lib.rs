@@ -1,103 +1,89 @@
-//! `tilo._native`: Tilo's API in process for the Python SDK, as a key the
-//! program holds ([`tilo_api::direct`]), so `AsyncTilo.host(...)` reaches a
-//! Tilo host directly as a device of the person, with no API server between.
+//! `tilo._native`: the Python SDK's way into Tilo, the device daemon's native endpoint.
 //!
-//! Every request runs on one tokio runtime for the process and is awaited
-//! from asyncio without holding the GIL; a streamed answer (server-sent
-//! events) is an async iterator of its chunks. The Automerge bytes the host
-//! sends are decoded in sandboxed workers, started as the
-//! `tilo-automerge-worker` program the wheel carries beside this module.
+//! A program connects to this computer's daemon as `tilo`'s workspace commands do
+//! ([`tilo_api::calls::Calls`]): action frames ([`tilo_actions::remote::RemoteActionFrame`]),
+//! one per line, carried by the line wire's one client, walked as the agent surface's tools in
+//! this process. The daemon admits the connection as whoever makes it: the person's own
+//! account, or an app process the daemon started, in the one workspace it was started in.
+//!
+//! Every call runs on one tokio runtime for the process and is awaited from asyncio without
+//! holding the GIL; it answers `{"answer": ...}` or `{"refused": {"error": {...}}}` as JSON text,
+//! the refusal's body as the SDK raises its typed errors from. The Automerge bytes a call reads
+//! are decoded in sandboxed workers, started as the `tilo-automerge-worker` program the wheel
+//! carries beside this module.
 
-use pyo3::exceptions::{PyImportError, PyStopAsyncIteration, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyConnectionError, PyImportError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyString};
-use std::borrow::Cow;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tilo_api::direct::{AnswerBody, Direct, KeyFile};
+use tilo_api::calls::Calls;
 
-/// A Tilo host reached directly with the key a key file holds.
+/// A connection to this computer's daemon.
 #[pyclass(frozen, module = "tilo._native")]
-struct Host {
-    direct: Arc<Direct>,
+struct Daemon {
+    calls: Arc<Calls>,
 }
 
 #[pymethods]
-impl Host {
-    /// `key_file`: the path of a key file, or its contents as a dict
-    /// (`{"host", "name", "key", "cert"}`).
-    #[new]
-    fn new(key_file: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let file = key_file_of(key_file)?;
-        serve_workers_beside_module(key_file.py())?;
-        let _runtime = pyo3_async_runtimes::tokio::get_runtime().enter();
-        let direct = Direct::new(&file).map_err(PyValueError::new_err)?;
-        Ok(Self {
-            direct: Arc::new(direct),
-        })
+impl Daemon {
+    /// The workspace this connection acts in when it names none.
+    #[getter]
+    fn workspace(&self) -> Option<String> {
+        self.calls.served_workspace().map(str::to_owned)
     }
 
-    /// Answer `method` on `path` (with its query) as the API does: awaits
-    /// `(status, headers, body)`, the body `bytes`, or an async iterator of
-    /// `bytes` chunks for a `text/event-stream` answer.
-    fn request<'py>(
+    /// Call `tool` with `args` (JSON text) in `workspace` (`None`: the account's own tree), as a
+    /// step of `group` (JSON text of `{id, title}`) when one is named: awaits JSON text of
+    /// `{"answer": ...}` or `{"refused": {"error": {...}}}`.
+    #[pyo3(signature = (workspace, tool, args, group=None))]
+    fn call<'py>(
         &self,
         py: Python<'py>,
-        method: String,
-        path: String,
-        headers: HashMap<String, String>,
-        body: &[u8],
+        workspace: Option<String>,
+        tool: String,
+        args: &str,
+        group: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let direct = Arc::clone(&self.direct);
-        let headers: Vec<(String, String)> = headers.into_iter().collect();
-        let body = body.to_vec();
+        let args: serde_json::Value = serde_json::from_str(args)
+            .map_err(|error| PyValueError::new_err(format!("the arguments: {error}")))?;
+        let group: Option<serde_json::Value> = group
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|error| PyValueError::new_err(format!("the group: {error}")))?;
+        let calls = Arc::clone(&self.calls);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let answer = direct.answer(&method, &path, &headers, &body).await;
-            let body = match answer.body {
-                AnswerBody::Whole(bytes) => Body::Whole(Cow::Owned(bytes.to_vec())),
-                AnswerBody::Stream(chunks) => Body::Stream(Chunks {
-                    chunks: Arc::new(chunks),
-                }),
+            let answer = match calls.call(workspace.as_deref(), &tool, args, group).await {
+                Ok(answer) => serde_json::json!({ "answer": answer }),
+                Err(refused) => serde_json::json!({ "refused": refused }),
             };
-            let headers: HashMap<String, String> = answer.headers.into_iter().collect();
-            Ok((answer.status, headers, body))
+            Ok(answer.to_string())
         })
     }
 }
 
-/// An answer's body as Python gets it.
-#[derive(IntoPyObject)]
-enum Body {
-    Whole(Cow<'static, [u8]>),
-    Stream(Chunks),
-}
-
-/// A streamed answer's chunks, as an async iterator of `bytes`.
-#[pyclass(frozen, module = "tilo._native")]
-struct Chunks {
-    chunks: Arc<tilo_api::direct::Chunks>,
-}
-
-#[pymethods]
-impl Chunks {
-    const fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let chunks = Arc::clone(&self.chunks);
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            match chunks.next().await {
-                Some(chunk) => Ok(Cow::<[u8]>::Owned(chunk.to_vec())),
-                None => Err(PyStopAsyncIteration::new_err(())),
-            }
+/// Connect to the daemon's native endpoint ([`Calls::connect`]): the connection the launcher
+/// handed an app it started, else `socket`, else this computer's daemon. `workspace` names the one
+/// workspace the connection acts in when it knows it. Awaits the [`Daemon`].
+#[pyfunction]
+#[pyo3(signature = (socket=None, workspace=None))]
+fn connect(
+    py: Python<'_>,
+    socket: Option<String>,
+    workspace: Option<String>,
+) -> PyResult<Bound<'_, PyAny>> {
+    serve_workers_beside_module(py)?;
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        let socket = socket.map(std::path::PathBuf::from);
+        let calls = Calls::connect(socket.as_deref(), workspace.as_deref())
+            .await
+            .map_err(|error| PyConnectionError::new_err(format!("{error:#}")))?;
+        Ok(Daemon {
+            calls: Arc::new(calls),
         })
-    }
+    })
 }
 
-/// Start the client's Automerge workers as the `tilo-automerge-worker`
-/// program the wheel carries beside this module: Python cannot be started
-/// again as one.
+/// Start the client's Automerge workers as the `tilo-automerge-worker` program the wheel
+/// carries beside this module: Python cannot be started again as one.
 fn serve_workers_beside_module(py: Python<'_>) -> PyResult<()> {
     let module: std::path::PathBuf = py.import("tilo._native")?.getattr("__file__")?.extract()?;
     let worker = module.with_file_name("tilo-automerge-worker");
@@ -111,29 +97,9 @@ fn serve_workers_beside_module(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
-/// The key file `value` names (a path) or is (a dict).
-fn key_file_of(value: &Bound<'_, PyAny>) -> PyResult<KeyFile> {
-    if let Ok(path) = value.cast::<PyString>() {
-        let path = path.to_cow()?;
-        return KeyFile::read(std::path::Path::new(path.as_ref())).map_err(PyValueError::new_err);
-    }
-    if value.cast::<PyDict>().is_ok() {
-        let text: String = value
-            .py()
-            .import("json")?
-            .call_method1("dumps", (value,))?
-            .extract()?;
-        return serde_json::from_str(&text)
-            .map_err(|error| PyValueError::new_err(format!("not a key file: {error}")));
-    }
-    Err(PyTypeError::new_err(
-        "a key file is its path or a dict of its contents",
-    ))
-}
-
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<Host>()?;
-    module.add_class::<Chunks>()?;
+    module.add_class::<Daemon>()?;
+    module.add_function(wrap_pyfunction!(connect, module)?)?;
     Ok(())
 }

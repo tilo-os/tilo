@@ -3,7 +3,6 @@
 import type { Tilo } from "./client.ts";
 import { type Endpoint, InvocationGroup, withinInvocation } from "./endpoint.ts";
 import {
-  actionAnswerOf,
   type Event,
   type Hit,
   hitOf,
@@ -17,20 +16,19 @@ import {
   type ProgramAnswer,
   InvocationList,
   type View,
-  type WorkspaceExport,
   type WorkspaceInfo,
-  resultOf,
+  type WorkspaceExport,
+  recordOf,
 } from "./models.ts";
-import { ProtocolError, refusalOf } from "./errors.ts";
-import { blake3 } from "@noble/hashes/blake3.js";
-import { bytesToHex } from "@noble/hashes/utils.js";
+import { Invocation } from "./invocation.ts";
+import { ProtocolError } from "./errors.ts";
 import { resourceProxy, type Resource, type Surface } from "./resource.ts";
-import { query as queryOf, routes } from "./routes.ts";
-import { collect } from "./transport.ts";
 
 const INVOCATION_PREFIX = "sdk:";
-/** How many bytes one piece of a content put carries, within the API's limit. */
-const PUT_PIECE = 8 * 1024 * 1024;
+/** How many bytes one append of an upload carries. */
+const PUT_PIECE = 384 * 1024;
+/** How many appends of an upload may be in flight at once. */
+const PUTS_AT_ONCE = 8;
 
 /** A file's bytes, as they go up: one upload's own type, when the caller knows it. */
 export type FileBytes = Uint8Array | ArrayBuffer | Blob;
@@ -56,67 +54,56 @@ export class Files {
    */
   async upload(data: FileBytes): Promise<string> {
     const endpoint = await this.workspace.endpoint();
-    const contentType =
-      data instanceof Blob && data.type !== "" ? data.type : "application/octet-stream";
     const bytes = await bytesOfFile(data);
-    const hash = bytesToHex(blake3(bytes));
-    const route = routes.contents(endpoint.id, hash);
-    if (bytes.length <= PUT_PIECE) {
-      const content = await this.put(endpoint, route, bytes, contentType, 0, bytes.length, bytes.length);
-      if (content === null) {
-        throw new ProtocolError("the host took the file without naming its content");
-      }
-      return content;
+    const begun = await endpoint.call("tilo_put_begin", { size: bytes.length });
+    const upload = begun.upload;
+    if (upload === undefined || upload === null) {
+      throw new ProtocolError("the host began no upload for the file");
     }
+    let inFlight: Promise<unknown>[] = [];
     for (let offset = 0; offset < bytes.length; offset += PUT_PIECE) {
       const piece = bytes.subarray(offset, Math.min(offset + PUT_PIECE, bytes.length));
-      const content = await this.put(
-        endpoint,
-        route,
-        piece,
-        contentType,
-        offset,
-        offset + piece.length - 1,
-        bytes.length,
+      inFlight.push(
+        endpoint.call("tilo_put_append", {
+          upload,
+          offset,
+          chunk: base64Of(piece),
+        }),
       );
-      if (content !== null) {
-        return content;
+      if (inFlight.length >= PUTS_AT_ONCE) {
+        await Promise.all(inFlight);
+        inFlight = [];
       }
     }
-    throw new ProtocolError("the host took every piece of the file without naming its content");
-  }
-
-  /** One piece of a put: its content once every byte is there, else `null`. */
-  private async put(
-    endpoint: Endpoint,
-    route: string,
-    piece: Uint8Array,
-    contentType: string,
-    from: number,
-    to: number,
-    size: number,
-  ): Promise<string | null> {
-    const headers: Record<string, string> = { "content-type": contentType };
-    if (from !== 0 || piece.length !== size) {
-      headers["content-range"] = `bytes ${from}-${to}/${size}`;
+    await Promise.all(inFlight);
+    const finished = await endpoint.call("tilo_put_finish", { upload });
+    const content = typeof finished.content === "string" ? finished.content : "";
+    if (content === "") {
+      throw new ProtocolError("the host finished the upload with no content");
     }
-    const answer = await endpoint.answer("PUT", route, { data: piece, headers });
-    if (typeof answer.content === "string" && answer.content !== "") {
-      return answer.content;
-    }
-    return null;
+    return content;
   }
 
   /** The bytes of `content`, a `tilo.content:<hash>` in this workspace. */
   async download(content: string): Promise<Uint8Array> {
     const endpoint = await this.workspace.endpoint();
-    const hash = content.startsWith("tilo.content:") ? content.slice("tilo.content:".length) : content;
-    const route = routes.contents(endpoint.id, hash);
-    const reply = await endpoint.request("GET", route, { stream: true, idempotent: false });
-    if (reply.status >= 400) {
-      throw refusalOf(reply.status, reply.body);
+    const pieces: Uint8Array[] = [];
+    let offset = 0;
+    for (;;) {
+      const piece = await endpoint.call("tilo_get", { content, offset });
+      const bytes =
+        typeof piece.bytes === "string" ? bytesOfBase64(piece.bytes) : new Uint8Array();
+      if (bytes.length === 0) {
+        break;
+      }
+      pieces.push(bytes);
+      offset += bytes.length;
+      const size = typeof piece.size === "number" ? piece.size : null;
+      if (size !== null && offset >= size) {
+        break;
+      }
     }
-    return reply.chunks === null ? new Uint8Array() : collect(reply.chunks);
+    return concatOf(pieces);
   }
 }
 
@@ -128,6 +115,35 @@ async function bytesOfFile(data: FileBytes): Promise<Uint8Array> {
     return new Uint8Array(data);
   }
   return new Uint8Array(await data.arrayBuffer());
+}
+
+/** Bytes as base64, in pieces small enough for a string's argument list. */
+function base64Of(bytes: Uint8Array): string {
+  let binary = "";
+  const step = 0x8000;
+  for (let at = 0; at < bytes.length; at += step) {
+    binary += String.fromCharCode(...bytes.subarray(at, at + step));
+  }
+  return btoa(binary);
+}
+
+function bytesOfBase64(text: string): Uint8Array {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function concatOf(pieces: Uint8Array[]): Uint8Array {
+  const whole = new Uint8Array(pieces.reduce((total, piece) => total + piece.length, 0));
+  let at = 0;
+  for (const piece of pieces) {
+    whole.set(piece, at);
+    at += piece.length;
+  }
+  return whole;
 }
 
 /** The keys that reach this one workspace. */
@@ -175,7 +191,7 @@ export class Members {
       args.invitee_name = options.email;
     }
     const invited = await endpoint.action("workspace/invitations#invite", args);
-    const invitation = invitationOf((invited ?? {}) as Record<string, unknown>);
+    const invitation = invitationOf(recordOf(invited));
     // Tilo sends no mail to an address it names: the link is handed over.
     if (options.email === undefined) {
       return invitation;
@@ -195,6 +211,103 @@ export class Members {
   }
 }
 
+/** A web request made with a key the vault keeps, by reference. */
+export interface WebCallOptions {
+  /** The address to call, at the service the key belongs to. */
+  url: string;
+  /** The vault item, a `vault.item:` reference. */
+  key: string;
+  /** `GET` when left out. */
+  method?: string;
+  /** Headers to send besides the key. */
+  headers?: Record<string, string>;
+  /** What to send, as text. */
+  body?: string;
+  /** Why you need it, in one sentence your person reads. */
+  reason?: string;
+}
+
+/** What a web call answered: the service's status, headers and body, the key struck out. */
+export interface WebCallAnswer {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/** Ask the person for a secret, which their vault then keeps for the places named. */
+export interface VaultAsk {
+  /** What it is: `login`, `key`, `code-generator`, `ssh-key` or `value`. */
+  kind: "login" | "key" | "code-generator" | "ssh-key" | "value";
+  /** Where it belongs, each a web address or a server; one to four. */
+  belongsTo: string[];
+  /** The name it signs in with, when it has one. */
+  username?: string;
+  /** For a key: how its service takes it (`basic`, `header:<name>`, `query:<name>`). */
+  sentIn?: string;
+}
+
+/**
+ * The person's vault: a secret stays there, and a call uses it by reference.
+ *
+ * There is no way to read a secret back. `webCall` has the server add the
+ * key on the way out and answers the service's reply with the key struck
+ * from it; `ask` is the one way a program comes by an item it was not given.
+ */
+export class Vault {
+  readonly workspace: Workspace;
+
+  constructor(workspace: Workspace) {
+    this.workspace = workspace;
+  }
+
+  /** Make a web request with a key the vault keeps, by reference. */
+  async webCall(call: WebCallOptions): Promise<WebCallAnswer> {
+    const args: Record<string, unknown> = { url: call.url, key: call.key };
+    if (call.method !== undefined) {
+      args.method = call.method;
+    }
+    if (call.headers !== undefined) {
+      args.headers = call.headers;
+    }
+    if (call.body !== undefined) {
+      args.body = call.body;
+    }
+    if (call.reason !== undefined) {
+      args.reason = call.reason;
+    }
+    const endpoint = await this.workspace.endpoint();
+    const answer = recordOf(await endpoint.action("vault/vault#web-call", args));
+    const headers: Record<string, string> = {};
+    for (const [name, value] of Object.entries(recordOf(answer.headers))) {
+      headers[name] = String(value);
+    }
+    return {
+      status: typeof answer.status === "number" ? answer.status : 0,
+      headers,
+      body: typeof answer.body === "string" ? answer.body : "",
+    };
+  }
+
+  /**
+   * Ask the person for a password, a key or another secret. They type it into
+   * the system's protected field on their own device; the answer is the
+   * reference the vault keeps it under, or `null` when they declined. It may
+   * throw `AskPending`, which waits for their decision.
+   */
+  async ask(ask: VaultAsk): Promise<string | null> {
+    const args: Record<string, unknown> = { kind: ask.kind, belongsTo: ask.belongsTo };
+    if (ask.username !== undefined) {
+      args.username = ask.username;
+    }
+    if (ask.sentIn !== undefined) {
+      args.sentIn = ask.sentIn;
+    }
+    const endpoint = await this.workspace.endpoint();
+    const answer = recordOf(await endpoint.action("vault/vault#ask", args));
+    return typeof answer.reference === "string" ? answer.reference : null;
+  }
+}
+
 function invocationId(title: string): string {
   const slug = title
     .toLowerCase()
@@ -205,26 +318,29 @@ function invocationId(title: string): string {
 }
 
 /**
- * One workspace, named by its id or by its name.
+ * One workspace, named by its id or by its name; named by neither, the one
+ * the daemon's connection acts in.
  */
 export class Workspace {
   readonly client: Tilo;
-  readonly ref: string;
+  readonly ref: string | null;
   readonly files: Files;
   readonly keys: WorkspaceKeys;
   readonly members: Members;
+  readonly vault: Vault;
   #info: WorkspaceInfo | null = null;
 
-  constructor(client: Tilo, ref: string) {
+  constructor(client: Tilo, ref: string | null) {
     this.client = client;
     this.ref = ref;
     this.files = new Files(this);
     this.keys = new WorkspaceKeys(this);
     this.members = new Members(this);
+    this.vault = new Vault(this);
   }
 
   toString(): string {
-    return `Workspace(${this.#info?.name || this.ref})`;
+    return `Workspace(${this.#info?.name || this.ref || ""})`;
   }
 
   /** The workspace as the account lists it: its id, name, host and your role. */
@@ -252,26 +368,35 @@ export class Workspace {
   ): Promise<Listing> {
     const endpoint = await this.endpoint();
     const page = async (cursor: string | null): Promise<Listing> => {
-      const fields = queryOf({
-        path,
-        kind: options.kind,
-        limit: options.limit,
-        cursor,
-      });
-      const answer = await endpoint.answer(
-        "GET",
-        `${routes.resources(endpoint.id)}${fields}`,
-        { idempotent: false },
-      );
-      return new ListingValue(answer, (next) => page(next));
+      const args: Record<string, unknown> = {};
+      if (path !== null) {
+        args.path = path;
+      }
+      if (options.kind != null) {
+        args.kind = options.kind;
+      }
+      if (options.limit != null) {
+        args.limit = options.limit;
+      }
+      if (cursor !== null) {
+        args.cursor = cursor;
+      }
+      return new ListingValue(await endpoint.call("tilo_ls", args), (next) => page(next));
     };
     return page(options.cursor ?? null);
   }
 
-  /** One resource's answer, as the API gives it. */
-  async readRaw(path: string): Promise<Record<string, unknown>> {
+  /**
+   * One resource's answer, as the host gives it: a record read as its first
+   * record's fields, and any app's read with its surface's version. `surface`
+   * is the app's version the types were made from, checked before the read.
+   */
+  async readRaw(
+    path: string,
+    options: { cursor?: string | null; surface?: string | null } = {},
+  ): Promise<Record<string, unknown>> {
     const endpoint = await this.endpoint();
-    return endpoint.answer("GET", routes.resource(endpoint.id, path), { idempotent: false });
+    return endpoint.read(path, options.cursor ?? null, options.surface ?? null);
   }
 
   /** A resource read whole: its fields, its children and its actions. */
@@ -282,7 +407,7 @@ export class Workspace {
   /**
    * A resource as a typed object: fields, actions and field edits. `surface`
    * is the app's version the types were made from, which generated types
-   * pass, and which every call through them sends.
+   * pass, and which every call through them checks.
    */
   resource(path: string, surface: Surface = null): Resource {
     return resourceProxy(this, path, surface);
@@ -297,8 +422,8 @@ export class Workspace {
     if (limit !== null) {
       args.limit = limit;
     }
-    const hits = ((await (await this.endpoint()).action("search#find", args)) as Record<string, unknown> | null)
-      ?.hits;
+    const found = recordOf((await this.endpoint()).action("search#find", args));
+    const hits = found.hits;
     return Array.isArray(hits)
       ? hits
           .filter((hit): hit is Record<string, unknown> => hit !== null && typeof hit === "object")
@@ -309,7 +434,7 @@ export class Workspace {
   /**
    * One call in this workspace, `app/resource#action`: its result, the `Invocation`
    * that follows it, or `AskPending` when it waits for the person. `surface`
-   * is sent as `Tilo-Surface` for a call made through generated types.
+   * is the app's version the types were made from, for a call made through them.
    */
   async call(
     path: string,
@@ -391,7 +516,7 @@ export class Workspace {
       `${path}#share-link`,
       mode === null ? {} : { mode },
     );
-    const url = (result as Record<string, unknown> | null)?.url;
+    const url = recordOf(result).url;
     if (typeof url !== "string" || url === "") {
       throw new ProtocolError(`the workspace answered no link for ${path}`);
     }
@@ -410,20 +535,7 @@ export class Workspace {
     path: string,
     options: { picture?: boolean; scale?: number | null } = {},
   ): Promise<View> {
-    const endpoint = await this.endpoint();
-    const answer = await endpoint.answer(
-      "GET",
-      `${routes.views(endpoint.id)}${queryOf({
-        path,
-        picture: options.picture === true ? true : null,
-        scale: options.scale ?? null,
-      })}`,
-      { idempotent: false },
-    );
-    if (typeof answer.text !== "string") {
-      throw new ProtocolError(`the workspace answered no view for ${path}`);
-    }
-    return answer as unknown as View;
+    return (await this.endpoint()).view(path, options.picture === true, options.scale ?? null);
   }
 
   /**
@@ -471,16 +583,11 @@ export class Workspace {
 
   /** `path` read with every page of what it holds. */
   private async readWhole(path: string): Promise<Record<string, unknown>> {
-    const endpoint = await this.endpoint();
     const children: unknown[] = [];
     let whole: Record<string, unknown> = {};
     let cursor: string | null = null;
     for (;;) {
-      const page: Record<string, unknown> = await endpoint.answer(
-        "GET",
-        `${routes.resource(endpoint.id, path)}${queryOf({ cursor })}`,
-        { idempotent: false },
-      );
+      const page: Record<string, unknown> = await this.readRaw(path, { cursor });
       if (cursor === null) {
         whole = { ...page };
       }
@@ -506,17 +613,10 @@ export class Workspace {
    * workspaces is still asked, and so is everything else that asks.
    */
   async unattended(on = true): Promise<Record<string, unknown>> {
-    const endpoint = await this.endpoint();
-    const answer = actionAnswerOf(
-      await endpoint.answer("POST", routes.action(endpoint.id, "account/workspaces", "unattended"), {
-        json: { workspace: endpoint.id, on },
-      }),
-    );
-    if (answer.status === "pending") {
-      throw endpoint.askOf(answer);
-    }
-    const result = resultOf(answer);
-    return result !== null && typeof result === "object" ? (result as Record<string, unknown>) : {};
+    const result = await this.client
+      .account()
+      .action("account/workspaces#unattended", { workspace: await this.id(), on });
+    return result instanceof Invocation ? {} : recordOf(result);
   }
 
   /**

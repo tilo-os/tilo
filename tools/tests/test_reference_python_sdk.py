@@ -72,7 +72,6 @@ class PythonSdkReferenceTests(unittest.TestCase):
         self.assertIn("#### Event.path\n", page)
         self.assertIn("### Refused\n", page)
         self.assertIn("### Unreachable\n", page)
-        self.assertIn("### UnsupportedVersion\n", page)
         self.assertIn("## App types", page)
         self.assertIn("tilo sdk gen --lang python --out tilo/types", page)
         self.assertNotIn("sdk/python/src/tilo/types", page)
