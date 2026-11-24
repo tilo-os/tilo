@@ -226,24 +226,23 @@ pub(crate) async fn answered(
     ended_as(&here, caller, request.invocation).await
 }
 
-/// What invocation `invocation` ended as, followed on `here` until it is terminal. Its record
-/// is read again as it goes, a call its person's approve admitted again having none for the
-/// moment it takes to start.
+/// What invocation `invocation` ended as, followed on `here` until it is terminal: the way a
+/// caller follows a call at any moment, including the one its person's approve admitted again.
 async fn ended_as(
     here: &(impl ActionProvider + Clone + Send + 'static),
     caller: &Caller,
     invocation: InvocationId,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
-    let state = tilo_test_env::within("the answered call's end", async {
-        loop {
-            match here.observe(caller, &invocation) {
-                Some(state) if state.is_terminal() => return state,
-                _ => tokio::task::yield_now().await,
-            }
-        }
+    let now = tilo_clock::now();
+    let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
+    settled(tilo_actions::remote::settle_with(
+        here, caller, invocation, None, until,
+    ))
+    .await
+    .map(|state| state.receipt())
+    .ok_or(ActionCallError::Unavailable {
+        reason: "the call is not followed on this host".into(),
     })
-    .await;
-    Ok(state.receipt())
 }
 
 /// What a pending answer comes to, on this runtime.

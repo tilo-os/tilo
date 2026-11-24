@@ -398,6 +398,21 @@ async fn an_answer_that_meets_the_record_is_carried_out() {
 
         let receipt = asking.await.expect("the call answers");
         assert!(receipt.is_ok(), "the call is not refused: {receipt:?}");
+        if approve {
+            // A caller follows the call the moment its approve returns: it finds the call it
+            // was handed back, never one there is nothing to follow.
+            let here = service.in_workspace_as(workspace_id, &ada);
+            let now = tilo_clock::now();
+            let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
+            let followed =
+                settled(tilo_actions::remote::settle_with(&here, &agent, invocation, None, until))
+                    .await
+                    .expect("an admitted call is followed from the moment of the approve");
+            assert!(
+                matches!(followed.update, InvocationUpdate::Succeeded { .. }),
+                "{followed:?}"
+            );
+        }
         match ended(&service, workspace_id, (&ada, &agent), invocation).await {
             InvocationUpdate::Succeeded { .. } if approve => {}
             InvocationUpdate::Cancelled { .. } if !approve => {}

@@ -4705,12 +4705,22 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
             here.invoke(caller, request).then(|_| {});
             return Ok(());
         };
-        if !server
-            .log()
-            .readmit(caller, &request, invocation_states::waits_an_answer)
-        {
+        let mut log = server.log();
+        if !log.readmit(caller, &request, invocation_states::waits_an_answer) {
             return Err(not_waiting());
         }
+        // Admitted again under its own id: it is under way from this answer, so a caller that
+        // follows it from here finds it, never a call with nothing to say.
+        log.complete(
+            &request.invocation,
+            InvocationState::new(
+                request.invocation,
+                tilo_actions::InvocationUpdate::Accepted {
+                    invocation: request.invocation,
+                },
+            ),
+        );
+        drop(log);
         drop(asking);
         let here = InWorkspace {
             server,
