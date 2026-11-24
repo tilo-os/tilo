@@ -20,7 +20,6 @@ pub mod move_vm;
 pub mod network;
 pub mod plan;
 pub mod service;
-pub mod size;
 pub mod vm;
 
 /// Usable as a file name: ASCII letters, digits, `-`, `_` and `.`, not starting with `.`, at most

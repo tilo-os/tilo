@@ -221,7 +221,7 @@ fn browser_member(dir: &std::path::Path, socket: std::path::PathBuf) -> Environm
             Some(crate::hosted_vm::HostedTarget {
                 socket,
                 account: "acct-1".into(),
-                size: linux_vm::hosted::size::VmSize::Small,
+                size: tilo_server_protocol::hosted_vm::VmSize::Small,
                 plans: None,
             }),
         )
@@ -352,7 +352,7 @@ fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
     );
     assert_eq!(
         *size,
-        linux_vm::hosted::size::VmSize::Small,
+        tilo_server_protocol::hosted_vm::VmSize::Small,
         "in the workspace's VM, at the size its shells run at"
     );
     assert!(
@@ -483,7 +483,7 @@ fn only_the_hosts_own_devices_branch_and_delete_a_workspaces_machine() {
             workspace: "ws-1".into(),
             environment: "default".into(),
             account: "acct-1".into(),
-            size: linux_vm::hosted::size::VmSize::Small,
+            size: tilo_server_protocol::hosted_vm::VmSize::Small,
         },
         from: "ws-0".into(),
     };
@@ -547,7 +547,11 @@ fn a_member_whose_environment_names_no_account_runs_programs_for_the_account_ask
     };
     assert_eq!(
         (vm.workspace.as_str(), vm.account.as_str(), vm.size),
-        ("ws-1", "acct-1", linux_vm::hosted::size::VmSize::Small),
+        (
+            "ws-1",
+            "acct-1",
+            tilo_server_protocol::hosted_vm::VmSize::Small
+        ),
         "the caller's workspace's VM, paid for by the account the run named, at its size"
     );
 }

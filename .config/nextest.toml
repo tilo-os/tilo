@@ -114,7 +114,7 @@ command = [
     "bash", "tools/build-sibling-binaries.sh",
     "tilo-lock-screen:tilo-lock-screen", "osk:osk",
     "tilolang-process:tilolang-process", "launcher:tilo-launcher",
-    "tilo-runtime:tilo-runtime=tilo-runtime/test-support",
+    "tilo-daemon:tilo-runtime=tilo-daemon/test-support",
     "example-shared-checklist:example-shared-checklist",
 ]
 
@@ -129,7 +129,7 @@ setup = "session-siblings"
 [scripts.setup.lounge-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "tilo-runtime:tilo-runtime=tilo-runtime/agents",
+    "tilo-daemon:tilo-runtime=tilo-daemon/agents",
 ]
 
 [[profile.default.scripts]]
@@ -224,7 +224,7 @@ setup = "vault-siblings"
 [scripts.setup.app-open-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "tilo-runtime:tilo-runtime=tilo-runtime/test-support",
+    "tilo-daemon:tilo-runtime=tilo-daemon/test-support",
     "launcher:tilo-launcher",
     "tilolang-process:tilolang-process=app-launch",
 ]

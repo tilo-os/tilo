@@ -71,7 +71,7 @@ need "$containerfile" "microdnf remove -y --setopt=protected_packages= openssl-l
 # The programs are one check's, thin LTO and read back off the ELF, from one feature resolution
 # per image. Thin LTO is
 # the default; only a development image's build asks for none, and the server image's does not.
-need "$binaries" "packages+=(-p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime)"
+need "$binaries" "packages+=(-p tilo-cli --bin tilo -p tilo-daemon --bin tilo-runtime)"
 need "$binaries" "bins+=(tilo tilo-runtime)"
 need "$binaries" ': "${TILO_SERVER_LTO:=thin}"'
 need "$binaries" "thin) export CARGO_PROFILE_RELEASE_LTO=thin ;;"

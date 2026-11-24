@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
         let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
         assert!(!output.status.success());
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("cargo build --locked -p tilo-runtime")
+            String::from_utf8_lossy(&output.stderr).contains("cargo build --locked -p tilo-daemon")
         );
         std::fs::write(&host, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();

@@ -383,7 +383,7 @@ case "$TILO_RUST_LTO" in \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
-         DESKTOP_RELEASE_ARGS="-p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
+         DESKTOP_RELEASE_ARGS="-p tilo-session --bin tilo-session -p tilo-daemon --bin tilo-runtime -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
     && if [ "$tilolang_apps" != 0 ]; then \
          TILOLANG_RELEASE_ARGS="-p tilolang-cli"; \

@@ -45,6 +45,12 @@ pub struct Worker {
     seen: Arc<Mutex<Seen>>,
 }
 
+/// Mount on this process's daemon what the `tilo-runtime` program mounts on its own, once.
+fn mount() {
+    static MOUNTED: std::sync::Once = std::sync::Once::new();
+    MOUNTED.call_once(|| tilo_runtime::device::capabilities::mount(tilo_daemon::capabilities()));
+}
+
 impl Worker {
     /// Start the device's daemon on `profile` and the thread that serves the phone's asks; `wake`
     /// wakes the window when what it shows moved.
@@ -52,6 +58,7 @@ impl Worker {
     /// # Errors
     /// The daemon did not start.
     pub fn start(profile: &Path, wake: impl Fn() + Send + 'static) -> anyhow::Result<Self> {
+        mount();
         let device = Device::start(profile)?;
         let (asks, asked) = std::sync::mpsc::channel();
         let seen = Arc::new(Mutex::new(Seen::default()));

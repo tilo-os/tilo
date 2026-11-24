@@ -2,5 +2,6 @@
 //! app attachment, and the stdio MCP entry point an agent's client runs.
 
 fn main() -> std::process::ExitCode {
+    tilo_runtime::device::capabilities::mount(tilo_daemon::capabilities());
     tilo_runtime::cli::host("tilo-runtime")
 }

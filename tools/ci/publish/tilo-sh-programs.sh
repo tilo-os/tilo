@@ -20,8 +20,8 @@ bins=(tilo-runtime discord-worker tilo-api fake-discord fake-model-providers til
 rm -rf "$out"
 mkdir -p "$out"
 server_bins=(tilo-runtime discord-worker)
-cargo build --locked --profile lounge-check --features tilo-runtime/agents \
-  -p tilo-runtime -p discord-worker "${server_bins[@]/#/--bin=}"
+cargo build --locked --profile lounge-check --features tilo-daemon/agents \
+  -p tilo-daemon -p discord-worker "${server_bins[@]/#/--bin=}"
 other_bins=(tilo-api fake-discord fake-model-providers tilo tilolang-process)
 cargo build --locked --profile lounge-check \
   -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process \

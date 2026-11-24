@@ -1,14 +1,12 @@
-//! The device's image model, served by this computer's one daemon: what a picture shows, the
+//! The device's image model, as this computer's one daemon serves it: what a picture shows, the
 //! words in it, the objects and pets it holds and the faces it groups, and the library analysis
 //! that writes what each picture shows into the device's index.
 //!
-//! The service is a provider on the daemon's dispatch ([`Providers`]), so an app calls its typed
-//! actions by the addresses it publishes (`vision:vision.image-model#describe`) whichever app the
-//! call names, and reads the answer as the action's value: there is no connection of its own and
-//! no second path for one language. The work is the device's: the model gateway, a picture's bytes
-//! from the blob service this daemon serves, and the index the daemon keeps.
-//!
-//! [`Providers`]: tilo_workspace_service::workspaces::providers::Providers
+//! The daemon's program registers it as a provider on the daemon's dispatch, so an app calls its
+//! typed actions by the addresses it publishes (`vision:vision.image-model#describe`) whichever
+//! app the call names, and reads the answer as the action's value: there is no connection of its
+//! own and no second path for one language. The work is the device's: the model gateway, a
+//! picture's bytes from the blob service the daemon serves, and the index the daemon keeps.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -20,45 +18,43 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionInvoker, ActionOutput, InvocationId, InvocationUpdate, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Service, Started};
-use tilo_vision_service::index::VisionIndex;
-use tilo_vision_service::{AnalysisSink, ImageSource, LocalVision, VisionService};
 
-use super::search::DeviceSearch;
+use crate::index::VisionIndex;
+use crate::{AnalysisSink, ImageSource, LocalVision, VisionService};
 
 /// The application whose grants decide the model's actions: the package it answers as.
-pub(crate) const APP: &str = tilo_vision_service::APP;
+pub const APP: &str = crate::APP;
 
 /// The provider a call to the model's resources names.
-pub(crate) const PROVIDER: &str = "so.tilo.vision";
+pub const PROVIDER: &str = "so.tilo.vision";
 
 /// The device's image model, as the daemon serves it to the apps it runs.
-pub(crate) struct ImageModel {
+pub struct ImageModel {
     /// The service answers one call at a time; the provider is asked from the dispatch's threads.
     service: Mutex<VisionService>,
 }
 
 impl ImageModel {
     /// Start the model over the device's pictures: their bytes from the blob service at
-    /// `blob_socket`, the index `search` answers, and `person` as the one whose pictures it reads.
+    /// `blob_socket`, the index `search` answers once the device's search is served, and `person`
+    /// as the one whose pictures it reads.
     ///
     /// # Errors
     ///
     /// The blob service does not answer, or the device's search is not served yet.
-    pub(crate) fn start(
+    pub fn start(
         blob_socket: &Path,
-        search: &Arc<DeviceSearch>,
+        search: Option<Arc<dyn ResourceSearch>>,
         person: &str,
     ) -> Result<Self, String> {
-        let search = search
-            .search()
-            .ok_or_else(|| "the device's search is not served yet".to_owned())?;
+        let search = search.ok_or_else(|| "the device's search is not served yet".to_owned())?;
         let client = runtime_fs::blobs::BlobClient::connect_session(blob_socket)
             .map_err(|error| format!("the blob service did not answer: {error}"))?;
         let store = tilo_content::ContentStore::from_backend(Arc::new(
             tilo_content_device::DeviceBackend::new(client),
         ));
         let index = Arc::new(VisionIndex {
-            search: search as Arc<dyn ResourceSearch>,
+            search,
             caller: Caller::local_person(person),
         });
         let wake = tilo_service::LoopWake::default();

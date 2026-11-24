@@ -32,7 +32,7 @@ use crate::environment_terminals::{Ended, EnvironmentTerminals, RanQueue, Termin
 use crate::workspace_shell::{Payer, RunWith, ShellRun, WorkspaceShells};
 
 /// The environment a workspace's machine is, whose lease names the device keeping it.
-pub use linux_vm::hosted::control::ENVIRONMENT;
+pub use tilo_server_protocol::hosted_vm::ENVIRONMENT;
 
 const PROFILE_STORE: &str = ".tilo/browser";
 
@@ -284,7 +284,7 @@ impl Inner {
         let invocation = run.state().invocation();
         let payer = Payer {
             account: asked.account.clone(),
-            size: linux_vm::hosted::size::VmSize::parse(&asked.size).unwrap_or_default(),
+            size: tilo_server_protocol::hosted_vm::VmSize::parse(&asked.size).unwrap_or_default(),
         };
         // The session's runs are kept for the server, which records them, to follow.
         let runs = RanQueue::new();
@@ -360,7 +360,8 @@ impl Inner {
             let stopping = || stop.load(Ordering::SeqCst);
             let payer = Payer {
                 account: asked.account.clone(),
-                size: linux_vm::hosted::size::VmSize::parse(&asked.size).unwrap_or_default(),
+                size: tilo_server_protocol::hosted_vm::VmSize::parse(&asked.size)
+                    .unwrap_or_default(),
             };
             let ran = inner.shells.run_for(
                 &workspace,
@@ -442,8 +443,8 @@ fn branch_machine(
     workspace: &str,
     asked: &BranchMachine,
 ) -> Result<bool, String> {
-    use linux_vm::hosted::control::{ENVIRONMENT, Reply, Request, VmRequest};
-    let size = linux_vm::hosted::size::VmSize::parse(&asked.size)
+    use linux_vm::hosted::control::{Reply, Request, VmRequest};
+    let size = tilo_server_protocol::hosted_vm::VmSize::parse(&asked.size)
         .ok_or_else(|| format!("{:?} is not a machine's size", asked.size))?;
     let request = Request::Branch {
         vm: VmRequest {
@@ -471,7 +472,7 @@ fn branch_machine(
 
 /// Delete `workspace`'s machine on the hosted-VM service at `socket`: done too when it had none.
 fn delete_machine(socket: &std::path::Path, workspace: &str) -> Result<(), String> {
-    use linux_vm::hosted::control::{ENVIRONMENT, Reply, Request};
+    use linux_vm::hosted::control::{Reply, Request};
     let request = Request::Delete {
         workspace: workspace.to_owned(),
         environment: ENVIRONMENT.to_owned(),

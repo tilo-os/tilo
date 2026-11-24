@@ -50,7 +50,7 @@ neighbour-wire = { package = "tilo-neighbour-wire", version = "0.1.0", path = ".
 # Agent and bot delegations and workspace shard ids, re-exported unchanged.
 tilo-workspace-join = { version = "0.1.0", path = "../workspace-join" }
 # How the boot opened its system volume, which the status reports.
-tilo-unlock-protocol = { version = "0.1.0", path = "../../os/tilo-unlock-protocol" }
+tilo-unlock-protocol = { version = "0.1.0", path = "../tilo-unlock-protocol" }
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true

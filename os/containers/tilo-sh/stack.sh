@@ -1520,8 +1520,8 @@ build_programs() {
     # its app workers cannot. `--locked`: the build reads the checkout through a cargo drop-in
     # whose source is read-only, where a lock cargo wanted to rewrite failed the whole build
     # writing Cargo.lock; a lock that is out of date is a failure to name, not to write.
-    (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --locked --profile "$profile" --features tilo-runtime/agents \
-      -p tilo-runtime -p discord-worker --bin tilo-runtime --bin discord-worker >&2 \
+    (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --locked --profile "$profile" --features tilo-daemon/agents \
+      -p tilo-daemon -p discord-worker --bin tilo-runtime --bin discord-worker >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --locked --profile "$profile" \
         -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process \
         --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilolang-process >&2 \

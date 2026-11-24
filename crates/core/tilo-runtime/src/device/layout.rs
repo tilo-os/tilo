@@ -393,8 +393,13 @@ impl LayoutActions {
             InvokeArgument::Json(arguments) => arguments.clone(),
             InvokeArgument::None | InvokeArgument::Text(_) => Map::new(),
         };
-        tilo_service::decode::<LayoutAction>(&self.resources, RESOURCE, &address.action, &arguments)
-            .map_err(|error| ActionCallError::from_api(&error))
+        tilo_resource::decode::<LayoutAction>(
+            &self.resources,
+            RESOURCE,
+            &address.action,
+            &arguments,
+        )
+        .map_err(|error| ActionCallError::from_api(&error))
     }
 }
 

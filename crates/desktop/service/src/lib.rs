@@ -6,7 +6,7 @@
 //! Settings, the desktop, a script and an agent read the same readings and
 //! invoke the same actions, by address, through the session's action API.
 //!
-//! A service's actions are an [`Effect`] vocabulary: its specs are derived
+//! A service's actions are an [`Effect`](tilo_resource::Effect) vocabulary: its specs are derived
 //! ([`offer`]) and an invocation is decoded back into the vocabulary
 //! ([`decode`]) after the published spec checked its arguments and its
 //! availability. The device calls behind them (`NetworkManager`, `BlueZ`,
@@ -26,7 +26,6 @@ mod worker;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
-use tilo_resource::Effect;
 
 pub use asks::{Answer, AskReceiver, AskSender, Asked, Question};
 pub use worker::{Jobs, LoopWake, Wake, Worker};
@@ -371,30 +370,8 @@ pub fn unavailable(resource: &mut ResourceSpec, action: &str, code: &str, reason
     }
 }
 
-/// The effect of `E` that invoking `action` of `resource` with `arguments`
-/// names, once the spec `published` offers for it checked the arguments
-/// and that it is available now. A spec offered bound to an item (a
-/// network, an accessory) adds the item's arguments.
-///
-/// # Errors
-/// [`ApiError::Unknown`] when nothing published names it,
-/// [`ApiError::Unavailable`], or the arguments' refusal.
-pub fn decode<E: Effect>(
-    published: &[ResourceSpec],
-    resource: &str,
-    action: &str,
-    arguments: &Map<String, Value>,
-) -> Result<E, ApiError> {
-    let address = ActionAddress::new(resource, action);
-    let (_, spec) = tilo_actions::api::locate(published, &address)
-        .ok_or_else(|| ApiError::Unknown(address.clone()))?;
-    tilo_actions::api::encode_json(published, &address, arguments)?;
-    let mut all = arguments.clone();
-    for (name, value) in spec.bound() {
-        all.insert(name.clone(), value.clone());
-    }
-    E::decode(&spec.id, &all).map_err(|error| ApiError::InvalidArguments(error.to_string()))
-}
+/// The effect of `E` an invocation of an action `resource` publishes names.
+pub use tilo_resource::decode;
 
 /// A reading as its JSON, for [`Service::read`].
 #[must_use]

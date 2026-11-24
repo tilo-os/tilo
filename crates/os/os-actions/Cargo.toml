@@ -43,6 +43,8 @@ tilo-crypto = { path = "../../core/tilo-crypto", default-features = false }
 # as long as its D-Bus connection, and pairing needs an agent object BlueZ
 # calls back into. See src/bluez.rs.
 tilo-bluez = { path = "../tilo-bluez" }
+# What a Bluetooth address is, checked before the radio is asked about one.
+tilo-bluetooth-address = { path = "../../core/bluetooth-address" }
 # Every network read and change goes through the one NetworkManager client
 # every OS reader shares.
 tilo-nm = { path = "../tilo-nm" }

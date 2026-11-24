@@ -146,9 +146,9 @@
 use std::sync::Arc;
 
 use tilo_actions::{
-    ActionContract, ActionKind, ActionParam, ActionSpec, ActionType, ConfirmationPolicy,
-    EncodedAction, ExecutionMode, OperationKind, ResourceSpec, ResultSpec, RetryPolicy, RiskLevel,
-    Target,
+    ActionAddress, ActionContract, ActionKind, ActionParam, ActionSpec, ActionType, ApiError,
+    ConfirmationPolicy, EncodedAction, ExecutionMode, OperationKind, ResourceSpec, ResultSpec,
+    RetryPolicy, RiskLevel, Target,
 };
 
 /// `resource` offering every action of the vocabulary `E`: a device's
@@ -160,6 +160,34 @@ use tilo_actions::{
 pub fn offer<E: Effect>(mut resource: ResourceSpec) -> ResourceSpec {
     resource.actions.extend(E::specs());
     resource
+}
+
+/// The effect of `E` that invoking `action` of `resource` with `arguments`
+/// names, once the spec `published` offers for it checked the arguments
+/// and that it is available now. A spec offered bound to an item (a
+/// network, an accessory) adds the item's arguments.
+///
+/// It sits beside [`offer`] for the same reason: whatever answers a
+/// vocabulary's actions decodes them without the service host.
+///
+/// # Errors
+/// [`ApiError::Unknown`] when nothing published names it,
+/// [`ApiError::Unavailable`], or the arguments' refusal.
+pub fn decode<E: Effect>(
+    published: &[ResourceSpec],
+    resource: &str,
+    action: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<E, ApiError> {
+    let address = ActionAddress::new(resource, action);
+    let (_, spec) = tilo_actions::api::locate(published, &address)
+        .ok_or_else(|| ApiError::Unknown(address.clone()))?;
+    tilo_actions::api::encode_json(published, &address, arguments)?;
+    let mut all = arguments.clone();
+    for (name, value) in spec.bound() {
+        all.insert(name.clone(), value.clone());
+    }
+    E::decode(&spec.id, &all).map_err(|error| ApiError::InvalidArguments(error.to_string()))
 }
 
 /// Why a caller's invocation does not name an effect of a vocabulary.

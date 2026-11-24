@@ -77,7 +77,7 @@ done
 # over the app's own payload and hosts a workspace's instances of each; the daemon starts both
 # from the installed package.
 cargo build --locked --release \
-  -p tilo-runtime --bin tilo-runtime -p store --bin store \
+  -p tilo-daemon --bin tilo-runtime -p store --bin store \
   -p runtime-update --bin tilo-runtime-update \
   -p tilolang-process --bin tilolang-process --features tilolang-process/app-launch \
   "${targets[@]/#/--target=}"

@@ -32,8 +32,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use linux_vm::hosted::control::ENVIRONMENT;
-use linux_vm::hosted::size::VmSize;
 use tilo_actions::remote::browser::{self, OpenBrowser, OpenedBrowser};
 use tilo_actions::remote::environment_commands::{
     self, CommandOutput, CommandRan, CommandRequest, VmSecret,
@@ -51,6 +49,7 @@ use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
 use tilo_agent_session::shell::{Opened, Opening, Recorder, ShellRan, Watching};
 use tilo_peer_state::actions::{ActionService, RemoteDevice};
 use tilo_server_protocol::hosted::Material;
+use tilo_server_protocol::hosted_vm::{ENVIRONMENT, VmSize};
 use ush::environment_terminals::quic::{Receiving, Sending, dial};
 use ush::environment_terminals::{HANDED_FOR, Handed, NOT_HANDED, Ran as TerminalRan, wire};
 

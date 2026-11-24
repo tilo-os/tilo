@@ -58,14 +58,14 @@ for image in "${images[@]}"; do
       # resolution for its programs. The host joins its person's identity on first start with
       # `tilo login` and the ticket it was given, which reaches the daemon beside it, and whoever
       # starts it reads the device key that login left with `tilo device key`.
-      packages+=(-p linux-vm --bin tilo-linux-vm --bin tilo-hosted-jail -p tilo-runtime --bin tilo-runtime \
+      packages+=(-p linux-vm --bin tilo-linux-vm --bin tilo-hosted-jail -p tilo-daemon --bin tilo-runtime \
                  -p tilo-cli --bin tilo)
       bins+=(tilo-linux-vm tilo-hosted-jail tilo-runtime tilo) ;;
     server)
       # The command and the device's one daemon beside it are what a volume first booting as one
       # of a person's devices runs: `tilo login` spends the ticket it was given, and the daemon
       # keeps what a server keeps as its configuration says.
-      packages+=(-p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime)
+      packages+=(-p tilo-cli --bin tilo -p tilo-daemon --bin tilo-runtime)
       bins+=(tilo tilo-runtime) ;;
     host)
       # The server OS: the server and replica, the hosted-VM service and its jail helper, the API

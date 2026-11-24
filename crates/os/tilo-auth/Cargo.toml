@@ -124,7 +124,7 @@ tilo-nm = { path = "../tilo-nm", optional = true }
 tilo-rollback = { path = "../tilo-rollback", optional = true }
 tilo-seal = { path = "../../core/tilo-seal", optional = true }
 # The strength rule for a secret no TPM throttles, shared with the installer.
-tilo-unlock-protocol = { path = "../tilo-unlock-protocol", optional = true }
+tilo-unlock-protocol = { path = "../../core/tilo-unlock-protocol", optional = true }
 tokio = { workspace = true, optional = true, features = ["macros", "rt", "signal", "time"] }
 unicode-normalization = { version = "0.1.25", optional = true }
 

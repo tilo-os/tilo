@@ -24,6 +24,8 @@ runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The device daemon, started on the app's own threads: Android runs no daemon process of its own.
 tilo-runtime = { path = "../../crates/core/tilo-runtime" }
+# What the device's daemon mounts beside the core, as the `tilo-runtime` program mounts it.
+tilo-daemon = { path = "../../crates/os/daemon" }
 # The daemon's API as `tilo login` and `tilo ls` call it: the same client and routes.
 tilo-api = { path = "../../crates/core/tilo-api" }
 tilo-device-identity = { path = "../../crates/core/tilo-device-identity" }

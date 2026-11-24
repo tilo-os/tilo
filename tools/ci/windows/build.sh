@@ -134,7 +134,7 @@ print(paths[0])' "${TMPDIR:-/tmp}/$crate-tests.json")"
     # x86_64 daemon can be run under Wine to prove it refuses legibly. The
     # daemon's Windows port is partial: it compiles, and its CLI answers the
     # refusal until its services have Windows bodies.
-    cargo xwin build --locked -p tilo-runtime -p tilolang-process --target "$target"
+    cargo xwin build --locked -p tilo-daemon -p tilolang-process --target "$target"
     install -m 0644 "${CARGO_TARGET_DIR:-target}/$target/debug/tilo-runtime.exe" "$out/tilo-runtime.exe"
     digest "$out/tilo-runtime.exe"
     ;;

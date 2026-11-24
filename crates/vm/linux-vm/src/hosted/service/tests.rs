@@ -7,8 +7,8 @@ use std::io::{Read as _, Write as _};
 use super::super::firecracker::Machine;
 use super::super::memory::{BALLOON_STEP_MIB, CLONE_MIB};
 use super::super::meter::{OpenRun, RunEnd, UsageKind};
-use super::super::size::VmSize;
 use super::*;
+use tilo_server_protocol::hosted_vm::VmSize;
 
 fn config(dir: &Path) -> ServiceConfig {
     ServiceConfig {

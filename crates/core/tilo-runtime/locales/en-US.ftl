@@ -49,3 +49,10 @@ nearby-send-stop-detail = Stops a transfer going out or coming in.
 nearby-send-again = Offer a file again
 nearby-send-again-detail = Offers a transfer that failed again.
 nearby-send-keep-question = Keep “{ $name }” from { $device }?
+
+## The actions of this device's server settings
+
+so-tilo-device-server-set-service = Offer or withdraw a service
+so-tilo-device-server-set-work = Whose work this device takes
+so-tilo-device-server-set-work-room = Keep part of the machine free
+so-tilo-device-server-set-work-while-charging = Take work only while charging

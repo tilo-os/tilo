@@ -1,0 +1,87 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-daemon"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The `tilo-runtime` program: this computer's one Tilo daemon, the core's device daemon with the optional subsystems (image model, account sign-ins, suspend holds, radio wake reads) mounted on it."
+
+[lib]
+name = "tilo_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-runtime"
+path = "src/bin/tilo-runtime.rs"
+
+# The daemon's own features, as the program is built with them.
+[features]
+# NEVER SHIP THIS: the developer environment overrides of the daemon it runs
+# (tools/policy/check_dev_overrides_contract.py).
+dev-overrides = ["tilo-runtime/dev-overrides"]
+# A machine that keeps a public workspace runs the apps and agents that answer in it.
+agents = ["tilo-runtime/agents"]
+# A test's daemon starts the test build of the session as its person's shell.
+test-support = ["tilo-runtime/test-support"]
+
+# The integration tests: one binary, its files included as modules by `tests/it.rs`.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[dependencies]
+tilo-runtime = { path = "../../core/tilo-runtime" }
+tilo-actions = { path = "../../core/actions" }
+tilo-workspace-service = { path = "../../core/tilo-workspace-service" }
+# The device's image model, registered on the daemon's dispatch.
+tilo-vision-service = { path = "../../services/vision" }
+# The workspaces' accounts and their sign-ins, told on the account sign-ins socket, and the
+# secret's buffers wiped once sent.
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
+zeroize.workspace = true
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-rt.workspace = true
+tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
+tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
+tilo-startup-metrics = { path = "../../core/tilo-startup-metrics" }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# What a radio says of waking its machine, read as the OS actions read it.
+os-actions = { path = "../os-actions" }
+# A request from another of the person's devices holds suspend off while it runs.
+tilo-power-mgmt = { path = "../power" }
+zbus = { workspace = true, features = ["tokio"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["test-support"] }
+tilo-action-policy = { path = "../../core/action-policy" }
+tilo-identity = { path = "../../core/tilo-identity" }
+tilo-automerge-isolate.workspace = true
+tilo-paths.workspace = true
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
+anyhow.workspace = true
+hex.workspace = true
+libc.workspace = true
+rand.workspace = true
+tempfile.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+# A server on this machine's loopback, which a test's device relays through.
+test-server = { path = "../../../tools/test-server" }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
+
+[lints]
+workspace = true

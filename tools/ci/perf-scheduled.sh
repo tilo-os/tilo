@@ -51,7 +51,7 @@ case $group in
     # no app, its sandboxes needing a /proc of their own, so such a step would
     # measure nothing. tilo-runtime's dev-overrides carry the throwaway identity the
     # run's session mints for the shell it opens.
-    cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime \
+    cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-daemon --bin tilo-runtime \
       --features dev-overrides
     test -r "$VK_DRIVER_FILES"
     env_json release lavapipe kvm > "$out/env.json"

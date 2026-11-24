@@ -954,8 +954,8 @@ mod tests {
 
     use super::super::firecracker::allocated;
     use super::super::meter::{Meter, VmIdentity};
-    use super::super::size::VmSize;
     use super::*;
+    use tilo_server_protocol::hosted_vm::VmSize;
 
     use super::super::firecracker::tests::files;
 

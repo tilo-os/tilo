@@ -108,7 +108,7 @@ if ((build)) && [[ $profile == nested ]]; then
 elif ((build)); then
     say "building tilo-session, tilo-runtime, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
     (cd "$repo_root" && cargo build --locked -p tilo-session --bin tilo-session \
-        -p tilo-runtime --bin tilo-runtime \
+        -p tilo-daemon --bin tilo-runtime \
         -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control \
         -p launcher --bin tilo-launcher -p install --bin tilo-install \
         -p tilo-app-package-cli --bin tilo-app-package \

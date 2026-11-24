@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use accounts::sign_ins::{self, Answer, Ask, Client};
 use tilo_actions::remote::Caller;
-use tilo_runtime::device::account_sign_ins::{self as daemon_sign_ins, AccountSignIns};
+use tilo_daemon::account_sign_ins::{self as daemon_sign_ins, AccountSignIns};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::account_logins::MAY_NOT_READ_APP;
 
@@ -134,7 +134,7 @@ fn mails_connector(sign_ins: &AccountSignIns, workspace: &str) -> Client {
 /// The account sign-ins `daemon` serves.
 fn daemons(daemon: &tilo_runtime::device::services::Daemon) -> &AccountSignIns {
     daemon
-        .account_sign_ins()
+        .account_sign_ins::<AccountSignIns>()
         .expect("the daemon serves the account sign-ins")
 }
 
@@ -320,7 +320,10 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
                 other => panic!("a refusal, not {other:?}"),
             }
         };
-        assert_eq!(refused(agent("off-mail", &[MAIL]).await, true).await, MAY_NOT_READ_APP);
+        assert_eq!(
+            refused(agent("off-mail", &[MAIL]).await, true).await,
+            MAY_NOT_READ_APP
+        );
         let files = tilo_app_id::apps::FILE_EXPLORER;
         assert_eq!(
             refused(agent("off-files", &[files]).await, false).await,

@@ -191,7 +191,8 @@ pub use collection::{
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
 pub use derived::{Bound, Derived};
 pub use effect::{
-    Answers, Effect, EffectDecl, EffectDecodeError, EffectOffload, EffectTarget, NoEffect, offer,
+    Answers, Effect, EffectDecl, EffectDecodeError, EffectOffload, EffectTarget, NoEffect, decode,
+    offer,
 };
 pub use evolution::Unreadable;
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};

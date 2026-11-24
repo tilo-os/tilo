@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use linux_vm::hosted::size::VmSize;
+use tilo_server_protocol::hosted_vm::VmSize;
 
 use super::*;
 use crate::hosted_vm::HostedTarget;

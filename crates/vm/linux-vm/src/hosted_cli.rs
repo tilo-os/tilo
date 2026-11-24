@@ -407,8 +407,8 @@ fn memory_budget(flags: &Flags) -> Result<linux_vm::hosted::memory::Budget, Stri
     })
 }
 
-fn vm_size(flags: &Flags) -> Result<linux_vm::hosted::size::VmSize, String> {
-    use linux_vm::hosted::size::VmSize;
+fn vm_size(flags: &Flags) -> Result<tilo_server_protocol::hosted_vm::VmSize, String> {
+    use tilo_server_protocol::hosted_vm::VmSize;
     flags.get("--size").map_or(Ok(VmSize::Small), |name| {
         VmSize::parse(name).ok_or_else(|| format!("no VM size {name:?}"))
     })

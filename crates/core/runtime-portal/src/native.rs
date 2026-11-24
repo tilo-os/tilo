@@ -231,7 +231,7 @@ mod unix {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
-                    "no runtime host found; in this checkout run `cargo build --locked -p tilo-runtime --bin {HOST}` once, then rerun the app"
+                    "no runtime host found; in this checkout run `cargo build --locked -p tilo-daemon --bin {HOST}` once, then rerun the app"
                 ),
             ));
         }

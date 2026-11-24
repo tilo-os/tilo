@@ -13,6 +13,8 @@ tilo-service = { path = "../../desktop/service" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 tilo-content = { path = "../../core/content" }
 tilo-content-device = { path = "../../core/content-device" }
+# The blob service the device's daemon serves, which the image model reads a picture's bytes from.
+runtime-fs = { package = "tilo-runtime-fs", path = "../../core/runtime-fs" }
 tilo-image-codec = { path = "../../engines/tilo-image-codec" }
 tilo-model-client = { path = "../../sdk/model-client", default-features = false }
 tilo-ocr = { path = "../../engines/ocr" }

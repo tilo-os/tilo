@@ -1,9 +1,5 @@
 ## Actions
 
-so-tilo-device-server-set-service = Einen Dienst anbieten oder zurückziehen
-so-tilo-device-server-set-work = Wessen Arbeit dieses Gerät annimmt
-so-tilo-device-server-set-work-room = Einen Teil des Rechners freihalten
-so-tilo-device-server-set-work-while-charging = Arbeit nur beim Laden annehmen
 so-tilo-system-keyboard-backlight-brighter = Tastatur heller
 so-tilo-system-keyboard-backlight-dimmer = Tastatur dunkler
 so-tilo-system-keyboard-backlight-set-level = Tastaturbeleuchtung

@@ -19,6 +19,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The sizes the plans a test sets up allow.
+tilo-server-protocol = { path = "../tilo-server-protocol" }
 
 [lints]
 workspace = true

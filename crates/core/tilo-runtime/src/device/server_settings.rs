@@ -21,9 +21,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
-use tilo_service::{decode, offer};
-pub use tilo_system_resources::device_settings::surface;
-use tilo_system_resources::device_settings::{
+use tilo_resource::{decode, offer};
+
+pub mod resource;
+
+pub use resource::surface;
+use resource::{
     ServerSettings, ServerSettingsAction, ServerSettingsReading, Services, Work, WorkFrom, WorkWhen,
 };
 
@@ -36,7 +39,7 @@ use tokio::sync::{mpsc, oneshot};
 const DEFAULT_CONFIG: &str = super::keep::CONFIG;
 
 /// The resource this module serves.
-pub use tilo_system_resources::device_settings::SERVER;
+pub use resource::SERVER;
 
 /// The application whose window shows and changes this device's server
 /// settings: the only caller these settings are read and changed for. A device's

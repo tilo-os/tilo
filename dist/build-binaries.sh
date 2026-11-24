@@ -15,7 +15,7 @@ cargo build "${cargo_args[@]}" -p launcher -p tilo-unlock-helper -p tilo-flight-
 # `tilo`, the command a terminal reaches the desktop's apps and actions with.
 cargo build "${cargo_args[@]}" -p tilo-cli --bin tilo
 # Beside it, the daemon `tilo login` starts, and the program a task's tilolang programs run in.
-cargo build "${cargo_args[@]}" -p tilo-runtime --bin tilo-runtime --no-default-features
+cargo build "${cargo_args[@]}" -p tilo-daemon --bin tilo-runtime --no-default-features
 cargo build "${cargo_args[@]}" -p tilolang-process --bin tilolang-process
 # The host package deliberately excludes the test-control socket. Video
 # codecs come from the distribution's GStreamer at runtime.

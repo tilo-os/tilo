@@ -6,13 +6,9 @@
 //! is the session's system service; this crate holds only the contract, so
 //! an app that shows or drives these resources depends on it and not on the
 //! session.
-//!
-//! [`device_settings`] is the exception: the device's server settings are the
-//! daemon's, which keeps the configuration they change.
 
 pub mod codec_pack;
 pub mod containers;
-pub mod device_settings;
 pub mod disk_unlock;
 pub mod disks;
 pub mod drives;

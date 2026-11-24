@@ -245,7 +245,7 @@ cmd_build() {
   # `tilo`: every archive carries it.
   # The tilolang command is built in the same build and released beside tilo, under the same
   # sums and signature.
-  local packages=(-p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime -p tilolang-cli --bin tilolang)
+  local packages=(-p tilo-cli --bin tilo -p tilo-daemon --bin tilo-runtime -p tilolang-cli --bin tilolang)
   local task_program='' built tilolang
   if [[ $os == linux ]]; then packages+=(-p tilolang-process --bin tilolang-process); fi
   RUSTFLAGS=$flags CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_INCREMENTAL=0 \

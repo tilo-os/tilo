@@ -51,7 +51,7 @@ fn entrypoint() -> std::path::PathBuf {
 /// A PATH holding the daemon this run built, so the image's `exec tilo-runtime`
 /// runs it.
 fn runtime_on_path() -> std::ffi::OsString {
-    let runtime = tilo_test_env::sibling_binary("tilo-runtime", "tilo-runtime");
+    let runtime = tilo_test_env::sibling_binary("tilo-daemon", "tilo-runtime");
     let programs = runtime
         .parent()
         .expect("the daemon's directory")

@@ -76,7 +76,7 @@ if (( run_cargo )); then
     # Building the package without an explicit target compiles and LTO-links
     # those large binaries even though stage-payload never ships them.
     ( cd "$repo_root" && cargo build --release --locked \
-        -p tilo-runtime --bin tilo-runtime --no-default-features )
+        -p tilo-daemon --bin tilo-runtime --no-default-features )
     say "cargo build --release (native session)"
     ( cd "$repo_root" && cargo build --release --locked -p tilo-session --bin tilo-session )
 fi

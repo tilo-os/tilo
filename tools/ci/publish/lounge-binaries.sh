@@ -27,6 +27,6 @@ case $profile in
   *) die "unknown profile $profile: release or lounge-check" ;;
 esac
 bins=(tilo-runtime discord-worker)
-cargo build --locked --profile "$profile" -p tilo-runtime -p discord-worker \
-  --features tilo-runtime/agents "${bins[@]/#/--bin=}"
+cargo build --locked --profile "$profile" -p tilo-daemon -p discord-worker \
+  --features tilo-daemon/agents "${bins[@]/#/--bin=}"
 for bin in "${bins[@]}"; do cp "$target/$profile/$bin" "$out/"; done

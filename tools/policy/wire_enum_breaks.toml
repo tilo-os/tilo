@@ -413,7 +413,7 @@ enum = "ContentPutStep"
 reason = "renames Standing to Progress in place: stored formats change with the code and nothing written before is read"
 
 [[break]]
-file = "crates/os/tilo-unlock-protocol/src/wire.rs"
+file = "crates/core/tilo-unlock-protocol/src/wire.rs"
 enum = "RefusalReason"
 reason = "renames NotACustodian to NotAKeyHolder in place: both devices of an unlock speak one build's format"
 

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use thiserror::Error;
 
-use super::size::VmSize;
+use tilo_server_protocol::hosted_vm::VmSize;
 
 /// The guest's context id: hybrid vsock gives every VM its own namespace.
 pub const GUEST_CID: u32 = 3;

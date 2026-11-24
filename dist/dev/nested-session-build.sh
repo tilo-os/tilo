@@ -117,7 +117,7 @@ build_host() {
     # the session reading the host's declarations through a remote builder.
     cargo build --locked --timings "${args[@]}" \
         -p tilo-session --bin tilo-session \
-        -p tilo-runtime --bin tilo-runtime \
+        -p tilo-daemon --bin tilo-runtime \
         -p launcher --bin tilo-launcher \
         -p install --bin tilo-install \
         --features dev-overrides || return 1

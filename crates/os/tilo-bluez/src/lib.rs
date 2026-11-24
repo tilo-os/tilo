@@ -22,5 +22,4 @@ pub use client::{BluezChanges, BluezClient, DISCOVERY_WINDOW, PairOutcome, error
 pub use model::{
     AdapterInfo, DeviceInfo, PairingPrompt, PairingReply, PairingRequest, adapter_from_interfaces,
     address_from_path, device_from_interfaces, path_for_address, reply_answers, sort_devices,
-    valid_address,
 };

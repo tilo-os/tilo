@@ -118,7 +118,7 @@ install-profile-model = { path = "../../os/install-profile-model" }
 # A server's rollback floor moves by approvals the person's floor key signs.
 tilo-rollback = { path = "../../os/tilo-rollback" }
 # How this boot's system volume opened, as early boot noted it.
-tilo-unlock-protocol = { path = "../../os/tilo-unlock-protocol" }
+tilo-unlock-protocol = { path = "../tilo-unlock-protocol" }
 tilo-crypto = { path = "../tilo-crypto", default-features = false }
 uuid.workspace = true
 # A bot's calendar schedules fire on this host's wall clock.

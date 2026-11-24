@@ -19,7 +19,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh::{EndpointAddr, EndpointId};
-use linux_vm::hosted::size::VmSize;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRequest};
 use tilo_actions::remote::{ActionProvider as _, Caller, InvokeArgument, InvokeRequest};
@@ -29,6 +28,7 @@ use tilo_runtime::device::environments::{Environments, Paid, Timing, WAITING};
 use tilo_runtime::device::take_work;
 use tilo_server::servers::{self, person_workspace_id};
 use tilo_server_protocol::WorkSetting;
+use tilo_server_protocol::hosted_vm::VmSize;
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{Hosted, TestUser, device_endpoint, serve_on};

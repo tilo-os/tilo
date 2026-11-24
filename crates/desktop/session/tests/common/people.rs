@@ -1466,10 +1466,7 @@ impl Device {
         let listening = format!("TILO_TEST_CONTROL={}", control.display());
         let (tell, told) = mpsc::channel();
 
-        let mut daemon = Command::new(tilo_test_env::sibling_binary(
-            "tilo-runtime",
-            "tilo-runtime",
-        ));
+        let mut daemon = Command::new(tilo_test_env::sibling_binary("tilo-daemon", "tilo-runtime"));
         self.device_env(&mut daemon, &logs);
         daemon
             // The daemon starts this test's build of the session as the person's shell.

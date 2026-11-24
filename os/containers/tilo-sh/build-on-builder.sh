@@ -54,8 +54,8 @@ build_programs() {
   # The server and its worker are built apart from the rest, as the Lounge image builds them:
   # in one build Cargo turns on every feature any of the programs asks of a shared crate for
   # all of them, and the server would link the desktop libraries the daemon needs.
-  cargo build --locked --profile lounge-local --features tilo-runtime/agents \
-    -p tilo-runtime -p discord-worker --bin tilo-runtime --bin discord-worker || return
+  cargo build --locked --profile lounge-local --features tilo-daemon/agents \
+    -p tilo-daemon -p discord-worker --bin tilo-runtime --bin discord-worker || return
   cargo build --locked --profile lounge-local \
     -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process \
     --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilolang-process || return

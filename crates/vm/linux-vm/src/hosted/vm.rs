@@ -22,9 +22,9 @@ use super::jail::{Jail, JailDirs};
 use super::memory;
 use super::meter::{Log, Meter, RunEnd, UsageEntry, VmIdentity};
 use super::network::Endpoint;
-use super::size::VmSize;
 use crate::lifecycle::{Action, Lifecycle, LifecycleError, Phase};
 use crate::virtiofs::SYSTEM_READ_ONLY;
+use tilo_server_protocol::hosted_vm::VmSize;
 
 /// The most directories one VM mounts.
 const MAX_SHARES: u32 = 64;

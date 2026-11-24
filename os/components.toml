@@ -232,9 +232,9 @@ files = [
 name = "native-runtime-host"
 kind = "userspace"
 scope = "session"
-packages = ["tilo-runtime"]
+packages = ["tilo-daemon"]
 bins = ["tilo-runtime"]
-dev_features = ["tilo-runtime/dev-overrides"]
+dev_features = ["tilo-daemon/dev-overrides"]
 # The device's daemon runs this binary from boot: a swap restarts it so the
 # running daemon is the swapped one.
 units = ["tilo-runtime.service"]

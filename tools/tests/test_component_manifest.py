@@ -461,7 +461,7 @@ class InstallerTests(unittest.TestCase):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             dev = installer.select_components(manifest, [], False, True)
             packages, bins, features = installer.cargo_plan(dev, True)
-            self.assertIn("tilo-runtime/dev-overrides", features)
+            self.assertIn("tilo-daemon/dev-overrides", features)
             self.assertIn("tilo-session/dev-overrides", features)
             self.assertEqual(set(bins), {"tilo-runtime", "tilo-vm",
                                          "tilo-test-registry", "tilo-session",

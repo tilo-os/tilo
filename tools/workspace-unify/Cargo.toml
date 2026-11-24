@@ -1041,6 +1041,7 @@ doc = false
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../vendor/automerge", default-features = false, features = [] }
 "tilo-automerge-isolate" = { path = "../../crates/core/tilo-automerge-isolate", default-features = false, features = [] }
 "tilo-backups-engine" = { path = "../../crates/engines/tilo-backups-engine", default-features = false, features = [] }
+"tilo-bluetooth-address" = { path = "../../crates/core/bluetooth-address", default-features = false, features = [] }
 "tilo-bluetooth-agent" = { path = "../../crates/os/bluetooth-agent", default-features = false, features = [] }
 "tilo-bluez" = { path = "../../crates/os/tilo-bluez", default-features = false, features = [] }
 "tilo-board-successor" = { path = "../../crates/os/board-successor", default-features = false, features = [] }
@@ -1089,6 +1090,7 @@ doc = false
 "tilo-cpu-raster" = { path = "../../crates/ui/tilo-cpu-raster", default-features = false, features = [] }
 "tilo-crash-reports" = { path = "../../crates/services/crash-reports", default-features = false, features = [] }
 "tilo-crypto" = { path = "../../crates/core/tilo-crypto", default-features = false, features = ["default", "pcr-prediction", "release-bundle", "srp", "srp-test-server", "tls-fixture"] }
+"tilo-daemon" = { path = "../../crates/os/daemon", default-features = false, features = [] }
 "tilo-dav" = { path = "../../crates/integrations/tilo-dav", default-features = false, features = ["client", "default", "net", "oauth", "test-support"] }
 "tilo-db" = { path = "../../crates/engines/tilo-db", default-features = false, features = [] }
 "tilo-default-apps" = { path = "../../crates/desktop/default-apps", default-features = false, features = ["default", "host-storage"] }
@@ -1286,7 +1288,7 @@ doc = false
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
 "tilo-ui-kms" = { path = "../../crates/ui/ui-kms", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../crates/ui/ui-paint", default-features = false, features = [] }
-"tilo-unlock-protocol" = { path = "../../crates/os/tilo-unlock-protocol", default-features = false, features = [] }
+"tilo-unlock-protocol" = { path = "../../crates/core/tilo-unlock-protocol", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../crates/core/tilo-user-identity", default-features = false, features = [] }
 "tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
@@ -3532,6 +3534,7 @@ doc = false
 "tilo-automerge" = { path = "../../crates/core/tilo-automerge", default-features = false, features = ["heap-probe"] }
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../vendor/automerge", default-features = false, features = [] }
 "tilo-automerge-isolate" = { path = "../../crates/core/tilo-automerge-isolate", default-features = false, features = [] }
+"tilo-bluetooth-address" = { path = "../../crates/core/bluetooth-address", default-features = false, features = [] }
 "tilo-bluetooth-agent" = { path = "../../crates/os/bluetooth-agent", default-features = false, features = [] }
 "tilo-bluez" = { path = "../../crates/os/tilo-bluez", default-features = false, features = [] }
 "tilo-board-successor" = { path = "../../crates/os/board-successor", default-features = false, features = [] }
@@ -3579,6 +3582,7 @@ doc = false
 "tilo-cpu-raster" = { path = "../../crates/ui/tilo-cpu-raster", default-features = false, features = [] }
 "tilo-crash-reports" = { path = "../../crates/services/crash-reports", default-features = false, features = [] }
 "tilo-crypto" = { path = "../../crates/core/tilo-crypto", default-features = false, features = ["default", "pcr-prediction", "release-bundle", "srp", "srp-test-server", "tls-fixture"] }
+"tilo-daemon" = { path = "../../crates/os/daemon", default-features = false, features = [] }
 "tilo-dav" = { path = "../../crates/integrations/tilo-dav", default-features = false, features = ["client", "default", "net", "oauth", "test-support"] }
 "tilo-default-apps" = { path = "../../crates/desktop/default-apps", default-features = false, features = ["default", "host-storage"] }
 "tilo-delivery-protocol" = { path = "../../crates/core/tilo-delivery-protocol", default-features = false, features = [] }
@@ -3759,7 +3763,7 @@ doc = false
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
 "tilo-ui-kms" = { path = "../../crates/ui/ui-kms", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../crates/ui/ui-paint", default-features = false, features = [] }
-"tilo-unlock-protocol" = { path = "../../crates/os/tilo-unlock-protocol", default-features = false, features = [] }
+"tilo-unlock-protocol" = { path = "../../crates/core/tilo-unlock-protocol", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../crates/core/tilo-user-identity", default-features = false, features = [] }
 "tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
@@ -4876,7 +4880,7 @@ doc = false
 "tilo-thumbnail" = { path = "../../crates/engines/thumbnail", default-features = false, features = [] }
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
 "tilo-ui-macros" = { path = "../../crates/ui/ui-macros", default-features = false, features = [] }
-"tilo-unlock-protocol" = { path = "../../crates/os/tilo-unlock-protocol", default-features = false, features = [] }
+"tilo-unlock-protocol" = { path = "../../crates/core/tilo-unlock-protocol", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../crates/core/tilo-user-identity", default-features = false, features = [] }
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 "tilo-view-macros" = { path = "../../crates/sdk/view-macros", default-features = false, features = [] }

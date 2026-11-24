@@ -47,3 +47,10 @@ nearby-send-stop-detail = Hält eine Übertragung an, die hinaus- oder hereingeh
 nearby-send-again = Eine Datei erneut anbieten
 nearby-send-again-detail = Bietet eine fehlgeschlagene Übertragung erneut an.
 nearby-send-keep-question = „{ $name }“ von { $device } behalten?
+
+## The actions of this device's server settings
+
+so-tilo-device-server-set-service = Einen Dienst anbieten oder zurückziehen
+so-tilo-device-server-set-work = Wessen Arbeit dieses Gerät annimmt
+so-tilo-device-server-set-work-room = Einen Teil des Rechners freihalten
+so-tilo-device-server-set-work-while-charging = Arbeit nur beim Laden annehmen

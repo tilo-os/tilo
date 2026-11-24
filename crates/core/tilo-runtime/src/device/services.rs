@@ -118,8 +118,9 @@ pub struct Daemon {
     /// workspace and read again as the store moves.
     #[cfg(not(windows))]
     _styles: super::styles::StylesShown,
-    /// The account sign-ins socket, while this login has a runtime directory to serve it in.
-    account_sign_ins: Option<super::account_sign_ins::AccountSignIns>,
+    /// The account sign-ins, while something mounted serves them
+    /// ([`super::capabilities::Capabilities::account_sign_ins`]).
+    account_sign_ins: Option<Box<dyn std::any::Any + Send + Sync>>,
     _media: profile::MediaHost,
     /// The endpoint's router, held so the workspace host, the device actions, the work this
     /// device takes and a ticket's certify call answer for as long as this runtime runs.
@@ -1628,20 +1629,17 @@ impl Daemon {
             broker.state().serve_records(Arc::clone(&reads) as _);
             search.serve(reads);
         }
-        // The device's image model, which apps ask by the addresses it publishes rather than
-        // through a connection of their own: one copy on this daemon's dispatch.
-        if let Ok(model) =
-            super::vision::ImageModel::start(&sockets.join(BLOB_SOCKET), &search, &actor)
-        {
-            workspaces.copies().providers().provide(
-                super::vision::PROVIDER,
-                super::vision::APP,
-                tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
-                Arc::new(model),
-            );
-        } else {
-            tracing::warn!("this device runs no image model");
-        }
+        // The services the daemon's program mounted (the device's image model among them),
+        // which apps ask by the addresses they publish rather than through a connection of their
+        // own: one copy each on this daemon's dispatch.
+        super::capabilities::register(&super::capabilities::Mounting {
+            providers: &workspaces.copies().providers(),
+            blob_socket: &sockets.join(BLOB_SOCKET),
+            search: search
+                .search()
+                .map(|search| search as Arc<dyn tilo_actions::remote::ResourceSearch>),
+            person: &actor,
+        });
         workspaces.serve_invocations(Arc::clone(&invocations));
         stage("reading the calls that wait for the person");
         let asked = super::asked::DeviceAsked::new(
@@ -1792,8 +1790,8 @@ impl Daemon {
         );
         // The workspaces' accounts and their sign-ins, for this login's cloud service and the
         // origin connectors this daemon starts.
-        let account_sign_ins = account_sign_ins(
-            &workspaces,
+        let account_sign_ins = super::capabilities::account_sign_ins(
+            workspaces.copies(),
             Caller::authenticated(
                 identity.cert.user_public_key,
                 identity.cert.device_public_key,
@@ -1801,9 +1799,10 @@ impl Daemon {
         );
         // The origin connectors this device starts are handed their workspace's account sign-ins
         // by them.
-        if let Some(sign_ins) = &account_sign_ins {
-            apps.hand_sign_ins(Box::new(sign_ins.hands()));
-        }
+        let account_sign_ins = account_sign_ins.map(|sign_ins| {
+            apps.hand_sign_ins(sign_ins.hands);
+            sign_ins.served
+        });
         stage("publishing the styles the installed packages offer");
         #[cfg(not(windows))]
         let styles = super::styles::publish(&workspaces);
@@ -2087,32 +2086,6 @@ fn asked_store(
     workspaces.copies().asked_store().ok_or_else(|| {
         io::Error::other("the workspaces this device serves keep no calls that wait")
     })
-}
-
-/// Serve the account sign-ins below this login's runtime directory, as `person`, taking the
-/// connections `links` holds a vouch for as that vouch's connector: `None`, said in the log, where
-/// there is no runtime directory or the socket cannot be made there, and the cloud service and
-/// origin connectors then reach no account's sign-in.
-fn account_sign_ins(
-    workspaces: &ServiceWorkspaces,
-    person: Caller,
-) -> Option<super::account_sign_ins::AccountSignIns> {
-    let Some(path) = accounts::sign_ins::socket() else {
-        tracing::warn!(
-            "no runtime directory, so the cloud service and origin connectors reach no account's \
-             sign-in"
-        );
-        return None;
-    };
-    let Some(models) = accounts::sign_ins::models_socket() else {
-        tracing::warn!("no runtime directory, so the model manager reaches no account's sign-in");
-        return None;
-    };
-    super::account_sign_ins::serve(&path, &models, workspaces.copies().clone(), person)
-    .inspect_err(|error| {
-        tracing::warn!(%error, path = %path.display(), "the account sign-ins socket is not served");
-    })
-    .ok()
 }
 
 /// `person`'s own workspace, at the id their key names.
@@ -4917,12 +4890,11 @@ pub(super) fn hold_files(
 }
 
 impl Daemon {
-    /// The account sign-ins this daemon serves, which hand an origin connector its own
-    /// ([`super::account_sign_ins::AccountSignIns::hand`]); `None` where this login has no runtime
-    /// directory to serve them in.
+    /// The account sign-ins this daemon serves, as the service mounted to serve them is
+    /// (`T`); `None` where nothing serves them, or they are not a `T`.
     #[must_use]
-    pub fn account_sign_ins(&self) -> Option<&super::account_sign_ins::AccountSignIns> {
-        self.account_sign_ins.as_ref()
+    pub fn account_sign_ins<T: std::any::Any>(&self) -> Option<&T> {
+        self.account_sign_ins.as_deref()?.downcast_ref()
     }
 
     /// Told each time this device starts holding a workspace as a member: what a computer that

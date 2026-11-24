@@ -38,6 +38,7 @@ pub mod directory;
 pub mod entering;
 pub mod host_voice;
 pub mod hosted;
+pub mod hosted_vm;
 pub mod invocation;
 pub mod live;
 pub mod mesh;

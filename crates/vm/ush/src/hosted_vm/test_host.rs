@@ -20,12 +20,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use linux_vm::hosted::control::{FRAMING, Reply, Request};
 use linux_vm::hosted::plan::{Plan, Plans, Sells, admit};
-use linux_vm::hosted::size::VmSize;
 use linux_vm_protocol::link::AgentLink;
 use linux_vm_protocol::{
     AgentHello, ExitStatus, GuestMessage, GuestOs, HostMessage, PROTOCOL_MAJOR, recv, send,
 };
 use tilo_actions::remote::server_account::{Limits, PlanOffer};
+use tilo_server_protocol::hosted_vm::VmSize;
 
 use super::HostedTarget;
 

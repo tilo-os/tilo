@@ -16,8 +16,7 @@ use linux_vm_protocol::link::AgentLink;
 
 use super::browser::{self, Browser, Kind, Launcher, Life, Limits, UP_PATIENCE};
 use super::control::{
-    ENVIRONMENT, FRAMING, HostLoad, OpenApp, OpenBrowser, Reply, Request, ShareRequest, VmRequest,
-    VmStatus,
+    FRAMING, HostLoad, OpenApp, OpenBrowser, Reply, Request, ShareRequest, VmRequest, VmStatus,
 };
 use super::files::Served;
 use super::firecracker::VmFiles;
@@ -25,11 +24,11 @@ use super::memory::{self, Budget};
 use super::meter::{Log, Meter, VmIdentity, summarize};
 use super::move_vm::{self, MoveError, Part};
 use super::plan::{AwakeVm, Plans, Refusal, admit};
-use super::size::VmSize;
 use super::valid_name;
 use super::vm::{Clock, HostedVm, Settings, VmError};
 use crate::lifecycle::Phase;
 use tilo_actions::remote::server_account;
+use tilo_server_protocol::hosted_vm::{ENVIRONMENT, VmSize};
 
 /// How often awake VMs are asked what runs in them.
 pub const POLL: Duration = Duration::from_secs(1);
@@ -107,7 +106,7 @@ struct Entry {
     workspace: String,
     environment: String,
     account: String,
-    size: Mutex<super::size::VmSize>,
+    size: Mutex<tilo_server_protocol::hosted_vm::VmSize>,
     /// Admitted and not yet seen asleep. Read without the VM's lock.
     awake: AtomicBool,
     vm: Mutex<HostedVm>,

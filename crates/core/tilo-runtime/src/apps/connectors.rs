@@ -41,7 +41,7 @@ struct Running {
 /// What hands a connector whose manifest grants it the workspace's account sign-ins those
 /// sign-ins, over its socket, before its first reader: the connector's socket, its app and the
 /// workspace.
-pub(crate) type SignIns = dyn Fn(&Descriptor, &str, &str) -> std::io::Result<()> + Send + Sync;
+pub type SignIns = dyn Fn(&Descriptor, &str, &str) -> std::io::Result<()> + Send + Sync;
 
 /// The pid a started connector runs as, as the launch record names it; `None` where the system
 /// does not say it in a pid this daemon records.

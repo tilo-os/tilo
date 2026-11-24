@@ -16,7 +16,7 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 
 use super::network::Endpoint;
-use super::size::VmSize;
+use tilo_server_protocol::hosted_vm::VmSize;
 
 pub const DEFAULT_CONFIG: &str = "/etc/tilo/hosted-jail.json";
 

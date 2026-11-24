@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::size::VmSize;
 use super::valid_name;
+use tilo_server_protocol::hosted_vm::VmSize;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VmIdentity {

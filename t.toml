@@ -151,7 +151,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
 # end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
-starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-runtime:tilo-runtime@fast=test-support", "example-shared-checklist:example-shared-checklist@fast", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-runtime:bin:tilo-runtime=agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher", "tilolang-process:tilolang-process", "assistant:assistant", "messages:messages", "poker:poker", "slides:slides", "terminal:terminal", "totp:totp"] }
+starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-daemon:tilo-runtime@fast=test-support", "example-shared-checklist:example-shared-checklist@fast", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-daemon:bin:tilo-runtime=agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher", "tilolang-process:tilolang-process", "assistant:assistant", "messages:messages", "poker:poker", "slides:slides", "terminal:terminal", "totp:totp"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -693,7 +693,7 @@ outputs = [
 [[check]]
 name = "docs-reference-bins"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked -p tilo-cli -p tilo-runtime --bin tilo --bin tilo-runtime\n"
+run = "cargo build --locked -p tilo-cli -p tilo-daemon --bin tilo --bin tilo-runtime\n"
 outputs = ["/target/debug/tilo", "/target/debug/tilo-runtime"]
 default = false
 
@@ -1717,7 +1717,7 @@ heavy = true
 [[check]]
 name = "runtime-macos"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo check -p tilo-runtime --all-targets --locked"
+run = "cargo check -p tilo-runtime -p tilo-daemon --all-targets --locked"
 requires = ["os=macos", "arch=arm64"]
 on = ["main"]
 heavy = true
@@ -3415,7 +3415,7 @@ default = false
 [[check]]
 name = "tilo-vm-binary-x86_64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked -p tilo-vm --bin tilo-vm -p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime\nrm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin\ncd \"$CARGO_TARGET_DIR/debug\" && cp tilo-vm tilo tilo-runtime /target/tilo-vm-bin/\n"
+run = "cargo build --locked -p tilo-vm --bin tilo-vm -p tilo-cli --bin tilo -p tilo-daemon --bin tilo-runtime\nrm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin\ncd \"$CARGO_TARGET_DIR/debug\" && cp tilo-vm tilo tilo-runtime /target/tilo-vm-bin/\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/tilo-vm-bin/**"]
 default = false
@@ -3423,7 +3423,7 @@ default = false
 [[check]]
 name = "tilo-vm-binary-aarch64"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked -p tilo-vm --bin tilo-vm -p tilo-cli --bin tilo -p tilo-runtime --bin tilo-runtime\nrm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin\ncd \"$CARGO_TARGET_DIR/debug\" && cp tilo-vm tilo tilo-runtime /target/tilo-vm-bin/\n"
+run = "cargo build --locked -p tilo-vm --bin tilo-vm -p tilo-cli --bin tilo -p tilo-daemon --bin tilo-runtime\nrm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin\ncd \"$CARGO_TARGET_DIR/debug\" && cp tilo-vm tilo tilo-runtime /target/tilo-vm-bin/\n"
 requires = ["arch=arm64"]
 outputs = ["/target/tilo-vm-bin/**"]
 default = false
@@ -7460,7 +7460,7 @@ default = false
 [[check]]
 name = "lounge-check-cli"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "# The tilo command and the daemon it starts, packed together (tools/ci/publish/cli-release.sh).\ncargo build --locked --profile lounge-check -p tilo-cli -p tilo-runtime --bin tilo --bin tilo-runtime\nrm -rf /target/publish/lounge-check/cli\nmkdir -p /target/publish/lounge-check/cli\ncp \"$CARGO_TARGET_DIR/lounge-check/tilo\" \"$CARGO_TARGET_DIR/lounge-check/tilo-runtime\" /target/publish/lounge-check/cli/\n"
+run = "# The tilo command and the daemon it starts, packed together (tools/ci/publish/cli-release.sh).\ncargo build --locked --profile lounge-check -p tilo-cli -p tilo-daemon --bin tilo --bin tilo-runtime\nrm -rf /target/publish/lounge-check/cli\nmkdir -p /target/publish/lounge-check/cli\ncp \"$CARGO_TARGET_DIR/lounge-check/tilo\" \"$CARGO_TARGET_DIR/lounge-check/tilo-runtime\" /target/publish/lounge-check/cli/\n"
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge-check/cli/**"]

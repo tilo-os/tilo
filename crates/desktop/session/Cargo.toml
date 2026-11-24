@@ -282,7 +282,7 @@ tilo-system-stats = { path = "../../os/system-stats" }
 # A sibling device's half of this device's disk key: the unlock exchange an
 # early-boot client speaks, and the sealed halves each device holds of the
 # other.
-tilo-unlock-protocol = { path = "../../os/tilo-unlock-protocol" }
+tilo-unlock-protocol = { path = "../../core/tilo-unlock-protocol" }
 # The sealed envelope a sibling half is carried in.
 tilo-seal = { path = "../../core/tilo-seal" }
 # The desktop's event sounds (a notification's ring, a screenshot's click), and the decoder a
@@ -356,6 +356,8 @@ tilo-window-share = { path = "../window-share" }
 # The identity record the launcher bound and the person's own: the directories
 # whose changes a worker follows.
 os-actions = { path = "../../os/os-actions" }
+# What a Bluetooth address is, checked before a handoff asks the radio about one.
+tilo-bluetooth-address = { path = "../../core/bluetooth-address" }
 # The person's `network-usage` section, which this device's traffic totals are
 # counted into, and the readings its verb takes.
 settings-sections = { path = "../../desktop/settings-sections" }

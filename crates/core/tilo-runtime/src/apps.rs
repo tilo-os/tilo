@@ -34,7 +34,7 @@ use tilo_workspace_service::apps::{
 };
 
 mod connection;
-mod connectors;
+pub(crate) mod connectors;
 mod instances;
 #[cfg(target_os = "linux")]
 mod linux;

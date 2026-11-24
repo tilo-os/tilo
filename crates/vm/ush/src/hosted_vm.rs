@@ -45,13 +45,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use linux_vm::hosted::control::{self, Reply, Request, ShareRequest, VmRequest};
-use linux_vm::hosted::size::VmSize;
 use linux_vm_protocol::client::{self, LaunchIo, LaunchSignals};
 use linux_vm_protocol::link::{AgentLink, AgentStream};
 use linux_vm_protocol::{
     AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio as Stream, TerminalSize,
 };
 use tilo_actions::remote::server_account;
+use tilo_server_protocol::hosted_vm::VmSize;
 use ush_shell::{Input, Output, Program, Std, Stdio};
 use ush_tilo::Programs;
 

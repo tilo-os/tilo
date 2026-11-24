@@ -149,7 +149,7 @@ fn interfaces() -> Vec<WakeRoute> {
         };
         // Wi-Fi drivers answer the wake query through their radio, not ethtool.
         let magic_packet = match std::fs::read_link(path.join("phy80211")) {
-            Ok(radio) => os_actions::network_wake::wifi_magic_packet(
+            Ok(radio) => super::capabilities::radio_wakes(
                 &radio.file_name().unwrap_or_default().to_string_lossy(),
             )
             .inspect_err(|reason| {

@@ -1,7 +1,7 @@
 use linux_vm::hosted::meter::VmIdentity;
 use linux_vm::hosted::plan::Plan;
-use linux_vm::hosted::size::VmSize;
 use tilo_actions::remote::server_account::{InvoiceStatus, PlanOffer};
+use tilo_server_protocol::hosted_vm::VmSize;
 
 use super::*;
 

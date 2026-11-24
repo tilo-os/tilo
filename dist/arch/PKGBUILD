@@ -31,7 +31,7 @@ build() {
   export CARGO_HOME="$srcdir/cargo-home"
   cargo build --release --locked -p launcher -p tilo-unlock-helper -p tilo-flight-log
   cargo build --release --locked -p tilo-cli --bin tilo
-  cargo build --release --locked -p tilo-runtime --bin tilo-runtime --no-default-features
+  cargo build --release --locked -p tilo-daemon --bin tilo-runtime --no-default-features
   cargo build --release --locked -p tilolang-process --bin tilolang-process
   export TILO_UNLOCK_HELPER_PATH=/usr/lib/tilo/tilo-unlock-helper
   cargo build --release --locked -p tilo-session --bin tilo-session

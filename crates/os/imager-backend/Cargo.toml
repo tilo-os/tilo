@@ -22,7 +22,7 @@ destination = [
 
 [dependencies]
 tilo-resource = { path = "../../core/tilo-resource" }
-tilo-unlock-protocol = { path = "../tilo-unlock-protocol" }
+tilo-unlock-protocol = { path = "../../core/tilo-unlock-protocol" }
 tilo-test-env = { path = "../../../tools/test-env", optional = true }
 tempfile.workspace = true
 base64.workspace = true

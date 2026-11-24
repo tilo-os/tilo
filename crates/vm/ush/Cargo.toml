@@ -88,6 +88,8 @@ tilo-egress = { path = "../../core/egress" }
 # leaves the `supervisor` feature off and links no Wayland server.
 linux-vm = { path = "../linux-vm", default-features = false }
 linux-vm-protocol = { path = "../linux-vm-protocol" }
+# The hosted VM a workspace asks for: its environment and the size it runs at.
+tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
 
 anyhow.workspace = true
 tilo-paths.workspace = true

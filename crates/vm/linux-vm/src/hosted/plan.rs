@@ -13,7 +13,7 @@ use tilo_actions::remote::server_account::{
     self, Invoice, NextStep, NextStepKind, PaymentMethod, PlanOffer, Reason,
 };
 
-use super::size::VmSize;
+use tilo_server_protocol::hosted_vm::VmSize;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Plan {

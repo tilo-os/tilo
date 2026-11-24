@@ -10,13 +10,9 @@ use serde::{Deserialize, Serialize};
 use wire_frame::Framing;
 
 use super::meter::{SizeUsage, UsageEntry};
-use super::size::VmSize;
+use tilo_server_protocol::hosted_vm::VmSize;
 
 pub const FRAMING: Framing = Framing::little_endian(16 * 1024 * 1024).reject_empty();
-
-/// The environment a workspace's VM is: one per workspace, which runs both its Linux programs and
-/// its Browser.
-pub const ENVIRONMENT: &str = "default";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VmRequest {

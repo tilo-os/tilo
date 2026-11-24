@@ -129,8 +129,9 @@ fn outcome_of(answer: Option<Result<InvocationUpdate, ActionCallError>>) -> OwnD
 /// A request from another of the person's own devices is use of this machine: suspend is held off
 /// for a lease after it, and renewed in place while they keep asking.
 ///
-/// A lease is held the way the machine understands one: a logind suspend inhibitor on Linux, and
-/// nothing on a machine that suspends another way.
+/// A lease is held the way the machine understands one: on Linux, as the daemon's program holds
+/// suspend off ([`super::capabilities::Capabilities::stay_awake`]), and nothing on a machine that
+/// suspends another way.
 #[derive(Clone, Default)]
 pub(crate) struct RemoteUse(Arc<Mutex<Option<Lease>>>);
 
@@ -195,9 +196,9 @@ fn hold(remote: RemoteUse) {
         return;
     };
     runtime.spawn(async move {
-        // The hold itself, kept alive while the lease is; re-taken if logind was not there when a
-        // request first arrived.
-        let mut inhibitor: Option<tilo_power_mgmt::LogindInhibitor> = None;
+        // The hold itself, kept alive while the lease is; re-taken if nothing could hold the
+        // machine when a request first arrived.
+        let mut inhibitor: Option<super::capabilities::Awake> = None;
         loop {
             let lease = {
                 let held = remote.0.lock_recover();
@@ -207,7 +208,7 @@ fn hold(remote: RemoteUse) {
                 return;
             };
             if inhibitor.is_none() {
-                inhibitor = logind_inhibitor().await;
+                inhibitor = super::capabilities::stay_awake().await;
             }
             let now = Instant::now();
             if now >= lease.until {
@@ -222,41 +223,6 @@ fn hold(remote: RemoteUse) {
             tokio::time::sleep(lease.until - now).await;
         }
     });
-}
-
-/// The logind suspend inhibitor this machine understands, once logind answers.
-#[cfg(target_os = "linux")]
-async fn logind_inhibitor() -> Option<tilo_power_mgmt::LogindInhibitor> {
-    use tilo_power_mgmt::LogindManager;
-    let connection = match zbus::Connection::system().await {
-        Ok(connection) => connection,
-        Err(error) => {
-            tracing::debug!(%error, "no system bus: a remote use cannot hold this machine awake");
-            return None;
-        }
-    };
-    let manager = match LogindManager::with_connection(&connection).await {
-        Ok(manager) => manager,
-        Err(error) => {
-            tracing::debug!(%error, "no logind: a remote use cannot hold this machine awake");
-            return None;
-        }
-    };
-    match manager
-        .inhibit(
-            "sleep",
-            "Tilo",
-            "another of your devices is using this computer",
-            "block",
-        )
-        .await
-    {
-        Ok(inhibitor) => Some(inhibitor),
-        Err(error) => {
-            tracing::debug!(%error, "logind refused the hold a remote use asked for");
-            None
-        }
-    }
 }
 
 /// A machine that suspends another way keeps no lease: nothing here can hold it.

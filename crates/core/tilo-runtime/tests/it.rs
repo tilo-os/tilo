@@ -29,8 +29,6 @@
 // entry every module's tests start.
 tilo_automerge_isolate::test_worker!();
 
-#[path = "account_sign_ins.rs"]
-mod account_sign_ins;
 #[path = "agent_fixture.rs"]
 mod agent_fixture;
 #[path = "agent_keys.rs"]
@@ -127,12 +125,8 @@ mod provided;
 mod refresh_reads;
 #[path = "root_holder_login.rs"]
 mod root_holder_login;
-#[path = "runtime_daemon_process.rs"]
-mod runtime_daemon_process;
 #[path = "search.rs"]
 mod search;
-#[path = "session_api_connect.rs"]
-mod session_api_connect;
 #[path = "shared_workspace.rs"]
 mod shared_workspace;
 #[path = "shell_link.rs"]

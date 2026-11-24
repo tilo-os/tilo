@@ -8,6 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::OnceLock;
 
+use tilo_bluetooth_address::valid_address;
 use tilo_bluez::BluezClient;
 pub use tilo_bluez::DeviceInfo;
 
@@ -202,8 +203,6 @@ fn unique_device_by_address<'a>(
     Ok(first)
 }
 
-pub use tilo_bluez::valid_address;
-
 /// Pairs, trusts and connects one local object for an approved handoff address; callers hold their own
 /// one-shot local authorization.
 pub fn pair_handoff(address: &str) -> Result<(), String> {
@@ -293,13 +292,6 @@ mod tests {
                         .unwrap_err()
                         .contains("ambiguous")
                 );
-            }
-            {
-                assert!(valid_address("AA:BB:CC:DD:EE:FF"));
-                assert!(valid_address("aa:bb:cc:dd:ee:ff"));
-                assert!(!valid_address("/org/bluez/hci0/dev_AA"));
-                assert!(!valid_address("AA:BB:CC:DD:EE"));
-                assert!(!valid_address("GG:BB:CC:DD:EE:FF"));
             }
             {
                 assert_eq!(

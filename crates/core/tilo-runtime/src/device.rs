@@ -23,8 +23,8 @@ pub(crate) mod account;
 #[cfg(target_os = "linux")]
 mod agent_tools;
 mod asked;
-// The account sign-ins socket a login's cloud service and origin connectors reach.
-pub mod account_sign_ins;
+// What the daemon's program mounts beside the core: services, and the machine's own hooks.
+pub mod capabilities;
 mod commits;
 mod content;
 mod dispatch;
@@ -90,7 +90,6 @@ pub(crate) mod unclaimed;
 mod unclaimed_tests;
 // A vault item released to the app process whose connection asks for it.
 pub(crate) mod vault_release;
-mod vision;
 pub mod wake;
 pub mod wifi;
 mod window_follow;

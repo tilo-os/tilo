@@ -160,7 +160,7 @@ def start(args) -> int:
         if not binary.exists():
             sys.exit(
                 f"FAIL: {binary} is missing; build it with\n"
-                "  cargo build -p tilo-session --bin tilo-session -p tilo-control -p tilolang-cli -p tilo-runtime"
+                "  cargo build -p tilo-session --bin tilo-session -p tilo-control -p tilolang-cli -p tilo-daemon"
             )
     prepare(session)
     env = session.env()

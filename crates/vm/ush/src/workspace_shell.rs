@@ -93,7 +93,7 @@ type FilesOf = dyn Fn(&str) -> PathBuf + Send + Sync;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Payer {
     pub account: String,
-    pub size: linux_vm::hosted::size::VmSize,
+    pub size: tilo_server_protocol::hosted_vm::VmSize,
 }
 
 /// What a caller is shown of a command while it runs: everything it printed
@@ -310,7 +310,7 @@ impl WorkspaceShells {
     }
 
     #[must_use]
-    pub fn hosted_size(&self) -> linux_vm::hosted::size::VmSize {
+    pub fn hosted_size(&self) -> tilo_server_protocol::hosted_vm::VmSize {
         self.vms
             .as_ref()
             .map(|target| target.size)

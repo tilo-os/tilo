@@ -1,8 +1,13 @@
-//! The sizes a hosted VM comes in.
+//! A workspace's hosted VM, as the devices that ask for one and the service that runs it name it:
+//! the environment it is and the sizes it comes in.
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+
+/// The environment a workspace's VM is: one per workspace, which runs both its Linux programs and
+/// its Browser.
+pub const ENVIRONMENT: &str = "default";
 
 /// A VM's machine and disk; the disk outlives every suspend and stop and is freed only by deleting
 /// the VM.

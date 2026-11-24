@@ -183,7 +183,7 @@ impl Handoffs {
     /// Check that the accessory the person named can move to `device`, and read what it is called
     /// on a worker: the first step, which answers the person when it cannot.
     fn begin(&self, shared: &Shared, fabric: &SharedLink, address: &str, device: &str) {
-        if !os_actions::bluez::valid_address(address) {
+        if !tilo_bluetooth_address::valid_address(address) {
             refused(shared, address, &t("session-bluetooth-unknown"));
             return;
         }
