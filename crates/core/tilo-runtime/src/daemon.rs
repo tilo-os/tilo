@@ -5,8 +5,6 @@ use crate::seats::{AppAt, Seated, Seats};
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, host};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 use std::{
     ffi::OsString,
     io::{self, BufRead, BufReader, Read, Write},

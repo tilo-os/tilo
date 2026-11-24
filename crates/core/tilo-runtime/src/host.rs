@@ -190,6 +190,7 @@ pub(crate) struct Connections {
 }
 #[cfg(unix)]
 impl Connections {
+    #[cfg(test)]
     pub(crate) fn prepare(
         command: &mut Command,
         app_id: &str,
