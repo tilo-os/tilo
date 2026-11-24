@@ -379,8 +379,13 @@ pub(crate) async fn governed(
     workspaces: &Workspaces,
 ) -> (String, WorkspaceId, ServiceWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();
-    let host = ServiceWorkspaceActions::new();
-    host.attach(workspaces.clone());
+    // The host's own dispatch where it has one: a person's answer to a call that waits for
+    // them comes back to that one, never to one made beside it.
+    let host = workspaces.governance().unwrap_or_else(|| {
+        let host = ServiceWorkspaceActions::new();
+        host.attach(workspaces.clone());
+        host
+    });
     (summary.workspace, summary.workspace_id, host)
 }
 

@@ -28,7 +28,7 @@ use collab_types::WorkspaceId;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_action_policy::{ActionKind, Answer as GrantAnswer, Grant, Grantee, KindSet, TreePath};
-use tilo_actions::remote::asked::{AskedBy, AskedFacts, asked_person};
+use tilo_actions::remote::asked::{AskedBy, AskedFacts, Offer, asked_person};
 use tilo_actions::remote::{
     ActionCallError as ActionError, ActionProvider as ActionService, Caller, CatalogueQuery,
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget, person_accounts,
@@ -39,7 +39,6 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::super::ServiceWorkspaceActions as HolderActions;
 use super::super::tests::{admit, caller, governed, settled};
-use super::turn_use_tests::approved;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost as TestHolder;
 use crate::workspaces::fixtures::test_host as test_holder;
@@ -183,7 +182,8 @@ impl Ada {
             address: ActionAddress::new(held::RESOURCE, action),
         };
         let request = calling(target, argument);
-        let answer = answered(&self.page(), caller, &request).await;
+        let receipt = settled(self.page().invoke(caller, request.clone())).await?;
+        let answer = super::waiting::at_once(&self.workspaces, &request, receipt);
         let Err(ActionError::ConfirmationRequired(facts)) = answer else {
             return answer;
         };
@@ -192,22 +192,13 @@ impl Ada {
             return Err(ActionError::ConfirmationRequired(facts));
         };
         answering.questions.lock().unwrap().push((*facts).clone());
-        match answering.answer {
-            None => Err(ActionError::ConfirmationRequired(facts)),
-            Some(Answer::Decline) => Err(ActionError::Refused {
-                reason: tilo_actions::remote::asked::DECLINED.to_owned(),
-            }),
-            Some(Answer::Approve) => {
-                self.workspaces
-                    .invoke(
-                        Some(self.workspace_id),
-                        caller,
-                        Some(&self.device),
-                        &approved(&request, &self.workspace_id.to_string()),
-                    )
-                    .await
-            }
-        }
+        let resolution = match answering.answer {
+            None => return Err(ActionError::ConfirmationRequired(facts)),
+            Some(Answer::Decline) => Offer::Decline,
+            Some(Answer::Approve) => Offer::Approve,
+        };
+        super::waiting::answered_by(&self.page(), &self.herself(), (caller, &request), resolution)
+            .await
     }
 
     /// Ada adds her account with the password she types.

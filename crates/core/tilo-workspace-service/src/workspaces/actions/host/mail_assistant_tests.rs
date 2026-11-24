@@ -31,7 +31,7 @@ use tilo_user_identity::DeviceCert;
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
 use super::accounts_tests::asking;
-use super::turn_use_tests::{approved, asked_by, asks, fact};
+use super::turn_use_tests::{asked_by, asks, fact};
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost;
 use crate::workspaces::mail_watch::testing::{Watched, keep};
@@ -106,14 +106,26 @@ impl Setup {
         self.ada().delegated_to(name)
     }
 
-    /// What `caller` is answered when it asks `action` over Ada's page.
+    /// What `caller` is answered when it asks `action` over Ada's page, or, where it waits for
+    /// her yes, what she is shown.
     async fn ask(
         &self,
         caller: &Caller,
         action: &str,
         argument: Value,
     ) -> Result<Value, ActionCallError> {
-        asked_of(&self.page(), caller, action, argument).await
+        self.waits(caller, &asking(action, argument)).await
+    }
+
+    /// `request` by `caller` over Ada's page: what it answered, or, where it waits in its asked
+    /// record for her yes, what she is shown there.
+    async fn waits(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        let receipt = settled(self.page().invoke(caller, request.clone())).await?;
+        super::waiting::at_once(&self.workspaces, request, receipt)
     }
 
     /// `action` asked by `caller` over Ada's page, which waits for its person's yes: the call,
@@ -125,24 +137,23 @@ impl Setup {
         argument: Value,
     ) -> (InvokeRequest, AskedFacts) {
         let request = asking(action, argument);
-        let facts = asks(answered(&self.page(), caller, &request).await);
+        let facts = asks(self.waits(caller, &request).await);
         (request, facts)
     }
 
-    /// `request` by `caller` again, as Ada's approve of it admits it.
+    /// `request` by `caller`, which waits for Ada's yes, approved by her: what it answered.
     async fn approve(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        self.workspaces
-            .invoke(
-                Some(self.workspace_id),
-                caller,
-                Some(&self.device),
-                &approved(request, &self.workspace_id.to_string()),
-            )
-            .await
+        super::waiting::answered_by(
+            &self.page(),
+            &self.ada(),
+            (caller, request),
+            tilo_actions::remote::asked::Offer::Approve,
+        )
+        .await
     }
 
     /// `action` asked by `caller` over Ada's page and, where it waits for her yes, approved
@@ -154,7 +165,7 @@ impl Setup {
         argument: Value,
     ) -> (Result<Value, ActionCallError>, Option<AskedFacts>) {
         let request = asking(action, argument);
-        match answered(&self.page(), caller, &request).await {
+        match self.waits(caller, &request).await {
             Err(ActionCallError::ConfirmationRequired(facts)) => {
                 (self.approve(caller, &request).await, Some(*facts))
             }
@@ -1070,7 +1081,7 @@ async fn a_migration_agent_adding_a_mail_account_asks_its_person_first() {
     let request = account_asking(&setup, adding);
 
     // The policy answers Ask, naming the agent: nothing is kept before the person answers.
-    let facts = asks(answered(&setup.page(), &migration, &request).await);
+    let facts = asks(setup.waits(&migration, &request).await);
     assert!(
         matches!(&facts.by, tilo_actions::remote::asked::AskedBy::Agent(named) if named.id == agent),
         "{facts:?}"

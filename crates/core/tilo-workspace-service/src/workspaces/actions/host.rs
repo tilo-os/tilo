@@ -1720,9 +1720,10 @@ mod tests;
 #[cfg(test)]
 mod told_tests;
 #[cfg(test)]
-#[cfg(test)]
 mod turn_use_tests;
 #[cfg(test)]
 mod vault_tests;
+#[cfg(test)]
+mod waiting;
 #[cfg(all(test, feature = "agents"))]
 mod web_call_tests;

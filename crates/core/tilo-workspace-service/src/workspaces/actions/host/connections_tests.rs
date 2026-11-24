@@ -13,16 +13,15 @@ use tilo_actions::remote::person_connections::{
 };
 use tilo_actions::remote::{
     ActionCallError as Refused, ActionProvider as _, Caller, CatalogueQuery, InvokeArgument,
-    InvokeRequest, ReceiptStatus,
+    InvokeRequest,
 };
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions as Served;
 use super::super::tests::{admit, caller, governed, settled};
-use super::turn_use_tests::{approved, asks};
+use super::turn_use_tests::asks;
 use crate::connections::ASKS_FIRST;
 use crate::connections::stand_in::StandIn;
-use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::test_host as start_serving;
 use crate::workspaces::tests::governor;
 
@@ -74,27 +73,22 @@ impl<'a> Asking<'a> {
         self.asked(&calling(action, argument)).await
     }
 
-    /// `action`, which waits for its person's yes, and the same call again as their approve
-    /// in `workspaces` admits it: what it answered then.
-    async fn allowed(
-        self,
-        workspaces: &Workspaces,
-        action: &str,
-        argument: Value,
-    ) -> Result<Value, Refused> {
+    /// `action`, which waits for its person's yes, approved by the person of the device it is
+    /// asked on: what it answered then.
+    async fn allowed(self, action: &str, argument: Value) -> Result<Value, Refused> {
         let request = calling(action, argument);
         asks(self.asked(&request).await);
-        workspaces
-            .invoke(
-                Some(self.workspace_id),
-                self.caller,
-                Some(self.device),
-                &approved(&request, &self.workspace_id.to_string()),
-            )
-            .await
+        super::waiting::answered_by(
+            &self.actions.in_workspace_as(self.workspace_id, self.device),
+            &caller(self.device),
+            (self.caller, &request),
+            tilo_actions::remote::asked::Offer::Approve,
+        )
+        .await
     }
 
-    /// `request`: what it answered, or why not.
+    /// `request`: what it answered, or why not, or, where it waits for its person's yes, what
+    /// they are shown.
     async fn asked(self, request: &InvokeRequest) -> Result<Value, Refused> {
         let receipt = settled(
             self.actions
@@ -102,10 +96,11 @@ impl<'a> Asking<'a> {
                 .invoke(self.caller, request.clone()),
         )
         .await?;
-        match receipt.status {
-            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
-            other => panic!("the workspace's connections answer at once: {other:?}"),
-        }
+        super::waiting::at_once(
+            self.actions.shared.workspaces.get().unwrap(),
+            request,
+            receipt,
+        )
     }
 
     /// The actions of the workspace's connections this caller finds in its
@@ -446,7 +441,7 @@ async fn a_handed_agent_reads_and_calls_and_its_changes_ask_its_member() {
     );
     let removed = searching
         .by(&ada, &agent)
-        .allowed(workspaces, REMOVE, json!({"connection": id}))
+        .allowed(REMOVE, json!({"connection": id}))
         .await
         .expect("her yes removes it");
     assert_eq!(removed["connections"], json!([]));

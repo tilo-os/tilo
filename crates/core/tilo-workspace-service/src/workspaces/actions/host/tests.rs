@@ -393,10 +393,11 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
         host_request(CREATE_WORKSPACE, json!({ "name": "Its own" })),
     ))
     .await;
-    assert_eq!(
-        unasked.unwrap_err(),
-        ActionCallError::confirmation_required(),
-        "with nobody to ask, the person's answer is still wanted"
+    assert!(
+        matches!(&unasked, Err(ActionCallError::Refused { reason })
+            if reason.contains("could not be kept for them to answer")),
+        "with nothing of the person's here to keep the question in, it is refused for that: \
+         {unasked:?}"
     );
 
     // A certificate that is not the caller's speaks for nobody.

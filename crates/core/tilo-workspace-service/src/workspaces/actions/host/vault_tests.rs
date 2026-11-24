@@ -14,8 +14,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
-    RemoteActionTarget,
+    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 use tilo_actions::remote::{model_providers, person_accounts, person_vault};
 use tilo_server_protocol::WorkspaceId;
@@ -23,7 +22,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
-use super::turn_use_tests::{approved, asks};
+use super::turn_use_tests::asks;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::{test_host, test_host_holding};
 use crate::workspaces::tests::{governor, guest_device};
@@ -73,7 +72,8 @@ fn request_of(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
 }
 
 /// `request` asked by `caller`, on the device `device` certifies, in the workspace
-/// `workspace_id` carries.
+/// `workspace_id` carries: what it answered, or, where it waits for its person's yes, what they
+/// are shown.
 async fn asked(
     service: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
@@ -86,10 +86,7 @@ async fn asked(
             .invoke(caller, request.clone()),
     )
     .await?;
-    match receipt.status {
-        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
-        other => panic!("a person's own vault answers at once: {other:?}"),
-    }
+    super::waiting::at_once(service.shared.workspaces.get().unwrap(), request, receipt)
 }
 
 /// `action` of the vault, asked as [`ask_at`] asks.
@@ -110,10 +107,9 @@ pub(super) async fn ask(
     .await
 }
 
-/// `target` asked by `caller` as [`ask_at`] asks, which waits for its person's yes, and then the
-/// same call as their approve admits it again: what it answered.
+/// `target` asked by `caller` as [`ask_at`] asks, which waits for its person's yes, and then
+/// approved by the person of `device`: what it answered.
 async fn allowed_at(
-    workspaces: &Workspaces,
     service: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     (device, caller): (&DeviceCert, &Caller),
@@ -121,14 +117,13 @@ async fn allowed_at(
 ) -> Result<Value, ActionCallError> {
     let request = request_of(target, argument);
     asks(asked(service, workspace_id, (device, caller), &request).await);
-    workspaces
-        .invoke(
-            Some(workspace_id),
-            caller,
-            Some(device),
-            &approved(&request, &workspace_id.to_string()),
-        )
-        .await
+    super::waiting::answered_by(
+        &service.in_workspace_as(workspace_id, device),
+        &super::super::tests::caller(device),
+        (caller, &request),
+        tilo_actions::remote::asked::Offer::Approve,
+    )
+    .await
 }
 
 /// The fields `said` carries, in order of their names.
@@ -418,7 +413,6 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
 
     // Allowed by its person, the change it would make is made.
     allowed_at(
-        workspaces,
         &service,
         workspace_id,
         (&ada, &agent),
@@ -896,7 +890,6 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
         "{unasked:?}"
     );
     let view = allowed_at(
-        workspaces,
         &service,
         workspace_id,
         (&ada, &helper),
