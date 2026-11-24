@@ -66,6 +66,9 @@ const A_DAY_AND_A_HALF_NS: u64 = 129_600_000_000_000;
 /// removal: an arrival the site fans out at once, so what has not arrived by then never would.
 const AFTER_THE_REMOVAL: Duration = Duration::from_secs(10);
 
+/// The screen the session draws its shell on.
+const WIDTH: i32 = 1280;
+const HEIGHT: i32 = 800;
 const COMMUNITY_WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const CLUB_WORKSPACE: &str = "1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e";
 
@@ -629,15 +632,25 @@ fn expired_throwaway_identity(
 
 /// A session that takes part in the peer network, keeping the workspaces it holds beside
 /// `state` .
-fn collaborative_session(state: &std::path::Path) -> Session {
-    crate::common::headless(Options {
-        collab: true,
-        // This machine's loopback relay, as the lounge's host is: nothing here reaches the
-        // person's relays out on the internet.
-        relays: Some(test_server::loopback()),
-        state: Some(state.to_path_buf()),
-        ..Options::default()
-    })
+fn collaborative_session(state: &std::path::Path) -> crate::common::held::Hosted {
+    // This machine's loopback relay, as the lounge's host is: nothing here reaches the
+    // person's relays out on the internet.
+    let mut env = tilo_test_env::ScopedEnv::new();
+    let (name, relay) = test_server::loopback_relay();
+    env.set(name, relay);
+    crate::common::held::hosted_in_env(
+        env,
+        Options {
+            collab: true,
+            state: Some(state.to_path_buf()),
+            ..Options::default()
+        },
+        &[tilo_compositor::OutputConfig::new(
+            "HEADLESS-1",
+            WIDTH,
+            HEIGHT,
+        )],
+    )
 }
 
 /// A chat record holding `line` : what one of the lounge's people wrote.

@@ -1,6 +1,7 @@
 //! A workspace this computer holds and governs, and the identities that hold it: the fixtures the
 //! tests of a hosted workspace start from.
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -10,8 +11,8 @@ use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::owner::{self, testing};
+use tilo_peer_state::owner;
+use tilo_runtime::daemon::Running;
 use tilo_session::{Options, Session};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -42,45 +43,64 @@ pub fn certified(
 }
 
 /// This computer's person: a device of theirs, certified for their own root key, kept in an
-/// identity root of the test's own.
+/// identity root of the test's own and named by the account's identity store, as a device its
+/// daemon starts the person's services as.
 pub fn this_computer(
     env: &mut tilo_test_env::ScopedEnv,
 ) -> (tempfile::TempDir, SigningKey, DeviceCert) {
     let root = tempfile::tempdir().expect("an identity root");
     let paths = IdentityPaths::under(root.path());
-    std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
-        .expect("this computer's key directory");
-    let person = SigningKey::from_bytes(&[0x61; 32]);
-    let device = SigningKey::from_bytes(&tilo_test_env::node_key());
-    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device)
-        .expect("this computer's device key");
-    let cert = certified(&person, &device, "The laptop", DeviceCapabilities::member());
-    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
-        .expect("this computer's certificate");
+    tilo_identity::sources::test_trust::install();
+    let personal =
+        tilo_identity::store::account_identity_dir_from_env().expect("the test's identity store");
+    tilo_identity::provisioning::ensure_collaboration_identity(
+        &personal,
+        &paths,
+        IdentityStorage::Files,
+    )
+    .expect("this computer's identity");
     env.set("TILO_IDENTITY_ROOT", root.path());
+    let device = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
+        .expect("this device's certificate");
     (root, device, cert)
 }
 
-/// This device's identity and the workspace it hosts, where the session reads them.
+/// This device's identity and the workspace it hosts, where its daemon reads them.
 pub struct Fixture {
     pub device: SigningKey,
     pub cert: DeviceCert,
-    /// The state directory the session keeps its workspaces under.
+    /// The state directory the device's daemon keeps its workspaces under.
     pub state: PathBuf,
-    // The identity's environment and files, restored and removed last: the session and the app read
-    // them while they run.
+    // The identity's environment and files, restored and removed last: the daemon and the apps
+    // read them while they run.
     _env: tilo_test_env::ScopedEnv,
     pub root: tempfile::TempDir,
 }
 
-/// This device's own identity, provisioned as a session provisions it, holding [`WORKSPACE`].
+/// This device's own identity, provisioned as a session provisions it, holding [`WORKSPACE`] in
+/// the store its daemon serves.
 pub fn fixture() -> Fixture {
     let root = tempfile::tempdir().expect("a directory for the identity");
+    let home = root.path().join("home");
     let xdg = root.path().join("config");
+    let data = root.path().join("data");
+    let cache = root.path().join("cache");
+    let runtime = root.path().join("runtime");
     let system = root.path().join("system");
     let state = root.path().join("state");
+    for directory in [&home, &xdg, &data, &cache, &state, &runtime] {
+        std::fs::create_dir_all(directory).expect("a directory for the device");
+    }
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))
+        .expect("the runtime directory is this user's");
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", &xdg)
+    env.set("HOME", &home)
+        .set("XDG_CONFIG_HOME", &xdg)
+        .set("XDG_DATA_HOME", &data)
+        .set("XDG_CACHE_HOME", &cache)
+        .set("XDG_STATE_HOME", &state)
+        .set("XDG_RUNTIME_DIR", &runtime)
         .set("TILO_IDENTITY_ROOT", &system)
         .set(FILE_SECRETS_ENV, "1");
     tilo_identity::sources::test_trust::install();
@@ -92,9 +112,6 @@ pub fn fixture() -> Fixture {
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let _profile = tilo_identity::store::identity_for_workspace(WORKSPACE)
-        .expect("the identity registry")
-        .expect("the workspace is answered by this device's person");
     let device = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");
@@ -108,39 +125,37 @@ pub fn fixture() -> Fixture {
     }
 }
 
-/// This computer's copy of the workspace `workspace` under `state`, held as `cert`'s device in a
-/// workspace the same device governs: the state a session started on this directory finds waiting
-/// for it.
-pub fn workspace_held_here(state: &Path, workspace: &str, cert: &DeviceCert, key: &SigningKey) {
-    let owner = owner::open_file(
-        &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
-    )
-    .expect("an owner for this device's workspace");
-    let governor = testing::add_interactive_device_in(&owner, key, cert, workspace)
-        .expect("this device governs the workspace it hosts");
-    // The governor's checkpoint now names this device: the host admits it as the publication a
-    // host's own workspace makes.
-    let host = governor.device().device_public_key;
-    let frames: Vec<Vec<u8>> = governor.outgoing().map(|(bytes, _)| bytes).collect();
-    let id = WorkspaceId::parse(workspace).expect("a workspace id");
-    for frame in frames {
-        owner
-            .receive(
-                id,
-                TransportOrigin::RetainedServerDelta(host),
-                postcard::from_bytes(&frame).expect("a publication is a message"),
-                SystemTime::now(),
-            )
-            .expect("the host admits the workspace's people");
-    }
+/// Where the device's daemon keeps the service that holds its workspaces, below its state
+/// directory: the state root its service is opened on when it starts
+/// (`tilo_runtime::device::workspaces`).
+pub fn daemon_service_root(state: &Path) -> PathBuf {
+    state
+        .join("tilo")
+        .join("device")
+        .join("own")
+        .join("service")
 }
 
-/// Found `workspace` under `name` on the workspace service this device's state keeps under `state`,
-/// as a session founds a workspace the person makes here: the service holds it, this device's
-/// person is its owner, and this device's own copy of it is enrolled in the owner store the session
-/// opens. What the session asks of the workspace's governance — an invitation into it above all —
-/// is answered by that service from then on. `then` runs on the service once the workspace is
-/// founded there: what the person did in it before the session started.
+/// This computer's copy of the workspace `workspace` under `state`, held as `cert`'s device in a
+/// workspace the same device governs: the state the daemon started on this directory finds
+/// waiting for it.
+pub fn workspace_held_here(state: &Path, workspace: &str, cert: &DeviceCert, key: &SigningKey) {
+    workspace_founded_on_this_device_then(
+        state,
+        workspace,
+        "Shared browser workspace",
+        cert,
+        key,
+        async |_| {},
+    );
+}
+
+/// Found `workspace` under `name` in the workspace service this device's daemon serves from
+/// `state`, as the daemon founds a workspace its person makes: the service holds and governs it,
+/// this device's person is its owner, and this device is enrolled in it. What a session asks of
+/// the workspace's governance — an invitation into it above all — is answered by that service
+/// through the daemon from then on. `then` runs on the service once the workspace is founded
+/// there: what the person did in it before the daemon started.
 pub fn workspace_founded_on_this_device_then(
     state: &Path,
     workspace: &str,
@@ -149,7 +164,7 @@ pub fn workspace_founded_on_this_device_then(
     key: &SigningKey,
     then: impl AsyncFnOnce(&tilo_workspace_service::service::WorkspaceService),
 ) {
-    let root = state.join("tilo").join("workspace-service");
+    let root = daemon_service_root(state);
     let workspace_id = WorkspaceId::parse(workspace).expect("a workspace id");
     let owner = owner::open_file(
         &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
@@ -250,25 +265,135 @@ pub fn layout(workspace: &str, person: &str) -> Layout {
     }
 }
 
-/// A session of this computer taking part in the peer network, keeping what it holds under
-/// `state` , on the shell showing [`WORKSPACE`] owned by the person whose root key is `root`.
-pub fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
-    let mut session = super::headless_on(
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+/// A session running as the shell of a device daemon a test started, over a profile of the
+/// test's own: the daemon stops after the session ends.
+pub struct Hosted {
+    pub session: Session,
+    // The daemon keeps the session's person's services, and stops once nothing holds it: after
+    // the session, which runs on the link it made.
+    _daemon: Running,
+    /// The profile the daemon serves, when the test did not keep it.
+    _profile: Option<tempfile::TempDir>,
+    /// What a test set for the daemon to read its state from, restored after it.
+    _env: Option<tilo_test_env::ScopedEnv>,
+    /// Whatever else the test's daemon reads, kept as long as the session it serves.
+    _kept: Vec<tempfile::TempDir>,
+}
+
+impl Hosted {
+    /// Keep `directory` as long as the session: what the daemon read as it started.
+    #[must_use]
+    pub fn keeping(mut self, directory: tempfile::TempDir) -> Self {
+        self._kept.push(directory);
+        self
+    }
+}
+
+impl std::ops::Deref for Hosted {
+    type Target = Session;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
+}
+
+impl std::ops::DerefMut for Hosted {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.session
+    }
+}
+
+/// A private directory for a daemon's profile, which only this user reaches.
+fn private_profile() -> tempfile::TempDir {
+    let profile = tempfile::tempdir().expect("a profile for the daemon");
+    std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the profile is this user's");
+    profile
+}
+
+/// A session as the shell of a device daemon over `profile`, waiting up to the suite's hang
+/// bound for the person's services to run: what a person's computer runs.
+///
+/// # Panics
+/// The daemon or the session does not start.
+#[track_caller]
+pub fn hosted_in(profile: &Path, options: Options, outputs: &[OutputConfig]) -> Hosted {
+    let (daemon, session) = tilo_session::shell_session::start_in_process(
+        profile,
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            ..options
+        },
+        outputs,
+        tilo_test_env::hang_bound(),
+    )
+    .expect("the daemon starts and the session runs as its shell");
+    Hosted {
+        session,
+        _daemon: daemon,
+        _profile: None,
+        _env: None,
+        _kept: Vec::new(),
+    }
+}
+
+/// A session as the shell of a device daemon of the test's own, on a profile of its own: the
+/// daemon takes the person's services from the environment, and stops after the session ends.
+///
+/// # Panics
+/// The daemon or the session does not start.
+#[track_caller]
+pub fn hosted(options: Options, outputs: &[OutputConfig]) -> Hosted {
+    let profile = private_profile();
+    let mut hosted = hosted_in(profile.path(), options, outputs);
+    // The profile the daemon serves lives as long as the session it serves.
+    hosted._profile = Some(profile);
+    hosted
+}
+
+/// [`hosted`], with `env` kept set for as long as the session runs: what the daemon reads its
+/// relays and other settings from as it starts.
+///
+/// # Panics
+/// The daemon or the session does not start.
+#[track_caller]
+pub fn hosted_in_env(
+    env: tilo_test_env::ScopedEnv,
+    options: Options,
+    outputs: &[OutputConfig],
+) -> Hosted {
+    let mut hosted = hosted(options, outputs);
+    hosted._env = Some(env);
+    hosted
+}
+
+/// A session of this computer taking part in the peer network, on the shell showing
+/// [`WORKSPACE`] owned by the person whose root key is `root`, as the shell of the device daemon
+/// started on the state `state` holds.
+pub fn hosted_session(state: &Path, root: &[u8; 32]) -> Hosted {
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_STATE_HOME", state);
+    let mut hosted = hosted(
         Options {
             collab: true,
             person: "Ada".to_owned(),
             state: Some(state.to_path_buf()),
             ..Options::default()
         },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     );
-    session
+    hosted._env = Some(env);
+    hosted
+        .session
         .handle()
         .replace_tree(layout(WORKSPACE, &actor(root)));
     for _ in 0..4 {
-        session.step(Duration::from_millis(1)).expect("a frame");
+        hosted
+            .session
+            .step(Duration::from_millis(1))
+            .expect("a frame");
     }
-    session
+    hosted
 }
 
 /// This computer's person: an identity of its own in `home` 's configuration, and a device

@@ -164,13 +164,11 @@ fn scanned(app: &mut TestApp<InviteApp>) -> Result<(Vec<u8>, usize), String> {
     Err("a scanner finds no readable QR on the sheet's screen".into())
 }
 
-/// A session on a shell showing the workspace it made, placed on this device's own workspace
-/// service, with the invite sheet up as the person who may invite there sees it: everything either
+/// A session on a shell showing the workspace it made, as the shell of the device's daemon,
+/// with the invite sheet up as the person who may invite there sees it: everything either
 /// test does before it can make a link.
 struct Hosted {
-    /// The state directory the session reads from.
-    _kept: Vec<tempfile::TempDir>,
-    session: Session,
+    session: crate::common::held::Hosted,
     state: tilo_sheets::invite::InviteState,
     /// This computer's person, by their key.
     person: [u8; 32],
@@ -181,21 +179,25 @@ struct Hosted {
 /// and the sheet the person's press puts up.
 fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
     let (_root, person) = this_computer_with_an_identity(home);
-    let state = tempfile::tempdir().expect("a state directory");
-    let mut session = crate::common::headless_on(
+    let mut session = crate::common::held::hosted(
+        tilo_session::Options {
+            collab: true,
+            person: "Ada".to_owned(),
+            ..tilo_session::Options::default()
+        },
         &[tilo_compositor::OutputConfig::new(
             "HEADLESS-1",
             WIDTH,
             HEIGHT,
         )],
-        tilo_session::Options {
-            collab: true,
-            person: "Ada".to_owned(),
-            state: Some(state.path().to_path_buf()),
-            ..tilo_session::Options::default()
-        },
     );
     settle(&mut session);
+    // The daemon founds the person's own workspace: Invite is offered once it is here.
+    crate::common::until(&mut session, "the daemon's workspace is here", |session| {
+        session
+            .handle()
+            .read(|tree| tree.active_workspace().is_some())
+    });
 
     // The person the workspace lets invite finds Invite on the bar, and
     // pressing it puts the sheet up. The pointer comes up to the bar first,
@@ -228,7 +230,6 @@ fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
         })
         .expect("the workspace the session made");
     Hosted {
-        _kept: vec![state],
         session,
         state: sheet,
         person,
@@ -296,7 +297,6 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     // network, which her device dials directly, rather than a public relay a test cannot count on.
     home.env().set(settings_store::relay::ENV, "none");
     let Hosted {
-        _kept,
         mut session,
         state,
         person,
@@ -440,7 +440,6 @@ fn a_native_invitation_scans_from_the_sheet_and_admits_over_iroh() {
     // Use the signed direct routes.
     home.env().set(settings_store::relay::ENV, "none");
     let Hosted {
-        _kept,
         mut session,
         state,
         workspace,

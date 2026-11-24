@@ -1217,24 +1217,27 @@ fn app_session(
     held: &crate::common::held::Fixture,
     sync: &Rc<Client>,
     tree: Layout,
-) -> Session {
+) -> crate::common::held::Hosted {
     // The app speaks from this test's own process, so the launch the session would have recorded
     // for it names that process.
     let launches = std::sync::Arc::new(Launches::default());
     launches.started(std::process::id(), "so.tilo.notes", WORKSPACE, true);
-    let mut session = crate::common::headless(Options {
-        sync: Some(Rc::clone(sync)),
-        app_socket: AppSocket::At(socket.to_path_buf()),
-        launches,
-        lists: Lists::default(),
-        state: Some(held.state.clone()),
-        ..Options::default()
-    });
-    session.handle().replace_tree(tree);
+    let mut hosted = crate::common::held::hosted(
+        Options {
+            sync: Some(Rc::clone(sync)),
+            app_socket: AppSocket::At(socket.to_path_buf()),
+            launches,
+            lists: Lists::default(),
+            state: Some(held.state.clone()),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    );
+    hosted.session.handle().replace_tree(tree);
     for _ in 0..4 {
-        session.step(Duration::from_millis(1)).expect("step");
+        hosted.session.step(Duration::from_millis(1)).expect("step");
     }
-    session
+    hosted
 }
 
 /// Following someone reaches the window's app: the app of the workspace's window is told which

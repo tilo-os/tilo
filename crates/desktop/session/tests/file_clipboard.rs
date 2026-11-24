@@ -28,7 +28,7 @@ use runtime_collab::file_clipboard::{
     Command, Conflict, ObjectIdentity, Offer, Reply, SelectedDescriptor,
 };
 use runtime_portal::DescriptorStreamSource as _;
-use tilo_compositor::Selection;
+use tilo_compositor::{OutputConfig, Selection};
 use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Launches, Lists, Options, Session};
 
@@ -41,31 +41,38 @@ const FILES: &str = "so.tilo.file-explorer";
 const NAME: &str = "notes.txt";
 /// Files' record in the workspace: the resource its folder actions name.
 const RESOURCE: &str = "files.folder";
+/// The screen the session draws its shell on.
+const WIDTH: i32 = 1280;
+const HEIGHT: i32 = 800;
 const BODY: &[u8] = b"the file the person copied";
 /// The session serving the apps it starts on `socket` , holding the fixture's workspace from its
 /// state and showing its shell.
-fn session(socket: &Path, fixture: &Fixture) -> Session {
+fn session(socket: &Path, fixture: &Fixture) -> crate::common::held::Hosted {
     // The app speaks from this test's own process, so the launch the session would have recorded
     // for it names that process.
     let launches = std::sync::Arc::new(Launches::default());
     launches.started(std::process::id(), FILES, WORKSPACE, true);
-    let mut session = crate::common::headless(Options {
-        collab: false,
-        wake: LoopWake::default(),
-        app_socket: AppSocket::At(socket.to_path_buf()),
-        person: "Ada".to_owned(),
-        launches,
-        state: Some(fixture.state.clone()),
-        lists: Lists::default(),
-        ..Options::default()
-    });
-    session
+    let mut hosted = crate::common::held::hosted(
+        Options {
+            collab: false,
+            wake: LoopWake::default(),
+            app_socket: AppSocket::At(socket.to_path_buf()),
+            person: "Ada".to_owned(),
+            launches,
+            state: Some(fixture.state.clone()),
+            lists: Lists::default(),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    );
+    hosted
+        .session
         .handle()
         .replace_tree(layout(WORKSPACE, &actor(&fixture.cert.user_public_key)));
     for _ in 0..4 {
-        session.step(Duration::from_millis(1)).expect("step");
+        hosted.session.step(Duration::from_millis(1)).expect("step");
     }
-    session
+    hosted
 }
 
 /// A connection to the session's app wire as Files in the workspace, as the launcher hands an app one:

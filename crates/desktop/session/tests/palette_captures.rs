@@ -28,6 +28,7 @@ use std::time::Duration;
 use runtime_collab::{CollabClient, Invocation};
 use tilo_actions::ResourceSpec;
 use tilo_actions::remote::InvokeArgument;
+use tilo_compositor::OutputConfig;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
 use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
@@ -38,6 +39,9 @@ use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, opened};
 const TASKS: &str = "so.tilo.tasks";
 /// The line a person writes into the palette.
 const LINE: &str = "Call the landlord fri 10am";
+/// The screen the session draws its shell on.
+const WIDTH: i32 = 1280;
+const HEIGHT: i32 = 800;
 
 /// A connection to the session's app wire as `app` in the workspace, as the launcher hands an app one.
 fn connect(socket: &Path) -> CollabClient {
@@ -63,7 +67,7 @@ fn channel() -> String {
 /// The session serving the apps it starts on `socket` , holding the fixture's workspace from its
 /// state and showing its shell: the session an installed session is, with the apps it launches
 /// started through.
-fn session(socket: &Path, fixture: &Fixture) -> (Session, Rc<Apps>) {
+fn session(socket: &Path, fixture: &Fixture) -> (crate::common::held::Hosted, Rc<Apps>) {
     // The app speaks from this test's own process, so the launch the session would have recorded
     // for it names that process: what the broker admits the connection by.
     let launches = Arc::new(Launches::default());
@@ -72,23 +76,27 @@ fn session(socket: &Path, fixture: &Fixture) -> (Session, Rc<Apps>) {
         tilo_app_launch::SessionEnvironment::from_process(),
         None,
     ));
-    let mut session = crate::common::headless(Options {
-        collab: false,
-        app_socket: AppSocket::At(socket.to_path_buf()),
-        person: actor(&fixture.cert.user_public_key),
-        launches,
-        state: Some(fixture.state.clone()),
-        apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-        launch: Some(Rc::clone(&apps)),
-        ..Options::default()
-    });
-    session
+    let mut hosted = crate::common::held::hosted(
+        Options {
+            collab: false,
+            app_socket: AppSocket::At(socket.to_path_buf()),
+            person: actor(&fixture.cert.user_public_key),
+            launches,
+            state: Some(fixture.state.clone()),
+            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+            launch: Some(Rc::clone(&apps)),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    );
+    hosted
+        .session
         .handle()
         .replace_tree(layout(WORKSPACE, &actor(&fixture.cert.user_public_key)));
     for _ in 0..4 {
-        session.step(Duration::from_millis(1)).expect("step");
+        hosted.session.step(Duration::from_millis(1)).expect("step");
     }
-    (session, apps)
+    (hosted, apps)
 }
 
 /// Tasks' capture, as the app publishes it: its root, with the one action that takes the line a

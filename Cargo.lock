@@ -20416,6 +20416,7 @@ dependencies = [
  "tilo-server-client",
  "tilo-server-protocol",
  "tilo-service",
+ "tilo-session",
  "tilo-session-actions",
  "tilo-session-client",
  "tilo-session-core",

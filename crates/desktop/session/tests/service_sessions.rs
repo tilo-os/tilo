@@ -48,40 +48,31 @@ struct Keys {
     cert: DeviceCert,
 }
 
-/// A person, their identity provisioned where this test's session reads it,
-/// and the workspace they host in its state.
+/// A person, their identity provisioned where their daemon reads it,
+/// and the workspace they host in its store.
 struct Fixture {
     keys: Keys,
-    /// The state directory the session keeps its workspaces under.
+    /// The state directory the device's daemon keeps its workspaces under.
     state: PathBuf,
-    // The identity's environment and files, restored and removed last: the session and the apps
+    // The identity's environment and files, restored and removed last: the daemon and the apps
     // read them while they run.
-    _env: tilo_test_env::ScopedEnv,
-    _root: tempfile::TempDir,
-    _home: tempfile::TempDir,
+    _home: tilo_test_env::TestHome,
 }
 
 /// A login whose session bus is one no Secret Service listens on: nothing of the person's
 /// workspace is kept in this host's keyring.
 fn fixture() -> Fixture {
-    let root = tempfile::tempdir().expect("a directory for the identity");
-    let home = tempfile::tempdir().expect("a home for this machine's session");
-    let xdg = root.path().join("config");
-    let system = root.path().join("system");
-    let state = root.path().join("state");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", &xdg)
-        .set("TILO_IDENTITY_ROOT", &system)
-        .set(FILE_SECRETS_ENV, "1")
-        .set("HOME", home.path());
-    env.set(
+    let mut home = tilo_test_env::TestHome::new().expect("a home for this machine's session");
+    home.env().set(FILE_SECRETS_ENV, "1");
+    let system = home.root().join("system");
+    home.env().set(
         "DBUS_SESSION_BUS_ADDRESS",
-        format!("unix:path={}", root.path().join("no-session-bus").display()),
+        format!("unix:path={}", home.root().join("no-session-bus").display()),
     );
     // The account's own store below the identity directory, where every reader looks, and the
     // person's devices a certificate is checked against before anything signs with it.
     tilo_identity::sources::test_trust::install();
-    let personal = tilo_identity::store::account_identity_dir(&xdg.join("tilo/identity"));
+    let personal = tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
     tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
@@ -98,7 +89,7 @@ fn fixture() -> Fixture {
         cert,
     };
     crate::common::held::workspace_founded_on_this_device_then(
-        &state,
+        home.state(),
         WORKSPACE,
         "Shell",
         &keys.cert,
@@ -107,9 +98,7 @@ fn fixture() -> Fixture {
     );
     Fixture {
         keys,
-        state,
-        _env: env,
-        _root: root,
+        state: home.state().to_path_buf(),
         _home: home,
     }
 }
@@ -139,28 +128,32 @@ fn private_socket() -> (tempfile::TempDir, PathBuf) {
 
 /// The session serving `app` on `socket` , holding the fixture's workspace from its state and
 /// showing its shell.
-fn session(socket: &Path, fixture: &Fixture, app: &str) -> Session {
+fn session(socket: &Path, fixture: &Fixture, app: &str) -> crate::common::held::Hosted {
     // The app speaks from this test's own process, so the launch the session would have recorded
     // for it names that process.
     let launches = Arc::new(Launches::default());
     launches.started(std::process::id(), app, WORKSPACE, true);
-    let mut session = crate::common::headless(Options {
-        collab: true,
-        wake: LoopWake::default(),
-        app_socket: AppSocket::At(socket.to_path_buf()),
-        person: "Ada".to_owned(),
-        launches,
-        state: Some(fixture.state.clone()),
-        lists: Lists::default(),
-        ..Options::default()
-    });
-    session.handle().replace_tree(shell(&fixture.keys));
+    let mut hosted = crate::common::held::hosted(
+        Options {
+            collab: true,
+            wake: LoopWake::default(),
+            app_socket: AppSocket::At(socket.to_path_buf()),
+            person: "Ada".to_owned(),
+            launches,
+            state: Some(fixture.state.clone()),
+            lists: Lists::default(),
+            ..Options::default()
+        },
+        &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+    );
+    hosted.session.handle().replace_tree(shell(&fixture.keys));
     for _ in 0..4 {
-        session
+        hosted
+            .session
             .step(std::time::Duration::from_millis(1))
             .expect("step");
     }
-    session
+    hosted
 }
 
 /// The channel key of `app` 's record in the workspace.

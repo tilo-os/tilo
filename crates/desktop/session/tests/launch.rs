@@ -174,13 +174,13 @@ fn choose(session: &mut Session, query: &str, title: &str) {
 #[test]
 fn choosing_a_host_app_starts_it_through_the_launcher_on_the_sessions_display() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
     let socket = home.runtime().join("wayland-7");
     let records = home.home().join("records");
     host_app(&home, "org.example.Probe.desktop", "#!/bin/sh\nexit 0\n");
     let launcher = recording_host_launcher(&home, &records);
 
-    let (mut session, _apps, _launches) = session_through(&home, &launcher, None);
+    let (mut session, _apps, _launches) = session_through(&mut home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     choose(&mut session, "probe", "Probe");
     until(&mut session, "the launcher starts", |_| records.exists());
@@ -202,7 +202,7 @@ fn choosing_a_host_app_starts_it_through_the_launcher_on_the_sessions_display() 
 #[test]
 fn a_document_opens_in_the_app_that_claims_its_type() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
     let records = home.home().join("records");
     host_app_claiming(
         &home,
@@ -214,7 +214,7 @@ fn a_document_opens_in_the_app_that_claims_its_type() {
     fs::write(&document, b"notes").unwrap();
     let launcher = recording_host_launcher(&home, &records);
 
-    let (mut session, apps, _launches) = session_through(&home, &launcher, None);
+    let (mut session, apps, _launches) = session_through(&mut home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     // The link a browser or a file manager hands over: the path inside it is percent-encoded, the
     // path the app opens is not.
@@ -242,12 +242,12 @@ fn a_document_opens_in_the_app_that_claims_its_type() {
 #[test]
 fn an_app_that_stops_on_its_own_leaves_a_notice_in_its_place() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
     host_app(&home, "org.example.Probe.desktop", "#!/bin/sh\nexit 3\n");
     // The launcher is the app's process: it ends with it.
     let launcher = tilo_test_env::stand_in(home.home().join("tilo-launcher"), "exit 3\n").unwrap();
 
-    let (mut session, _apps, _launches) = session_through(&home, &launcher, None);
+    let (mut session, _apps, _launches) = session_through(&mut home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     choose(&mut session, "probe", "Probe");
     until(&mut session, "the notice is shown", |session| {
@@ -340,7 +340,7 @@ fn an_app_that_ends_before_its_window_could_open_says_why() {
         "echo 'the display refused this app' >&2\nexit 1\n",
     )
     .unwrap();
-    let (mut session, apps, _launches) = session_through(&home, &launcher, None);
+    let (mut session, apps, _launches) = session_through(&mut home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     let (workspace, _) = front_workspace(&session);
     apps.start(
@@ -420,7 +420,7 @@ fn an_app_whose_window_came_and_then_ended_stopped_and_did_not_fail_to_open() {
     installed_probe_package(&mut home);
     let started = home.home().join("starts");
     let launcher = probe_launcher(&home, &started, "exit 3\n");
-    let (mut session, apps, _launches) = session_through(&home, &launcher, None);
+    let (mut session, apps, _launches) = session_through(&mut home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     let (workspace, _) = front_workspace(&session);
     apps.start(
@@ -483,7 +483,7 @@ fn titled_window(id: u64, app: &str, title: &str) -> Window {
 #[test]
 fn a_second_launch_raises_the_window_the_app_already_has() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
     let records = home.home().join("records");
     host_app_declaring(
         &home,
@@ -493,7 +493,7 @@ fn a_second_launch_raises_the_window_the_app_already_has() {
     );
     let launcher = recording_host_launcher(&home, &records);
 
-    let (mut session, _apps, _launches) = session_through(&home, &launcher, None);
+    let (mut session, _apps, _launches) = session_through(&mut home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     choose(&mut session, "probe", "Probe");
     until(&mut session, "the launcher starts", |_| records.exists());
@@ -591,6 +591,9 @@ fn an_action_that_takes_the_person_into_an_app_brings_its_window_forward() {
 }
 
 /// The app the tab tests install: a Tilo package whose window is a tab of the desktop.
+/// The screen the session draws its shell on.
+const WIDTH: i32 = 1280;
+const HEIGHT: i32 = 800;
 const PROBE: &str = "so.tilo.probe";
 /// What the person reads for [`PROBE`]: the name its package gives it, which its window bar says
 /// and its tab takes.
@@ -743,7 +746,12 @@ fn handed(records: &Path, flag: &str) -> String {
 fn probe_session(
     home: &mut tilo_test_env::TestHome,
     started: &Path,
-) -> (Session, Rc<Apps>, Arc<Launches>, tilo_test_env::StandIn) {
+) -> (
+    crate::common::held::Hosted,
+    Rc<Apps>,
+    Arc<Launches>,
+    tilo_test_env::StandIn,
+) {
     probe_session_on(home, started, None)
 }
 
@@ -753,7 +761,12 @@ fn probe_session_with_services(
     home: &mut tilo_test_env::TestHome,
     started: &Path,
     bus: &tilo_test_env::PrivateBus,
-) -> (Session, Rc<Apps>, Arc<Launches>, tilo_test_env::StandIn) {
+) -> (
+    crate::common::held::Hosted,
+    Rc<Apps>,
+    Arc<Launches>,
+    tilo_test_env::StandIn,
+) {
     probe_session_on(home, started, Some(bus))
 }
 
@@ -763,18 +776,32 @@ fn probe_session_on(
     home: &mut tilo_test_env::TestHome,
     started: &Path,
     bus: Option<&tilo_test_env::PrivateBus>,
-) -> (Session, Rc<Apps>, Arc<Launches>, tilo_test_env::StandIn) {
+) -> (
+    crate::common::held::Hosted,
+    Rc<Apps>,
+    Arc<Launches>,
+    tilo_test_env::StandIn,
+) {
     let probe = installed_probe(home, started);
     let (session, apps, launches) = session_through(home, &probe, bus);
     (session, apps, launches, probe)
 }
 
+/// Whether this test's environment already names a device its daemon can serve the person as.
+fn an_identity_is_here() -> bool {
+    std::env::var_os("TILO_IDENTITY_ROOT").is_some_and(|root| {
+        tilo_device_identity::IdentityPaths::under(std::path::PathBuf::from(root))
+            .device_cert
+            .exists()
+    })
+}
+
 /// A session over `home` 's own app store whose packages start through `launcher` .
 fn session_through(
-    home: &tilo_test_env::TestHome,
+    home: &mut tilo_test_env::TestHome,
     launcher: &tilo_test_env::StandIn,
     bus: Option<&tilo_test_env::PrivateBus>,
-) -> (Session, Rc<Apps>, Arc<Launches>) {
+) -> (crate::common::held::Hosted, Rc<Apps>, Arc<Launches>) {
     let socket = home.runtime().join("wayland-7");
     let mut environment = tilo_app_launch::SessionEnvironment::from_process();
     environment.wayland_socket = Some(socket);
@@ -807,7 +834,10 @@ fn session_through(
     if let Some(desktop) = &desktop {
         crate::common::person_asked_on(&desktop.asks().1);
     }
-    let session = crate::common::headless(Options {
+    // The device this session is the shell of needs an identity its daemon can serve the
+    // person as: a test that reads no person of its own gets one of its own.
+    let identity = (!an_identity_is_here()).then(|| this_computer(home));
+    let options = Options {
         lists: host_lists(home),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
         launch: Some(Rc::clone(&apps)),
@@ -819,7 +849,29 @@ fn session_through(
         collab: desktop.is_none(),
         desktop,
         ..Options::default()
-    });
+    };
+    let mut session = crate::common::held::hosted(
+        options,
+        &[tilo_compositor::OutputConfig::new(
+            "HEADLESS-1",
+            WIDTH,
+            HEIGHT,
+        )],
+    );
+    if let Some((root, _)) = identity {
+        session = session.keeping(root);
+    }
+    // The daemon founds the person's own workspace: it is in front once it is here.
+    crate::common::wait_for(
+        &mut session,
+        "the daemon's workspace is in front",
+        |session| {
+            session
+                .handle()
+                .read(|tree| tree.active_workspace().is_some())
+                .then_some(())
+        },
+    );
     (session, apps, started)
 }
 
@@ -1264,7 +1316,7 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
     let arguments = home.home().join("arguments");
     installed_probe_package(&mut home);
     let launcher = recording_launcher(&home, &started, &arguments);
-    let (mut session, apps, _started) = session_through(&home, &launcher, None);
+    let (mut session, apps, _started) = session_through(&mut home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
 
     let (name, _) = front_workspace(&session);
@@ -1342,7 +1394,7 @@ fn an_app_opened_in_a_joined_workspace_opens_there() {
     let arguments = home.home().join("arguments");
     installed_probe_package(&mut home);
     let launcher = recording_launcher(&home, &started, &arguments);
-    let (mut session, _apps, _started) = session_through(&home, &launcher, None);
+    let (mut session, _apps, _started) = session_through(&mut home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     let (their_own, _) = front_workspace(&session);
     assert!(!their_own.is_empty(), "this session starts in a workspace");
@@ -1436,7 +1488,7 @@ fn an_app_runs_in_the_workspace_the_shell_made_its_tab_in() {
     let arguments = home.home().join("arguments");
     installed_probe_package(&mut home);
     let launcher = recording_launcher(&home, &started, &arguments);
-    let (mut session, _apps, _started) = session_through(&home, &launcher, None);
+    let (mut session, _apps, _started) = session_through(&mut home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     let (their_own, _) = front_workspace(&session);
 
@@ -2076,7 +2128,7 @@ const X11_CLASS: &str = "tilo.test.class";
 #[test]
 fn reopening_a_closed_window_starts_its_app_again() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
     let records = home.home().join("records");
     host_app_declaring(
         &home,
@@ -2086,7 +2138,7 @@ fn reopening_a_closed_window_starts_its_app_again() {
     );
     let launcher = recording_host_launcher(&home, &records);
 
-    let (mut session, _apps, _launches) = session_through(&home, &launcher, None);
+    let (mut session, _apps, _launches) = session_through(&mut home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     // The client's two windows: their class is the app, their title the tabs'.
     session.desktop().with_policy(|policy| {
@@ -2311,7 +2363,7 @@ fn close_then_open_again(status: &str) {
         ),
     )
     .unwrap();
-    let (mut session, apps, _launches) = session_through(&home, &launcher, None);
+    let (mut session, apps, _launches) = session_through(&mut home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     let (workspace, _) = front_workspace(&session);
     let open = |apps: &Apps| {

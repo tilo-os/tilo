@@ -60,6 +60,11 @@ dev-overrides = ["tilo-identity/throwaway-test-identity"]
 # (`shell_session::start_in_process`), on a link the daemon made for it. A
 # production session never builds it: the daemon starts its shell itself.
 test-support = ["tilo-runtime/test-support"]
+# The session holds no copy of any workspace, serves no workspace endpoint and
+# reaches its workspaces only through its device's daemon: what the tests that
+# land with the deletion of the session's own copy prove. Off until that copy
+# is gone; the commit that deletes it turns it on.
+no-replica = ["test-support"]
 
 [dependencies]
 # The device's published resources: their readings, verbs and surfaces.
@@ -483,6 +488,9 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 # The canonical compiled form of the surface this crate publishes.
 tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
+# This package's own integration tests run a session in their process as the shell of a device
+# daemon (`shell_session::start_in_process`): the feature that builds it.
+tilo-session = { path = ".", features = ["test-support"] }
 # The person's devices as a host holding their record lists them, which the tests' own identities
 # are checked against (`sources::test_trust`).
 tilo-identity = { path = "../../core/tilo-identity", features = ["test-support"] }
