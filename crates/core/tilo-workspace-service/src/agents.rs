@@ -458,16 +458,18 @@ pub async fn on_device(
     actions: Arc<dyn ActionProvider + Send + Sync>,
 ) {
     let workspaces = service.installed().await.workspaces().clone();
-    run_on_device(workspaces, actions, None).await;
+    run_on_device(workspaces, actions, None, None).await;
 }
 
 /// [`on_device`] for the service whose `workspaces` the device opened already. Where the device
 /// serves tickets (`tickets`), it asks with one to run the agents of other people it may take
-/// turns of, and runs each once its person redeemed the ticket.
+/// turns of, and runs each once its person redeemed the ticket. What the assistants' look-round
+/// (`initiative`) proposes is filed through the same calls, each signed by its agent's key.
 pub async fn run_on_device(
     workspaces: Workspaces,
     actions: Arc<dyn ActionProvider + Send + Sync>,
     tickets: Option<Arc<dyn ticketed_keys::AgentKeyTickets>>,
+    initiative: Option<initiative::Initiative>,
 ) {
     // The person's own device calls the model their workspace linked where it is, one on their
     // own network or on this machine included: a local model answers with no network at all.
@@ -496,6 +498,12 @@ pub async fn run_on_device(
     // Every key an agent is given here from a root is kept among its person's keys in their own
     // workspace.
     keys.keep_in(&workspaces);
+    if let Some(initiative) = initiative {
+        initiative.act_through(EngineActions::new(
+            Arc::clone(&actions),
+            Arc::clone(&keys) as Arc<dyn agent_keys::AgentKeys>,
+        ));
+    }
     tracing::info!(
         "this device runs its workspaces' agents, each on the model its workspace linked"
     );

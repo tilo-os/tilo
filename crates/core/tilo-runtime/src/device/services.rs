@@ -50,6 +50,8 @@ use tilo_server_protocol::workspaces::{
 };
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed, this_device};
+use tilo_workspace_service::agents::events::WorkspaceEvents;
+use tilo_workspace_service::agents::initiative::Initiative;
 use tilo_workspace_service::apps::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
     collab_core::{BrokerChannels, BrokerSealChecks},
@@ -1303,8 +1305,19 @@ impl Daemon {
         #[cfg(unix)]
         let shell_dispatch: Arc<super::shell::Dispatching> = Arc::default();
         let invocations: Arc<Invocations> = Arc::default();
+        // The person's shortcuts, saved into the workspaces this device holds and run here: the
+        // same store the trigger runner arms them from, so a computer keeps its shortcuts with no
+        // desktop session open on it.
+        let shortcuts: Arc<dyn ShortcutLibraryServices> =
+            Arc::new(super::shortcuts::Shortcuts::new(
+                workspaces.copies().clone(),
+                workspaces.device_cert().clone(),
+                workspaces.signer(),
+            )?);
+        let initiative = serve_initiative(&workspaces, &shortcuts);
         let (policy_origin, broker) = start_broker(
             BrokerParts {
+                shortcuts,
                 root,
                 sockets,
                 apps: &apps,
@@ -1415,7 +1428,7 @@ impl Daemon {
                 &policy_origin,
             )?;
         }
-        start_agents(&broker, &workspaces, &tickets);
+        start_agents(&broker, &workspaces, &tickets, initiative);
         start_triggers(&broker, &workspaces, &invocations);
         let replicas = take_work_files(
             &TakenFiles {
@@ -1820,6 +1833,8 @@ struct BrokerParts<'a> {
     /// The dispatch those shells' calls reach, once the broker serves.
     #[cfg(unix)]
     shell_dispatch: &'a Arc<super::shell::Dispatching>,
+    /// The person's shortcuts, which the workspaces' events are saved as.
+    shortcuts: Arc<dyn ShortcutLibraryServices>,
 }
 
 /// Start the collaboration broker over this profile's services.
@@ -1958,18 +1973,11 @@ fn broker_services(
             .content_shelf()
             .map(tilo_workspace_service::content::shelf_puts),
         document_content: Some(document_content),
-        // The person's shortcuts, saved into the workspaces this device holds and run here: the
-        // same store the trigger runner arms them from, so a computer keeps its shortcuts with
-        // no desktop session open on it.
         // Who is present on which device, as this device's workspaces hear it: their links, and
         // the agent sessions this daemon serves.
         present_devices: Some(Arc::new(parts.workspaces.copies().clone())
             as Arc<dyn tilo_workspace_service::workspaces::PresentDevices>),
-        shortcut_library: Some(Arc::new(super::shortcuts::Shortcuts::new(
-            parts.workspaces.copies().clone(),
-            parts.workspaces.device_cert().clone(),
-            parts.workspaces.signer(),
-        )?) as Arc<dyn ShortcutLibraryServices>),
+        shortcut_library: Some(parts.shortcuts),
         // This device's server settings, as the apps attached to this daemon read and change them:
         // the work its machine takes and the services it offers, saved to the configuration the
         // daemon keeps.
@@ -4389,7 +4397,13 @@ impl Daemon {
 /// a workspace's host runs, each turn's calls decided by `broker` as the person's own calls are.
 /// An agent whose person's root is not here is asked for with a ticket `tickets` serves, which
 /// its person redeems to approve this device's key for it.
-fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces, tickets: &Arc<Tickets>) {
+/// What the assistants' look-round proposes is filed through the same broker (`initiative`).
+fn start_agents(
+    broker: &BrokerHandle,
+    workspaces: &ServiceWorkspaces,
+    tickets: &Arc<Tickets>,
+    initiative: Initiative,
+) {
     let Some(broker) = broker.app_action_broker() else {
         tracing::warn!("this device's broker is not up, so it runs no agents of its workspaces");
         return;
@@ -4400,7 +4414,26 @@ fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces, tickets: 
             workspaces.copies().clone(),
             broker.device_host(),
             Some(Arc::clone(tickets) as _),
+            Some(initiative),
         ));
+}
+
+/// Answer the workspaces' events and their assistants' look-round on this device: each event is
+/// saved as a shortcut in `shortcuts`, and the look-round runs among them. The returned
+/// look-round files what it proposes once the device's agents run ([`start_agents`]).
+fn serve_initiative(
+    workspaces: &ServiceWorkspaces,
+    shortcuts: &Arc<dyn ShortcutLibraryServices>,
+) -> Initiative {
+    let events = Arc::new(WorkspaceEvents::new(
+        workspaces.copies().clone(),
+        Arc::clone(shortcuts),
+    ));
+    let initiative = Initiative::new(workspaces.copies().clone(), Arc::clone(&events));
+    let providers = workspaces.copies().providers();
+    events.register(&providers);
+    Arc::new(initiative.clone()).register(&providers);
+    initiative
 }
 
 /// Run the triggers of the shortcuts the person saved in this device's workspaces: each firing

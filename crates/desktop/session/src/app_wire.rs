@@ -557,9 +557,6 @@ pub struct Hosted {
     /// The workspace's shortcuts as the broker saves and runs them, from this device's own
     /// workspace service; no session without a device identity keeps any.
     pub shortcuts: Option<std::sync::Arc<dyn ShortcutLibraryServices>>,
-    /// The workspace's events and its assistant's look-round, saved through those shortcuts:
-    /// what a person and their assistant set up, change and pause.
-    pub initiative: Option<tilo_workspace_service::agents::initiative::Initiative>,
     pub activity: std::sync::Arc<ActivityWire>,
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
@@ -1336,7 +1333,6 @@ fn broker_services(
         records,
         layout,
         shortcuts,
-        initiative,
         activity,
         agents,
         agent_sessions,
@@ -1439,9 +1435,21 @@ fn broker_services(
     if let Some(programs) = task_programs {
         agent_session_steps(programs, &providers);
     }
-    if let Some(initiative) = &initiative {
-        initiative.events_served().register(&providers);
-        std::sync::Arc::new(initiative.clone()).register(&providers);
+    // The workspace's events and its assistants' look-round are the device's daemon's, saved as
+    // the shortcuts it keeps: a call of them is carried there as the app or agent that made it.
+    if let Ok(link) = &daemon {
+        let _inside = tilo_rt::app().handle().enter();
+        for provider in [
+            tilo_actions::remote::workspace_events::PROVIDER,
+            tilo_actions::remote::workspace_initiative::PROVIDER,
+        ] {
+            providers.provide(
+                provider,
+                provider,
+                tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
+                std::sync::Arc::new(link.dispatch()),
+            );
+        }
     }
     if let Some(actions) = session_actions {
         // The device's dispatch reaches them over the shell's link too: what the daemon's own
@@ -2109,7 +2117,6 @@ mod tests {
                 Names::default(),
             )),
             shortcuts: None,
-            initiative: None,
             activity: crate::activity_provider::wire(requests()),
             agents: None,
             agent_sessions: None,
@@ -2676,8 +2683,7 @@ mod tests {
             None,
             Hosted {
                 shortcuts: Some(std::sync::Arc::new(library)),
-                initiative: None,
-                ..hosted()
+                    ..hosted()
             },
             None,
             None,
