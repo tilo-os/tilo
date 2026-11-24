@@ -201,6 +201,32 @@ pub fn on_device(published: &str, device: &str) -> String {
     published.replace(DEVICE_KEY, device)
 }
 
+/// Where Settings publishes the person's region and formats (the `locale` section), which a
+/// device that never chose them still has to read before a session publishes one.
+pub const SETTINGS_LOCALE: &str = "settings/locale";
+
+/// What a device that has chosen no region or formats yet reads at [`SETTINGS_LOCALE`]: every
+/// field the section's type defaults them to (`tilo_locale::Locale::default()`), so a view that
+/// formats a number, a day or a unit lays out rather than trapping on a root no session has
+/// published. A literal, because the section's type lives in `tilo-locale`, which pulls the app
+/// toolkit into a wasm build of a page; the host's test holds it to the type.
+pub const SETTINGS_LOCALE_DEFAULTS: &str = concat!(
+    r#"{"currency":"USD","date_format":"Language","time_format":"Language","#,
+    r#""measurement":"Metric","number_style":"DecimalPoint","first_day_of_week":"Monday"}"#,
+);
+
+/// What the platform root `published` reads before any session publishes it: the new-install
+/// defaults of a root whose type has them ([`SETTINGS_LOCALE_DEFAULTS`]), and nothing for every
+/// other root, so a view over one lays out as it does on a computer without that resource.
+#[must_use]
+pub fn platform_root_defaults(published: &str) -> &'static str {
+    if published == SETTINGS_LOCALE {
+        SETTINGS_LOCALE_DEFAULTS
+    } else {
+        "{}"
+    }
+}
+
 /// Each of Settings' resources a view names, read from the sections' surface: its name in a
 /// view (`settings.power`), its kind, and where the session publishes it, a device section's
 /// address with [`DEVICE_KEY`] where the device's key goes.
@@ -839,13 +865,17 @@ impl Roots {
         }
     }
 
-    /// Start `target` reading what it would before its app publishes anything, so a view that
-    /// reads a field of it runs as the app opens, rather than trapping on a resource with no
-    /// reading at all. The session's first reading replaces it.
-    /// A root the host serves itself (the workspace's members) already reads as it serves it.
+    /// Start `target` reading what it would before its app publishes anything
+    /// ([`platform_root_defaults`]), so a view that reads a field of it runs as the app opens,
+    /// rather than trapping on a resource with no reading at all. The session's first reading
+    /// replaces it. A root the host serves itself (the workspace's members) already reads as it
+    /// serves it.
     fn seed(host: &crate::host::Host, target: &crate::runtime::ResourceRef) {
         if !host.runtime().serves(target) {
-            let _ = host.runtime().set_reading(target, "{}");
+            let _ = host.runtime().set_reading(
+                target,
+                platform_root_defaults(&target.id_string()),
+            );
         }
     }
 
@@ -942,6 +972,35 @@ impl Roots {
 )]
 mod tests {
     use super::*;
+
+    /// A page with no session behind it seeds the platform's roots from
+    /// [`platform_root_defaults`]: nothing for every root that declares no defaults, and the
+    /// region and formats section's own new-install defaults, which this holds to the type they
+    /// stand for, so the literal a wasm build carries never drifts from the section.
+    #[test]
+    fn a_new_install_reads_the_settings_defaults_and_nothing_else() {
+        let locale: tilo_locale::Locale = serde_json::from_str(SETTINGS_LOCALE_DEFAULTS)
+            .expect("the defaults read as the section's type");
+        assert_eq!(
+            serde_json::to_value(locale).expect("the section writes as JSON"),
+            serde_json::to_value(tilo_locale::Locale::default()).expect("its defaults write"),
+            "the literal is the section's default, field for field"
+        );
+        assert_eq!(
+            platform_root_defaults(SETTINGS_LOCALE),
+            SETTINGS_LOCALE_DEFAULTS
+        );
+        for (published, _) in platform_roots() {
+            if published == SETTINGS_LOCALE {
+                continue;
+            }
+            assert_eq!(
+                platform_root_defaults(&published),
+                "{}",
+                "`{published}` declares no defaults: a device without it reads nothing"
+            );
+        }
+    }
 
     /// Every root a published app names is a type its committed surface publishes. A resource
     /// added to the table without its surface fails here, naming the kind, before every package

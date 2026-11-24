@@ -22299,6 +22299,7 @@ dependencies = [
  "tilo-doc",
  "tilo-failure",
  "tilo-formats",
+ "tilo-locale",
  "tilo-reference",
  "tilo-render-protocol",
  "tilo-resource",

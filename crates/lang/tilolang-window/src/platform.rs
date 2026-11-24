@@ -79,10 +79,10 @@ fn image_of(image: &ClipboardImage) -> (String, Vec<u8>) {
 
 impl Platform for Packages {
     fn load(&self, host: &Host) -> u64 {
-        // The platform's resources stand as a device that has none of them,
-        // read as each declares when nothing is published: a view over the
-        // sound or the battery lays out as it does on a computer without
-        // them.
+        // The platform's resources stand as a device that has none of them, read as each
+        // declares when nothing is published: a view over the sound or the battery lays out as
+        // it does on a computer without them, and the region and formats read the defaults a
+        // new install starts from rather than trapping on a section no session has written.
         for meta in &self.platform {
             if let Err(error) = host.runtime().load_foreign(meta.clone()) {
                 eprintln!("tilolang: a platform package did not load: {error}");
@@ -100,7 +100,8 @@ impl Platform for Packages {
                 // A root the host serves itself (the workspace's members) reads as it serves it.
                 Some(target) if host.runtime().serves(&target) => {}
                 Some(target) => {
-                    if let Err(error) = host.runtime().set_reading(&target, "{}") {
+                    let reading = tilolang_tilo::platform_apps::platform_root_defaults(&published);
+                    if let Err(error) = host.runtime().set_reading(&target, reading) {
                         eprintln!("tilolang: `{published}` reads nothing: {error}");
                     }
                 }

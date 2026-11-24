@@ -71,6 +71,8 @@ collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../
 # The archives an app exports, read back as a person who unzips them finds them.
 bounded-zip = { package = "tilo-bounded-zip", path = "../../engines/bounded-zip" }
 tempfile.workspace = true
+# The region and formats section's own defaults, which a page's seed of them is held to.
+tilo-locale = { version = "0.1.0", path = "../../platform/tilo-locale" }
 uuid.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # The toolkit's words, as the session's hosts read them: what the tests' published
