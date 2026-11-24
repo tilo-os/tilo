@@ -262,7 +262,9 @@ impl StatePeer {
                 .checkpoint_writes
                 .iter()
                 .chain(document.sealed.iter())
-                .any(|kept| kept.signature == op.signature)
+                // A write of a sequence kept already is that write again, or a second write of
+                // its sequence: either way the checkpoint lacks nothing of it.
+                .any(|kept| kept.author == op.author && kept.seq == op.seq)
     }
 
     /// Whether `compaction` folds a write this replica still holds as history:
