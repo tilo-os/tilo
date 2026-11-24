@@ -157,15 +157,6 @@ impl Steps {
         answering: &mut Answering<'_>,
     ) -> Result<std::result::Result<Value, ActionFailure>> {
         let stopped = || anyhow!("the device stopped answering");
-        // This device's endpoint serves its person in the device's own workspace only, so a
-        // question a run asks in another workspace is answered from that workspace's shell.
-        let answers_here = answering.asks.answers() && self.into.is_none();
-        if let Some(into) = self.into.as_ref().filter(|_| answering.asks.answers()) {
-            (answering.say)(&format!(
-                "A question this run asks in workspace {into} waits for your answer in that \
-                 workspace's shell; this terminal answers only for this device's own workspace."
-            ));
-        }
         let mut seen = UpdateMark::Accepted;
         loop {
             match status {
@@ -191,7 +182,7 @@ impl Steps {
                 .observe(&self.caller, &id)
                 .ok_or_else(stopped)?;
             if UpdateMark::of(&state.update) == seen {
-                if answers_here {
+                if answering.asks.answers() {
                     // A run that waits for its person asks in a record of its own: the caller
                     // answers it, as any other client of the workspace does.
                     self.answer_asks(answering)?;
@@ -272,7 +263,7 @@ impl Steps {
         Ok(waiting_in(&reading))
     }
 
-    /// Answer `question`'s record with `approve`.
+    /// Answer `question`'s record with `approve`, in the workspace that keeps it.
     fn answer(&self, question: &Asked, approve: bool) -> Result<()> {
         let mut args = Map::new();
         args.insert(
@@ -286,7 +277,11 @@ impl Steps {
             },
             args,
         );
-        answered(self.dispatch.invoke(&self.caller, request))?
+        let caller = self
+            .caller
+            .clone()
+            .in_workspace(question.record.workspace.clone());
+        answered(self.dispatch.invoke(&caller, request))?
             .map_err(|error| anyhow!("the answer was refused: {}", error.said()))?;
         Ok(())
     }

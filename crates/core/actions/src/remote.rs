@@ -2230,6 +2230,12 @@ fn changed<H: ActionProvider>(
 pub struct RemoteActionFrame {
     pub version: u16,
     pub message: RemoteActionMessage,
+    /// The workspace the request is asked in, on a transport that serves every workspace its
+    /// device holds (the daemon's native endpoint), as a shell link's call names its own: none
+    /// asks in the device's own. A read names its workspace in its address instead
+    /// ([`Self::workspace`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 /// Why bytes are not a usable [`RemoteActionFrame`].
@@ -2250,6 +2256,24 @@ impl RemoteActionFrame {
         Self {
             version: REMOTE_ACTIONS_VERSION,
             message,
+            workspace: None,
+        }
+    }
+
+    /// The same request, asked in `workspace` (none: the device's own).
+    #[must_use]
+    pub fn in_workspace(mut self, workspace: Option<String>) -> Self {
+        self.workspace = workspace;
+        self
+    }
+
+    /// The workspace the request is asked in: the one a read's address names, else the one the
+    /// frame names; `None` for the device's own.
+    #[must_use]
+    pub fn workspace(&self) -> Option<&str> {
+        match &self.message {
+            RemoteActionMessage::ResourceRead { read, .. } => Some(&read.workspace),
+            _ => self.workspace.as_deref(),
         }
     }
 

@@ -836,18 +836,21 @@ impl Daemon {
         self.tree_in(workspace, caller)
     }
 
-    /// The tree a plain connection from the person's own account reaches, and the caller it is
-    /// admitted as there: an unnamed agent of theirs, which may do only what both an agent and
-    /// the person may, even though the account itself is theirs.
+    /// The tree a plain connection from the person's own account reaches in `workspace` (none:
+    /// the one this daemon serves), and the caller it is admitted as there: an unnamed agent of
+    /// theirs, which may do only what both an agent and the person may, even though the account
+    /// itself is theirs.
     ///
     /// # Errors
     /// The workspace cannot be admitted to now, or the device cannot make the agent's key.
-    pub(crate) fn connection_tree(
+    pub(crate) fn connection_tree_in(
         self: &Arc<Self>,
+        workspace: Option<&str>,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let workspace = workspace.unwrap_or(&self.workspace);
         let time = self.policy_origin.capture().map_err(io::Error::other)?;
-        let base = self.provider_for(&self.workspace)?;
-        let (provider, _) = base.agent_session(&self.workspace, &self.actor, &time, |person| {
+        let base = self.provider_for(workspace)?;
+        let (provider, _) = base.agent_session(workspace, &self.actor, &time, |person| {
             (
                 device_agent_id(person, UNNAMED_AGENT),
                 UNNAMED_AGENT.to_owned(),
@@ -862,7 +865,7 @@ impl Daemon {
             .cloned()
             .ok_or_else(|| io::Error::other("this device made no agent for the connection"))?;
         let api = self.api()?;
-        let named = self.workspace.clone();
+        let named = workspace.to_owned();
         let joined = block_on_owned(async move { api.joined(&named, Arc::new(provider)).await })
             .map_err(io::Error::other)?;
         Ok((joined, caller))
@@ -2391,13 +2394,13 @@ impl Daemon {
             let daemon = daemon
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-            let (provider, caller) = daemon.key_tree(&key, &cert)?;
+            let (provider, caller) = daemon.key_tree(&key, &cert, None)?;
             tilo_mcp::McpServer::admitted(provider, caller)
         })
     }
 
-    /// A run of `key` (certified by `cert`) in the device's workspace, and the caller its calls
-    /// go as: the key itself ([`Self::provider_for_key`]).
+    /// A run of `key` (certified by `cert`) in `workspace` (none: the device's), and the caller
+    /// its calls go as: the key itself ([`Self::provider_for_key`]).
     ///
     /// # Errors
     /// The certificate does not hold, or the workspace does not admit the key.
@@ -2405,6 +2408,7 @@ impl Daemon {
         &self,
         key: &SigningKey,
         cert: &DeviceCert,
+        workspace: Option<&str>,
     ) -> io::Result<(RuntimeActionProvider, Caller)> {
         let key = tilo_api::grant_key::GrantKey::held(
             key.clone(),
@@ -2412,15 +2416,17 @@ impl Daemon {
             tilo_clock::unix_now_ns(),
         )
         .map_err(|refused| io::Error::other(refused.to_string()))?;
-        let provider = self.provider_for_key(&self.workspace()?, &key)?;
+        let workspace = match workspace {
+            Some(workspace) => workspace.to_owned(),
+            None => self.workspace()?,
+        };
+        let provider = self.provider_for_key(&workspace, &key)?;
         let caller = provider
             .admission_caller()
             .ok_or_else(|| io::Error::other("the key's run was not admitted"))?;
         Ok((provider, caller))
     }
-}
 
-impl Daemon {
     /// A run of the key `key` in `workspace`: its calls are the key's own, admitted by the
     /// certificate its person gave it and decided by what the workspace grants that key
     /// ([`ServiceWorkspaces::admit_key`]), never by what its person may do.

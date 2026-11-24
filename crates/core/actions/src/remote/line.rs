@@ -59,7 +59,13 @@ pub fn answer_message<H: ActionProvider + Clone + Send + 'static>(
 /// `message` as the line a socket writes.
 #[must_use]
 pub fn frame_line(message: RemoteActionMessage) -> String {
-    match RemoteActionFrame::new(message).encode() {
+    frame_line_in(message, None)
+}
+
+/// `message`, asked in `workspace` (none: the device's own), as the line a socket writes.
+fn frame_line_in(message: RemoteActionMessage, workspace: Option<&str>) -> String {
+    let frame = RemoteActionFrame::new(message).in_workspace(workspace.map(str::to_owned));
+    match frame.encode() {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(error) => line_refusal("unavailable", &error.to_string()),
     }

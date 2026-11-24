@@ -9,6 +9,7 @@ use std::time::Duration;
 use tilo_lock::MutexRecover as _;
 
 use super::{answer_message, frame_line, line_refusal};
+use crate::remote::refuse;
 use crate::remote::{
     ActionCallError, ActionProvider, Caller, ContentGetAnswer, HostedContentPuts,
     MAX_REMOTE_ACTION_FRAME_BYTES, RemoteActionFrame, RemoteActionMessage,
@@ -18,8 +19,13 @@ use crate::remote::{
 /// in turn, so a caller that floods waits slows only itself.
 const WAITING_AT_ONCE: usize = 64;
 
-/// Answer every line `input` reads as `caller` asks it of `provider`, `first` before them,
+/// Answer every line `input` reads as `tree` answers the frame it holds, `first` before them,
 /// writing each answer to `output` until `input` ends or `output` closes.
+///
+/// `tree` names, for each frame, the provider it is asked of and the caller it is asked as: a
+/// connection that serves every workspace its device holds answers each frame in the workspace
+/// it names ([`RemoteActionFrame::workspace`]). A frame `tree` refuses is answered with that
+/// refusal, and the connection goes on.
 ///
 /// Uploads stay open between lines in `uploads` ([`HostedContentPuts`]), each answering only the
 /// caller that began it: kept beyond the connection, one a lost connection cut is taken up on the
@@ -28,8 +34,7 @@ const WAITING_AT_ONCE: usize = 64;
 /// answered meanwhile; each answer names what it answers, so the order answers go out in is
 /// theirs. A line that is no frame is refused, and the connection goes on.
 pub fn serve_lines<H: ActionProvider + Clone + Send + Sync + 'static>(
-    provider: &H,
-    caller: &Caller,
+    mut tree: impl FnMut(&RemoteActionFrame) -> Result<(H, Caller), ActionCallError>,
     uploads: &HostedContentPuts,
     first: Option<Vec<u8>>,
     mut input: impl BufRead,
@@ -47,8 +52,8 @@ pub fn serve_lines<H: ActionProvider + Clone + Send + Sync + 'static>(
                 Ok(None) | Err(_) => return,
             },
         };
-        let message = match RemoteActionFrame::decode(&line) {
-            Ok(frame) => frame.message,
+        let frame = match RemoteActionFrame::decode(&line) {
+            Ok(frame) => frame,
             Err(error) => {
                 if !write_line(&output, &line_refusal("parse_error", &error.to_string())) {
                     return;
@@ -56,7 +61,21 @@ pub fn serve_lines<H: ActionProvider + Clone + Send + Sync + 'static>(
                 continue;
             }
         };
-        let answer = match message {
+        let (provider, caller) = match tree(&frame) {
+            Ok(served) => served,
+            Err(refusal) => {
+                let answer = refuse(&frame.message, refusal).map_or_else(
+                    || line_refusal("parse_error", "a frame sent here asks something"),
+                    frame_line,
+                );
+                if !write_line(&output, &answer) {
+                    return;
+                }
+                continue;
+            }
+        };
+        let (provider, caller) = (&provider, &caller);
+        let answer = match frame.message {
             RemoteActionMessage::ContentPutRequest { correlation, step } => {
                 let result = provider
                     .content_puts()
@@ -300,8 +319,7 @@ mod tests {
         std::thread::spawn(move || {
             let output = far.try_clone().unwrap();
             serve_lines(
-                &provider,
-                &caller,
+                |_| Ok((provider.clone(), caller.clone())),
                 &HostedContentPuts::default(),
                 None,
                 BufReader::new(far),

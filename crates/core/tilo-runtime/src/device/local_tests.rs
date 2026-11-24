@@ -460,3 +460,211 @@ fn a_folder_put_again_sends_none_of_its_bytes() {
         "a folder the workspace has sends none of its bytes: {steps:?}"
     );
 }
+
+const WORKSPACES_TEST: &str =
+    "device::local::tests::the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other";
+
+/// The provider whose one action asks its person first, as its contract says.
+const ASKS: &str = "so.tilo.probe";
+
+/// A provider offering `probe#publish`, which asks its person before it runs.
+fn asking() -> Arc<tilo_actions::remote::TestProvider> {
+    use tilo_actions::remote::{CataloguePage, CatalogueProvider, CatalogueRow, TestProvider};
+    Arc::new(TestProvider::new().with_catalogue(|caller, query| {
+        let row = CatalogueRow::for_action(
+            ASKS,
+            ASKS,
+            tilo_actions::ActionDescriptor {
+                did: None,
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                address: tilo_actions::ActionAddress::new("probe", "publish"),
+                resource_kind: "probe".into(),
+                resource_label: "Probe".into(),
+                action_label: "Publish".into(),
+                keywords: Vec::new(),
+                icon: None,
+                description: None,
+                locus: tilo_actions::ExecutionLocus::ClientLocal,
+                kind: tilo_actions::OperationKind::Effect,
+                contract: tilo_actions::ActionContract {
+                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                    ..tilo_actions::ActionContract::default()
+                },
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            },
+        );
+        let mut page = CataloguePage::from_rows("1".into(), vec![row], &query);
+        if query.provider.is_none() {
+            page.providers.push(CatalogueProvider {
+                provider: ASKS.into(),
+                app_id: ASKS.into(),
+                workspace: caller.workspace().unwrap_or_default().to_owned(),
+                document_id: String::new(),
+                browsable: true,
+            });
+        }
+        Ok(page)
+    }))
+}
+
+/// What `pending` answers, within the hang bound.
+fn answered<T: Send + 'static>(pending: tilo_actions::remote::Pending<T>) -> T {
+    pending
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("the daemon answered")
+}
+
+/// A person in two workspaces calls and reads in the second one through the daemon's one native
+/// endpoint, each frame naming its workspace: the call their account's connection makes there
+/// waits for their yes as its asked record, the connection reads that record among the second
+/// workspace's invocations, and the answer is theirs alone, as in their own workspace: the
+/// connection's resolve is refused, theirs through their own dispatch there answers it. A
+/// workspace they are not in refuses both the read and the call.
+#[test]
+fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
+    use tilo_actions::remote::{InvokeRequest, ReceiptStatus, RemoteActionTarget};
+    let Some(root) = isolated_root(WORKSPACES_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let own = daemon.workspace().unwrap();
+    let studio = tilo_desktop_model::WorkspaceId::new();
+    let serving = Arc::clone(daemon.serving());
+    tilo_rt::app()
+        .block_on(async move { serving.found(studio, "Studio").await })
+        .expect("the runtime runs the founding")
+        .expect("the device founds Studio");
+    let studio = studio.to_string();
+    let probe = asking();
+    daemon.provide(ASKS, Arc::clone(&probe) as _);
+    let socket = native_endpoint(&daemon, &root);
+    let person = line_client(&socket, OWN);
+    // Whom a client names does not count, only the workspace it names: the daemon decides who by
+    // the account connecting.
+    let in_studio = Caller::local_person("").in_workspace(studio.clone());
+    let publish = || {
+        InvokeRequest::plain(
+            RemoteActionTarget {
+                provider: ASKS.into(),
+                address: tilo_actions::ActionAddress::new("probe", "publish"),
+            },
+            serde_json::Map::new(),
+        )
+    };
+
+    // The person's call in the second workspace waits for their yes, nothing of it run.
+    let receipt = answered(person.invoke(&in_studio, publish())).expect("the call is admitted");
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Accepted),
+        "the call waits for its person: {receipt:?}"
+    );
+    assert!(probe.asked().is_empty(), "nothing of it ran yet");
+
+    // They read its asked record among the second workspace's invocations, as `tilo migrate`
+    // reads the questions that wait for them.
+    let steps = |workspace: &str| {
+        tilo_migrate::provider::caller::Steps::new(
+            Arc::clone(&person) as _,
+            Caller::local_person("").in_workspace(workspace.to_owned()),
+            &daemon.device_key(),
+            workspace.to_owned(),
+            None,
+        )
+    };
+    let questions = steps(&studio).questions().expect("the questions read");
+    let question = questions
+        .iter()
+        .find(|question| question.action.ends_with("#publish"))
+        .unwrap_or_else(|| panic!("the call's question reads there: {questions:?}"))
+        .clone();
+    assert_eq!(question.workspace, studio, "{question:?}");
+    assert!(
+        steps(&own)
+            .questions()
+            .unwrap()
+            .iter()
+            .all(|asked| asked.workspace != studio),
+        "the device's own workspace lists none of the second one's questions"
+    );
+
+    // The connection is an agent acting for them, which answers no question, there as in their own
+    // workspace; they answer it with its record's own resolve, and it waits no more.
+    let resolve = || {
+        let mut approve = serde_json::Map::new();
+        approve.insert("resolution".into(), serde_json::json!("approve"));
+        InvokeRequest::plain(
+            RemoteActionTarget {
+                provider: tilo_actions::remote::workspace_invocations::PROVIDER.into(),
+                address: tilo_actions::ActionAddress::new(
+                    question.record.record.clone(),
+                    tilo_actions::remote::asked::RESOLVE,
+                ),
+            },
+            approve,
+        )
+    };
+    let refusal = match answered(person.invoke(&in_studio, resolve())) {
+        Err(error)
+        | Ok(tilo_actions::remote::InvocationReceipt {
+            status: ReceiptStatus::Rejected { error },
+            ..
+        }) => error.to_string(),
+        Ok(receipt) => panic!("an agent answers no question: {receipt:?}"),
+    };
+    assert!(
+        refusal.contains(tilo_actions::remote::asked::NOT_YOURS),
+        "{refusal}"
+    );
+    assert!(probe.asked().is_empty(), "nothing of it ran on the refusal");
+    let (theirs, as_them) = daemon
+        .person_tree_in(&studio)
+        .expect("the person's own dispatch serves the second workspace");
+    let resolved = answered(theirs.invoke(&as_them, resolve())).expect("the answer is admitted");
+    assert!(
+        matches!(resolved.status, ReceiptStatus::Completed { .. }),
+        "the answer goes through: {resolved:?}"
+    );
+    assert!(
+        steps(&studio)
+            .questions()
+            .unwrap()
+            .iter()
+            .all(|asked| asked.record.record != question.record.record),
+        "the answered question waits no more"
+    );
+
+    // A workspace the person is not in refuses their read and their call alike.
+    let elsewhere = tilo_desktop_model::WorkspaceId::new().to_string();
+    let refused = steps(&elsewhere)
+        .questions()
+        .expect_err("a workspace they are not in reads nothing");
+    assert!(
+        refused
+            .to_string()
+            .contains(tilo_actions::remote::RESOURCE_READ_REFUSED),
+        "{refused:#}"
+    );
+    let ran = probe.asked().len();
+    let refused = answered(person.invoke(
+        &Caller::local_person("").in_workspace(elsewhere.clone()),
+        publish(),
+    ));
+    let refusal = match refused {
+        Err(error)
+        | Ok(tilo_actions::remote::InvocationReceipt {
+            status: ReceiptStatus::Rejected { error },
+            ..
+        }) => error.to_string(),
+        Ok(receipt) => panic!("a workspace they are not in runs nothing: {receipt:?}"),
+    };
+    assert!(
+        refusal.contains(&elsewhere) && refusal.contains("does not let you act"),
+        "{refusal}"
+    );
+    assert_eq!(probe.asked().len(), ran, "nothing ran in it");
+}

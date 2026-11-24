@@ -50,7 +50,7 @@ fn endpoint() -> (tempfile::TempDir, PathBuf, HeldHost) {
         agents: None,
         frames: {
             let host = host.clone();
-            crate::device::local::Frames::new(move || {
+            crate::device::local::Frames::new(move |_| {
                 Ok((
                     Arc::new(host.clone())
                         as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,

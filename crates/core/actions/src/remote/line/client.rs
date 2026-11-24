@@ -1,5 +1,7 @@
 //! The line wire's client: one connection to a provider that answers frames a line each, as an
 //! [`ActionProvider`] of its own, so whatever walks a provider walks the one at the other end.
+//! A call goes out in the workspace its caller names ([`Caller::workspace`]), which the other end
+//! answers it in where it serves more than one.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -9,7 +11,7 @@ use std::time::Duration;
 
 use tilo_lock::MutexRecover as _;
 
-use super::frame_line;
+use super::frame_line_in;
 use crate::outcome::InvocationId;
 use crate::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
@@ -29,7 +31,8 @@ type Asked = Completer<Answered<RemoteActionMessage>>;
 /// One connection to a provider over the line wire. Every request names what its answer
 /// answers (a correlation, or the invocation it is about), so requests go out at once from any
 /// thread and one reader hands each answer to whoever waits for it. Who the caller is the other
-/// end decides from the connection, never from the [`Caller`] a method is handed.
+/// end decides from the connection, never from the [`Caller`] a method is handed: of the caller
+/// only the workspace it names goes with the request.
 ///
 /// When the connection ends, every waiting request is answered with why, and so is every later
 /// one.
@@ -142,6 +145,17 @@ impl LineClient {
         key: Key,
         message: RemoteActionMessage,
     ) -> Pending<Answered<RemoteActionMessage>> {
+        self.ask_in(key, message, None)
+    }
+
+    /// Send `message` asked in `workspace` (none: the other end's own), its answer found by
+    /// `key`.
+    fn ask_in(
+        &self,
+        key: Key,
+        message: RemoteActionMessage,
+        workspace: Option<&str>,
+    ) -> Pending<Answered<RemoteActionMessage>> {
         let (asked, answer) = pending();
         {
             let mut waiting = self.0.waiting.lock_recover();
@@ -161,7 +175,7 @@ impl LineClient {
                 }
             }
         }
-        let line = frame_line(message);
+        let line = frame_line_in(message, workspace);
         let sent = {
             let mut writer = self.0.writer.lock_recover();
             writeln!(writer, "{line}").and_then(|()| writer.flush())
@@ -179,7 +193,17 @@ impl LineClient {
 
     /// [`Self::ask`], waited for.
     fn asked(&self, key: Key, message: RemoteActionMessage) -> Answered<RemoteActionMessage> {
-        self.ask(key, message)
+        self.asked_in(key, message, None)
+    }
+
+    /// [`Self::ask_in`], waited for.
+    fn asked_in(
+        &self,
+        key: Key,
+        message: RemoteActionMessage,
+        workspace: Option<&str>,
+    ) -> Answered<RemoteActionMessage> {
+        self.ask_in(key, message, workspace)
             .wait_timeout(MAX_REMOTE_WAIT.saturating_add(SLACK))
             .ok()
             .flatten()
@@ -367,11 +391,12 @@ fn take_first(
 }
 
 impl ActionProvider for LineClient {
-    fn query(&self, _caller: &Caller, query: CatalogueQuery) -> Pending<Answered<CataloguePage>> {
+    fn query(&self, caller: &Caller, query: CatalogueQuery) -> Pending<Answered<CataloguePage>> {
         let correlation = self.correlation();
-        self.ask(
+        self.ask_in(
             Key::Correlation(correlation),
             RemoteActionMessage::CatalogueRequest { correlation, query },
+            caller.workspace(),
         )
         .map(|answer| match answer? {
             RemoteActionMessage::CatalogueResponse { result, .. } => result,
@@ -381,13 +406,14 @@ impl ActionProvider for LineClient {
 
     fn invoke(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Answered<InvocationReceipt>> {
         let invocation = request.invocation;
-        self.ask(
+        self.ask_in(
             Key::Receipt(invocation),
             RemoteActionMessage::Invoke(request),
+            caller.workspace(),
         )
         .map(|answer| match answer? {
             RemoteActionMessage::Receipt(receipt) => Ok(receipt),
@@ -395,10 +421,10 @@ impl ActionProvider for LineClient {
         })
     }
 
-    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         let correlation = self.correlation();
         let state = match self
-            .asked(
+            .asked_in(
                 Key::Correlation(correlation),
                 RemoteActionMessage::Observe {
                     correlation,
@@ -406,6 +432,7 @@ impl ActionProvider for LineClient {
                     wait_ms: None,
                     seen: None,
                 },
+                caller.workspace(),
             )
             .ok()?
         {
@@ -418,7 +445,7 @@ impl ActionProvider for LineClient {
 
     /// Resolves once the invocation moves past where it was last seen here, or the longest
     /// remote wait passes; `None` for one seen to end.
-    fn next_change(&self, _caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
         let seen = self
             .0
             .waiting
@@ -434,7 +461,7 @@ impl ActionProvider for LineClient {
         let wait_ms = u32::try_from(MAX_REMOTE_WAIT.as_millis()).unwrap_or(u32::MAX);
         let this = self.clone();
         Some(
-            self.ask(
+            self.ask_in(
                 Key::Correlation(correlation),
                 RemoteActionMessage::Observe {
                     correlation,
@@ -442,6 +469,7 @@ impl ActionProvider for LineClient {
                     wait_ms: Some(wait_ms),
                     seen: Some(seen),
                 },
+                caller.workspace(),
             )
             .map(move |answer| {
                 if let Ok(RemoteActionMessage::Update { state, .. }) = answer {
@@ -451,10 +479,11 @@ impl ActionProvider for LineClient {
         )
     }
 
-    fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Pending<Answered<()>> {
-        self.ask(
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Answered<()>> {
+        self.ask_in(
             Key::Cancel(*id),
             RemoteActionMessage::Cancel { invocation: *id },
+            caller.workspace(),
         )
         .map(|answer| match answer? {
             RemoteActionMessage::CancelResponse { result, .. } => result,

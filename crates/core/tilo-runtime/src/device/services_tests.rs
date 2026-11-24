@@ -1456,7 +1456,7 @@ fn a_plain_connection_is_an_unnamed_agent_and_may_not_govern() {
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
     let workspace = daemon.workspace().unwrap();
-    let (_, agent) = daemon.connection_tree().unwrap();
+    let (_, agent) = daemon.connection_tree_in(None).unwrap();
     assert!(
         agent.acting().is_agent(),
         "a plain connection is an agent, never the person: {agent:?}"
