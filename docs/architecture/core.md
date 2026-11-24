@@ -369,7 +369,10 @@ process several apps share never receives a secret. The process's egress, fixed
 at its launch, is the network its package was granted, which may name every host
 under a domain when the person is shown that domain as such, and a new grant
 restarts it. Passwords an app keeps are vault items, never
-fields of its own records.
+fields of its own records. An item says which app and purpose it serves, and the
+app finds it by those. Secrets the old keeper holds move into the vault once, on
+the person's own device, through the ordinary add as that person, and leave the
+old keeper as they move; nobody types a secret again.
 The secret lives in that process's memory alone, never in a record, an argument,
 a log or history.
 Every other use stays a call the vault makes itself, such as a web call with the
