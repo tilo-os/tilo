@@ -244,6 +244,13 @@ pub enum Shape {
         h: f64,
         src: String,
     },
+    /// A surface of cells, nine numbers each: four corners, x and y in turn, then how much of
+    /// the fill's light reaches the cell (`1` the ink itself, `0` black). Cells are drawn in the
+    /// order they are given, so a nearer fold covers the one behind it.
+    ///
+    /// It is one shape however many cells it holds: a surface of thousands of cells is one value
+    /// a view hands the window, not thousands.
+    Mesh { cells: Vec<f64>, fill: Ink },
 }
 
 enum Lowered {
@@ -347,7 +354,9 @@ impl Shape {
                 }
                 Some(Lowered::Outline(path))
             }
-            Self::Text { .. } | Self::Label { .. } | Self::Picture { .. } => None,
+            Self::Text { .. } | Self::Label { .. } | Self::Picture { .. } | Self::Mesh { .. } => {
+                None
+            }
         }
     }
 
@@ -375,6 +384,7 @@ impl Shape {
             Self::Path { points, .. } | Self::Stroke { points, .. } => {
                 out.extend(points.iter().copied());
             }
+            Self::Mesh { cells, .. } => out.extend(cells.iter().copied()),
             Self::Text { x, y, .. } | Self::Label { x, y, .. } => out.extend([*x, *y]),
             Self::Picture { x, y, w, h, .. } => out.extend([*x, *y, *w, *h]),
         }
@@ -426,6 +436,7 @@ impl Shape {
             Self::Path { points, .. } | Self::Stroke { points, .. } => {
                 points.iter_mut().for_each(next);
             }
+            Self::Mesh { cells, .. } => cells.iter_mut().for_each(&mut next),
             Self::Text { x, y, .. } | Self::Label { x, y, .. } => {
                 for slot in [x, y] {
                     next(slot);
@@ -447,6 +458,7 @@ impl Shape {
             | (Self::Stroke { points: a, .. }, Self::Stroke { points: b, .. }) => {
                 a.len() == b.len()
             }
+            (Self::Mesh { cells: a, .. }, Self::Mesh { cells: b, .. }) => a.len() == b.len(),
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
     }
@@ -461,7 +473,8 @@ impl Shape {
             | Self::Oval { .. }
             | Self::Stroke { .. }
             | Self::Label { .. }
-            | Self::Picture { .. } => None,
+            | Self::Picture { .. }
+            | Self::Mesh { .. } => None,
         }
     }
 
@@ -478,7 +491,8 @@ impl Shape {
             | Self::Oval { .. }
             | Self::Stroke { .. }
             | Self::Label { .. }
-            | Self::Picture { .. } => None,
+            | Self::Picture { .. }
+            | Self::Mesh { .. } => None,
         }
     }
 
@@ -789,6 +803,35 @@ impl Drawing {
                         &style,
                     );
                     return Some(Rect::new(left, top, left + width, top + height));
+                }
+                // A surface draws its cells itself: one shape whose geometry is a flat buffer,
+                // each cell filled in the light its own face turns to, back to front.
+                if let Shape::Mesh { cells, fill } = shape {
+                    let at = |x: f64, y: f64| {
+                        Point::new(
+                            bounds.x0 + x * bounds.width(),
+                            bounds.y0 + y * bounds.height(),
+                        )
+                    };
+                    let colour = fill.colour(theme);
+                    for cell in cells.chunks_exact(9) {
+                        let mut path = BezPath::new();
+                        let mut edge = cell[..8].chunks_exact(2).map(|p| at(p[0], p[1]));
+                        let Some(first) = edge.next() else { continue };
+                        path.move_to(first);
+                        for corner in edge {
+                            path.line_to(corner);
+                        }
+                        path.close_path();
+                        scene.fill(
+                            Fill::NonZero,
+                            transform,
+                            shaded(colour, Some(cell[8])),
+                            None,
+                            &path,
+                        );
+                    }
+                    return None;
                 }
                 let Some(Lowered::Area(path) | Lowered::Outline(path)) = shape.lowered(bounds)
                 else {

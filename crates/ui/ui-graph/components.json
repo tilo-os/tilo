@@ -12676,6 +12676,40 @@
           ]
         },
         {
+          "name": "mesh",
+          "doc": "A surface of cells, nine numbers each: four corners, x and y in turn, then how much of the fill's light reaches the cell, `1` the ink itself and `0` black. Cells are drawn in the order they are given, so a nearer fold covers the one behind it.",
+          "fields": [
+            {
+              "name": "cells",
+              "ty": {
+                "list": "float"
+              },
+              "doc": "The cells' numbers, nine to a cell."
+            },
+            {
+              "name": "fill",
+              "ty": {
+                "choice": {
+                  "name": "Ink",
+                  "cases": [
+                    "accent",
+                    "ink",
+                    "muted",
+                    "track",
+                    "success",
+                    "warning",
+                    "danger",
+                    "info",
+                    "base",
+                    "surface",
+                    "sidebar"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
           "name": "text",
           "doc": "A text at (x, y), set in one of the theme's type roles.",
           "fields": [
