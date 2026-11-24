@@ -1115,3 +1115,204 @@ fn both_actions_keep_their_faces_whether_beside_or_under_the_message() {
     d.relayout_at((360, 400)).expect("lays out narrow");
     assert_eq!(roles(&d), wide, "under the message, the same faces");
 }
+
+fn page_ground(d: &FrameHarness) -> [u8; 3] {
+    let ground = d.theme().tokens.colors.surfaces.content.to_rgba8();
+    [ground.r, ground.g, ground.b]
+}
+
+#[allow(
+    clippy::indexing_slicing,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "pixel tallies inside the rendered frame"
+)]
+fn pixel(rgba: &[u8], width: u32, at: Point) -> [u8; 3] {
+    let (x, y) = (at.x.floor() as u32, at.y.floor() as u32);
+    let start = ((y * width + x) * 4) as usize;
+    [rgba[start], rgba[start + 1], rgba[start + 2]]
+}
+
+fn near(a: [u8; 3], b: [u8; 3]) -> bool {
+    a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 2)
+}
+
+/// A banner its view stops building leaves with the paint it kept: its own band, still drawing
+/// its words, rather than a blank slot where it stood.
+#[test]
+fn a_banner_that_leaves_still_paints_the_band_it_kept() {
+    use crate::time::testing::with_monotonic_time;
+    let mut checked = Vec::new();
+    for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+        let start = crate::time::now();
+        let mut d = with_monotonic_time(start, || {
+            let mut d =
+                FrameHarness::for_root(State::new(), offline_view(), (640, 400), theme.clone());
+            d.relayout();
+            d
+        });
+        let band = d.targets()["offline"];
+        assert!(
+            band.height() > 30.0,
+            "{name}: fixture: the banner stands to be left"
+        );
+        with_monotonic_time(start, || {
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            rebuild(&mut d, None);
+        });
+        let ground = page_ground(&d);
+        let rgba = d.render_rgba();
+        let painted = pixel(&rgba, 640, Point::new(band.x0 + 6.0, band.center().y));
+        crate::testing::capture_regression(
+            "banner-leaves",
+            name,
+            d.frame_output().scene,
+            640,
+            400,
+            d.theme().tokens.colors.surfaces.content,
+        );
+        checked.push((name, painted, ground));
+    }
+    for (name, painted, ground) in checked {
+        assert!(
+            !near(painted, ground),
+            "{name}: the leaving banner paints its band, at {painted:?} over {ground:?}"
+        );
+    }
+}
+
+/// A banner on its way in paints only as far as it has opened: the closed part of its band is
+/// not painted above the page under it.
+#[test]
+fn a_banner_on_its_way_in_paints_only_as_far_as_it_has_opened() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut d = with_monotonic_time(start, || rooted(Column::new()));
+    with_monotonic_time(start, || rebuild(&mut d, None));
+    with_monotonic_time(start, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        rebuild(
+            &mut d,
+            Some(Banner::warning("Reconnecting").with_id("sync")),
+        );
+    });
+    // Step the entrance one frame at a time until one catches it partway open: at that instant
+    // the frame is drawn and read, so the paint and the reveal it is checked against are the
+    // same frame's.
+    let mut checked = Vec::new();
+    let mut midway = None;
+    for step in 1..=20_u32 {
+        let at = start + crate::time::Duration::from_millis(u64::from(step) * 12);
+        let caught = with_monotonic_time(at, || {
+            d.relayout();
+            let Some((extent, drawn)) = revealed_band(&d) else {
+                return false;
+            };
+            // Halfway and past, its contents have faded in; below its whole height, part of it
+            // is still closed.
+            if drawn < extent * 0.75 || drawn + 4.0 >= extent {
+                return false;
+            }
+            // A frame draws what the frame before it laid out: draw once more so the paint is
+            // this instant's.
+            d.relayout();
+            checked.push(captured_band(&d, "dark", extent, drawn));
+            true
+        });
+        if caught {
+            midway = Some(at);
+            break;
+        }
+    }
+    let midway = midway.expect("fixture: a frame catches the banner partway open");
+    with_monotonic_time(midway, || {
+        d.set_theme(Theme::light());
+        d.relayout();
+        let (extent, drawn) = revealed_band(&d).expect("light: it is still opening");
+        checked.push(captured_band(&d, "light", extent, drawn));
+    });
+    for frame in checked {
+        assert_band_opened_only(&frame);
+    }
+}
+
+/// How far the first child of the column has opened: the band's whole height, and the part of it
+/// drawn this frame.
+fn revealed_band(d: &FrameHarness) -> Option<(f64, f64)> {
+    match d.root_widget().children()[0].disclosing()? {
+        crate::widget::Disclosing::Band { extent, drawn } => Some((extent, drawn)),
+        crate::widget::Disclosing::Grows { .. } => None,
+    }
+}
+
+/// What one frame of a partway-open banner paints: the pixel just inside its edge, the one
+/// below that edge, and the page ground both are compared with.
+struct BandFrame {
+    name: &'static str,
+    shown: [u8; 3],
+    closed: [u8; 3],
+    ground: [u8; 3],
+    extent: f64,
+    slot: f64,
+}
+
+#[allow(
+    clippy::indexing_slicing,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "pixel tallies inside the rendered frame"
+)]
+fn captured_band(d: &FrameHarness, name: &'static str, extent: f64, reveal: f64) -> BandFrame {
+    let slot = d.root_widget().children()[0].paint_bounds();
+    let ground = page_ground(d);
+    let rgba = d.render_rgba();
+    let shown = pixel(
+        &rgba,
+        640,
+        Point::new(slot.center().x, slot.y0 + reveal / 2.0),
+    );
+    let closed = pixel(
+        &rgba,
+        640,
+        Point::new(slot.x1 - 8.0, slot.y0 + reveal + (extent - reveal) / 2.0),
+    );
+    crate::testing::capture_regression(
+        "banner-band",
+        name,
+        d.frame_output().scene,
+        640,
+        400,
+        d.theme().tokens.colors.surfaces.content,
+    );
+    BandFrame {
+        name,
+        shown,
+        closed,
+        ground,
+        extent,
+        slot: slot.height(),
+    }
+}
+
+fn assert_band_opened_only(frame: &BandFrame) {
+    let BandFrame {
+        name,
+        shown,
+        closed,
+        ground,
+        extent,
+        slot,
+    } = *frame;
+    assert!(
+        (extent - slot).abs() < 0.5,
+        "{name}: the band is drawn in its slot: {extent} of {slot}"
+    );
+    assert!(
+        !near(shown, ground),
+        "{name}: what has opened is painted, at {shown:?} over {ground:?}"
+    );
+    assert!(
+        near(closed, ground),
+        "{name}: nothing is painted below its edge, at {closed:?} over {ground:?}"
+    );
+}

@@ -1561,3 +1561,92 @@ fn a_tile_whose_history_shows_a_version_leaves_the_hidden_apps_change_with_it() 
         );
     }
 }
+
+/// The box the app's flood colour covers in `scene`, far edges exclusive: the window's own
+/// ground and shadow are never red enough to count.
+#[allow(
+    clippy::indexing_slicing,
+    clippy::cast_possible_truncation,
+    reason = "pixel tallies inside the rendered frame"
+)]
+fn flood_bounds(scene: &Scene, width: u32, height: u32) -> Rect {
+    let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
+    let rgba = renderer.render(scene, vello::peniko::Color::TRANSPARENT);
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0_u32, 0_u32);
+    for y in 0..height {
+        for x in 0..width {
+            let at = ((y * width + x) * 4) as usize;
+            let (r, g, b, a) = (rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]);
+            if a == 0 || r <= g.saturating_mul(2) || r <= b.saturating_mul(2) || r <= 0x40 {
+                continue;
+            }
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+    }
+    assert!(x0 <= x1, "the arriving app paints its own flood");
+    Rect::new(
+        f64::from(x0),
+        f64::from(y0),
+        f64::from(x1.saturating_add(1)),
+        f64::from(y1.saturating_add(1)),
+    )
+}
+
+#[test]
+fn a_window_that_is_arriving_is_painted_at_its_opening_pose() {
+    let (width, height) = (560_u32, 460_u32);
+    let rect = Rect::new(40.0, 40.0, 500.0, 400.0);
+    let mut checked = Vec::new();
+    for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+        let elapsed = spawn_time() / 4;
+        let now = crate::time::now();
+        let mut host = TileHost::new(TileContent::App(Box::new(FloodFill { rect })));
+        host.rect = rect;
+        host.spawned_at = now.checked_sub(elapsed);
+        assert!(
+            host.spawn_in_flight(),
+            "{name}: fixture: the window is on its way in"
+        );
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        host.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            crate::presence::PresenceCtx::empty().draw_env(),
+        ));
+        crate::testing::capture_regression(
+            "window-pose",
+            name,
+            &scene,
+            width,
+            height,
+            theme.tokens.colors.surfaces.content,
+        );
+        let bounds = flood_bounds(&scene, width, height);
+        // Opened at its pose: scaled about its centre, not painted where it rests.
+        let pose = WindowMotion::content_pose(spawn_progress(elapsed), rect, theme.motion());
+        let expected = pose.transform.transform_rect_bbox(rect);
+        checked.push((name, bounds, expected, rect));
+    }
+    for (name, bounds, expected, rect) in checked {
+        assert!(
+            (bounds.x0 - expected.x0).abs() < 2.0
+                && (bounds.y0 - expected.y0).abs() < 2.0
+                && (bounds.x1 - expected.x1).abs() < 2.0
+                && (bounds.y1 - expected.y1).abs() < 2.0,
+            "{name}: the arriving window paints at {bounds:?}, its pose {expected:?}"
+        );
+        assert!(
+            bounds.x0 > rect.x0 + 1.0
+                && bounds.x1 < rect.x1 - 1.0
+                && bounds.y0 > rect.y0 + 1.0
+                && bounds.y1 < rect.y1 - 1.0,
+            "{name}: it is drawn inside where it rests: {bounds:?} in {rect:?}"
+        );
+    }
+}

@@ -654,3 +654,53 @@ fn the_pointer_coming_over_a_card_is_reported_once_on_arrival() {
         "coming back is another arrival"
     );
 }
+
+/// Whether the scene records `color` as a plain fill or glyph brush: what a widget paints a
+/// thing in is encoded as the draw data's packed RGBA.
+fn scene_paints_colour(scene: &Scene, color: vello::peniko::Color) -> bool {
+    let packed = vello_encoding::DrawColor::from(color).rgba;
+    scene.encoding().draw_data.contains(&packed)
+}
+
+#[test]
+fn a_cards_contents_draw_in_the_colours_of_the_face_they_stand_on() {
+    let mut checked = Vec::new();
+    for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+        let face = CardFace::content_theme(&theme);
+        let face_raised = face.tokens.colors.surfaces.raised;
+        assert_ne!(
+            face_raised, theme.tokens.colors.surfaces.raised,
+            "{name}: the card's face carries its own raised surface, not the page's"
+        );
+        let harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(
+                Card::new(Box::new(Text::new("Words on the card's own face")))
+                    .with_footer(Actions::new(Button::new("card.act", "Continue"))),
+            ),
+            (420, 240),
+            theme.clone(),
+        );
+        let scene = harness.frame_output().scene;
+        crate::testing::capture_regression(
+            "card-theme",
+            name,
+            scene,
+            420,
+            240,
+            theme.tokens.colors.surfaces.content,
+        );
+        checked.push((
+            name,
+            scene_paints_colour(scene, face.text_primary),
+            scene_paints_colour(scene, face_raised),
+        ));
+    }
+    for (name, words, action) in checked {
+        assert!(words, "{name}: the card's words are painted");
+        assert!(
+            action,
+            "{name}: its action stands on the face the contents are on, not the page's"
+        );
+    }
+}

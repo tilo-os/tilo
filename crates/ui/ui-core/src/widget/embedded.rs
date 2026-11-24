@@ -471,6 +471,7 @@ impl<W: Widget + 'static> Embedded<W> {
 mod tests {
     use super::*;
     use crate::widget::TaffyTreeExt;
+    use vello::Scene;
 
     tilo_test_env::scenario! {
         /// A child embedded in a host.
@@ -528,5 +529,157 @@ mod tests {
             host.layout(rect, &theme.clone(), &mut text);
             assert_eq!(host.widget().builds, 2);
         }
+    }
+
+    struct PanelChild {
+        panel: Rect,
+        fill: Color,
+        viewport: std::rc::Rc<std::cell::Cell<Option<Rect>>>,
+    }
+
+    impl Widget for PanelChild {
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _theme: &Theme,
+            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = tree.leaf_node(taffy::Style {
+                size: Size {
+                    width: taffy::Dimension::length(200.0),
+                    height: taffy::Dimension::length(100.0),
+                },
+                ..Default::default()
+            });
+            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn name(&self) -> &str {
+            "panel-child"
+        }
+        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+            self.viewport.set(ctx.env.viewport);
+        }
+        fn modal_capture(&self) -> Option<Rect> {
+            Some(self.panel)
+        }
+        fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+            self.viewport.set(ctx.env.viewport);
+            let (scene, transform, _, _, _) = ctx.parts();
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                self.fill,
+                None,
+                &self.panel,
+            );
+        }
+    }
+
+    fn panel_child(fill: Color) -> Embedded<PanelChild> {
+        Embedded::new(PanelChild {
+            panel: Rect::new(30.0, 20.0, 110.0, 60.0),
+            fill,
+            viewport: std::rc::Rc::new(std::cell::Cell::new(None)),
+        })
+    }
+
+    /// The box `fill` covers in `rgba`, far edges exclusive.
+    #[allow(
+        clippy::indexing_slicing,
+        clippy::cast_possible_truncation,
+        reason = "pixel tallies inside the rendered frame"
+    )]
+    fn filled_bounds(rgba: &[u8], width: u32, height: u32, fill: Color) -> Rect {
+        let ink = fill.to_rgba8();
+        let (fr, fg, fb) = (ink.r, ink.g, ink.b);
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0_u32, 0_u32);
+        for y in 0..height {
+            for x in 0..width {
+                let at = ((y * width + x) * 4) as usize;
+                let (r, g, b, a) = (rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]);
+                if a == 0 || r.abs_diff(fr) > 4 || g.abs_diff(fg) > 4 || b.abs_diff(fb) > 4 {
+                    continue;
+                }
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+        assert!(x0 <= x1, "the panel paints");
+        Rect::new(
+            f64::from(x0),
+            f64::from(y0),
+            f64::from(x1.saturating_add(1)),
+            f64::from(y1.saturating_add(1)),
+        )
+    }
+
+    #[test]
+    fn an_embedded_widgets_panel_stands_where_its_owner_places_it() {
+        let fill = Color::from_rgb8(0xff, 0x40, 0x00);
+        let mut host = panel_child(fill);
+        let mut text = crate::font_catalog::fixture_renderer();
+        let theme = Theme::dark();
+        host.layout(Rect::new(0.0, 0.0, 200.0, 100.0), &theme, &mut text);
+        host.set_transform(Affine::translate((40.0, 25.0)));
+        let mut scene = Scene::new();
+        host.draw_overlay(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            crate::presence::PresenceCtx::empty().draw_env(),
+        ));
+        let (width, height) = (240_u32, 140_u32);
+        let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
+        let rgba = renderer.render(&scene, vello::peniko::Color::TRANSPARENT);
+        let bounds = filled_bounds(&rgba, width, height, fill);
+        let panel = host.widget().panel;
+        let expected = panel + vello::kurbo::Vec2::new(40.0, 25.0);
+        assert!(
+            (bounds.x0 - expected.x0).abs() < 1.5
+                && (bounds.y0 - expected.y0).abs() < 1.5
+                && (bounds.x1 - expected.x1).abs() < 1.5
+                && (bounds.y1 - expected.y1).abs() < 1.5,
+            "the panel stands where its panel is placed, {expected:?}, at {bounds:?}"
+        );
+    }
+
+    #[test]
+    fn an_embedded_widget_scaled_to_nothing_keeps_its_owners_viewport() {
+        let mut host = panel_child(Color::BLACK);
+        let mut text = crate::font_catalog::fixture_renderer();
+        let theme = Theme::dark();
+        host.layout(Rect::new(0.0, 0.0, 200.0, 100.0), &theme, &mut text);
+        host.set_transform(Affine::scale(0.0));
+        let owner = Rect::new(0.0, 0.0, 640.0, 400.0);
+        let presence = crate::presence::PresenceCtx::empty();
+        let mut env = presence.draw_env();
+        env.viewport = Some(owner);
+        let seen = host.widget().viewport.clone();
+        let mut scene = Scene::new();
+        host.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            env.clone(),
+        ));
+        assert_eq!(
+            seen.get(),
+            Some(owner),
+            "a widget scaled to nothing draws with its owner's viewport, not an inverse of a singular one"
+        );
+        let mut scene = Scene::new();
+        host.draw_overlay(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            env,
+        ));
+        assert_eq!(seen.get(), Some(owner), "and so does its overlay");
     }
 }
