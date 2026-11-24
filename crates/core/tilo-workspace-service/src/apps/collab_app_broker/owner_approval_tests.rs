@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
         assert_eq!(service.calls.lock().unwrap().len(), 1);
     }
 
-    phase unrelated_publication_changes_preserve_an_owners_approve;
+    phase unrelated_changes_preserve_an_owners_approve;
     {
         let (state, service, owner, mut request) = broker(true);
         request.confirmation = Some(approval(&request));

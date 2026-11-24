@@ -473,9 +473,7 @@ fn status_role(index: Int) -> Text {
         "status.danger"
     } else if index == 1 {
         "status.warning"
-    } else if index == 2 {
-        "status.success"
-    } else { "status.info" }
+    } else if index == 2 { "status.success" } else { "status.info" }
 }
 
 /// One status colour: how light it is drawn and how much of its hue it carries.

@@ -465,7 +465,7 @@ mod tests {
     /// roster when the call returns, with no pass of the session in between. On a machine no agent
     /// worked on, that is the first client the person approves.
     #[test]
-    fn a_clients_agent_member_is_listed_for_the_broker_when_the_mcp_server_answers() {
+    fn a_clients_agent_member_is_listed_when_the_mcp_server_answers() {
         let _settled = ui::motion::testing::settled();
         let _home = tilo_test_env::TestHome::new().expect("a home");
         let state = tempfile::tempdir().expect("a state directory");

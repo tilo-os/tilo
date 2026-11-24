@@ -3248,7 +3248,7 @@ fn an_account_with_no_password_says_so_and_leads_to_settings() {
 // USER REQUIREMENT: what waits to go has a place of its own, showing how each message stands,
 // with the press that takes it back or tries a refused one again.
 #[test]
-fn the_outbox_shows_what_waits_to_go_and_takes_a_message_back() {
+fn the_mail_waiting_to_go_shows_and_takes_a_message_back() {
     let servers = servers();
     let (_connector, mut session) = window_of(account(&servers));
     synced(&mut session);

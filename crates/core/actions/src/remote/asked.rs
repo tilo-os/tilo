@@ -26,8 +26,8 @@ use super::RemoteActionTarget;
 
 mod store;
 pub use store::{
-    ANSWERED, ANSWERED_THERE, AskedStore, MOST_WAITING, NOT_YOURS, NOTHING_ASKED,
-    ON_YOUR_OWN_DEVICE, TOO_MANY_WAIT, Waiting,
+    ANSWERED, ANSWERED_THERE, AskedStore, MOST_WAITING, NOT_YOURS, NOTHING_ASKED, ON_YOUR_DEVICE,
+    TOO_MANY_WAIT, Waiting,
 };
 
 /// What a frame carrying an approve no resolve handed back is refused with

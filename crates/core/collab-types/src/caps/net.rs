@@ -461,7 +461,7 @@ mod tests {
         parse_refuses_addresses_and_junk();
         the_table_agrees_with_the_policy();
         a_grant_spelling_covers_everything_it_names();
-        device_local_names_are_exact_unless_the_grant_widens();
+        loopback_names_are_exact_unless_the_grant_widens();
     }
 
     fn parse_accepts_every_spelling_of_a_host() {
@@ -564,7 +564,7 @@ mod tests {
         }
     }
 
-    fn device_local_names_are_exact_unless_the_grant_widens() {
+    fn loopback_names_are_exact_unless_the_grant_widens() {
         let exact = EgressPolicy::from_grants(["localhost"]);
         assert!(exact.names_exactly("LOCALHOST."));
         assert!(exact.permits_device_local("localhost"));

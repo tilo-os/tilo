@@ -1424,7 +1424,7 @@ pub(super) fn fake_client(broker: FakeBroker) -> (runtime_collab::CollabClient, 
 
 #[test]
 #[cfg(unix)]
-fn inherited_broker_identity_delegates_keys() {
+fn inherited_identity_delegates_keys() {
     use std::os::fd::AsFd as _;
     use tilo_identity_client::wire::{FRAMING, Request, Response};
 

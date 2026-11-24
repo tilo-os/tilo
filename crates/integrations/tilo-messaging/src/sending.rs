@@ -20,7 +20,7 @@ pub enum SendError {
     Uncertain,
     /// The computer is not one of the person's own Tilo devices and holds
     /// no root: it sends from none of their accounts.
-    NotOwnDevice,
+    NotYourDevice,
 }
 #[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct SendReceipt {

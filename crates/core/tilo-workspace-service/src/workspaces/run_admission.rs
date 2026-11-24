@@ -256,13 +256,13 @@ impl Workspaces {
         // ([`Self::admit_execution_on_this_device`]): its workspace service serves under a key
         // its device issued ([`ServiceIdentity::beside_device`]), which is not the key the run
         // acts as, and the run is still at this machine.
-        let on_own_device = (on_this_machine
+        let on_this_device = (on_this_machine
             || own.device_public_key == self.device_cert().device_public_key)
             && !own.capabilities.foreign
             && tilo_user_identity::verify_device_cert(own).is_ok();
         let caller = Caller::authenticated(own.user_public_key, own.device_public_key)
             .in_workspace(workspace)
-            .from_foreign_device(!on_own_device)
+            .from_foreign_device(!on_this_device)
             .in_new_execution();
         if caller.acting().person_id() != Some(actor) {
             caller.retire_execution();

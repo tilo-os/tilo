@@ -818,7 +818,7 @@ fn decision_record(
 /// release this device holds and no key of another boot opens.
 fn release(
     _pending: &PendingUnlock,
-    _enrolment: &UnlockEnrolment,
+    _unlocking: &UnlockEnrolment,
     view: &UnlockView<'_>,
 ) -> SiblingFrame {
     view.release.map_or(

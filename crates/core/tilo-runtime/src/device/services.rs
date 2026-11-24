@@ -2589,7 +2589,7 @@ fn broker_services(
         providers: Some(parts.workspaces.copies().providers()),
         // What an app publishes of what it holds, on its connection here: the device's one
         // search index keeps it after the app closes.
-        search_index: parts.workspaces.search_publications(),
+        search_index: parts.workspaces.search_index_services(),
         // Settings shares the passphrase of a network with the person's other devices, and joins
         // with one they shared.
         // What this computer's networks wake and saved is its desktop session's to read.
@@ -2655,7 +2655,13 @@ impl Daemon {
         founding: Arc<super::unclaimed::Founding>,
     ) -> io::Result<Self> {
         let serving = if dev { Serving::Dev } else { Serving::Profile };
-        Self::start(root, stage, serving, (Some(device), entered), Some(founding))
+        Self::start(
+            root,
+            stage,
+            serving,
+            (Some(device), entered),
+            Some(founding),
+        )
     }
 }
 

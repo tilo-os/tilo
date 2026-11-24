@@ -44,9 +44,8 @@ impl DisplayControl {
                 // device is decides nothing; nor does where the Settings worker runs.
                 let (_, certificate) = tilo_identity::trusted_device::current(workspace)
                     .map_err(|error| error.to_string())?;
-                let own = tilo_action_policy::roles::person_workspace_id(
-                    &certificate.user_public_key,
-                );
+                let own =
+                    tilo_action_policy::roles::person_workspace_id(&certificate.user_public_key);
                 let mut may = false;
                 use tilo_broker_core::services::WorkspaceAuthority as _;
                 governing.with_workspace(&own, &mut |held| {
@@ -157,7 +156,7 @@ mod tests {
     /// Another of this device's person's own devices.
     const ELSEWHERE: [u8; 32] = [9; 32];
     /// A person who governs a shared workspace and is not this device's person.
-    const GOVERNOR: [u8; 32] = [4; 32];
+    const OWNER: [u8; 32] = [4; 32];
     /// A person this device's person granted its displays to.
     const GUEST: [u8; 32] = [5; 32];
     const MODE: OutputMode = OutputMode {
@@ -320,14 +319,14 @@ mod tests {
 
             // Governing a shared workspace says nothing about a device that is not theirs.
             let mut shared =
-                tilo_action_policy::WorkspacePolicy::new("the-shared-workspace", person(GOVERNOR));
+                tilo_action_policy::WorkspacePolicy::new("the-shared-workspace", person(OWNER));
             shared.add_member(person(ROOT), tilo_action_policy::Role::Editor);
             assert!(
-                !display_writable(&shared, &person(GOVERNOR), DEVICE),
+                !display_writable(&shared, &person(OWNER), DEVICE),
                 "a workspace's owner writes no other person's device"
             );
             assert_eq!(
-                asked(&own, GOVERNOR, DEVICE, &larger_mode())
+                asked(&own, OWNER, DEVICE, &larger_mode())
                     .expect_err("a governing person changes another person's device nothing"),
                 "The current workspace policy does not permit display changes."
             );

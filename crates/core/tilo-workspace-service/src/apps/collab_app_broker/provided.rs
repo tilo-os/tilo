@@ -709,7 +709,9 @@ pub(crate) mod signed_test_support {
                 .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
             tilo_identity::sources::test_trust::install();
             tilo_identity::provisioning::ensure_collaboration_identity(
-                &tilo_identity::store::account_identity_dir(&directory.path().join("config/tilo/identity")),
+                &tilo_identity::store::account_identity_dir(
+                    &directory.path().join("config/tilo/identity"),
+                ),
                 &tilo_device_identity::IdentityPaths::under(directory.path().join("identity")),
                 tilo_identity::provisioning::IdentityStorage::Files,
             )
@@ -724,7 +726,7 @@ pub(crate) mod signed_test_support {
             let owner = Arc::new(
                 tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap(),
             );
-            tilo_peer_state::owner::testing::enroll_interactive(&owner, &key, &certificate)
+            tilo_peer_state::owner::testing::add_interactive_device(&owner, &key, &certificate)
                 .unwrap();
             let publisher = PeerPublisher::with_commits(Arc::new(NativeOwnerReceipts { owner }));
             let person = person_id_for_root(certificate.user_public_key);

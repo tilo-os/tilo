@@ -1873,7 +1873,7 @@ fn read_failure(report: &InvocationReport) -> Option<&StepFailure> {
 tilo_test_env::scenario! {
     fn consent_is_asked_of_a_person_and_never_assumed_unattended;
 
-    phase confirmation_is_refused_unattended_and_carried_from_the_persons_approve;
+    phase confirmation_is_refused_with_nobody_to_ask_and_carried_from_the_persons_approve;
     {
         let host = FakeHost::new();
         let purge = shortcut(

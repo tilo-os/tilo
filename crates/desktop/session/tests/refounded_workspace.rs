@@ -64,7 +64,7 @@ fn held_at(site: &Site) -> (Vec<(String, String)>, String) {
 }
 
 #[test]
-fn an_unenrolled_device_of_the_owner_making_the_hosted_workspace_leaves_it_whole() {
+fn a_device_the_owner_has_not_added_making_the_workspace_on_a_server_leaves_it_whole() {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Acme");
     let mut laptop = ada.device("Ada's laptop");

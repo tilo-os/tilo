@@ -99,7 +99,7 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
 }
 
 #[test]
-fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it() {
+fn a_fresh_device_starts_from_the_persons_workspace_and_keeps_it() {
     let computer = Computer::start();
     let state = tempfile::tempdir().expect("a state directory");
     let started = {

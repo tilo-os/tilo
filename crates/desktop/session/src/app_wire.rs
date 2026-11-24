@@ -2193,7 +2193,7 @@ mod tests {
     /// workspace's action it names, sent to the device's dispatch at the workspace's governance
     /// address as the window's person: what Settings' Save does.
     #[test]
-    fn a_windows_call_on_the_workspaces_content_is_its_governance_action() {
+    fn a_windows_call_on_the_workspaces_content_is_the_workspaces_own_action() {
         let wake: Wake = std::sync::Arc::new(|| ());
         let link = Link::new(wake);
         let dispatch = std::sync::Arc::new(Dispatched::default());

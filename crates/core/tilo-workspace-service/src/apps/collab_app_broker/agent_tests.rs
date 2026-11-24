@@ -319,7 +319,8 @@ impl Fixture {
         certificate.capabilities.foreign = foreign;
         tilo_user_identity::sign_device_cert(&mut certificate, &SigningKey::from_bytes(&[91; 32]))
             .unwrap();
-        tilo_peer_state::owner::testing::enroll_interactive(&owner, &key, &certificate).unwrap();
+        tilo_peer_state::owner::testing::add_interactive_device(&owner, &key, &certificate)
+            .unwrap();
         let native = Arc::new(Native {
             owner,
             key,

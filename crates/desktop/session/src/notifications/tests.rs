@@ -11,8 +11,8 @@ use tilo_session_core::desktop::notifications::{
 use tilo_session_power::PowerLink;
 
 use super::*;
-use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 use crate::platform::notice::OPEN_ACTION;
+use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 
 /// What an app with a launcher-verified identity sent.
 fn from_app(
@@ -1103,14 +1103,14 @@ tilo_test_env::scenario! {
 /// The person's own workspace as their devices reach it: one store each of them writes to as
 /// itself, which tells every one of them what moved.
 #[derive(Default)]
-struct OwnWorkspace {
+struct PersonsWorkspace {
     docs: Mutex<BTreeMap<(String, String), automerge::AutoCommit>>,
     told: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<tilo_workspace_service::workspaces::Moved>>>,
 }
 
 /// One device of the person, reaching their own workspace as itself.
 struct AsDevice {
-    workspace: Arc<OwnWorkspace>,
+    workspace: Arc<PersonsWorkspace>,
     cert: tilo_user_identity::DeviceCert,
 }
 
@@ -1126,7 +1126,14 @@ impl tilo_workspace_service::workspaces::PersonStore for AsDevice {
     fn routes(
         &self,
     ) -> tilo_workspace_service::workspaces::Answer<'_, Result<Vec<(String, String)>, String>> {
-        let routes = self.workspace.docs.lock().unwrap().keys().cloned().collect();
+        let routes = self
+            .workspace
+            .docs
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
         Box::pin(async move { Ok(routes) })
     }
 
@@ -1191,7 +1198,7 @@ impl tilo_workspace_service::workspaces::PersonStore for AsDevice {
 
 /// Where the person's workspace writes run: one thread, so each device's writes land in the order
 /// it made them.
-fn workspace_runtime() -> tokio::runtime::Handle {
+fn test_runtime() -> tokio::runtime::Handle {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
     RUNTIME
         .get_or_init(|| {
@@ -1250,12 +1257,12 @@ struct TwoDevices {
     desktop_cert: tilo_user_identity::DeviceCert,
     /// The desktop's switch for notifications continuing.
     desktop_continuity: crate::platform::fabric::Continuity,
-    workspace: Arc<OwnWorkspace>,
+    workspace: Arc<PersonsWorkspace>,
 }
 
 fn two_devices() -> TwoDevices {
     let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-    let workspace = Arc::new(OwnWorkspace::default());
+    let workspace = Arc::new(PersonsWorkspace::default());
     let desktop_cert = device_of(&root, "Desktop", 2);
     let laptop_cert = device_of(&root, "Laptop", 3);
     let desktop_continuity = continuity(true);
@@ -1267,7 +1274,7 @@ fn two_devices() -> TwoDevices {
                 workspace: Arc::clone(&workspace),
                 cert: cert.clone(),
             }),
-            &workspace_runtime(),
+            &test_runtime(),
         );
         let kept = cert.clone();
         resources.apply(DEVICES, move || {
@@ -1647,7 +1654,10 @@ fn a_banner_dismisses_and_opens_through_its_published_actions() {
 fn a_banner_chooses_by_label_and_replies() {
     let (rig, mut served, id) = banner_rig(&[
         ("snooze", "Snooze"),
-        (tilo_session_core::desktop::notifications::INLINE_REPLY, "Reply"),
+        (
+            tilo_session_core::desktop::notifications::INLINE_REPLY,
+            "Reply",
+        ),
     ]);
     invoke_banner(
         &mut served,
@@ -1661,7 +1671,10 @@ fn a_banner_chooses_by_label_and_replies() {
         "the label chose the key it names: {taken:?}"
     );
 
-    let (rig, mut served, id) = banner_rig(&[(tilo_session_core::desktop::notifications::INLINE_REPLY, "Reply")]);
+    let (rig, mut served, id) = banner_rig(&[(
+        tilo_session_core::desktop::notifications::INLINE_REPLY,
+        "Reply",
+    )]);
     invoke_banner(
         &mut served,
         "reply",

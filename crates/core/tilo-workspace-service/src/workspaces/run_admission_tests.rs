@@ -321,7 +321,7 @@ async fn the_persons_admitted_run_answers_what_their_agent_asked_and_no_other_de
         .in_workspace(workspace.clone())
         .from_foreign_device(true);
     assert!(
-        refusal(answer(&foreign)).contains(asked::ON_YOUR_OWN_DEVICE),
+        refusal(answer(&foreign)).contains(asked::ON_YOUR_DEVICE),
         "a foreign device answers nothing for its person"
     );
     assert!(handed.0.lock().unwrap().is_empty(), "nothing was handed back");

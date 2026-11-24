@@ -215,7 +215,7 @@ pub trait AppWidget: Widget {
     /// or as the window's own person when `None`: the same API, with the invocation admitted for
     /// whoever asked, so an action that acts on this device's person alone is refused for anyone
     /// else. A window that keeps no such distinction answers as it does for the person.
-    fn invoke_device_local_action_as(
+    fn invoke_this_device_action_as(
         &mut self,
         _actor: Option<&tilo_actions::Actor>,
         address: &tilo_actions::ActionAddress,

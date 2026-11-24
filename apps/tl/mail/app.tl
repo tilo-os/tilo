@@ -2071,10 +2071,10 @@ fn waiting_to_go(m: Mail) -> List<Draft> {
 /// The outbox as a place of its own: every message that waits to go, how it stands, and the
 /// presses that take one back or try a refused one again.
 view outbox(m: Mail) {
-    outbox_list(waiting_to_go(m))
+    waiting_list(waiting_to_go(m))
 }
 
-view outbox_list(waiting: List<Draft>) {
+view waiting_list(waiting: List<Draft>) {
     if waiting.is_empty() {
         ui.EmptyState("Nothing is waiting to be sent", icon: .send)
     } else {

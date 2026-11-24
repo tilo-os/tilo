@@ -372,7 +372,7 @@ mod cases {
             assert_eq!(t.rt.read(&timer, "seconds").unwrap(), Value::Int(3661));
         }
 
-        phase the_running_clocks_stand_in_the_shell_with_their_controls;
+        phase the_running_clocks_show_in_the_shell_with_their_controls;
         {
             let t = Clocks::new();
             assert_eq!(

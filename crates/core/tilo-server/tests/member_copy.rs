@@ -13,7 +13,7 @@ const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(0x6d65_6d62_6572_2d63_6f70
 /// its device there first as the server's workspace link asks, and reads and writes the
 /// workspace's tree through it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_member_copy_opens_the_workspaces_tree_from_its_server() {
+async fn a_members_device_opens_the_workspaces_tree_from_its_server() {
     let ada = TestUser::fresh("Ada");
     let server_device = ada.enrol("home-server", DeviceCapabilities::member());
     let laptop = ada.enrol("laptop", DeviceCapabilities::primary());

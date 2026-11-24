@@ -774,7 +774,7 @@ impl ServiceWorkspaces {
     }
 
     /// Where an app's search entries are published, once the daemon keeps the index.
-    pub(crate) fn search_publications(
+    pub(crate) fn search_index_services(
         &self,
     ) -> Option<Arc<dyn tilo_workspace_service::apps::services::SearchIndexServices>> {
         Some(self.search.get()?.publications())

@@ -512,7 +512,7 @@ mod empty_interactive_tests {
     tilo_test_env::scenario! {
         fn the_fixture_holds_its_workspace_as_one_device;
 
-        phase empty_interactive_holds_the_workspace_it_founded_as_its_own_device;
+        phase empty_interactive_holds_the_workspace_it_founded_on_its_device;
         {
             let signing_identity = SigningKey::from_bytes(&[91; 32]);
             let key = SigningKey::from_bytes(&[92; 32]);

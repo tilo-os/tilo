@@ -2244,7 +2244,7 @@ async fn a_departure_the_person_does_not_allow_is_answered_kept() {
 /// Only the environment's own device releases the requests its own window
 /// holds: another device of the workspace is refused, and nobody is asked.
 #[tokio::test]
-async fn only_the_windows_own_device_releases_what_it_holds() {
+async fn only_the_device_of_the_window_releases_what_it_holds() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let linked = member_link(&fixture.server.server, &fixture.agent).await;
     let remote = asking(&linked, WS_NAME).await;

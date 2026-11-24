@@ -131,7 +131,7 @@ fn displays(workspace: &str, device: &[u8; 32]) -> TreePath {
 tilo_test_env::scenario! {
     fn a_devices_settings_are_its_owners_alone;
 
-    phase the_persons_own_workspace_admits_them;
+    phase the_persons_workspace_admits_them;
     {
         let root = [3u8; 32];
         let owner = hex::encode(root);

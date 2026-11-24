@@ -140,7 +140,7 @@ impl SessionActions {
             loop {
                 actions.moved.notified().await;
                 if let Err(error) = provided.publish(&actions.page()).await {
-                    tracing::debug!(%error, "the daemon is handed the session's actions no more");
+                    tracing::warn!(%error, "the daemon is handed the session's actions no more: they stop changing in its dispatch");
                     return;
                 }
             }
@@ -921,7 +921,7 @@ mod tests {
         .expect("an owner for this device's workspace");
         let workspace_id =
             tilo_desktop_model::WorkspaceId::parse(workspace).expect("a workspace id");
-        let governor = tilo_peer_state::owner::testing::enroll_interactive_in(
+        let governor = tilo_peer_state::owner::testing::add_interactive_device_in(
             &owner, &device, &cert, workspace,
         )
         .expect("this device governs the workspace it hosts");

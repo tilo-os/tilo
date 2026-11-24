@@ -34,7 +34,7 @@ pub const MOST_WAITING: usize = 32;
 pub const TOO_MANY_WAIT: &str = "Too many questions already wait for this person's answer: answer or decline some of them first";
 
 /// What answering from a device that is not the person's own is refused with.
-pub const ON_YOUR_OWN_DEVICE: &str = "This is answered on a device of your own";
+pub const ON_YOUR_DEVICE: &str = "This is answered on a device of your own";
 
 /// What a resolve of a record nobody asks the caller is refused with.
 pub const NOT_YOURS: &str = "Only the person this question asks can answer it";
@@ -486,7 +486,7 @@ impl AskedStore {
         // A person at a device that is not theirs made the call there; only a device of their own
         // answers for them, so the device that asked never approves itself.
         if answering.is_foreign_device() {
-            return Err(refused(ON_YOUR_OWN_DEVICE));
+            return Err(refused(ON_YOUR_DEVICE));
         }
         let mut kept = self.kept.lock_recover();
         let record = kept.find(at).ok_or_else(|| refused(NOTHING_ASKED))?;

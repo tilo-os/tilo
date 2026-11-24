@@ -133,7 +133,7 @@ fn lists_as_whole(host: &Host, planner: &Arc<dyn Planner>, parent: Option<&str>)
 }
 
 #[test]
-fn a_page_of_a_level_lists_what_the_whole_publication_lists_there() {
+fn a_page_of_a_level_lists_what_the_whole_tree_lists_there() {
     let (replica, root) = seeded_chat();
     let host = &replica.host;
     let planner: Arc<dyn Planner> = Arc::new(Refusing);

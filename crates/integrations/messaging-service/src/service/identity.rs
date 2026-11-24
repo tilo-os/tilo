@@ -156,7 +156,7 @@ impl Identity {
             return Err(SendError::Revoked);
         }
         if certificate.capabilities.foreign {
-            return Err(SendError::NotOwnDevice);
+            return Err(SendError::NotYourDevice);
         }
         Ok(())
     }

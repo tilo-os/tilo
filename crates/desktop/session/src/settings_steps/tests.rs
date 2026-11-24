@@ -76,7 +76,7 @@ fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &Devic
     )
     .expect("an owner for this device's workspace");
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let governor = testing::enroll_interactive_in(&owner, device, cert, WORKSPACE)
+    let governor = testing::add_interactive_device_in(&owner, device, cert, WORKSPACE)
         .expect("this device governs the workspace it hosts");
     let host = governor.device().device_public_key;
     let frames: Vec<Vec<u8>> = governor.outgoing().map(|(bytes, _)| bytes).collect();
@@ -101,7 +101,9 @@ fn person_id(root: &[u8; 32]) -> String {
 fn shell(fixture: &Fixture) -> Layout {
     let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let mut workspace = Workspace::new(workspace_id, "Shell");
-    workspace.policy.set_owner(person_id(&fixture.cert.user_public_key));
+    workspace
+        .policy
+        .set_owner(person_id(&fixture.cert.user_public_key));
     Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),

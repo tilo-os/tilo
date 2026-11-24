@@ -26,7 +26,7 @@ view disk_unlock_pane() {
             ui.PropertyList {
                 ui.Property("Secrets", sealing_words(volume.sealing))
                 ui.Property("Key slot", "{volume.keyslot}")
-                ui.Property("Devices that may unlock it", sibling_words(volume))
+                ui.Property("Devices that may unlock it", unlocking_devices_words(volume))
             }
             if volume.sealing == .cleartext {
                 ui.StatusLine(
@@ -92,6 +92,6 @@ fn sealing_words(sealing: device.Sealing) -> Text {
 }
 
 /// The person's devices that may release the half, or that none does yet.
-fn sibling_words(volume: device.UnlockVolume) -> Text {
+fn unlocking_devices_words(volume: device.UnlockVolume) -> Text {
     if volume.siblings.is_empty() { "None yet" } else { volume.siblings.join(", ") }
 }

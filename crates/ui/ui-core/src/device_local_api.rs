@@ -88,7 +88,7 @@ impl SharedApi {
     /// Host: run what was queued through `app`'s API, oldest first.
     pub fn serve(&self, app: &mut dyn AppWidget) -> bool {
         self.serve_with(|actor, address, arguments| {
-            app.invoke_device_local_action_as(actor, address, arguments)
+            app.invoke_this_device_action_as(actor, address, arguments)
         })
     }
 

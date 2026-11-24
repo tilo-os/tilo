@@ -265,11 +265,7 @@ pub fn apply_setup_handoff(
 /// device issues, which the image redeems itself. Nothing of the person's identity is written
 /// onto the image: no root, no certificate.
 #[cfg(unix)]
-fn stage_identity_ticket(
-    root: &Path,
-    profile: &InstallProfile,
-    label: &str,
-) -> Result<(), String> {
+fn stage_identity_ticket(root: &Path, profile: &InstallProfile, label: &str) -> Result<(), String> {
     if profile.user.username.trim().is_empty() {
         return Err("Choose the account name before enrolling this device.".into());
     }
@@ -653,7 +649,7 @@ mod tests {
 
     /// An image written with no enrolment carries no identity to join with.
     #[test]
-    fn an_image_written_without_enrolment_carries_no_ticket() {
+    fn an_image_written_without_adding_a_device_carries_no_ticket() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("image");
         fs::create_dir(&root).unwrap();
@@ -665,8 +661,10 @@ mod tests {
             identity_dir: Path::new("/nonexistent"),
             system: &tilo_device_identity::IdentityPaths::default_system(),
         };
-        assert!(apply_setup_handoff(&root, &profile, "hunter2", &local).is_err()
-            || !root.join("etc/tilo/ticket").exists());
+        assert!(
+            apply_setup_handoff(&root, &profile, "hunter2", &local).is_err()
+                || !root.join("etc/tilo/ticket").exists()
+        );
         assert!(
             !root.join("etc/tilo/ticket").exists(),
             "the image carries no ticket unless the person asks for one"
@@ -698,6 +696,9 @@ mod tests {
         let refused = apply_setup_handoff(&root, &profile, "", &local).unwrap_err();
         assert!(refused.contains("ticket"), "{refused}");
         assert!(!root.join("etc/tilo/ticket").exists());
-        assert!(!root.join("var/lib/tilo").exists(), "no identity is written");
+        assert!(
+            !root.join("var/lib/tilo").exists(),
+            "no identity is written"
+        );
     }
 }

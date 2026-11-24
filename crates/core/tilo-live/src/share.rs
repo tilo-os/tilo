@@ -297,8 +297,7 @@ pub fn open(
     )?;
     // The body names whom it is for under the seal; the header only lets the others pass it by.
     let said = Said::decode(&body).ok_or(Refusal::Unauthenticated)?;
-    if said.to != own || said.control.to_host() != (under == own) || !said.control.within_bounds()
-    {
+    if said.to != own || said.control.to_host() != (under == own) || !said.control.within_bounds() {
         return Err(Refusal::Unauthenticated);
     }
     Ok(Some(body))
@@ -381,7 +380,7 @@ mod tests {
             assert_eq!(opened.as_deref().and_then(Said::decode), Some(ended));
         }
 
-        phase a_sender_off_the_roster_or_a_changed_byte_is_refused;
+        phase a_sender_off_the_member_list_or_a_changed_byte_is_refused;
         {
             let (_, scope, channel, _, object) = pressed();
             let outsider = Roster::new([HOST]);

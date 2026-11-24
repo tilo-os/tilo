@@ -137,22 +137,22 @@ pub fn founded(
     key: &SigningKey,
 ) -> Result<WorkspaceId, String> {
     let workspace = WorkspaceId::new();
-    enroll_interactive_in(owner, key, certificate, &workspace.to_string())?;
+    add_interactive_device_in(owner, key, certificate, &workspace.to_string())?;
     Ok(workspace)
 }
 
 /// Enroll an empty interactive workspace through the real signed join protocol.
 /// This helper neither seeds application records nor grants capabilities.
-pub fn enroll_interactive(
+pub fn add_interactive_device(
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
     certificate: &DeviceCert,
 ) -> Result<workspace::TestWorkspace, String> {
-    enroll_interactive_in(owner, key, certificate, WORKSPACE)
+    add_interactive_device_in(owner, key, certificate, WORKSPACE)
 }
 
-/// [`enroll_interactive`] into `workspace`.
-pub fn enroll_interactive_in(
+/// [`add_interactive_device`] into `workspace`.
+pub fn add_interactive_device_in(
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
     certificate: &DeviceCert,
@@ -164,7 +164,7 @@ pub fn enroll_interactive_in(
 }
 
 /// Enroll `certificate`'s device into the workspace `fixture` already holds, as
-/// the workspace's devices [`enroll_interactive`] make one for: what a
+/// the workspace's devices [`add_interactive_device`] make one for: what a
 /// workspace whose other devices are already in it admits this one into.
 pub fn enroll_into(
     mut fixture: workspace::TestWorkspace,

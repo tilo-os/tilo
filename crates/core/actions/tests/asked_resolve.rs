@@ -729,7 +729,7 @@ fn the_foreign_device_that_asked_cannot_answer_for_its_person() {
     for resolution in [Offer::Approve, Offer::Decline] {
         assert_eq!(
             refusal(resolve(&host, &at, &foreign, resolution, None)),
-            tilo_actions::remote::asked::ON_YOUR_OWN_DEVICE
+            tilo_actions::remote::asked::ON_YOUR_DEVICE
         );
     }
     assert!(

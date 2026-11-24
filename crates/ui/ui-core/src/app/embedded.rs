@@ -1079,7 +1079,7 @@ impl AppWidget for EmbeddedApp {
         self.wants_frame.set(true);
         started
     }
-    fn invoke_device_local_action_as(
+    fn invoke_this_device_action_as(
         &mut self,
         actor: Option<&tilo_actions::Actor>,
         address: &tilo_actions::ActionAddress,

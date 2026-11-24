@@ -804,7 +804,7 @@ const MODERATION_SURFACE: &str = include_str!("../../../../apps/moderation-model
 
 /// A committed surface file's resources (`{"resources": […]}`).
 #[derive(serde::Deserialize)]
-struct CommittedSurfaces {
+struct SurfaceFileResources {
     resources: Vec<Surface>,
 }
 
@@ -817,7 +817,7 @@ fn kept_for_workspace(app: &str) -> Vec<Surface> {
         "the moderation surface beside its model is what that model publishes: the crate's own \
          test holds the file to it, so a file that does not read names no record in a build that \
          was already broken",
-        serde_json::from_str::<CommittedSurfaces>(MODERATION_SURFACE)
+        serde_json::from_str::<SurfaceFileResources>(MODERATION_SURFACE)
             .map(|file| file.resources)
             .unwrap_or_default()
     );

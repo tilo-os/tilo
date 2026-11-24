@@ -212,7 +212,7 @@ impl Sending {
                         tilo_messaging::SendError::InvalidRequest=>"messages-send-invalid",
                         tilo_messaging::SendError::AlreadyReserved=>"messages-send-reserved",
                         tilo_messaging::SendError::Uncertain=>"messages-send-uncertain",
-                        tilo_messaging::SendError::NotOwnDevice=>"messages-not-own-device",
+                        tilo_messaging::SendError::NotYourDevice=>"messages-not-own-device",
                     };Err(CATALOG.t(key))
                 },
             }

@@ -554,7 +554,7 @@ def defaults(text: str) -> dict[tuple[str, str], bool]:
     return found
 
 
-def carrier_interfaces(
+def compact_interfaces(
     root: Path = ROOT, unreadable: list[str] | None = None
 ) -> dict[tuple[str, str], list]:
     """`{(file, type): interfaces}` of the positional interfaces that carry each
@@ -593,7 +593,7 @@ def default_problems(
     base = subprocess.run(
         ["git", "merge-base", base, "HEAD"], cwd=root, capture_output=True, text=True, check=True
     ).stdout.strip()
-    carriers = carrier_interfaces(root, unreadable)
+    carriers = compact_interfaces(root, unreadable)
     base_versions: dict[str, int | None] = {}
 
     def version_at_base(spec) -> int | None:

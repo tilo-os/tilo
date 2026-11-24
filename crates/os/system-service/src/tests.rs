@@ -1900,7 +1900,7 @@ fn an_enrolled_volume() -> DiskUnlock {
 }
 
 #[test]
-fn the_disk_unlock_resource_reads_the_enrolment_and_chooses_its_networks() {
+fn the_disk_unlock_resource_reads_the_volumes_unlock_and_chooses_its_networks() {
     let fake = Fake::new();
     *fake.disk_unlock.lock().unwrap() = an_enrolled_volume();
     let mut service = service(&fake);
@@ -2312,7 +2312,14 @@ fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_wor
         .iter()
         .map(|action| action.id.as_str())
         .collect();
-    for action in ["launch", "stop", "open-file", "install", "set-route", "delete-data"] {
+    for action in [
+        "launch",
+        "stop",
+        "open-file",
+        "install",
+        "set-route",
+        "delete-data",
+    ] {
         assert!(
             actions.contains(&action),
             "{action} is published: {actions:?}"
@@ -2330,10 +2337,7 @@ fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_wor
         Ok(Started::Accepted)
     );
     service.settle();
-    assert_eq!(
-        windows.changes(),
-        [("w1".to_owned(), "launch".to_owned())]
-    );
+    assert_eq!(windows.changes(), [("w1".to_owned(), "launch".to_owned())]);
 
     // The action's own refusal is said in the reading until the next.
     *windows.refusal.lock().unwrap() = Some("The capsule's runner is not installed.".to_owned());
