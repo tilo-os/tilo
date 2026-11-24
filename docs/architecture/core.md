@@ -1120,10 +1120,16 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   carries its signed call; a call on the same device is admitted by the
   daemon from who is on the other end of its socket, with no signing step
   added. A caller whose connection ends cancels its call: that is the
-  record's status, not a lease beside it. A call that starts a device job (a
-  recording, a render) stays running until the job ends, held by the job's device:
-  its writes land at once, closing the window that made it ends nothing, and when
-  the job ends its `done:` action runs as a child call under the caller's grants. `work::takes_turn` only places
+  record's status, not a lease beside it. The one exception is held work. A call
+  that starts a device job (a recording, a render) stays running until the job
+  ends, held by the job's device, which keeps the job at `devices/<id>/jobs/<job>`:
+  its writes land at once, closing the window or the app's process ends nothing,
+  no idle timeout applies while the job runs, and when the job ends its `done:`
+  action runs as a child call under the caller's grants, starting the app without
+  a window if it isn't running. Cancelling the call cancels its jobs. A press in a
+  window is a call like any other, admitted as the person who pressed, with its
+  own invocation record. Work with no end, such as a language server or a
+  gateway, is the app's held connection, never a job. `work::takes_turn` only places
   work that leaves the starting device. A call that leaves its device carries its caller's
   signature: a person's device signs for its person, an agent with its own
   key, a visitor with theirs, and an app's call travels as the signed call it
