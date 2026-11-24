@@ -37,17 +37,13 @@ impl Core {
         let part = match a.h(1)? {
             PART_EXCERPT => Value::Text(self.read_rich(&r, true)),
             PART_TEXT => Value::Text(self.read_rich(&r, false)),
-            PART_MARKDOWN => {
-                Value::Text(tilo_doc_codecs::rich::markdown_of_blocks(&r.blocks))
-            }
+            PART_MARKDOWN => Value::Text(tilo_doc_codecs::rich::markdown_of_blocks(&r.blocks)),
             PART_REFERENCES => Value::List(self.referenced(&r)?),
             PART_PEOPLE => Value::List(
                 r.references()
                     .into_iter()
                     .filter_map(|r| match r {
-                        Reference::Member(member) => {
-                            Some(Value::Actor(Actor::Member(member)))
-                        }
+                        Reference::Member(member) => Some(Value::Actor(Actor::Member(member))),
                         Reference::Resource(_) => None,
                     })
                     .collect(),
@@ -94,6 +90,17 @@ impl Core {
                         self.ret_h(Value::Rich(RichValue { blocks }))
                     }
                     Err(why) => trap(format!("this text is not a document: {why}")),
+                }
+            }
+            // `RichText.from_html(text)`: the document an HTML text says — a message its sender
+            // formatted says one — read the one way every app reads one
+            // (`tilo_doc_codecs::rich`). Scripts and styles are not part of it, and a picture
+            // keeps the address it names, so the read reaches nothing outside the text.
+            Imp::RichFromHtml => {
+                let html = self.text(a.h(0)?)?;
+                match tilo_doc_codecs::rich::blocks_of_html(&html) {
+                    Ok(blocks) => self.ret_h(Value::Rich(RichValue { blocks })),
+                    Err(why) => trap(format!("this text is not an HTML document: {why}")),
                 }
             }
             Imp::RichRelinked => self.rich_relinked(a),

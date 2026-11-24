@@ -119,6 +119,18 @@ JVBERi0xLjQKJSBsZWFzZSAyMDI2Cg==\n--lease--\n"
     )
 }
 
+/// A message its sender formatted: the words as text, and the same as the HTML part a mail
+/// program shows when it renders formatted mail.
+fn mail_formatted(id: &str, from: &str, subject: &str, text: &str, html: &str) -> String {
+    format!(
+        "From: {from}\nTo: {ME}\nSubject: {subject}\nMessage-ID: <{id}>\n\
+Date: Tue, 30 Jun 2026 09:00:00 +0000\nMIME-Version: 1.0\n\
+Content-Type: multipart/alternative; boundary=\"formed\"\n\n\
+--formed\nContent-Type: text/plain; charset=utf-8\n\n{text}\n\
+--formed\nContent-Type: text/html; charset=utf-8\n\n{html}\n--formed--\n"
+    )
+}
+
 /// The two servers with nothing in the inbox yet: what a test puts there once the window stands,
 /// as mail arrives at an open window.
 fn empty_servers() -> Servers {
@@ -2689,6 +2701,58 @@ fn forward_reply_all_open_and_discard_work_on_the_composers_draft() {
     );
     let waiting = session.refs(&root, "drafts");
     assert_eq!(waiting, vec![forwarded.clone()], "only the forward waits");
+}
+
+// USER REQUIREMENT: a message its sender formatted reads as they wrote it — its paragraphs,
+// links and emphasis — and nothing a script or a style of it says is shown.
+#[test]
+fn a_message_its_sender_formatted_reads_as_they_wrote_it() {
+    let servers = empty_servers();
+    servers.imap.append(
+        "INBOX",
+        &mail_formatted(
+            "news@letter.example",
+            "Ada Lovelace <ada@analytical.example>",
+            "The news",
+            "Hello Ada, the plan is ready.",
+            "<p>Hello <strong>Ada</strong>,</p><p>The <a href=\"https://tilo.sh\">plan</a> is \
+             ready.</p><script>alert('secret words')</script><style>p{color:red}</style>",
+        ),
+        &["\\Seen"],
+    );
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let news = session.thread("The news");
+    session.open_showing(&news);
+    session.settle();
+    let tree = session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .detail_tree()
+        .expect("the conversation opens beside the list");
+    let mut texts = Vec::new();
+    super::texts(&tree, &mut texts);
+    assert!(
+        texts.iter().any(|text| text == "Hello Ada,"),
+        "the sender's own paragraph is what reads: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "The plan is ready."),
+        "and the next one: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "plan"),
+        "a link is the words it covers: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|text| text.contains("secret words")),
+        "nothing a script says reaches the person: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|text| text.contains("color:red")),
+        "nor a style: {texts:?}"
+    );
 }
 
 // USER REQUIREMENT: a mailbox opens as its own page: the conversations filed in it, and nothing

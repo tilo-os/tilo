@@ -2637,7 +2637,8 @@ impl Checker<'_> {
         Ex::host(imp, vec![text, near], Ty::Option(Box::new(ty)))
     }
 
-    /// `RichText.from_markdown(text)` and `RichText.embed(r)`: pure, as a value's method is.
+    /// `RichText.from_markdown(text)`, `RichText.from_html(text)` and `RichText.embed(r)`: pure,
+    /// as a value's method is.
     fn rich_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         if name.name == "embed" {
             let Some(r) = self.resource_arg("RichText.embed", args, span) else {
@@ -2645,11 +2646,42 @@ impl Checker<'_> {
             };
             return Ex::host(Imp::RichEmbed, vec![r], Ty::RichText);
         }
+        if name.name == "from_html" {
+            let mut text = None;
+            for a in args {
+                match a.name.as_ref().map(|n| n.name.as_str()) {
+                    None => {
+                        if text.replace(self.expr_as(&a.value, &Ty::Text)).is_some() {
+                            self.err(
+                                "E022",
+                                span,
+                                "`.from_html` reads one text, the first it takes: \
+                                 `RichText.from_html(text)`",
+                            );
+                        }
+                    }
+                    Some(other) => self.err(
+                        "E022",
+                        a.value.span,
+                        format!("`.from_html` takes the text; not `{other}:`"),
+                    ),
+                }
+            }
+            let Some(text) = text else {
+                self.err(
+                    "E022",
+                    span,
+                    "`.from_html` takes the text it reads: `RichText.from_html(text)`",
+                );
+                return Ex::error();
+            };
+            return Ex::host(Imp::RichFromHtml, vec![text], Ty::RichText);
+        }
         if name.name != "from_markdown" {
             self.err(
                 "E027",
                 name.span,
-                "`RichText` is a type, not a value; its methods of its own are `.from_markdown(text)`, the document a Markdown text says, and `.embed(r)`, the text projecting the resource `r`, and `RichText(…)` builds a value",
+                "`RichText` is a type, not a value; its methods of its own are `.from_markdown(text)`, the document a Markdown text says, `.from_html(text)`, the document an HTML text says, and `.embed(r)`, the text projecting the resource `r`, and `RichText(…)` builds a value",
             );
             for a in args {
                 let _ = self.expr(&a.value, None);

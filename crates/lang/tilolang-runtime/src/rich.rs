@@ -184,6 +184,18 @@ impl RichValue {
             .map_err(|why| format!("this text is not a document: {why}"))
     }
 
+    /// The text an HTML document says, as `RichText.from_html(text)` reads one: a message its
+    /// sender formatted, an article, a page someone copied. A script or a style is not part of
+    /// it, and a picture keeps the address it names, so reading it never reaches outside.
+    ///
+    /// # Errors
+    /// When the text is not a document.
+    pub fn from_html(html: &str) -> Result<Self, String> {
+        tilo_doc_codecs::rich::blocks_of_html(html)
+            .map(|blocks| Self { blocks })
+            .map_err(|why| format!("this text is not an HTML document: {why}"))
+    }
+
     /// `RichText("…")`: the text, a paragraph per line, unformatted.
     #[must_use]
     pub fn from_text(text: &str) -> Self {

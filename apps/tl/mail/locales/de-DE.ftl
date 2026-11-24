@@ -657,6 +657,8 @@ d-n2xgxnbw = Nachricht
     .w-to = an { $to }
     .w-hide-quoted-text = Zitierten Text ausblenden
     .w-show-quoted-text = Zitierten Text anzeigen
+    .w-show-plain-text = Nur Text anzeigen
+    .w-show-formatted = Formatiert anzeigen
 
 d-llqqdcy5 = Anhang-Chip
     .w-not-downloaded = { $name }, nicht heruntergeladen

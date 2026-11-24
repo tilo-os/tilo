@@ -54,10 +54,10 @@ use Imp::{
     RandomFloat, RandomId, RandomInt, RandomShuffle, Reach, ReadText, ReadWith, RecNew, RecSetF,
     RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI,
     ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended, RichEmbed, RichEmpty,
-    RichFromMarkdown, RichMarkdown, RichMarked, RichNew, RichPart, RichRelinked, RichTime, RowOpen,
-    RunChanges, SeenBy, SetAdd, SetRemove, SheetEdit, SheetEntry, SheetFile, SheetNumbers,
-    SheetOfFile, SheetRanges, SheetRecords, SheetValues, Single, SomeF, SomeH, SomeI, SortLit,
-    SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat,
+    RichFromHtml, RichFromMarkdown, RichMarkdown, RichMarked, RichNew, RichPart, RichRelinked,
+    RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, SheetEdit, SheetEntry, SheetFile,
+    SheetNumbers, SheetOfFile, SheetRanges, SheetRecords, SheetValues, Single, SomeF, SomeH, SomeI,
+    SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat,
     StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches,
     StrMisspelled, StrReplace, StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat,
     StrToInt, StrTrim, StrUpper, StrUrlEncode, StrWords, Suggest, Take, TimeClock, TimeDay,
@@ -629,7 +629,9 @@ impl Core {
                 self.random_import(imp, a)
             }
             RichNew | RichPart | RichEmpty | RichAppended | RichTime | RichFromMarkdown
-            | RichMarkdown | RichEmbed | RichRelinked | RichMarked => self.rich_import(imp, a),
+            | RichFromHtml | RichMarkdown | RichEmbed | RichRelinked | RichMarked => {
+                self.rich_import(imp, a)
+            }
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF

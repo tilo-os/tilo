@@ -2266,6 +2266,9 @@ view conversation_messages(t: Thread) {
 /// the list runs them.
 view message(m: Message) {
     state quoting: Bool
+    // A message its sender formatted is shown as they wrote it, and as words at the press that
+    // asks for it.
+    state as_written: Bool = true
     let body = as_lines(m.body)
     let at = quote_begins(body)
     let said = if let i = at { body.slice(0, i) } else { body }
@@ -2315,7 +2318,23 @@ view message(m: Message) {
         }
         ui.Card {
             ui.Text("to {m.to}", role: .caption, secondary: true)
-            ui.Text(said, role: .body)
+            if m.html != "" and as_written {
+                // What its sender formatted, read the one way every app reads a document: its
+                // paragraphs, lists, quotes, tables and links, and no script or style of it.
+                ui.BlockEditor(RichText.from_html(m.html))
+                row(gap: .related, align: .center) {
+                    ui.Button("Show plain text", icon: .file_text, size: .small) {
+                        on press: set(as_written, false)
+                    }
+                }
+            } else {
+                ui.Text(said, role: .body)
+                if m.html != "" {
+                    ui.Button("Show formatted", icon: .file_text, size: .small) {
+                        on press: set(as_written, true)
+                    }
+                }
+            }
             if at != .none {
                 ui.DisclosureRow(
                     if quoting { "Hide quoted text" } else { "Show quoted text" },

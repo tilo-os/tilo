@@ -764,6 +764,8 @@ d-n2xgxnbw = Message
     .w-reply-all = Reply all
     .w-forward = Forward
     .w-to = to { $to }
+    .w-show-plain-text = Show plain text
+    .w-show-formatted = Show formatted
     .w-hide-quoted-text = Hide quoted text
     .w-show-quoted-text = Show quoted text
 

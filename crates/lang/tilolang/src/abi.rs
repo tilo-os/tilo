@@ -345,6 +345,10 @@ imports! {
     // of the bundle read as the reference to it. The arguments are the text, the pages by the address each
     // stands at, the folder the page is written in, and the app the references name.
     RichFromMarkdown = "rich_from_markdown" ([H, H, H, H] -> [H]);
+    // `RichText.from_html(text)`: the document an HTML text says — what a message its sender
+    // formatted says. Scripts and styles are not part of it, and a picture keeps the address it
+    // names, so nothing outside the text is read.
+    RichFromHtml = "rich_from_html" ([H] -> [H]);
     // `r.markdown(links:, from:)`: the document as Markdown, each reference to one of `links` written as
     // the link to the page it stands at, from the folder the page is written in.
     RichMarkdown = "rich_markdown" ([H, H, H] -> [H]);

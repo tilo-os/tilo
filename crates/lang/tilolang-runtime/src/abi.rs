@@ -306,6 +306,7 @@ imports! {
     (RichMarked, "rich_marked", "iiiill", "i"),
     (RichTime, "rich_time", "i", "i"),
     (RichFromMarkdown, "rich_from_markdown", "iiii", "i"),
+    (RichFromHtml, "rich_from_html", "i", "i"),
     (RichMarkdown, "rich_markdown", "iii", "i"),
     (RichRelinked, "rich_relinked", "iiii", "i"),
     (RichEmbed, "rich_embed", "i", "i"),
