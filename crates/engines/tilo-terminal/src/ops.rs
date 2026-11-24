@@ -120,7 +120,10 @@ pub fn call(op: &str, input: &str, opener: &dyn Opener) -> Result<String, String
             Ok(json!({"events": events, "next": next}).to_string())
         }),
         "rerun_test" => {
-            let command = ask.get("command").and_then(Value::as_str).unwrap_or_default();
+            let command = ask
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let test = ask.get("test").and_then(Value::as_str).unwrap_or_default();
             let again = crate::parse::rerun_test(command, test)
                 .ok_or_else(|| "this command's tool cannot run one test".to_owned())?;
@@ -164,10 +167,12 @@ pub fn status(job: &str) -> Result<String, String> {
     let held = jobs()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let job = held
+    let state = held
         .get(job)
-        .ok_or_else(|| format!("no job `{job}` runs on this device"))?;
-    Ok(job.to_string())
+        .ok_or_else(|| format!("no job `{job}` runs on this device"))?
+        .to_string();
+    drop(held);
+    Ok(state)
 }
 
 /// Stop a run: false when it is not this device's or it had finished.
@@ -175,17 +180,20 @@ pub fn cancel(job: &str) -> bool {
     let mut held = jobs()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(state) = held.get_mut(job) {
-        state["state"] = json!("cancelled");
-        return true;
-    }
-    false
+    let cancelled = match held.get_mut(job) {
+        Some(state) => {
+            state["state"] = json!("cancelled");
+            true
+        }
+        None => false,
+    };
+    drop(held);
+    cancelled
 }
 
 fn jobs() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, Value>> {
-    static JOBS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::BTreeMap<String, Value>>,
-    > = std::sync::OnceLock::new();
+    static JOBS: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<String, Value>>> =
+        std::sync::OnceLock::new();
     JOBS.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
 }
 
@@ -296,7 +304,7 @@ fn parse(input: &str) -> Value {
     serde_json::from_str(input).unwrap_or_else(|_| json!({}))
 }
 
-fn text<'a>(ask: &'a Value) -> Result<&'a str, String> {
+fn text(ask: &Value) -> Result<&str, String> {
     ask.get("text")
         .and_then(Value::as_str)
         .ok_or_else(|| "the ask names no text".to_owned())
@@ -352,17 +360,9 @@ fn open(ask: &Value) -> Result<String, String> {
         record,
         ..OpenOptions::default()
     };
-    let (content, wake) = device();
-    let live = Live::open(
-        &target,
-        requested_by,
-        &options,
-        content,
-        columns,
-        rows,
-        wake,
-    )
-    .map_err(|error| open_error(&error))?;
+    let (store, wake) = device();
+    let live = Live::open(&target, requested_by, &options, store, columns, rows, wake)
+        .map_err(|error| open_error(&error))?;
     Ok(json!({
         "shell": live.id(),
         "shell_name": live.session().shell_name(),
@@ -379,30 +379,25 @@ fn open_error(error: &OpenError) -> String {
     error.to_string()
 }
 
+/// What wakes a window when a session's grid changed.
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
+
+/// The content store sessions keep their pictures in, and how their window is woken.
+type Device = (tilo_content::ContentStore, Option<Wake>);
+
 /// What the device gives every session: the content store its pictures and transcripts are kept
 /// in, and how a window is woken when its grid changed.
-fn device() -> (
-    tilo_content::ContentStore,
-    Option<Arc<dyn Fn() + Send + Sync>>,
-) {
-    let held = CONFIGURED.get_or_init(|| {
-        (
-            tilo_content::ContentStore::memory(),
-            None::<Arc<dyn Fn() + Send + Sync>>,
-        )
-    });
+fn device() -> Device {
+    let held = CONFIGURED.get_or_init(|| (tilo_content::ContentStore::memory(), None::<Wake>));
     (held.0.clone(), held.1.clone())
 }
 
-static CONFIGURED: std::sync::OnceLock<(
-    tilo_content::ContentStore,
-    Option<Arc<dyn Fn() + Send + Sync>>,
-)> = std::sync::OnceLock::new();
+static CONFIGURED: std::sync::OnceLock<Device> = std::sync::OnceLock::new();
 
 /// Tell the ops the device they run on: the content store sessions keep their pictures in, and
 /// what wakes a window when a session's grid changed. A session process sets this once, at its
 /// start; a process that never does keeps an empty store and wakes nobody.
-pub fn configure(content: tilo_content::ContentStore, wake: Option<Arc<dyn Fn() + Send + Sync>>) {
+pub fn configure(content: tilo_content::ContentStore, wake: Option<Wake>) {
     let _ = CONFIGURED.set((content, wake));
 }
 
@@ -449,7 +444,9 @@ mod tests {
     fn only_plain_web_addresses_are_public_links() {
         assert!(crate::is_public_web_link("https://example.test/docs"));
         assert!(crate::is_public_web_link("http://example.test"));
-        assert!(!crate::is_public_web_link("file:///home/me/.ssh/id_ed25519"));
+        assert!(!crate::is_public_web_link(
+            "file:///home/me/.ssh/id_ed25519"
+        ));
         assert!(!crate::is_public_web_link("https://token@example.test/x"));
         assert!(!crate::is_public_web_link("https://example.test/?q=secret"));
         assert!(!crate::is_public_web_link("https://example.test/#fragment"));

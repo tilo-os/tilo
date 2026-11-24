@@ -335,13 +335,13 @@ fn open_supervisor_session(
     requested_by: Requester,
     options: &OpenOptions<'_>,
 ) -> Result<Session, OpenError> {
-    let program = options.program.unwrap_or_default();
     // How long the answer may take. Before it answers, the supervisor checks
     // that the environment can be built, which on a device's first open reads
     // the system store's images: ~400 ms on the CI VM, past the 250 ms a
     // hosted connection is given to connect. Never shorten a longer
     // bound, nor add one where the connection has none.
     const USH_OPEN_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+    let program = options.program.unwrap_or_default();
     let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());
     {
         let mut writer = stream;
@@ -663,9 +663,7 @@ pub(crate) type SpawnedPty = (
 
 /// Open a pty on `cmd`, with `TERM` forced to `xterm-256color` so programs emit the SGR and DEC
 /// sequences the emulator reads.
-pub(crate) fn spawn_pty(
-    cmd: CommandBuilder,
-) -> Result<SpawnedPty, Box<dyn std::error::Error>> {
+pub(crate) fn spawn_pty(cmd: CommandBuilder) -> Result<SpawnedPty, Box<dyn std::error::Error>> {
     let mut cmd = cmd;
     cmd.env("TERM", "xterm-256color");
     let shell_name = cmd

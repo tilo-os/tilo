@@ -39,24 +39,64 @@ pub enum Key {
     Named(Named),
 }
 
-/// The modifiers held beside a key or a button.
+/// The modifiers held beside a key or a button, as the one bit each takes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Held {
-    pub shift: bool,
-    pub alt: bool,
-    pub ctrl: bool,
-    pub sup: bool,
+    bits: u8,
 }
 
 impl Held {
+    /// Shift held.
+    pub const SHIFT: Self = Self { bits: 1 };
+    /// Alt held.
+    pub const ALT: Self = Self { bits: 2 };
+    /// Control held.
+    pub const CTRL: Self = Self { bits: 4 };
+    /// Super held.
+    pub const SUP: Self = Self { bits: 8 };
+
+    /// The set, one bit per modifier.
     #[must_use]
-    pub const fn new(shift: bool, alt: bool, ctrl: bool, sup: bool) -> Self {
-        Self {
-            shift,
-            alt,
-            ctrl,
-            sup,
+    pub const fn bits(self) -> u8 {
+        self.bits
+    }
+
+    #[must_use]
+    pub const fn shift(self) -> bool {
+        self.bits & Self::SHIFT.bits != 0
+    }
+
+    #[must_use]
+    pub const fn alt(self) -> bool {
+        self.bits & Self::ALT.bits != 0
+    }
+
+    #[must_use]
+    pub const fn ctrl(self) -> bool {
+        self.bits & Self::CTRL.bits != 0
+    }
+
+    #[must_use]
+    pub const fn sup(self) -> bool {
+        self.bits & Self::SUP.bits != 0
+    }
+}
+
+impl From<[bool; 4]> for Held {
+    /// The modifiers held, in the order shift, alt, ctrl, super.
+    fn from([shift, alt, ctrl, sup]: [bool; 4]) -> Self {
+        let mut held = Self::default();
+        for (on, modifier) in [
+            (shift, Self::SHIFT),
+            (alt, Self::ALT),
+            (ctrl, Self::CTRL),
+            (sup, Self::SUP),
+        ] {
+            if on {
+                held.bits |= modifier.bits;
+            }
         }
+        held
     }
 }
 
@@ -76,23 +116,23 @@ pub enum Button {
 pub fn encode_key(key: Key, text: Option<&str>, held: Held, modes: TermModes) -> Option<Vec<u8>> {
     let modifier = mod_param(held);
 
-    if let Key::Named(Named::Backspace) = key {
-        if held.ctrl && !held.alt {
+    if key == Key::Named(Named::Backspace) {
+        if held.ctrl() && !held.alt() {
             return Some(vec![0x17]);
         }
-        if held.alt && !held.ctrl {
+        if held.alt() && !held.ctrl() {
             return Some(vec![0x1b, 0x7f]);
         }
     }
 
     let bytes = match key {
-        Key::Char(character) if held.ctrl => ctrl_char(character, held.alt),
-        Key::Char(character) if held.alt && !held.ctrl && !held.sup => alt_char(character),
-        Key::Char(character) if !held.ctrl && !held.alt && !held.sup => {
+        Key::Char(character) if held.ctrl() => ctrl_char(character, held.alt()),
+        Key::Char(character) if held.alt() && !held.ctrl() && !held.sup() => alt_char(character),
+        Key::Char(character) if !held.ctrl() && !held.alt() && !held.sup() => {
             Some(character.to_string().into_bytes())
         }
-        Key::Named(named) => named_key(named, held.shift, modifier, modes.app_cursor_keys),
-        _ => None,
+        Key::Char(_) => None,
+        Key::Named(named) => named_key(named, held.shift(), modifier, modes.app_cursor_keys),
     };
     if bytes.is_some() {
         return bytes;
@@ -112,13 +152,13 @@ pub fn encode_key(key: Key, text: Option<&str>, held: Held, modes: TermModes) ->
 /// The xterm modifier parameter: 1 + shift + 2·alt + 4·ctrl, only when one is held.
 fn mod_param(held: Held) -> Option<u8> {
     let mut pressed = 0u8;
-    if held.shift {
+    if held.shift() {
         pressed |= 1;
     }
-    if held.alt {
+    if held.alt() {
         pressed |= 2;
     }
-    if held.ctrl {
+    if held.ctrl() {
         pressed |= 4;
     }
     (pressed != 0).then_some(pressed + 1)
@@ -149,7 +189,12 @@ fn fkey_ss3(final_byte: u8, modifier: Option<u8>) -> Vec<u8> {
     }
 }
 
-fn named_key(named: Named, shift: bool, modifier: Option<u8>, app_cursor_keys: bool) -> Option<Vec<u8>> {
+fn named_key(
+    named: Named,
+    shift: bool,
+    modifier: Option<u8>,
+    app_cursor_keys: bool,
+) -> Option<Vec<u8>> {
     match named {
         Named::Enter => Some(vec![b'\r']),
         Named::Space => Some(vec![b' ']),
@@ -259,13 +304,13 @@ pub fn mouse_bytes(
 ) -> Vec<u8> {
     // Shift is the conventional override: a program that tracks the mouse still lets a person
     // select, so the view reports the shift and the program ignores it.
-    if held.shift {
+    if held.shift() {
         code |= 4;
     }
-    if held.alt {
+    if held.alt() {
         code |= 8;
     }
-    if held.ctrl {
+    if held.ctrl() {
         code |= 16;
     }
     let x = column.max(1);
@@ -294,13 +339,7 @@ mod tests {
 
     fn ctrl_arrow(key: Named, expected: &[u8], what: &str) {
         assert_eq!(
-            encode_key(
-                Key::Named(key),
-                None,
-                Held::new(false, false, true, false),
-                plain()
-            )
-            .as_deref(),
+            encode_key(Key::Named(key), None, Held::CTRL, plain()).as_deref(),
             Some(expected),
             "{what}"
         );
@@ -331,29 +370,34 @@ mod tests {
         );
 
         assert_eq!(
-            encode_key(Key::Named(Named::Tab), None, Held::new(true, false, false, false), plain())
-                .as_deref(),
+            encode_key(Key::Named(Named::Tab), None, Held::SHIFT, plain()).as_deref(),
             Some(&b"\x1b[Z"[..]),
             "Shift+Tab is back-tab"
-        );
-        assert_eq!(
-            encode_key(Key::Named(Named::Function(1)), None, Held::default(), plain()).as_deref(),
-            Some(&b"\x1bOP"[..]),
-            "F1 keeps its SS3 form"
         );
         assert_eq!(
             encode_key(
                 Key::Named(Named::Function(1)),
                 None,
-                Held::new(false, false, true, false),
+                Held::default(),
                 plain()
             )
             .as_deref(),
+            Some(&b"\x1bOP"[..]),
+            "F1 keeps its SS3 form"
+        );
+        assert_eq!(
+            encode_key(Key::Named(Named::Function(1)), None, Held::CTRL, plain()).as_deref(),
             Some(&b"\x1b[1;5P"[..]),
             "a held modifier takes the CSI form"
         );
         assert_eq!(
-            encode_key(Key::Named(Named::Function(5)), None, Held::default(), plain()).as_deref(),
+            encode_key(
+                Key::Named(Named::Function(5)),
+                None,
+                Held::default(),
+                plain()
+            )
+            .as_deref(),
             Some(&b"\x1b[15~"[..])
         );
         assert_eq!(
@@ -373,7 +417,7 @@ mod tests {
     /// Ctrl+letter is its C0 code, Alt is Meta, and a composed character sends its text.
     #[test]
     fn control_alt_and_composed_text_send_what_the_shell_expects() {
-        let ctrl = Held::new(false, false, true, false);
+        let ctrl = Held::CTRL;
         assert_eq!(
             encode_key(Key::Char('c'), None, ctrl, plain()).as_deref(),
             Some(&b"\x03"[..]),
@@ -385,24 +429,17 @@ mod tests {
             "Ctrl+Space is NUL"
         );
         assert_eq!(
-            encode_key(Key::Char('a'), None, Held::new(false, true, false, false), plain()).as_deref(),
+            encode_key(Key::Char('a'), None, Held::ALT, plain()).as_deref(),
             Some(&b"\x1ba"[..]),
             "Alt+a is Meta-a"
         );
         assert_eq!(
-            encode_key(Key::Char('ä'), Some("ä"), Held::new(false, true, false, false), plain())
-                .as_deref(),
+            encode_key(Key::Char('ä'), Some("ä"), Held::ALT, plain()).as_deref(),
             Some("ä".as_bytes()),
             "AltGr keeps the character it composed"
         );
         assert_eq!(
-            encode_key(
-                Key::Named(Named::Backspace),
-                None,
-                Held::new(false, false, true, false),
-                plain()
-            )
-            .as_deref(),
+            encode_key(Key::Named(Named::Backspace), None, Held::CTRL, plain()).as_deref(),
             Some(&b"\x17"[..]),
             "Ctrl+Backspace deletes a word"
         );
@@ -421,10 +458,7 @@ mod tests {
             bracketed_paste: true,
             ..plain()
         };
-        assert_eq!(
-            encode_paste("a\nb", bracketed),
-            b"\x1b[200~a\rb\x1b[201~"
-        );
+        assert_eq!(encode_paste("a\nb", bracketed), b"\x1b[200~a\rb\x1b[201~");
     }
 
     /// The pointer is reported only when the program asked, in the mode it asked for, and a
@@ -452,8 +486,7 @@ mod tests {
             "a release is its own final byte in SGR"
         );
         assert_eq!(
-            encode_mouse(sgr, Button::Right, true, Held::new(true, false, false, false), 1, 1)
-                .as_deref(),
+            encode_mouse(sgr, Button::Right, true, Held::SHIFT, 1, 1).as_deref(),
             Some(&b"\x1b[<6;1;1M"[..]),
             "Shift is reported for a program that ignores it"
         );
@@ -466,7 +499,12 @@ mod tests {
         };
         let bytes = encode_mouse(x10, Button::Left, true, Held::default(), 1, 1).expect("a report");
         assert_eq!(bytes, vec![0x1b, b'[', b'M', 32, 33, 33]);
-        let release = encode_mouse(x10, Button::Left, false, Held::default(), 1, 1).expect("a report");
-        assert_eq!(release, vec![0x1b, b'[', b'M', 35, 33, 33], "X10 releases as button 3");
+        let release =
+            encode_mouse(x10, Button::Left, false, Held::default(), 1, 1).expect("a report");
+        assert_eq!(
+            release,
+            vec![0x1b, b'[', b'M', 35, 33, 33],
+            "X10 releases as button 3"
+        );
     }
 }

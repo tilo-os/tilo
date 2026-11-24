@@ -314,15 +314,16 @@ impl Live {
     #[must_use]
     pub fn events(&self, since: u64) -> (Vec<Event>, u64) {
         let first = self.shared.dropped.load(Ordering::Acquire);
-        let events = self
-            .shared
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let from = since.saturating_sub(first) as usize;
-        let events = events
-            .get(from.min(events.len())..)
-            .map_or_else(Vec::new, <[Event]>::to_vec);
+        let events = {
+            let held = self
+                .shared
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            held.get(from.min(held.len())..)
+                .map_or_else(Vec::new, <[Event]>::to_vec)
+        };
         let next = first + events.len() as u64;
         (events, next)
     }
@@ -543,11 +544,11 @@ impl Live {
                             &mut emulator,
                             &mut marks,
                             &mut commands,
-                            &buffer[..read],
+                            buffer.get(..read).unwrap_or_default(),
                             revision,
                         );
                     }
-                    PtyReadDisposition::Retry => continue,
+                    PtyReadDisposition::Retry => {}
                     PtyReadDisposition::Closed => break,
                 }
             }
@@ -634,11 +635,12 @@ impl Live {
         self.shared.revision.fetch_add(1, Ordering::AcqRel);
         match end {
             SessionEnd::Exited => self.shared.push(Event::Exit(0)),
-            SessionEnd::Lost(reason) => self.shared.push(Event::Lost(reason)),
+            SessionEnd::Lost(reason) | SessionEnd::Failed(reason) => {
+                self.shared.push(Event::Lost(reason));
+            }
             SessionEnd::Superseded => self
                 .shared
                 .push(Event::Lost("another window took this session".to_owned())),
-            SessionEnd::Failed(reason) => self.shared.push(Event::Lost(reason)),
         }
         self.wake();
     }
