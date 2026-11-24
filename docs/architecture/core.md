@@ -1046,7 +1046,13 @@ wrapper around it.
 What survives: **one daemon per device**, the workspace service opened
 through `own_device`. It is the device's, not a signed-in person's: a system
 service holding the device key, up from boot, so a device at the greeter, before
-its first sign-in or mid-update still answers `tilo-actions/1`. A desktop session is
+its first sign-in or mid-update still answers `tilo-actions/1`. The daemon is the
+key's one writer: it alone opens the key and keeps its one sequence counter, and
+its workspace service and every other process sign through it. A second process
+opening the key is refused, saying which one holds it. Two changes under one key
+with the same sequence number mean a copied machine: the receiver refuses that
+key, says which device, and takes it again only once the person re-adds one copy
+with a ticket. A desktop session is
 a client of it. It is one binary that the CLI, a server and tilo.sh all run, with one MCP socket
 locally and `tilo-actions/1` frames as its remote face. A server differs only in
 what it keeps and which work it takes, set per workspace. An always-on server
