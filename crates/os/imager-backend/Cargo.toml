@@ -7,31 +7,27 @@ publish = false
 license.workspace = true
 
 [features]
-test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env", "dep:tilo-oauth", "tilo-migrate/test-support"]
+test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env", "tilo-migrate/test-support"]
 flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]
 # The guided setup's destination side on the live installer medium
-# (`destination`): disks, the privileged install, network, power, online
-# accounts and the medium's profile. imager's `destination` feature enables it.
+# (`destination`): disks, the privileged install, network, power and the
+# medium's profile. imager's `destination` feature enables it.
 destination = [
     "dep:os-actions",
     "dep:tilo-power-mgmt",
     "dep:console-control",
     "dep:tilo-install-helpers",
     "dep:tilo-lock",
-    "tilo-dav/oauth",
 ]
 
 [dependencies]
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-unlock-protocol = { path = "../tilo-unlock-protocol" }
 tilo-test-env = { path = "../../../tools/test-env", optional = true }
-tilo-seal = { path = "../../core/tilo-seal" }
 tempfile.workspace = true
 base64.workspace = true
-accounts = { path = "../../integrations/accounts", features = ["person"] }
-# The accounts vault and the bounded reads it shares with the migration engine.
+# The bounded reads it shares with the migration engine.
 tilo-migrate = { path = "../../import/migrate" }
-account-credentials = { path = "../../integrations/account-credentials" }
 zeroize.workspace = true
 block-devices = { path = "../block-devices" }
 bounded-command = { path = "../../platform/bounded-command" }
@@ -39,7 +35,6 @@ bounded-command = { path = "../../platform/bounded-command" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 crc32fast.workspace = true
 url.workspace = true
-tilo-dav = { path = "../../integrations/tilo-dav" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -52,9 +47,6 @@ os-actions = { path = "../os-actions", optional = true }
 tilo-power-mgmt = { path = "../power", default-features = false, optional = true }
 console-control = { path = "../console-control", optional = true }
 tilo-lock = { path = "../../platform/tilo-lock", optional = true }
-# The live installer's account fixtures for the imager's tests (`test-support`).
-tilo-oauth = { path = "../../integrations/tilo-oauth", features = ["fake"], optional = true }
-tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -79,7 +71,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 [dev-dependencies]
 # The destination namespace checks recognise the fixture roots the tests build in.
 tilo-migrate = { path = "../../import/migrate", features = ["test-support"] }
-tilo-oauth = { path = "../../integrations/tilo-oauth", features = ["fake"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]

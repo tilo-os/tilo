@@ -62,7 +62,6 @@ impl InstallerApp {
         match self.step {
             Step::Keyboard => "keyboard",
             Step::Network => "network",
-            Step::Accounts => "accounts",
             Step::Disk => "disk",
             Step::Account => "account",
             Step::Options => "options",

@@ -70,7 +70,6 @@
     )
 )]
 
-pub mod account_store;
 pub mod cache;
 pub mod imager_model;
 pub mod media_model;

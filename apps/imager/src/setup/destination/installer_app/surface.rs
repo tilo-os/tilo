@@ -250,7 +250,6 @@ impl InstallerApp {
             Check::new("set-recovery-promise", self.off_step(Step::Review)),
         ];
         checks.extend(self.network_checks());
-        checks.extend(self.online_account_checks());
         checks.extend(self.recovery_checks());
         checks
     }
@@ -512,42 +511,6 @@ impl InstallerApp {
             Check::new("refresh-networks", on_step.or(busy)),
             Check::new("select-network", select),
             Check::new("connect-network", connect),
-        ]
-    }
-
-    fn online_account_checks(&self) -> Vec<Check> {
-        use crate::setup::destination::accounts_view::AccountsStatus;
-        let status = self.accounts_controller.as_ref().map_or(
-            if self.accounts_initialized {
-                AccountsStatus::Failed
-            } else {
-                AccountsStatus::Ready
-            },
-            imager_backend::destination::online_accounts::AccountsController::status,
-        );
-        let on_step = self.off_step(Step::Accounts);
-        let signing_in = (status == AccountsStatus::SigningIn)
-            .then(|| ("signing_in", t("installer-blocked-signing-in")));
-        let add = Check::new(
-            "add-account",
-            on_step.clone().or_else(|| signing_in.clone()),
-        );
-        let add = if status == AccountsStatus::ReviewCalendars {
-            add.labelled(t("installer-action-confirm-calendars"))
-        } else {
-            add
-        };
-        vec![
-            add,
-            Check::new(
-                "retry-account",
-                on_step.clone().or(signing_in).or_else(|| {
-                    (status != AccountsStatus::Failed)
-                        .then(|| ("not_failed", t("installer-blocked-retry-not-failed")))
-                }),
-            ),
-            Check::new("cancel-sign-in", on_step.clone()),
-            Check::new("continue-offline", on_step),
         ]
     }
 
@@ -822,22 +785,6 @@ impl InstallerApp {
                 description: Some(description),
             }),
         }
-    }
-
-    fn apply_online_control(&mut self, effect: &DestinationEffect) -> Applied {
-        self.require_step(Step::Accounts)?;
-        match effect {
-            DestinationEffect::AddAccount | DestinationEffect::RetryAccount => self
-                .accounts_form
-                .submit(matches!(effect, DestinationEffect::RetryAccount))
-                .map_err(|_| {
-                    "Check the private account form or wait for sign-in to finish".to_string()
-                })?,
-            DestinationEffect::CancelSignIn => self.accounts_form.cancel(),
-            _ => self.accounts_form.skip_offline(),
-        }
-        self.sync_accounts();
-        Ok(ActionOutput::default())
     }
 
     pub(super) fn invoke_control(&mut self, effect: DestinationEffect, phrase: Option<&str>) {
@@ -1355,10 +1302,6 @@ impl InstallerApp {
                     Err(self.status_or("Could not run the power action"))
                 }
             }
-            DestinationEffect::AddAccount
-            | DestinationEffect::RetryAccount
-            | DestinationEffect::CancelSignIn
-            | DestinationEffect::ContinueOffline => self.apply_online_control(&effect),
             DestinationEffect::ReturnToHost => {
                 if self.internal_host().is_none() {
                     return Err("This installer was not staged next to an existing system".into());

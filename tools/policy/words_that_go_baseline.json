@@ -1577,7 +1577,6 @@
    "accepted_handoff_requests",
    "access_handoff_names_the_target_only_when_a_hostname_was_chosen",
    "access_handoff_writes_wifi_and_the_owner_key_without_an_identity",
-   "account_handoff",
    "an_access_handoff_carries_wifi_and_owner_keys_without_an_identity",
    "an_enrollment_is_reviewed_chosen_and_retired_by_its_flow",
    "another_devices_enrolment_names_it_and_its_unattended_choice",

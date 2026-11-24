@@ -50,7 +50,6 @@ use imager_backend::destination::layouts;
 use imager_backend::destination::network::{
     Connection, ConnectivityState, InstallerNetwork, NetworkPhase,
 };
-use imager_backend::destination::online_accounts::AccountsController;
 use imager_backend::destination::power_readiness::current_insufficient_battery_percent;
 use imager_backend::destination::probes;
 
@@ -241,7 +240,6 @@ const INSTALLED_RESTART: &str = "Installed. Restart to start Tilo.";
 pub enum Step {
     Keyboard,
     Network,
-    Accounts,
     Disk,
     Account,
     Options,
@@ -250,14 +248,13 @@ pub enum Step {
     Install,
 }
 
-pub const STEP_LABELS: [&str; 9] = [
-    "Keyboard", "Network", "Accounts", "Disk", "Account", "Options", "Media", "Review", "Install",
+pub const STEP_LABELS: [&str; 8] = [
+    "Keyboard", "Network", "Disk", "Account", "Options", "Media", "Review", "Install",
 ];
 
-const STEP_KEYS: [&str; 9] = [
+const STEP_KEYS: [&str; 8] = [
     "installer-step-keyboard",
     "installer-step-network",
-    "installer-step-accounts",
     "installer-step-disk",
     "installer-step-account",
     "installer-step-options",
@@ -306,13 +303,12 @@ pub fn step_index(step: Step) -> usize {
     match step {
         Step::Keyboard => 0,
         Step::Network => 1,
-        Step::Accounts => 2,
-        Step::Disk => 3,
-        Step::Account => 4,
-        Step::Options => 5,
-        Step::Media => 6,
-        Step::Review => 7,
-        Step::Install => 8,
+        Step::Disk => 2,
+        Step::Account => 3,
+        Step::Options => 4,
+        Step::Media => 5,
+        Step::Review => 6,
+        Step::Install => 7,
     }
 }
 
@@ -327,8 +323,7 @@ pub enum InstallState {
 pub fn next_step(step: Step) -> Option<Step> {
     match step {
         Step::Keyboard => Some(Step::Network),
-        Step::Network => Some(Step::Accounts),
-        Step::Accounts => Some(Step::Disk),
+        Step::Network => Some(Step::Disk),
         Step::Disk => Some(Step::Account),
         Step::Account => Some(Step::Options),
         Step::Options => Some(Step::Media),
@@ -341,8 +336,7 @@ pub fn next_step(step: Step) -> Option<Step> {
 pub fn prev_step(step: Step) -> Option<Step> {
     match step {
         Step::Network => Some(Step::Keyboard),
-        Step::Accounts => Some(Step::Network),
-        Step::Disk => Some(Step::Accounts),
+        Step::Disk => Some(Step::Network),
         Step::Account => Some(Step::Disk),
         Step::Options => Some(Step::Account),
         Step::Media => Some(Step::Options),
@@ -388,12 +382,7 @@ pub fn validate_step(
                 Err("Enter a valid hostname (letters, digits, hyphens)".to_string())
             }
         }
-        Step::Network
-        | Step::Accounts
-        | Step::Keyboard
-        | Step::Media
-        | Step::Review
-        | Step::Install => Ok(()),
+        Step::Network | Step::Keyboard | Step::Media | Step::Review | Step::Install => Ok(()),
     }
 }
 
@@ -453,10 +442,6 @@ impl Mailbox {
 )]
 pub struct InstallerApp {
     network: InstallerNetwork,
-    // Online identities, commands and credentials never enter the document or profile.
-    accounts_form: crate::setup::destination::accounts_view::AccountsForm,
-    accounts_controller: Option<imager_backend::destination::online_accounts::AccountsController>,
-    accounts_initialized: bool,
     disks: Vec<Disk>,
     selected_disk: Option<usize>,
     selected_guided_extent: Option<usize>,
@@ -677,9 +662,6 @@ impl InstallerApp {
             password_confirmation: Arc::new(Mutex::new(String::new())),
             disk_password: Arc::new(Mutex::new(String::new())),
             wifi_password: Arc::new(Mutex::new(String::new())),
-            accounts_form: crate::setup::destination::accounts_view::AccountsForm::new(),
-            accounts_controller: None,
-            accounts_initialized: false,
             hostname: ui::LocalState::new(DEFAULT_HOSTNAME.to_string()),
             locale: ui::LocalState::new("en_US.UTF-8".to_string()),
             timezone: ui::LocalState::new(DEFAULT_TIMEZONE.to_string()),
@@ -1006,7 +988,7 @@ impl InstallerApp {
         app.keymap.set(DEFAULT_KEYMAP_NAME.to_string());
         if !matches!(
             step,
-            Step::Network | Step::Accounts | Step::Keyboard | Step::Disk
+            Step::Network | Step::Keyboard | Step::Disk
         ) {
             app.selected_disk = Some(0);
         }
@@ -1351,8 +1333,6 @@ impl InstallerApp {
                 String::new()
             },
             codecs: self.codecs,
-            online_accounts: None,
-            account_operation: String::new(),
         }
     }
 
@@ -1429,99 +1409,6 @@ impl InstallerApp {
                 return Err("Choose a valid time zone from the list".into());
             }
         }
-        Ok(())
-    }
-
-    fn enter_accounts(&mut self) {
-        if self.step != Step::Accounts || self.accounts_initialized {
-            return;
-        }
-        self.accounts_initialized = true;
-        self.accounts_controller = AccountsController::live_in_session().ok();
-        if self.accounts_controller.is_none() {
-            self.accounts_form
-                .set_status(crate::setup::destination::accounts_view::AccountsStatus::Failed);
-        }
-    }
-
-    fn leave_accounts(&mut self) {
-        use crate::setup::destination::accounts_view::{AccountsCommand, AccountsStatus};
-        if self.step != Step::Accounts {
-            return;
-        }
-        self.accounts_form.drain_commands();
-        if let Some(controller) = self.accounts_controller.as_mut() {
-            let _ = controller.command(AccountsCommand::Cancel);
-        }
-        self.accounts_form.set_status(AccountsStatus::Ready);
-        let _ = self.accounts_form.select_source(None);
-    }
-
-    fn sync_accounts(&mut self) {
-        self.dirty = true;
-        use crate::setup::destination::accounts_view::{AccountsCommand, AccountsStatus};
-        if self.step != Step::Accounts {
-            return;
-        }
-        self.enter_accounts();
-        for command in self.accounts_form.drain_commands() {
-            let skip = matches!(command, AccountsCommand::SkipOffline);
-            let escape = matches!(
-                command,
-                AccountsCommand::Cancel | AccountsCommand::SkipOffline
-            );
-            let status = match self.accounts_controller.as_mut() {
-                Some(controller) => {
-                    if controller.command(command).is_ok() {
-                        controller.status()
-                    } else {
-                        AccountsStatus::Failed
-                    }
-                }
-                None if escape => AccountsStatus::Ready,
-                None => AccountsStatus::Failed,
-            };
-            self.accounts_form.set_status(status);
-            self.dirty_structure = true;
-            if skip {
-                self.go_next();
-                return;
-            }
-        }
-        if let Some(controller) = self.accounts_controller.as_mut() {
-            let status = controller.poll();
-            self.accounts_form.set_connected(controller.connected());
-            if status != self.accounts_form.status() {
-                self.accounts_form.set_status(status);
-                self.dirty_structure = true;
-            }
-            if status == AccountsStatus::ReviewCalendars {
-                self.accounts_form.set_calendars(controller.calendars());
-            }
-        }
-        self.dirty_structure |= self.accounts_form.take_structure_changed();
-    }
-
-    fn prepare_live_accounts(
-        &mut self,
-        opts: &mut InstallOptions,
-        user: &str,
-    ) -> Result<(), imager_backend::destination::online_accounts::AccountsError> {
-        let Some(controller) = self.accounts_controller.as_mut() else {
-            return Ok(());
-        };
-        let Some((accounts, operation)) = controller.stage_for_install(
-            opts.disk_size_bytes,
-            &opts.disk_major_minor,
-            &opts.disk_wwn,
-            &opts.disk_serial,
-            user,
-        )?
-        else {
-            return Ok(());
-        };
-        opts.online_accounts = Some(Arc::new(accounts));
-        opts.account_operation = operation;
         Ok(())
     }
 
@@ -1622,7 +1509,6 @@ impl InstallerApp {
                             completion.filesystem = FieldCompletion::Complete;
                         }
                         Step::Network
-                        | Step::Accounts
                         | Step::Disk
                         | Step::Media
                         | Step::Review
@@ -1631,9 +1517,7 @@ impl InstallerApp {
                 }
                 if let Some(n) = self.next_setup_step() {
                     if n != Step::Install {
-                        self.leave_accounts();
                         self.step = n;
-                        self.enter_accounts();
                         self.reset_viewport();
                         self.status.clear();
                         self.dirty_structure = true;
@@ -1712,9 +1596,7 @@ impl InstallerApp {
         }
         let destination = prev_step(self.step);
         if let Some(p) = destination {
-            self.leave_accounts();
             self.step = p;
-            self.enter_accounts();
             self.reset_viewport();
             self.status.clear();
             self.dirty_structure = true;
@@ -1793,13 +1675,7 @@ impl InstallerApp {
             self.set_status("Choose a disk secret different from the account password");
             return;
         }
-        let mut opts = self.install_options();
-        // A server has no account (and therefore no desktop account) to hand
-        // selected online accounts to; the backend refuses that transport.
-        if !server && self.prepare_live_accounts(&mut opts, &user).is_err() {
-            self.set_status("Could not prepare your connected accounts; retry before installing");
-            return;
-        }
+        let opts = self.install_options();
 
         clear_secret_buffer(&self.password);
         clear_secret_buffer(&self.password_confirmation);
@@ -1990,14 +1866,6 @@ impl InstallerApp {
         let mut actions: Vec<Box<dyn Widget>> = Vec::new();
         match self.step {
             Step::Network => self.compose_network_step(theme, &mut children, &mut actions),
-            Step::Accounts => {
-                children.push(self.accounts_form.view());
-                actions.push(self.nav_row(
-                    Step::Accounts,
-                    Some((self.next_control(), NEXT_KEY)),
-                    false,
-                ));
-            }
             Step::Disk => self.compose_disk_step(theme, &mut children, &mut actions),
             Step::Account => self.compose_account_step(theme, &mut children, &mut actions),
             Step::Keyboard => self.compose_keyboard_step(theme, &mut children, &mut actions),
@@ -3657,7 +3525,6 @@ impl Widget for InstallerApp {
         self.take_mail();
         self.notice_capacity_edit();
         self.run_presses();
-        self.sync_accounts();
         self.notice_confirmation_edit();
         if self.network.ensure_initial_scan(self.network_wake()) {
             self.dirty_structure = true;
@@ -3771,17 +3638,9 @@ impl Widget for InstallerApp {
                     self.run_press(Press::new(DestinationEffect::Next));
                     *ctx.handled = true;
                 }
-                Step::Accounts | Step::Install => {}
+                Step::Install => {}
             }
         }
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        self.step == Step::Accounts
-            && self.accounts_controller.as_ref().is_some_and(|controller| {
-                controller.status()
-                    == crate::setup::destination::accounts_view::AccountsStatus::SigningIn
-            })
     }
 
     fn take_focus_reset(&mut self) -> bool {

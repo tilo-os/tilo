@@ -11,7 +11,6 @@ use std::ffi::OsString;
 use std::fmt;
 use std::process::ExitCode;
 
-pub mod account_handoff;
 pub use tilo_pycompat::argparse as args;
 pub mod code_refresh;
 pub mod code_refresh_probe;

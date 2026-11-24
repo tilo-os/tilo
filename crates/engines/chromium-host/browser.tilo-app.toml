@@ -1,5 +1,5 @@
-# The package `apps/tl/browser` builds into, kept as the fixture the launcher, the packaging CLI
-# and the imager's tests read: a package that shows a web page declares its engine runtime, and
+# The package `apps/tl/browser` builds into, kept as the fixture the launcher and the packaging
+# CLI read: a package that shows a web page declares its engine runtime, and
 # the launcher runs it in the web engine's confinement. `tilolang build` writes this shape; the
 # numbers a build fills in (its version, the language runtime it ships) are the build's own.
 

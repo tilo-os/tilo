@@ -555,10 +555,6 @@ installer-preview-files-title = Files and settings
 
 installer-preview-files-body = Your entire home folder, including hidden files, browser profiles, saved credentials, Flatpak apps and settings.
 
-installer-preview-accounts-title = Connect services in Tilo
-
-installer-preview-accounts-body = Choose saved connections or sign in on the next step.
-
 installer-preview-hide-details = Hide details
 
 installer-preview-storage-heading = Choose space for Tilo
@@ -821,8 +817,6 @@ installer-preview-cancel = Cancel
 
 installer-accounts-connect = Connect
 
-installer-accounts-cancel = Cancel sign-in
-
 installer-preview-prepare-direct = Review installation
 
 installer-preview-install-profile-invalid = Your installation preferences need to be corrected before continuing.
@@ -935,43 +929,6 @@ installer-storage-linux-no-space = No safe alongside space was found. { $prepara
 installer-storage-linux-preparation = Back up your files. Free space inside ext4 or Btrfs is not unallocated space: use your distribution's supported offline partitioning tools from recovery media to leave 35 GiB contiguous unallocated, then refresh disks. This installer will not automatically shrink existing filesystems, LVM, or LUKS containers. This medium is not a full live desktop.
 installer-storage-boot-guidance = If your other system is missing from Tilo's boot menu, use the computer's firmware boot picker. Existing boot entries and the default are preserved.
 installer-storage-files-guidance = Existing Linux partitions are not automatically mounted in Tilo. Files selected for import are separate from this. Set up Nextcloud separately after installation; do not share a writable sync folder between systems.
-
-installer-online-title = Online accounts
-installer-online-private = Sign in privately on this computer. Windows suggestions contain account details, not sign-in tokens.
-installer-online-google = Google
-installer-online-microsoft = Microsoft
-installer-online-nextcloud = Nextcloud
-installer-online-use-hint = Review suggested account
-installer-online-email = Email (optional)
-installer-online-server = Nextcloud server (HTTPS)
-installer-online-review = Review the services to connect
-installer-online-files = Files
-installer-online-mail = Mail (Google and Microsoft only)
-installer-online-calendar = Calendars (Google and Nextcloud): read, create, change and delete events in the calendars you select
-installer-online-calendar-review = Select the calendars Tilo may read and write. No calendar is connected until you confirm.
-installer-online-calendar-confirm = Connect selected calendars
-installer-online-ready = Choose a provider and review the services before signing in.
-installer-online-pending = Waiting for account sign-in or cancellation…
-installer-online-failed = Sign-in did not finish. Check your connection and try again, or continue without accounts.
-installer-online-added = Account connected for the services shown above. You can add another account or continue.
-installer-online-add = Add account
-installer-online-retry = Retry
-installer-online-cancel = Cancel sign-in
-installer-online-skip = Continue without another sign-in
-installer-online-invalid = Check the server address and select at least one supported service, then try again.
-installer-online-previous = Suggestions from Windows, not connected
-installer-online-source-onedrive = Found in OneDrive. Review permissions before connecting.
-installer-online-source-outlook = Found in Outlook and suggested for Mail. Review permissions before connecting.
-installer-online-source-google-web = Found as a Google web account. Choose which services to connect.
-installer-online-manual = Connect an account
-installer-online-connected-files = Connected for Files
-installer-online-connected-mail = Connected for Mail
-installer-online-connected-calendar = Connected for Calendar
-installer-online-connected = Connected here
-installer-online-adopted = Sign-ins completed here are passed securely to your installed Tilo user. You do not need to sign in again for these connected services.
-installer-online-loading = Connected means access is allowed. Files and calendars still load when you open them.
-installer-online-suggestions-note = Review a suggestion to prefill editable details below. Choose services and sign in here to connect them; no Windows sign-in tokens are imported.
-installer-online-skip-note = You can finish setup offline. Continuing cancels any unfinished sign-in and keeps accounts already connected here. Without connecting a service, its online files, mail and calendars will not be available through Tilo. You can connect it after installation.
 
 # The compatibility report on Review: the probe's own words, one message per
 # component class, reason, evidence and next step. Tilo Imager shows the same
@@ -1116,7 +1073,6 @@ imager-installer-checking-networks = Checking networks…
 # windows stand in; and the words the image wizard and the download status use.
 installer-step-keyboard = Keyboard
 installer-step-network = Network
-installer-step-accounts = Accounts
 installer-step-disk = Disk
 installer-step-account = Account
 installer-step-options = Options
@@ -1242,8 +1198,6 @@ installer-blocked-network-busy = A network operation is already in progress.
 installer-blocked-no-networks = No Wi-Fi networks are visible; refresh the list.
 installer-blocked-no-network-choice = Choose a Wi-Fi network first.
 installer-blocked-network-connected = That Wi-Fi network is already connected.
-installer-blocked-signing-in = Wait for sign-in to finish or cancel it.
-installer-blocked-retry-not-failed = Retry is available after a failed sign-in.
 installer-blocked-no-recovery-key = No recovery key has been generated.
 installer-blocked-power-not-finished = Power actions are offered once the install has finished.
 installer-blocked-recovery-unsaved-reboot = Save the recovery key off this computer and confirm it before restarting.
@@ -1252,7 +1206,6 @@ installer-blocked-installer-disk = The running installer disk cannot be used as 
 installer-blocked-read-only = This disk is hardware or policy write-protected.
 installer-blocked-begin-no-target = Select a disk (and, alongside, a region) before installing.
 installer-blocked-begin-recovery = Confirm you will save your recovery key first.
-installer-action-confirm-calendars = Confirm selected calendars
 installer-item-region = { $size } free at { $start }
 installer-item-storage = Installation target
 installer-item-storage-erase = Erase the selected disk

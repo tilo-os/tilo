@@ -173,11 +173,6 @@ pub struct InstallOptions {
     pub network_dns: String,
     /// Install the media codecs extension, which downloads the formats from their publishers.
     pub codecs: bool,
-    /// Never serialized into a prepared profile.
-    pub online_accounts:
-        Option<std::sync::Arc<tilo_install_helpers::account_handoff::InstallAccounts>>,
-    /// Identity of the operation confirmed on Review.
-    pub account_operation: String,
 }
 
 pub const MEDIA_CODECS_EXTENSION: &str = "media-codecs";
@@ -236,8 +231,6 @@ impl Default for InstallOptions {
             network_gateway: String::new(),
             network_dns: String::new(),
             codecs: false,
-            online_accounts: None,
-            account_operation: String::new(),
         }
     }
 }
@@ -305,9 +298,6 @@ fn add_guided_alongside_args(cmd: &mut Command, disk: &str, opts: &InstallOption
 )]
 pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command {
     let mut cmd = Command::new(INSTALL_BIN);
-    if opts.online_accounts.is_some() {
-        cmd.arg("--account-operation").arg(&opts.account_operation);
-    }
     cmd.arg("--disk").arg(disk);
     // A Tilo Server has no login account, so it takes no account name.
     if opts.purpose != SERVER_PURPOSE {
@@ -501,41 +491,27 @@ fn wait_exited_unreaped(pid: u32) -> std::io::Result<()> {
     }
 }
 
-/// Spawns `cmd`, writes `password` and then each of `extra_stdin` as newline-terminated stdin
-/// lines, and relays stdout line by line to `on_line`; on failure captured stderr follows.
-/// Returns whether the child exited `0`. A child that exits before reading stdin is tolerated.
-pub fn stream_command<F: FnMut(String)>(
-    cmd: Command,
-    password: &str,
-    extra_stdin: &[&str],
-    on_line: F,
-) -> std::io::Result<bool> {
-    stream_command_with_accounts(cmd, password, extra_stdin, None, on_line)
-}
-
 fn write_install_input(
     stdin: Option<std::process::ChildStdin>,
     password: &str,
     extra: &[String],
-    accounts: Option<&tilo_install_helpers::account_handoff::InstallAccounts>,
 ) -> std::io::Result<()> {
     if let Some(mut stdin) = stdin {
         writeln!(stdin, "{password}")?;
         for line in extra {
             writeln!(stdin, "{line}")?;
         }
-        if let Some(accounts) = accounts {
-            accounts.write_to(&mut stdin)?;
-        }
     }
     Ok(())
 }
 
-fn stream_command_with_accounts<F: FnMut(String)>(
+/// Spawns `cmd`, writes `password` and then each of `extra_stdin` as newline-terminated stdin
+/// lines, and relays stdout line by line to `on_line`; on failure captured stderr follows.
+/// Returns whether the child exited `0`. A child that exits before reading stdin is tolerated.
+pub fn stream_command<F: FnMut(String)>(
     mut cmd: Command,
     password: &str,
     extra_stdin: &[&str],
-    accounts: Option<std::sync::Arc<tilo_install_helpers::account_handoff::InstallAccounts>>,
     mut on_line: F,
 ) -> std::io::Result<bool> {
     cmd.stdin(Stdio::piped())
@@ -563,7 +539,7 @@ fn stream_command_with_accounts<F: FnMut(String)>(
     // The disk secret can exceed pipe capacity; feed it while draining output.
     let writer_tree = std::sync::Arc::clone(&tree);
     let stdin_writer = std::thread::spawn(move || -> std::io::Result<()> {
-        let result = write_install_input(stdin, &password, &extra_stdin, accounts.as_deref());
+        let result = write_install_input(stdin, &password, &extra_stdin);
         match result {
             Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
             Err(error) => {
@@ -661,11 +637,6 @@ pub fn run_install<F: FnMut(String)>(
     } else {
         vec![opts.pin.as_str()]
     };
-    if opts.online_accounts.is_some()
-        && (uuid::Uuid::parse_str(&opts.account_operation).is_err() || opts.pin.is_empty())
-    {
-        return Err(std::io::Error::other("invalid selected-account operation"));
-    }
     if opts.password_is_hash {
         if opts.purpose == SERVER_PURPOSE {
             return Err(std::io::Error::other(
@@ -675,19 +646,8 @@ pub fn run_install<F: FnMut(String)>(
         if password.is_empty() {
             return Err(std::io::Error::other("missing account password hash"));
         }
-        if opts.online_accounts.is_some() {
-            return Err(std::io::Error::other(
-                "an account transport cannot take a password hash",
-            ));
-        }
     }
-    stream_command_with_accounts(
-        install_command(disk, user, opts),
-        password,
-        &extra,
-        opts.online_accounts.clone(),
-        on_line,
-    )
+    stream_command(install_command(disk, user, opts), password, &extra, on_line)
 }
 
 /// Runs the power backend. On success the machine is already going down, so the UI rarely sees
@@ -700,86 +660,6 @@ pub fn run_power(action: PowerAction) -> std::io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn account_transport_drains_progress_while_feeding_private_frame() {
-        use account_credentials::portable::{self, PortableBinding};
-        use accounts::{Account, AccountId, Secret, SecretVault};
-        use sha2::{Digest, Sha256};
-        let source = tempfile::tempdir().unwrap();
-        let account = Account::new(AccountId::new("selected"), "webdav");
-        let mut vault = SecretVault::open_in(source.path());
-        vault.put(&account.id, &Secret::password("s".repeat(256 * 1024)));
-        vault.try_save().unwrap();
-        let record = crate::account_store::Accounts::empty();
-        record.keep(&account).unwrap();
-        record.project(source.path()).unwrap();
-        let key = tilo_seal::SymmetricKey::generate().unwrap();
-        let operation = uuid::Uuid::new_v4().to_string();
-        let binding = PortableBinding::new(&operation, "disk", "person", 1000).unwrap();
-        let sealed = portable::seal_selected_accounts(
-            source.path(),
-            &[account.id],
-            &key,
-            binding.as_bytes(),
-        )
-        .unwrap();
-        let accounts = std::sync::Arc::new(
-            tilo_install_helpers::account_handoff::InstallAccounts::new(&sealed, key),
-        );
-        let mut frame = Zeroizing::new(Vec::new());
-        accounts.write_to(&mut *frame).unwrap();
-        let digest =
-            Sha256::digest(&*frame)
-                .iter()
-                .fold(String::with_capacity(64), |mut output, byte| {
-                    use std::fmt::Write as _;
-                    let _ = write!(output, "{byte:02x}");
-                    output
-                });
-        let expected = format!("{digest}  -");
-        let opts = InstallOptions {
-            online_accounts: Some(accounts.clone()),
-            account_operation: operation.clone(),
-            ..InstallOptions::default()
-        };
-        let command = install_command("/dev/fixture", "person", &opts);
-        let args: Vec<_> = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy())
-            .collect();
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--account-operation", operation.as_str()])
-        );
-        assert!(
-            !args
-                .iter()
-                .any(|arg| arg.contains("selected") || arg.contains("ssss"))
-        );
-        // A sequential writer deadlocks once progress fills stdout before the backend reads a
-        // selection larger than the pipe.
-        let mut command = Command::new("timeout");
-        command.args([
-            "10s",
-            "bash",
-            "-c",
-            r#"
-            IFS= read -r password; IFS= read -r pin
-            [ "$password" = login ] && [ "$pin" = 123456 ] || exit 2
-            for ((i=0; i<2048; i++)); do printf '%128s\n' progress; done
-            sha256sum
-        "#,
-        ]);
-        let mut last = String::new();
-        assert!(
-            stream_command_with_accounts(command, "login", &["123456"], Some(accounts), |line| {
-                last = line;
-            },)
-            .unwrap()
-        );
-        assert_eq!(last, expected);
-    }
 
     #[test]
     fn stream_command_feeds_secrets_on_stdin_and_bounds_output() {

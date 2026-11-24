@@ -52,7 +52,7 @@ path = "examples/staging-handoff-fixture.rs"
 name = "code-refresh-mount-probe"
 path = "examples/code-refresh-mount-probe.rs"
 
-# The first-boot account seeding helper the live installer ships
+# The first-boot home seeding helper the live installer ships
 # (/usr/libexec/tilo-firstboot-home-seeds).
 [[bin]]
 name = "tilo-firstboot-home-seeds"
@@ -65,11 +65,8 @@ name = "install-test-firstboot-files"
 path = "../firstboot-files/src/main.rs"
 
 [dependencies]
-account-credentials = { path = "../../integrations/account-credentials" }
 # The code refresh daemon's hold on the backend's lock.
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
-tilo-seal = { path = "../../core/tilo-seal" }
-zeroize.workspace = true
 tilo-firstboot-files = { path = "../firstboot-files" }
 libc.workspace = true
 uuid.workspace = true
@@ -101,7 +98,6 @@ tilo-board-successor = { path = "../board-successor" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-accounts = { path = "../../integrations/accounts", features = ["person"] }
 base64.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 

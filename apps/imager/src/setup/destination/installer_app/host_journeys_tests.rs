@@ -1,6 +1,6 @@
 //! The installer's journeys as the host runs them: every step driven through
 //! `imager.destination`'s published actions, as a button, the palette or an
-//! agent invokes them, with fakes in place of disks, radios and accounts. Each
+//! agent invokes them, with fakes in place of disks and radios. Each
 //! test asserts what the person sees in the window and what the machine was
 //! asked to do.
 
@@ -155,13 +155,8 @@ fn wifi(ssid: &str, secure: bool, signal: u8) -> WifiNetworkInfo {
 }
 
 /// The installer window a test drives: `backend` in place of the machine's
-/// disks and install helpers, `network` in place of its radio, and the
-/// account controller `accounts` when the journey signs in.
-fn installer(
-    backend: Arc<FakeBackend>,
-    network: Arc<RecordedNetwork>,
-    accounts: Option<AccountsController>,
-) -> InstallerApp {
+/// disks and install helpers, and `network` in place of its radio.
+fn installer(backend: Arc<FakeBackend>, network: Arc<RecordedNetwork>) -> InstallerApp {
     let mut app = InstallerApp::with_disks(Vec::new()).with_backend(backend);
     app.network = InstallerNetwork::for_test(network);
     // The network worker and the install helper report through this mailbox;
@@ -172,10 +167,6 @@ fn installer(
     app.secure_boot = false;
     app.kernel_lockdown = false;
     app.target_verified_boot = false;
-    if let Some(controller) = accounts {
-        app.accounts_controller = Some(controller);
-        app.accounts_initialized = true;
-    }
     app
 }
 
@@ -319,7 +310,7 @@ fn an_offline_erase_install_ends_on_its_recovery_key_and_power() {
     let _host = ui::process::enter(&services);
     let backend = FakeBackend::new();
     let network = RecordedNetwork::new(ConnectivityState::Offline);
-    let mut app = opened(installer(backend.clone(), network, None));
+    let mut app = opened(installer(backend.clone(), network));
 
     assert_eq!(step(&mut app), "keyboard");
     // A step's own effects are refused before the installer reaches it.
@@ -355,8 +346,6 @@ fn an_offline_erase_install_ends_on_its_recovery_key_and_power() {
     assert_eq!(status(&mut app)["network"]["busy"], json!(false));
 
     app.effect(&DestinationEffect::Next).unwrap();
-    assert_eq!(step(&mut app), "accounts");
-    app.effect(&DestinationEffect::ContinueOffline).unwrap();
     assert_eq!(step(&mut app), "disk");
 
     let device = offered_device(&mut app);
@@ -376,7 +365,6 @@ fn an_offline_erase_install_ends_on_its_recovery_key_and_power() {
     assert_eq!(status(&mut app)["storage"]["method"], "erase");
     assert_eq!(status(&mut app)["storage"]["selected"], device);
     assert_eq!(status(&mut app)["storage"]["confirmation_target"], device);
-    refused_saying(&app.effect(&DestinationEffect::ContinueOffline), "Accounts");
     app.effect(&DestinationEffect::Next).unwrap();
     assert_eq!(step(&mut app), "account");
 
@@ -545,20 +533,14 @@ fn an_offline_erase_install_ends_on_its_recovery_key_and_power() {
     clippy::too_many_lines,
     reason = "one person's install, read as the steps they take"
 )]
-fn an_online_install_joins_wifi_and_carries_the_signed_in_account() {
-    let (_directory, server, _urls, controller, profile) =
-        imager_backend::destination::online_accounts::tests::mail_fixture();
+fn an_online_install_joins_wifi() {
     let backend = FakeBackend::new();
     let network = RecordedNetwork::offering(
         ConnectivityState::Full,
         vec![wifi("Cafe", true, 4), wifi("Library", false, 2)],
     );
     network.accepting("Cafe", "darjeeling-and-biscuits");
-    let mut app = opened(installer(
-        backend.clone(),
-        network.clone(),
-        Some(controller),
-    ));
+    let mut app = opened(installer(backend.clone(), network.clone()));
 
     app.effect(&DestinationEffect::SetLayout {
         layout: "English (US)".into(),
@@ -614,37 +596,6 @@ fn an_online_install_joins_wifi_and_carries_the_signed_in_account() {
     assert_eq!(joined["network"]["networks"][0]["connected"], json!(true));
 
     app.effect(&DestinationEffect::Next).unwrap();
-    assert_eq!(step(&mut app), "accounts");
-    // The person ticks Mail in the form, then connects the account.
-    app.with_widget::<InstallerApp, _>(|app| app.accounts_form.mail.set(true))
-        .unwrap();
-    app.effect(&DestinationEffect::AddAccount).unwrap();
-    wait_for_text(&mut app, "personal@example.org");
-    assert!(
-        texts(&mut app).contains("Connected for Mail"),
-        "the person sees which service the account is for"
-    );
-    assert!(
-        !server.verifiers().is_empty(),
-        "the sign-in went through the provider's own flow"
-    );
-
-    // Retry belongs to a failed sign-in. This one succeeded, so the effect is
-    // refused and the person's account stays where it is.
-    assert!(app.effect(&DestinationEffect::RetryAccount).is_err());
-    assert!(texts(&mut app).contains("personal@example.org"));
-    // Cancelling the sign-in clears the form without dropping the account.
-    app.effect(&DestinationEffect::CancelSignIn).unwrap();
-    assert_eq!(
-        app.with_widget::<InstallerApp, _>(|app| app.accounts_form.status()
-            == crate::setup::destination::accounts_view::AccountsStatus::Ready),
-        Some(true),
-        "cancelling leaves the form ready for another sign-in"
-    );
-    assert!(texts(&mut app).contains("personal@example.org"));
-    profile.join().unwrap();
-
-    app.effect(&DestinationEffect::Next).unwrap();
     assert_eq!(step(&mut app), "disk");
     let device = offered_device(&mut app);
     app.effect_on(
@@ -671,10 +622,6 @@ fn an_online_install_joins_wifi_and_carries_the_signed_in_account() {
         (device.as_str(), "ada", ACCOUNT)
     );
     assert!(
-        opts.online_accounts.is_some(),
-        "the signed-in account travelled with the install"
-    );
-    assert!(
         opts.network_static.is_empty(),
         "a Wi-Fi join leaves the image's own network alone"
     );
@@ -690,7 +637,7 @@ fn an_install_beside_an_existing_system_takes_the_reviewed_free_space() {
     let device = disk.name.clone();
     let backend = FakeBackend::with_disks(vec![disk]);
     let network = RecordedNetwork::new(ConnectivityState::Offline);
-    let mut app = opened(installer(backend.clone(), network, None));
+    let mut app = opened(installer(backend.clone(), network));
 
     app.effect(&DestinationEffect::SetLayout {
         layout: "English (US)".into(),
@@ -698,7 +645,6 @@ fn an_install_beside_an_existing_system_takes_the_reviewed_free_space() {
     .unwrap();
     app.effect(&DestinationEffect::Next).unwrap();
     app.effect(&DestinationEffect::Next).unwrap();
-    app.effect(&DestinationEffect::ContinueOffline).unwrap();
     assert_eq!(step(&mut app), "disk");
 
     app.effect(&DestinationEffect::SetMethod {

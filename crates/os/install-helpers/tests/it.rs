@@ -11,8 +11,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "accounts_native.rs"]
-mod accounts_native;
 #[path = "backend_commands.rs"]
 mod backend_commands;
 #[path = "code_refresh.rs"]

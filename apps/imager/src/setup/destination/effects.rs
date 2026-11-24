@@ -53,18 +53,6 @@ pub enum DestinationEffect {
         #[param(secret, "Wi-Fi password (secured networks only)")]
         password: Option<String>,
     },
-    /// Sign in using the private form.
-    #[effect(kind = "outside", on = Session)]
-    AddAccount,
-    /// Retry signing in using the private form.
-    #[effect(kind = "outside", on = Session)]
-    RetryAccount,
-    #[effect(kind = "outside")]
-    #[effect(label = "installer-accounts-cancel", on = Session)]
-    CancelSignIn,
-    #[effect(kind = "outside")]
-    #[effect(label = "imager-installer-continue-offline", on = Session)]
-    ContinueOffline,
     /// Choose install method.
     #[effect(kind = "outside", on = Session)]
     SetMethod {

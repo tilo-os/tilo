@@ -1408,11 +1408,9 @@ inputs = [
   "crates/os/block-devices/tests/fixtures/imager.json",
   "apps/imager/tests/fixtures/lsblk-targets.json",
   "crates/os/block-devices/tests/fixtures/installer.json",
-  "crates/engines/chromium-host/browser.tilo-app.toml",
 ]
 readers = [
   "crates/os/imager-backend/src/destination/disks.rs",
-  "crates/os/imager-backend/src/destination/online_accounts/browser.rs",
   "crates/os/imager-backend/src/probe.rs",
 ]
 

@@ -10,7 +10,6 @@
 //! * [`internal_handoff`]: the staged (USB-free) installation's handoff.
 //! * [`media_profile`]: the profile the host side prepared on the medium.
 //! * [`network`]: connectivity, Wi-Fi and captive portals, off the UI thread.
-//! * [`online_accounts`]: device-private account sign-in and ownership.
 //! * [`power_readiness`]: the battery rule before installing.
 //! * [`probes`]: what this computer proves about its boot chain.
 //! * [`private_io`]: the unattended recipe and recovery key's private files.
@@ -23,7 +22,6 @@ pub mod internal_handoff;
 pub mod layouts;
 pub mod media_profile;
 pub mod network;
-pub mod online_accounts;
 pub mod power_readiness;
 pub mod private_io;
 pub mod probes;
@@ -33,6 +31,3 @@ pub mod timezones;
 /// and virtio port.
 pub use console_control as console;
 pub use disks::{Disk, DiskPartition, parse_lsblk, read_disks};
-/// The online accounts the installer hands to the installed system's first
-/// boot, which its seeding helper imports.
-pub use tilo_install_helpers::account_handoff;

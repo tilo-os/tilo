@@ -466,7 +466,7 @@ fail('seeds-after')
         self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
 
     def test_attested_output_tampering_blocks_retry_before_ownership_or_unlock(self):
-        result = self.run_boot('plan')
+        result = self.run_boot('key-repair')
         self.assertNotEqual(result.returncode, 0)
         receipt = self.root / 'state/seeds' / (str(os.getuid()) + '.json')
         before = receipt.read_bytes()

@@ -238,118 +238,6 @@ fn local_labels(widget: &dyn Widget) -> Vec<String> {
 }
 
 tilo_test_env::scenario! {
-    fn accounts_and_private_media_reach_the_surface_only_as_reviewed;
-
-    phase oauth_selected_services_reach_production_form_without_public_identity;
-    {
-        use crate::setup::destination::accounts_view::AccountsStatus;
-        let (_directory, server, urls, controller, profile) =
-            imager_backend::destination::online_accounts::tests::mail_fixture();
-        let (mut app, mut doc) = app(&FakeBackend::new());
-        app.step = Step::Accounts;
-        app.accounts_initialized = true;
-        app.accounts_controller = Some(controller);
-        app.accounts_form.mail.set(true);
-        app.accounts_form.submit(false).unwrap();
-        tilo_test_env::wait_until("the accounts to be added", || {
-            app.sync_accounts();
-            let status = app.accounts_form.status();
-            assert!(status != AccountsStatus::Failed);
-            status == AccountsStatus::Added
-        });
-        profile.join().unwrap();
-        let _ = tilo_test_env::recv("the authorization URL", &urls);
-        let labels = local_labels(app.accounts_form.view().as_ref());
-        for label in ["personal@example.org", "Connected for Mail"] {
-            assert!(labels.iter().any(|value| value == label), "missing {label}");
-        }
-        assert!(!labels.iter().any(|value| value == "Connected for Calendar"));
-        assert_eq!(server.verifiers().len(), 1);
-        let connected = app.accounts_controller.as_ref().unwrap().connected();
-        assert_eq!(connected.len(), 1);
-        assert!(!connected[0].files && connected[0].mail && !connected[0].calendar);
-        imager_backend::destination::online_accounts::tests::assert_adopted_projection(
-            app.accounts_controller.as_mut().unwrap(),
-        );
-        assert_eq!(server.verifiers().len(), 1);
-        assert!(!public(&mut app, &mut doc).contains("personal@example.org"));
-        app.accounts_form.files.set(false);
-        app.accounts_form.mail.set(false);
-        app.accounts_form.calendar.set(true);
-        app.accounts_form.submit(false).unwrap();
-        app.sync_accounts();
-        let fresh = tilo_test_env::recv("a fresh authorization URL", &urls);
-        assert!(fresh.contains("calendar"));
-        app.accounts_form.cancel();
-        app.sync_accounts();
-        assert!(app.accounts_controller.as_ref().unwrap().connected() == connected);
-    }
-
-    phase calendar_review_confirmation_uses_selected_private_collections;
-    {
-        let (directory, controller) =
-            imager_backend::destination::online_accounts::calendar_tests::reviewing();
-        let selected_calendar = controller.calendars()[0].0.clone();
-        let (mut app, mut doc) = app(&FakeBackend::new());
-        app.step = Step::Accounts;
-        app.accounts_initialized = true;
-        app.accounts_controller = Some(controller);
-        app.sync_accounts();
-        assert!(
-            app.accounts_controller
-                .as_ref()
-                .unwrap()
-                .selected()
-                .is_empty()
-        );
-        let published = public(&mut app, &mut doc);
-        assert!(published.contains("Confirm selected calendars"));
-        assert!(!published.contains("cloud.example"));
-        assert!(
-            refused(&invoke(
-                &mut app,
-                &mut doc,
-                "add-account@installer",
-                &json!({})
-            ))
-            .is_some()
-        );
-        assert!(
-            app.accounts_controller
-                .as_ref()
-                .unwrap()
-                .selected()
-                .is_empty()
-        );
-        app.accounts_form.select_calendar_for_test(0);
-        let reply = invoke(&mut app, &mut doc, "add-account@installer", &json!({}));
-        assert!(refused(&reply).is_none(), "{reply}");
-        let controller = app.accounts_controller.as_ref().unwrap();
-        assert!(controller.status() == crate::setup::destination::accounts_view::AccountsStatus::Added);
-        assert_eq!(controller.selected().len(), 1);
-        let labels = local_labels(app.accounts_form.view().as_ref());
-        assert!(labels.iter().any(|label| label == "Connected for Files"));
-        assert!(labels.iter().any(|label| label == "Connected for Calendar"));
-        assert!(!labels.iter().any(|label| label == "Connected for Mail"));
-        let root = std::fs::read_dir(directory.path())
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let store = imager_backend::account_store::Accounts::read(&root).unwrap();
-        let account = store
-            .get(controller.selected()[0].as_str())
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            account.config["calendar"]["calendars"][0]["id"],
-            selected_calendar
-        );
-    }
-}
-
-tilo_test_env::scenario! {
     fn the_published_surface_refuses_what_was_not_reviewed;
 
     phase linux_without_unallocated_space_never_falls_back_to_erase;
@@ -442,7 +330,6 @@ tilo_test_env::scenario! {
             for step in [
                 Step::Keyboard,
                 Step::Network,
-                Step::Accounts,
                 Step::Disk,
                 Step::Account,
                 Step::Options,
@@ -694,10 +581,6 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
     );
     assert_eq!(
         invoke(&mut app, doc, "next@installer", &json!({}))["answer"]["step"],
-        "accounts"
-    );
-    assert_eq!(
-        invoke(&mut app, doc, "continue-offline@installer", &json!({}))["answer"]["step"],
         "disk"
     );
 

@@ -208,31 +208,6 @@ fn invoke_provider(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str) {
 tilo_test_env::scenario! {
     fn the_account_step_explains_itself_and_keeps_secrets_private;
 
-    phase accounts_provider_buttons_rebuild_server_field;
-    {
-        let mut app = InstallerApp::with_disks(Vec::new());
-        let mut doc = AutoCommit::new();
-        app.step = Step::Accounts;
-        app.accounts_initialized = true;
-        app.dirty_structure = true;
-        app.sync(&doc, &automerge::ROOT);
-        let _ = build(&mut app);
-        assert!(!has_test_id(&app, "installer.online.server"));
-        app.take_structure_dirty();
-
-        invoke_provider(&mut app, &mut doc, "installer-online-nextcloud");
-        assert!(app.dirty_structure, "provider change must request layout");
-        app.take_structure_dirty();
-        let _ = build(&mut app);
-        assert!(has_test_id(&app, "installer.online.server"));
-
-        invoke_provider(&mut app, &mut doc, "installer-online-google");
-        assert!(app.dirty_structure, "provider change must request layout");
-        app.take_structure_dirty();
-        let _ = build(&mut app);
-        assert!(!has_test_id(&app, "installer.online.server"));
-    }
-
     phase welcome_and_account_explain_choices_in_person_first_order;
     {
         let mut app = InstallerApp::with_disks(Vec::new());
@@ -364,48 +339,6 @@ tilo_test_env::scenario! {
             "correct horse battery staple",
             "the one secret unlocks the disk"
         );
-    }
-
-    phase online_accounts_skip_uses_semantic_api_without_sharing_form_fields;
-    {
-        let mut app = InstallerApp::with_disks(sample());
-        app.accounts_initialized = true;
-        app.step = Step::Network;
-        let doc = AutoCommit::new();
-        next(&mut app, &doc);
-        assert_eq!(app.step, Step::Accounts);
-        app.accounts_form.email.set("private@example.org".into());
-        app.accounts_form
-            .server
-            .set("https://private.example.org".into());
-        let public = app.console_state().to_string();
-        assert!(!public.contains("private@example.org"));
-        assert!(!public.contains("private.example.org"));
-        run(&mut app, &doc, DestinationEffect::ContinueOffline);
-        assert_eq!(app.step, Step::Disk);
-        assert!(app.accounts_form.drain_commands().is_empty());
-        assert!(app.accounts_form.email.with(String::is_empty));
-        assert!(app.accounts_form.server.with(String::is_empty));
-        assert_eq!(doc.length(automerge::ROOT), 0);
-    }
-
-    phase leaving_online_accounts_discards_unstarted_authorization;
-    {
-        use crate::setup::destination::accounts_view::AccountsCommand;
-        let mut app = InstallerApp::with_disks(sample());
-        app.accounts_initialized = true;
-        app.step = Step::Accounts;
-        app.accounts_form.mail.set(true);
-        app.accounts_form.submit(false).unwrap();
-        app.go_back();
-        assert_eq!(app.step, Step::Network);
-        assert!(app.accounts_form.drain_commands().is_empty());
-        app.step = Step::Accounts;
-        app.accounts_form.cancel();
-        assert!(matches!(
-            app.accounts_form.drain_commands().as_slice(),
-            [AccountsCommand::Cancel]
-        ));
     }
 
     phase account_step_keeps_secrets_out_of_the_crdt_and_waits_for_username;
@@ -1151,17 +1084,16 @@ tilo_test_env::scenario! {
 
     phase step_navigation_walks_forward_back_and_indexes_labels;
     {
-        assert_eq!(STEP_LABELS.len(), 9);
+        assert_eq!(STEP_LABELS.len(), 8);
         let cases = [
             (Step::Keyboard, Some(Step::Network), None, 0),
-            (Step::Network, Some(Step::Accounts), Some(Step::Keyboard), 1),
-            (Step::Accounts, Some(Step::Disk), Some(Step::Network), 2),
-            (Step::Disk, Some(Step::Account), Some(Step::Accounts), 3),
-            (Step::Account, Some(Step::Options), Some(Step::Disk), 4),
-            (Step::Options, Some(Step::Media), Some(Step::Account), 5),
-            (Step::Media, Some(Step::Review), Some(Step::Options), 6),
-            (Step::Review, Some(Step::Install), Some(Step::Media), 7),
-            (Step::Install, None, None, 8),
+            (Step::Network, Some(Step::Disk), Some(Step::Keyboard), 1),
+            (Step::Disk, Some(Step::Account), Some(Step::Network), 2),
+            (Step::Account, Some(Step::Options), Some(Step::Disk), 3),
+            (Step::Options, Some(Step::Media), Some(Step::Account), 4),
+            (Step::Media, Some(Step::Review), Some(Step::Options), 5),
+            (Step::Review, Some(Step::Install), Some(Step::Media), 6),
+            (Step::Install, None, None, 7),
         ];
         for (step, next, prev, index) in cases {
             assert_eq!(next_step(step), next, "next_step case {step:?}");
@@ -1289,9 +1221,6 @@ tilo_test_env::scenario! {
 
             activate(&mut app, &mut doc, "installer.back");
             assert_eq!(app.step, Step::Disk);
-
-            activate(&mut app, &mut doc, "installer.back");
-            assert_eq!(app.step, Step::Accounts);
 
             activate(&mut app, &mut doc, "installer.back");
             assert_eq!(app.step, Step::Network);
@@ -2235,7 +2164,6 @@ tilo_test_env::scenario! {
         {
             for step in [
                 Step::Network,
-                Step::Accounts,
                 Step::Disk,
                 Step::Account,
                 Step::Keyboard,
@@ -2333,7 +2261,6 @@ tilo_test_env::scenario! {
                 for step in [
                     Step::Keyboard,
                     Step::Network,
-                    Step::Accounts,
                     Step::Disk,
                     Step::Account,
                     Step::Options,
@@ -2630,8 +2557,6 @@ tilo_test_env::scenario! {
             assert_eq!(app.step, Step::Account);
             app.go_back();
             assert_eq!(app.step, Step::Disk);
-            app.go_back();
-            assert_eq!(app.step, Step::Accounts);
             app.go_back();
             assert_eq!(app.step, Step::Network);
         }

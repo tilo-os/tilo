@@ -245,12 +245,6 @@ fn drive_plan(app: &mut InstallerApp, plan: &Plan) -> Result<(), String> {
             // The plan decides these; the machine's own connection is what
             // the install and its first start use.
             Step::Keyboard | Step::Network | Step::Disk | Step::Media => advance(app, step)?,
-            Step::Accounts => {
-                invoke(app, "continue-offline@installer", serde_json::json!({}))?;
-                if app.step() == step {
-                    return Err(step_error(app, step));
-                }
-            }
             Step::Account => {
                 // A server's one secret opens its disk; it is generated here
                 // and never kept once the volume holds it. The ways in that
@@ -966,12 +960,6 @@ fn drive(app: &mut InstallerApp, recipe: &Recipe) -> Result<(), String> {
                 advance(app, step)?;
             }
             Step::Network => advance(app, step)?,
-            Step::Accounts => {
-                invoke(app, "continue-offline@installer", serde_json::json!({}))?;
-                if app.step() == step {
-                    return Err(step_error(app, step));
-                }
-            }
             Step::Disk => {
                 invoke(app, "refresh-disks@installer", serde_json::json!({}))?;
                 let disk = reviewed_disk(app.available_disks(), &recipe.disk)?.to_owned();
@@ -1115,7 +1103,6 @@ fn step_label(step: Step) -> &'static str {
     match step {
         Step::Keyboard => "keyboard",
         Step::Network => "network",
-        Step::Accounts => "accounts",
         Step::Disk => "disk",
         Step::Account => "account",
         Step::Options => "options",
