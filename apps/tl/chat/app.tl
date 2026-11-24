@@ -344,9 +344,7 @@ migration action carry_direct_people(all: Conversations) {
                 if d.people.is_empty() {
                     d.people.add(d.person)
                     if let opener = created(d)?.who {
-                        if opener.kind() == .person {
-                            d.people.add(opener)
-                        }
+                        if opener.kind() == .person { d.people.add(opener) }
                     }
                 }
             }
@@ -797,9 +795,15 @@ action summarize(to: TextChannel | Thread | Direct, summary: Text) (
     label: "Summarize",
 ) {
     match to {
-        c: TextChannel => { c.summary = summary }
-        t: Thread => { t.summary = summary }
-        d: Direct => { d.summary = summary }
+        c: TextChannel => {
+            c.summary = summary
+        }
+        t: Thread => {
+            t.summary = summary
+        }
+        d: Direct => {
+            d.summary = summary
+        }
     }
 }
 
@@ -1559,7 +1563,9 @@ view composer(
         placeholder,
         if (agent or said.any(m -> m.turn != "")) and reads_as_call(draft.text) {
             run_line(to, draft.text)
-        } else { send(to, draft, replying).then(set(replying, .none)) },
+        } else {
+            send(to, draft, replying).then(set(replying, .none))
+        },
         speakers: speakers(said),
     )
 }
@@ -1732,9 +1738,7 @@ fn turn_said(t: host.Invoked) -> Text {
         "Waiting for your answer"
     } else if t.state == "failed" {
         "Failed"
-    } else if t.state == "cancelled" {
-        "Stopped"
-    } else { "Done" }
+    } else if t.state == "cancelled" { "Stopped" } else { "Done" }
     let model = if t.model != "" { " · {t.provider}/{t.model}" } else { "" }
     let cost = if t.cost > 0.0 { " · ${t.cost.round(4)}" } else { "" }
     "{state}{model}{cost}"
@@ -1746,7 +1750,9 @@ view turn_step(s: host.Invoked) {
     stack(gap: .none) {
         row(gap: .tight, align: .center) {
             ui.Text(
-                if s.title != "" { s.title } else if s.summary != "" { s.summary } else { s.action },
+                if s.title != "" {
+                    s.title
+                } else if s.summary != "" { s.summary } else { s.action },
                 role: .caption,
                 secondary: s.state != "waiting",
                 fill: 1.0,
