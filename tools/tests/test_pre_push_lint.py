@@ -28,6 +28,7 @@ HOOK_SOURCES = [
     # The catalogue judgement the push makes over its range, and what it reads.
     "tools/policy/check_catalogue_coverage.py",
     "tools/policy/check_copy_language.py",
+    "tools/policy/derived_catalogue.py",
     "tools/policy/judged.py",
     "tools/policy/rust_source.py",
 ]

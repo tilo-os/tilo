@@ -46,8 +46,20 @@ def packages(root: Path) -> list[Path]:
     )
 
 
+def writes_catalogues(binary: str) -> bool:
+    """Whether `binary` is a `tilolang` new enough to write a package's source catalogue: one built
+    before the command existed answers its own usage instead."""
+    result = subprocess.run([binary, "catalogue", "--help"], capture_output=True, text=True,
+                            check=False)
+    return result.returncode == 0
+
+
 def binary(asked: str | None, root: Path = ROOT) -> str:
-    """The compiler that writes a package's source catalogue, refusing when there is none."""
+    """The compiler that writes a package's source catalogue, refusing when there is none.
+
+    A binary an older build left in a target directory answers no `catalogue`, so it is not one
+    this tree can read a package's words with: such a candidate is passed over for the tree's own
+    build."""
     target = Path(os.environ.get("CARGO_TARGET_DIR") or root / "target")
     candidates = [asked, os.environ.get("TILOLANG"),
                   str(target / "debug" / "tilolang"),
@@ -55,7 +67,8 @@ def binary(asked: str | None, root: Path = ROOT) -> str:
                   str(root / "target" / "debug" / "tilolang"),
                   shutil.which("tilolang")]
     for candidate in candidates:
-        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK) \
+                and writes_catalogues(candidate):
             return candidate
     # Nothing built yet: this tree's compiler is the one that writes a package's catalogue, and
     # cargo knows whether it is fresh, so a checked tree pays only the fingerprint check.
@@ -65,7 +78,8 @@ def binary(asked: str | None, root: Path = ROOT) -> str:
             [cargo, "build", "--locked", "--quiet", "-p", "tilolang-cli", "--bin", "tilolang"],
             cwd=root, capture_output=True, text=True, check=False)
         built_binary = target / "debug" / "tilolang"
-        if built.returncode == 0 and built_binary.is_file():
+        if built.returncode == 0 and built_binary.is_file() \
+                and writes_catalogues(str(built_binary)):
             return str(built_binary)
     raise Unread(
         "no tilolang to write a package's source catalogue with: build one "
