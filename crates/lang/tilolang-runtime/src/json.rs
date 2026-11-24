@@ -72,6 +72,12 @@ impl Core {
 
     /// A `Result`: `.ok(value)`, or `.err(why)` saying what did not fit, and where.
     pub(crate) fn result(&self, outcome: Result<Value, String>) -> HResult<Option<Wasm>> {
+        self.ret_h(Self::result_value(outcome))
+    }
+
+    /// The value a `Result` is: `.ok(value)`, or `.err(why)`, as a run's journal keeps it and
+    /// as the code reads it.
+    pub(crate) fn result_value(outcome: Result<Value, String>) -> Value {
         let mut fields = BTreeMap::new();
         let variant = match outcome {
             Ok(Value::Unit) => tilolang::RESULT_OK,
@@ -84,11 +90,11 @@ impl Core {
                 tilolang::RESULT_ERR
             }
         };
-        self.ret_h(Value::Enum(EnumValue {
+        Value::Enum(EnumValue {
             ty: tilolang::RESULT_TYPE.to_owned(),
             variant: variant.to_owned(),
             fields,
-        }))
+        })
     }
 }
 

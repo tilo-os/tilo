@@ -4,11 +4,13 @@
 
 #[cfg(test)]
 mod cases {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+    use std::collections::BTreeMap;
     use std::rc::Rc;
 
     use crate::common::*;
     use tilolang_runtime::delegate::Invoked;
+    use tilolang_runtime::files::{Entry, FilesHost};
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ModelHost, Pending, RunOutcome, Runtime, SimpleAuthority, Store,
         Value,
@@ -718,6 +720,160 @@ action prune(g: Design, d: device.Desk, first: Text, second: Text) -> Text {
                 "nothing of the declined trim is in history"
             );
         }
+    }
+
+    /// An app that moves a file on the device and then asks the device's own app about what is
+    /// left: the run waits on the device between the two, and going on replays the move it made.
+    const MOVER: &str = r#"app so.tilo.mover "Mover"
+
+use so.tilo.device as device
+
+type Shelf {
+    moved: Text
+    refused: Text
+}
+
+root Shelf
+
+default view shelf for Shelf
+
+view shelf(s: Shelf) {
+    text("{s.moved}")
+}
+
+action move_then_ask(s: Shelf, d: device.Desk, from: Text, folder: Text) -> Text uses files {
+    match File.move(from, folder) {
+        .ok(moved) => {
+            s.moved = moved.path
+        }
+        .err(why) => {
+            s.moved = ""
+            s.refused = why
+        }
+    }
+    let said = device.verdict(d, 1)
+    s.moved = said
+    return said
+}
+"#;
+
+    /// This device's files, by path: a move takes one out of where it stood, so a run that went
+    /// on and moved it again would find nothing there.
+    #[derive(Clone, Default)]
+    struct Disk {
+        files: Rc<RefCell<BTreeMap<String, String>>>,
+        moves: Rc<Cell<u32>>,
+    }
+
+    impl Disk {
+        fn file(&self, path: &str) {
+            let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+            self.files.borrow_mut().insert(path.to_owned(), name);
+        }
+
+        fn holds(&self, path: &str) -> bool {
+            self.files.borrow().contains_key(path)
+        }
+    }
+
+    impl FilesHost for Disk {
+        fn list(&self, _path: &str) -> Result<Vec<Entry>, String> {
+            Err("the test reads no folder".to_owned())
+        }
+
+        fn stat(&self, path: &str) -> Result<Option<Entry>, String> {
+            Ok(self.files.borrow().get(path).map(|name| Entry {
+                name: name.clone(),
+                path: path.to_owned(),
+                folder: false,
+                size: 0,
+                modified: 0,
+                hidden: false,
+            }))
+        }
+
+        fn read(&self, _path: &str) -> Result<Vec<u8>, String> {
+            Err("the test reads no file".to_owned())
+        }
+
+        fn watch(&self, path: &str, _run: &str) -> Result<String, String> {
+            Ok(format!("watch:{path}"))
+        }
+
+        fn move_entry(&self, path: &str, folder: &str) -> Result<Entry, String> {
+            self.moves.set(self.moves.get().saturating_add(1));
+            let mut files = self.files.borrow_mut();
+            let Some(name) = files.remove(path) else {
+                return Err(format!("nothing stands at {path}"));
+            };
+            let to = format!("{folder}/{name}");
+            files.insert(to.clone(), name.clone());
+            Ok(Entry {
+                name,
+                path: to,
+                folder: false,
+                size: 0,
+                modified: 0,
+                hidden: false,
+            })
+        }
+    }
+
+    #[test]
+    fn a_run_that_moved_a_file_before_it_waited_moves_it_no_more_when_it_goes_on() {
+        let device = App::compile(DEVICE, &[]);
+        let mover = App::compile(MOVER, &[device.meta().clone()]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        device.load(&rt);
+        mover.load(&rt);
+        let disk = Disk::default();
+        disk.file("~/Downloads/report.pdf");
+        rt.set_device_files(disk.clone());
+        let dispatch = Dispatch::new();
+        rt.set_foreign_invoker(dispatch.clone());
+        let shelf = rt.create_root("Shelf").unwrap();
+        let desk = rt.create_root("Desk").unwrap();
+        let move_then_ask = mover.action("move_then_ask");
+        let InvokeOutcome::Waits { run, .. } = rt
+            .invoke_action(
+                &me(),
+                (
+                    move_then_ask.as_str(),
+                    vec![
+                        Value::resource(&shelf),
+                        Value::resource(&desk),
+                        Value::text("~/Downloads/report.pdf"),
+                        Value::text("~/Documents"),
+                    ],
+                ),
+            )
+            .unwrap()
+        else {
+            panic!("the device's verdict is asked of a person first");
+        };
+        assert!(disk.holds("~/Documents/report.pdf"), "the file moved");
+        assert!(
+            !disk.holds("~/Downloads/report.pdf"),
+            "and left where it stood"
+        );
+        let out = dispatch.allow(&rt, &run);
+        assert_eq!(
+            out,
+            RunOutcome::Done(Value::text("holds 1")),
+            "the run went on from the answer it asked for, on the branch the move took"
+        );
+        assert_eq!(
+            disk.moves.get(),
+            1,
+            "going on answered the move it made once instead of moving the file again"
+        );
+        assert!(
+            disk.holds("~/Documents/report.pdf"),
+            "the file stands where the first run moved it"
+        );
+        assert_eq!(rt.read(&shelf, "moved").unwrap(), Value::text("holds 1"));
+        assert_eq!(rt.read(&shelf, "refused").unwrap(), Value::text(""));
+        assert_eq!(rt.read(&desk, "asked").unwrap(), Value::Int(1));
     }
 
     /// A package whose action makes a resource and answers it, as the discussion makes a comment.
