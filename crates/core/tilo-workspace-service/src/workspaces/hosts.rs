@@ -62,6 +62,13 @@ const CATCH_UP_ANSWERS: u32 = 100;
 /// it still lacks ([`Workspaces::content_settled`]).
 const CONTENT_SETTLES_WITHIN: Duration = Duration::from_secs(60);
 
+/// How long a catch-up waits to dial the device that asked it: one that reached
+/// this device over the workspace's link itself has its changes here already, and
+/// a device others cannot dial back is answered from what its link brought rather
+/// than left unanswered. A dial that works connects in a moment.
+#[cfg(not(target_arch = "wasm32"))]
+const CATCH_UP_DIAL: Duration = Duration::from_secs(10);
+
 /// How many cursors of where a store stands one answer carries: under a
 /// hundred and fifty bytes each in its frame, so an answer stays well within
 /// [`tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES`] however many
@@ -414,6 +421,24 @@ impl Workspaces {
         if device == host.cert.device_public_key {
             return Err("this device holds the workspace already".into());
         }
+        // The list of the person's workspaces lives in their own workspace.
+        // Opening that workspace's group here, on the device handing it over,
+        // before the hand-over means the server that takes it in joins a group
+        // that exists: it writes the list as part of the take-in, before it
+        // answers, and waits for no group still to be founded. A group this
+        // device does not found is the founders' to hand it, as any join is.
+        if role == CopyRole::KeyHolder
+            && workspace
+                == tilo_server_protocol::servers::person_workspace_id(&host.cert.user_public_key)
+        {
+            let bounded = tilo_workspace_keys::founding_wait() + std::time::Duration::from_secs(2);
+            if !matches!(
+                tokio::time::timeout(bounded, self.join_keys(workspace)).await,
+                Ok(true)
+            ) {
+                tracing::warn!(%workspace, "the person's own workspace's group was not opened before it was handed over");
+            }
+        }
         let reached = self.reach_host(device, addr).await?;
         let member = reached.certificate.clone();
         let named_before = self.names_server(workspace, device).await;
@@ -445,6 +470,12 @@ impl Workspaces {
                 .await);
         }
         let _ = self.inner.changes.send(workspace.to_owned());
+        // The holder answered over the action connection, so it is reachable from
+        // here. The workspace's own link to it is dialed from this side too: a
+        // device that keeps a workspace from behind a network others cannot dial
+        // into would otherwise never be handed the keys of its group, and the
+        // hand-over would be answered before the holder could write what it must.
+        self.dial_attached(workspace, device, &answered).await;
         // Named, the server may link to this device's: it takes in what this
         // device keeps over that link, which only a device the workspace
         // names may.
@@ -478,6 +509,46 @@ impl Workspaces {
             tracing::warn!(%workspace, server = %hex::encode(device), %error, "a server's administrators were not granted its controls");
         }
         Ok(hint)
+    }
+
+    /// Dial `device`, the holder that just answered this device's hand-over of
+    /// `workspace` at `answered`, over the workspace's own link, unless this
+    /// device dials it already. The hand-over proves the holder reachable from
+    /// here even where the order of the holders' keys leaves the dial to it.
+    async fn dial_attached(&self, workspace: &str, device: [u8; 32], answered: &TransportHint) {
+        let Ok(state) = self.workspace(workspace).await else {
+            return;
+        };
+        let mut governed = state.lock().await;
+        if governed.holders.sessions.contains_key(&device) {
+            return;
+        }
+        let workspace_id = governed.workspace_id();
+        let Some(link) = self.inner.direct.link(workspace_id) else {
+            return;
+        };
+        let links = governed.holders.links.clone();
+        let name = governed.workspace().to_owned();
+        let Ok(signed) =
+            tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(
+                answered,
+            )
+        else {
+            return;
+        };
+        let dialing = tokio::spawn(super::holding::dial_holder(
+            link,
+            self.inner.host.endpoint.clone(),
+            signed.endpoint_addr,
+            device,
+            links,
+            name,
+            Arc::downgrade(&self.inner),
+        ));
+        governed
+            .holders
+            .sessions
+            .insert(device, super::holding::AbortOnDrop::new(dialing));
     }
 
     /// The address `reached` signs for `workspace` in `role`, checked to be its
@@ -733,6 +804,31 @@ impl Workspaces {
         let workspace_id = WorkspaceId::parse(workspace)
             .ok_or_else(|| "a workspace is named by its id".to_owned())?;
         let address = self.handing(caller, workspace).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let cursors = {
+            let taken = tokio::time::timeout(
+                CATCH_UP_DIAL,
+                self.take_store_of(
+                    workspace_id,
+                    address.endpoint_addr,
+                    address.device_certificate.device_public_key,
+                ),
+            )
+            .await;
+            match taken {
+                Ok(Ok(cursors)) => cursors,
+                Ok(Err(error)) => {
+                    tracing::debug!(%workspace, %error, "the caller's store was not taken by dialling back; what its link brought stands");
+                    self.standing_here(workspace_id)?
+                }
+                Err(_) => {
+                    tracing::debug!(%workspace, "the caller could not be dialled back in time; what its link brought stands");
+                    self.standing_here(workspace_id)?
+                }
+            }
+        };
+        // A page's service dials no one back: it answers where its link brought it.
+        #[cfg(target_arch = "wasm32")]
         let cursors = self
             .take_store_of(
                 workspace_id,
@@ -748,6 +844,20 @@ impl Workspaces {
             u32::try_from(content_missing).unwrap_or(u32::MAX),
             fetched,
         ))
+    }
+
+    /// Where this device's store stands on `workspace_id`, as a catch-up answers:
+    /// what the workspace's link has brought in already.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn standing_here(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<Vec<tilo_peer_state::store::Cursor>, String> {
+        self.inner
+            .direct
+            .link(workspace_id)
+            .ok_or_else(|| "no link serves the workspace here".to_owned())?
+            .standing()
     }
 
     /// The address of `caller`, a device `workspace` names among those
@@ -766,7 +876,7 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let handing = state.lock().await.handed_by.clone();
+        let handed = state.lock().await.handed_by.clone();
         let named = self
             .hosts(workspace)
             .await
@@ -776,15 +886,15 @@ impl Workspaces {
             .map(|hint| WorkspaceDeviceHintV1::from_transport_hint(&hint))
             .transpose()
             .map_err(|error| error.to_string())?;
-        // Until the change naming this device among those keeping the
-        // workspace arrives, the device that handed it over is the one it
-        // knows of.
-        named
-            .or_else(|| {
-                handing.filter(|handing| {
-                    handing.device_certificate.device_public_key == caller.device_public_key
-                })
+        // The device that handed the workspace over is reached at the address
+        // the hand-over itself carried: it is fresher than the one its naming
+        // in the governance keeps, and until the change naming it among those
+        // keeping the workspace arrives, the only one there is.
+        handed
+            .filter(|handed| {
+                handed.device_certificate.device_public_key == caller.device_public_key
             })
+            .or(named)
             .ok_or_else(|| "only a device keeping the workspace hands its changes over".to_owned())
     }
 

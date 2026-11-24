@@ -124,6 +124,13 @@ pub(super) fn handed_by(path: &std::path::Path) -> Option<WorkspaceDeviceHintV1>
 /// Aborts its task when dropped.
 pub(super) struct AbortOnDrop(tokio::task::JoinHandle<()>);
 
+impl AbortOnDrop {
+    /// Keep `task` running until this guard is dropped.
+    pub(super) fn new(task: tokio::task::JoinHandle<()>) -> Self {
+        Self(task)
+    }
+}
+
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
@@ -376,7 +383,8 @@ impl Workspaces {
             .holder_role(&self.inner.host.cert.device_public_key)
             != Some(CopyRole::Store);
         drop(governed);
-        self.list_for_person_at_hand_over(&workspace, holds_keys);
+        self.list_for_person_at_hand_over(&workspace, holds_keys)
+            .await?;
         Ok(hint)
     }
 
@@ -486,45 +494,43 @@ impl Workspaces {
     /// ciphertext alone and writes nothing of it.
     ///
     /// The records are sealed, so the write waits for the group's keys, which
-    /// come from the other holders over the workspace's link. It does so beside
-    /// the hand-over's answer rather than before it: a server on its person's
-    /// login must answer, and the list a login reads is waited for where it is
-    /// read.
-    fn list_for_person_at_hand_over(&self, workspace: &str, holds_keys: bool) {
+    /// come from the other holders over the workspace's link. It does so before
+    /// the hand-over answers: whoever reads the list from this server right
+    /// after the hand-over finds it written, never a write still under way,
+    /// which it could not wait for without racing it.
+    ///
+    /// # Errors
+    ///
+    /// The workspace's group did not admit this server in time for the list to
+    /// be written.
+    async fn list_for_person_at_hand_over(
+        &self,
+        workspace: &str,
+        holds_keys: bool,
+    ) -> Result<(), String> {
         let person = self.inner.host.cert.user_public_key;
         if !holds_keys || workspace != tilo_server_protocol::servers::person_workspace_id(&person) {
-            return;
+            return Ok(());
         }
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let workspace = workspace.to_owned();
-        // A host that keeps no group keys writes in the clear.
-        let device = self.device_keys();
-        let workspaces = self.downgrade();
-        runtime.spawn(async move {
-            // A build without the device keys keeps no group keys to wait for: the keys and the
-            // deadline they are waited on come from that module, so it writes in the clear.
-            #[cfg(not(all(feature = "device-keys", not(target_arch = "wasm32"))))]
-            let _ = (device, &workspace);
-            #[cfg(all(feature = "device-keys", not(target_arch = "wasm32")))]
-            if let Some(device) = device {
-                let keys_here = tokio::time::timeout(
-                    super::sealed_documents::OPEN_WAIT,
-                    super::sealed_documents::wait_for_group_keys(&device, &workspace),
-                )
-                .await
-                .unwrap_or(false);
-                if !keys_here {
-                    tracing::warn!(%workspace, "the person's list of workspaces was not written: the workspace's group has not admitted this server");
-                    return;
-                }
+        // A build without the device keys keeps no group keys to wait for: the keys and the
+        // deadline they are waited on come from that module, so it writes in the clear.
+        #[cfg(all(feature = "device-keys", not(target_arch = "wasm32")))]
+        if let Some(device) = self.device_keys() {
+            let keys_here = tokio::time::timeout(
+                super::sealed_documents::OPEN_WAIT,
+                super::sealed_documents::wait_for_group_keys(&device, workspace),
+            )
+            .await
+            .unwrap_or(false);
+            if !keys_here {
+                return Err(format!(
+                    "the person's list of workspaces was not written: the workspace's group has \
+                     not admitted this server ({workspace})"
+                ));
             }
-            let Some(workspaces) = workspaces.upgrade() else {
-                return;
-            };
-            workspaces.list_known_for(&person).await;
-        });
+        }
+        self.list_known_for(&person).await;
+        Ok(())
     }
 
     /// Let `workspace` go, `caller`'s request: another device of this one's own
@@ -634,10 +640,18 @@ impl Workspaces {
             != Some(own)
             && !governed.holders.sessions.contains_key(&dialled)
         {
-            let Some(holder) = named
-                .iter()
-                .find(|holder| holder.device_certificate.device_public_key == dialled)
-            else {
+            // The address the hand-over itself carried is fresher than the one
+            // the device's naming in the governance keeps, and it is the device
+            // that just answered here: dial it at that one.
+            let handed = governed
+                .handed_by
+                .clone()
+                .filter(|handed| handed.device_certificate.device_public_key == dialled);
+            let Some(holder) = handed.as_ref().or_else(|| {
+                named
+                    .iter()
+                    .find(|holder| holder.device_certificate.device_public_key == dialled)
+            }) else {
                 return;
             };
             let Some(link) = self.inner.direct.link(workspace_id) else {
@@ -666,7 +680,7 @@ impl Workspaces {
 /// Dial `device` at `addr` over the workspace's link until the workspace is
 /// let go here, taking in what it holds and answering it: what this holder's
 /// copy lacks of the other, and what it publishes, go over that one link.
-async fn dial_holder(
+pub(super) async fn dial_holder(
     link: tilo_peer_state::direct::DirectSync,
     endpoint: iroh::Endpoint,
     addr: iroh_base::EndpointAddr,
@@ -854,9 +868,9 @@ impl Workspaces {
 #[derive(Default)]
 pub(super) struct Holders {
     /// A session to each other holder, by device.
-    sessions: HashMap<[u8; 32], AbortOnDrop>,
+    pub(super) sessions: HashMap<[u8; 32], AbortOnDrop>,
     /// Where each of those sessions stands.
-    links: Links,
+    pub(super) links: Links,
     /// What says in the workspace where this device's copy stands.
     reporting: Option<AbortOnDrop>,
     /// Whether the workspace's governance has named this device among its

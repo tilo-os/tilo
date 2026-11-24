@@ -78,10 +78,12 @@ impl Workspaces {
         Ok(first)
     }
 
-    /// Take in `author`'s access request or commit for a channel of `workspace`.
+    /// Take in `author`'s access request or commit for a channel of `workspace`:
+    /// a member's device, or a device of a person the workspace has as a member,
+    /// as the person's own laptop is.
     ///
-    /// This host holds no channel keys of its own. What a governed member
-    /// device sent, and only that, it keeps like any other governance, for
+    /// This host holds no channel keys of its own. What a governed device sent,
+    /// and only that, it keeps like any other governance, for
     /// whoever takes part later: a device that links reads every channel's
     /// genesis from it, and the host answers a request with what it keeps
     /// ([`tilo_peer_state::direct::DirectSync`]). One whose device's channel
@@ -104,18 +106,36 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let (workspace_id, member) = {
+        let (workspace_id, governed_by) = {
             let governed = state.lock().await;
-            (
-                governed.workspace_id(),
-                governed
-                    .peer()
-                    .governance()
-                    .governed_access(tilo_clock::wall())
-                    .is_ok_and(|access| access.member_devices.contains(&author)),
-            )
+            let peer = governed.peer();
+            let governance = peer.governance();
+            let access = governance.governed_access(tilo_clock::wall());
+            let access = access.as_ref().ok();
+            let member = access.is_some_and(|access| access.member_devices.contains(&author));
+            // A device is one the workspace governs by the same rule wherever it asks: it is a
+            // member's device, or a device of a person the workspace has as a member, as the
+            // person's laptop is. What it certifies is its certificate's user key, held here
+            // among the devices the workspace knows or the holders it names.
+            let their_person = peer
+                .certificates()
+                .iter()
+                .find(|cert| cert.device_public_key == author)
+                .map(|cert| cert.user_public_key)
+                .or_else(|| {
+                    governance
+                        .keeping_devices()
+                        .into_iter()
+                        .find(|hint| hint.host.device_public_key == author)
+                        .map(|hint| hint.host.user_public_key)
+                });
+            let person = their_person.is_some_and(|person| {
+                person == governance.owner_user_public_key()
+                    || access.is_some_and(|access| access.member_user_roots.contains(&person))
+            });
+            (governed.workspace_id(), member || person)
         };
-        if !member {
+        if !governed_by {
             return Ok(());
         }
         if self
