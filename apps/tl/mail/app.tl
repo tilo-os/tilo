@@ -295,7 +295,9 @@ primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New mess
 /// here, from the same account, as the same identity, to the same people (the blind ones too),
 /// with the same subject, body and invitation. A message that was waiting to go is a draft
 /// again, to be sent from here. What a draft held that this app has no place for is kept on it
-/// in `set_aside`, never sent. The native app's own documents are left as they are.
+/// in `set_aside`, never sent. Each draft is its author's, as the native mailbox's history names
+/// whoever wrote it there (the person an agent drafted it for), and read by them alone until it is
+/// sent. The native app's own documents are left as they are.
 migration action carry_native_mail(m: Mail) {
     let earlier = earlier(m)
     // An outbox entry is waiting while it has not settled; one that went or failed for good is
@@ -305,21 +307,19 @@ migration action carry_native_mail(m: Mail) {
             and e.texts.get("settled") == .none
             and e.lists.get("settled") == .none,
     )
-    let carried = [
-        earlier.filter(e -> e.of == "draft").flat_map(e -> native_draft(e, "", "", "")),
-        earlier.filter(e -> e.of == "drafts").flat_map(e -> native_draft(e, "", "", "")),
-        waiting.flat_map(
-            e -> native_draft(
-                e,
-                "value.draft.",
-                e.texts.get("value.account") ?? "",
-                e.texts.get("value.in_reply_to") ?? "",
-            ),
-        ),
-    ]
-        .flat_map(x -> x)
-    for draft in carried {
-        m.drafts.insert(draft)
+    // Each is carried under the id it had there, so it is made as whoever wrote it there: a draft
+    // is read by its author alone until it is sent.
+    for e in earlier.filter(e -> e.of == "draft" or e.of == "drafts") {
+        for draft in native_draft(e, "", "", "") {
+            m.drafts.insert(draft, id: e.id)
+        }
+    }
+    for e in waiting {
+        let account = e.texts.get("value.account") ?? ""
+        let answers = e.texts.get("value.in_reply_to") ?? ""
+        for draft in native_draft(e, "value.draft.", account, answers) {
+            m.drafts.insert(draft, id: e.id)
+        }
     }
 }
 

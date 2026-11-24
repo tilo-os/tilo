@@ -1,225 +1,203 @@
 //! A mailbox the native Mail app wrote, opened by the tilolang Mail: its migration carries every
 //! draft it was writing and every message still waiting in its outbox over once, each a draft
-//! from the same account, to the same people, with the same subject and body. What a draft held
-//! that the tilolang Mail has no place for is kept on the draft in words, never dropped. The
-//! native app's documents are read, never written.
+//! from the same account and identity, to the same people (the blind ones too), with the same
+//! subject, body and invitation, answering what it answered. What a draft held that the
+//! tilolang Mail has no place for (its attachments, its private notes) is kept on it in words,
+//! never dropped. Each draft is made as whoever wrote it there, as the native mailbox's history
+//! names them, and read by them alone until it is sent. The native app's documents are read, never
+//! written.
 //!
-//! The native mailbox is written here in the layout the native app stored it in: the record's
-//! fields at the document's root, the composer's draft a record within it, the other drafts and
-//! the outbox collections of items (an order key `k` and the fields `v`), and each outbox entry's
-//! message the JSON the native app kept it as.
+//! `legacy/rust_mail.hex` is what the native Mail's own actions wrote: Ada's composer draft
+//! (a chosen sender, a blind copy, a body being written, an attachment, an invitation and notes),
+//! a reply and an empty draft of hers, a draft Leo wrote in the same mailbox, one an agent drafted
+//! for Ada, and two messages she sent, one waiting in the outbox and one that went.
 
-use automerge::transaction::Transactable as _;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ScalarValue};
+use automerge::AutoCommit;
 use tilolang_runtime::{ResourceRef, Value};
 
-use crate::fixtures::{Replica, target};
+use crate::fixtures::{MAIL_SET, Replica, Workspace, target};
 
 const MAIL_APP: &str = "so.tilo.mail";
 
-fn put(doc: &mut AutoCommit, at: &ObjId, key: &str, value: &str) {
-    doc.put(at, key, value).unwrap();
-}
-
-/// One item of a native collection: its order key and its fields.
-fn item(doc: &mut AutoCommit, collection: &ObjId, id: &str, order: &str) -> ObjId {
-    let entry = doc.put_object(collection, id, ObjType::Map).unwrap();
-    doc.put(&entry, "k", order).unwrap();
-    doc.put_object(&entry, "v", ObjType::Map).unwrap()
-}
-
-/// The native mailbox: a composer draft with a Bcc, an attachment and notes; an empty draft and a
-/// reply in its drafts; a message waiting in the outbox and one that already went.
-fn native_mailbox() -> AutoCommit {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "tilo:version", ScalarValue::Int(3)).unwrap();
-
-    let draft = doc.put_object(ROOT, "draft", ObjType::Map).unwrap();
-    let sender = doc.put_object(&draft, "sender", ObjType::Map).unwrap();
-    put(&mut doc, &sender, "account", "work");
-    put(&mut doc, &sender, "email", "ada@example.com");
-    put(&mut doc, &draft, "to", "board@example.com");
-    put(&mut doc, &draft, "cc", "");
-    put(&mut doc, &draft, "bcc", "auditor@example.com");
-    put(&mut doc, &draft, "subject", "Quarterly numbers");
-    put(&mut doc, &draft, "body", "The numbers are attached.");
-    put(&mut doc, &draft, "notes", "Check the totals first");
-    let attachments = doc
-        .put_object(&draft, "attachments", ObjType::List)
-        .unwrap();
-    let plan = doc.insert_object(&attachments, 0, ObjType::Map).unwrap();
-    put(&mut doc, &plan, "content_id", "c1");
-    put(&mut doc, &plan, "filename", "numbers.pdf");
-    put(&mut doc, &plan, "mime", "application/pdf");
-
-    let drafts = doc.put_object(ROOT, "drafts", ObjType::Map).unwrap();
-    let empty = item(&mut doc, &drafts, "d-empty", "a0");
-    for field in ["to", "cc", "bcc", "subject", "body", "notes"] {
-        put(&mut doc, &empty, field, "");
-    }
-    let reply = item(&mut doc, &drafts, "d-reply", "a1");
-    let sender = doc.put_object(&reply, "sender", ObjType::Map).unwrap();
-    put(&mut doc, &sender, "account", "home");
-    put(&mut doc, &sender, "email", "ada@home.example");
-    put(&mut doc, &reply, "to", "grace@example.com");
-    put(&mut doc, &reply, "cc", "linus@example.com");
-    put(&mut doc, &reply, "bcc", "");
-    put(&mut doc, &reply, "subject", "Re: Lunch");
-    put(&mut doc, &reply, "body", "Thursday works.");
-    put(&mut doc, &reply, "in_reply_to", "<lunch@example.com>");
-    put(&mut doc, &reply, "notes", "");
-
-    let outbox = doc.put_object(ROOT, "outbox", ObjType::Map).unwrap();
-    let waiting = item(&mut doc, &outbox, "o-waiting", "a0");
-    let message = serde_json::json!({
-        "id": "o-waiting",
-        "account": "work",
-        "draft": {
-            "sender": null,
-            "to": "team@example.com",
-            "cc": "",
-            "bcc": "",
-            "subject": "Offsite",
-            "body": "See you at nine.",
-            "html_body": null,
-            "attachments": [],
-        },
-        "in_reply_to": "<offsite@example.com>",
-        "not_before": 1,
-    });
-    put(&mut doc, &waiting, "value", &message.to_string());
-    doc.put_object(&waiting, "compensates", ObjType::List)
-        .unwrap();
-    let gone = item(&mut doc, &outbox, "o-gone", "a1");
-    let sent = serde_json::json!({
-        "id": "o-gone",
-        "account": "work",
-        "draft": { "to": "old@example.com", "cc": "", "bcc": "", "subject": "Sent already",
-                   "body": "Gone.", "html_body": null, "attachments": [] },
-        "in_reply_to": null,
-    });
-    put(&mut doc, &gone, "value", &sent.to_string());
-    let settled = doc.put_object(&gone, "settled", ObjType::Map).unwrap();
-    put(&mut doc, &settled, "outcome", "done");
-    doc
-}
+/// The invitation the composer's draft carries, as the native app kept it.
+const INVITATION: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Tilo//Mail//EN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:review-1@tilo.example\r\nDTSTAMP:20260629T070000Z\r\nDTSTART:20260702T090000Z\r\nDTEND:20260702T100000Z\r\nSUMMARY:Design review\r\nORGANIZER:mailto:ada@work.example\r\nATTENDEE:mailto:mia@work.example\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 
 fn native_documents() -> Vec<(String, AutoCommit)> {
-    vec![(String::new(), native_mailbox())]
+    crate::fixtures::native_documents(include_str!("legacy/rust_mail.hex"))
 }
 
-fn text(ada: &Replica, at: &ResourceRef, field: &str) -> String {
-    match ada.host.runtime().read(at, field).unwrap() {
+fn text(r: &Replica, at: &ResourceRef, field: &str) -> String {
+    match r.host.runtime().read(at, field).unwrap() {
         Value::Text(text) => text,
         other => panic!("{field} reads {other:?}"),
     }
 }
 
-/// Each draft of the mailbox: from, to, cc, bcc, subject, body, what it answers, what was set
-/// aside.
-fn drafts(ada: &Replica, mail: &ResourceRef) -> Vec<[String; 8]> {
-    let Value::List(items) = ada.host.runtime().read(mail, "drafts").unwrap() else {
+/// A draft as the test reads it: from, the identity it goes as, to, cc, bcc, subject, body, what
+/// it answers, its invitation, and what was set aside.
+type Row = [String; 10];
+
+/// Each draft of the mailbox `r` holds, by subject.
+fn rows(r: &Replica, mail: &ResourceRef) -> Vec<Row> {
+    let Value::List(items) = r.host.runtime().read(mail, "drafts").unwrap() else {
         panic!("the drafts read as a list");
     };
-    let mut out: Vec<[String; 8]> = items
+    let mut out: Vec<Row> = items
         .iter()
-        .map(target)
-        .map(|d| {
+        .map(|item| {
+            let draft = target(item);
             [
                 "from",
+                "from_address",
                 "to",
                 "cc",
                 "bcc",
                 "subject",
                 "body",
                 "in_reply_to",
+                "invitation",
                 "set_aside",
             ]
-            .map(|field| text(ada, &d, field))
+            .map(|field| text(r, &draft, field))
         })
         .collect();
-    out.sort_by(|a, b| a[4].cmp(&b[4]));
+    out.sort_by(|a, b| a[5].cmp(&b[5]));
     out
 }
 
-fn row(fields: [&str; 8]) -> [String; 8] {
+fn row(fields: [&str; 10]) -> Row {
     fields.map(str::to_owned)
 }
 
-fn assert_carried(ada: &Replica, mail: &ResourceRef) {
-    assert_eq!(
-        drafts(ada, mail),
-        [
-            row([
-                "work",
-                "team@example.com",
-                "",
-                "",
-                "Offsite",
-                "See you at nine.",
-                "<offsite@example.com>",
-                "",
-            ]),
-            row([
-                "work",
-                "board@example.com",
-                "",
-                "auditor@example.com",
-                "Quarterly numbers",
-                "The numbers are attached.",
-                "",
-                "Attachments not carried over: numbers.pdf\nNotes: Check the totals first",
-            ]),
-            row([
-                "home",
-                "grace@example.com",
-                "linus@example.com",
-                "",
-                "Re: Lunch",
-                "Thursday works.",
-                "<lunch@example.com>",
-                "",
-            ]),
-        ],
-        "the composer's draft, the reply and the waiting message, each a draft; the empty draft \
-         and the message that went are not"
-    );
+/// What Ada's native mailbox showed her as drafts: the composer's, her reply, the one her agent
+/// drafted for her, and the message still waiting to go, each a draft again; not the empty one,
+/// nor the message that went.
+fn adas() -> Vec<Row> {
+    vec![
+        row([
+            "ada@work.example",
+            "",
+            "team@work.example",
+            "",
+            "",
+            "Offsite",
+            "See you at nine.",
+            "<offsite-1@work.example>",
+            "",
+            "",
+        ]),
+        row([
+            "work",
+            "ada@work.example",
+            "board@work.example",
+            "",
+            "auditor@work.example",
+            "Quarterly numbers",
+            "The numbers are attached.\n\nThe totals moved.",
+            "",
+            INVITATION,
+            "Attachments not carried over: numbers.pdf",
+        ]),
+        row([
+            "home",
+            "ada@home.example",
+            "grace@hopper.example",
+            "linus@home.example",
+            "",
+            "Re: Lunch",
+            "Thursday works.",
+            "<lunch-1@hopper.example>",
+            "",
+            "Notes: Ask about the venue",
+        ]),
+        row([
+            "",
+            "",
+            "mia@work.example",
+            "",
+            "",
+            "Your launch numbers",
+            "Mia, the launch is down to a second and a half.",
+            "",
+            "",
+            "Notes: Drafted from the release channel",
+        ]),
+    ]
+}
+
+/// What Leo wrote in the same mailbox: his own draft, which only he reads.
+fn leos() -> Vec<Row> {
+    vec![row([
+        "work",
+        "leo@work.example",
+        "ops@work.example",
+        "",
+        "",
+        "Rota",
+        "I can take Friday.",
+        "",
+        "",
+        "",
+    ])]
+}
+
+/// `name`'s mailbox with the native app's `documents` beside it.
+fn opened(name: &str, doc: Workspace, documents: &[(String, AutoCommit)]) -> (Replica, ResourceRef) {
+    let (r, _) = Replica::new(name, doc, MAIL_SET);
+    r.host.runtime().set_earlier(MAIL_APP, documents);
+    let mail = r.host.root_of(MAIL_APP).expect("the mailbox");
+    r.commit();
+    (r, mail)
+}
+
+/// A device of `name` that receives what `from` wrote, as sync hands it what its person reads,
+/// with the native app's `documents` beside it as well.
+fn device(from: &Replica, name: &str, documents: &[(String, AutoCommit)]) -> Replica {
+    let (r, _) = Replica::new(name, Workspace::new(), MAIL_SET);
+    from.send_to(&r);
+    r.host.runtime().set_earlier(MAIL_APP, documents);
+    r
 }
 
 #[test]
-fn a_native_mailbox_is_carried_over_once() {
+fn a_native_mailbox_is_carried_over_once_each_draft_its_authors() {
     let documents = native_documents();
     let before: Vec<_> = documents
         .iter()
         .map(|(_, doc)| doc.clone().get_heads())
         .collect();
-    let (ada, _) = Replica::new(
-        "ada",
-        crate::fixtures::Workspace::new(),
-        crate::fixtures::MAIL_SET,
-    );
-    ada.host.runtime().set_earlier(MAIL_APP, &documents);
-    let mail = ada.host.root_of(MAIL_APP).expect("the mailbox");
-    ada.commit();
-    assert!(
-        drafts(&ada, &mail).is_empty(),
-        "nothing before the migration"
-    );
+    let (ada, mail) = opened("u_ada", Workspace::new(), &documents);
+    assert!(rows(&ada, &mail).is_empty(), "nothing before the migration");
 
     assert_eq!(ada.host.migrate(), 1, "the mailbox's migration runs");
-    assert_eq!(ada.commit(), 1, "as one change");
-    assert_carried(&ada, &mail);
-
+    ada.commit();
+    let migration = ada
+        .host
+        .package(MAIL_APP)
+        .unwrap()
+        .meta
+        .migrations()
+        .find(|m| m.name == "carry_native_mail")
+        .unwrap()
+        .id
+        .clone();
+    let versions = ada.host.runtime().versions(&mail).unwrap();
+    assert_eq!(
+        versions.iter().filter(|v| v.action == migration).count(),
+        1,
+        "one change of the mailbox carried them: {versions:?}"
+    );
     assert_eq!(ada.host.migrate(), 0, "it runs once");
     assert_eq!(ada.commit(), 0);
-    let grace = ada.fork("grace", crate::fixtures::MAIL_SET);
-    grace.host.runtime().set_earlier(MAIL_APP, &documents);
-    assert_eq!(
-        grace.host.migrate(),
-        0,
-        "another start with the same documents finds it done"
-    );
-    assert_carried(&grace, &mail);
+
+    // Ada's other device, opening the same mailbox and the same native documents later, finds
+    // it done and holds her drafts alone; Leo's holds his own and none of hers.
+    let laptop = device(&ada, "u_ada", &documents);
+    assert_eq!(laptop.host.migrate(), 0, "another device finds it done");
+    assert_eq!(rows(&laptop, &mail), adas(), "Ada's drafts, each once");
+    let leo = device(&ada, "u_leo", &documents);
+    assert_eq!(leo.host.migrate(), 0, "and so does Leo's");
+    assert_eq!(rows(&leo, &mail), leos(), "Leo's draft, his alone");
 
     let after: Vec<_> = documents
         .iter()
@@ -230,21 +208,16 @@ fn a_native_mailbox_is_carried_over_once() {
 
 #[test]
 fn a_mailbox_opened_before_the_native_documents_arrived_receives_them_once_they_do() {
-    let (ada, _) = Replica::new(
-        "ada",
-        crate::fixtures::Workspace::new(),
-        crate::fixtures::MAIL_SET,
-    );
-    let mail = ada.host.root_of(MAIL_APP).expect("the mailbox");
-    ada.commit();
+    let (ada, mail) = opened("u_ada", Workspace::new(), &[]);
     assert_eq!(ada.host.migrate(), 0, "nothing to carry has arrived");
     assert_eq!(ada.commit(), 0, "and nothing is recorded");
 
-    ada.host
-        .runtime()
-        .set_earlier(MAIL_APP, &native_documents());
+    let documents = native_documents();
+    ada.host.runtime().set_earlier(MAIL_APP, &documents);
     assert_eq!(ada.host.migrate(), 1, "the carrying waited for them");
-    assert_eq!(ada.commit(), 1);
-    assert_carried(&ada, &mail);
+    ada.commit();
     assert_eq!(ada.host.migrate(), 0, "and runs only once");
+    let laptop = device(&ada, "u_ada", &documents);
+    assert_eq!(laptop.host.migrate(), 0);
+    assert_eq!(rows(&laptop, &mail), adas());
 }

@@ -513,13 +513,41 @@ fn read_field_at(
             let mut records = Vec::new();
             for at in 0..doc.length(obj) {
                 match doc.get(obj, at).ok().flatten() {
-                    Some((AmValue::Scalar(s), _)) => held.extend(scalar_words(&s)),
+                    // A record a native app kept as JSON in one entry (a draft's attachment)
+                    // reads as the records below do (`attachments.filename`), and as its words.
+                    Some((AmValue::Scalar(s), _)) => {
+                        let Some(said) = scalar_words(&s) else {
+                            continue;
+                        };
+                        if said.starts_with('{')
+                            && let Ok(serde_json::Value::Object(record)) =
+                                serde_json::from_str::<serde_json::Value>(&said)
+                        {
+                            let mut fields = BTreeMap::new();
+                            for (key, inner) in record {
+                                let words = match &inner {
+                                    serde_json::Value::String(text) => text.clone(),
+                                    serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+                                        inner.to_string()
+                                    }
+                                    _ => continue,
+                                };
+                                item.lists
+                                    .entry(format!("{name}.{key}"))
+                                    .or_default()
+                                    .push(words.clone());
+                                fields.insert(key, words);
+                            }
+                            records.push(fields);
+                        }
+                        held.push(said);
+                    }
                     Some((AmValue::Object(ObjType::Text), text)) => {
                         held.extend(doc.text(&text).ok());
                     }
-                    // A list of records (a skill's examples, a draft's attachments) reads as its
-                    // records, in the order they stand, and as a list of each of their fields
-                    // (`attachments.filename`), an entry for each record that has it.
+                    // A list of records (a skill's examples) reads as its records, in the order
+                    // they stand, and as a list of each of their fields (`examples.text`), an
+                    // entry for each record that has it.
                     Some((AmValue::Object(ObjType::Map), record)) => {
                         let mut fields = BTreeMap::new();
                         for key in doc.keys(&record) {
