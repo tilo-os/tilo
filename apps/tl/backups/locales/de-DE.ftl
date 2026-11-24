@@ -261,19 +261,16 @@ d-lbwhdcbx = Ersetzen
 
 d-3pulbfdz-filter-overwrite = Ersetzen
 
-d-66xmnr3b = Arbeitszustand
+d-xzbqloor = Arbeitsdetails
+    .doc = Was das Gerät über eine laufende Arbeit sagt und wenn sie endet.
     .noun = { $count ->
-        [one] work state
-       *[other] work states
+        [one] Arbeitsdetail
+       *[other] Arbeitsdetails
     }
 
-d-ptww3noe = Zustand
+d-m7xwwoxh = Fortschritt
 
-d-pnevrulc = Fortschritt
-
-d-lrfiygoo = Antwort
-
-d-apwu74vg = Fehler
+d-lwahnmcm = Antwort
 
 d-znoewa74 = Geprüft
     .noun = { $count ->
@@ -392,8 +389,17 @@ d-v5ylljvo-s = S
 d-pz4zxkew = Arbeit anhalten
     .doc = Hält die laufende Arbeit an; was sie schrieb, wird entfernt.
 
-d-eq6dkezf = Abfragen
-    .doc = Fragt das Gerät einmal pro Sekunde, wie weit die Arbeit ist, solange sie läuft.
+d-ijjf4th6 = Arbeit meldet Fortschritt
+    .doc = Die Arbeit ist weitergegangen: wie weit sie gekommen ist, in Dateien und Bytes.
+
+d-ijjf4th6-j = J
+
+d-vxnmsby4 = Arbeit beendet
+    .doc = Die Arbeit ist beendet: das Repository, wie es jetzt steht, was eine Prüfung gefunden hat, oder warum sie fehlgeschlagen ist.
+
+d-vxnmsby4-kind = Art
+
+d-vxnmsby4-j = J
 
 d-nrshrfas = Stand öffnen
     .doc = Zeigt das Blatt eines Stands: was er enthält und was damit möglich ist.

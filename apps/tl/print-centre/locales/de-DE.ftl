@@ -163,27 +163,14 @@ d-uxntnjuy = Options ask
 
 d-aun3edzr = Warteschlange
 
-d-w7gub7hu = Job answer
-    .doc = Was die Engine auf den Start eines Drucks antwortet.
+d-j57iegqy = Scan-Details
+    .doc = Was die Engine über einen beendeten Scan sagt: wo sie das Bild der Seite abgelegt hat.
     .noun = { $count ->
-        [one] job answer
-       *[other] job answers
+        [one] Scan-Detail
+       *[other] Scan-Details
     }
 
-d-hovq2inv = Auftrag
-
-d-mhsgav5j = Job state
-    .doc = Wie ein Druck oder ein Scan steht.
-    .noun = { $count ->
-        [one] job state
-       *[other] job states
-    }
-
-d-3ofqxf34 = Stand
-
-d-cmyjb3zt = Adresse
-
-d-oyaqvmzs = Fehler
+d-jlmf7wws = Adresse
 
 d-ci6obt7q = Ocr ask
     .doc = Womit die Engine den Text einer Seite liest.
@@ -309,15 +296,20 @@ d-khrlaoyo = An den Drucker senden
     .w-choose-a-printer = Wähle einen Drucker
     .w-choose-a-document-to-print = Wähle ein Dokument zum Drucken
 
-d-yowh5xy6 = Druck abfragen
-    .doc = Fragt, wie weit der Druck ist; ein fertiger oder fehlgeschlagener sagt es.
+d-if3hgspw = Druck beendet
+    .doc = Der Druck ist beendet, gedruckt oder fehlgeschlagen; er sagt, was zutrifft.
+
+d-if3hgspw-j = J
+
 
 d-jjrbwly5 = Seite scannen
     .doc = Scannt eine Seite mit dem gewählten Scanner und den Voreinstellungen.
     .w-this-computer-has-no-scanner = Dieser Computer hat keinen Scanner
 
-d-3wzuiq3w = Scan abfragen
-    .doc = Fragt, wie weit der Scan ist; eine angekommene Seite wird dem Dokument hinzugefügt.
+d-2gs6stw6 = Scan beendet
+    .doc = Der Scan ist beendet; eine angekommene Seite wird dem Dokument hinzugefügt.
+
+d-2gs6stw6-j = J
 
 d-hpf3cjyc = Seite drehen
     .doc = Dreht eine gescannte Seite um ein Viertel im Uhrzeigersinn.

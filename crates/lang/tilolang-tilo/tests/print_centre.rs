@@ -8,7 +8,7 @@ use std::rc::Rc;
 use tilolang::IdsLock;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-use tilolang_runtime::host_work::EngineHost;
+use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
@@ -129,11 +129,19 @@ impl Invoker for Sent {
     }
 }
 
-/// The engine: what it was asked, and the answers it gives.
+/// The engine: what it was asked, the answers it gives, and what a job's start named as it moves
+/// and ends.
 #[derive(Clone, Default)]
 struct Engine {
     asked: Rc<RefCell<Vec<(String, String)>>>,
-    polls: Rc<RefCell<u32>>,
+    handlers: Rc<RefCell<Vec<JobHandlers>>>,
+    /// How the last job stands, as the device says it: the job's detail while it runs.
+    state: Rc<RefCell<String>>,
+}
+
+/// A job's record as the device that holds it says it stands.
+fn record(id: &str, state: &str, detail: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"id": id, "op": "scan", "state": state, "detail": detail})
 }
 
 impl Engine {
@@ -164,35 +172,25 @@ impl EngineHost for Engine {
         _app: &str,
         op: &str,
         input: &str,
-        _handlers: &tilolang_runtime::host_work::JobHandlers,
+        handlers: &JobHandlers,
     ) -> Result<String, String> {
         self.asked
             .borrow_mut()
             .push((op.to_owned(), input.to_owned()));
         match op {
-            "print" | "scan" => Ok(format!(r#"{{"job":"{op}-1"}}"#)),
+            "print" | "scan" => {
+                self.handlers.borrow_mut().push(handlers.clone());
+                Ok(format!("{op}-1"))
+            }
             other => Err(format!("`{other}` is no op this device runs")),
         }
     }
 
     fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-        let said = || -> Result<String, String> {
-            if !job.starts_with("print-") && !job.starts_with("scan-") {
-                return Err(format!("no job `{job}`"));
-            }
-            let mut polls = self.polls.borrow_mut();
-            *polls += 1;
-            if *polls == 1 {
-                Ok(r#"{"state":"running","url":"","error":""}"#.to_owned())
-            } else if job.starts_with("scan-") {
-                Ok(r#"{"state":"done","url":"tilo-blob://page1","error":""}"#.to_owned())
-            } else {
-                Ok(r#"{"state":"done","url":"","error":""}"#.to_owned())
-            }
-        };
-        Ok(said()
-            .ok()
-            .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
+        if !job.starts_with("print-") && !job.starts_with("scan-") {
+            return Err(format!("no job `{job}`"));
+        }
+        Ok(tilolang_tilo::engine::record_of(job, &self.state.borrow()))
     }
 
     fn cancel(&self, job: &str) -> bool {
@@ -296,6 +294,30 @@ impl Installed {
 
     fn root_value(&self) -> Value {
         Value::resource(&self.root)
+    }
+
+    /// The device runs what the job's start named, now that it stands as `record` says: the
+    /// handler it kept, filled with the job. The start kept one job at a time in these tests.
+    fn moves(
+        &self,
+        handler: fn(&JobHandlers) -> Option<serde_json::Value>,
+        record: &serde_json::Value,
+    ) {
+        let kept = {
+            let kept = self.engine.handlers.borrow();
+            handler(kept.last().expect("a start came before its job moved"))
+                .expect("the start named this handler")
+        };
+        *self.engine.state.borrow_mut() = record["detail"].to_string();
+        let call = self
+            .host
+            .runtime()
+            .job_call(&kept, record)
+            .expect("the handler's call");
+        self.host
+            .runtime()
+            .invoke_action(&me(), call)
+            .expect("the handler runs");
     }
 }
 
@@ -473,8 +495,14 @@ fn a_scan_keeps_the_page_the_scanner_answered() {
     let app = Installed::new();
     app.call("scan_page", vec![app.root_value()]);
     assert!(app.engine.ops().iter().any(|op| op == "scan"));
-    app.call("poll_scan", vec![app.root_value()]);
-    app.call("poll_scan", vec![app.root_value()]);
+    app.moves(
+        |handlers| handlers.done.clone(),
+        &record(
+            "scan-1",
+            "done",
+            serde_json::json!({"url": "tilo-blob://page1"}),
+        ),
+    );
     let mut window = app.window();
     pick(&mut window, "place", Value::text("scan"));
     assert!(contains(&window, "Page"), "{:?}", shown(&window));
@@ -484,8 +512,14 @@ fn a_scan_keeps_the_page_the_scanner_answered() {
 fn a_page_is_turned_read_copied_and_removed() {
     let app = Installed::new();
     app.call("scan_page", vec![app.root_value()]);
-    app.call("poll_scan", vec![app.root_value()]);
-    app.call("poll_scan", vec![app.root_value()]);
+    app.moves(
+        |handlers| handlers.done.clone(),
+        &record(
+            "scan-1",
+            "done",
+            serde_json::json!({"url": "tilo-blob://page1"}),
+        ),
+    );
     let mut window = app.window();
     pick(&mut window, "place", Value::text("scan"));
     for wanted in ["Turn", "Read its text", "Remove", "Save this page"] {
@@ -497,8 +531,14 @@ fn a_page_is_turned_read_copied_and_removed() {
 fn the_scanned_document_is_written_as_one_pdf() {
     let app = Installed::new();
     app.call("scan_page", vec![app.root_value()]);
-    app.call("poll_scan", vec![app.root_value()]);
-    app.call("poll_scan", vec![app.root_value()]);
+    app.moves(
+        |handlers| handlers.done.clone(),
+        &record(
+            "scan-1",
+            "done",
+            serde_json::json!({"url": "tilo-blob://page1"}),
+        ),
+    );
     let saved = app.call("document_to_save", vec![app.root_value()]);
     match saved {
         Value::File(file) => assert_eq!(file.media, "application/pdf"),

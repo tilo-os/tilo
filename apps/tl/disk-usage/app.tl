@@ -105,18 +105,18 @@ action analyze(a: Analyzer, path: Text, label: Text) uses files, time {
     for m in a.entries {
         a.entries.remove(m)
     }
-    match engine.start("scan", json.encode(ScanAsk(path: rooted))) {
+    match engine.start(
+        "scan",
+        json.encode(ScanAsk(path: rooted)),
+        done: j -> scan_ended(a, j),
+        progress: j -> scan_moved(a, j),
+    ) {
         .err(why) => {
             a.trouble = why
         }
-        .ok(said) => match json.decode<JobAnswer>(said) {
-            .err(why) => {
-                a.trouble = why
-            }
-            .ok(answer) => {
-                a.job = answer.job
-            }
-        },
+        .ok(job) => {
+            a.job = job
+        }
     }
 }
 
@@ -218,91 +218,90 @@ action open_disks() (icon: .hard_drive, label: "Open Disks") {
     session.open_app(app: "so.tilo.disks")
 }
 
-/// Asks how far the measuring has got: the window's own clock, once a second while it runs.
-action poll(a: Analyzer) uses time {
-    if a.job == "" {
+/// The measuring moved on: how much of the folder it has seen so far.
+action scan_moved(a: Analyzer, j: host.Job) {
+    if a.job != j.id {
         return
     }
-    match engine.status(a.job) {
-        .err(why) => {
-            a.trouble = why
-            a.job = ""
+    match json.decode<ScanState>(j.detail) {
+        .ok(state) => {
+            a.seen_bytes = state.bytes
+            a.seen_files = state.files
         }
-        .ok(said) => match json.decode<ScanState>(said) {
-            .err(why) => {
-                a.trouble = why
-                a.job = ""
-            }
-            .ok(state) => {
-                a.seen_bytes = state.bytes
-                a.seen_files = state.files
-                if state.state == "done" {
-                    a.total = state.total
-                    a.files = state.files
-                    a.unreadable = state.unreadable
-                    a.trouble = state.error
-                    for m in a.entries {
-                        a.entries.remove(m)
-                    }
-                    match engine.call("entries", json.encode(JobAnswer(job: a.job))) {
-                        .err(why) => {
-                            a.trouble = why
-                        }
-                        .ok(listed) => match json.decode<List<Scanned>>(listed) {
-                            .err(why) => {
-                                a.trouble = why
-                            }
-                            .ok(scanned) => {
-                                for m in scanned.take(8) {
-                                    a.entries.insert(
-                                        Measure(
-                                            name: m.name,
-                                            path: m.path,
-                                            bytes: m.bytes,
-                                            files: m.files,
-                                        ),
-                                    )
-                                }
-                                if scanned.len() > 8 {
-                                    a.entries.insert(
-                                        Measure(
-                                            name: "Other folders",
-                                            path: "",
-                                            bytes: held_from(scanned, 8),
-                                            files: files_from(scanned, 8),
-                                        ),
-                                    )
-                                }
-                                a.job = ""
-                                // The folder it measured is offered again: once, and the five
-                                // newest of them.
-                                for r in a.recents {
-                                    if r.path == a.folder { a.recents.remove(r) }
-                                }
-                                a.recents.insert(Recent(path: a.folder, label: a.label, seen: now))
-                                let kept = a.recents.sort_by(r -> r.seen, desc)
-                                if kept.len() > 5 {
-                                    if let oldest = kept.last() { a.recents.remove(oldest) }
-                                }
-                            }
-                        },
-                    }
-                } else if state.state == "failed" {
-                    a.trouble = if state.error == "" {
-                        "The folder could not be read."
-                    } else { state.error }
-                    a.job = ""
-                } else if state.state == "cancelled" {
-                    a.notice = "Stopped measuring {a.label}."
-                    a.job = ""
-                }
-            }
-        },
+        .err(why) => {}
     }
 }
 
-/// A measuring runs while the window is open, so how far it is goes is asked for once a second.
-trigger watch(a: Analyzer) every 1s: poll(a)
+/// The measuring ended: the folders it found, why it could not read them, or that it was
+/// stopped.
+action scan_ended(a: Analyzer, j: host.Job) uses time {
+    if a.job != j.id {
+        return
+    }
+    a.job = ""
+    if j.state == .done {
+        match json.decode<ScanState>(j.detail) {
+            .err(why) => {
+                a.trouble = why
+            }
+            .ok(state) => {
+                a.total = state.total
+                a.files = state.files
+                a.unreadable = state.unreadable
+                a.trouble = state.error
+                for m in a.entries {
+                    a.entries.remove(m)
+                }
+                match engine.call("entries", json.encode(EntriesAsk(job: j.id))) {
+                    .err(why) => {
+                        a.trouble = why
+                    }
+                    .ok(listed) => match json.decode<List<Scanned>>(listed) {
+                        .err(why) => {
+                            a.trouble = why
+                        }
+                        .ok(scanned) => {
+                            for m in scanned.take(8) {
+                                a.entries.insert(
+                                    Measure(
+                                        name: m.name,
+                                        path: m.path,
+                                        bytes: m.bytes,
+                                        files: m.files,
+                                    ),
+                                )
+                            }
+                            if scanned.len() > 8 {
+                                a.entries.insert(
+                                    Measure(
+                                        name: "Other folders",
+                                        path: "",
+                                        bytes: held_from(scanned, 8),
+                                        files: files_from(scanned, 8),
+                                    ),
+                                )
+                            }
+                            // The folder it measured is offered again: once, and the five
+                            // newest of them.
+                            for r in a.recents {
+                                if r.path == a.folder { a.recents.remove(r) }
+                            }
+                            a.recents.insert(Recent(path: a.folder, label: a.label, seen: now))
+                            let kept = a.recents.sort_by(r -> r.seen, desc)
+                            if kept.len() > 5 {
+                                if let oldest = kept.last() { a.recents.remove(oldest) }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    } else if j.state == .failed {
+        a.trouble = if j.error == "" { "The folder could not be read." } else { j.error }
+    } else if j.state == .cancelled {
+        a.notice = "Stopped measuring {a.label}."
+    }
+}
 
 /// The newest first of the folders of `a`, each with what it holds.
 fn largest(a: Analyzer) -> List<Measure> {
@@ -532,7 +531,19 @@ type ScanAsk {
     path: Text
 }
 
-type JobAnswer {
+/// What the engine says of a measuring as it runs and when it ends.
+type ScanState {
+    state: Text = ""
+    path: Text = ""
+    bytes: Int = 0
+    files: Int = 0
+    total: Int = 0
+    unreadable: Int = 0
+    error: Text = ""
+}
+
+/// What asks the engine which folders a finished measuring found.
+type EntriesAsk {
     job: Text
 }
 
@@ -541,16 +552,6 @@ type Scanned {
     path: Text
     bytes: Int
     files: Int
-}
-
-type ScanState {
-    state: Text
-    path: Text
-    bytes: Int
-    files: Int
-    total: Int
-    unreadable: Int
-    error: Text
 }
 
 /// The analyzer with a home folder measured and its folders, as a first run finds it.

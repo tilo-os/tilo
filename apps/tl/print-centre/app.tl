@@ -95,16 +95,9 @@ type OptionsAsk {
     queue: Text
 }
 
-/// What the engine answers a print's start with.
-type JobAnswer {
-    job: Text
-}
-
-/// How a print or a scan stands.
-type JobState {
-    state: Text
-    url: Text
-    error: Text
+/// What the engine says of a scan that finished: where it kept the page's picture.
+type ScanDetail {
+    url: Text = ""
 }
 
 /// What the engine reads a page's text with.
@@ -290,57 +283,32 @@ action send_to_printer(p: PrintCentre) {
             duplex: doc.duplex,
             orientation: doc.orientation,
         )
-        match engine.start("print", json.encode(asked)) {
+        match engine.start("print", json.encode(asked), done: j -> print_ended(doc, j)) {
             .err(why) => {
                 doc.failed = why
             }
-            .ok(text) => match json.decode<JobAnswer>(text) {
-                .ok(answer) => {
-                    doc.job = answer.job
-                    doc.failed = ""
-                }
-                .err(why) => {
-                    doc.failed = why
-                }
-            },
+            .ok(job) => {
+                doc.job = job
+                doc.failed = ""
+            }
         }
     } else {
         doc.failed = std.say("Choose a document to print")
     }
 }
 
-/// Asks how far the print has got; a finished or failed one says so.
-action poll_print(p: PrintCentre) {
-    for doc in p.documents {
-        if doc.job != "" {
-            match engine.status(doc.job) {
-                .err(why) => {
-                    doc.failed = why
-                    doc.job = ""
-                }
-                .ok(text) => match json.decode<JobState>(text) {
-                    .err(why) => {
-                        doc.failed = why
-                        doc.job = ""
-                    }
-                    .ok(state) => {
-                        if state.state == "done" {
-                            doc.job = ""
-                            doc.failed = ""
-                        } else if state.state == "failed" {
-                            doc.failed = state.error
-                            doc.job = ""
-                        } else if state.state == "cancelled" {
-                            doc.job = ""
-                        }
-                    }
-                },
-            }
-        }
+/// The print ended, printed or failed; it says which.
+action print_ended(doc: PrintDocument, j: host.Job) {
+    if doc.job != j.id {
+        return
+    }
+    doc.job = ""
+    if j.state == .failed {
+        doc.failed = j.error
+    } else if j.state == .done {
+        doc.failed = ""
     }
 }
-
-trigger watch_print(p: PrintCentre) every 1s: poll_print(p)
 
 /// Scans one page with the chosen scanner and the defaults.
 action scan_page(p: PrintCentre) {
@@ -361,61 +329,40 @@ action scan_page(p: PrintCentre) {
         source: p.defaults.scan_source,
         name: "scan-{scan.pages.len() + 1}.png",
     )
-    match engine.start("scan", json.encode(asked)) {
+    match engine.start("scan", json.encode(asked), done: j -> scan_ended(scan, j)) {
         .err(why) => {
             scan.failed = why
         }
-        .ok(text) => match json.decode<JobAnswer>(text) {
-            .ok(answer) => {
-                scan.job = answer.job
+        .ok(job) => {
+            scan.job = job
+            scan.failed = ""
+        }
+    }
+}
+
+/// The scan ended; a page that arrived is added to the document.
+action scan_ended(scan: ScanSession, j: host.Job) {
+    if scan.job != j.id {
+        return
+    }
+    scan.job = ""
+    if j.state == .done {
+        match json.decode<ScanDetail>(j.detail) {
+            .ok(detail) => {
+                let name = "scan-{scan.pages.len() + 1}.png"
+                scan.pages.insert(
+                    ScannedPage(file: File.at(name, detail.url), order: scan.pages.len()),
+                )
                 scan.failed = ""
             }
             .err(why) => {
                 scan.failed = why
             }
-        },
-    }
-}
-
-/// Asks how far the scan has got; a page that arrived is added to the document.
-action poll_scan(p: PrintCentre) {
-    for scan in p.scans {
-        if scan.job != "" {
-            match engine.status(scan.job) {
-                .err(why) => {
-                    scan.failed = why
-                    scan.job = ""
-                }
-                .ok(text) => match json.decode<JobState>(text) {
-                    .err(why) => {
-                        scan.failed = why
-                        scan.job = ""
-                    }
-                    .ok(state) => {
-                        if state.state == "done" {
-                            let name = "scan-{scan.pages.len() + 1}.png"
-                            scan.pages.insert(
-                                ScannedPage(
-                                    file: File.at(name, state.url),
-                                    order: scan.pages.len(),
-                                ),
-                            )
-                            scan.job = ""
-                            scan.failed = ""
-                        } else if state.state == "failed" {
-                            scan.failed = state.error
-                            scan.job = ""
-                        } else if state.state == "cancelled" {
-                            scan.job = ""
-                        }
-                    }
-                },
-            }
         }
+    } else if j.state == .failed {
+        scan.failed = j.error
     }
 }
-
-trigger watch_scan(p: PrintCentre) every 1s: poll_scan(p)
 
 /// Turns a scanned page a quarter clockwise.
 action turn_page(page: ScannedPage) uses image {

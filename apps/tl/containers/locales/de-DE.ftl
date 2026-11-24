@@ -67,27 +67,14 @@ d-putmiceq = Download-Anfrage
 
 d-tukmkidh = Image
 
-d-ergy7t3a = Auftragsantwort
-    .doc = Was die Engine antwortet, wenn ein Download beginnt.
+d-xjgsomkl = Download-Details
+    .doc = Was die Engine über einen laufenden Download sagt: die Ausgabe des Images bisher.
     .noun = { $count ->
-        [one] Auftragsantwort
-       *[other] Auftragsantworten
+        [one] Download-Detail
+       *[other] Download-Details
     }
 
-d-znalhivd = Auftrag
-
-d-mgkaxdqm = Auftragsstand
-    .doc = Wie ein Download steht, so wie die Engine ihn meldet.
-    .noun = { $count ->
-        [one] Auftragsstand
-       *[other] Auftragsstände
-    }
-
-d-h3ie7k7k = Stand
-
-d-bzkmqs4p = Zeilen
-
-d-a6sjrj6l = Fehler
+d-bldlgtsf = Zeilen
 
 d-xcaqps73 = Entwurf leeren
     .doc = Leert das Formular für einen neuen Container.
@@ -123,8 +110,15 @@ d-dq4m27xc = Download beginnen
 
 d-dq4m27xc-image = Image
 
-d-htfh3zck = Download abfragen
-    .doc = Fragt, wie weit ein Download ist; ein fertiger oder fehlgeschlagener sagt es und bleibt.
+d-ickgbq77 = Download meldet Fortschritt
+    .doc = Der Download ist weitergegangen: was die Engine bisher geschrieben hat.
+
+d-ickgbq77-j = J
+
+d-5sku455z = Download beendet
+    .doc = Der Download ist beendet, fertig oder fehlgeschlagen; er sagt, wie, und bleibt.
+
+d-5sku455z-j = J
 
 d-muuf5usk = Download abbrechen
     .doc = Beendet einen Download und den Prozess der Engine mit ihm.

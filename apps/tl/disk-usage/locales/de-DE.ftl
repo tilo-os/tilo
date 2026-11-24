@@ -113,14 +113,6 @@ d-nzngtwys = Messauftrag
 
 d-fzzlfxy7 = Pfad
 
-d-md3xb3ih = Auftragsantwort
-    .noun = { $count ->
-        [one] Auftragsantwort
-       *[other] Auftragsantworten
-    }
-
-d-42vybryr = Auftrag
-
 d-qv3bkujz = Gemessen
     .noun = { $count ->
         [one] Messung
@@ -140,6 +132,7 @@ d-qv3bkujz-filter-bytes = Bytes
 d-qv3bkujz-filter-files = Dateien
 
 d-26wmp7vw = Messstand
+    .doc = Was die Engine über eine laufende Messung sagt und wenn sie endet.
     .noun = { $count ->
         [one] Messstand
        *[other] Messstände
@@ -166,6 +159,15 @@ d-26wmp7vw-filter-files = Dateien
 d-26wmp7vw-filter-total = Gesamt
 
 d-26wmp7vw-filter-unreadable = Unlesbar
+
+d-hkc4egnr = Einträge-Abfrage
+    .doc = Was die Engine fragt, welche Ordner eine beendete Messung gefunden hat.
+    .noun = { $count ->
+        [one] Einträge-Abfrage
+       *[other] Einträge-Abfragen
+    }
+
+d-hxfyfs5q = Auftrag
 
 d-lipx2inw = Analysieren
     .doc = Der gewählte Ordner wird der jetzt gemessene Ordner und der Anfang seiner eigenen Reihe.
@@ -213,8 +215,15 @@ d-j7osqmlp = Ordnerwahl lesen
 d-awmspafp = Datenträger öffnen
     .doc = Öffnet die App Datenträger, wo die Laufwerke des Geräts und ihre Belegung stehen.
 
-d-okrhw5uy = Abfragen
-    .doc = Fragt, wie weit die Messung ist: mit der Uhr des Fensters, einmal pro Sekunde, solange sie läuft.
+d-uraskhqo = Messung meldet Fortschritt
+    .doc = Die Messung ist weitergegangen: wie viel des Ordners sie bisher gesehen hat.
+
+d-uraskhqo-j = J
+
+d-c7sluhhk = Messung beendet
+    .doc = Die Messung ist beendet: die gefundenen Ordner, warum sie nicht gelesen werden konnten, oder dass sie gestoppt wurde.
+
+d-c7sluhhk-j = J
 
 d-bmoxtaea = Analyse
 

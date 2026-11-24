@@ -9,7 +9,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::files::{Entry, FilesHost};
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::value::ResourceRef;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
@@ -20,14 +20,15 @@ mod cases {
     const DONE: &str = r#"{"state":"done","path":"/home/you","bytes":210300000000,"files":92127,"total":210300000000,"unreadable":3,"error":""}"#;
     const CANCELLED: &str = r#"{"state":"cancelled","path":"/home/you","bytes":42000000000,"files":1430,"total":0,"unreadable":0,"error":""}"#;
 
-    /// The device's engine: what it was asked, the answer `status` gives now, and the folders a
-    /// finished scan lists.
+    /// The device's engine: what it was asked, how the scan it runs stands now, the folders a
+    /// finished scan lists, and the actions the start named as the scan moves and ends.
     #[derive(Clone, Default)]
     struct Engine {
         asked: Rc<RefCell<Vec<(String, String)>>>,
         state: Rc<RefCell<String>>,
         entries: Rc<RefCell<String>>,
         cancelled: Rc<RefCell<Vec<String>>>,
+        handlers: Rc<RefCell<Vec<JobHandlers>>>,
     }
 
     impl EngineHost for Engine {
@@ -47,13 +48,14 @@ mod cases {
             _app: &str,
             op: &str,
             input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
+            handlers: &JobHandlers,
         ) -> Result<String, String> {
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
             if op == "scan" {
-                Ok(r#"{"job":"scan-1"}"#.to_owned())
+                self.handlers.borrow_mut().push(handlers.clone());
+                Ok("scan-1".to_owned())
             } else {
                 Err(format!("`{op}` is no op this device runs"))
             }
@@ -159,6 +161,35 @@ mod cases {
             self.call(action, args);
         }
 
+        /// The device runs what the scan's start named, now that it stands as its engine says of
+        /// it: the handler it kept, filled with the job's record.
+        fn moves(&self, handler: fn(&JobHandlers) -> Option<serde_json::Value>) {
+            let kept = {
+                let kept = self.engine.handlers.borrow();
+                handler(kept.last().expect("a start came before its job moved"))
+                    .expect("the scan's start named this handler")
+            };
+            let said = self.engine.state.borrow().clone();
+            let record = tilolang_tilo::engine::record_of("scan-1", &said).expect("a job record");
+            let call = self
+                .rt
+                .job_call(&kept, &record)
+                .expect("the handler's call");
+            self.rt
+                .invoke_action(&me(), call)
+                .expect("the handler runs");
+        }
+
+        /// The scan moved on, as far as the engine's last word says.
+        fn moved(&self) {
+            self.moves(|handlers| handlers.progress.clone());
+        }
+
+        /// The scan ended, as the engine's last word says.
+        fn ended(&self) {
+            self.moves(|handlers| handlers.done.clone());
+        }
+
         fn text(&self, field: &str) -> String {
             match self.rt.read(&self.root, field).unwrap() {
                 Value::Text(text) => text,
@@ -256,19 +287,19 @@ mod cases {
             );
         }
 
-        phase polling_writes_the_folders_largest_first_and_the_rest_as_one;
+        phase the_job_s_moves_write_the_folders_largest_first_and_the_rest_as_one;
         {
             let t = Usage::new();
             *t.engine.state.borrow_mut() = RUNNING.to_owned();
             t.act("open_place", vec![Value::resource(&t.root), Value::text("/home/you")]);
-            t.act("poll", vec![Value::resource(&t.root)]);
+            t.moved();
             assert_eq!(t.text("job"), "scan-1", "a measuring still runs");
             assert_eq!(t.int("seen_bytes"), 42_000_000_000);
             assert_eq!(t.int("seen_files"), 1430);
             assert!(t.kept("entries", "name").is_empty(), "nothing shows until it ends");
             *t.engine.state.borrow_mut() = DONE.to_owned();
             *t.engine.entries.borrow_mut() = done_entries();
-            t.act("poll", vec![Value::resource(&t.root)]);
+            t.ended();
             assert_eq!(t.text("job"), "", "the measuring ended");
             assert_eq!(t.int("total"), 210_300_000_000);
             assert_eq!(t.int("files"), 92_127);
@@ -286,7 +317,7 @@ mod cases {
             *t.engine.state.borrow_mut() = DONE.to_owned();
             *t.engine.entries.borrow_mut() = done_entries();
             t.act("open_place", vec![Value::resource(&t.root), Value::text("/home/you")]);
-            t.act("poll", vec![Value::resource(&t.root)]);
+            t.ended();
             let Value::List(items) = t.rt.read(&t.root, "entries").unwrap() else {
                 panic!("entries are a list");
             };
@@ -311,7 +342,7 @@ mod cases {
             t.act("stop", vec![Value::resource(&t.root)]);
             assert_eq!(t.engine.cancelled.borrow().as_slice(), ["scan-1".to_owned()]);
             *t.engine.state.borrow_mut() = CANCELLED.to_owned();
-            t.act("poll", vec![Value::resource(&t.root)]);
+            t.ended();
             assert_eq!(t.text("job"), "");
             assert!(t.text("notice").contains("Stopped"), "the window says it stopped");
         }
@@ -326,7 +357,7 @@ mod cases {
                 Value::text("/secret"),
                 Value::text("secret"),
             ]);
-            t.act("poll", vec![Value::resource(&t.root)]);
+            t.ended();
             assert_eq!(t.text("trouble"), "it is not granted");
             assert_eq!(t.text("job"), "");
         }
@@ -356,7 +387,7 @@ mod cases {
             *t.engine.state.borrow_mut() = DONE.to_owned();
             *t.engine.entries.borrow_mut() = done_entries();
             t.act("open_place", vec![Value::resource(&t.root), Value::text("/home/you")]);
-            t.act("poll", vec![Value::resource(&t.root)]);
+            t.ended();
             view.poll_patches().unwrap();
             assert!(!of_kind(view.tree(), "ui.PieChart").is_empty(), "the folders are a donut");
             assert!(any_prop_text(view.tree(), "84.2 GB"), "a folder says what it takes");
@@ -372,7 +403,7 @@ mod cases {
             let t = Usage::new();
             *t.engine.state.borrow_mut() = RUNNING.to_owned();
             t.act("open_place", vec![Value::resource(&t.root), Value::text("/home/you")]);
-            t.act("poll", vec![Value::resource(&t.root)]);
+            t.moved();
             let view = t.view();
             assert!(any_prop_text(view.tree(), "Measuring"), "the window says so");
             assert!(any_prop_text(view.tree(), "42 GB"), "how far it got is said");

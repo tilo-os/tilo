@@ -409,67 +409,57 @@ action stop_work(b: Backups) (icon: .square, label: "Stop the work") {
     b.notice = "The work was stopped. Nothing half-written stays behind."
 }
 
-/// Asks the device how the work is doing, once a second while it runs.
-action poll(b: Backups) uses time {
-    if b.job == "" {
+/// The work moved on: how far it has got, in files and bytes.
+action work_moved(b: Backups, j: host.Job) {
+    if b.job != j.id {
         return
     }
-    match engine.status(b.job) {
-        .err(why) => {
-            b.trouble = why
-            b.job = ""
-            b.working = ""
+    match json.decode<WorkDetail>(j.detail) {
+        .ok(detail) => {
+            b.progress = detail.progress
         }
-        .ok(text) => match json.decode<WorkState>(text) {
-            .err(why) => {
-                b.trouble = why
-                b.job = ""
-                b.working = ""
-            }
-            .ok(state) => {
-                b.progress = state.progress
-                if state.state == "done" {
-                    let kind = b.working
-                    b.job = ""
-                    b.working = ""
-                    b.progress = ""
-                    if kind == "backup" {
-                        keep_catalog(b, state.answer)
-                        b.notice = "The folder is backed up."
-                    } else {
-                        match json.decode<Checked>(state.answer) {
-                            .err(why) => {
-                                b.trouble = why
-                            }
-                            .ok(checked) => {
-                                b.result = "{files_text(checked.files)}, {size_text(checked.bytes)}"
-                                b.notice = if kind == "verify" {
-                                    "The snapshot checks out."
-                                } else { "The snapshot is back." }
-                            }
-                        }
-                        refresh(b)
-                    }
-                } else if state.state == "failed" {
-                    let kind = b.working
-                    b.failure = if state.error == "" { "The work failed." } else { state.error }
-                    b.job = ""
-                    b.working = ""
-                    b.progress = ""
-                    if kind == "backup" { refresh(b) }
-                } else if state.state == "cancelled" {
-                    b.job = ""
-                    b.working = ""
-                    b.progress = ""
-                }
-            }
-        },
+        .err(why) => {}
     }
 }
 
-/// The work under way is followed once a second, so its end reaches the window without
-/// anything asking by hand.
-trigger watch(b: Backups) every 1s: poll(b)
+/// The work ended: the repository as it now stands, what a check found, or why it failed.
+action work_ended(b: Backups, kind: Text, j: host.Job) uses time {
+    if b.job != j.id {
+        return
+    }
+    b.job = ""
+    b.working = ""
+    b.progress = ""
+    match json.decode<WorkDetail>(j.detail) {
+        .err(why) => {
+            b.trouble = why
+        }
+        .ok(detail) => {
+            if j.state == .done {
+                if kind == "backup" {
+                    keep_catalog(b, detail.answer)
+                    b.notice = "The folder is backed up."
+                } else {
+                    match json.decode<Checked>(detail.answer) {
+                        .err(why) => {
+                            b.trouble = why
+                        }
+                        .ok(checked) => {
+                            b.result = "{files_text(checked.files)}, {size_text(checked.bytes)}"
+                            b.notice = if kind == "verify" {
+                                "The snapshot checks out."
+                            } else { "The snapshot is back." }
+                        }
+                    }
+                    refresh(b)
+                }
+            } else if j.state == .failed {
+                b.failure = if j.error == "" { "The work failed." } else { j.error }
+                if kind == "backup" { refresh(b) }
+            }
+        }
+    }
+}
 
 /// Shows one snapshot's sheet: what it holds and what can be done with it.
 action open_snapshot(b: Backups, s: Snapshot) (did: "opened a snapshot") {
@@ -668,11 +658,11 @@ type RestoreAsk {
     overwrite: Bool
 }
 
-type WorkState {
-    state: Text = ""
+/// What the device says of a piece of work as it runs and when it ends. Its failure is the
+/// job's `error`; `answer` is the device's own JSON, read once `done`.
+type WorkDetail {
     progress: Text = ""
     answer: Text = ""
-    error: Text = ""
 }
 
 type Checked {
@@ -749,10 +739,10 @@ action start_work(b: Backups, kind: Text, ask: Text) {
     b.notice = ""
     b.result = ""
     b.progress = ""
-    let begun = if kind == "backup" {
-        engine.start("backup", ask)
-    } else if kind == "verify" { engine.start("verify", ask) } else { engine.start("restore", ask) }
-    match begun {
+    let op = if kind == "backup" {
+        "backup"
+    } else if kind == "verify" { "verify" } else { "restore" }
+    match engine.start(op, ask, done: j -> work_ended(b, kind, j), progress: j -> work_moved(b, j)) {
         .err(why) => {
             b.failure = why
         }

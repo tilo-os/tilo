@@ -68,16 +68,9 @@ type PullAsk {
     image: Text
 }
 
-/// What the engine answers when a pull starts.
-type JobAnswer {
-    job: Text
-}
-
-/// How a pull stands, as the engine reports it.
-type JobState {
-    state: Text
+/// What the engine says of a pull as it runs: the image's output so far.
+type PullDetail {
     lines: List<Text>
-    error: Text
 }
 
 /// How a container's state reads.
@@ -233,55 +226,46 @@ action begin_pull(c: Containers, image: Text) {
     if let running = c.pulls.find(p -> p.job != "" and not p.done) {
         return
     }
-    match engine.start("pull", json.encode(PullAsk(image: image))) {
+    let p = c.pulls.insert(Pull(image: image))
+    match engine.start(
+        "pull",
+        json.encode(PullAsk(image: image)),
+        done: j -> pull_ended(p, j),
+        progress: j -> pull_moved(p, j),
+    ) {
         .err(why) => {
-            c.pulls.insert(Pull(image: image, failed: why, done: true))
+            p.failed = why
+            p.done = true
         }
-        .ok(text) => match json.decode<JobAnswer>(text) {
-            .err(why) => {
-                c.pulls.insert(Pull(image: image, failed: why, done: true))
-            }
-            .ok(answer) => {
-                c.pulls.insert(Pull(image: image, job: answer.job))
-            }
-        },
+        .ok(job) => {
+            p.job = job
+        }
     }
 }
 
-/// Asks how far a pull has got; a finished or failed one says so and stays.
-action poll_pull(c: Containers) {
-    for p in c.pulls {
-        if p.job != "" and not p.done {
-            match engine.status(p.job) {
-                .err(why) => {
-                    p.failed = why
-                    p.done = true
-                    p.job = ""
-                }
-                .ok(text) => match json.decode<JobState>(text) {
-                    .err(why) => {
-                        p.failed = why
-                        p.done = true
-                        p.job = ""
-                    }
-                    .ok(state) => {
-                        p.lines = state.lines
-                        if state.state == "done" {
-                            p.done = true
-                            p.job = ""
-                        } else if state.state == "failed" {
-                            p.failed = state.error
-                            p.done = true
-                            p.job = ""
-                        } else if state.state == "cancelled" {
-                            p.done = true
-                            p.job = ""
-                        }
-                    }
-                },
-            }
+/// The pull moved on: what the engine wrote so far.
+action pull_moved(p: Pull, j: host.Job) {
+    match json.decode<PullDetail>(j.detail) {
+        .ok(detail) => {
+            p.lines = detail.lines
         }
+        .err(why) => {}
     }
+}
+
+/// The pull ended, finished or failed; it says how and stays.
+action pull_ended(p: Pull, j: host.Job) {
+    match json.decode<PullDetail>(j.detail) {
+        .ok(detail) => {
+            p.lines = detail.lines
+        }
+        .err(why) => {}
+    }
+    if j.state == .failed {
+        p.failed = j.error
+    }
+    p.done = true
+    p.job = ""
 }
 
 /// Ends a pull and the engine's process with it.
@@ -297,9 +281,6 @@ action cancel_pull(c: Containers, p: Pull) {
 action dismiss_pull(c: Containers, p: Pull) {
     c.pulls.remove(p)
 }
-
-/// A pull runs while the window is open, so its progress is asked for once a second.
-trigger watch_pull(c: Containers) every 1s: poll_pull(c)
 
 /// Opens a shell in a running container: podman's, in the Tilo terminal.
 action open_shell(container: Text) uses files {

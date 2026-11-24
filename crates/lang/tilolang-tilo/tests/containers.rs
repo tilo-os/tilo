@@ -7,7 +7,7 @@ use std::rc::Rc;
 use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::files::{Entry, FileTarget, FilesHost, TrashEntry};
-use tilolang_runtime::host_work::EngineHost;
+use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::{
     ActionRef, Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance,
 };
@@ -170,11 +170,18 @@ impl FilesHost for Shells {
     }
 }
 
-/// The app's engine: one pull job, answered running first and done after.
+/// The app's engine: one pull job, and what its start named as the pull moves and ends.
 #[derive(Clone, Default)]
 struct Pulls {
     asked: Rc<RefCell<Vec<(String, String)>>>,
-    polls: Rc<RefCell<u32>>,
+    handlers: Rc<RefCell<Vec<JobHandlers>>>,
+    /// How the pull stands, as the device says it: the job's detail while it runs.
+    state: Rc<RefCell<String>>,
+}
+
+/// The pull's record as the device that holds it says it stands.
+fn record(state: &str, detail: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"id": "pull-1", "op": "pull", "state": state, "detail": detail})
 }
 
 impl EngineHost for Pulls {
@@ -182,24 +189,25 @@ impl EngineHost for Pulls {
         Err(format!("`{op}` is no op this device runs for {app}"))
     }
 
-    fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+    fn start(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        handlers: &JobHandlers,
+    ) -> Result<String, String> {
         self.asked
             .borrow_mut()
             .push((app.to_owned(), format!("{op} {input}")));
-        Ok(r#"{"job":"pull-1"}"#.to_owned())
+        self.handlers.borrow_mut().push(handlers.clone());
+        Ok("pull-1".to_owned())
     }
 
-    fn status(&self, job: &str) -> Result<String, String> {
+    fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
         if job != "pull-1" {
             return Err(format!("no job `{job}` runs on this device"));
         }
-        let mut polls = self.polls.borrow_mut();
-        *polls += 1;
-        if *polls == 1 {
-            Ok(r#"{"state":"running","lines":["Copying blob nginx"],"error":""}"#.to_owned())
-        } else {
-            Ok(r#"{"state":"done","lines":["Copying blob nginx","Done"],"error":""}"#.to_owned())
-        }
+        Ok(tilolang_tilo::engine::record_of(job, &self.state.borrow()))
     }
 
     fn cancel(&self, job: &str) -> bool {
@@ -221,7 +229,9 @@ struct Installed {
 impl Installed {
     fn new(reading_json: &str) -> Self {
         let host = Host::new(me(), || None).expect("a host");
-        let metas = tilolang_tilo::platform_apps::platform_packages()
+        // Only the packages the app `use`s: the whole platform carries the actions package the
+        // host already runs, and a host loads one package once.
+        let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
             .expect("the platform's packages read");
         for meta in &metas {
             host.runtime().load_foreign(meta.clone()).expect("the device is loaded");
@@ -338,6 +348,30 @@ impl Installed {
 
     fn root_value(&self) -> Value {
         Value::resource(&self.root)
+    }
+
+    /// The device runs what the pull's start named, now that it stands as `record` says: the
+    /// handler it kept, filled with the job.
+    fn moves(
+        &self,
+        handler: fn(&JobHandlers) -> Option<serde_json::Value>,
+        record: &serde_json::Value,
+    ) {
+        let kept = {
+            let kept = self.pulls.handlers.borrow();
+            handler(kept.last().expect("a start came before its job moved"))
+                .expect("the start named this handler")
+        };
+        *self.pulls.state.borrow_mut() = record["detail"].to_string();
+        let call = self
+            .host
+            .runtime()
+            .job_call(&kept, record)
+            .expect("the handler's call");
+        self.host
+            .runtime()
+            .invoke_action(&me(), call)
+            .expect("the handler runs");
     }
 }
 
@@ -618,11 +652,23 @@ fn a_pull_runs_in_the_apps_engine_and_its_output_shows() {
     assert!(asked[0].1.starts_with("pull "), "{asked:?}");
     assert!(asked[0].1.contains("nginx:alpine"), "{asked:?}");
 
-    app.call("poll_pull", vec![app.root_value()]);
+    app.moves(
+        |handlers| handlers.progress.clone(),
+        &record(
+            "running",
+            serde_json::json!({"lines": ["Copying blob nginx"]}),
+        ),
+    );
     let window = app.window();
     assert!(has(&window, "Copying blob nginx"), "{:?}", shown(&window));
 
-    app.call("poll_pull", vec![app.root_value()]);
+    app.moves(
+        |handlers| handlers.done.clone(),
+        &record(
+            "done",
+            serde_json::json!({"lines": ["Copying blob nginx", "Done"]}),
+        ),
+    );
     let window = app.window();
     let words = shown(&window);
     assert!(words.iter().any(|text| text == "Done"), "{words:?}");

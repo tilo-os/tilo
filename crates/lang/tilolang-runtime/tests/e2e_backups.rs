@@ -10,7 +10,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::files::{Entry, FilesHost};
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::value::ResourceRef;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
@@ -18,20 +18,40 @@ mod cases {
 
     const SOURCE: &str = include_str!("../../../../apps/tl/backups/app.tl");
 
-    /// What the device asked for, in the words the app wrote.
+    /// What the device asked for, in the words the app wrote, and the actions a job's start
+    /// named as it moves and ends.
     #[derive(Clone, Default)]
     struct Engine {
         calls: Rc<RefCell<Vec<(String, String)>>>,
-        /// How `status` answers now: `running` until the test says otherwise.
+        /// How the job stands now: `running` until the test says otherwise.
         state: Rc<RefCell<String>>,
         /// What a finished job answers with.
         answer: Rc<RefCell<String>>,
         cancelled: Rc<RefCell<Vec<String>>>,
+        handlers: Rc<RefCell<Vec<JobHandlers>>>,
     }
 
     impl Engine {
         fn asked(&self) -> Vec<(String, String)> {
             self.calls.borrow().clone()
+        }
+
+        /// How the job stands, as the engine that runs it says it now.
+        fn said(&self) -> String {
+            let state = self.state.borrow().clone();
+            let (answer, error) = match state.as_str() {
+                "done" => (self.answer.borrow().clone(), String::new()),
+                "failed" => (String::new(), "the drive went away".to_owned()),
+                "cancelled" => (String::new(), "The work was stopped.".to_owned()),
+                _ => (String::new(), String::new()),
+            };
+            serde_json::json!({
+                "state": state,
+                "progress": "1430 of 9218 files, 42.0 GB",
+                "answer": answer,
+                "error": error,
+            })
+            .to_string()
         }
 
         fn last_input(&self) -> serde_json::Value {
@@ -71,40 +91,25 @@ mod cases {
             _app: &str,
             op: &str,
             input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
+            handlers: &JobHandlers,
         ) -> Result<String, String> {
             self.calls
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
             match op {
-                "backup" | "verify" | "restore" => Ok(format!("job-{op}")),
+                "backup" | "verify" | "restore" => {
+                    self.handlers.borrow_mut().push(handlers.clone());
+                    Ok(format!("job-{op}"))
+                }
                 other => Err(format!("`{other}` is no op this device runs")),
             }
         }
 
         fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-            let said = || -> Result<String, String> {
-                let state = self.state.borrow().clone();
-                if !job.starts_with("job-") {
-                    return Err(format!("no job `{job}` runs on this device"));
-                }
-                let (answer, error) = match state.as_str() {
-                    "done" => (self.answer.borrow().clone(), String::new()),
-                    "failed" => (String::new(), "the drive went away".to_owned()),
-                    "cancelled" => (String::new(), "The work was stopped.".to_owned()),
-                    _ => (String::new(), String::new()),
-                };
-                Ok(serde_json::json!({
-                    "state": state,
-                    "progress": "1430 of 9218 files, 42.0 GB",
-                    "answer": answer,
-                    "error": error,
-                })
-                .to_string())
-            };
-            Ok(said()
-                .ok()
-                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
+            if !job.starts_with("job-") {
+                return Err(format!("no job `{job}` runs on this device"));
+            }
+            Ok(tilolang_tilo::engine::record_of(job, &self.said()))
         }
 
         fn cancel(&self, job: &str) -> bool {
@@ -346,6 +351,36 @@ mod cases {
             self.choose_source("/home/you/Documents");
             self.choose_destination("/home/you/backup-drive");
         }
+
+        /// The device runs what the running job's start named, as the job stands now: the
+        /// handler it kept, filled with the record of the job the app holds.
+        fn moves(&self, handler: fn(&JobHandlers) -> Option<serde_json::Value>) {
+            let kept = {
+                let kept = self.engine.handlers.borrow();
+                handler(kept.last().expect("a start came before its job moved"))
+                    .expect("the work's start named this handler")
+            };
+            let id = self.text(&self.root, "job");
+            let record =
+                tilolang_tilo::engine::record_of(&id, &self.engine.said()).expect("a job record");
+            let call = self
+                .rt
+                .job_call(&kept, &record)
+                .expect("the handler's call");
+            self.rt
+                .invoke_action(&me(), call)
+                .expect("the handler runs");
+        }
+
+        /// The work moved on, as far as the engine says.
+        fn moved(&self) {
+            self.moves(|handlers| handlers.progress.clone());
+        }
+
+        /// The work ended, as the engine says it did.
+        fn ended(&self) {
+            self.moves(|handlers| handlers.done.clone());
+        }
     }
 
     fn s_done(s: &Backups, action: &str, args: Vec<Value>) {
@@ -408,7 +443,7 @@ mod cases {
 
         // It finishes with the repository as it now stands.
         s.engine.done_with(&catalog_json());
-        s.done("poll", vec![Value::resource(&s.root)]);
+        s.ended();
         assert_eq!(s.text(&s.root, "job"), "", "no job runs any more");
         let snapshots = s.records(&s.root, "snapshots");
         assert_eq!(snapshots.len(), 2);
@@ -448,7 +483,7 @@ mod cases {
         s.set_up();
         s.done("back_up_now", vec![Value::resource(&s.root)]);
         s.engine.done_with(&catalog_json());
-        s.done("poll", vec![Value::resource(&s.root)]);
+        s.ended();
         let snapshots = s.records(&s.root, "snapshots");
 
         // A verification reads the snapshot and reports what it checked.
@@ -463,7 +498,7 @@ mod cases {
         assert_eq!(ask["destination"], "/home/you/backup-drive");
         s.engine
             .done_with(r#"{"files": 1840, "bytes": 48200000000}"#);
-        s.done("poll", vec![Value::resource(&s.root)]);
+        s.ended();
         assert!(s.text(&s.root, "result").contains("1840 files"));
         assert_eq!(s.text(&s.root, "notice"), "The snapshot checks out.");
 
@@ -492,7 +527,7 @@ mod cases {
         assert_eq!(ask["overwrite"], false);
         s.engine
             .done_with(r#"{"files": 1840, "bytes": 48200000000}"#);
-        s.done("poll", vec![Value::resource(&s.root)]);
+        s.ended();
         assert_eq!(s.text(&s.root, "notice"), "The snapshot is back.");
     }
 
@@ -501,7 +536,7 @@ mod cases {
         let s = Backups::new();
         s.set_up();
         s.done("back_up_now", vec![Value::resource(&s.root)]);
-        s.done("poll", vec![Value::resource(&s.root)]);
+        s.moved();
         assert_eq!(
             s.text(&s.root, "progress"),
             "1430 of 9218 files, 42.0 GB",
@@ -519,7 +554,7 @@ mod cases {
         s.set_up();
         s.done("back_up_now", vec![Value::resource(&s.root)]);
         s.engine.failed_with();
-        s.done("poll", vec![Value::resource(&s.root)]);
+        s.ended();
         assert_eq!(s.text(&s.root, "failure"), "the drive went away");
         assert_eq!(s.text(&s.root, "working"), "");
         assert_eq!(s.text(&s.root, "job"), "");
