@@ -474,6 +474,19 @@ impl Store {
         self.index.count(kind, filters, may_read)
     }
 
+    /// The values the resources of `kind` whose readers `may_read` admits and that hold to
+    /// `filters` hold in `field`, each once, in order ([`Index::values`]).
+    #[must_use]
+    pub fn values(
+        &self,
+        kind: &str,
+        filters: &[Filter],
+        field: &str,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Vec<Value> {
+        self.index.values(kind, filters, field, may_read)
+    }
+
     /// How many resources `query` lists, of those whose readers `may_read` admits.
     #[must_use]
     pub fn len(&self, query: &Query, may_read: &dyn Fn(&str) -> bool) -> usize {

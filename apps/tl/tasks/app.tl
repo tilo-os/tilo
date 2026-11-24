@@ -489,7 +489,8 @@ action set_status(t: Task, status: Status, at: Int = 0) uses time (
     require t.status != status "It stands there already"
     t.status = status
     t.done = closed(status)
-    tasks.items.move(t, to: at, among: tasks.items.filter(x -> x.status == status and x != t))
+    // A place counts among the column's other tasks: the moved one stands in it already.
+    tasks.items.move(t, to: at, among: tasks.items.filter(x -> x.status == status))
     if closed(status) {
         // A column of finished work opens nothing: the task goes on as over it.
         for x in tasks.items.descendants(t, .parent) {
@@ -1410,21 +1411,6 @@ fn place_of(side: List<Filter<Task>>, x: Task) -> Filter<Task> {
     }
 }
 
-/// The labels in use across the workspace's tasks, once each, in order.
-fn labels_in_use(items: List<Task>) -> List<Text> {
-    let seen: Map<Bool> = Map<Bool>()
-    let out: List<Text> = []
-    for t in items {
-        for l in t.labels.sort_by(x -> x) {
-            if seen.get(l) == .none {
-                seen.put(l, true)
-                out = [out, [l]].flat_map(x -> x)
-            }
-        }
-    }
-    out
-}
-
 /// The tasks of a column of a board: the open ones of `status`, never a card of a subtask whose
 /// parent is in the same column.
 fn column(p: Option<Project>, status: Status) -> List<Task> {
@@ -1495,7 +1481,8 @@ view home(t: Tasks) {
     } else if let p = project {
         "New task in {p.name}"
     } else if in_today { "New task for today" } else { "New task" }
-    let labels = labels_in_use(t.items)
+    // The labels in use, from the index: the same cost at three tasks or three thousand.
+    let labels = t.items.values(.labels)
     // The places, the tasks of one, and the opened task beside them: the list is the window's
     // overview, so the open task's page stands in the content column and the list keeps its
     // place left of it, rather than the page growing out of the row under the list's foot.

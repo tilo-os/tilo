@@ -805,6 +805,46 @@ impl Table {
         }
     }
 
+    /// The values the resources holding to `filters` hold in `field`, each once: each member of
+    /// a set. Where every resource of the table holds to the filters (the items of a collection,
+    /// all under its one holder), the counts the index keeps per value answer without reading a
+    /// resource; otherwise the resources the filters narrow to are read.
+    fn values(&self, filters: &[Filter], field: &str) -> BTreeSet<Value> {
+        let every = filters.iter().all(|filter| match filter {
+            Filter::Is(held, value) | Filter::Has(held, value) => {
+                *value != Value::Null && self.holders(held, value) == self.rows.len()
+            }
+            _ => false,
+        });
+        if every {
+            return self
+                .counts
+                .get(field)
+                .into_iter()
+                .flat_map(HashMap::keys)
+                .filter(|value| **value != Value::Null)
+                .cloned()
+                .collect();
+        }
+        let holds = |stored: &&Indexed| filters.iter().all(|filter| filter.holds(stored));
+        let held = |stored: &Indexed| -> Vec<Value> {
+            match stored.fields.get(field) {
+                Some(Cell::One(value)) if *value != Value::Null => vec![value.clone()],
+                Some(Cell::Set(members)) => members.iter().cloned().collect(),
+                _ => Vec::new(),
+            }
+        };
+        match self.narrowed(filters) {
+            Some(ids) => ids
+                .into_iter()
+                .filter_map(|id| self.rows.get(id))
+                .filter(holds)
+                .flat_map(held)
+                .collect(),
+            None => self.rows.values().filter(holds).flat_map(held).collect(),
+        }
+    }
+
     /// Where the whole listing of `query` lies in one of this table's orders, when it is one
     /// span of it: the kind in an order, one value's resources in the kind's order, or a range
     /// of a field in that field's order. `None` for any other query.
@@ -1218,6 +1258,24 @@ impl Index {
         self.readable(kind, may_read)
             .map(|table| table.count(filters))
             .fold(0, usize::saturating_add)
+    }
+
+    /// The values the resources of `kind` whose readers `may_read` admits and that hold to
+    /// `filters` hold in `field`, each once, in order: the labels a workspace's tasks are sorted
+    /// by, read from the counts the index keeps rather than from every task.
+    #[must_use]
+    pub fn values(
+        &self,
+        kind: &str,
+        filters: &[Filter],
+        field: &str,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Vec<Value> {
+        let mut values = BTreeSet::new();
+        for table in self.readable(kind, may_read) {
+            values.extend(table.values(filters, field));
+        }
+        values.into_iter().collect()
     }
 
     /// The span of each readable table `query` lists, when it is one span in every one of them.

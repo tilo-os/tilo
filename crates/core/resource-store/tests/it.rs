@@ -128,6 +128,60 @@ fn any_of_several_values_lists_and_counts_each_holder_of_one() {
 }
 
 #[test]
+fn the_values_a_field_holds_are_each_named_once_of_the_resources_asked_for() {
+    let mut index = board();
+    let values = |index: &Index, filters: &[Filter]| -> Vec<Value> {
+        index.values(ISSUE, filters, "labels", &anyone)
+    };
+    let parent = Filter::Is(PARENT.into(), "board".into());
+    // Every issue is the board's: the counts the index keeps answer, each label once.
+    assert_eq!(
+        values(&index, std::slice::from_ref(&parent)),
+        ["all", "done", "open"].map(Value::from)
+    );
+    assert_eq!(
+        values(
+            &index,
+            &[parent.clone(), Filter::Is("state".into(), "open".into())]
+        ),
+        ["all", "open"].map(Value::from)
+    );
+    // Another board's issue is no label of this one's, and a label nothing holds any more is
+    // gone.
+    commit(
+        &mut index,
+        "doc-2",
+        &[issue("j0", "other", "a0", "Elsewhere", "blocked", 1)],
+    );
+    for n in (1..10).step_by(2) {
+        commit(
+            &mut index,
+            "doc-1",
+            &[issue(
+                &format!("i{n}"),
+                "board",
+                &format!("a{n}"),
+                "Reopened",
+                "open",
+                n,
+            )],
+        );
+    }
+    assert_eq!(
+        values(&index, std::slice::from_ref(&parent)),
+        ["all", "open"].map(Value::from)
+    );
+    assert_eq!(
+        values(&index, &[]),
+        ["all", "blocked", "open"].map(Value::from)
+    );
+    assert_eq!(
+        values(&index, &[Filter::Is(PARENT.into(), "none".into())]),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
 fn several_values_asked_together_find_their_holders_in_either_order() {
     // The parent every issue holds and a title one holds: the answer is the same whichever is
     // asked first, and a value no resource holds answers nothing.

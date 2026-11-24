@@ -2023,6 +2023,30 @@ impl Core {
         let Ok(at) = usize::try_from(a.long(3)?) else {
             return trap("a run has no place before its first");
         };
+        // A run the store lists names the item at the place from its listing, where it knows its
+        // length and where the moved item stands: a column of three thousand finished tasks reads
+        // the neighbour, not every task in it.
+        if let Value::Coll(coll) = self.val(a.h(4)?)? {
+            let listing = self.coll_listing(&coll)?;
+            if listing.len_is_exact()
+                && let Some(stands) = listing.position(&item)
+            {
+                let len = listing.len();
+                let others = len.saturating_sub(usize::from(stands.is_some()));
+                let past = |at: usize| match stands {
+                    Some(stands) if stands <= at => at.saturating_add(1),
+                    _ => at,
+                };
+                let next = match others.checked_sub(1) {
+                    None => None,
+                    Some(last) => listing.get(past(at.min(last))),
+                };
+                return match next {
+                    Some(next) => self.coll_move_beside(&ctx, &item, &next, at >= others),
+                    None => ret_void(),
+                };
+            }
+        }
         let run = match self.val_whole(a.h(4)?)? {
             Value::List(run) => run,
             other => return trap(format!("expected a list, got {}", other.kind_name())),

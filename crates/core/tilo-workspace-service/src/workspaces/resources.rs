@@ -1773,6 +1773,7 @@ fn stamp_resource_invoker(
         | Command::PageAt { .. }
         | Command::Contents { .. }
         | Command::Fields { .. }
+        | Command::Values { .. }
         | Command::Turn { .. }
         | Command::Reach { .. }
         | Command::RecordChanges { .. }

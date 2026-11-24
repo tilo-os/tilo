@@ -116,6 +116,34 @@ pub fn lit_of(id: &str, value: FieldValue, absent: &Lit) -> Result<Lit, StoreErr
     }
 }
 
+/// The texts the items of a collection hold in their field `of`, read item by item: what
+/// [`Store::values`] answers where no index does.
+///
+/// # Errors
+///
+/// As [`Store::listing_query`], and as reading `of`.
+pub fn read_values<S: Store + ?Sized>(
+    store: &S,
+    at: &ResourceRef,
+    field: &FieldSpec,
+    item: &TypeId,
+    pred: Option<&Pred>,
+    of: &FieldSpec,
+) -> Result<Vec<String>, StoreError> {
+    let listing = store.listing_query(at, field, item, pred, None)?;
+    let mut values = std::collections::BTreeSet::new();
+    for id in listing.iter() {
+        match store.read(&at.item(&id, item.clone()), of)? {
+            FieldValue::Keys(keys) => values.extend(keys),
+            FieldValue::Text(text) | FieldValue::Scalar(Scalar::Text(text)) => {
+                values.insert(text);
+            }
+            _ => {}
+        }
+    }
+    Ok(values.into_iter().collect())
+}
+
 /// How two values of the field a query orders by compare: an absent value first, text
 /// without regard to case.
 #[must_use]
@@ -1674,6 +1702,25 @@ pub trait Store {
         _down: bool,
     ) -> Result<Option<Vec<(ItemId, TypeId)>>, StoreError> {
         Ok(None)
+    }
+
+    /// The texts the items of the collection `field` of `at` (of the type `item`) that `pred`
+    /// holds of (all of them for `None`) hold in their field `of`, each once: every member of a
+    /// set of texts, and a text field's text. A store with an index answers it from the count it
+    /// keeps of each value, without reading an item; this one reads every item.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::listing_query`], and as reading `of`.
+    fn values(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        item: &TypeId,
+        pred: Option<&Pred>,
+        of: &FieldSpec,
+    ) -> Result<Vec<String>, StoreError> {
+        read_values(self, at, field, item, pred, of)
     }
 
     /// The items of the collection `field` of `at` (whose items are of the type `item`) that

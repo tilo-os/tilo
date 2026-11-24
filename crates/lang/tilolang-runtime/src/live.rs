@@ -456,7 +456,8 @@ impl CollChecks {
             .listings
             .get(at)
             .and_then(|(_, listing)| listing.as_ref())
-            .is_some_and(|listing| seen.holds(listing));
+            .is_some_and(|listing| seen.holds(listing))
+            || !seen.values_hold(&**core.store.borrow());
         self.seen.insert(id, stale);
         stale
     }
@@ -904,7 +905,10 @@ impl Live {
                 .enumerate()
                 .filter(|(_, seen)| seen.resource == resource && seen.coll.field == coll)
                 .filter(|(_, seen)| {
-                    item_field.is_none_or(|read| seen.coll.derived() && seen.coll.reads_field(read))
+                    item_field.is_none_or(|read| {
+                        (seen.coll.derived() && seen.coll.reads_field(read))
+                            || seen.values.iter().any(|(of, _)| of.id == read)
+                    })
                 })
                 .any(|(at, seen)| {
                     !joined.is_some_and(|items| checked.none_held(core, &seen.coll, items))

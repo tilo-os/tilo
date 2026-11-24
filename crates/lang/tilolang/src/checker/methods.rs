@@ -104,7 +104,8 @@ const SET: &[&str] = &[
 ];
 
 /// The methods a collection's items have, as a view reads them: the list's, less `of`, and without
-/// `first`/`last` counting a stored order the store keeps.
+/// `first`/`last` counting a stored order the store keeps, and the texts they hold in a field
+/// (`values`), which the store's index answers.
 const COLLECTION: &[&str] = &[
     "len",
     "is_empty",
@@ -131,6 +132,7 @@ const COLLECTION: &[&str] = &[
     "descendants",
     "ancestors",
     "matching",
+    "values",
 ];
 
 /// The methods a map field's value has, read with the key they ask for.

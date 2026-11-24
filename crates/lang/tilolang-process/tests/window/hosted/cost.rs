@@ -490,7 +490,7 @@ const TARGETS: &[(&str, Target)] = &[
             step_us: 300_000,
             eval_layout_us: 300_000,
             held: Held {
-                optimized_us: 380_000,
+                optimized_us: 289_000,
                 development_us: 1_470_000,
             },
         },
@@ -757,6 +757,9 @@ struct Opened {
     patches: u64,
     /// The entries the instance published to the session's search index.
     indexed: usize,
+    /// The references to collection items its code built: a loop over every task builds one
+    /// per task, and a count or a list of labels the index answers builds none.
+    built: u64,
 }
 
 impl Opened {
@@ -773,6 +776,9 @@ impl Opened {
             rows,
             patches: instance.patches_sent(),
             indexed,
+            built: instance
+                .host()
+                .map_or(0, |host| host.runtime().items_built()),
         }
     }
 
@@ -785,10 +791,11 @@ impl Opened {
             rows,
             patches,
             indexed,
+            built,
         } = self;
         format!(
             "{published} documents published ({sweeps} sweeps), {surface} actions on the surface, \
-             {rows} rows, {patches} patches, {indexed} indexed"
+             {rows} rows, {patches} patches, {indexed} indexed, {built} items built"
         )
     }
 }
@@ -851,6 +858,9 @@ fn opening_a_window_does_the_work_the_window_shows(
     );
     hold("rows", small.rows as u64, large.rows as u64, 0);
     hold("patches", small.patches, large.patches, 2);
+    // The window's code reads the tasks the list shows, never every task: what waits in a place
+    // and the labels in use are the index's answers.
+    hold("items built", small.built, large.built, 64);
     assert!(
         over.is_empty(),
         "opening a window does the work the window shows:\n{}",

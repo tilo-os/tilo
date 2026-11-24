@@ -46,6 +46,10 @@ pub(crate) struct CollSeen {
     /// Whether the listing held each item a view asked the place of, where the store answered
     /// without reading its items.
     holds: Vec<(Rc<str>, bool)>,
+    /// The texts its items hold in a field, each once, where a view read them
+    /// ([`Core::coll_values`]): a change to that field of any item runs it again when they are
+    /// other texts now, and no other change to it does.
+    pub values: Vec<(FieldSpec, Vec<String>)>,
     /// How many items were read one after the other from the first: a loop over the
     /// collection. Once it read them all, the view depends on the whole collection (a read of
     /// its field) and what it reads of it item by item is no longer kept.
@@ -65,9 +69,18 @@ impl CollSeen {
             at: Vec::new(),
             before: Vec::new(),
             holds: Vec::new(),
+            values: Vec::new(),
             sweep: 0,
             whole: false,
         }
+    }
+
+    /// Whether the texts the items hold in each field a view read them of are still those it
+    /// read, as `store` answers now.
+    pub(crate) fn values_hold(&self, store: &dyn Store) -> bool {
+        self.values
+            .iter()
+            .all(|(of, seen)| values_of(store, &self.coll, of).is_ok_and(|now| now == *seen))
     }
 
     /// What a preview of `coll` sees: its length and its first `shown` items.
@@ -130,6 +143,11 @@ impl CollSeen {
 
     /// Take on what `other`, of the same collection, saw.
     fn absorb(&mut self, other: Self) {
+        for (of, values) in other.values {
+            if !self.values.iter().any(|(held, _)| *held == of) {
+                self.values.push((of, values));
+            }
+        }
         if self.whole || other.whole {
             self.whole = true;
             self.at = Vec::new();
@@ -178,6 +196,31 @@ pub(crate) fn merge_seen(into: &mut Vec<CollSeen>, seen: Vec<CollSeen>) {
             None => into.push(one),
         }
     }
+}
+
+/// The texts the items of `coll` hold in their field `of`, each once, as a person reads a list
+/// of them: in the order of the alphabet whatever their case, and no empty text.
+///
+/// # Errors
+///
+/// As [`Store::values`].
+pub(crate) fn values_of(
+    store: &dyn Store,
+    coll: &CollRef,
+    of: &FieldSpec,
+) -> Result<Vec<String>, StoreError> {
+    let spec = FieldSpec {
+        id: coll.field.clone(),
+        kind: FieldKind::Collection,
+    };
+    let mut values = store.values(&coll.target, &spec, &coll.item, coll.filter.as_deref(), of)?;
+    values.retain(|value| !value.is_empty());
+    values.sort_by(|a, b| {
+        a.to_lowercase()
+            .cmp(&b.to_lowercase())
+            .then_with(|| a.cmp(b))
+    });
+    Ok(values)
 }
 
 /// The listing of `coll` in `store`: its items, or those its filter holds of.
@@ -262,6 +305,8 @@ enum Read {
     /// Whether the listing held the item, where a view asked where it stands and the store
     /// answered that without reading the items: an item that joins or leaves runs it again.
     Holds(Rc<str>, bool),
+    /// The texts its items hold in a field, each once ([`Core::coll_values`]).
+    Values(FieldSpec, Vec<String>),
 }
 
 impl Core {
@@ -326,6 +371,17 @@ impl Core {
         let Some(seen) = vs.colls.get_mut(at) else {
             return;
         };
+        // What its items hold in a field is no part of the listing: a collection read whole
+        // depends on it too, as its field does not change when an item's does.
+        let read = match read {
+            Read::Values(of, values) => {
+                if !seen.values.iter().any(|(held, _)| *held == of) {
+                    seen.values.push((of, values));
+                }
+                return;
+            }
+            read => read,
+        };
         if seen.whole {
             return;
         }
@@ -342,6 +398,7 @@ impl Core {
             }
             Read::Before(item, before) => seen.before.push((item, before)),
             Read::Holds(item, holds) => seen.holds.push((item, holds)),
+            Read::Values(..) => {}
         }
         // A filtered or ordered collection read whole still depends on what it saw item by
         // item: an item changing whether it is in, or where, is no change to the collection's
@@ -577,6 +634,37 @@ impl Core {
         let count = listing.count();
         self.saw(coll, Read::Count(count), len);
         Ok(self.settled().then_some(count))
+    }
+
+    /// `coll_values(coll, field)`: the texts the items of the collection `coll` hold in their
+    /// field `field` (by id), each once, in the order of the alphabet: the labels in use
+    /// across a workspace's tasks. A store with an index answers from the count it keeps of
+    /// each value ([`Store::values`]), so a view pays the same at ten items or ten thousand.
+    ///
+    /// What it depends on is the texts themselves: a change to that field of an item runs the
+    /// view again when they are other texts now.
+    pub(crate) fn coll_values(&self, coll: i32, field: i32) -> HResult<Value> {
+        let coll = self.with_val(coll, |v| match v {
+            Value::Coll(coll) => Ok(Rc::clone(coll)),
+            other => trap(format!(
+                "`values` reads a stored collection, got {}",
+                other.kind_name()
+            )),
+        })?;
+        let field = self.text(field)?;
+        let (_, collection) = self.lookup_field(&coll.target, &coll.field)?;
+        let item = self.item_type(&collection.ty)?;
+        let Some(of) = item.field_by_id_or_name(&field) else {
+            return trap(format!("{} has no field {field}", item.name));
+        };
+        let of = FieldSpec {
+            id: of.id.clone(),
+            kind: of.kind,
+        };
+        let values = values_of(&**self.store.borrow(), &coll, &of).map_err(|e| e.to_string())?;
+        let len = values.len();
+        self.saw(&coll, Read::Values(of, values.clone()), len);
+        Ok(Value::List(values.into_iter().map(Value::Text).collect()))
     }
 
     /// Whether the store has read the whole workspace ([`crate::store::Store::settled`]).

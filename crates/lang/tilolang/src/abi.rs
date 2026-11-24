@@ -169,6 +169,9 @@ imports! {
     CollCount = "coll_count" ([H] -> [I64]);
     CollCounted = "coll_counted" ([H] -> [H]);
     CollEmpty = "coll_empty" ([H] -> [I32]);
+    // The texts the items of a collection hold in a field (by id), each once, in the order of the
+    // alphabet: answered from the store's index.
+    CollValues = "coll_values" ([H, H] -> [H]);
     SetAdd = "set_add" ([H, H, H] -> []);
     SetRemove = "set_remove" ([H, H, H] -> []);
     // A map held as a value (`let names: Map<Text> = Map<Text>()`), filled while the code runs.

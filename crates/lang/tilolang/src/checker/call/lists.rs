@@ -403,6 +403,48 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(stmts, Box::new(Ex::local(found, out.clone()))), out)
     }
 
+    /// `values(.field)`: the texts the items of a collection hold in a field of theirs, each once, in the order
+    /// of the alphabet: every member of a set of texts, and each text of a text field. The store answers it
+    /// from the count its index keeps of each value, never by reading the items ([`Imp::CollValues`]), so the
+    /// labels in use across ten thousand tasks cost what they cost across ten.
+    pub(super) fn values(&mut self, coll: Ex, elem: &Ty, args: &[ast::Arg], span: Span) -> Ex {
+        let lambda = match args {
+            [a] if a.name.is_none() => super::super::optional::lambda_of(&a.value),
+            _ => None,
+        };
+        let field = lambda.and_then(|(param, body)| {
+            let ExprKind::Field { base, name } = &body.kind else {
+                return None;
+            };
+            if !matches!(&base.kind, ExprKind::Ident(p) if *p == param.name) {
+                return None;
+            }
+            let Ty::Record(key) = elem else {
+                return None;
+            };
+            let field = self.env.type_info(key)?.field(&name.name)?;
+            let texts = match &field.ty {
+                Ty::Text => true,
+                Ty::Set(inner) => matches!(**inner, Ty::Text),
+                _ => false,
+            };
+            texts.then(|| field.id.clone())
+        });
+        let Some(field) = field else {
+            self.err(
+                "E051",
+                span,
+                "`.values` takes a field of the items that holds a text or a set of texts, such as `.values(.labels)`",
+            );
+            return Ex::error();
+        };
+        Ex::host(
+            Imp::CollValues,
+            vec![coll, Ex::str(&field)],
+            Ty::List(Box::new(Ty::Text)),
+        )
+    }
+
     /// `sort_by(x -> key)`: collects the keys in a parallel list, then asks the host for the items ordered by
     /// them (ascending, stable). Keys are Int, Float, Text or Bool; a Date or a Time sorts in time order, and
     /// one that may be absent after every item that has one.

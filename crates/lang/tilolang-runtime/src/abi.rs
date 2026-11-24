@@ -147,6 +147,7 @@ imports! {
     (CollCount, "coll_count", "i", "l"),
     (CollCounted, "coll_counted", "i", "i"),
     (CollEmpty, "coll_empty", "i", "i"),
+    (CollValues, "coll_values", "ii", "i"),
     (SetAdd, "set_add", "iii", ""),
     (SetRemove, "set_remove", "iii", ""),
     (MapNew, "map_new", "", "i"),

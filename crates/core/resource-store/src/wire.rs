@@ -18,6 +18,7 @@ use crate::history::Version;
 use crate::index::Indexed;
 use crate::query::{Filter, Page, Query};
 use crate::store::{Resource, Store, StoreError, Written};
+use crate::value::Value;
 
 /// The most a command or its answer takes on the wire.
 pub const MAX_WIRE_BYTES: usize = 4 << 20;
@@ -160,6 +161,15 @@ pub enum Command {
     /// The ids of the asking app's records the workspace holds, answered as [`Reply::Ids`] by the
     /// device's workspace service; a store answers none ([`read`]).
     Records,
+    /// The values the resources of `kind` holding to `filters` hold in `field`, each once, in
+    /// order (each member of a set): what a view listing the labels in use reads, answered from
+    /// the counts the index keeps rather than from every resource. Answered as
+    /// [`Reply::Values`].
+    Values {
+        kind: String,
+        filters: Vec<Filter>,
+        field: String,
+    },
 }
 
 /// One edit of a resource's content.
@@ -245,6 +255,8 @@ pub enum Reply {
         #[serde(default)]
         pending: bool,
     },
+    /// The values a field holds, each once, in order ([`Command::Values`]).
+    Values(Vec<Value>),
 }
 
 /// How many bytes of changes one page or run carries: under [`MAX_WIRE_BYTES`] once encoded.
@@ -448,6 +460,7 @@ fn write_into(
         | Command::MadeFrom { .. }
         | Command::Contents { .. }
         | Command::Fields { .. }
+        | Command::Values { .. }
         | Command::Turn { .. }
         | Command::Reach { .. }
         | Command::RecordChanges { .. }
@@ -480,6 +493,11 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
             Reply::Page(page)
         }
         Command::Count { kind, filters } => Reply::Count(store.count(kind, filters, may_read)),
+        Command::Values {
+            kind,
+            filters,
+            field,
+        } => Reply::Values(store.values(kind, filters, field, may_read)),
         Command::Content { kind, id } => Reply::Content(
             store
                 .get(kind, id, may_read)

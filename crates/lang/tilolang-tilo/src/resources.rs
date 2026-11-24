@@ -3725,6 +3725,20 @@ impl ResourceStore {
     }
 
     /// The listing of the collection `field` of `at`, read page by page from the store.
+    /// `filters`, narrowed to the items of the collection `field` of `at`: those nested in it,
+    /// and of those, the ones standing in that field where its holder keeps more than one.
+    fn held_in(&self, at: &ResourceRef, field: &str, filters: Vec<Filter>) -> Vec<Filter> {
+        let mut filters = filters;
+        filters.insert(0, Filter::Is(PARENT.to_owned(), Value::Text(id_of(at))));
+        if self.shares_holder(&at.ty, field) {
+            filters.insert(
+                1,
+                Filter::Is(STANDS_IN.to_owned(), Value::Text(field.to_owned())),
+            );
+        }
+        filters
+    }
+
     fn paged(
         &self,
         at: &ResourceRef,
@@ -3733,15 +3747,7 @@ impl ResourceStore {
         filters: Vec<Filter>,
         order: Order,
     ) -> Rc<Listing> {
-        let holder = id_of(at);
-        let mut filters = filters;
-        filters.insert(0, Filter::Is(PARENT.to_owned(), Value::Text(holder)));
-        if self.shares_holder(&at.ty, field) {
-            filters.insert(
-                1,
-                Filter::Is(STANDS_IN.to_owned(), Value::Text(field.to_owned())),
-            );
-        }
+        let filters = self.held_in(at, field, filters);
         let key = format!("{kind}#{}#{field}#{filters:?}#{order:?}", id_of(at));
         if let Some((listing, _)) = self.inner.listings.borrow().get(&key) {
             return Rc::clone(listing);
@@ -4895,6 +4901,56 @@ impl Store for ResourceStore {
         let all = self.listing(at, field)?;
         let items = all.items();
         self.evaluated(at, items, item, pred, order)
+    }
+
+    fn values(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        item: &TypeId,
+        pred: Option<&Pred>,
+        of: &FieldSpec,
+    ) -> Result<Vec<String>, StoreError> {
+        let at = &*self.typed(at);
+        let kind = self.kind_of_type(item)?;
+        // The index answers from what the store holds, under the name the field is held by now:
+        // writes not sent yet, and items holding it under an earlier name or kind, are read item
+        // by item instead.
+        let indexed = self
+            .entry_of_kind(&kind)
+            .filter(|_| !self.writes_of(&kind))
+            .filter(|_| self.kinds_of_type(item).is_ok_and(|kinds| kinds.len() == 1))
+            .filter(|entry| {
+                entry
+                    .fields
+                    .get(&of.id)
+                    .is_some_and(|held| held.former.is_empty())
+            })
+            .and_then(|entry| {
+                let filters = match pred {
+                    Some(pred) => self.filters_of(pred, &entry)?,
+                    None => Vec::new(),
+                };
+                Some((filters, self.indexed_as(&of.id, &entry)?))
+            });
+        let Some((filters, name)) = indexed else {
+            return tilolang_runtime::store::read_values(self, at, field, item, pred, of);
+        };
+        let values = match self.command(Command::Values {
+            kind,
+            filters: self.held_in(at, &field.id, filters),
+            field: name,
+        })? {
+            Reply::Values(values) => values,
+            other => return Err(backend(format!("asking for values answered {other:?}"))),
+        };
+        Ok(values
+            .into_iter()
+            .filter_map(|value| match value {
+                Value::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect())
     }
 
     fn select(

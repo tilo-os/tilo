@@ -397,6 +397,16 @@ let total = tasks.counted()
 if let n = total { "{pending.count(x -> x.done)}/{n}" } else { .none }
 ```
 
+**The texts a collection's items hold.** `items.values(.labels)` is every text the items hold
+in a field, each once, in the order of the alphabet: each member of a set of texts, and the text
+of a text field. The store answers it from the count its index keeps of each value, so the labels
+in use across ten thousand tasks cost a view what they cost across ten, and the view runs again
+only when an item's change makes them other texts:
+
+```
+for l in tasks.items.values(.labels) { ui.NavItem("label:{l}", l, icon: .tag) }
+```
+
 **Actions that call actions** invoke them by calling them, their own package's or another
 one's: each call runs at its action API as a change of its own, and may wait for a person's approval.
 What the caller writes before a call is a change of its own too, committed before the call runs,

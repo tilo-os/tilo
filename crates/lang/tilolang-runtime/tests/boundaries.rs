@@ -14,6 +14,7 @@ mod cases {
 type Item {
     title: Text
     done: Bool = false
+    tags: Set<Text>
 
     search {
         filter "Open" = not done
@@ -67,6 +68,23 @@ fn to_do(done: Bool) -> Bool {
 
 action open_count_through_a_fn(bag: Bag) -> Int {
     return bag.items.count(item -> to_do(item.done))
+}
+
+action tag(item: Item, name: Text) {
+    item.tags.add(name)
+}
+
+action untag(item: Item, name: Text) {
+    item.tags.remove(name)
+}
+
+/// The tags in use across the bag's items, once each.
+view tags(bag: Bag) {
+    section("Tags") {
+        for t in bag.items.values(.tags) {
+            text(t)
+        }
+    }
 }
 
 action open_titles(bag: Bag) -> List<Text> {
@@ -759,13 +777,64 @@ view deck(d: Deck) {
             else {
                 panic!("a count");
             };
-            assert_eq!(open, i64::try_from(n - 1).unwrap(), "{n} items, one checked");
+            assert_eq!(
+                open,
+                i64::try_from(n - 1).unwrap(),
+                "{n} items, one checked"
+            );
             let read = rows.rt.items_built() - built;
             assert!(
                 read <= 2,
                 "{n} items: counting through `to_do` read {read} items one by one"
             );
         }
+    }
+
+    /// The tags in use across a bag's items read once each, in the order of the alphabet: a
+    /// view showing them runs again when an item's tags make them other tags, and for no other
+    /// change of an item.
+    #[test]
+    fn the_tags_in_use_follow_the_items_tags() {
+        let rows = Rows::new(5);
+        let tag = |at: usize, name: &str| {
+            rows.call(
+                "tag",
+                vec![Value::resource(&rows.items[at]), Value::text(name)],
+            );
+        };
+        tag(3, "errand");
+        tag(1, "Bug");
+        tag(2, "errand");
+        let mut view = rows.view("tags");
+        assert_eq!(texts(view.tree()), ["Bug", "errand"]);
+
+        let before = view.stats().renders;
+        rows.call(
+            "retitle",
+            vec![Value::resource(&rows.items[1]), Value::text("renamed")],
+        );
+        tag(4, "errand");
+        view.poll_patches().unwrap();
+        assert_eq!(
+            view.stats().renders,
+            before,
+            "a title, and a tag already in use, leave the tags as they were"
+        );
+
+        tag(0, "admin");
+        view.poll_patches().unwrap();
+        assert_eq!(texts(view.tree()), ["admin", "Bug", "errand"]);
+
+        rows.call(
+            "untag",
+            vec![Value::resource(&rows.items[1]), Value::text("Bug")],
+        );
+        view.poll_patches().unwrap();
+        assert_eq!(
+            texts(view.tree()),
+            ["admin", "errand"],
+            "the last item tagged Bug let it go"
+        );
     }
 
     /// The tiered engine starts a module on wasmi and moves it to compiled code between calls,

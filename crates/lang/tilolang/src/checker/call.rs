@@ -4450,6 +4450,11 @@ impl Checker<'_> {
                 let elem = (**t).clone();
                 self.matching(r, &elem, args, span)
             }
+            // The texts the items hold in a field, each once, which the store answers from its index.
+            (Ty::Collection(t), "values") => {
+                let elem = (**t).clone();
+                self.values(r, &elem, args, span)
+            }
             (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "sort_by") => {
                 let elem = (**t).clone();
                 self.sort_by(r, &elem, name, args, span)
