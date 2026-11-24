@@ -738,12 +738,11 @@ impl Client {
 #[test]
 fn a_page_joins_over_the_endpoint_its_device_delegated() {
     let client = Client::seeded_page();
-    let workspace = client.workspace();
     let endpoint = [7; 32];
     let mut log = JoinLog::default();
     let challenge = log
         .membership_challenge(
-            &workspace,
+            &client.workspace(),
             endpoint,
             client.request(Some(client.delegation_for(7, client.now_ns))),
             [21; 32],
@@ -756,7 +755,7 @@ fn a_page_joins_over_the_endpoint_its_device_delegated() {
             .unwrap();
     let bootstrap = log
         .membership_complete(
-            &workspace,
+            &client.workspace(),
             endpoint,
             &MembershipCompleteRequest { proof },
             client.now_ns,
@@ -770,12 +769,11 @@ fn a_page_joins_over_the_endpoint_its_device_delegated() {
 #[test]
 fn a_device_joins_over_its_own_key() {
     let client = Client::seeded_page();
-    let workspace = client.workspace();
     let endpoint = client.page_cert.device_public_key;
     let mut log = JoinLog::default();
     let challenge = log
         .membership_challenge(
-            &workspace,
+            &client.workspace(),
             endpoint,
             client.request(None),
             [22; 32],
@@ -788,7 +786,7 @@ fn a_device_joins_over_its_own_key() {
             .unwrap();
     let bootstrap = log
         .membership_complete(
-            &workspace,
+            &client.workspace(),
             endpoint,
             &MembershipCompleteRequest { proof },
             client.now_ns,
@@ -802,7 +800,6 @@ fn a_device_joins_over_its_own_key() {
 #[test]
 fn a_delegation_signed_by_another_device_is_refused() {
     let client = Client::seeded_page();
-    let workspace = client.workspace();
     let endpoint = [7; 32];
     let stranger = SigningKey::from_bytes(&[3; 32]);
     let forged = tilo_user_identity::sign_endpoint_delegation(
@@ -815,7 +812,7 @@ fn a_delegation_signed_by_another_device_is_refused() {
     let mut log = JoinLog::default();
     let refused = log
         .membership_challenge(
-            &workspace,
+            &client.workspace(),
             endpoint,
             client.request(Some(forged)),
             [23; 32],
@@ -835,14 +832,13 @@ fn a_delegation_signed_by_another_device_is_refused() {
 #[test]
 fn an_expired_delegation_is_refused() {
     let client = Client::seeded_page();
-    let workspace = client.workspace();
     let endpoint = [7; 32];
     let expired =
         client.delegation_for(7, client.now_ns.saturating_sub(2 * DELEGATION_LIFETIME_NS));
     let mut log = JoinLog::default();
     let refused = log
         .membership_challenge(
-            &workspace,
+            &client.workspace(),
             endpoint,
             client.request(Some(expired)),
             [24; 32],
@@ -862,11 +858,10 @@ fn an_expired_delegation_is_refused() {
 #[test]
 fn a_delegation_naming_another_endpoint_is_refused() {
     let client = Client::seeded_page();
-    let workspace = client.workspace();
     let mut log = JoinLog::default();
     let refused = log
         .membership_challenge(
-            &workspace,
+            &client.workspace(),
             [7; 32],
             client.request(Some(client.delegation_for(8, client.now_ns))),
             [25; 32],
@@ -886,11 +881,10 @@ fn a_delegation_naming_another_endpoint_is_refused() {
 #[test]
 fn a_derived_endpoint_without_a_delegation_is_refused() {
     let client = Client::seeded_page();
-    let workspace = client.workspace();
     let mut log = JoinLog::default();
     let refused = log
         .membership_challenge(
-            &workspace,
+            &client.workspace(),
             [7; 32],
             client.request(None),
             [26; 32],
