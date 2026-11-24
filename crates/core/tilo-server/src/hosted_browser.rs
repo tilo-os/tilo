@@ -14,8 +14,10 @@
 //! - **Place** ([`HostedBrowsers::place`]): the workspace's open of Browser
 //!   (`app.so.tilo.browser#open`) reaches this host as a provider on its
 //!   device's one dispatch ([`HostedBrowsers::provide_in`]); it certifies a
-//!   device for the session scoped to the workspace, lists it as a member
-//!   device, asks the hosted-VM service to start it
+//!   device for the session scoped to the workspace's one record and places
+//!   it in this host's register, which is all that admits its link here (no
+//!   other device lists it, and it takes no key of the workspace's), asks the
+//!   hosted-VM service to start it
 //!   ([`BrowserSessions::start`]) with that material, and remembers the window
 //!   it answered. The open answers once the window is live; a second open
 //!   attaches to the same session.
@@ -54,9 +56,8 @@
 //!
 //! - **Stop** ([`HostedBrowsers::stopped`]): the environment's device is
 //!   refused on every protocol first — its entry in the server's register says it
-//!   stopped, before anything is delisted, so a delisting that fails leaves it
-//!   refused rather than open — then the session in the VM is ended, its
-//!   device delisted, and every connection it had is cut. The register says so
+//!   stopped — then the session in the VM is ended and every connection it had
+//!   is cut. The register says so
 //!   on disk too, so a server that restarts keeps it refused until the
 //!   certificate it was given expires.
 //!
@@ -68,7 +69,6 @@
 //! and the certificate's expiry bounds whatever is missed.
 
 use std::collections::{BTreeMap, HashMap};
-use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1272,16 +1272,12 @@ impl HostedBrowsers {
             tracing::warn!(%error, "the Browser's device could not be confined");
             return Err("Browser couldn't start. Try again in a minute.".to_owned());
         }
-        // The workspace's roster has the device before the session dials
-        // with it, so its first link is admitted.
-        self.list(workspace_id, &device, true);
         let window = match self.sessions.start(&material) {
             Ok(window) => window,
             Err(error) => {
                 // The device never left this host: it is forgotten rather
-                // than left a member of the workspace.
+                // than left placed.
                 self.forget(&device);
-                self.list(workspace_id, &device, false);
                 return Err(error);
             }
         };
@@ -1375,14 +1371,12 @@ impl HostedBrowsers {
                 tracing::warn!(%error, "the Linux app's device could not be confined");
                 words("The app couldn't start. Try again in a minute.".to_owned())
             })?;
-            self.list(workspace_id, &device, true);
         }
         let window = match self.sessions.start_app(&material, launch) {
             Ok(window) => window,
             Err(refusal) => {
                 if fresh {
                     self.forget(&device);
-                    self.list(workspace_id, &device, false);
                 }
                 return Err(refusal);
             }
@@ -1429,11 +1423,9 @@ impl HostedBrowsers {
         );
         if let Some(stopped) = &stopped {
             self.sessions.stop(&stopped.workspace);
-            self.list(workspace_id, &stopped.device, false);
         }
         if let Some(stopped) = &stopped_apps {
             self.sessions.stop_apps(&stopped.workspace);
-            self.list(workspace_id, &stopped.device, false);
         }
         // Every connection the devices had here audits on this: the protocols
         // that carried them refuse them, and their sessions end.
@@ -1441,8 +1433,8 @@ impl HostedBrowsers {
     }
 
     /// One environment's device stopped — its session ended and did not come
-    /// back: refuse it on every protocol, forget its window, end what is left of
-    /// the session in the VM and delist it. A device placed for the same
+    /// back: refuse it on every protocol, forget its window and end what is left
+    /// of the session in the VM. A device placed for the same
     /// workspace since is another environment, and is not this stop's.
     ///
     /// The refusal comes first and is written down, so what follows may fail:
@@ -1476,11 +1468,9 @@ impl HostedBrowsers {
         self.refuse(std::iter::once((device, until_ns)));
         if let Some(stopped) = &stopped {
             self.sessions.stop(&stopped.workspace);
-            self.list(workspace_id, &stopped.device, false);
         }
         if let Some(stopped) = &stopped_apps {
             self.sessions.stop_apps(&stopped.workspace);
-            self.list(workspace_id, &stopped.device, false);
         }
         crate::authority_epoch::bump();
     }
@@ -1545,8 +1535,8 @@ impl HostedBrowsers {
         });
     }
 
-    /// Register what a session's device reaches, before it is listed in its
-    /// workspace and handed to the session.
+    /// Register what a session's device reaches, before it is handed to the
+    /// session: the register is what this host admits the device's link by.
     fn confine(
         &self,
         device: &DeviceCert,
@@ -1570,31 +1560,6 @@ impl HostedBrowsers {
             return;
         };
         authority.environments.forget(&device.device_public_key);
-    }
-
-    /// List (or forget) the session's device in the workspace it serves,
-    /// as a member device of the person the workspace belongs to.
-    fn list(&self, workspace_id: WorkspaceId, device: &DeviceCert, listed: bool) {
-        let authority = self.authority.lock_recover();
-        let Some(authority) = authority.as_ref() else {
-            return;
-        };
-        let Some(workspaces) = &authority.workspaces else {
-            return;
-        };
-        let Some(listed) = waited_on_its_own_thread(
-            &authority.runtime,
-            workspaces.list_device(workspace_id, device, listed),
-        ) else {
-            return;
-        };
-        if let Err(error) = listed {
-            tracing::warn!(
-                %error,
-                device = %hex::encode(device.device_public_key),
-                "a browser session's device was not listed in its workspace"
-            );
-        }
     }
 }
 
@@ -1886,17 +1851,6 @@ impl ActionProvider for HostedBrowsers {
             reason: "the Browser window holds it".to_owned(),
         }))
     }
-}
-
-/// `work`, run to its end on `runtime` from a thread of the runtime's own: a
-/// session's device is listed from the blocking thread that placed it, which
-/// carries the runtime's context, where waiting on the runtime is refused.
-/// `None` when that thread panicked.
-fn waited_on_its_own_thread<T: Send>(
-    runtime: &tokio::runtime::Handle,
-    work: impl Future<Output = T> + Send,
-) -> Option<T> {
-    std::thread::scope(|scope| scope.spawn(|| runtime.block_on(work)).join().ok())
 }
 
 /// [`DEVICE_LIFETIME`] in nanoseconds: how long a session's certificate lasts.

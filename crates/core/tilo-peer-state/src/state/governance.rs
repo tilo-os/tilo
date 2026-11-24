@@ -1176,8 +1176,8 @@ impl PeerGovernanceMut<'_> {
 
     /// Take `device`'s row out of the workspace's governance before its
     /// certificate expires, as [`Self::forget_expired_devices`] does after:
-    /// what a host that certified a device for a while does when that device
-    /// stops, so no member's device admits it any longer. A row that records
+    /// what the workspace does with a device that stopped being one of its
+    /// own, so no member's device admits it any longer. A row that records
     /// an admission, a delegation or a revocation stays. Whether the workspace
     /// changed.
     ///

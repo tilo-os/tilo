@@ -1973,8 +1973,17 @@ impl DirectSync {
         let opened = Arc::new(RwLock::new(BTreeSet::new()));
         // The device that accepted a dial refuses one of the workspace's
         // roster it does not know before a frame is read; the one that
-        // dialled cannot judge, and takes only what its roster verifies.
-        if !dialing && let Err(reason) = self.admits(remote, false) {
+        // dialled cannot judge, and takes only what its roster verifies. A
+        // device the host placed and confined to one record is in no roster:
+        // the host's admission, which confined it, is what admits it.
+        #[cfg(not(target_arch = "wasm32"))]
+        let placed = admit.scope.reads.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let placed = false;
+        if !dialing
+            && !placed
+            && let Err(reason) = self.admits(remote, false)
+        {
             return Err(refuse(transport, &self.refusal_to(remote, reason)));
         }
         if !dialing {

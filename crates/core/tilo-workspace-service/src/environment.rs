@@ -100,10 +100,11 @@ impl EnvironmentScope {
     ///
     /// Subscription, state, replay and publishing are what joining, syncing
     /// and writing its record need; the live session carries its window's page;
-    /// a remote action is how the window answers the page action the server
-    /// handed it; and a channel is how it asks its record's keys for access.
-    /// Every other protocol — compute, an environment, content discovery,
-    /// membership — is not its to ask.
+    /// and a remote action is how the window answers the page action the
+    /// server handed it. Every other protocol — a channel's keys, compute, an
+    /// environment, content discovery, membership — is not its to ask: a page
+    /// that escapes Chromium holds the device's key, and no key of the
+    /// workspace's goes to it. The host answers what it needs of keys itself.
     #[must_use]
     pub fn admits(self, workspace: WorkspaceId, op: WorkspaceOperation) -> bool {
         self.workspace == workspace
@@ -115,7 +116,6 @@ impl EnvironmentScope {
                     | WorkspaceOperation::Replay
                     | WorkspaceOperation::Live
                     | WorkspaceOperation::RemoteAction
-                    | WorkspaceOperation::KeyAccess
             )
     }
 
@@ -686,11 +686,11 @@ mod tests {
             WorkspaceOperation::Replay,
             WorkspaceOperation::Live,
             WorkspaceOperation::RemoteAction,
-            WorkspaceOperation::KeyAccess,
         ] {
             assert!(scope().admits(workspace(), op), "{op:?}");
         }
         for op in [
+            WorkspaceOperation::KeyAccess,
             WorkspaceOperation::Compute,
             WorkspaceOperation::Environment,
             WorkspaceOperation::ContentDiscovery,
