@@ -24,7 +24,7 @@ async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    crate::support::place(&host.server, &asker.cert).await;
+    crate::support::place(&host.server, (&asker.cert, &asker.key)).await;
     let start = |device: &crate::support::Device| {
         start_peer(
             host.iroh(),

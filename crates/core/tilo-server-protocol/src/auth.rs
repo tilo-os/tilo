@@ -1861,6 +1861,7 @@ mod tests {
             name: "Alice".to_owned(),
             request_id: [2; 32],
             through: Through::Entry,
+            admission: Vec::new(),
         };
         let entry = |proof| {
             Hello::entering(

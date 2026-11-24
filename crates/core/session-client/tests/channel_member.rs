@@ -42,7 +42,7 @@ fn epoch(peer: &GroupPeer) -> u64 {
 
 /// `device`'s own link to the workspace on `host`.
 async fn session(host: &TestHost, root: &SigningKey, device: &Device) -> DeviceLink {
-    crate::support::place(&host.server, &device.cert).await;
+    crate::support::place(&host.server, (&device.cert, &device.key)).await;
     connect(
         &host.server,
         root.verifying_key().to_bytes(),
@@ -62,7 +62,7 @@ struct Laptop {
 
 impl Laptop {
     async fn start(host: &TestHost, root: &SigningKey, device: Device) -> Self {
-        crate::support::place(&host.server, &device.cert).await;
+        crate::support::place(&host.server, (&device.cert, &device.key)).await;
         let native = NativeDevice::start(
             &host.server,
             root.verifying_key().to_bytes(),

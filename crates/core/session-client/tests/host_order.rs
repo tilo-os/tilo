@@ -56,8 +56,8 @@ async fn https_and_iroh_commits_share_one_host_order() {
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    crate::support::place(&host.server, &laptop.cert).await;
-    crate::support::place(&host.server, &observer.cert).await;
+    crate::support::place(&host.server, (&laptop.cert, &laptop.key)).await;
+    crate::support::place(&host.server, (&observer.cert, &observer.key)).await;
     let laptop_peer = start_peer(
         host.iroh(),
         laptop.cert.clone(),

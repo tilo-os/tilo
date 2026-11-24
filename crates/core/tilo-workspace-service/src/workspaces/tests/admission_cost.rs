@@ -7,20 +7,24 @@
 use super::*;
 
 /// One person's device entering `workspace` through its entry, as a page
-/// does: the owner's pre-admission, the challenge, then the proof. `n`
-/// tells this arrival apart from every other.
+/// does: the owner's pre-admission, then the device's proof with the
+/// admission it signs itself. `n` tells this arrival apart from every
+/// other. Answers what the host did for it: the device's own signing, which
+/// reads the member list it signs against on the device, is the device's.
 pub(crate) async fn entry_arrival(
     workspaces: &Workspaces,
     host: &DeviceCert,
     workspace: &str,
     n: u32,
-) {
+) -> tilo_peer_state::work::Work {
     use tilo_server_protocol::workspaces::JoinReply;
-    let (_, device_cert) = guest_device();
+    let (device_key, device_cert) = guest_device();
     let mut id = [0u8; 32];
     id[..4].copy_from_slice(&n.to_le_bytes());
     id[30] = 7;
     let token = id[..8].to_vec();
+    let name = format!("Member {n}");
+    let before = tilo_peer_state::work::now();
     let issued = workspaces
         .pre_admit(
             host,
@@ -34,19 +38,37 @@ pub(crate) async fn entry_arrival(
         .await
         .unwrap();
     id[31] = 1;
-    let admitted = workspaces
-        .admit_proven(
-            issued.signed_invitation,
-            device_cert,
+    let signing = tilo_peer_state::work::now();
+    let admission = workspaces
+        .own_admission_of(
+            &issued.signed_invitation,
+            (&device_cert, &device_key),
             id,
-            &format!("Member {n}"),
+            &name,
+        )
+        .await
+        .unwrap();
+    let signed = tilo_peer_state::work::now();
+    let admitted = workspaces
+        .redeem_on_connection(
+            super::super::pages::Presented {
+                invitation: issued.signed_invitation,
+                cert: device_cert,
+                request_id: id,
+            },
+            admission,
+            &name,
             Some(&token),
         )
         .await;
+    let host_work = tilo_peer_state::work::now()
+        .since(before)
+        .since(signed.since(signing));
     assert!(
         matches!(admitted, JoinReply::Admitted { .. }),
         "{admitted:?}"
     );
+    host_work
 }
 
 /// What the host reads of the workspace's governance for each of the last
@@ -62,10 +84,9 @@ async fn work_per_arrival(members: u32, arrivals: u32) -> Vec<tilo_peer_state::w
     let workspace = created.workspace;
     let mut work = Vec::new();
     for n in 0..members + arrivals {
-        let before = tilo_peer_state::work::now();
-        entry_arrival(&workspaces, &cert, &workspace, n).await;
+        let host_work = entry_arrival(&workspaces, &cert, &workspace, n).await;
         if n >= members {
-            work.push(tilo_peer_state::work::now().since(before));
+            work.push(host_work);
         }
     }
     drop(workspaces);

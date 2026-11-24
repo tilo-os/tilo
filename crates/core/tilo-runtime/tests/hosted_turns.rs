@@ -149,8 +149,10 @@ async fn viewer(host: &Host) -> (Caller, String, host::Member) {
         )
         .await
         .expect("the workspace adds its viewer");
-    tilo_workspace_service::workspaces::fixtures::enter_key(workspaces, host.workspace(), &cert)
-        .await;
+    workspaces
+        .enter(host.workspace(), (&cert, &key))
+        .await
+        .expect("Bo's device lists itself");
     let bo = hex::encode(root.verifying_key().to_bytes());
     let caller = Caller::authenticated(root.verifying_key().to_bytes(), cert.device_public_key)
         .in_workspace(host.workspace());

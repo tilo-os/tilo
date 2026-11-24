@@ -140,7 +140,7 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
     }
     for device in [&phone, &tablet] {
         made_on
-            .enter(&workspace.workspace, &device.cert)
+            .enter(&workspace.workspace, (&device.cert, &device.sk))
             .await
             .unwrap();
     }

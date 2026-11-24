@@ -303,6 +303,18 @@ mod tests {
                 hex::encode(member.device_public_key).as_str(),
                 serde_json::to_string(&entry)?.as_str(),
             )?;
+            // The operation naming the hosts it changes, as every writer of
+            // governance records one.
+            let op = crate::members::SignedMembershipOp::signed(
+                &member,
+                &member_key,
+                crate::members::heads(&crate::members::ops(&doc)),
+                tilo_clock::unix_now_ns(),
+                crate::members::MembershipOpCommand::Governance {
+                    rows: vec![crate::workspace::GovernanceRow::Hosts],
+                },
+            )?;
+            crate::members::put_op(&mut doc, &op)?;
             doc.commit();
             let changes = doc
                 .get_changes(&before)

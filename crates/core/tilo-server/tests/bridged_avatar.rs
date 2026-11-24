@@ -26,7 +26,7 @@ async fn member_in_a_new_workspace(
     let workspaces = server.workspaces().unwrap();
     let workspace = workspaces.create("Bridged").await.unwrap();
     workspaces
-        .enter(&workspace.workspace, &member.cert)
+        .enter(&workspace.workspace, (&member.cert, &member.sk))
         .await
         .unwrap();
     let linked = Linked::open(server, member, workspace.workspace_id)

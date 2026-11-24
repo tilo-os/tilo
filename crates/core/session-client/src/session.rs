@@ -1132,6 +1132,7 @@ impl Task {
             name: self.config.cert.device_label.clone(),
             request_id: rand::random(),
             through: tilo_server_protocol::entering::Through::Entry,
+            admission: Vec::new(),
         };
         let answered = ask_entry(
             self.actions.as_ref(),
@@ -1156,6 +1157,13 @@ impl Task {
             tilo_server_protocol::entering::Entered::Admitted { host: None, .. } => {
                 return Err(LinkError::Unavailable(
                     "the host keeps no address for the workspace".into(),
+                ));
+            }
+            // The entry asks again with the admission this device signed: a host that asks for
+            // one once more did not take it.
+            tilo_server_protocol::entering::Entered::Sign { .. } => {
+                return Err(LinkError::Refused(
+                    "the host did not take the admission this device signed".into(),
                 ));
             }
         };
@@ -4622,6 +4630,13 @@ fn entry_state(entered: &tilo_server_protocol::entering::Entered) -> crate::Entr
             host: host.clone(),
         },
         Entered::Refused(refusal) => refused_entry(refusal),
+        // The entry asks the host again with the admission it signed: no
+        // answer it settles on asks for one.
+        Entered::Sign { .. } => {
+            refused_entry(&tilo_server_protocol::entering::EnterRefusal::Workspace(
+                "the host asked for an admission it was sent".into(),
+            ))
+        }
     }
 }
 
@@ -4665,9 +4680,61 @@ async fn ask_fetch_grant(
 }
 
 /// Ask the host to admit this device through `entering`, on the actions link and in the entry
-/// scope: an uncertified device reaches nothing else there. The host answers the
-/// [`Entered`](tilo_server_protocol::entering::Entered) it answered a session's entry with.
+/// scope: an uncertified device reaches nothing else there. Where the host answers that the
+/// workspace lets the device in once it signs its own admission
+/// ([`Entered::Sign`](tilo_server_protocol::entering::Entered::Sign)), the device signs it with
+/// its own key ([`tilo_peer_state::own_admission::sign_entry`]) and asks again with it: no host
+/// signs anyone in. The host's last answer.
 async fn ask_entry(
+    actions: Option<&tilo_server_client::link::Link>,
+    signer: Arc<dyn tilo_server_client::DeviceSigner>,
+    cert: DeviceCert,
+    host: [u8; 32],
+    entering: &tilo_server_protocol::entering::Entering,
+) -> Result<tilo_server_protocol::entering::Entered, EntryFailure> {
+    use tilo_server_protocol::entering::{Entered, Through};
+    let entered =
+        ask_entry_once(actions, Arc::clone(&signer), cert.clone(), host, entering).await?;
+    let Entered::Sign {
+        governance,
+        through,
+    } = entered
+    else {
+        return Ok(entered);
+    };
+    let invitation = match &through {
+        Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
+        Through::Entry => None,
+    };
+    let admission = tilo_peer_state::own_admission::sign_entry(
+        &entering.workspace,
+        &governance,
+        (invitation, entering.request_id),
+        Some(entering.name.as_str()),
+        (&cert, signer.as_ref()),
+        tilo_clock::wall(),
+    )
+    .await
+    .map_err(|reason| EntryFailure {
+        code: "refused",
+        message: format!("this device could not sign its own admission: {reason}"),
+    })?;
+    let with_admission = tilo_server_protocol::entering::Entering {
+        through,
+        admission,
+        ..entering.clone()
+    };
+    match ask_entry_once(actions, signer, cert, host, &with_admission).await? {
+        Entered::Sign { .. } => Err(EntryFailure {
+            code: "refused",
+            message: "the host did not take the admission this device signed".into(),
+        }),
+        entered => Ok(entered),
+    }
+}
+
+/// One ask of [`ask_entry`]: the host's answer to `entering` as it stands.
+async fn ask_entry_once(
     actions: Option<&tilo_server_client::link::Link>,
     signer: Arc<dyn tilo_server_client::DeviceSigner>,
     cert: DeviceCert,

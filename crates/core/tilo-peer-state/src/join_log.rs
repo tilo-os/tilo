@@ -44,7 +44,7 @@ use crate::join::{
 /// an agent's grant, a server key a backend holds, a key minted for one
 /// workspace — names itself: its label is the key's ("Jane Doe's agent"),
 /// and a key never names the person it acts for.
-fn names_its_person(cert: &DeviceCert) -> bool {
+pub(crate) fn names_its_person(cert: &DeviceCert) -> bool {
     cert.capabilities.agent.is_none() && !cert.capabilities.stand_in
 }
 
@@ -241,11 +241,7 @@ impl Governed<'_> {
     ///
     /// The workspace's governance does not encode.
     pub fn filled(&self, admitted: JoinBootstrap) -> Result<JoinBootstrap, JoinError> {
-        let messages = match self.governance_messages {
-            Some(messages) => messages.governance_messages(),
-            None => self.peer.governance_messages(),
-        }
-        .map_err(JoinError::new)?;
+        let messages = self.governance()?;
         Ok(JoinBootstrap {
             certified_roster: self.peer.certificates(),
             revocations: self.peer.revocations(),
@@ -253,6 +249,21 @@ impl Governed<'_> {
             governance_messages: messages,
             ..admitted
         })
+    }
+
+    /// The workspace's governance as it stands now, as the messages a device
+    /// takes it in by: what a joining device writes its own admission on top
+    /// of ([`crate::own_admission`]), and what a bootstrap carries.
+    ///
+    /// # Errors
+    ///
+    /// The workspace's governance does not encode.
+    pub fn governance(&self) -> Result<Vec<Vec<u8>>, JoinError> {
+        match self.governance_messages {
+            Some(messages) => messages.governance_messages(),
+            None => self.peer.governance_messages(),
+        }
+        .map_err(JoinError::new)
     }
 
     fn revocations(&self) -> Result<RevocationList, JoinError> {
@@ -280,10 +291,10 @@ pub struct Redeeming<'a> {
     pub request_id: [u8; 32],
     pub proof_digest: [u8; 32],
     pub redemption: &'a VerifiedRedemption,
-    /// How the person names themself as they join: the name the workspace
-    /// shows for them ([`crate::PeerGovernanceMut::name_person`]).
-    /// `None` keeps the name their invitation and certificate give.
-    pub name: Option<&'a str>,
+    /// The redeeming device's own admission, as the workspace changes it
+    /// signed ([`crate::own_admission::sign_own_admission`]), the name it
+    /// chose among them: the answering device passes them on unchanged.
+    pub admission: &'a [Vec<u8>],
 }
 
 /// What a workspace's governor keeps between the steps of its joins. Its bytes
@@ -1086,35 +1097,29 @@ impl JoinLog {
         Ok(())
     }
 
-    /// Admit the verified `joins` into `candidate`, the workspace's next state,
-    /// signed by the governor's `key`. Each is checked on its own and
-    /// refused alone: a refused admission leaves the others' candidate as it
-    /// was. Answers each join's refusal, in order.
+    /// Admit the verified `joins` into `candidate`, the workspace's next state:
+    /// each by the admission its device signed itself, taken in as that
+    /// device's ([`StatePeer::admit_own_redemption`]). Each is checked on its
+    /// own and refused alone: a refused admission leaves the others'
+    /// candidate as it was. Answers each join's refusal, in order.
     pub fn admit(
         &self,
         candidate: &mut StatePeer,
         joins: &[Redeeming<'_>],
-        key: &dyn collab_types::signer::DeviceSigner,
         now: u64,
     ) -> Vec<Option<JoinError>> {
         joins
             .iter()
             .map(|join| {
-                let redemption = join.redemption;
-                self.redeemable(redemption.join().invite_id())
+                self.redeemable(join.redemption.join().invite_id())
                     .and_then(|()| {
-                        let mut next = candidate.clone();
-                        next.governance_mut().admit_named_member(
-                            redemption,
-                            // A blank name is none given: the person stays unnamed.
-                            join.name
-                                .filter(|name| !name.trim().is_empty())
-                                .filter(|_| names_its_person(redemption.certificate())),
-                            key,
-                            system_time(now),
-                        )?;
-                        *candidate = next;
-                        Ok(())
+                        candidate
+                            .admit_own_redemption(
+                                join.redemption,
+                                join.admission.to_vec(),
+                                system_time(now),
+                            )
+                            .map_err(JoinError::new)
                     })
                     .err()
             })
@@ -1217,31 +1222,6 @@ impl JoinLog {
         Ok(challenge)
     }
 
-    /// The renewed certificate a member proved its membership with, which
-    /// the governor puts in place of the one the workspace holds
-    /// ([`crate::PeerGovernanceMut::renew_member_certificate`]) before it
-    /// answers [`Self::membership_complete`]. `None` when the workspace holds the
-    /// certificate the member proved with.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::membership_complete`], or the certificate does not renew
-    /// the one the workspace holds ([`crate::PeerGovernance::renewal_of`]).
-    pub fn membership_renewal(
-        &self,
-        workspace: &Governed<'_>,
-        remote_endpoint: [u8; 32],
-        request: &MembershipCompleteRequest,
-        now: u64,
-    ) -> Result<Option<DeviceCert>, JoinError> {
-        let (issued, _) = self.proven_membership(workspace, remote_endpoint, request, now)?;
-        Ok(workspace
-            .peer
-            .governance()
-            .renewal_of(&issued.device_cert, system_time(now))?
-            .map(|_| issued.device_cert.clone()))
-    }
-
     /// The challenge `request` proves, checked against the endpoint that
     /// sent it and the workspace's revocations.
     fn proven_membership(
@@ -1272,6 +1252,24 @@ impl JoinLog {
             now,
         )?;
         Ok((issued, membership))
+    }
+
+    /// The device that proved `request`, checked as
+    /// [`Self::membership_complete`] checks it: what a further device's own
+    /// row is taken in as before it is answered.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::membership_complete`].
+    pub fn membership_device(
+        &self,
+        workspace: &Governed<'_>,
+        remote_endpoint: [u8; 32],
+        request: &MembershipCompleteRequest,
+        now: u64,
+    ) -> Result<DeviceCert, JoinError> {
+        let (issued, _) = self.proven_membership(workspace, remote_endpoint, request, now)?;
+        Ok(issued.device_cert.clone())
     }
 
     /// The workspace's current bootstrap for a member that proved its membership

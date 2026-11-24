@@ -387,28 +387,47 @@ mod tests {
 
         phase any_device_of_the_owner_renames_the_workspace_and_rewrites_its_grant_sets;
         {
-            let (_, key, mut peer) = governor();
-            let (_, other) = device(13);
+            let (cert, key, mut peer) = governor();
+            let (other_cert, other) = device(13);
             write(
                 &mut peer,
-                &other,
+                (&other_cert, &other),
                 "scratch",
                 ScalarValue::Str("mine".into()),
+                false,
             )
             .unwrap();
+            // A rename is the operation that names it, from the owner's
+            // devices as from anyone's.
+            assert!(
+                write(
+                    &mut peer,
+                    (&other_cert, &other),
+                    WORKSPACE_NAME_KEY,
+                    ScalarValue::Str("Mine".into()),
+                    false,
+                )
+                .is_err()
+            );
+            assert_eq!(
+                peer.governance().workspace_name().as_deref(),
+                Some("Workspace")
+            );
             write(
                 &mut peer,
-                &other,
+                (&other_cert, &other),
                 WORKSPACE_NAME_KEY,
                 ScalarValue::Str("Mine".into()),
+                true,
             )
             .unwrap();
             assert_eq!(peer.governance().workspace_name().as_deref(), Some("Mine"));
             write(
                 &mut peer,
-                &key,
+                (&cert, &key),
                 WORKSPACE_NAME_KEY,
                 ScalarValue::Str("Ours".into()),
+                true,
             )
             .unwrap();
             assert_eq!(peer.governance().workspace_name().as_deref(), Some("Ours"));
@@ -416,12 +435,14 @@ mod tests {
     }
 
     /// A change `key` makes to the workspace: `field` set to `value`, delivered
-    /// as that device's.
+    /// as that device's, with the operation naming the settings it changes
+    /// where `named`.
     fn write(
         peer: &mut StatePeer,
-        key: &SigningKey,
+        (cert, key): (&DeviceCert, &SigningKey),
         field: &str,
         value: ScalarValue,
+        named: bool,
     ) -> Result<(), String> {
         let mut doc = peer.admitted_workspace().unwrap().clone();
         let before = doc.get_heads();
@@ -429,6 +450,19 @@ mod tests {
             key.verifying_key().to_bytes().to_vec(),
         ));
         doc.put(ROOT, field, value).unwrap();
+        if named {
+            let op = crate::members::SignedMembershipOp::signed(
+                cert,
+                key,
+                crate::members::heads(&crate::members::ops(&doc)),
+                tilo_clock::unix_now_ns(),
+                crate::members::MembershipOpCommand::Governance {
+                    rows: vec![crate::workspace::GovernanceRow::Settings],
+                },
+            )
+            .unwrap();
+            crate::members::put_op(&mut doc, &op).unwrap();
+        }
         doc.commit();
         let changes = doc
             .get_changes(&before)

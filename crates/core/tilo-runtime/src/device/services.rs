@@ -3817,16 +3817,18 @@ impl Daemon {
     }
 }
 
-/// Enter `workspace` as this device's, as `device`: a workspace the device made for its person
-/// is one it keeps, so its views and calls reach it at once.
+/// Enter `workspace` as this device's, as `device`, signing its own row there with this device's
+/// key: a workspace the device made for its person is one it keeps, so its views and calls reach
+/// it at once.
 async fn enter_here(
     workspaces: &ServiceWorkspaces,
     workspace: &str,
     device: &DeviceCert,
 ) -> Result<(), ServerError> {
+    let signer = workspaces.signer();
     workspaces
         .copies()
-        .enter(workspace, device)
+        .enter(workspace, (device, &*signer))
         .await
         .map(drop)
         .map_err(unavailable)

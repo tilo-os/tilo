@@ -379,10 +379,25 @@ tilo_test_env::scenario! {
             doc.commit();
         }
         assert!(governor.governance().lacks_removal_cuts());
-        let mut joiner = newcomer_exact(&story);
+        // A device joining now takes the workspace in as it stands, the
+        // removal recorded and no cut written, and the document as founded.
+        let mut joiner = StatePeer::new(
+            story.governor.workspace_id(),
+            certificate_of(&story.governor, &story.a),
+            vec![],
+            RevocationList::new(),
+            story.now,
+        )
+        .unwrap();
+        joiner.select_exact_admissions().unwrap();
         joiner
             .receive_from(live(&story.a), governor.workspace_message(), story.now)
             .unwrap();
+        for message in story.founding.clone() {
+            joiner
+                .receive_from(live(&story.a), message, story.now)
+                .unwrap();
+        }
         assert!(joiner.governance().lacks_removal_cuts());
         let held = joiner
             .receive_from_report(retained(&story.b), story.phones.clone(), story.now)
@@ -437,6 +452,19 @@ tilo_test_env::scenario! {
             let mut doc = story.governor.core.workspace_doc.clone().unwrap();
             let before = doc.get_heads();
             doc.delete(ROOT, crate::removals::FIELD_V1).unwrap();
+            // With the operation naming what it changes, as the owner's
+            // devices write governance.
+            let op = crate::members::SignedMembershipOp::signed(
+                &certificate_of(&story.governor, &story.a),
+                &story.a,
+                crate::members::heads(&crate::members::ops(&doc)),
+                tilo_clock::unix_now_ns(),
+                crate::members::MembershipOpCommand::Governance {
+                    rows: vec![crate::workspace::GovernanceRow::Removals],
+                },
+            )
+            .unwrap();
+            crate::members::put_op(&mut doc, &op).unwrap();
             doc.commit();
             NeighbourMsg::SyncResp {
                 changes: doc

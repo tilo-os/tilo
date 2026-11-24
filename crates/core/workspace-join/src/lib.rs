@@ -45,7 +45,7 @@ const ADMINISTRATOR_INVITATION_VERSION: u32 = 7;
 pub const MAX_INVITER_NAME_CHARS: usize = 80;
 /// Challenges carry no authority device, and name the workspace by its
 /// [`WorkspaceId`] alone.
-const JOIN_VERSION: u32 = 3;
+const JOIN_VERSION: u32 = 4;
 /// The variant index of [`JoinTransportRequest::Complete`] in every join
 /// layout: what a stored Complete's bytes start with.
 const COMPLETE_VARIANT: u32 = 2;
@@ -450,11 +450,19 @@ pub struct JoinChallengeRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinChallengeResponse {
     pub challenge: JoinChallenge,
+    /// The workspace's governance, as encoded neighbour messages, given once
+    /// the invitation verified for the asking device: what the device writes
+    /// its own admission on top of.
+    pub governance: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinCompleteRequest {
     pub proof: JoinProof,
+    /// The device's own admission, as workspace changes it signed: its
+    /// redemption of the invitation and its device row. The answering device
+    /// takes them in as the joining device's and passes them on unchanged.
+    pub admission: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -472,11 +480,17 @@ pub struct MembershipChallengeRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MembershipChallengeResponse {
     pub challenge: MembershipChallenge,
+    /// The workspace's governance, as encoded neighbour messages: what a
+    /// further device of a member writes its own row on top of.
+    pub governance: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MembershipCompleteRequest {
     pub proof: MembershipProof,
+    /// A further device's own row, as workspace changes it signed; empty for
+    /// a device the workspace lists already.
+    pub admission: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

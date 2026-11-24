@@ -149,7 +149,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     .unwrap();
     assert_eq!(unadmitted(&peer), 0);
 
-    crate::support::place(&host.server, &observer.cert).await;
+    crate::support::place(&host.server, (&observer.cert, &observer.key)).await;
     let observer_peer = start_peer(
         host.iroh(),
         observer.cert.clone(),

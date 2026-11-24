@@ -703,8 +703,8 @@ impl Workspaces {
         rows
     }
 
-    /// Take `device`'s person into the workspace `args` names, and hand the
-    /// device an invitation of its own to redeem there.
+    /// Hand `device` an invitation of its own to the workspace `args` names, to
+    /// redeem there: its device signs its own admission with it.
     async fn enter_invoke(
         &self,
         device: &DeviceCert,
@@ -717,10 +717,6 @@ impl Workspaces {
         let seconds = args
             .integer("expires_in_seconds")?
             .unwrap_or(OWN_INVITATION_SECONDS);
-        let changed = self
-            .enter(workspace, device)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         // The invitation is the entering device's own: its person's role, an Editor's at most,
         // and no grant to invite. The local device redeems in process; one sent to another
         // device needs to wait for the host's reachable address.
@@ -738,7 +734,6 @@ impl Workspaces {
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
         answer(&EnteredWorkspace {
-            changed,
             invitation: ActionInvitation::of(&issued),
         })
     }
@@ -1407,8 +1402,6 @@ impl Workspaces {
                 .await
                 .map_err(ActionCallError::refused)?;
             own.record(&person, &summary.workspace)
-                .map_err(ActionCallError::refused)?;
-            self.keep_membership(&summary.workspace, &person, OWNER_ROLE)
                 .map_err(ActionCallError::refused)?;
             summary
         };

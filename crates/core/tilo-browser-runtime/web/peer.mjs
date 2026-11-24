@@ -1086,14 +1086,13 @@ async function connect({
       return ask('create', {name: name.trim()});
     },
     /** A workspace made under `workspace` (a UUID the page chose) and named
-     * `name`, this device admitted to it as its owner: asked again with the
-     * same id it answers the one already made, never a second. */
+     * `name`, which this device then enters as its owner's: asked again with
+     * the same id it answers the one already made, never a second. */
     place: ({workspace, name}) => {
       if (typeof workspace !== 'string' || !workspace) throw new TypeError('a placed workspace needs an id');
       if (typeof name !== 'string' || !name.trim()) throw new TypeError('a workspace needs a name');
       return ask('place', {workspace, name: name.trim()});
     },
-    enter: workspace => ask('enter', {workspace}),
   };
   const certifiedPeer = {
     get host() { return host; },

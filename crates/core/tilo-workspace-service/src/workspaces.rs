@@ -1115,6 +1115,10 @@ struct WorkspacesInner {
     link_remotes: std::sync::Mutex<
         std::collections::BTreeMap<WorkspaceId, std::collections::BTreeSet<[u8; 32]>>,
     >,
+    /// The links whose device signs its own row onto the workspace's member
+    /// list before it is a member device's, by workspace and device
+    /// ([`tilo_peer_state::direct::LinkScope::lists_itself`]).
+    listing_themselves: std::sync::Mutex<std::collections::BTreeSet<(WorkspaceId, [u8; 32])>>,
     /// The agent sessions this device serves, present on it while each connection lasts.
     agent_sessions: personal::AgentSessions,
     /// What the workspaces kept here hold, read and written in process.
@@ -1615,6 +1619,7 @@ impl Workspaces {
                 store,
                 direct,
                 link_remotes: std::sync::Mutex::default(),
+                listing_themselves: std::sync::Mutex::default(),
                 agent_sessions: personal::AgentSessions::default(),
                 records,
                 member: member::Members::default(),

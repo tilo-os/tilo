@@ -143,9 +143,6 @@ impl WorkspaceOperation {
 pub enum Decision {
     /// Admitted now.
     Admit,
-    /// Admitted once the device is persisted as a member; a caller that
-    /// cannot enrol treats it as not yet a member.
-    AdmitAndEnrol,
     /// Refused.
     Deny(DenyReason),
 }
@@ -196,6 +193,10 @@ pub enum DenyReason {
     AgentOutOfScope,
     /// Not a member of the workspace.
     NotAMember,
+    /// A device of someone the workspace has in it, which its member list
+    /// does not list yet: it signs its own row first, through its entry or
+    /// the membership exchange, and no host writes it in its place.
+    Unlisted,
     /// A hosted browser environment's device, outside the one workspace and
     /// the one record the server confines it to.
     OutOfEnvironmentScope,
@@ -252,6 +253,9 @@ impl DenyReason {
             Self::AgentExpired => "the agent's delegation expired",
             Self::AgentOutOfScope => "the agent is not delegated this workspace",
             Self::NotAMember => "device not in workspace membership",
+            Self::Unlisted => {
+                "the workspace does not list this device yet: it signs its own row before it links"
+            }
             Self::OutOfEnvironmentScope => {
                 "a browser environment's device reaches one workspace and its own record"
             }
@@ -571,16 +575,11 @@ pub(crate) fn decide_in(
     op: WorkspaceOperation,
     now_ns: u64,
 ) -> Decision {
+    // The operator's handshake policy gates who connects to this host: a person it no longer
+    // trusts is refused here whatever a workspace's list says, as an expired or revoked
+    // certificate, a blocked key, an agent outside its delegation and a stopped environment are.
     if let Err(reason) = trust.actor(peer, workspace.workspace_id(), now_ns) {
-        // The operator's handshake policy gates who connects to this host. A workspace's own
-        // signed membership admits its members, as its entry does: a device of a person it holds
-        // reaches the workspace on that rule, even where the operator's policy would not admit
-        // it. Every other refusal — an expired or revoked certificate, a blocked key, an agent
-        // outside its delegation, a stopped environment — still denies: in particular a block is
-        // never read as the policy's refusal and bypassed.
-        if reason != DenyReason::NotTrusted || !person_device(&peer.cert) {
-            return Decision::Deny(reason);
-        }
+        return Decision::Deny(reason);
     }
     match crate::environment::environment_of(trust.environments, &peer.device_public_key) {
         Some(crate::environment::Environment::Placed(scope)) => {
@@ -612,7 +611,7 @@ pub(crate) fn decide_in(
         return Decision::Admit;
     }
     if op == WorkspaceOperation::Subscribe && workspace.enrols_member_device(peer) {
-        return Decision::AdmitAndEnrol;
+        return Decision::Deny(DenyReason::Unlisted);
     }
     Decision::Deny(DenyReason::NotAMember)
 }

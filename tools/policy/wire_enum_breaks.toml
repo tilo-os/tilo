@@ -779,3 +779,8 @@ reason = "the service's half of the same socket: JSON never kept, between ends o
 file = "crates/desktop/session/src/controls.rs"
 enum = "SessionCommand"
 reason = "the session's own queue between its loop and its resources, never written or sent: the `ConfirmedCall` variant went with the session-side confirm dialog, one call kept in the session's memory"
+
+[[break]]
+file = "crates/core/tilo-server-protocol/src/workspaces.rs"
+enum = "WorkspacesRequest"
+reason = "a page's request to its host on a live connection, never stored: the `Enter` variant went because a host no longer lists a device in a workspace for it; the device signs its own row on its entry, and both ends are the same build"

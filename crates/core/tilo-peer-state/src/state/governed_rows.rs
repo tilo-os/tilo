@@ -82,6 +82,18 @@ pub(crate) struct GovernedIdentity {
 }
 
 impl GovernedIdentity {
+    /// The certificate the identity row `bytes` hold, its first part, read
+    /// without the rest of the row.
+    ///
+    /// # Errors
+    ///
+    /// The bytes do not start with a certificate.
+    pub(crate) fn certificate_of(bytes: &[u8]) -> Result<DeviceCert, RowError> {
+        postcard::take_from_bytes::<DeviceCert>(bytes)
+            .map(|(cert, _)| cert)
+            .map_err(RowError::Postcard)
+    }
+
     /// The identity row `bytes` hold, as stored.
     ///
     /// A row written before rows carried a removal's mark ends where its last

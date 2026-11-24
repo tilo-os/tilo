@@ -251,13 +251,13 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         73,
         tilo_user_identity::DeviceCapabilities::member(),
     );
-    let (_, owner) = device(&signer, 74, DeviceCapabilities::member());
+    let (owner_key, owner) = device(&signer, 74, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server = server_at(&state, host.identity(), ServerConfig::default()).await;
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Plaza").await.unwrap();
     workspaces
-        .enter(&workspace.workspace, &owner)
+        .enter(&workspace.workspace, (&owner, &owner_key))
         .await
         .unwrap();
 
@@ -569,12 +569,15 @@ async fn an_invitation_its_workspace_keeps_is_opened_by_its_links_secret() {
 
     let root = SigningKey::from_bytes(&[131; 32]);
     let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::member());
-    let (_, owner) = device(&root, 133, DeviceCapabilities::member());
+    let (owner_key, owner) = device(&root, 133, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server = server_at(&state, host.identity(), ServerConfig::default()).await;
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-    workspaces.enter(&workspace, &owner).await.unwrap();
+    workspaces
+        .enter(&workspace, (&owner, &owner_key))
+        .await
+        .unwrap();
     let invitation = workspaces
         .issue(
             &workspace,
@@ -790,7 +793,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         83,
         tilo_user_identity::DeviceCapabilities::member(),
     );
-    let (_, owner) = device(&signer, 84, DeviceCapabilities::member());
+    let (owner_key, owner) = device(&signer, 84, DeviceCapabilities::member());
     let (joined_key, joined) = device(&watcher, 85, DeviceCapabilities::member());
     let (_, watch) = device(&watcher, 86, DeviceCapabilities::member());
     let (_, laptop) = device(&signer, 87, DeviceCapabilities::member());
@@ -799,7 +802,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Lounge").await.unwrap();
     workspaces
-        .enter(&workspace.workspace, &owner)
+        .enter(&workspace.workspace, (&owner, &owner_key))
         .await
         .unwrap();
     // Another person is a viewer of the workspace, as an invitation makes

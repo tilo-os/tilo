@@ -37,7 +37,7 @@ use tilo_actions::remote::server_account::{
 use tilo_lock::MutexRecover as _;
 
 use super::Workspaces;
-use super::membership::{self, Membership, Ownership};
+use super::membership::{self, Ownership};
 use super::person_workspace;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::workspaces::WorkspaceLabels;
@@ -667,21 +667,6 @@ impl Workspaces {
         })
     }
 
-    /// Keep that `person` holds `role` in `workspace`, made now.
-    pub(super) fn keep_membership(
-        &self,
-        workspace: &str,
-        person: &[u8; 32],
-        role: &str,
-    ) -> Result<(), String> {
-        let now = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
-        self.change(
-            workspace,
-            (membership::APP, &membership::member_record(person)),
-            Membership::KEEP_ROLE.with((role.to_owned(), now)),
-        )
-    }
-
     /// Label `workspace` with `labels`, in place of what it was labelled with before (none takes
     /// them all off).
     pub(super) fn label(&self, workspace: &str, labels: WorkspaceLabels) -> Result<(), String> {
@@ -720,11 +705,7 @@ impl Workspaces {
         if !self.inner.workspaces.lock().await.contains_key(workspace) {
             return false;
         }
-        let claimed = own.record(person, workspace).is_ok();
-        if claimed && let Err(error) = self.keep_membership(workspace, person, "owner") {
-            tracing::warn!(%workspace, %error, "a claimed workspace's owner's membership of it is not kept");
-        }
-        claimed
+        own.record(person, workspace).is_ok()
     }
 
     /// Whether `workspace` is one of `person`'s own here.

@@ -55,6 +55,7 @@ pub struct PreAdmitRequest {
 /// and where its answer goes.
 pub(super) struct QueuedAdmission {
     presented: Presented,
+    admission: Vec<Vec<u8>>,
     name: String,
     token: Vec<u8>,
     answer: tokio::sync::oneshot::Sender<Result<JoinReply, CollaborationError>>,
@@ -248,10 +249,6 @@ impl Workspaces {
             WorkspacesRequest::Create { name } => self.page_create(device, &name, now).await?,
             WorkspacesRequest::Place { workspace, name } => {
                 self.page_place(device, &workspace, &name, now).await?
-            }
-            WorkspacesRequest::Enter { workspace } => {
-                self.enter(&workspace, device).await?;
-                self.page_workspace(&workspace, device).await?
             }
             request @ (WorkspacesRequest::Invite { .. }
             | WorkspacesRequest::Cancel { .. }
@@ -727,8 +724,9 @@ impl Workspaces {
         self.page_workspace(&created.workspace, device).await
     }
 
-    /// Govern `workspace` here unless this host does, created as `name`, and
-    /// admit `device` to it as its owner.
+    /// Govern `workspace` here unless this host does, created as `name`. The
+    /// device lists itself there on its entry, signing its own row; this host
+    /// signs nothing for it.
     async fn page_place(
         &self,
         device: &DeviceCert,
@@ -749,7 +747,6 @@ impl Workspaces {
         {
             return Err(error.into());
         }
-        self.enter(workspace, device).await?;
         self.page_workspace(workspace, device).await
     }
 
@@ -1263,43 +1260,18 @@ impl Workspaces {
         })
     }
 
-    /// Admit the device `cert` certifies with `invitation`, under the request
-    /// `request_id`, shown to the workspace's people as `name`, with the
-    /// owner's pre-admission `token` where it was issued under one. The
-    /// caller vouches that the device proved it holds its key on the
-    /// connection that carries the redemption: the host's session entry
-    /// ([`tilo_server_protocol::entering`]) checks that proof before it gets
-    /// here.
-    pub async fn admit_proven(
-        &self,
-        invitation: Vec<u8>,
-        cert: DeviceCert,
-        request_id: [u8; 32],
-        name: &str,
-        token: Option<&[u8]>,
-    ) -> JoinReply {
-        self.redeem_on_connection(
-            Presented {
-                invitation,
-                cert,
-                request_id,
-            },
-            name,
-            token,
-        )
-        .await
-    }
-
-    /// Admit the device `presented` names with its invitation: what a session
-    /// entering with an invitation, or through an entry, is answered.
+    /// Admit the device `presented` names with its invitation, by the
+    /// `admission` it signed: what a session entering with an invitation, or
+    /// through an entry, is answered.
     pub(crate) async fn redeem_on_connection(
         &self,
         presented: Presented,
+        admission: Vec<Vec<u8>>,
         name: &str,
         token: Option<&[u8]>,
     ) -> JoinReply {
         let now = tilo_clock::unix_now_ns();
-        self.presented(presented, name, token, now)
+        self.presented(presented, admission, name, token, now)
             .await
             .unwrap_or_else(|error| JoinReply::Refused(error.to_string()))
     }
@@ -1307,33 +1279,26 @@ impl Workspaces {
     async fn presented(
         &self,
         presented: Presented,
+        admission: Vec<Vec<u8>>,
         name: &str,
         token: Option<&[u8]>,
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
         let proving = crate::timing::start();
         let (invitation, person) = (presented.invitation.clone(), presented.cert.user_public_key);
-        let cert = presented.cert.clone();
         let joined = joined_name(name)?;
         let reply = match token {
             Some(token) => {
-                self.prove_pre_admitted(presented, &joined, token, now)
+                self.prove_pre_admitted(presented, admission, &joined, token, now)
                     .await?
             }
-            None => self.enter_invited(presented, &joined, now).await?,
+            None => {
+                self.enter_invited(presented, admission, &joined, now)
+                    .await?
+            }
         };
         if let JoinReply::Admitted { workspace, .. } = &reply {
             self.accepted(workspace, &invitation, person).await;
-            // A key that came in with an invitation is listed as every key
-            // the workspace admits is, by the name it joined as, so its
-            // person finds it and can revoke it there.
-            if let Some(scope) = cert.capabilities.agent {
-                let governed = self.workspace(workspace).await?;
-                let mut governed = governed.lock().await;
-                let named = (!name.is_empty()).then_some(name);
-                self.list_grant(&mut governed, &cert, scope, named, now)
-                    .await?;
-            }
         }
         crate::timing::event("join.prove.admitted", proving, 0);
         crate::timing::event("join.prove", proving, 0);
@@ -1346,6 +1311,7 @@ impl Workspaces {
     async fn enter_invited(
         &self,
         presented: Presented,
+        admission: Vec<Vec<u8>>,
         name: &str,
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
@@ -1368,6 +1334,7 @@ impl Workspaces {
                     request_id: presented.request_id,
                     name: name.to_owned(),
                     token: None,
+                    admission,
                 }],
             )
             .await?
@@ -1410,6 +1377,7 @@ impl Workspaces {
     async fn prove_pre_admitted(
         &self,
         presented: Presented,
+        admission: Vec<Vec<u8>>,
         name: &str,
         token: &[u8],
         now: u64,
@@ -1420,6 +1388,7 @@ impl Workspaces {
             &workspace.to_string(),
             QueuedAdmission {
                 presented,
+                admission,
                 name: name.to_owned(),
                 token: token.to_vec(),
                 answer,
@@ -1474,6 +1443,7 @@ impl Workspaces {
                 request_id: join.presented.request_id,
                 name: join.name.clone(),
                 token: Some(join.token.clone()),
+                admission: join.admission.clone(),
             })
             .collect();
         let answers = self

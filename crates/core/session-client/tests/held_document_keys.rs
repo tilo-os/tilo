@@ -63,7 +63,7 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
     let note = route();
     let artifact = document_artifact_id(&note.app_id, &note.cluster_id, &note.document);
     let laptop_device = laptop.key.verifying_key().to_bytes();
-    crate::support::place(&host.server, &laptop.cert).await;
+    crate::support::place(&host.server, (&laptop.cert, &laptop.key)).await;
     let mut laptop = NativeDevice::start(
         &host.server,
         root.verifying_key().to_bytes(),

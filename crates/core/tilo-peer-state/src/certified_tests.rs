@@ -149,7 +149,11 @@ fn actual_redemption_at(
     };
     (
         join,
-        JoinCompleteRequest { proof },
+        // The test admits the device itself and builds the bootstrap.
+        JoinCompleteRequest {
+            proof,
+            admission: Vec::new(),
+        },
         bootstrap,
         device,
         hint,

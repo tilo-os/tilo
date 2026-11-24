@@ -125,6 +125,10 @@ enum LinkFrame {
         /// Whether the dialling device takes the records every device is not
         /// replayed only once it opens them, as a page does.
         opens: bool,
+        /// The dialling device's certificate: what the dialled host admits it
+        /// by when the workspace there does not list it yet, so it may sign
+        /// its own row on the link ([`LinkScope::lists_itself`]).
+        certificate: Option<Box<tilo_user_identity::DeviceCert>>,
     },
     /// The retained history the dialling device asks for, from its cursors.
     Cursors(Vec<Cursor>),
@@ -320,6 +324,12 @@ pub struct LinkScope {
     /// ([`NeighbourMsg::MlsAccessRequest`]) but may not publish a group's
     /// commit, so a visitor's many links cannot churn the workspace's channels.
     pub key_access: bool,
+    /// Whether the link's device is one the workspace lets in once it lists
+    /// itself, and does not list yet: the link carries the member list to it
+    /// and its own row back, and nothing else either way. The host ends the
+    /// link once the row is in ([`Refusal::Listed`]), and the device dials
+    /// again as the member device it now is.
+    pub lists_itself: bool,
 }
 
 impl LinkScope {
@@ -332,6 +342,19 @@ impl LinkScope {
             reads: None,
             own_frames_only: false,
             key_access: true,
+            lists_itself: false,
+        }
+    }
+
+    /// The scope of a device that signs its own row on the link before it is
+    /// a member device ([`Self::enrol`]).
+    #[must_use]
+    pub const fn listing_itself() -> Self {
+        Self {
+            reads: None,
+            own_frames_only: true,
+            key_access: false,
+            lists_itself: true,
         }
     }
 }
@@ -399,6 +422,10 @@ impl LinkAdmit {
         {
             return false;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.scope.lists_itself && !own_row_frame(&authored.message) {
+            return false;
+        }
         if self.records_only && !records_frame(&authored.message) {
             return false;
         }
@@ -407,6 +434,15 @@ impl LinkAdmit {
         }
         !self.own_frames_only || by_remote(&authored.message, authored.from, remote)
     }
+}
+
+/// Whether `message` travels on a link whose device signs its own row
+/// ([`LinkScope::lists_itself`]): its identity and the member list's changes.
+fn own_row_frame(message: &NeighbourMsg) -> bool {
+    matches!(
+        message,
+        NeighbourMsg::SyncResp { .. } | NeighbourMsg::IdentityHello { .. }
+    )
 }
 
 /// Whether `message` is one a device that takes the workspace's records only
@@ -935,6 +971,9 @@ struct Inner {
     /// them, and says so to the device it dials ([`DirectSync::when_opened`]):
     /// a page reaches its workspace that way.
     opens: bool,
+    /// This device's certificate, when the workspace may not list it yet
+    /// ([`DirectSync::with_certificate`]).
+    certificate: Option<tilo_user_identity::DeviceCert>,
     /// The records this device asks the one it dialled to open
     /// ([`DirectSync::open_record`]), while the link runs.
     opening: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<RecordAsk>>>>,
@@ -1024,6 +1063,7 @@ impl DirectSync {
             geneses: Geneses::default(),
             other_store: Arc::default(),
             opens: false,
+            certificate: None,
             opening: Arc::default(),
             #[cfg(feature = "test-support")]
             lost_answers: Arc::default(),
@@ -1057,6 +1097,7 @@ impl DirectSync {
             geneses: Arc::clone(&self.0.geneses),
             other_store: Arc::clone(&self.0.other_store),
             opens: self.0.opens,
+            certificate: self.0.certificate.clone(),
             opening: Arc::clone(&self.0.opening),
             #[cfg(feature = "test-support")]
             lost_answers: Arc::clone(&self.0.lost_answers),
@@ -1091,6 +1132,17 @@ impl DirectSync {
             placed: Some(certificate),
             ..self.copied()
         })))
+    }
+
+    /// This device is `certificate`'s, whether or not the workspace lists it
+    /// yet: a dial names it, and a device the workspace does not list signs
+    /// its own row on the link it dials ([`LinkScope::lists_itself`]).
+    #[must_use]
+    pub fn with_certificate(&self, certificate: tilo_user_identity::DeviceCert) -> Self {
+        Self(Arc::new(Inner {
+            certificate: Some(certificate),
+            ..self.copied()
+        }))
     }
 
     /// Take the workspace's records only as this device opens them, and say
@@ -1753,6 +1805,7 @@ impl DirectSync {
         device: [u8; 32],
     ) -> Result<Dialed, Refusal> {
         let dialed = self.reach(endpoint, addr, device, false).await?;
+        self.list_self().await.map_err(Refusal::Other)?;
         // Who the dialled device is, this one learns from what it sends: its
         // certificate is in the frames it opens with, and a device that has
         // not synced yet holds no roster to refuse by.
@@ -1773,8 +1826,43 @@ impl DirectSync {
         device: [u8; 32],
     ) -> Result<Dialed, Refusal> {
         let dialed = self.named_over(transport, device, false).await?;
+        self.list_self().await.map_err(Refusal::Other)?;
         self.certificate().map_err(Refusal::Other)?;
         Ok(dialed)
+    }
+
+    /// Sign this device's own row onto the workspace's member list, when the
+    /// list does not have it yet and the device knows its certificate
+    /// ([`Self::with_certificate`]), and send it on the link just dialled:
+    /// the device lists itself, and no host writes it in its place. Asked
+    /// after the dial subscribed to what this device publishes, so the row
+    /// reaches the host on that link.
+    async fn list_self(&self) -> Result<(), String> {
+        let Some(certificate) = self.0.certificate.clone() else {
+            return Ok(());
+        };
+        if self.certificate().is_ok() {
+            return Ok(());
+        }
+        let heads = self.0.replica.lock().workspace_heads().unwrap_or_default();
+        self.signed_change(|peer, signer, now| {
+            peer.governance_mut()
+                .admit_member_device(&certificate, signer, now)
+        })
+        .await?;
+        let changes = self.0.replica.lock().workspace_changes_since(&heads);
+        self.0.changed.send_modify(bump);
+        if !changes.is_empty() {
+            self.outgoing(Authored {
+                from: self.device(),
+                message: NeighbourMsg::SyncResp {
+                    changes,
+                    workspace: self.0.replica.workspace(),
+                },
+                published: true,
+            });
+        }
+        Ok(())
     }
 
     /// Dial `device` at `addr` from `endpoint` and answer its admission, as
@@ -1873,6 +1961,11 @@ impl DirectSync {
             LinkFrame::Workspace {
                 id: workspace,
                 opens: self.0.opens,
+                certificate: self
+                    .certificate()
+                    .ok()
+                    .or_else(|| self.0.certificate.clone())
+                    .map(Box::new),
             }
         };
         write_link(&mut send, &named)
@@ -2209,7 +2302,7 @@ impl DirectSync {
         // device the host placed and confined to one record is in no roster:
         // the host's admission, which confined it, is what admits it.
         #[cfg(not(target_arch = "wasm32"))]
-        let placed = admit.scope.reads.is_some();
+        let placed = admit.scope.reads.is_some() || admit.scope.lists_itself;
         #[cfg(target_arch = "wasm32")]
         let placed = false;
         // A device the workspace names among its holders is no member and is
@@ -2380,14 +2473,20 @@ impl DirectSync {
                 }
             }
         };
+        // A refusal closes the connection before the link's other halves are dropped: dropping
+        // its send stream finishes it, and a device that read that finish before the refusal
+        // would take its link for one that ended well.
+        let refusing = |reason: Option<Refusal>| reason.map(|reason| refuse(transport, &reason));
+        let ending = async { refusing(ending.await) };
+        let ended = async { refusing(ended.await) };
         let ended = tokio::select! {
             result = receiving => result,
             result = sending => result,
             result = answer_all => result,
             result = content_out => result,
             result = history => result,
-            Some(reason) = ending => Err(refuse(transport, &reason)),
-            Some(reason) = ended => Err(refuse(transport, &reason)),
+            Some(refused) = ending => Err(refused),
+            Some(refused) = ended => Err(refused),
         };
         tracing::debug!(
             workspace = ?self.workspace().ok(),
@@ -2820,6 +2919,9 @@ impl DirectSync {
     ) -> impl Fn(&NeighbourMsg) -> bool + use<> {
         let link = self.clone();
         move |message| {
+            if scope.lists_itself && !own_row_frame(message) {
+                return false;
+            }
             if let Some(only) = scope.reads
                 && let Some(record) = record_of(message)
                 && record != only
@@ -3895,6 +3997,8 @@ struct DialedWorkspace {
     workspace: WorkspaceId,
     takes: bool,
     opens: bool,
+    /// The certificate the dialling device named itself by.
+    certificate: Option<tilo_user_identity::DeviceCert>,
     control: Control,
 }
 
@@ -3902,9 +4006,19 @@ struct DialedWorkspace {
 /// Read the workspace a dialling device names first, off its control stream.
 async fn dialed_workspace(transport: &dyn Transport) -> Result<DialedWorkspace, String> {
     let (send, mut recv) = transport.accept_bi().await?;
-    let (workspace, takes, opens) = match read_link(&mut recv, MAX_FRAME_BYTES).await? {
-        Some(LinkFrame::Workspace { id, opens }) => (id, false, opens),
-        Some(LinkFrame::Take(id)) => (id, true, false),
+    let (workspace, takes, opens, certificate) = match read_link(&mut recv, MAX_FRAME_BYTES).await?
+    {
+        Some(LinkFrame::Workspace {
+            id,
+            opens,
+            certificate,
+        }) => (
+            id,
+            false,
+            opens,
+            certificate.map(|certificate| *certificate),
+        ),
+        Some(LinkFrame::Take(id)) => (id, true, false, None),
         _ => {
             return Err(refuse(
                 transport,
@@ -3916,6 +4030,7 @@ async fn dialed_workspace(transport: &dyn Transport) -> Result<DialedWorkspace, 
         workspace,
         takes,
         opens,
+        certificate,
         control: Control { send, recv },
     })
 }
@@ -3967,7 +4082,9 @@ pub struct Serving {
 
 /// What [`Serving::admitting`] installs: the scope a device at `remote`
 /// reaches in `link`'s workspace, or why it is refused.
-pub type Admitting = dyn Fn([u8; 32], &DirectSync) -> Result<LinkScope, Refusal> + Send + Sync;
+pub type Admitting = dyn Fn([u8; 32], Option<&tilo_user_identity::DeviceCert>, &DirectSync) -> Result<LinkScope, Refusal>
+    + Send
+    + Sync;
 
 impl std::fmt::Debug for Serving {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -4055,14 +4172,16 @@ impl Serving {
             )
         })?;
         let scope = match &self.admitting {
-            Some(hook) => hook(transport.remote(), &link).map_err(|refusal| {
-                tracing::info!(
-                    %refusal,
-                    remote = %short(&transport.remote()),
-                    "a host refused a link's device before it listened"
-                );
-                refuse(transport, &refusal)
-            })?,
+            Some(hook) => {
+                hook(transport.remote(), dialed.certificate.as_ref(), &link).map_err(|refusal| {
+                    tracing::info!(
+                        %refusal,
+                        remote = %short(&transport.remote()),
+                        "a host refused a link's device before it listened"
+                    );
+                    refuse(transport, &refusal)
+                })?
+            }
             None => LinkScope::admitting(),
         };
         link.serve_as(transport, dialed, scope).await

@@ -284,7 +284,7 @@ impl Ada {
 
     /// Ada's laptop, in the workspace over a direct session.
     pub(crate) async fn laptop_peer(&self, server_cert: &DeviceCert) -> Link {
-        place(&self.host.server, &self.laptop.cert).await;
+        place(&self.host.server, (&self.laptop.cert, &self.laptop.key)).await;
         let peer = start_peer(
             self.host.over(Carrier::Direct),
             self.laptop.cert.clone(),
@@ -679,7 +679,7 @@ async fn a_device_removed_while_connected_is_dropped_and_signs_for_nothing_after
 async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier: Carrier) {
     let ada = Ada::start().await;
     let (key, cert, server_cert) = ada.certified(&ada.host.over(carrier)).await;
-    place(&ada.host.server, &cert).await;
+    place(&ada.host.server, (&cert, &key)).await;
     let keys = live_session_keys();
 
     // The workspace's governance admits the page.
@@ -897,7 +897,7 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
     let person = ada.root.verifying_key().to_bytes();
     let keys = live_session_keys();
     let (key, cert, server_cert) = ada.certified(&ada.host.over(carrier)).await;
-    place(&ada.host.server, &cert).await;
+    place(&ada.host.server, (&cert, &key)).await;
     let browser = page(&ada.host, carrier, key, &cert, &server_cert);
     browser
         .send(Cmd::InstallGroupKeys(live_session_route(), keys.clone()))
@@ -910,7 +910,7 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
         .unwrap();
     in_workspace(&laptop, crate::support::workspace()).await;
     let (key, outsider_cert, _) = ada.certified(&ada.host.over(carrier)).await;
-    place(&ada.host.server, &outsider_cert).await;
+    place(&ada.host.server, (&outsider_cert, &key)).await;
     let outsider = page(&ada.host, carrier, key, &outsider_cert, &server_cert);
     outsider
         .send(Cmd::InstallGroupKeys(
@@ -1520,7 +1520,7 @@ async fn the_live_origin_holds_a_call_to_its_rule_whatever_a_client_does() {
         .unwrap();
     in_workspace(&laptop, crate::support::workspace()).await;
     let tablet = enrol(&ada.root, "tablet", DeviceCapabilities::member());
-    place(&ada.host.server, &tablet.cert).await;
+    place(&ada.host.server, (&tablet.cert, &tablet.key)).await;
     let (bo_root, _) = UserIdentity::generate("Bo", 1);
     let bo_browser = enrol(&bo_root, "browser", DeviceCapabilities::member());
     let bo = bo_root.verifying_key().to_bytes();

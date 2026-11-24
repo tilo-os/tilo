@@ -216,6 +216,7 @@ impl Device {
                 name: String::new(),
                 request_id: rand::random(),
                 through: tilo_server_protocol::entering::Through::Entry,
+                admission: Vec::new(),
             }
         });
         let through_entry = entering.is_some();
@@ -327,6 +328,7 @@ impl Device {
             name: String::new(),
             request_id: rand::random(),
             through: tilo_server_protocol::entering::Through::Entry,
+            admission: Vec::new(),
         };
         let entered = self.enter_once(entering).await?;
         let admission = admission(entered).map_err(|refusal| {
@@ -1119,6 +1121,7 @@ fn invitation_entering(
             invitation: invitation.to_vec(),
             token: token.map(<[u8]>::to_vec),
         },
+        admission: Vec::new(),
     })
 }
 
@@ -1146,6 +1149,12 @@ fn admission(
             host,
         }),
         tilo_server_protocol::entering::Entered::Refused(refusal) => Err(refusal),
+        // The session's entry answers it with the admission this device signed.
+        tilo_server_protocol::entering::Entered::Sign { .. } => {
+            Err(tilo_server_protocol::entering::EnterRefusal::Workspace(
+                "the host asked for an admission it was sent".into(),
+            ))
+        }
     }
 }
 
@@ -1180,6 +1189,7 @@ pub async fn entry_request(
         ),
         request_id: rand::random(),
         through: tilo_server_protocol::entering::Through::Entry,
+        admission: Vec::new(),
     };
     Ok((cert, entry))
 }

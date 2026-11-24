@@ -492,13 +492,11 @@ impl StatePeer {
                         },
                     );
                 }
-                // A holder of the workspace is known by the address it signed
-                // among the workspace's holders, whether or not the roster
-                // carries its certificate: what it writes is decided now, as a
-                // member's work under a member's delegation or not at all. A
-                // holder never becomes a member by governance arriving later.
-                let holder = self.holder_certificate(&source).is_some();
-                if !holder && !self.core.certificates.contains_key(&source) {
+                // A device the roster does not certify writes nothing here
+                // yet: its write is held until the governance listing it
+                // arrives, and applied only once the workspace lists it. A
+                // holder that is no member never is.
+                if !self.core.certificates.contains_key(&source) {
                     return self.defer(
                         source,
                         message,
@@ -509,12 +507,10 @@ impl StatePeer {
                         },
                     );
                 }
-                if !holder
-                    && matches!(
-                        backend::member::role(&self.core, &source, now),
-                        Err(MembershipError::Absent)
-                    )
-                {
+                if matches!(
+                    backend::member::role(&self.core, &source, now),
+                    Err(MembershipError::Absent)
+                ) {
                     // The governance that lists the writer's device has not arrived yet: a
                     // replay or a delivery ahead of it. A write it would refuse is held and
                     // decided again with every governance change; it is applied only once the
@@ -631,10 +627,15 @@ impl StatePeer {
         }
         let access = self
             .workspace_writer(source, now)
-            .map_err(crate::AdmissionError::malformed)?;
+            .map_err(crate::AdmissionError::forbidden)?;
         let owner = self.core.owner;
         let administrators = self.administrator_roots();
         let from = hex::encode(source);
+        let anchors: Vec<[u8; 32]> = self
+            .own_device
+            .into_iter()
+            .chain([self.core.origin])
+            .collect();
         // The one workspace admission the shell's workspace tree runs too.
         let workspace::AdmittedWorkspace {
             mut candidate,
@@ -646,6 +647,7 @@ impl StatePeer {
                 source: workspace::Writer { key: &from, access },
                 owner: &owner,
                 administrators: &administrators,
+                anchors: &anchors,
                 now_ns: now_ns(now),
             },
             workspace_changes,
@@ -653,11 +655,9 @@ impl StatePeer {
         if rebased && let Some(before) = self.core.workspace_doc.as_deref() {
             self.carry_over_base(before, &mut candidate)?;
         }
-        // The workspace's owner is the person its governance names, not the
-        // person of the device this replica was joined through: a member's
-        // device admits its person's further device too, and the workspace
-        // stays its own owner's ([`Self::from_join`] names the admitting
-        // device until the governance arrives).
+        // The workspace's owner is the person its governance names, never
+        // the person of the device this replica was joined through
+        // ([`Self::from_join`] names no owner until the governance arrives).
         if self.core.workspace_doc.is_none()
             && let Some(owner) = owner_named_by(&candidate, &self.core.workspace)
         {
@@ -742,44 +742,38 @@ impl StatePeer {
     }
 
     /// Who writes the workspace's changes as `source`'s device: the member it
-    /// is, else one of the workspace's holders by the address it signed.
-    ///
-    /// Every device, the owner's included, writes the workspace's governance
-    /// only while the roster holds it: a device the workspace took out of its
-    /// roster writes nothing there, whatever person's certificate it carries.
-    /// The device this replica was joined through supplies the first
-    /// governance before there is a roster to hold it.
+    /// is, holding a role on the signed member list as the workspace's owner
+    /// does too, else a device enrolling itself, which writes its own
+    /// admission and nothing else. A device the workspace revoked, or took off
+    /// its member list with the mark that removed it
+    /// ([`crate::PeerGovernance::removed_from_member_list`]), writes nothing,
+    /// and is told so.
     fn workspace_writer(
         &self,
         source: [u8; 32],
         now: SystemTime,
     ) -> Result<workspace::SenderAccess, String> {
-        let member = self
+        let held = self
             .certificate(&source, now)
-            .map_err(|error| error.to_string())
-            .and_then(|cert| {
-                let person = cert.user_public_key;
-                let foreign = backend::member::foreign(cert, &self.core.origin);
-                if self.core.workspace_doc.is_some() || person != self.core.owner {
-                    self.role(&source, now).map_err(|error| error.to_string())?;
-                }
-                // A device the workspace took off its member list writes nothing
-                // here, whether its row was deleted or kept with the mark that
-                // removed it ([`crate::PeerGovernance::removed_from_member_list`]).
-                if self.governance().removed_from_member_list(cert) {
-                    return Err(crate::state::MembershipError::Absent.to_string());
-                }
-                Ok(workspace::SenderAccess::Member { person, foreign })
-            });
-        match member {
-            Ok(access) => Ok(access),
-            Err(error) => self
-                .holder_certificate(&source)
-                .map(|cert| workspace::SenderAccess::Holder {
-                    person: cert.user_public_key,
-                })
-                .ok_or(error),
+            .and_then(|cert| self.role(&source, now).map(|_| cert));
+        if let Err(revoked @ super::MembershipError::Revoked) = &held {
+            return Err(revoked.to_string());
         }
+        if let Ok(cert) = &held
+            && self.governance().removed_from_member_list(cert)
+        {
+            return Err(super::MembershipError::Absent.to_string());
+        }
+        let member = tilo_failure::ignored!(
+            "a sender the workspace does not list with a role yet writes only its own admission",
+            held.ok()
+        );
+        Ok(member.map_or(workspace::SenderAccess::Enrolling, |cert| {
+            workspace::SenderAccess::Member {
+                person: cert.user_public_key,
+                foreign: backend::member::foreign(cert, &self.core.origin),
+            }
+        }))
     }
 
     pub(super) fn receive_document(

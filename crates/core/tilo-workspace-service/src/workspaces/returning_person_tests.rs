@@ -120,26 +120,27 @@ async fn a_new_tab_comes_back_at_the_part_they_hold(
     person: [u8; 32],
 ) {
     let now = tilo_clock::unix_now_ns();
-    let (_, returned) = device_of(
+    let (returned_key, returned) = device_of(
         root,
         now.saturating_sub(1_000_000_000),
         now + 3_600_000_000_000,
     );
-    let entered = crate::handshake::Admit::enter(
-        workspaces,
-        &returned,
-        Entry {
-            entering: Entering {
-                workspace: workspace.to_owned(),
-                name: "Returning".into(),
-                request_id: rand::random(),
-                through: Through::Entry,
+    let entered = workspaces
+        .enter_signed(
+            (&returned_key, &returned),
+            Entry {
+                entering: Entering {
+                    workspace: workspace.to_owned(),
+                    name: "Returning".into(),
+                    request_id: rand::random(),
+                    through: Through::Entry,
+                    admission: Vec::new(),
+                },
+                access: None,
+                proof: [0; 64],
             },
-            access: None,
-            proof: [0; 64],
-        },
-    )
-    .await;
+        )
+        .await;
     let Entered::Admitted { role, .. } = entered else {
         panic!("the returning person is let in: {entered:?}");
     };

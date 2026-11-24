@@ -225,7 +225,7 @@ pub(super) async fn studio(root: &SigningKey, state: &std::path::Path) -> Studio
         .clone();
     let workspace = hosted.create("Studio").await.unwrap().workspace;
     hosted
-        .enter(&workspace, &laptop_cert)
+        .enter(&workspace, (&laptop_cert, &laptop_key))
         .await
         .expect("a device of the person enters the workspace");
     let login = login_to(&server, &workspace, (&laptop_cert, &server_cert));
@@ -1000,7 +1000,7 @@ async fn servers_host(root: &SigningKey) -> ServersHost {
         .await
         .expect("the person's Servers workspace is founded");
     hosted
-        .enter(&admin, &issuer_cert)
+        .enter(&admin, (&issuer_cert, &issuer_key))
         .await
         .expect("a device of the person enters the Servers workspace");
     ServersHost {
@@ -1443,7 +1443,7 @@ async fn a_root_holders_login_at_a_server_names_it_among_the_persons_hosts() {
         .clone();
     let workspace = hosted.create("Studio").await.unwrap().workspace;
     hosted
-        .enter(&workspace, &laptop_cert)
+        .enter(&workspace, (&laptop_cert, &laptop_key))
         .await
         .expect("a device of the person enters the workspace");
 

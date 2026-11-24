@@ -156,6 +156,18 @@ fn admit(
     owner: &[u8; 32],
     changes: &[Vec<u8>],
 ) -> Result<AdmittedWorkspace, WorkspaceRefusal> {
+    admit_anchored(before, source, owner, &[], changes)
+}
+
+/// [`admit`] on a replica whose own device, and the device it joined
+/// through, are `anchors`.
+fn admit_anchored(
+    before: Option<&AutoCommit>,
+    source: Writer<'_>,
+    owner: &[u8; 32],
+    anchors: &[[u8; 32]],
+    changes: &[Vec<u8>],
+) -> Result<AdmittedWorkspace, WorkspaceRefusal> {
     admit_workspace_changes(
         WorkspaceAdmission {
             before,
@@ -163,6 +175,7 @@ fn admit(
             source,
             owner,
             administrators: &[],
+            anchors,
             now_ns: crate::workspace::saved_shortcut::ns_at(NOW),
         },
         changes,
@@ -191,31 +204,42 @@ fn take_ownership(doc: &mut AutoCommit, root: [u8; 32]) {
 tilo_test_env::scenario! {
     fn a_batch_is_admitted_only_under_the_workspaces_authority;
 
-    phase authority_bootstrap_needs_no_roster_and_others_need_held_governance;
+    phase a_first_member_list_is_taken_in_where_it_lists_this_device;
+    // With nothing held, whoever sends the workspace's governance, it is taken
+    // in only where it lists this replica's own device (or the device it
+    // joined through) under a person holding a role: no sender is the
+    // workspace's governor by answering first.
     {
-        let authority = key(0xA0);
-        let snapshot = all_changes(&governed());
-        let admitted = admit(
+        let mut listed = governed();
+        let (_, editor) = editor_device();
+        list_device(&mut listed, &editor);
+        let snapshot = all_changes(&listed);
+        let stranger = key(0xB0);
+        let admitted = admit_anchored(
             None,
-            member(&authority, owner_root()),
-            &owner_root(),
+            member(&stranger, newcomer_root()),
+            &[0; 32],
+            &[editor.device_public_key],
             &snapshot,
         )
-        .expect("the invite's authority supplies the first governance");
+        .expect("the governance lists the replica's own device");
         assert_eq!(
             super::super::governance_of(Some(&admitted.candidate)).owner,
             Some(person_id(owner_root()))
         );
-        let stranger = key(0xB0);
+        let (_, newcomer) = rooted(0x69);
         assert_eq!(
-            admit(
+            admit_anchored(
                 None,
-                member(&stranger, editor_root()),
+                member(&key(0xA0), owner_root()),
                 &owner_root(),
+                &[newcomer.device_public_key],
                 &snapshot,
             )
             .unwrap_err(),
-            WorkspaceRefusal::RulesMissing
+            WorkspaceRefusal::WriteForbidden,
+            "a governance that lists no anchor of the replica governs nothing here, \
+             whoever sends it"
         );
     }
 
@@ -323,7 +347,10 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase governance_changes_only_from_the_owners_devices;
+    phase the_member_list_changes_only_through_operations;
+    // The owner writes governance as everyone does: through an operation its
+    // role permits. A batch that moves governance without one is refused from
+    // the owner's devices too.
     {
         let before = governed();
         let seize = changes_after(&before, |doc| take_ownership(doc, editor_root()));
@@ -335,15 +362,16 @@ tilo_test_env::scenario! {
             "an editor's governance change is refused"
         );
         for device in [0xA0, 0x05] {
-            assert!(
+            assert_eq!(
                 admit(
                     Some(&before),
                     member(&key(device), owner_root()),
                     &owner_root(),
                     &seize
                 )
-                .is_ok(),
-                "any device of the owner may change governance"
+                .unwrap_err(),
+                WorkspaceRefusal::GovernanceWriter,
+                "no device of the owner writes governance without an operation"
             );
         }
         // An echo re-states held governance under the sender's own actor.
@@ -375,7 +403,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_first_answer_from_someone_not_the_owner_is_refused;
+    phase a_first_answer_listing_no_device_here_is_refused;
     {
         let snapshot = all_changes(&governed());
         let first = key(0xB0);
@@ -390,7 +418,7 @@ tilo_test_env::scenario! {
                 &snapshot,
             )
             .unwrap_err(),
-            WorkspaceRefusal::GovernanceWriter,
+            WorkspaceRefusal::WriteForbidden,
             "answering first does not make a peer the governor"
         );
     }
@@ -684,6 +712,7 @@ tilo_test_env::scenario! {
                 source: member(&writer, editor_root()),
                 owner: &owner_root(),
                 administrators: &[],
+                anchors: &[],
                 now_ns: NOW_NS + 700_000_000,
                 },
             &batch,
@@ -1258,6 +1287,32 @@ fn rooted(seed: u8) -> (ed25519_dalek::SigningKey, DeviceCert) {
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
     (key, cert)
+}
+
+/// Put `cert`'s device among `doc`'s device rows.
+fn list_device(doc: &mut AutoCommit, cert: &DeviceCert) {
+    let rows = match doc.get(ROOT, "peer_identities_v1").unwrap() {
+        Some((_, rows)) => rows,
+        None => doc
+            .put_object(ROOT, "peer_identities_v1", automerge::ObjType::Map)
+            .unwrap(),
+    };
+    let identity = crate::state::GovernedIdentity {
+        device_cert: cert.clone(),
+        revocations: Vec::new(),
+        admission: None,
+        admissions: Vec::new(),
+        delegate: None,
+        workspace_delegations: Vec::new(),
+        removed: false,
+    };
+    doc.put(
+        &rows,
+        hex::encode(cert.device_public_key),
+        ScalarValue::Bytes(identity.encode().unwrap()),
+    )
+    .unwrap();
+    doc.commit();
 }
 
 fn person_of(cert: &DeviceCert) -> String {

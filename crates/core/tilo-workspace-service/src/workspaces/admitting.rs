@@ -12,9 +12,9 @@
 //! as this device ([`Caller::local_system`]) with every one of them, which the owner's
 //! pre-admissions decide.
 //!
-//! Whichever way, the change that admits people commits, with the signed member list, each
-//! one's membership record (`so.tilo.membership/member.<person>`), the invitations they spent
-//! and the workspace's receipts of their requests: all of it, or none.
+//! Whichever way, the change that admits people commits, with the signed member list, the
+//! invitations they spent and the workspace's receipts of their requests: all of it, or none.
+//! Each one's membership reads from that list ([`tilo_server_protocol::workspaces::MEMBERSHIP_APP`]).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -31,7 +31,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
 use super::collaboration::{
-    AddMemberRequest, CollaborationError, GovernanceCompletion, HeldWorkspace, Keeping, Redeeming,
+    AddMemberRequest, CollaborationError, GovernanceCompletion, HeldWorkspace, Redeeming,
     request_digest,
 };
 use super::pages::Presented;
@@ -51,16 +51,22 @@ pub(super) enum Admitting {
     /// A device redeeming `invitation` on the connection that carries its entry, on which its
     /// host checked it holds `certificate`'s key ([`tilo_server_protocol::entering`]), shown to
     /// the workspace's people as `name`, with the owner's pre-admission `token` where the
-    /// invitation was issued under one.
+    /// invitation was issued under one, and `admission`, the workspace changes it signed to let
+    /// itself in ([`tilo_peer_state::own_admission::sign_entry`]).
     Entry {
         invitation: Vec<u8>,
         certificate: DeviceCert,
         request_id: [u8; 32],
         name: String,
         token: Option<Vec<u8>>,
+        admission: Vec<Vec<u8>>,
     },
-    /// A device that answered the join exchange's challenge with `proof`.
-    Answered { proof: JoinProof },
+    /// A device that answered the join exchange's challenge with `proof`, and sent `admission`,
+    /// the workspace changes it signed to let itself in.
+    Answered {
+        proof: JoinProof,
+        admission: Vec<Vec<u8>>,
+    },
 }
 
 impl Admitting {
@@ -75,7 +81,7 @@ impl Admitting {
             } => redeemed == invitation && device == Some(certificate.device_public_key),
             Self::Entry { token: Some(_), .. } => false,
             // The exchange's log checks the proof against the connection that answered.
-            Self::Answered { proof } => {
+            Self::Answered { proof, .. } => {
                 proof.challenge.signed_invitation == invitation && device.is_some()
             }
         }
@@ -116,7 +122,8 @@ struct Checked {
     remote_endpoint: [u8; 32],
     proof_digest: [u8; 32],
     redemption: VerifiedRedemption,
-    name: Option<String>,
+    /// The workspace changes the device signed to let itself in: its name among them.
+    admission: Vec<Vec<u8>>,
     way: Way,
 }
 
@@ -129,72 +136,6 @@ enum Way {
         name: String,
     },
     Answered,
-}
-
-/// What admitting people to a workspace writes besides its member list: each
-/// one's membership ([`super::membership::Membership`]) at the role the
-/// admitting change gives them, kept in that same change, so the workspace
-/// never lists a member whose membership it does not keep, nor the reverse.
-struct Admission {
-    /// Who the change may admit, with their membership records.
-    members: Vec<([u8; 32], super::authored::HeldRecord)>,
-    /// The device that writes the records: this host.
-    writer: DeviceCert,
-}
-
-impl Admission {
-    /// Keep in `candidate` the membership of each person it may admit at the
-    /// role `candidate`'s governance gives them, where their record holds
-    /// another, signed with `key` at `now`. Answers whose it kept.
-    ///
-    /// # Errors
-    /// The governance does not read, or a record cannot be written.
-    fn keep(
-        &self,
-        candidate: &mut tilo_peer_state::StatePeer,
-        (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),
-    ) -> Result<(Vec<[u8; 32]>, Vec<neighbour_wire::NeighbourMsg>), String> {
-        use super::membership::Membership;
-        if self.members.is_empty() {
-            return Ok((Vec::new(), Vec::new()));
-        }
-        let policy = candidate
-            .governance()
-            .governed_policy()
-            .map_err(|error| error.to_string())?;
-        let made_at_ms = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
-        let (mut kept, mut written) = (Vec::new(), Vec::new());
-        for (person, record) in &self.members {
-            let Some(role) = policy.active_role(&hex::encode(person)) else {
-                continue;
-            };
-            let role = role.key().to_string();
-            let genesis = super::person_workspace::genesis::<Membership>(record.workspace())?;
-            let (_, wrote) = record.write(
-                candidate,
-                Some(Box::new(genesis)),
-                |doc| {
-                    let held = tilo_resource::Replica::<Membership>::from_doc(doc.clone())
-                        .state()
-                        .map_err(|error| error.to_string())?;
-                    if held.role.as_deref() == Some(role.as_str()) {
-                        return Ok(());
-                    }
-                    super::person_workspace::invoke(
-                        doc,
-                        &self.writer,
-                        Membership::KEEP_ROLE.with((role.clone(), made_at_ms)),
-                    )
-                },
-                (key, now),
-            )?;
-            if !wrote.is_empty() {
-                kept.push(*person);
-                written.extend(wrote);
-            }
-        }
-        Ok((kept, written))
-    }
 }
 
 /// Answer the `index`th admission asked with `admitted`.
@@ -237,23 +178,14 @@ impl Workspaces {
         self.authorize(administrator, Some(&workspace), op, now)?;
         let key = self.inner.host.key.clone();
         let name = request.name.as_deref();
-        let admission = self.admission(&workspace, [person]).await?;
-        let mut kept = (Vec::new(), Vec::new());
         let done = self
             .administer(
                 &mut workspace,
                 request.request_id,
                 request_digest(&("member", person, &place, name))?,
                 |peer| {
-                    let changed = peer.governance_mut().place_member(
-                        person,
-                        place,
-                        name,
-                        &key,
-                        system_time(now),
-                    )?;
-                    kept = admission.keep(peer, (&key, system_time(now)))?;
-                    Ok(changed)
+                    peer.governance_mut()
+                        .place_member(person, place, name, &key, system_time(now))
                 },
                 now,
             )
@@ -268,8 +200,6 @@ impl Workspaces {
                 .removals
                 .clear(person)
                 .map_err(CollaborationError::new)?;
-            self.carry_written(workspace.workspace_id(), &kept.1)?;
-            self.kept_memberships(workspace.workspace(), &kept.0);
         }
         drop(workspace);
         done
@@ -359,7 +289,7 @@ impl Workspaces {
                 request_id: checked.redemption.request_id(),
                 proof_digest: checked.proof_digest,
                 redemption: &checked.redemption,
-                name: checked.name.as_deref(),
+                admission: &checked.admission,
             })
             .collect();
         let admitted = if joins.is_empty() {
@@ -431,13 +361,14 @@ impl Workspaces {
         now: u64,
     ) -> Result<Result<Checked, Admitted>, CollaborationError> {
         let answering = self.device_cert();
-        let (remote_endpoint, proof_digest, redemption, name, way) = match admission {
+        let (remote_endpoint, proof_digest, redemption, admission, way) = match admission {
             Admitting::Entry {
                 invitation,
                 certificate,
                 request_id,
                 name,
                 token,
+                admission,
             } => {
                 let presented = Presented {
                     invitation,
@@ -476,16 +407,9 @@ impl Workspaces {
                     }
                     None => Way::Entered,
                 };
-                // A device that names no person arrives as it is: the name the workspace
-                // already knows the person by stands, and one it does not know yet stays
-                // unnamed rather than taking a device's label for a person's name.
-                let named = match way {
-                    Way::PreAdmitted { .. } => Some(name),
-                    _ => (!name.trim().is_empty()).then_some(name),
-                };
-                (device, presented.digest()?, redemption, named, way)
+                (device, presented.digest()?, redemption, admission, way)
             }
-            Admitting::Answered { proof } => {
+            Admitting::Answered { proof, admission } => {
                 let remote_endpoint =
                     device.ok_or_else(|| CollaborationError::new("no device answered"))?;
                 self.inner
@@ -516,7 +440,7 @@ impl Workspaces {
                     remote_endpoint,
                     proof_digest,
                     redemption,
-                    None,
+                    admission,
                     Way::Answered,
                 )
             }
@@ -554,7 +478,7 @@ impl Workspaces {
             remote_endpoint,
             proof_digest,
             redemption,
-            name,
+            admission,
             way,
         }))
     }
@@ -605,11 +529,11 @@ impl Workspaces {
     }
 
     /// Admit the verified `joins` to `workspace` in one governance change: the
-    /// shared admission ([`tilo_peer_state::join_answer::admit`]), each
-    /// person's membership record kept in that change ([`Admission`]),
-    /// published before anyone hears their answer. People arriving together
-    /// cost the workspace one write and one publication instead of one each,
-    /// and each of those grows with the workspace.
+    /// shared admission ([`tilo_peer_state::join_answer::admit`]), each the
+    /// admission its own device signed, published before anyone hears their
+    /// answer. People arriving together cost the workspace one write and one
+    /// publication instead of one each, and each of those grows with the
+    /// workspace.
     ///
     /// Answers each join in order. Fails as a whole when the change cannot
     /// be committed or published.
@@ -623,35 +547,26 @@ impl Workspaces {
         joins: &[Redeeming<'_>],
         now: u64,
     ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {
-        let key = &self.inner.host.key;
-        let people: Vec<[u8; 32]> = joins
-            .iter()
-            .map(|join| join.redemption.certificate().user_public_key)
-            .collect();
-        let admission = self.admission(workspace, people).await?;
         let deciding = crate::timing::start();
-        let (admitted, committed, kept, written) = {
-            let keep: Keeping<'_> = &|peer, at| admission.keep(peer, at);
+        let (admitted, committed) = {
             let shared = workspace.peer.shared();
             let mut replica = shared.lock();
-            let mut held =
-                HeldWorkspace::new(key, self.device_cert(), workspace, &mut replica, Some(keep));
-            let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
-            (admitted, held.committed, held.kept, held.written)
+            let mut held = HeldWorkspace::new(
+                &self.inner.host.key,
+                self.device_cert(),
+                workspace,
+                &mut replica,
+            );
+            let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, now);
+            (admitted, held.committed)
         };
         crate::timing::event("join.admit.decide", deciding, joins.len() as u64);
         if committed {
             let settling = crate::timing::start();
             self.settle(workspace).await?;
             crate::timing::event("join.admit.settle", settling, joins.len() as u64);
-            self.carry_written(workspace.workspace_id(), &written)?;
-            self.kept_memberships(workspace.workspace(), &kept);
-            // The workspace keeps the grant of every key it admitted, so every
-            // holder and every API server reads the same grant from the
-            // workspace itself, whichever way the key came in.
             if let Ok(answers) = &admitted {
                 for (join, answer) in joins.iter().zip(answers) {
-                    let certificate = join.redemption.certificate();
                     if answer.is_ok() {
                         // Redeeming an invitation is a deliberate admission:
                         // it lifts a plain removal at once, as holding the
@@ -659,14 +574,8 @@ impl Workspaces {
                         // policy, so an invitation admits no banned person.
                         workspace
                             .removals
-                            .clear(certificate.user_public_key)
+                            .clear(join.redemption.certificate().user_public_key)
                             .map_err(CollaborationError::new)?;
-                    }
-                    if answer.is_ok()
-                        && let Some(scope) = certificate.capabilities.agent
-                    {
-                        self.list_grant(workspace, certificate, scope, join.name, now)
-                            .await?;
                     }
                 }
             }
@@ -675,45 +584,6 @@ impl Workspaces {
             workspace.forget_joined_wait_list();
         }
         admitted
-    }
-
-    /// Take what admitting `people` to `workspace` writes of their memberships.
-    ///
-    /// # Errors
-    /// A membership record cannot be written here
-    /// ([`Self::hold_record`]).
-    async fn admission(
-        &self,
-        workspace: &GovernedWorkspace,
-        people: impl IntoIterator<Item = [u8; 32]>,
-    ) -> Result<Admission, CollaborationError> {
-        let mut members: Vec<([u8; 32], super::authored::HeldRecord)> = Vec::new();
-        for person in people {
-            if members.iter().any(|(held, _)| *held == person) {
-                continue;
-            }
-            let record = super::membership::member_record(&person);
-            let held = self
-                .hold_record(workspace, (super::membership::APP, &record))
-                .await?;
-            members.push((person, held));
-        }
-        Ok(Admission {
-            members,
-            writer: self.device_cert().clone(),
-        })
-    }
-
-    /// Tell whoever follows `workspace`'s records of the memberships an
-    /// admission kept of `people`.
-    fn kept_memberships(&self, workspace: &str, people: &[[u8; 32]]) {
-        for person in people {
-            self.wrote(
-                workspace,
-                super::membership::APP,
-                &super::membership::member_record(person),
-            );
-        }
     }
 
     /// Ask `workspace/members#admit` of the workspace `workspace_id` on this device's dispatch,
@@ -800,8 +670,8 @@ impl Workspaces {
     }
 
     /// Admit, through `workspace/members#admit`, the device at `remote_endpoint` that answered
-    /// the join exchange's challenge with `proof`, as the invitation it redeems: the workspace as
-    /// the admission committed it.
+    /// the join exchange's challenge with `proof`, by `admission`, the changes it signed to let
+    /// itself in with the invitation it redeems: the workspace as the admission committed it.
     ///
     /// # Errors
     /// The invitation does not hold, or the admission refused it.
@@ -809,6 +679,7 @@ impl Workspaces {
         &self,
         remote_endpoint: [u8; 32],
         proof: JoinProof,
+        admission: Vec<Vec<u8>>,
         now: u64,
     ) -> Result<JoinBootstrap, CollaborationError> {
         let invitation = proof.challenge.signed_invitation.clone();
@@ -816,7 +687,11 @@ impl Workspaces {
         let caller = Caller::invited(remote_endpoint, Invited { invitation, issuer });
         let workspace = proof.challenge.workspace_id;
         match self
-            .admit_through(workspace, &caller, vec![Admitting::Answered { proof }])
+            .admit_through(
+                workspace,
+                &caller,
+                vec![Admitting::Answered { proof, admission }],
+            )
             .await?
             .pop()
         {

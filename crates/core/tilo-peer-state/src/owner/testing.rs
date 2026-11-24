@@ -213,8 +213,26 @@ pub fn enroll_into(
     let join::JoinTransportResponse::Challenge(response) = response else {
         return Err("the workspace refused the challenge".into());
     };
+    let redemption = join::verify_connection_redemption(
+        verified.signed_invitation(),
+        certificate,
+        request_id,
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let admission = crate::own_admission::own_admission(
+        &verified.grant().workspace_id.to_string(),
+        &response.governance,
+        &redemption,
+        None,
+        key,
+        now,
+    )
+    .unwrap();
     let complete = join::JoinCompleteRequest {
         proof: join::sign_join_proof(response.challenge, key).unwrap(),
+        admission,
     };
     let intent = VerifiedNativeEnrollmentIntent::from_proof(
         verified,
@@ -477,7 +495,10 @@ pub fn governed_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKe
     };
     let intent = VerifiedNativeEnrollmentIntent::from_proof(
         verified,
-        join::JoinCompleteRequest { proof },
+        join::JoinCompleteRequest {
+            proof,
+            admission: Vec::new(),
+        },
         device,
         hint,
         now,

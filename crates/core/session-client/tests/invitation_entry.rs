@@ -386,6 +386,7 @@ async fn an_invitation_asked_again_under_the_same_request_admits_the_device_it_a
             invitation: issued.clone(),
             token: None,
         },
+        admission: Vec::new(),
     };
     for ask in ["first", "again"] {
         let (done, receive) = tilo_session_client::answer();

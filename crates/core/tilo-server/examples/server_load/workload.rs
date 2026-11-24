@@ -222,7 +222,7 @@ impl Fleet {
                         workspace
                             .members
                             .iter()
-                            .map(|device| device.cert.clone())
+                            .map(|device| (device.cert.clone(), device.sk.to_bytes()))
                             .collect(),
                     )
                 })

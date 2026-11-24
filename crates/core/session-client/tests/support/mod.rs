@@ -124,7 +124,7 @@ pub fn workspace() -> tilo_server_protocol::WorkspaceId {
 /// and admit `device` to it as its owner: what a page asks of its host
 /// before it joins ([`Outbox::join_placed`](tilo_session_client::Outbox::join_placed)), done here for a peer
 /// that reaches the host without the route that administers them.
-pub async fn place(server: &Server, device: &DeviceCert) {
+pub async fn place(server: &Server, device: (&DeviceCert, &SigningKey)) {
     let workspaces = server.workspaces().unwrap();
     if workspaces.summary(WORKSPACE).await.is_err()
         && let Err(error) = workspaces
@@ -134,7 +134,10 @@ pub async fn place(server: &Server, device: &DeviceCert) {
         // Another peer of the test may have placed it meanwhile.
         assert!(workspaces.summary(WORKSPACE).await.is_ok(), "{error}");
     }
-    workspaces.enter(WORKSPACE, device).await.unwrap();
+    workspaces
+        .enter(WORKSPACE, (device.0, device.1))
+        .await
+        .unwrap();
 }
 
 pub struct Device {
@@ -828,12 +831,13 @@ pub async fn entry_grant(
 
 /// Redeem `entry` for `cert`'s device in the host's process, as its session's entry has the
 /// workspace admit it once the device proved its key on the connection
-/// (`invitation_entry.rs` walks that entry itself): the workspace admits it as an editor.
+/// (`invitation_entry.rs` walks that entry itself): the device signs its own admission with
+/// `key`, and the workspace admits it as an editor.
 pub async fn redeem(
     host: &TestHost,
     (invitation, token): (Vec<u8>, Vec<u8>),
     cert: &DeviceCert,
-    _key: &SigningKey,
+    key: &SigningKey,
 ) {
     let admitted = host
         .server
@@ -841,7 +845,7 @@ pub async fn redeem(
         .unwrap()
         .admit_proven(
             invitation,
-            cert.clone(),
+            (cert.clone(), key),
             random_bytes(),
             "Guest",
             Some(&token),

@@ -250,12 +250,17 @@ async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_acti
     let laptop = owners_laptop();
     let created = workspaces.create("Plans").await.unwrap();
 
-    // Entering admits the laptop and answers the invitation it redeems,
-    // restricted to its own person.
+    // Entering answers the invitation the laptop redeems, restricted to its
+    // own person, and lists nothing: the laptop signs its own admission with it.
     let enter = || host_request(ENTER_WORKSPACE, json!({ "workspace": created.workspace }));
     let entered: EnteredWorkspace =
         serde_json::from_value(invoke(&host, &laptop, enter()).await.unwrap()).unwrap();
-    assert!(entered.changed);
+    assert!(
+        !workspaces
+            .decides_for(created.workspace_id, laptop.device_public_key)
+            .await,
+        "this host lists no device in the workspace for it"
+    );
     let own = entered.invitation.decode().unwrap();
     let verified = decode_and_verify_invitation(
         &own.signed_invitation,
@@ -270,10 +275,14 @@ async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_acti
     );
     let again: EnteredWorkspace =
         serde_json::from_value(invoke(&host, &laptop, enter()).await.unwrap()).unwrap();
-    assert!(!again.changed, "already admitted");
+    assert_ne!(
+        again.invitation, entered.invitation,
+        "each entry answers an invitation of its own"
+    );
 
-    // A Viewer, who may invite no one, enters from a device of theirs the same way: the
-    // invitation it answers is their own, at their role, and the device redeems it.
+    // A Viewer, who may invite no one, lists a device of theirs by signing its own row, and
+    // the device is then answered the same way: the invitation is their own, at their role,
+    // and the device redeems it.
     let root = SigningKey::from_bytes(&[9; 32]);
     workspaces
         .add_member(
@@ -295,9 +304,19 @@ async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_acti
         ..laptop.clone()
     };
     sign_device_cert(&mut phone, &root).unwrap();
+    let phone_key = phone.device_public_key;
+    assert!(
+        workspaces
+            .enter(
+                &created.workspace,
+                (&phone, &SigningKey::from_bytes(&[10; 32]))
+            )
+            .await
+            .unwrap(),
+        "the phone lists itself under its person"
+    );
     let entered: EnteredWorkspace =
         serde_json::from_value(invoke(&host, &phone, enter()).await.unwrap()).unwrap();
-    assert!(entered.changed, "the phone is enrolled under its person");
     let own = entered.invitation.decode().unwrap();
     let verified = decode_and_verify_invitation(
         &own.signed_invitation,
@@ -308,7 +327,13 @@ async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_acti
     .unwrap();
     assert_eq!(verified.grant().role, Role::Viewer);
     let redeemed = workspaces
-        .admit_proven(own.signed_invitation, phone, [11; 32], "Cy", None)
+        .admit_proven(
+            own.signed_invitation,
+            (phone, &SigningKey::from_bytes(&[10; 32])),
+            [11; 32],
+            "Cy",
+            None,
+        )
         .await;
     assert!(
         matches!(
@@ -316,6 +341,12 @@ async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_acti
             tilo_server_protocol::workspaces::JoinReply::Admitted { .. }
         ),
         "{redeemed:?}"
+    );
+    assert!(
+        workspaces
+            .decides_for(created.workspace_id, phone_key)
+            .await,
+        "the phone is listed"
     );
     server.shutdown().await;
 }

@@ -24,6 +24,7 @@ use tilo_user_identity::{
 
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{Answering, answered, caller, settled};
+use crate::workspaces::fixtures::list_itself_on_link;
 use crate::workspaces::tests::{governor, guest_device, test_host};
 use crate::workspaces::{IssueInvitationRequest, OwnWorkspaceOffer, WaitListSecrets, Workspaces};
 
@@ -129,17 +130,25 @@ async fn offered(
 }
 
 /// `device` redeems `created`'s invitation, as a page joining does.
-async fn join(workspaces: &Workspaces, created: &CreatedWorkspace, device: &DeviceCert) {
+async fn join(
+    workspaces: &Workspaces,
+    created: &CreatedWorkspace,
+    device: (&SigningKey, &DeviceCert),
+) {
     let issued = created.invitation.as_ref().unwrap().decode().unwrap();
     join_with(workspaces, issued.signed_invitation, device).await;
 }
 
 /// `device` redeems `invitation`, the signed bytes of one.
-async fn join_with(workspaces: &Workspaces, invitation: Vec<u8>, device: &DeviceCert) {
+async fn join_with(
+    workspaces: &Workspaces,
+    invitation: Vec<u8>,
+    (key, device): (&SigningKey, &DeviceCert),
+) {
     let admitted = workspaces
         .admit_proven(
             invitation,
-            device.clone(),
+            (device.clone(), key),
             rand::random(),
             // As the page or shell joining says what its person is called.
             device.device_label.as_str(),
@@ -181,7 +190,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let host = super::super::tests::host_dispatch(&workspaces);
-    let (_, guest) = guest_device();
+    let (guest_key, guest) = guest_device();
 
     // A host that keeps none offers a stranger nothing.
     assert!(offered(&host, &guest, &caller(&guest)).await.is_empty());
@@ -240,7 +249,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
 
     // It is theirs: its governance names them its owner, and their device
     // comes in as the owner's.
-    join(workspaces, &created, &guest).await;
+    join(workspaces, &created, (&guest_key, &guest)).await;
     assert_eq!(
         access(
             workspaces,
@@ -754,7 +763,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
         )
         .is_ok()
     );
-    join(workspaces, &created, &all).await;
+    join(workspaces, &created, (&grant_key, &all)).await;
     assert_eq!(
         access(
             workspaces,
@@ -787,7 +796,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
         now + 60_000_000_000,
     );
     sign_device_cert(&mut minted, &grant_key).unwrap();
-    join(workspaces, &again, &minted).await;
+    join(workspaces, &again, (&minted_key, &minted)).await;
     // Listing answers the grant's person only their own workspace, not the
     // host's others.
     workspaces.create("Someone else's").await.unwrap();
@@ -1096,7 +1105,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let backend_key = SigningKey::from_bytes(&rand::random());
     let backend = certified(&ada, &backend_key, DeviceCapabilities::server_key_grant());
     let created = own_as_key(&host, &backend, json!({"name": "Applicant"})).await;
-    join(workspaces, &created, &backend).await;
+    join(workspaces, &created, (&backend_key, &backend)).await;
     let workspace = &created.workspace;
 
     // It governs as Ada does: she owns the workspace, so it invites at
@@ -1129,7 +1138,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let consented = certified(&ada, &consented_key, all);
     let ada_asked = Answering::approving();
     let entering = own_as_key(&host, &consented, json!({"workspace": workspace.workspace})).await;
-    join(workspaces, &entering, &consented).await;
+    join(workspaces, &entering, (&consented_key, &consented)).await;
     govern(
         &host,
         workspace,
@@ -1149,7 +1158,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let rosa = SigningKey::from_bytes(&rand::random());
     let page_key = SigningKey::from_bytes(&rand::random());
     let page = certified(&rosa, &page_key, DeviceCapabilities::member());
-    join_with(workspaces, invitation, &page).await;
+    join_with(workspaces, invitation, (&page_key, &page)).await;
     let rosa_person = rosa.verifying_key().to_bytes();
     assert_eq!(
         access(workspaces, &workspace.workspace, rosa_person).await,
@@ -1161,7 +1170,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let reviewer = certified(&rosa, &reviewer_key, DeviceCapabilities::server_key_grant());
     let entering = own_as_key(&host, &reviewer, json!({"workspace": workspace.workspace})).await;
     assert_eq!(entering.workspace.workspace, workspace.workspace);
-    join(workspaces, &entering, &reviewer).await;
+    join(workspaces, &entering, (&reviewer_key, &reviewer)).await;
     assert_eq!(
         access(workspaces, &workspace.workspace, rosa_person).await,
         Some((Role::Editor, false))
@@ -1210,14 +1219,15 @@ async fn a_key_of_the_person_a_workspace_was_handed_to_enters_it() {
         .declare_owner(&home, person, Some("Ada"))
         .await
         .unwrap();
+    let backend_signer = SigningKey::from_bytes(&rand::random());
     let backend = certified(
         &ada,
-        &SigningKey::from_bytes(&rand::random()),
+        &backend_signer,
         DeviceCapabilities::server_key_grant(),
     );
     let entering = own_as_key(&host, &backend, json!({"workspace": home})).await;
     assert_eq!(entering.workspace.workspace, home);
-    join(workspaces, &entering, &backend).await;
+    join(workspaces, &entering, (&backend_signer, &backend)).await;
     assert_eq!(
         access(workspaces, &home, person)
             .await
@@ -1244,13 +1254,10 @@ async fn an_owners_key_adds_an_administrator_by_key_whose_own_key_then_brings_pe
 
     let ada = SigningKey::from_bytes(&rand::random());
     let_in(workspaces, &home, ada.verifying_key().to_bytes()).await;
-    let ada_key = certified(
-        &ada,
-        &SigningKey::from_bytes(&rand::random()),
-        DeviceCapabilities::server_key_grant(),
-    );
+    let ada_signer = SigningKey::from_bytes(&rand::random());
+    let ada_key = certified(&ada, &ada_signer, DeviceCapabilities::server_key_grant());
     let created = own_as_key(&host, &ada_key, json!({"name": "Lounge"})).await;
-    join(workspaces, &created, &ada_key).await;
+    join(workspaces, &created, (&ada_signer, &ada_key)).await;
     let workspace = &created.workspace;
     assert!(
         workspaces
@@ -1338,13 +1345,10 @@ async fn entered(
     workspace: &tilo_server_protocol::workspaces::WorkspaceListing,
     person: &SigningKey,
 ) -> DeviceCert {
-    let key = certified(
-        person,
-        &SigningKey::from_bytes(&rand::random()),
-        DeviceCapabilities::server_key_grant(),
-    );
+    let key_signer = SigningKey::from_bytes(&rand::random());
+    let key = certified(person, &key_signer, DeviceCapabilities::server_key_grant());
     let entering = own_as_key(host, &key, json!({"workspace": workspace.workspace})).await;
-    join(workspaces, &entering, &key).await;
+    join(workspaces, &entering, (&key_signer, &key)).await;
     key
 }
 
@@ -1408,7 +1412,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
         "Ada's backend",
     );
     let created = own_as_key(&host, &backend, json!({"name": "Applicant: Jane Doe"})).await;
-    join(workspaces, &created, &backend).await;
+    join(workspaces, &created, (&backend_key, &backend)).await;
     let workspace = &created.workspace;
     let invited = govern(
         &host,
@@ -1426,7 +1430,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     join_with(
         workspaces,
         hex::decode(invited["invitation"].as_str().unwrap()).unwrap(),
-        &page,
+        (&page_key, &page),
     )
     .await;
 
@@ -1446,7 +1450,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     join_with(
         workspaces,
         hex::decode(theirs["invitation"].as_str().unwrap()).unwrap(),
-        &ada_page,
+        (&ada_key, &ada_page),
     )
     .await;
     let agent_key = SigningKey::from_bytes(&rand::random());
@@ -1466,7 +1470,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     // A key minted for one workspace enters it with the invitation the key
     // that minted it asks for, as the entry hands it over.
     let entering = own_as_key(&host, &backend, json!({"workspace": workspace.workspace})).await;
-    join(workspaces, &entering, &agent).await;
+    join(workspaces, &entering, (&agent_key, &agent)).await;
 
     // The people in it: Ada under her own name, its owner and administrator,
     // Rosa under hers, and no row for the host's device that runs it or for
@@ -1562,7 +1566,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     let created = own_as_key(&host, &server, json!({"name": "Applicant: Jane Doe"})).await;
     let workspace = created.workspace.workspace.clone();
     let workspace_id = created.workspace.workspace_id;
-    join(workspaces, &created, &server).await;
+    join(workspaces, &created, (&key, &server)).await;
     let stored = dir.path().join("workspaces");
     let record = stored.join(format!("{workspace}.workspace"));
     assert!(record.exists());
@@ -1652,7 +1656,7 @@ async fn held_host() -> (
     ServiceWorkspaceActions,
     Workspaces,
     String,
-    tilo_user_identity::DeviceCert,
+    (SigningKey, tilo_user_identity::DeviceCert),
     tempfile::TempDir,
 ) {
     use tilo_server_protocol::workspaces::Role;
@@ -1689,7 +1693,7 @@ async fn held_host() -> (
             mail: true,
         })
     );
-    let (_, stranger) = guest_device();
+    let (stranger_key, stranger) = guest_device();
     assert!(
         workspaces
             .wait(
@@ -1705,7 +1709,7 @@ async fn held_host() -> (
             .await
             .is_ok()
     );
-    (host, workspaces, lounge, stranger, dir)
+    (host, workspaces, lounge, (stranger_key, stranger), dir)
 }
 
 /// The owner of a workspace whose entry takes people by invitation is let in
@@ -1757,7 +1761,7 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
 async fn the_wait_list_holds_the_entry_and_lets_nobody_in_on_an_address() {
     use tilo_server_protocol::directory::EntryJoin;
 
-    let (_, workspaces, lounge, stranger, _state) = held_host().await;
+    let (_, workspaces, lounge, (_, stranger), _state) = held_host().await;
     let refused = workspaces
         .admit_listed(
             &lounge,
@@ -1810,7 +1814,7 @@ fn waits(result: &Result<impl std::fmt::Debug, ActionCallError>) {
 /// host keeps nothing for them: no workspace, no workspace list.
 #[tokio::test]
 async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
-    let (host, workspaces, _, stranger, _state) = held_host().await;
+    let (host, workspaces, _, (_, stranger), _state) = held_host().await;
     // Its person allows what their agents ask of them.
     Answering::approving();
     waits(&create_own(&host, &stranger, json!({})).await);
@@ -1852,22 +1856,19 @@ async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
 /// address keeps nothing.
 #[tokio::test]
 async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
-    let (host, workspaces, lounge, stranger, _state) = held_host().await;
+    let (host, workspaces, lounge, (_, stranger), _state) = held_host().await;
     // Its person allows what their agents ask of them.
     Answering::approving();
     let root = SigningKey::from_bytes(&rand::random());
     let person = root.verifying_key().to_bytes();
-    let page = certified(
-        &root,
-        &SigningKey::from_bytes(&rand::random()),
-        DeviceCapabilities::member(),
-    );
+    let page_signer = SigningKey::from_bytes(&rand::random());
+    let page = certified(&root, &page_signer, DeviceCapabilities::member());
     let invitation = let_in(&workspaces, &lounge, person).await;
-    join_with(&workspaces, invitation, &page).await;
+    join_with(&workspaces, invitation, (&page_signer, &page)).await;
     let first = create_own(&host, &page, json!({"name": "Work"}))
         .await
         .unwrap();
-    join(&workspaces, &first, &page).await;
+    join(&workspaces, &first, (&page_signer, &page)).await;
     for name in ["Side project", "Third"] {
         create_own(&host, &page, json!({"name": name}))
             .await
@@ -1941,14 +1942,14 @@ async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
 /// their own as well.
 #[tokio::test]
 async fn an_invited_member_enters_what_they_were_invited_into() {
-    let (host, workspaces, lounge, stranger, _state) = held_host().await;
-    let (_, ada) = guest_device();
+    let (host, workspaces, lounge, (stranger_key, stranger), _state) = held_host().await;
+    let (ada_signer, ada) = guest_device();
     let invitation = let_in(&workspaces, &lounge, ada.user_public_key).await;
-    join_with(&workspaces, invitation, &ada).await;
+    join_with(&workspaces, invitation, (&ada_signer, &ada)).await;
     let created = create_own(&host, &ada, json!({"name": "Shared"}))
         .await
         .unwrap();
-    join(&workspaces, &created, &ada).await;
+    join(&workspaces, &created, (&ada_signer, &ada)).await;
     let invitation = workspaces
         .issue(
             &created.workspace.workspace,
@@ -1965,7 +1966,7 @@ async fn an_invited_member_enters_what_they_were_invited_into() {
         .await
         .unwrap()
         .signed_invitation;
-    join_with(&workspaces, invitation, &stranger).await;
+    join_with(&workspaces, invitation, (&stranger_key, &stranger)).await;
     let entered = create_own(
         &host,
         &stranger,
@@ -1984,7 +1985,7 @@ async fn an_invited_member_enters_what_they_were_invited_into() {
 
 /// A device of the person whose root is `root`, certified now for an hour, as
 /// a page's root certifies a tab.
-fn tab_of(root: &SigningKey, label: &str) -> DeviceCert {
+fn tab_of(root: &SigningKey, label: &str) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&rand::random());
     let now = tilo_clock::unix_now_ns();
     let mut cert = DeviceCert {
@@ -1998,12 +1999,11 @@ fn tab_of(root: &SigningKey, label: &str) -> DeviceCert {
         issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
-    cert
+    (key, cert)
 }
 
 /// How `workspace` on `workspaces`' server answers `device` subscribing, as a
-/// page's join does: admitted (enrolled first where the workspace enrols it),
-/// or refused and why.
+/// page's join does: admitted, or refused and why.
 async fn subscribe(
     workspaces: &Workspaces,
     workspace: &str,
@@ -2062,15 +2062,22 @@ async fn a_persons_first_device_joins_their_own_workspace_before_any_entry() {
     let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
 
     // The person's key makes the workspace: no device of theirs has entered it.
-    let first = tab_of(&root, "Firefox on Linux");
+    let (_, first) = tab_of(&root, "Firefox on Linux");
     let created = create_own(&host, &first, json!({})).await.unwrap();
     let workspace = created.workspace.workspace.clone();
-    let computer = tab_of(&root, "Ada's laptop");
+    let (computer_key, computer) = tab_of(&root, "Ada's laptop");
+    assert_eq!(
+        subscribe(workspaces, &workspace, &computer).await,
+        Err(crate::workspace_access::DenyReason::Unlisted),
+        "the member list does not list the device before it lists itself"
+    );
+    let linked = list_itself_on_link(&server, &workspace, (&computer_key, &computer)).await;
     assert_eq!(
         subscribe(workspaces, &workspace, &computer).await,
         Ok(()),
         "a device of the person joins a workspace of their own before any of theirs entered"
     );
+    linked.abort();
     assert_eq!(
         access(workspaces, &workspace, root.verifying_key().to_bytes()).await,
         Some((Role::Owner, true)),
@@ -2102,13 +2109,15 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
     let root = SigningKey::from_bytes(&rand::random());
     let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
 
-    let first = tab_of(&root, "Firefox on Linux");
+    let (first_key, first) = tab_of(&root, "Firefox on Linux");
     let created = create_own(&host, &first, json!({})).await.unwrap();
-    join(workspaces, &created, &first).await;
+    join(workspaces, &created, (&first_key, &first)).await;
     let workspace = created.workspace.workspace.clone();
     assert_eq!(subscribe(workspaces, &workspace, &first).await, Ok(()));
 
-    let later = tab_of(&root, "Firefox on Linux");
+    let (later_key, later) = tab_of(&root, "Firefox on Linux");
+    let linked = list_itself_on_link(&server, &workspace, (&later_key, &later)).await;
+    linked.abort();
     assert_eq!(
         subscribe(workspaces, &workspace, &later).await,
         Ok(()),
@@ -2155,12 +2164,12 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     let person = root.verifying_key().to_bytes();
     let_in(workspaces, &home, person).await;
 
-    let first = tab_of(&root, "Firefox on Linux");
+    let (first_key, first) = tab_of(&root, "Firefox on Linux");
     let made = create_own(&host, &first, json!({})).await.unwrap();
-    join(workspaces, &made, &first).await;
+    join(workspaces, &made, (&first_key, &first)).await;
     let own = made.workspace.workspace;
 
-    let later = tab_of(&root, "Firefox on Linux");
+    let (_, later) = tab_of(&root, "Firefox on Linux");
     let entered = create_own(&host, &later, json!({})).await.unwrap();
     assert_eq!(entered.workspace.workspace, own, "the workspace they have");
 
@@ -2182,7 +2191,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     let_in(workspaces, &home, newcomer.verifying_key().to_bytes()).await;
     let refused = create_own(
         &host,
-        &tab_of(&newcomer, "Chrome"),
+        &tab_of(&newcomer, "Chrome").1,
         json!({"workspace": uuid::Uuid::new_v4().to_string()}),
     )
     .await;
@@ -2197,7 +2206,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     );
 
     // Another person's workspace is not theirs either.
-    let theirs = create_own(&host, &tab_of(&newcomer, "Chrome"), json!({}))
+    let theirs = Box::pin(create_own(&host, &tab_of(&newcomer, "Chrome").1, json!({})))
         .await
         .unwrap()
         .workspace
@@ -2248,7 +2257,7 @@ async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device
 
     let entering = own_as_key(&host, &backend, json!({"workspace": home})).await;
     assert_eq!(entering.workspace.workspace, home);
-    join(workspaces, &entering, &backend).await;
+    join(workspaces, &entering, (&backend_key, &backend)).await;
     let issued = govern(
         &host,
         &lounge,

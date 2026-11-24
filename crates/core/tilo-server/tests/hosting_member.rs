@@ -16,7 +16,7 @@ use tilo_peer_state::{CopyRole, StatePeer};
 use tilo_server_protocol::{WorkFrom, WorkSetting};
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Hosted, Linked, TestDevice, TestUser, next, receives, serve_in, serve_on};
+use crate::common::{Hosted, Linked, TestDevice, TestUser, next, receives, serve_on};
 use tilo_server::WorkspaceId;
 
 /// The app the tests write records in. Each step writes a record of its own, so a change is read
@@ -268,7 +268,7 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     // The phone enters the workspace on the laptop; the holder follows that
     // governance and admits it.
     workspaces
-        .enter(&workspace.workspace, &phone.cert)
+        .enter(&workspace.workspace, (&phone.cert, &phone.sk))
         .await
         .unwrap();
     let on_member = member_at(&member, &phone, workspace.workspace_id).await;
@@ -389,7 +389,7 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
         .await
         .unwrap();
     workspaces
-        .enter(&workspace.workspace, &phone.cert)
+        .enter(&workspace.workspace, (&phone.cert, &phone.sk))
         .await
         .unwrap();
     let kept = tilo_test_env::within("the holder to keep the workspace's changes", async {
@@ -415,7 +415,7 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
 
     // The workspace moves on while the holder is away.
     workspaces
-        .enter(&workspace.workspace, &tablet.cert)
+        .enter(&workspace.workspace, (&tablet.cert, &tablet.sk))
         .await
         .unwrap();
 
@@ -489,7 +489,7 @@ async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_gover
     assert_eq!(made_on.hosts(&workspace.workspace).await.unwrap().len(), 3);
     for device in [&phone, &tablet] {
         made_on
-            .enter(&workspace.workspace, &device.cert)
+            .enter(&workspace.workspace, (&device.cert, &device.sk))
             .await
             .unwrap();
     }
@@ -502,7 +502,7 @@ async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_gover
         let newcomer = alice.enrol(&format!("device {gone}"), DeviceCapabilities::primary());
         one.host
             .workspaces()
-            .enter(&workspace.workspace, &newcomer.cert)
+            .enter(&workspace.workspace, (&newcomer.cert, &newcomer.sk))
             .await
             .unwrap();
         let mut on_two = member_at(two, &newcomer, workspace.workspace_id).await;
@@ -594,7 +594,10 @@ async fn used_for_a_while(
 ) {
     for device in 0..NAMED_DEVICES {
         let device = person.enrol(&format!("device {device}"), DeviceCapabilities::member());
-        workspaces.enter(workspace, &device.cert).await.unwrap();
+        workspaces
+            .enter(workspace, (&device.cert, &device.sk))
+            .await
+            .unwrap();
     }
 }
 
@@ -654,7 +657,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
-        .enter(&workspace.workspace, &phone.cert)
+        .enter(&workspace.workspace, (&phone.cert, &phone.sk))
         .await
         .unwrap();
     used_for_a_while(workspaces, &alice, &workspace.workspace).await;
@@ -777,7 +780,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
-        .enter(&workspace.workspace, &phone.cert)
+        .enter(&workspace.workspace, (&phone.cert, &phone.sk))
         .await
         .unwrap();
     let holder = serve_on(&site, &server, WorkSetting::own_person()).await;
@@ -899,7 +902,7 @@ async fn a_workspace_moves_from_one_server_to_another() {
     let workspaces = made_on.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
-        .enter(&workspace.workspace, &phone.cert)
+        .enter(&workspace.workspace, (&phone.cert, &phone.sk))
         .await
         .unwrap();
     // Two servers of the site, each letting Alice in.
@@ -1174,7 +1177,7 @@ async fn a_held_workspace_is_not_taken_from_another_governor() {
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
-        .enter(&workspace.workspace, &phone.cert)
+        .enter(&workspace.workspace, (&phone.cert, &phone.sk))
         .await
         .unwrap();
     // The site's operator takes that workspace, whoever hands it over.
@@ -1294,7 +1297,7 @@ async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
-        .enter(&workspace.workspace, &phone.cert)
+        .enter(&workspace.workspace, (&phone.cert, &phone.sk))
         .await
         .unwrap();
     let mut takes = WorkSetting::own_person();
@@ -1343,7 +1346,7 @@ async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
     let entered = holder
         .host
         .workspaces()
-        .enter(&workspace.workspace, &tablet.cert)
+        .enter(&workspace.workspace, (&tablet.cert, &tablet.sk))
         .await;
     write(&on_holder, &phone, "note:entry", "after the entry").unwrap();
     reaches_host(
@@ -1381,7 +1384,7 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
     let workspace = workspaces.create("Notes").await.unwrap();
     for device in [&phone, &tablet] {
         workspaces
-            .enter(&workspace.workspace, &device.cert)
+            .enter(&workspace.workspace, (&device.cert, &device.sk))
             .await
             .unwrap();
     }
@@ -1435,7 +1438,7 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
 
     // The group moves on to admit another device; the store is not in it.
     workspaces
-        .enter(&workspace.workspace, &watch.cert)
+        .enter(&workspace.workspace, (&watch.cert, &watch.sk))
         .await
         .unwrap();
     for at in [&governor, &store] {
@@ -1559,7 +1562,7 @@ async fn detaching_the_base_maker_hands_the_base_to_another_key_holder() {
     }
     for device in [&phone, &tablet] {
         made_on
-            .enter(&workspace.workspace, &device.cert)
+            .enter(&workspace.workspace, (&device.cert, &device.sk))
             .await
             .unwrap();
     }

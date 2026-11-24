@@ -31,6 +31,7 @@ use tilo_actions::remote::{
     ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake,
 };
 use tilo_peer_state::StatePeer;
+use tilo_server_protocol::workspaces::MEMBERSHIP_APP;
 
 use super::{WeakWorkspaces, Workspaces};
 use crate::device_documents::on_its_own;
@@ -695,6 +696,35 @@ impl RecordReads {
             ResourceCopy::reading(serde_json::json!(grant), None)
         }))
     }
+
+    /// The membership `address` names, as `route` reads it for `caller`: the role the workspace's
+    /// member list gives its person and when the workspace was made, both as its governance keeps
+    /// them; absent where the list holds no such person.
+    async fn membership(
+        route: Route,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> Result<ResourceCopy, ActionCallError> {
+        let workspaces = match route {
+            Route::Held(workspaces) => workspaces,
+            Route::Served(served) => return served.read(caller, address),
+        };
+        let Some(person) = tilo_server_protocol::workspaces::member_of_record(&address.record)
+        else {
+            return Ok(ResourceCopy::Absent);
+        };
+        let membership = workspaces.state(&address.workspace).await.and_then(|state| {
+            let governance = state.governance();
+            let role = governance.governed_policy().ok()?.active_role(person)?;
+            Some(serde_json::json!({
+                "role": role.key(),
+                "made_at_ms": governance.made_at_ms(),
+            }))
+        });
+        Ok(membership.map_or(ResourceCopy::Absent, |membership| {
+            ResourceCopy::reading(membership, None)
+        }))
+    }
 }
 
 impl RecordReads {
@@ -762,6 +792,9 @@ impl RecordReads {
         }
         if address.app == KEY_GRANTS {
             return Self::key(route, caller, address).await;
+        }
+        if address.app == MEMBERSHIP_APP {
+            return Self::membership(route, caller, address).await;
         }
         let workspaces = match route {
             Route::Held(workspaces) => workspaces,
@@ -877,8 +910,8 @@ impl RecordReads {
             address.app.clone(),
             address.record.clone(),
         );
-        // A grant is no document: it moves with the workspace's governance.
-        if app == KEY_GRANTS {
+        // A grant or a membership is no document: it moves with the workspace's governance.
+        if app == KEY_GRANTS || app == MEMBERSHIP_APP {
             let changes = workspaces.governance_changes();
             wake_at(
                 &runtime,

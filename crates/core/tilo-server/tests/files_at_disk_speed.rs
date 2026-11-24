@@ -142,7 +142,7 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
     let server_device = ada.enrol("home-server", DeviceCapabilities::member());
     let laptop = ada.enrol("laptop", DeviceCapabilities::primary());
     let server_key = server_device.device_pubkey();
-    let server = spawn_server(&ada, server_device, &[WORKSPACE], &[&laptop.cert]).await;
+    let server = spawn_server(&ada, server_device, &[WORKSPACE], &[&laptop]).await;
     let hosted = server
         .server
         .workspaces()

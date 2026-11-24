@@ -127,7 +127,7 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
         .clone();
     let workspace = hosted.create("Studio").await.unwrap().workspace;
     hosted
-        .enter(&workspace, &laptop_cert)
+        .enter(&workspace, (&laptop_cert, &laptop_key))
         .await
         .expect("a device of the person enters the workspace");
     found_front(&hosted, &workspace, "Main").await;
@@ -286,7 +286,7 @@ async fn a_workspace_joined_after_the_login_reaches_this_devices_copy() {
         .clone();
     let studio = hosted.create("Studio").await.unwrap().workspace;
     hosted
-        .enter(&studio, &laptop_cert)
+        .enter(&studio, (&laptop_cert, &laptop_key))
         .await
         .expect("a device of the person enters the workspace it logs into");
     found_front(&hosted, &studio, "Main").await;
@@ -294,7 +294,7 @@ async fn a_workspace_joined_after_the_login_reaches_this_devices_copy() {
     // not name: the join is how it reaches the device.
     let labs = hosted.create("Labs").await.unwrap().workspace;
     hosted
-        .enter(&labs, &laptop_cert)
+        .enter(&labs, (&laptop_cert, &laptop_key))
         .await
         .expect("the same device is a member of the second workspace");
     found_front(&hosted, &labs, "Bench").await;
@@ -414,7 +414,7 @@ async fn a_grant_written_on_the_server_reaches_this_devices_copy_and_admits_a_pr
         .clone();
     let workspace = hosted.create("Home").await.unwrap().workspace;
     hosted
-        .enter(&workspace, &laptop_cert)
+        .enter(&workspace, (&laptop_cert, &laptop_key))
         .await
         .expect("a device of the person enters the workspace");
     // Another person's device, in the workspace as a viewer.
@@ -816,7 +816,7 @@ async fn desktop_founds_its_persons_workspace(
     let root = state.join("tilo/collaboration/mls");
     let kept = std::sync::Arc::new(tilo_workspace_keys::KeyDir::new(root.join("groups")));
     let desktop_vault = MlsVault::open(kept, &vault::master_key_locator(&root)).unwrap();
-    let identity = tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key);
+    let identity = tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key.clone());
     let desktop_keys = own_device::KeyService::open(
         "desktop-groups",
         &root.join("groups"),
@@ -853,7 +853,7 @@ async fn desktop_founds_its_persons_workspace(
         .unwrap();
     desktop
         .workspaces()
-        .enter(&person.to_string(), cert)
+        .enter(&person.to_string(), (cert, &key))
         .await
         .unwrap();
     found_front(desktop.workspaces(), &person.to_string(), "desk").await;

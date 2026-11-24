@@ -1620,7 +1620,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let (root, user) = UserIdentity::generate("owner", 1);
             let (host_key, host) = DeviceIdentity::generate("home", 2);
-            let (_, client) = DeviceIdentity::generate("laptop", 3);
+            let (client_key, client) = DeviceIdentity::generate("laptop", 3);
             let (admin_key, admin) = DeviceIdentity::generate("primary", 5);
             let mut server_cert = DeviceCert {
                 user_public_key: user.public_key,
@@ -1735,7 +1735,7 @@ mod tests {
                 .await
                 .unwrap();
             server_workspaces
-                .enter(&server_workspace, &client_cert)
+                .enter(&server_workspace, (&client_cert, &client_key))
                 .await
                 .unwrap();
             let governed = server.workspaces().unwrap();

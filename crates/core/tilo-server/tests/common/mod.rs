@@ -101,7 +101,7 @@ pub async fn spawn_server(
     user: &TestUser,
     server_dev: TestDevice,
     workspaces: &[WorkspaceId],
-    members: &[&DeviceCert],
+    members: &[&TestDevice],
 ) -> TestServer {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = tmp.path().to_path_buf();
@@ -133,7 +133,7 @@ pub async fn spawn_server_on(
     user: &TestUser,
     server_dev: TestDevice,
     workspaces: &[WorkspaceId],
-    members: &[&DeviceCert],
+    members: &[&TestDevice],
 ) -> Server {
     Box::pin(spawn_server_with(
         state_root, user, server_dev, workspaces, members, None,
@@ -147,7 +147,7 @@ pub async fn spawn_server_serving_apps(
     user: &TestUser,
     server_dev: TestDevice,
     workspaces: &[WorkspaceId],
-    members: &[&DeviceCert],
+    members: &[&TestDevice],
     server: std::sync::Arc<dyn tilo_server::AppActionServer>,
 ) -> TestServer {
     let tmp = tempfile::tempdir().unwrap();
@@ -173,7 +173,7 @@ async fn spawn_server_with(
     user: &TestUser,
     server_dev: TestDevice,
     workspaces: &[WorkspaceId],
-    members: &[&DeviceCert],
+    members: &[&TestDevice],
     server: Option<std::sync::Arc<dyn tilo_server::AppActionServer>>,
 ) -> Server {
     if std::env::var_os("TILO_SERVER_CORRELATED_DIAGNOSTICS").is_some() {
@@ -263,7 +263,7 @@ pub async fn member_devices(server: &Server, workspace: WorkspaceId) -> Vec<[u8;
 /// `members`, devices of theirs, enter it. These tests enter a workspace the
 /// way production does — a server holds what is made on it, and a member
 /// joins — never by handing the server a member list from outside.
-pub async fn hold_workspace(server: &Server, workspace: WorkspaceId, members: &[&DeviceCert]) {
+pub async fn hold_workspace(server: &Server, workspace: WorkspaceId, members: &[&TestDevice]) {
     let workspaces = server.workspaces().expect("the server holds workspaces");
     let workspace = workspace.to_string();
     if workspaces.summary(&workspace).await.is_ok() {
@@ -277,9 +277,9 @@ pub async fn hold_workspace(server: &Server, workspace: WorkspaceId, members: &[
         .expect("the person's server makes the workspace");
     for member in members {
         workspaces
-            .enter(&workspace, member)
+            .enter(&workspace, (&member.cert, &member.sk))
             .await
-            .expect("a device of the person enters the workspace");
+            .expect("a device of the person lists itself in the workspace");
     }
 }
 
@@ -291,7 +291,7 @@ pub async fn spawn_server_admitting(
     server_dev: &TestDevice,
     others: &[&TestUser],
     workspaces: &[WorkspaceId],
-    members: &[&DeviceCert],
+    members: &[&TestDevice],
 ) -> TestServer {
     Box::pin(spawn_server_admitting_with(
         user, server_dev, others, workspaces, members, None,
@@ -305,7 +305,7 @@ pub async fn spawn_server_admitting_with(
     server_dev: &TestDevice,
     others: &[&TestUser],
     workspaces: &[WorkspaceId],
-    members: &[&DeviceCert],
+    members: &[&TestDevice],
     server: Option<std::sync::Arc<dyn tilo_server::AppActionServer>>,
 ) -> TestServer {
     let tmp = tempfile::tempdir().unwrap();

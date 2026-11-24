@@ -383,6 +383,9 @@ pub(crate) fn install_governance(
     now: SystemTime,
 ) -> Result<usize, crate::AdmissionError> {
     let origin = TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key);
+    // The governance is taken in as this device's: its own row on the signed
+    // member list is what anchors it ([`crate::workspace::admit_workspace_changes`]).
+    peer.write_as_device(bootstrap.device_cert.device_public_key);
     let mut app_messages = 0usize;
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg = neighbour_wire::NeighbourMsg::decode(bytes)

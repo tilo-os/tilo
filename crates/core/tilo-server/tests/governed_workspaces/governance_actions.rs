@@ -197,7 +197,7 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
     let workspaces = server.workspaces().unwrap();
     let workspace = workspaces.create("Design review").await.unwrap();
     workspaces
-        .enter(&workspace.workspace, &laptop.cert)
+        .enter(&workspace.workspace, (&laptop.cert, &laptop.sk))
         .await
         .unwrap();
     super::members::admit(&server, &host, &phone, &workspace.workspace).await;
@@ -316,7 +316,6 @@ async fn the_servers_person_shares_through_its_host_actions_and_a_member_cannot(
         serde_json::json!({ "workspace": created.workspace.workspace }),
     )
     .await;
-    assert!(entered.changed);
     let own = entered.invitation.decode().unwrap();
     decode_and_verify_invitation(
         &own.signed_invitation,
@@ -398,7 +397,7 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
     let workspaces = server.workspaces().unwrap();
     let workspace = workspaces.create("Design review").await.unwrap();
     workspaces
-        .enter(&workspace.workspace, &laptop.cert)
+        .enter(&workspace.workspace, (&laptop.cert, &laptop.sk))
         .await
         .unwrap();
     super::members::admit(&server, &host, &phone, &workspace.workspace).await;

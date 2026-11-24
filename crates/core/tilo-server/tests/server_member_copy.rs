@@ -210,7 +210,7 @@ async fn a_devices_own_service_holds_a_workspace_a_server_hosts_as_a_member_copy
     let server_device = ada.enrol("home-server", DeviceCapabilities::member());
     let laptop = ada.enrol("laptop", DeviceCapabilities::primary());
     let server_key = server_device.device_pubkey();
-    let server = spawn_server(&ada, server_device, &[WORKSPACE], &[&laptop.cert]).await;
+    let server = spawn_server(&ada, server_device, &[WORKSPACE], &[&laptop]).await;
     let hosted = server
         .server
         .workspaces()
@@ -294,7 +294,7 @@ async fn what_a_laptop_writes_while_its_server_is_down_reaches_the_server_once_i
     let laptop = ada.enrol("laptop", DeviceCapabilities::primary());
     let server_key = server_device.device_pubkey();
     let server_state = tempfile::tempdir().unwrap();
-    let members = [&laptop.cert];
+    let members = [&laptop];
     let start_server = || {
         crate::common::spawn_server_on(
             server_state.path(),
@@ -492,7 +492,7 @@ async fn notes_written_long_ago(
         cert: server_device.cert.clone(),
     };
     let laptop = ada.enrol("laptop", DeviceCapabilities::primary());
-    let server = spawn_server(ada, server_device, &[WORKSPACE], &[&laptop.cert]).await;
+    let server = spawn_server(ada, server_device, &[WORKSPACE], &[&laptop]).await;
     let hosted = server
         .server
         .workspaces()

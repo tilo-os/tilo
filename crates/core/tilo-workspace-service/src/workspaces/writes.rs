@@ -164,7 +164,7 @@ mod tests {
     use tilo_user_identity::DeviceCapabilities;
 
     use super::super::fixtures::{
-        TestGroupKeys, device_cert, enter_key, governor_with, test_host, test_host_holding,
+        TestGroupKeys, device_cert, governor_with, test_host, test_host_holding,
         test_host_in_the_clear,
     };
     use super::super::{MemberDevice, Workspaces};
@@ -210,7 +210,10 @@ mod tests {
         // The service acts as this device, the person's own, as a desktop's does: what it writes
         // is the device's.
         let (member_key, member_cert) = device_cert(&root, "Laptop", DeviceCapabilities::member());
-        enter_key(&workspaces, &workspace, &member_cert).await;
+        workspaces
+            .enter(&workspace, (&member_cert, &member_key))
+            .await
+            .expect("the device lists itself");
         workspaces.set_member_device(Arc::new(MemberDevice {
             cert: member_cert,
             signer: Arc::new(member_key),
@@ -441,7 +444,10 @@ mod tests {
             .expect("the workspace")
             .workspace;
         let (member_key, member_cert) = device_cert(&root, "Laptop", DeviceCapabilities::member());
-        enter_key(&workspaces, &workspace, &member_cert).await;
+        workspaces
+            .enter(&workspace, (&member_cert, &member_key))
+            .await
+            .expect("the member's device lists itself");
         workspaces.set_member_device(Arc::new(MemberDevice {
             cert: member_cert,
             signer: Arc::new(member_key),
@@ -471,7 +477,10 @@ mod tests {
             .workspace;
         let root = SigningKey::from_bytes(&[1; 32]);
         let (member_key, member_cert) = device_cert(&root, "Laptop", DeviceCapabilities::member());
-        enter_key(&workspaces, &workspace, &member_cert).await;
+        workspaces
+            .enter(&workspace, (&member_cert, &member_key))
+            .await
+            .expect("the member's device lists itself");
         workspaces.set_member_device(Arc::new(MemberDevice {
             cert: member_cert,
             signer: Arc::new(member_key),

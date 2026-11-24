@@ -644,7 +644,7 @@ impl Workspaces {
             .map_err(|e| e.to_string())?;
         let client = WorkspaceJoinClient::new(self.inner.host.endpoint.clone());
         let request_id: [u8; 32] = rand::random();
-        let challenge = match client
+        let answer = match client
             .request(
                 address.endpoint_addr.clone(),
                 JoinTransportRequest::Challenge(JoinChallengeRequest {
@@ -656,17 +656,37 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?
         {
-            JoinTransportResponse::Challenge(challenge) => challenge.challenge,
+            JoinTransportResponse::Challenge(answer) => answer,
             JoinTransportResponse::Error { message, .. } => {
                 return Err(format!("the workspace's device refused: {message}"));
             }
             _ => return Err("the host answered no enrollment challenge".into()),
         };
-        let proof = tilo_peer_state::join::sign_join_proof(challenge, device.signer.as_ref())?;
+        // This device signs its own admission, the invitation its authority:
+        // the device that answered carries it to the workspace unchanged.
+        let now = tilo_clock::wall();
+        let redemption = tilo_peer_state::join::verify_connection_redemption(
+            join.signed_invitation(),
+            &device.cert,
+            request_id,
+            &tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )?;
+        let admission = tilo_peer_state::own_admission::sign_own_admission(
+            &workspace.to_string(),
+            &answer.governance,
+            &redemption,
+            None,
+            device.signer.as_ref(),
+            now,
+        )
+        .await?;
+        let proof =
+            tilo_peer_state::join::sign_join_proof(answer.challenge, device.signer.as_ref())?;
         let bootstrap = match client
             .request(
                 address.endpoint_addr.clone(),
-                JoinTransportRequest::Complete(JoinCompleteRequest { proof }),
+                JoinTransportRequest::Complete(JoinCompleteRequest { proof, admission }),
             )
             .await
             .map_err(|error| error.to_string())?
@@ -1952,8 +1972,11 @@ impl Workspaces {
         let host = address.device_certificate.clone();
         let workspace_id = governed.workspace_id();
         let name = governed.workspace().to_owned();
+        // The device names its certificate on its dial: a copy whose member
+        // list does not list it yet has it sign its own row there first.
         let link = DirectSync::over(governed.peer.clone(), Arc::clone(&device.signer))
-            .with_store(Arc::clone(&self.inner.store));
+            .with_store(Arc::clone(&self.inner.store))
+            .with_certificate(device.cert.clone());
         self.recall_member_resources(&mut governed, Some(&link))
             .await?;
         drop(governed);
@@ -1984,10 +2007,17 @@ impl Workspaces {
                         };
                         workspaces.member_link_reached(workspace_id);
                         drop(workspaces);
-                        if let Err(refusal) = dialed.run(&link).await {
-                            tracing::debug!(%name, ?refusal, "a member copy's link ended");
-                        }
+                        let ended = dialed.run(&link).await;
                         up.send_replace(false);
+                        match ended {
+                            // Its own row is on the member list now: it dials
+                            // again at once, as the member device it is.
+                            Err(Refusal::Listed) => continue,
+                            Err(refusal) => {
+                                tracing::debug!(%name, ?refusal, "a member copy's link ended");
+                            }
+                            Ok(()) => {}
+                        }
                     }
                     Err(refusal @ Refusal::Revoked(_)) => {
                         tracing::debug!(%name, ?refusal, "a member copy's device says the key is retired");

@@ -240,10 +240,6 @@ pub enum WorkspacesRequest {
     Create {
         name: String,
     },
-    /// Admit the calling device to `workspace` as its owner.
-    Enter {
-        workspace: String,
-    },
     /// Issue an invitation anyone holding it may redeem; it admits each
     /// device that redeems it, by this invitation's own grant.
     Invite {
@@ -854,10 +850,10 @@ impl std::fmt::Display for AdminRefusal {
         }
     }
 }
-/// Admit the calling device to `workspace` as one of its owner's. Answers
-/// an [`EnteredWorkspace`]: the invitation the device redeems to hold the workspace,
-/// restricted to its person and redeemable `expires_in_seconds` (600 when
-/// omitted).
+/// Hand the calling device an invitation of its own to `workspace`. Answers
+/// an [`EnteredWorkspace`]: the invitation the device redeems to hold the
+/// workspace, signing its own admission, restricted to its person and
+/// redeemable `expires_in_seconds` (600 when omitted).
 pub const ENTER_WORKSPACE: &str = "workspace.enter";
 /// Administer this host's workspaces from a page: the request in argument
 /// `request` (a [`WorkspacesRequest`]), answered with the [`WorkspacesReply`]
@@ -890,15 +886,25 @@ pub const IDENTITY_LIST: (&str, &str) = (
     tilo_user_identity::workspace_list::RESOURCE,
 );
 
-/// The app a workspace keeps its members' memberships in, under [`member_record`].
+/// The app a workspace's members' memberships read under, each under [`member_record`]: what its
+/// member list says of them.
 pub const MEMBERSHIP_APP: &str = "so.tilo.membership";
 
 /// The record of `person`'s membership of a workspace: the role they hold there and when the
 /// workspace was made.
 #[must_use]
 pub fn member_record(person: &[u8; 32]) -> String {
-    format!("member.{}", hex::encode(person))
+    format!("{MEMBER_RECORD}{}", hex::encode(person))
 }
+
+/// The person whose membership `record` is, by their key in hex ([`member_record`]).
+#[must_use]
+pub fn member_of_record(record: &str) -> Option<&str> {
+    record.strip_prefix(MEMBER_RECORD)
+}
+
+/// What every membership's record name starts with, before its person's key.
+const MEMBER_RECORD: &str = "member.";
 
 /// The record of what a workspace's owner alone keeps of it: the labels they gave it and
 /// whether keys reaching it alone run commands in its machine unasked.
@@ -1414,8 +1420,6 @@ pub struct CreatedWorkspace {
 /// What [`ENTER_WORKSPACE`] answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnteredWorkspace {
-    /// Whether governance changed to admit the caller.
-    pub changed: bool,
     /// The invitation the caller redeems to hold the workspace.
     pub invitation: ActionInvitation,
 }

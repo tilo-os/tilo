@@ -239,7 +239,7 @@ async fn started() -> Started {
 
 /// `laptop` joined to the workspace's group, as its owner.
 async fn joined(started: &Started, laptop: crate::support::Device) -> NativeDevice {
-    crate::support::place(&started.server.server, &laptop.cert).await;
+    crate::support::place(&started.server.server, (&laptop.cert, &laptop.key)).await;
     let mut laptop = NativeDevice::start(
         &started.server.server,
         started.root.verifying_key().to_bytes(),

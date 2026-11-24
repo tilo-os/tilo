@@ -836,7 +836,7 @@ impl LoungeHost {
                     .workspace;
                 // The site's page is in its workspace.
                 workspaces
-                    .enter(&workspace, &page_device)
+                    .enter(&workspace, (&page_device, &page_key))
                     .await
                     .expect("the site's page is in its workspace");
                 (server, workspaces, workspace)

@@ -66,7 +66,7 @@ async fn a_request_addressed_to_this_device_is_served_here_and_answered_to_the_a
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    place(&host.server, &window.cert).await;
+    place(&host.server, (&window.cert, &window.key)).await;
     let start = |device: &Device| {
         start_peer(
             host.iroh(),

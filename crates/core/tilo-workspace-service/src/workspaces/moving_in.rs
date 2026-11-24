@@ -308,7 +308,9 @@ impl Workspaces {
             key,
             now,
             |_, candidate| {
-                let admitted = candidate.admit_certificate(own.clone(), key, now)?;
+                let admitted = candidate
+                    .governance_mut()
+                    .admit_member_device(own, key, now)?;
                 let named = candidate
                     .governance_mut()
                     .author_keeping_device(&hint, key, now)?;

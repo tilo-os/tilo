@@ -67,7 +67,7 @@ async fn the_host_answers_its_devices_and_refuses_the_rest() {
         &user,
         host,
         &[WS],
-        &[&a.cert],
+        &[&a],
         Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions)))),
     ))
     .await;
@@ -156,7 +156,7 @@ async fn a_request_addressed_to_another_device_is_passed_on() {
         &user,
         host,
         &[WS],
-        &[&a.cert, &page.cert],
+        &[&a, &page],
         Arc::new(ActionProviderServer::new(SharedHost(Arc::default()))),
     ))
     .await;

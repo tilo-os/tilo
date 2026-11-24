@@ -14,7 +14,7 @@ async fn pre_admitted_join(
     workspaces: &Workspaces,
     cert: &DeviceCert,
     workspace: &str,
-    device_cert: DeviceCert,
+    (key, device_cert): (&SigningKey, DeviceCert),
 ) -> tilo_server_protocol::workspaces::JoinReply {
     let token: [u8; 8] = rand::random();
     let issued = workspaces
@@ -32,7 +32,7 @@ async fn pre_admitted_join(
     workspaces
         .admit_proven(
             issued.signed_invitation,
-            device_cert,
+            (device_cert, key),
             rand::random(),
             "Returning",
             Some(token.as_slice()),
@@ -74,7 +74,7 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
         workspaces,
         &cert,
         &created.workspace,
-        certify(&device, 1, DeviceCapabilities::member()),
+        (&device, certify(&device, 1, DeviceCapabilities::member())),
     )
     .await;
     assert!(matches!(first, JoinReply::Admitted { .. }), "{first:?}");
@@ -85,7 +85,7 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
         workspaces,
         &cert,
         &created.workspace,
-        certify(&device, 2, DeviceCapabilities::primary()),
+        (&device, certify(&device, 2, DeviceCapabilities::primary())),
     )
     .await;
     assert!(
@@ -98,7 +98,7 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
         workspaces,
         &cert,
         &created.workspace,
-        certify(&device, 3, DeviceCapabilities::member()),
+        (&device, certify(&device, 3, DeviceCapabilities::member())),
     )
     .await;
     assert!(matches!(again, JoinReply::Admitted { .. }), "{again:?}");
@@ -108,7 +108,7 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
         workspaces,
         &cert,
         &created.workspace,
-        certify(&device, 2, DeviceCapabilities::member()),
+        (&device, certify(&device, 2, DeviceCapabilities::member())),
     )
     .await;
     assert!(
@@ -121,7 +121,7 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
         workspaces,
         &cert,
         &created.workspace,
-        certify(&renewed, 4, DeviceCapabilities::member()),
+        (&renewed, certify(&renewed, 4, DeviceCapabilities::member())),
     )
     .await;
     assert!(matches!(fresh, JoinReply::Admitted { .. }), "{fresh:?}");
@@ -149,7 +149,7 @@ fn based_on(
     (signer, signer_cert): (&SigningKey, &DeviceCert),
     label: &str,
     now: u64,
-) -> DeviceCert {
+) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&rand::random());
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -162,7 +162,7 @@ fn based_on(
         issuer: Some(Box::new(signer_cert.clone())),
     };
     sign_device_cert(&mut cert, signer).expect("a device of the person's signs their tab's");
-    cert
+    (key, cert)
 }
 
 /// A tab one of the person's devices signed enters the person's own workspace as
@@ -187,6 +187,7 @@ async fn a_tab_a_member_device_signed_enters_and_comes_back_as_the_person() {
             name: "Jane".into(),
             request_id: rand::random(),
             through,
+            admission: Vec::new(),
         },
         access: None,
         proof: [0; 64],
@@ -196,7 +197,13 @@ async fn a_tab_a_member_device_signed_enters_and_comes_back_as_the_person() {
     // were invited into.
     let (computer_key, computer) =
         super::tests::device_cert(&root, "Laptop", DeviceCapabilities::primary());
-    let joined = pre_admitted_join(workspaces, &cert, &workspace, computer.clone()).await;
+    let joined = pre_admitted_join(
+        workspaces,
+        &cert,
+        &workspace,
+        (&computer_key, computer.clone()),
+    )
+    .await;
     assert!(
         matches!(
             joined,
@@ -206,8 +213,10 @@ async fn a_tab_a_member_device_signed_enters_and_comes_back_as_the_person() {
     );
 
     // The tab their computer signed, as the sign-in makes it, comes in as theirs.
-    let tab = based_on(&root, (&computer_key, &computer), "Firefox on phone", now);
-    let entered = crate::handshake::Admit::enter(workspaces, &tab, entry(Through::Entry)).await;
+    let (tab_key, tab) = based_on(&root, (&computer_key, &computer), "Firefox on phone", now);
+    let entered = workspaces
+        .enter_signed((&tab_key, &tab), entry(Through::Entry))
+        .await;
     assert!(
         matches!(entered, Entered::Admitted { .. }),
         "a tab one of the person's devices signed enters as theirs: {entered:?}"
@@ -268,6 +277,7 @@ async fn a_member_device_whose_certificate_ran_out_comes_back_under_its_renewal(
             name: "Jane".into(),
             request_id: rand::random(),
             through: Through::Entry,
+            admission: Vec::new(),
         },
         access: None,
         proof: [0; 64],
@@ -294,7 +304,7 @@ async fn a_member_device_whose_certificate_ran_out_comes_back_under_its_renewal(
         now.saturating_sub(1_000_000_000),
         Some(now + 2_000_000_000),
     );
-    let joined = pre_admitted_join(workspaces, &cert, &workspace, short).await;
+    let joined = pre_admitted_join(workspaces, &cert, &workspace, (&device, short)).await;
     assert!(
         matches!(
             joined,
@@ -307,7 +317,7 @@ async fn a_member_device_whose_certificate_ran_out_comes_back_under_its_renewal(
     // Its person's root certifies the same device again, and it comes back as
     // the device the workspace holds: no conflict.
     let renewed = certified(&device, tilo_clock::unix_now_ns(), None);
-    let entered = crate::handshake::Admit::enter(workspaces, &renewed, entry()).await;
+    let entered = workspaces.enter_signed((&device, &renewed), entry()).await;
     assert!(
         matches!(entered, Entered::Admitted { .. }),
         "a member's device comes back under its renewal: {entered:?}"

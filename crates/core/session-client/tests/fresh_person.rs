@@ -43,7 +43,7 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     server
         .workspaces()
         .unwrap()
-        .enter(&lounge.workspace, &alice_laptop.cert)
+        .enter(&lounge.workspace, (&alice_laptop.cert, &alice_laptop.key))
         .await
         .unwrap();
     let lounge_id = tilo_server::WorkspaceId::parse(&lounge.workspace).unwrap();

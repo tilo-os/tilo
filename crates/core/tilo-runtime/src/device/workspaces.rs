@@ -232,7 +232,7 @@ impl ServiceWorkspaces {
         self.service.hold_own_workspace(&id, name, cert).await?;
         self.service
             .workspaces()
-            .enter(&id, cert)
+            .enter(&id, (cert, &*self.identity.signer))
             .await
             .map(drop)
             .map_err(|error| error.to_string())?;
@@ -695,7 +695,7 @@ impl ServiceWorkspaces {
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<Arc<SessionAdmission>, String> {
         self.copies()
-            .enter(workspace, cert)
+            .enter(workspace, (cert, key))
             .await
             .map_err(|error| error.to_string())?;
         let join = tilo_identity_client::collaboration_join_digest(workspace)

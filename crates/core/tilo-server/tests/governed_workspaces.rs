@@ -88,8 +88,19 @@ async fn create_and_enter(server: &Server, device: &TestDevice, name: &str) -> W
     )
     .await;
     assert!(
-        entered.changed,
-        "the device is admitted as the workspace's owner's"
+        entered.invitation.decode().is_ok(),
+        "the device is handed an invitation of its own"
+    );
+    // The device lists itself as its owner's, signing its own row: the host
+    // signs nothing for it.
+    assert!(
+        server
+            .workspaces()
+            .unwrap()
+            .enter(&created.workspace.workspace, (&device.cert, &device.sk))
+            .await
+            .unwrap(),
+        "the device lists itself as the workspace's owner's"
     );
     created.workspace
 }

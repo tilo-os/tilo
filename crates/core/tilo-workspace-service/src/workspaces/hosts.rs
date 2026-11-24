@@ -41,7 +41,6 @@ use tilo_server_protocol::workspaces::{
 };
 use tilo_user_identity::DeviceCert;
 
-use super::authority::WorkspaceOp;
 use super::{CollaborationError, GovernedWorkspace, Workspaces};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
@@ -1098,11 +1097,11 @@ impl Workspaces {
     /// a joining member gets it, and this device's own signed address, under the
     /// workspace's id. Being a holder is the person's decision, signed into the
     /// workspace, so a hand-over that names no server is refused by the host it
-    /// is handed to. A device of this one's own person is admitted to the
-    /// workspace as one of the owner's devices first, so it takes in and writes
-    /// the workspace's changes as they do; named a store, it holds no keys all
-    /// the same ([`tilo_peer_state::PeerGovernance::key_holders`]). Answers the
-    /// address the host signed for the workspace, which it answers with at the
+    /// is handed to. The naming is the server's only row there: a holder's, with
+    /// no person and no role, and this device writes no other row for it; named
+    /// a store, it holds no keys all the same
+    /// ([`tilo_peer_state::PeerGovernance::key_holders`]). Answers the address
+    /// the host signed for the workspace, which it answers with at the
     /// hand-over.
     pub(super) async fn hand_over(
         &self,
@@ -1111,17 +1110,6 @@ impl Workspaces {
         role: CopyRole,
     ) -> Result<(WorkspaceId, TransportHint, Map<String, Value>), String> {
         let member = &reached.certificate;
-        if member.user_public_key == self.inner.host.cert.user_public_key {
-            // Handing the workspace to a device of its owner's is the workspace's own
-            // deliberate admission: it writes the device's row even where a removal took it
-            // out, which the device asking for itself cannot ([`Workspaces::enter`]).
-            self.check_now(member, Some(workspace), WorkspaceOp::Enter)
-                .await
-                .map_err(|error| error.to_string())?;
-            self.admit_entering(workspace, member, tilo_clock::unix_now_ns())
-                .await
-                .map_err(|error| error.to_string())?;
-        }
         let workspace_id = {
             let governed = self
                 .workspace(workspace)

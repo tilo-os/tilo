@@ -431,11 +431,12 @@ async fn an_environment_scope_reads_one_record_only() {
     let (host, host_key, member, member_key, directory) =
         devices(0x30, 0x31, 0x32, &[EAGER, OTHER]);
     let reaches = app_document_group(APP, EAGER);
-    let hook: Arc<Admitting> = Arc::new(move |_remote, _link| {
+    let hook: Arc<Admitting> = Arc::new(move |_remote, _certificate, _link| {
         Ok(LinkScope {
             reads: Some(reaches),
             own_frames_only: true,
             key_access: false,
+            lists_itself: false,
         })
     });
     let serving = Serving::new().admitting(hook);
@@ -553,7 +554,7 @@ async fn a_device_without_the_workspace_cannot_send_a_permission_grant() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_link_without_key_access_joins_no_channel_and_is_heard_asking() {
     let (host, host_key, member, member_key, directory) = devices(0x50, 0x51, 0x52, &[EAGER]);
-    let hook: Arc<Admitting> = Arc::new(|_remote, _link| {
+    let hook: Arc<Admitting> = Arc::new(|_remote, _certificate, _link| {
         Ok(LinkScope {
             key_access: false,
             ..Default::default()

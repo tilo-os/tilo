@@ -804,6 +804,7 @@ mod tests {
                     name: "Stranger".to_owned(),
                     request_id: [2; 32],
                     through: tilo_server_protocol::entering::Through::Entry,
+                    admission: Vec::new(),
                 },
                 access: None,
                 proof: [0; 64],

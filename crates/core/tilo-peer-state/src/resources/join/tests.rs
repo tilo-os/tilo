@@ -117,10 +117,14 @@ fn responses() -> Vec<JoinTransportResponse> {
             invite_id: verified.invite_id(),
             grant,
         }),
-        JoinTransportResponse::Challenge(JoinChallengeResponse { challenge }),
+        JoinTransportResponse::Challenge(JoinChallengeResponse {
+            challenge,
+            governance: bootstrap.governance_messages.clone(),
+        }),
         JoinTransportResponse::Complete(bootstrap.clone()),
         JoinTransportResponse::MembershipChallenge(MembershipChallengeResponse {
             challenge: membership,
+            governance: bootstrap.governance_messages.clone(),
         }),
         JoinTransportResponse::MembershipComplete(bootstrap),
         JoinTransportResponse::Error {

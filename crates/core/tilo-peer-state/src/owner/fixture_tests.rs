@@ -91,7 +91,7 @@ fn fixture_with(
     let response = governor.handle(
         certificate.device_public_key,
         JoinTransportRequest::Challenge(join::JoinChallengeRequest {
-            signed_invitation: invitation,
+            signed_invitation: invitation.clone(),
             device_cert: certificate.clone(),
             request_id: [95; 32],
         }),
@@ -99,8 +99,25 @@ fn fixture_with(
     let JoinTransportResponse::Challenge(response) = response else {
         panic!("challenge refused")
     };
+    let redemption = join::verify_connection_redemption(
+        &invitation,
+        &certificate,
+        [95; 32],
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let admission = crate::own_admission::own_admission(
+        testing::WORKSPACE,
+        &response.governance,
+        &redemption,
+        None,
+        &key,
+        now,
+    )
+    .unwrap();
     let proof = join::sign_join_proof(response.challenge, &key).unwrap();
-    let complete = join::JoinCompleteRequest { proof };
+    let complete = join::JoinCompleteRequest { proof, admission };
     let intent = VerifiedNativeEnrollmentIntent::from_proof(
         verified,
         complete.clone(),

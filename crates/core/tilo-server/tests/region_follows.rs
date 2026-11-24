@@ -42,7 +42,7 @@ async fn a_zone_chosen_on_one_device_is_the_zone_another_device_of_theirs_reads(
     on_laptop
         .host
         .workspaces()
-        .enter(&team.workspace, &phone.cert)
+        .enter(&team.workspace, (&phone.cert, &phone.sk))
         .await
         .expect("the workspace admits her phone");
     let linked = Linked::open_hosted(&on_laptop, &phone, workspace_id)

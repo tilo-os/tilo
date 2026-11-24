@@ -159,7 +159,7 @@ pub async fn prepare_and_complete(
             &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
             &mut request_id,
         );
-        let challenge = match client
+        let (challenge, governance) = match client
             .request(
                 host.endpoint_addr.clone(),
                 JoinTransportRequest::Challenge(JoinChallengeRequest {
@@ -171,7 +171,7 @@ pub async fn prepare_and_complete(
             .await
             .map_err(|e| e.to_string())?
         {
-            JoinTransportResponse::Challenge(value) => value.challenge,
+            JoinTransportResponse::Challenge(value) => (value.challenge, value.governance),
             JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
             _ => return Err("pinned native host answered no enrollment challenge".into()),
         };
@@ -192,8 +192,28 @@ pub async fn prepare_and_complete(
         if challenge != expected {
             return Err("native host challenge changed original identity or scope".into());
         }
+        // The device signs its own admission, the invitation its authority:
+        // whoever answered the join carries it to the workspace unchanged. It
+        // is kept with the proof, so a retry sends the very same changes.
+        let redemption = join::verify_connection_redemption(
+            join.signed_invitation(),
+            &device,
+            request_id,
+            &revocations,
+            now_ns(prepared)?,
+        )?;
+        let admission = crate::own_admission::sign_own_admission(
+            &join.grant().workspace_id.to_string(),
+            &governance,
+            &redemption,
+            None,
+            identity.signer.as_ref(),
+            prepared,
+        )
+        .await?;
         let complete = JoinCompleteRequest {
             proof: join::sign_join_proof(challenge, identity.signer.as_ref())?,
+            admission,
         };
         let intent = VerifiedNativeEnrollmentIntent::from_proof(
             join,
@@ -354,7 +374,7 @@ pub async fn prove_membership(
         &mut request_id,
     );
     let delegation = endpoint_delegation(client.endpoint_public_key(), device, signer).await?;
-    let challenge = match client
+    let (challenge, governance) = match client
         .request(
             host.clone(),
             JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
@@ -367,15 +387,28 @@ pub async fn prove_membership(
         .await
         .map_err(|e| e.to_string())?
     {
-        JoinTransportResponse::MembershipChallenge(value) => value.challenge,
+        JoinTransportResponse::MembershipChallenge(value) => (value.challenge, value.governance),
         JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
         _ => return Err("the host answered no membership challenge".into()),
     };
+    // A further device of a member writes its own row; a device the
+    // workspace lists already writes nothing.
+    let admission = crate::own_admission::sign_further_device_row(
+        &workspace_id.to_string(),
+        &governance,
+        device,
+        signer,
+        tilo_clock::wall(),
+    )
+    .await?;
     let proof = join::sign_membership_proof(challenge, signer).await?;
     match client
         .request(
             host.clone(),
-            JoinTransportRequest::MembershipComplete(join::MembershipCompleteRequest { proof }),
+            JoinTransportRequest::MembershipComplete(join::MembershipCompleteRequest {
+                proof,
+                admission,
+            }),
         )
         .await
         .map_err(|e| e.to_string())?

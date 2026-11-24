@@ -746,9 +746,30 @@ impl PeerGovernance<'_> {
         // membership is decided once the governor holds it
         // ([`PeerGovernanceMut::renew_member_certificate`]).
         if self.renewal_of(device_cert, now)?.is_none() {
-            self.peer
-                .certificate(&device_cert.device_public_key, now)
-                .map_err(|error| error.to_string())?;
+            if let Err(error) = self.peer.certificate(&device_cert.device_public_key, now) {
+                // A further device of a person the workspace lists is
+                // challenged as theirs, and sends its own row with its proof
+                // ([`crate::own_admission::sign_further_device_row`]).
+                tilo_user_identity::verify_device_cert_at(device_cert, now_ns(now)).map_err(err)?;
+                let further = !self.peer.core.revocations.refuses(device_cert)
+                    && self.peer.core.workspace_doc.as_ref().is_some_and(|doc| {
+                        doc.workspace_policy(&self.peer.core.workspace)
+                            .active_role(&hex::encode(device_cert.user_public_key))
+                            .is_some()
+                    });
+                if !further {
+                    return Err(error.to_string());
+                }
+                return crate::join::MembershipChallenge::new(
+                    workspace_id,
+                    host,
+                    device_cert,
+                    request_id,
+                    nonce,
+                    expires_at_ns,
+                    now_ns(now),
+                );
+            }
             // A device the workspace admitted and then removed is refused as
             // removed, not as a stranger.
             match self.peer.permissions(device_cert.device_public_key, now) {
@@ -1035,17 +1056,13 @@ impl PeerGovernanceMut<'_> {
         if redemption.join().grant().workspace_id.to_string() != self.peer.core.workspace {
             return Err("invitation is not for this workspace".into());
         }
-        // An inviter writes the redemption, or a holder of the workspace that
-        // is no member: every receiver checks the invitation itself.
-        if let Err(error) = self.peer.require_inviter(key, now) {
-            let device = key.device_public_key();
-            if self.peer.role(&device, now).is_ok()
-                || self.peer.holder_certificate(&device).is_none()
-            {
-                return Err(error);
-            }
-        }
+        // The redeeming device writes its own redemption, the invitation its
+        // authority, or a member who may invite writes it: every receiver
+        // checks the invitation itself.
         let cert = redemption.certificate();
+        if key.device_public_key() != cert.device_public_key {
+            self.peer.require_inviter(key, now)?;
+        }
         if self.peer.core.revocations.refuses(cert) {
             return Err("device revoked".into());
         }
@@ -1109,10 +1126,9 @@ impl PeerGovernanceMut<'_> {
     }
 
     /// Admit `device`, a device certified by the root of someone already a
-    /// member, as that member's: it needs no invitation, and the device
-    /// `key` that keeps the workspace's keys writes it in when it first
-    /// asks, whether its person is a member or a holder that is none.
-    /// Whether the workspace changed.
+    /// member, as that member's: it needs no invitation, and `key` is that
+    /// very device, writing its own row when it first asks, or a current
+    /// member's device. Whether the workspace changed.
     ///
     /// A device the workspace already holds is admitted again under the same
     /// certificate, and a later certificate of it replaces the held one
@@ -1126,8 +1142,8 @@ impl PeerGovernanceMut<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not a current member's device nor one of
-    /// the workspace's key-holding holders, `device`
+    /// Returns an error if `key` is neither `device` itself nor a current
+    /// member's device, `device`
     /// does not verify, is revoked or names another device than the one the
     /// workspace holds, its person is not a member, or governance cannot be
     /// updated.
@@ -1137,7 +1153,9 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_admitting_writer(key, now)?;
+        if key.device_public_key() != device.device_public_key {
+            self.peer.require_member_writer(key, now)?;
+        }
         tilo_user_identity::verify_device_cert_at(device, now_ns(now)).map_err(err)?;
         if self.peer.core.revocations.refuses(device) {
             return Err("device revoked".into());

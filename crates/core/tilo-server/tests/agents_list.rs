@@ -34,13 +34,7 @@ async fn a_members_agent_list_reaches_their_second_device_over_its_link() {
     let host = ann.enrol("home", DeviceCapabilities::member());
     let laptop = ann.enrol("laptop", DeviceCapabilities::primary());
     let phone = ann.enrol("phone", DeviceCapabilities::member());
-    let server = Box::pin(spawn_server(
-        &ann,
-        host,
-        &[WS],
-        &[&laptop.cert, &phone.cert],
-    ))
-    .await;
+    let server = Box::pin(spawn_server(&ann, host, &[WS], &[&laptop, &phone])).await;
     let workspaces = server
         .server
         .workspaces()
