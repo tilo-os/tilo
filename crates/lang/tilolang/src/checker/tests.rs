@@ -177,6 +177,9 @@ fn an_error_in_a_library_template_names_the_library_file_and_line() {
             .filter(|d| d.file.as_deref() != Some(library))
             .all(|d| d.line <= src.lines().count() + 1),
         "nothing lands on a line the app does not have: {placed:?}"
+    );
+}
+
 /// A job's `done:` is an action of the app's own, applied when the job starts: the call leaves out
 /// its last parameter, a `Text`, which the job's last word fills when it ends.
 #[test]
