@@ -94,10 +94,10 @@ d-frttwlrr = Gefunden y
 d-di5cyk72 = Gefunden b
 d-3adwwuks = Gefunden h
 d-fnu3wna2 = Aufnahme läuft
+    .doc = Der Clip, der aufgenommen wird, nach seinem Engine-Auftrag.
 
 d-z6lzljr2 = Aufnahme seit
     .doc = Der Zeitpunkt, an dem die Aufnahme begann, solange aufgezeichnet wird.
-    .doc = Der Clip, der aufgenommen wird, nach seinem Engine-Auftrag.
 d-bkfl557v = Auslöser um
     .doc = Der Moment, in dem der Selbstauslöser auslöst, während er zählt.
 d-zu2gt2mk = Störung
