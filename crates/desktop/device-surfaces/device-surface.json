@@ -3963,6 +3963,20 @@
       ],
       "types": [
         {
+          "name": "DriveMode",
+          "doc": "How a drive is opened: the faster kernel driver, or a confined userspace one for drives the person does not know.",
+          "cases": [
+            {
+              "name": "open",
+              "label": "Open"
+            },
+            {
+              "name": "open_safely",
+              "label": "Open safely"
+            }
+          ]
+        },
+        {
           "name": "DriveVolume",
           "doc": "An NTFS volume attached now.",
           "fields": [
@@ -4019,20 +4033,6 @@
                   "named": "Mounted"
                 }
               }
-            }
-          ]
-        },
-        {
-          "name": "DriveMode",
-          "doc": "How a drive is opened: the faster kernel driver, or a confined userspace one for drives the person does not know.",
-          "cases": [
-            {
-              "name": "open",
-              "label": "Open"
-            },
-            {
-              "name": "open_safely",
-              "label": "Open safely"
             }
           ]
         },
