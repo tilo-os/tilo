@@ -37,6 +37,9 @@ pub const CAMERA_APP: &str = "so.tilo.camera";
 /// The app whose repositories `libtilo_git_engine.so` answers.
 pub const GIT_APP: &str = "so.tilo.git-client";
 
+/// The app whose downloads `libtilo_browser_engine.so` fetches.
+pub const BROWSER_APP: &str = "so.tilo.browser";
+
 /// The app whose Grayjay link `libtilo_grayjay_engine.so` answers.
 pub const GRAYJAY_APP: &str = "so.tilo.tube";
 
@@ -52,6 +55,7 @@ fn library_of(app: &str) -> Option<&'static str> {
         CAMERA_APP => Some("libtilo_camera_engine.so"),
         GIT_APP => Some("libtilo_git_engine.so"),
         GRAYJAY_APP => Some("libtilo_grayjay_engine.so"),
+        BROWSER_APP => Some("libtilo_browser_engine.so"),
         TOTP_APP => Some("libtilo_totp_engine.so"),
         _ => None,
     }

@@ -375,6 +375,7 @@ members = [
     "crates/core/engine-loader",
     "crates/engines/loadable/accounts",
     "crates/engines/loadable/adblock",
+    "crates/engines/loadable/browser",
     "crates/engines/loadable/camera",
     "crates/engines/loadable/chip-design",
     "crates/engines/loadable/contact-directory",

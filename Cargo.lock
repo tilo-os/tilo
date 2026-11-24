@@ -15796,6 +15796,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-browser-engine"
+version = "0.1.0"
+dependencies = [
+ "host-fs",
+ "percent-encoding",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-engine-loader",
+ "tilo-net",
+ "tilo-paths",
+ "tilo-rt",
+ "tilo-test-http",
+ "tokio",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-browser-runtime"
 version = "0.1.0"
 dependencies = [

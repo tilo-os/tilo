@@ -95,7 +95,8 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # libtilo_git_engine.so (3655504) and libtilo_grayjay_engine.so (391744) were
 # measured at their introduction on x86_64. The chip, camera, diffmerge and git aarch64 numbers are the x86_64
 # budgets, and Typst's is its earlier library's, until the first aarch64 run
-# prints what to lower them to.
+# prints what to lower them to. libtilo_browser_engine.so's budget is an estimate
+# on both architectures until the first run prints what to lower it to.
 
 # The apps of apps_without_media that use an engine library
 # (crates/engines/loadable/), by library: they load it at exec. the app release
@@ -142,6 +143,7 @@ bytes = 2490368
 [engines.x86_64]
 "libtilo_accounts_engine.so" = 2752512
 "libtilo_adblock_engine.so" = 262144
+"libtilo_browser_engine.so" = 196608
 "libtilo_camera_engine.so" = 1245184
 "libtilo_chip_engine.so" = 1245184
 "libtilo_contact_directory_engine.so" = 393216
@@ -158,6 +160,7 @@ bytes = 2490368
 [engines.aarch64]
 "libtilo_accounts_engine.so" = 2490368
 "libtilo_adblock_engine.so" = 262144
+"libtilo_browser_engine.so" = 196608
 "libtilo_camera_engine.so" = 1245184
 "libtilo_chip_engine.so" = 1245184
 "libtilo_contact_directory_engine.so" = 393216
