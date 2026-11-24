@@ -518,18 +518,17 @@ fn names_table(meta: &PackageMeta, catalogues: &[(String, String)]) -> String {
 /// The `[package.keywords]` table of an app's manifest: the other words search matches it by, in
 /// each language its catalogues translate them in (`d-so-tilo-tasks-keywords = Aufgaben, ...`).
 fn keywords_table(meta: &PackageMeta, catalogues: &[(String, String)]) -> String {
-    let key = tilolang::messages::keywords_key(&meta.app);
     let mut table = String::new();
     for (locale, catalogue) in catalogues {
         if locale == tilolang::messages::SOURCE_LOCALE {
             continue;
         }
-        let Some(words) = tilolang::messages::word(catalogue, &key) else {
+        // A translation names the words its language knows the app by; one that only repeats
+        // the source's adds nothing.
+        let Some(words) = tilolang::messages::keywords_word(catalogue, &meta.app) else {
             continue;
         };
-        if tilolang::messages::keywords_word(catalogue, &meta.app)
-            .is_some_and(|words| words == meta.keywords)
-        {
+        if words == meta.keywords {
             continue;
         }
         if table.is_empty() {
@@ -537,7 +536,8 @@ fn keywords_table(meta: &PackageMeta, catalogues: &[(String, String)]) -> String
         }
         table.push_str(&toml_string(locale));
         table.push_str(" = ");
-        table.push_str(&toml_string(&words));
+        let words = words.into_iter().map(toml::Value::String).collect();
+        table.push_str(&toml::Value::Array(words).to_string());
         table.push('\n');
     }
     table
