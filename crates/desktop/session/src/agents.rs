@@ -570,21 +570,26 @@ mod tests {
             None,
             std::sync::Arc::new(|| ()),
         );
-        let (agent, _) = {
-            tab.create(Some(&workspace), &person, ("Scout", None), "")
-                .expect("the workspace makes the agent")
-        };
-        session.shared.feed_agents();
+        // The id the workspace minted is the record's own; this device reads it from the list
+        // the tab's Add leaves.
+        tab.create(Some(&workspace), &person, ("Scout", None), "")
+            .expect("the workspace makes the agent");
+        tilo_test_env::wait_until("the workspace's list holds the agent", || {
+            session.shared.feed_agents();
+            roster.listed(STUDIO).len() == 1
+        });
         let listed = roster.listed(STUDIO);
         assert_eq!(listed.len(), 1, "one agent: {listed:?}");
         assert_eq!(listed[0].name, "Scout");
         assert_eq!(listed[0].avatar, None, "she set no picture yet");
+        let agent = listed[0].id.clone();
 
-        {
-            tab.set_avatar(Some(&workspace), &agent, Some(PNG))
-                .expect("the workspace pictures the agent");
-        }
-        session.shared.feed_agents();
+        tab.set_avatar(Some(&workspace), &agent, Some(PNG))
+            .expect("the workspace pictures the agent");
+        tilo_test_env::wait_until("the list names the picture it wears", || {
+            session.shared.feed_agents();
+            roster.listed(STUDIO)[0].avatar.as_deref() == Some(PNG)
+        });
         let listed = roster.listed(STUDIO);
         assert_eq!(listed[0].name, "Scout", "the persona keeps its name");
         assert_eq!(
