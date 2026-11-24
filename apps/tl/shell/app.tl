@@ -125,6 +125,11 @@ view clock() {
 view bar() {
     let s = shell
     let roomy = space.width_class == .expanded or space.width_class == .wide
+    // What the bar's room allows each part: a part is drawn in a box of its own size, so it is
+    // told the bar's width rather than reading its own.
+    let narrow = bar_is_narrow(space.width)
+    let compact = space.compact
+    let wide = space.width_class == .wide
     // The display in use carries the whole bar; each other display carries the compact one, as
     // the desktop's own bars do: what a person reaches for where their work is (the sounds, the
     // connection, the charge, the notices, the people) stays where they work.
@@ -147,7 +152,7 @@ view bar() {
                         .trailing
                     } else if part.kind == .spacer { .space } else { .leading },
                 ) {
-                    bar_part(part, phone: space.compact, wide: space.width_class == .wide)
+                    bar_part(part, narrow, compact, wide)
                 }
             }
         }
@@ -210,12 +215,13 @@ fn bar_is_narrow(width: Float) -> Bool {
 /// items, each under the app's own words for it, then the device's own status, the notifications,
 /// and the person's own face at the far end. On a compact bar the tray items and the sound give
 /// way: what a glance needs — the clock, the workspace, the connection, the charge, the
-/// notifications and the person's own face — keeps its room.
-view bar_part(part: BarPart, phone: Bool, wide: Bool) {
+/// notifications and the person's own face — keeps its room. `narrow`, `compact` and `wide` are
+/// the bar's own room (`bar`), never the part's: a part stands in a box its own size.
+view bar_part(part: BarPart, narrow: Bool, compact: Bool, wide: Bool) {
     if part.kind == .spacer {
         spacer
     } else if part.kind == .clock {
-        clock_or_follow()
+        clock_or_follow(compact)
     } else if part.kind == .menu {
         row(gap: .related, align: .center) {
             ui.MenuButton("Tilo", icon: .tilo, icon_only: true, role: .bar) {
@@ -241,23 +247,23 @@ view bar_part(part: BarPart, phone: Bool, wide: Bool) {
             // focused window's menu; the same switch is a page of Settings, so the style a
             // person picked is never out of reach, and no control is pressed into its neighbour
             // to keep it here.
-            if not bar_is_narrow(space.width) {
-                style_menu(viewing)
+            if not narrow {
+                style_menu(viewing, compact)
             }
         }
     } else if part.kind == .workspace {
-        workspace_menu()
+        workspace_menu(narrow, compact, wide)
     } else if part.kind == .app_menu {
         action_bar(layout, BarRoom.menus)
     } else if part.kind == .strip {
         strip_part()
     } else if part.kind == .people {
         row(gap: .related, align: .center) {
-            if not space.compact and not frames_style() {
+            if not compact and not frames_style() {
                 people_button()
                 // Someone new is one press from the faces, as the Rust bar's invite was: the
                 // launchpad's invite card, which the session's own action opens.
-                if space.width_class == .wide {
+                if wide {
                     ui.Button("Invite someone", icon: .user_plus, icon_only: true, role: .bar) {
                         on press: session.launchpad(card: "invite")
                     }
@@ -293,8 +299,8 @@ view bar_part(part: BarPart, phone: Bool, wide: Bool) {
         row(gap: .related, align: .center) {
             // What is live now — a video playing, a timer running — by its own view, on every
             // bar, compact or not: it is what a glance at the bar is for while it lasts.
-            live_pill(phone: phone, wide: wide)
-            if not space.compact and not device.tray.items.is_empty() {
+            live_pill(phone: compact, wide: wide)
+            if not compact and not device.tray.items.is_empty() {
                 row(gap: .related, align: .center) {
                     for item in device.tray.items {
                         // A press opens the item's window, or its menu when it is one: the app's
@@ -314,7 +320,7 @@ view bar_part(part: BarPart, phone: Bool, wide: Bool) {
             // What is using the camera or the microphone now: a glyph each, naming the first app
             // in reach and how many more, and a press that opens the quick settings where sound
             // and capture are changed.
-            capture_status()
+            capture_status(compact)
             // The device's own status: the sound's level, the connection the machine's traffic
             // leaves on, and the pack's charge. Each reads the resource the session publishes —
             // the sound, the network and the battery `quick.tl` reads and changes too, so the bar
@@ -322,14 +328,14 @@ view bar_part(part: BarPart, phone: Bool, wide: Bool) {
             // the one place a person changes them.
             // Below a wide bar, what is live takes the sound's place: the sound is in quick
             // settings, a press away, as on a compact bar.
-            if not space.compact and not (live_on_bar() and space.width_class != .wide) {
+            if not compact and not (live_on_bar() and not wide) {
                 volume_status()
             }
-            if not space.compact or folders_need_person(device.folders.folders) {
+            if not compact or folders_need_person(device.folders.folders) {
                 sync_status()
             }
             network_status()
-            battery_status()
+            battery_status(compact)
             bell()
             // The person's own face opens their own card: their name, status and colour, their
             // devices, pairing a new one and Settings. A question put to them shows as its dot
@@ -355,7 +361,8 @@ view bar_part(part: BarPart, phone: Bool, wide: Bool) {
 /// device's workspaces. On a bar too narrow for its name beside the clock and the status (a
 /// phone with large text), it is the workspaces' icon, named for the workspace; a shell whose
 /// workspace the session has not published a name for still opens by the workspaces' name.
-view workspace_menu() {
+/// `narrow`, `compact` and `wide` are the bar's room (`bar`).
+view workspace_menu(narrow: Bool, compact: Bool, wide: Bool) {
     state renaming: Text = ""
     state renamed: Text = ""
     let name = if front_workspace_name() != "" { front_workspace_name() } else { "Workspaces" }
@@ -372,9 +379,9 @@ view workspace_menu() {
     } else {
         // On a phone the status cluster takes the name's room while a folder needs the person,
         // and below a wide bar so does something live.
-        let icon_only = bar_is_narrow(space.width)
-            or space.compact and folders_need_person(device.folders.folders)
-            or live_on_bar() and space.width_class != .wide
+        let icon_only = narrow
+            or compact and folders_need_person(device.folders.folders)
+            or live_on_bar() and not wide
         ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
             for w in layout.workspaces {
                 if w.home != "" {
@@ -594,7 +601,7 @@ view person_menu() {
 /// glyph of what is watched and of what is heard, naming the first app in reach and how many more,
 /// and a press that opens the quick settings, where the sound and the capture are changed. Nothing
 /// while nothing takes either.
-view capture_status() {
+view capture_status(compact: Bool) {
     let uses = device.sound.uses
     if not uses.is_empty() {
         let listening = uses.any(u -> u.kind == .microphone)
@@ -611,7 +618,7 @@ view capture_status() {
         ui.Button(
             label,
             icon: if watching { .camera } else { .mic },
-            icon_only: space.compact,
+            icon_only: compact,
             role: .bar,
             alert: listening,
         ) {
@@ -777,7 +784,7 @@ fn stuck_reason(f: device.Folder, server: Text) -> Text {
 /// service's own state, not whether the machine happens to run on the pack, and nothing on a
 /// machine with no battery. A compact bar shows the glyph alone. The glyph says the charging,
 /// so the reading is the charge alone and the name assistive technology hears says both.
-view battery_status() {
+view battery_status(compact: Bool) {
     let b = device.battery
     if b.present {
         let charging = b.state == "charging" or b.state == "pending-charge"
@@ -786,7 +793,7 @@ view battery_status() {
             "{b.percentage}%",
             accessible_name: name,
             icon: if charging { .battery_charging } else { .battery },
-            icon_only: space.compact,
+            icon_only: compact,
             role: .bar,
         ) {
             on press: device.show_surface(device.overlays, surface: "quick-settings")

@@ -54,7 +54,7 @@ view dock_run(s: Shell) {
             row(gap: .sibling, align: .center) {
                 ui.DragRun(axis: .horizontal) {
                     trailing: {
-                        clock_or_follow()
+                        clock_or_follow(space.compact)
                         bell()
                     }
                     on drop(moved: DockItem, at: Int): place_item(s, moved, at)

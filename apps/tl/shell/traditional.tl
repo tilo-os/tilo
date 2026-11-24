@@ -248,7 +248,7 @@ view traditional_bar() {
         }
         action_bar(layout, room)
         spacer
-        clock_or_follow()
+        clock_or_follow(space.compact)
         if room != .one {
             people_button()
         }
@@ -256,7 +256,7 @@ view traditional_bar() {
             volume_status()
         }
         network_status()
-        battery_status()
+        battery_status(space.compact)
         bell()
         if layout.person != "" {
             ui.Avatar(name: layout.person)

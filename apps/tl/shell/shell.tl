@@ -77,7 +77,7 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                 // The keys a held Super reaches stand over the windows. The shell's own work
                 // stays behind them, so nothing of the style is drawn here; the card itself
                 // stands over everything in `shell_around`.
-                banners_over()
+                banners_over(roomy: not (space.compact or space.width < 44.0))
             } else if device.overlays.here == "quick-settings" {
                 // Beside a caret, the panel is drawn over the whole shell, at the point the stack
                 // settled (below the bar too). Left at its own place it keeps the band under the
@@ -109,7 +109,7 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         if device.overlays.here == "quick-settings" {
             if let p = device.overlays.place {
                 stack(at: .top_leading, x: p.x, y: p.y, height: p.h * 1dp) {
-                    quick_settings_panel(fill_height: true)
+                    quick_settings_panel(fill_height: true, compact: space.compact)
                 }
             }
         }
@@ -396,7 +396,7 @@ template view over_band(body: View) {
         // The band is the display's width, which the cards' own view cannot see: a phone takes
         // one card across under the bar.
         live_cards(phone: space.compact, fill)
-        banners_over()
+        banners_over(roomy: not (space.compact or space.width < 44.0))
     }
 }
 
@@ -410,16 +410,17 @@ template view over_band(body: View) {
 /// out and draws nothing. A banner is the display in use's: it rises in the corner of the screen
 /// the person works on, a banner's width in from the edge the transient panels keep, and another
 /// display shows none of it. A display too narrow for the corner (a phone) takes the card across
-/// it, a phone's gutter in from either edge.
-view banners_over() {
+/// it, a phone's gutter in from either edge: `roomy` says the display keeps the corner, read
+/// from the room the caller has, never this view's own.
+view banners_over(roomy: Bool) {
     if (device.notifications.banner ?? -1) != -1 and on_primary() {
-        if space.compact or space.width < 44.0 {
+        if not roomy {
             stack(at: .top, fill, padding: .sibling) {
-                banner()
+                banner(roomy: false)
             }
         } else {
             stack(at: .top_trailing, padding: .related) {
-                banner()
+                banner(roomy: true)
             }
         }
     }
