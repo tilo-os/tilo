@@ -2847,7 +2847,13 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::ExtensionList { .. }
         | WebViewCommand::ExtensionInstall { .. }
         | WebViewCommand::ExtensionEnable { .. }
-        | WebViewCommand::ExtensionRemove { .. } => return None,
+        | WebViewCommand::ExtensionRemove { .. }
+        | WebViewCommand::SetDownloadDestination { .. }
+        | WebViewCommand::CancelDownload { .. }
+        | WebViewCommand::SetContentFilter(_)
+        | WebViewCommand::SetContentFilters { .. }
+        | WebViewCommand::RequestMediaElement { .. }
+        | WebViewCommand::RequestMediaElementById { .. } => return None,
         WebViewCommand::Credentials(request) => request.encode()?,
         WebViewCommand::ImportServiceSession(request) => request.encode()?,
         WebViewCommand::Navigate(url) => json!({"op":"navigate","url":url}),
@@ -3081,14 +3087,6 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             "faces": families,
         }),
         WebViewCommand::StartDownload { uri } => json!({"op":"download_start","url":uri}),
-        WebViewCommand::SetDownloadDestination { .. }
-        | WebViewCommand::CancelDownload { .. }
-        | WebViewCommand::SetContentFilter(_)
-        | WebViewCommand::SetContentFilters { .. } => {
-            return None;
-        }
-        WebViewCommand::RequestMediaElement { .. }
-        | WebViewCommand::RequestMediaElementById { .. } => return None,
     })
 }
 
