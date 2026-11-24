@@ -201,14 +201,18 @@ destructive action remove_tag(lib: Library, tag: Text) (
 /// Copies a snippet's body to the clipboard, and counts the use. A snippet with variables is
 /// filled in first (`begin_fill`), so what is copied is what the person meant.
 action copy(snippet: Snippet) uses clipboard (icon: .copy, label: "Copy", did: "copied a snippet") {
-    copy_text(snippet.body)
-    snippet.uses += 1
+    if copy_text(snippet.body) {
+        snippet.uses += 1
+        notice("Copied; it leaves the clipboard in a minute", kind: .success)
+    } else {
+        notice("Could not copy to the clipboard", kind: .error)
+    }
 }
 
 /// Puts `text` on the clipboard: as a secret, which histories do not keep and which leaves the
 /// clipboard after a while, when it looks like it carries a credential, so an API key does not
-/// stay there for whatever is pasted next.
-action copy_text(text: Text) uses clipboard {
+/// stay there for whatever is pasted next. False when the device refused the copy.
+action copy_text(text: Text) -> Bool uses clipboard {
     if carries_a_credential(text) { clipboard.copy_secret(text) } else { clipboard.copy(text) }
 }
 
@@ -260,9 +264,13 @@ action copy_filled(lib: Library, fill: Fill) uses clipboard (
     did: "copied a snippet",
 ) {
     let snippet = fill.snippet ?? Snippet(title: "")
-    copy_text(expanded(snippet.body, fill))
-    snippet.uses += 1
-    clear_fill(fill)
+    if copy_text(expanded(snippet.body, fill)) {
+        snippet.uses += 1
+        clear_fill(fill)
+        notice("Copied; it leaves the clipboard in a minute", kind: .success)
+    } else {
+        notice("Could not copy to the clipboard", kind: .error)
+    }
 }
 
 /// Puts the filling away without copying.

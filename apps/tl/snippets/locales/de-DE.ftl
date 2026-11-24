@@ -180,6 +180,8 @@ d-rirlohhq-tag = Schlagwort
 d-2fawdcmk = Kopieren
     .doc = Kopiert den Inhalt eines Textbausteins in die Zwischenablage und zählt die Nutzung.
     .did = kopierte einen Textbaustein
+    .w-copied-it-leaves-the-clipboard-in = Kopiert; nach einer Minute ist die Zwischenablage wieder leer
+    .w-could-not-copy-to-the-clipboard = Konnte nicht in die Zwischenablage kopieren
 
 d-niz7er5a = Ausfüllen und kopieren
     .doc = Beginnt das Ausfüllen der Variablen eines Textbausteins: ein Feld für jede Variable seines Inhalts, geleert.
@@ -189,6 +191,8 @@ d-niz7er5a-snippet = Textbaustein
 d-iaud5pvs = Kopieren
     .doc = Kopiert den ausgefüllten Inhalt, zählt die Nutzung und legt die Füllung weg.
     .did = kopierte einen Textbaustein
+    .w-copied-it-leaves-the-clipboard-in = Kopiert; nach einer Minute ist die Zwischenablage wieder leer
+    .w-could-not-copy-to-the-clipboard = Konnte nicht in die Zwischenablage kopieren
 
 d-iaud5pvs-fill = Füllung
 

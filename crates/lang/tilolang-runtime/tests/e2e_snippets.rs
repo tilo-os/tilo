@@ -19,11 +19,13 @@ mod cases {
         copied: Rc<RefCell<Option<String>>>,
         /// How long the last copy stays, when it was a secret's.
         clears_after: Rc<RefCell<Option<std::time::Duration>>>,
+        /// Whether the device takes no copy at all, as a session with no selection does.
+        refuses: Rc<RefCell<bool>>,
     }
 
     impl ClipboardHost for Selection {
         fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-            if mime != "text/plain" {
+            if mime != "text/plain" || *self.refuses.borrow() {
                 return false;
             }
             *self.copied.borrow_mut() = Some(String::from_utf8_lossy(bytes).into_owned());
@@ -32,6 +34,9 @@ mod cases {
         }
 
         fn copy_secret(&self, text: &str, clear_after: std::time::Duration) -> bool {
+            if *self.refuses.borrow() {
+                return false;
+            }
             *self.copied.borrow_mut() = Some(text.to_owned());
             *self.clears_after.borrow_mut() = Some(clear_after);
             true
@@ -250,12 +255,33 @@ mod cases {
             "kubectl -n ${namespace} rollout restart deployment/${deployment}"
         );
         assert_eq!(snippets.field(&restart, "uses"), json!(1));
+        // The window says the copy went through, and that it does not stay.
+        let said = snippets.rt.take_said();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].text, "Copied; it leaves the clipboard in a minute");
+        assert_eq!(said[0].kind, tilolang_runtime::notice::Kind::Success);
         let page = snippets.window("snippet_page", vec![Value::resource(&restart)]);
         assert!(
             drawn(&page).contains(&"Copied once".to_owned()),
             "{:?}",
             drawn(&page)
         );
+    }
+
+    /// A copy the device refuses says so, and the snippet is not counted as used.
+    #[test]
+    fn a_refused_copy_says_so_and_counts_nothing() {
+        let snippets = Snippets::new();
+        let restart = snippets.add("Restart deployment", "Ops");
+        snippets.write_body(&restart, "kubectl rollout restart deployment/web");
+        *snippets.selection.refuses.borrow_mut() = true;
+        snippets.call("copy", &[("snippet", Value::resource(&restart))]);
+        assert_eq!(snippets.field(&restart, "uses"), json!(0));
+        assert!(snippets.selection.copied.borrow().is_none());
+        let said = snippets.rt.take_said();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].text, "Could not copy to the clipboard");
+        assert_eq!(said[0].kind, tilolang_runtime::notice::Kind::Error);
     }
 
     /// A use is counted without a copy: the body never reaches the clipboard and the count moves
