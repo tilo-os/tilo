@@ -14,6 +14,10 @@ app so.tilo.chat "Chat" (
 type Conversations {
     channels: Collection<Category | TextChannel | VoiceChannel | Direct>
     skills: Collection<Skill>
+    /// What each person is writing in a conversation and has not sent. A draft is read by its
+    /// author alone, so a change to it is never news to the conversation: nobody else sees that
+    /// someone is half-way through a message.
+    drafts: Collection<Draft>
 }
 
 root conversations: Conversations
@@ -57,15 +61,18 @@ type TextChannel {
     threads: Collection<Thread>
     /// The reports filed about its messages, for the workspace's moderators.
     reports: Collection<Report>
-
-    search {
-        kind conversation
-    }
+    /// Whether the channel is set aside: it keeps every message and its place in the sidebar is
+    /// gone until it is restored. Search still finds it, so restoring it is a press there.
+    archived: Bool = false
     /// The outside service this conversation is carried to, as its people read it ("Discord");
     /// empty for one that stays here.
     service: Text = ""
     /// Its id there, when a bridge carries it: the channel, category or conversation there.
     outside_id: Text = ""
+
+    search {
+        kind conversation
+    }
 }
 
 /// Who wrote a message somewhere else, as that place shows them: a bridge's generic outside
@@ -188,16 +195,26 @@ type Direct (readers: people) {
     threads: Collection<Thread>
     /// The reports filed about its messages, for the workspace's moderators.
     reports: Collection<Report>
-
-    search {
-        kind conversation
-        people people
-    }
     /// The outside service this conversation is carried to, as its people read it ("Discord");
     /// empty for one that stays here.
     service: Text = ""
     /// Its id there, when a bridge carries it: the channel, category or conversation there.
     outside_id: Text = ""
+
+    search {
+        kind conversation
+        people people
+    }
+}
+
+/// What a person is writing in a conversation and has not sent. The composer binds its `body`, so
+/// what is typed survives the window and reaches the person's other devices; the send that makes
+/// the message empties it. A draft is read by its author alone (`readers: author`), so a
+/// half-written message is theirs until it goes.
+type Draft (readers: author) {
+    /// The conversation it is written in: a channel, a thread or a direct conversation.
+    conversation: TextChannel | Thread | Direct
+    body: RichText
 }
 
 /// A file a message carries, as the place it was copied from keeps it: its name, what it is, how
@@ -232,7 +249,11 @@ type Part {
 /// Carries a conversation to an outside service: its name as people read it ("Discord") and
 /// the id it has there. The bridge's own actions keep what joins the two sides; this is what
 /// every view reads to show the place a conversation is also said in.
-action bridge(c: TextChannel | VoiceChannel | Category | Direct, service: Text, outside_id: Text = "") {
+action bridge(
+    c: TextChannel | VoiceChannel | Category | Direct,
+    service: Text,
+    outside_id: Text = "",
+) {
     require service.trim() != "" "Say which service carries the conversation"
     match c {
         ch: TextChannel => {
@@ -835,26 +856,63 @@ fn made_before(x: host.Resource, y: host.Resource) -> Bool {
     } else { false }
 }
 
+/// Opening a channel makes the draft its person writes in, when they have none: a press away and
+/// back finds what they typed, on every device of theirs, and nobody else reads it.
+opened action open_channel(c: TextChannel) {
+    let all = root Conversations
+    if not all.drafts.any(d -> d.conversation == c and (created(d)?.mine ?? false)) {
+        all.drafts.insert(Draft(conversation: c, body: RichText("")))
+    }
+}
+
+/// [`open_channel`] for a direct conversation.
+opened action open_direct(c: Direct) {
+    let all = root Conversations
+    if not all.drafts.any(d -> d.conversation == c and (created(d)?.mine ?? false)) {
+        all.drafts.insert(Draft(conversation: c, body: RichText("")))
+    }
+}
+
+/// [`open_channel`] for a thread.
+opened action open_thread(t: Thread) {
+    let all = root Conversations
+    if not all.drafts.any(d -> d.conversation == t and (created(d)?.mine ?? false)) {
+        all.drafts.insert(Draft(conversation: t, body: RichText("")))
+    }
+}
+
+/// Whether a send names nothing to say: the draft's words when it sends one, else the body given.
+fn empty_writing(draft: Option<Draft>, body: RichText) -> Bool {
+    if let writing = draft { writing.body.is_empty() } else { body.is_empty() }
+}
+
 /// Posts a message in a channel, a thread or a direct conversation as the invoker, answering
 /// another when `reply_to` names one. History and the catch-up say what a person did in its own
 /// words, counting the messages a step of them holds. A message in a direct conversation is news
 /// to the other people in it: each is told once, on every device of theirs, who wrote and what,
 /// and choosing the notice opens the conversation.
+///
+/// A composer names the person's `draft`: what it holds is the message, and the draft is emptied in
+/// the same change, so the press is one step to undo. What is sent without a draft is the `body`
+/// given, as a program writing a message says it.
 action send(
     to: TextChannel | Thread | Direct,
-    body: RichText,
+    body: RichText = RichText(""),
     reply_to: Option<Message> = .none,
     attachments: List<File> = [],
     turn: Text = "",
+    draft: Option<Draft> = .none,
 ) -> Message uses notify (icon: .send, label: "Send", did: "wrote a message") {
-    let m = Message(body: body, reply_to: reply_to, turn: turn)
+    require not empty_writing(draft, body) "Type a message first"
+    let words = if let writing = draft { writing.body } else { body }
+    let m = Message(body: words, reply_to: reply_to, turn: turn)
     let sent = match to {
         c: TextChannel => c.messages.insert(m),
         t: Thread => t.messages.insert(m),
         d: Direct => {
             let sent = d.messages.insert(m)
             for p in d.people.filter(p -> p != invoker and p.kind() == .person) {
-                notify(to: p, title: invoker.name(), body: body.text, opens: d)
+                notify(to: p, title: invoker.name(), body: words.text, opens: d)
             }
             sent
         }
@@ -865,6 +923,9 @@ action send(
         sent.attachments.insert(
             Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()),
         )
+    }
+    if let d = draft {
+        d.body = RichText("")
     }
     sent
 }
@@ -935,11 +996,13 @@ action relay(
         by: by.trim(),
         written_in: written_in,
         written: written,
-        outside: .some(OutsideAuthor(
-            name: by.trim(),
-            avatar: avatar,
-            service: if service == "" { written_in } else { service },
-        )),
+        outside: .some(
+            OutsideAuthor(
+                name: by.trim(),
+                avatar: avatar,
+                service: if service == "" { written_in } else { service },
+            ),
+        ),
     )
     let sent = match to {
         c: TextChannel => c.messages.insert(m),
@@ -1042,6 +1105,45 @@ action move_category(all: Conversations, c: Category, at: Int = -1) (
 ) {
     let place = if at < 0 { all.channels.len() } else { at }
     all.channels.move(c, to: place)
+}
+
+/// Renames a text channel. What was said in it stays.
+action rename_channel(ch: TextChannel, name: Text) (icon: .pencil, label: "Rename channel") {
+    require moderates(invoker) "Only the workspace's moderators rename a channel"
+    require name.trim() != "" "Name the channel first"
+    ch.name = name.trim()
+}
+
+/// Renames a voice channel. A call in it is untouched.
+action rename_voice_channel(ch: VoiceChannel, name: Text) (
+    icon: .pencil,
+    label: "Rename voice channel",
+) {
+    require moderates(invoker) "Only the workspace's moderators rename a channel"
+    require name.trim() != "" "Name the channel first"
+    ch.name = name.trim()
+}
+
+/// Says what a channel is for, in its topic.
+action set_topic(ch: TextChannel, topic: Text) (icon: .file_text, label: "Set the topic") {
+    require moderates(invoker) "Only the workspace's moderators set a channel's topic"
+    ch.topic = topic.trim()
+}
+
+/// Renames a category. Its channels stay in it.
+action rename_category(c: Category, name: Text) (icon: .pencil, label: "Rename category") {
+    require moderates(invoker) "Only the workspace's moderators rename a category"
+    require name.trim() != "" "Name the category first"
+    c.name = name.trim()
+}
+
+/// Sets a channel aside, out of the sidebar, keeping everything said in it, or brings it back.
+action archive_channel(ch: TextChannel, archived: Bool = not ch.archived) (
+    icon: .archive,
+    label: if archived { "Archive channel" } else { "Restore channel" },
+) {
+    require moderates(invoker) "Only the workspace's moderators archive a channel"
+    ch.archived = archived
 }
 
 /// Changes what a message says. Only its author may. An agent retrying its answer writes it
@@ -1324,17 +1426,23 @@ view sidebar(all: Conversations) {
                                         for x in c.channels {
                                             match x {
                                                 ch: TextChannel => {
-                                                    ui.NavItem(
-                                                        "{c.name}/{ch.name}",
-                                                        ch.name,
-                                                        icon: .hash,
-                                                        item: ch,
-                                                        mentions: mentions(ch),
-                                                    ) {
-                                                        on select: set(shown, "{c.name}/{ch.name}")
-                                                            .then(
-                                                                open(ch),
-                                                            )
+                                                    if not ch.archived {
+                                                        ui.NavItem(
+                                                            "{c.name}/{ch.name}",
+                                                            ch.name,
+                                                            icon: .hash,
+                                                            item: ch,
+                                                            unread: first_unseen(ch) != .none,
+                                                            mentions: mentions(ch),
+                                                        ) {
+                                                            on select: set(
+                                                                    shown,
+                                                                    "{c.name}/{ch.name}",
+                                                                )
+                                                                .then(
+                                                                    open(ch),
+                                                                )
+                                                        }
                                                     }
                                                 }
                                                 v: VoiceChannel => {
@@ -1366,14 +1474,17 @@ view sidebar(all: Conversations) {
                                 }
                             }
                             ch: TextChannel => {
-                                ui.NavItem(
-                                    "/{ch.name}",
-                                    ch.name,
-                                    icon: .hash,
-                                    item: ch,
-                                    mentions: mentions(ch),
-                                ) {
-                                    on select: set(shown, "/{ch.name}").then(open(ch))
+                                if not ch.archived {
+                                    ui.NavItem(
+                                        "/{ch.name}",
+                                        ch.name,
+                                        icon: .hash,
+                                        item: ch,
+                                        unread: first_unseen(ch) != .none,
+                                        mentions: mentions(ch),
+                                    ) {
+                                        on select: set(shown, "/{ch.name}").then(open(ch))
+                                    }
                                 }
                             }
                             v: VoiceChannel => {
@@ -1403,6 +1514,7 @@ view sidebar(all: Conversations) {
                                             other.name(),
                                             person: other,
                                             item: d,
+                                            unread: first_unseen(d) != .none,
                                             mentions: mentions(d),
                                         ) {
                                             on select: set(shown, "/dm/{other.id()}").then(open(d))
@@ -1413,6 +1525,7 @@ view sidebar(all: Conversations) {
                                             "Notes to self",
                                             icon: .bookmark,
                                             item: d,
+                                            unread: first_unseen(d) != .none,
                                             mentions: mentions(d),
                                         ) {
                                             on select: set(shown, "/dm/self").then(open(d))
@@ -1422,21 +1535,13 @@ view sidebar(all: Conversations) {
                             }
                         }
                     }
-                    // Everyone in the workspace: a press opens the conversation with them, or the
-                    // one already there. A person is an actor the workspace's membership knows,
-                    // never a copy Chat keeps.
+                    // Everyone in the workspace, on a page of their own: the sidebar lists the
+                    // conversations a person has, never every member, so a workspace with a
+                    // thousand of them keeps its channels in sight.
                     if not workspace.members.is_empty() {
-                        ui.NavSection("Direct messages", collapsible: true) {
-                            for p in workspace.members {
-                                // Your own place is your notes, which the sidebar says above.
-                                if p != invoker {
-                                    ui.NavItem("/person/{p.name()}", p.name(), person: p) {
-                                        on select: set(shown, "/person/{p.name()}")
-                                            .then(
-                                                message_person(all, p),
-                                            )
-                                    }
-                                }
+                        ui.NavSection("Direct messages") {
+                            ui.NavItem("/people", "Everyone", icon: .users) {
+                                on select: set(shown, "/people").then(open(all, view: people))
                             }
                         }
                     }
@@ -1460,15 +1565,41 @@ view sidebar(all: Conversations) {
 
 /// A text channel: its messages, and a composer that can answer one of them.
 view channel(c: TextChannel) {
-    state draft: RichText = RichText("")
     state replying: Option<Message> = .none
     state editing: Option<Message> = .none
     state revised: RichText = RichText("")
-    std.transcript(c, c.messages, unread: first_unseen(c)) { m ->
+    let all = root Conversations
+    std.transcript_by(c, c.messages, author: m -> writer_of(m), unread: first_unseen(c)) { m ->
         channel_message(c, m, c.messages, replying, editing, revised)
         composer: {
             typing_here(c)
-            composer(c, c.messages, draft, replying, "Message #{c.name}")
+            // What can be done to the channel itself: its name, what it is for, the page its
+            // pins stand on, and setting it aside. A press that needs words opens the form that
+            // asks for them.
+            row(distribute: .end) {
+                if c.messages.any(m -> m.pinned) {
+                    ui.Button("Pinned messages", icon: .pin, size: .small, role: .plain) {
+                        on press: open(c, view: pins)
+                    }
+                }
+                ui.MenuButton("Channel", icon: .more_horizontal) {
+                    ui.MenuItem("Rename channel", icon: .pencil) {
+                        on choose: rename_channel(c)
+                    }
+                    ui.MenuItem("Set the topic", icon: .file_text) {
+                        on choose: set_topic(c)
+                    }
+                    ui.MenuItem(
+                        if c.archived { "Restore channel" } else { "Archive channel" },
+                        icon: .archive,
+                    ) {
+                        on choose: archive_channel(c, archived: not c.archived)
+                    }
+                }
+            }
+            if let d = all.drafts.find(x -> x.conversation == c and (created(x)?.mine ?? false)) {
+                composer(c, c.messages, d, replying, "Message #{c.name}")
+            }
         }
     }
 }
@@ -1476,24 +1607,28 @@ view channel(c: TextChannel) {
 /// A direct conversation: the same messages and composer as a channel, with the person's name
 /// over it.
 view direct(d: Direct) {
-    state draft: RichText = RichText("")
     state replying: Option<Message> = .none
     state editing: Option<Message> = .none
     state revised: RichText = RichText("")
-    std.transcript(d, d.messages, unread: first_unseen(d)) { m ->
+    let all = root Conversations
+    std.transcript_by(d, d.messages, author: m -> writer_of(m), unread: first_unseen(d)) { m ->
         direct_message(d, m, d.messages, replying, editing, revised)
         composer: {
             direct_typing_here(d)
-            composer(
-                d,
-                d.messages,
-                draft,
-                replying,
-                if let other = other_in(d, invoker) {
-                    "Message {other.name()}"
-                } else { "Message {d.name}" },
-                agent: d.people.any(p -> p.kind() == .agent),
-            )
+            if let writing = all.drafts.find(
+                    x -> x.conversation == d and (created(x)?.mine ?? false),
+                ) {
+                composer(
+                    d,
+                    d.messages,
+                    writing,
+                    replying,
+                    if let other = other_in(d, invoker) {
+                        "Message {other.name()}"
+                    } else { "Message {d.name}" },
+                    agent: d.people.any(p -> p.kind() == .agent),
+                )
+            }
         }
     }
 }
@@ -1501,6 +1636,66 @@ view direct(d: Direct) {
 /// A channel as another app's page summarizes it: its name, and what it is about.
 view channel_summary(c: TextChannel) {
     row(c.name, secondary: c.topic, icon: .hash)
+}
+
+/// A channel's pinned messages, as a page of their own: each as it was written, with what came
+/// with it, so what the workspace keeps at hand is read without scrolling back to it. Choosing
+/// one opens the conversation it stands in.
+view pins(c: TextChannel) {
+    let pinned = c.messages.filter(m -> m.pinned)
+    std.page(c) {
+        content: {
+            if pinned.is_empty() {
+                ui.EmptyState(
+                    "Nothing pinned yet",
+                    icon: .pin,
+                    message: "Pin a message from its menu to keep it here for everyone.",
+                )
+            } else {
+                for m in pinned {
+                    ui.Card(item: m, title: meta(m).title) {
+                        stack(gap: .tight) {
+                            for f in m.attachments {
+                                ui.Link(f.blob, label: f.name)
+                            }
+                            said(m)
+                        }
+                        on activate: open(c)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Everyone in the workspace, each with their face, and the way to the conversation with them: a
+/// workspace's people are its membership's, never a list Chat keeps, and one with many members
+/// reaches any of them here rather than from a sidebar that would hold them all.
+view people(all: Conversations) {
+    ui.NavShell(content_kind: .page, title: "People") {
+        content: {
+            ui.Scroll {
+                page {
+                    for p in workspace.members {
+                        row(gap: .related, align: .center) {
+                            avatar(p)
+                            stack(fill: 1.0, gap: .none) {
+                                text(p.name(), role: .label)
+                                if p.kind() == .agent {
+                                    text("Agent", role: .caption, secondary: true)
+                                }
+                            }
+                            if p != invoker {
+                                ui.Button("Message", icon: .message_circle, size: .small) {
+                                    on press: message_person(all, p)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A voice channel: the system's call, with this channel as its place.
@@ -1602,15 +1797,17 @@ view channel_message(
 
 /// A thread: its messages and a composer, the same way.
 view thread(t: Thread) {
-    state draft: RichText = RichText("")
     state replying: Option<Message> = .none
     state editing: Option<Message> = .none
     state revised: RichText = RichText("")
-    std.transcript(t, t.messages) { m ->
+    let all = root Conversations
+    std.transcript_by(t, t.messages, author: m -> writer_of(m)) { m ->
         thread_message(t, m, t.messages, replying, editing, revised)
         composer: {
             thread_typing_here(t)
-            composer(t, t.messages, draft, replying, "Message {t.name}")
+            if let d = all.drafts.find(x -> x.conversation == t and (created(x)?.mine ?? false)) {
+                composer(t, t.messages, d, replying, "Message {t.name}")
+            }
         }
     }
 }
@@ -1649,7 +1846,7 @@ view thread_message(
 view composer(
     to: TextChannel | Thread | Direct,
     said: List<Message>,
-    draft: State<RichText>,
+    draft: Draft,
     replying: State<Option<Message>>,
     placeholder: Text,
     agent: Bool = false,
@@ -1660,13 +1857,13 @@ view composer(
     if let r = replying {
         std.reply_banner(r, cancel: set(replying, .none))
     }
-    std.composer(
+    std.composer_draft(
         draft,
         placeholder,
-        if (agent or said.any(m -> m.turn != "")) and reads_as_call(draft.text) {
-            run_line(to, draft.text)
+        if (agent or said.any(m -> m.turn != "")) and reads_as_call(draft.body.text) {
+            run_line(to, draft.body.text)
         } else {
-            send(to, draft, replying).then(set(replying, .none))
+            send(to, reply_to: replying, draft: .some(draft)).then(set(replying, .none))
         },
         speakers: speakers(said),
     )
@@ -1752,6 +1949,24 @@ view edit_button(m: Message, editing: State<Option<Message>>, revised: State<Ric
     }
 }
 
+/// Who wrote a message here: the person whose press or agent whose turn wrote it. None for one
+/// carried in from another service: it shows the account that wrote it there (`persona`), not
+/// whoever carried it, so it opens no run of the carrier's.
+fn writer_of(m: Message) -> Option<Actor> {
+    if m.by != "" or m.outside != .none { .none } else { created(m)?.who }
+}
+
+/// Who wrote a message where it came from, when it was carried here from another service, in
+/// the place its author's face would stand: the account's own face and name, in the colour that
+/// name draws, with where it wrote.
+view persona(m: Message) {
+    row(gap: .tight, align: .center) {
+        ui.Avatar(name: m.by)
+        ui.Text(m.by, role: .label)
+        ui.Text("in {m.written_in}", role: .caption, secondary: true)
+    }
+}
+
 /// What one message says: the message it answers, its text (or, while it is being edited, the
 /// editor in its place), and the thread it started. `shown` is the transcript's own messages:
 /// the list draws them where they stand, so what a message was made from reads once, as the
@@ -1774,7 +1989,7 @@ view message(
             ui.Text("{o.name} wrote this in {o.service}", role: .caption, secondary: true)
         }
     } else if m.by != "" {
-        ui.Text("{m.by} wrote this in {m.written_in}", role: .caption, secondary: true)
+        persona(m)
     }
     if m.pinned {
         ui.Text("Pinned", role: .caption, secondary: true)
@@ -2049,7 +2264,9 @@ scenario "a message from Discord" -> TextChannel {
             written_in: "Discord",
             avatar: "https://cdn.discordapp.com/avatars/1/abc.png",
             service: "Discord",
-            outside_emoji: [OutsideEmoji(name: "party", picture: "https://cdn.discordapp.com/emojis/2.png")],
+            outside_emoji: [
+                OutsideEmoji(name: "party", picture: "https://cdn.discordapp.com/emojis/2.png"),
+            ],
         ),
         by: mia,
     )

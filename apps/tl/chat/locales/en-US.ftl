@@ -16,6 +16,9 @@ d-5kzdptyg = Channels
 
 d-n2xgh234 = Skills
 
+d-64vv225r = Drafts
+    .doc = What each person is writing in a conversation and has not sent.
+
 d-fe2st4jb = Category
     .doc = A named group of channels in the sidebar.
     .noun = { $count ->
@@ -71,11 +74,16 @@ d-ztou5nin = Threads
 d-kgihivmr = Reports
     .doc = The reports filed about its messages, for the workspace's moderators.
 
+d-byf6kyop = Archived
+    .doc = Whether the channel is set aside: it keeps every message and its place in the sidebar is gone until it is restored.
+
 d-eqr5qd3v = Service
     .doc = The outside service this conversation is carried to, as its people read it ("Discord"); empty for one that stays here.
 
 d-elvv3ebj = Outside id
     .doc = Its id there, when a bridge carries it: the channel, category or conversation there.
+
+d-q7llygsa-filter-archived = Archived
 
 d-3ngvkwox = Outside author
     .doc = Who wrote a message somewhere else, as that place shows them: a bridge's generic outside author, never one service's shape.
@@ -242,6 +250,18 @@ d-f4cfgfpu = Outside id
 d-5nkbpj6q-filter-people = People
 
 d-5nkbpj6q-filter-person = Person
+
+d-lhl5rxcq = Draft
+    .doc = What a person is writing in a conversation and has not sent.
+    .noun = { $count ->
+        [one] draft
+       *[other] drafts
+    }
+
+d-5shwuvrs = Conversation
+    .doc = The conversation it is written in: a channel, a thread or a direct conversation.
+
+d-rxmavdj2 = Body
 
 d-5rctnita = Attached
     .doc = A file a message carries, as the place it was copied from keeps it: its name, what it is, how many bytes, and the address of its content.
@@ -443,6 +463,15 @@ d-aaqqwyl3-who = Who
 d-uxndjwde = Unread
     .doc = How many messages of a direct conversation the person asking has not read: the number its row shows beside the other person, and what an agent or a script reads of it.
 
+d-q5e45hla = Open channel
+    .doc = Opening a channel makes the draft its person writes in, when they have none: a press away and back finds what they typed, on every device of theirs, and nobody else reads it.
+
+d-yfjnxpbn = Open direct
+    .doc = {""}[`open_channel`] for a direct conversation.
+
+d-hs67kfnp = Open thread
+    .doc = {""}[`open_channel`] for a thread.
+
 # refined
 d-peb7lz2j = Send
     .doc = Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one.
@@ -460,6 +489,8 @@ d-peb7lz2j-reply_to = Reply to
 d-peb7lz2j-attachments = Attachments
 
 d-peb7lz2j-turn = Turn
+
+d-peb7lz2j-draft = Draft
 
 d-kn2iqm4w = Write to
     .doc = Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the one already open, else a new one in the sidebar.
@@ -556,6 +587,41 @@ d-6rigb6x4-c = C
 
 d-6rigb6x4-at = At
 
+d-k5m36ngd = Rename channel
+    .doc = Renames a text channel.
+    .w-only-the-workspace-s-moderators-rename = Only the workspace's moderators rename a channel
+    .w-name-the-channel-first = Name the channel first
+
+d-k5m36ngd-name = Name
+
+d-tekxv77d = Rename voice channel
+    .doc = Renames a voice channel.
+    .w-only-the-workspace-s-moderators-rename = Only the workspace's moderators rename a channel
+    .w-name-the-channel-first = Name the channel first
+
+d-tekxv77d-name = Name
+
+d-sgvix76a = Set the topic
+    .doc = Says what a channel is for, in its topic.
+    .w-only-the-workspace-s-moderators-set = Only the workspace's moderators set a channel's topic
+
+d-sgvix76a-topic = Topic
+
+d-ciefrn2e = Rename category
+    .doc = Renames a category.
+    .w-only-the-workspace-s-moderators-rename = Only the workspace's moderators rename a category
+    .w-name-the-category-first = Name the category first
+
+d-ciefrn2e-name = Name
+
+d-z7ux3t5k = Archive channel
+    .doc = Sets a channel aside, out of the sidebar, keeping everything said in it, or brings it back.
+    .w-only-the-workspace-s-moderators-archive = Only the workspace's moderators archive a channel
+    .w-archive-channel = Archive channel
+    .w-restore-channel = Restore channel
+
+d-z7ux3t5k-archived = Archived
+
 d-yjc4fmrk = Edit
     .doc = Changes what a message says.
     .w-only-its-author-can-edit-a = Only its author can edit a message
@@ -622,6 +688,8 @@ d-amkgebye = Report problem~present
 
 d-pszgxdax = Message person~present
 
+d-vib4vsqe = Send~present
+
 d-dgrvpxre = Send view~present
 
 d-psjj65el = Relay~present
@@ -631,6 +699,16 @@ d-zmf3ccig = Relay reaction~present
 d-mdviqjz2 = Delete channel~present
 
 d-czomdsi6 = Delete category~present
+
+d-r47ecljq = Rename channel~present
+
+d-cqfpcwyx = Rename voice channel~present
+
+d-maq2lipz = Set topic~present
+
+d-vrzrke7n = Rename category~present
+
+d-g5hhjpdz = Archive channel~present
 
 d-7ioawutl = Edit~present
 
@@ -670,15 +748,21 @@ d-5rkfnkg4 = Sidebar
     .w-channels-are-where-your-workspace-talks = Channels are where your workspace talks, each one a topic.
     .w-notes-to-self = Notes to self
     .w-direct-messages = Direct messages
+    .w-everyone = Everyone
     .w-workspace = Workspace
     .w-workspace-skills = Workspace skills
     .w-no-channel-open = No channel open
 
 d-ymtess4x = Channel
+    .w-pinned-messages = Pinned messages
+    .w-channel = Channel
+    .w-rename-channel = Rename channel
+    .w-set-the-topic = Set the topic
+    .w-restore-channel = Restore channel
+    .w-archive-channel = Archive channel
     .w-message = Message #{ $name }
     .w-send = Send
     .w-wrote-this-in = { $name } wrote this in { $service }
-    .w-wrote-this-in-2 = { $by } wrote this in { $written_in }
     .w-pinned = Pinned
     .w-edit-message = Edit message
     .w-cancel = Cancel
@@ -690,7 +774,6 @@ d-jbezqvlc = Direct
     .w-message = Message { $name }
     .w-send = Send
     .w-wrote-this-in = { $name } wrote this in { $service }
-    .w-wrote-this-in-2 = { $by } wrote this in { $written_in }
     .w-pinned = Pinned
     .w-edit-message = Edit message
     .w-cancel = Cancel
@@ -699,6 +782,15 @@ d-jbezqvlc = Direct
     .w-edit = Edit
 
 d-q45utnmh = Channel summary
+
+d-i3f4daaw = Pins
+    .w-nothing-pinned-yet = Nothing pinned yet
+    .w-pin-a-message-from-its-menu = Pin a message from its menu to keep it here for everyone.
+
+d-pyomqal2 = People
+    .w-people = People
+    .w-agent = Agent
+    .w-message = Message
 
 d-qnkkcusk = Voice
 
@@ -714,7 +806,6 @@ d-enkgjyn7 = Thread
     .w-message = Message { $name }
     .w-send = Send
     .w-wrote-this-in = { $name } wrote this in { $service }
-    .w-wrote-this-in-2 = { $by } wrote this in { $written_in }
     .w-pinned = Pinned
     .w-edit-message = Edit message
     .w-cancel = Cancel
@@ -736,6 +827,9 @@ d-tx3zjawu = Direct typing here
 d-dcprca6g = Thread typing here
     .w-is-typing = { $who } is typing…
     .w-and-others-are-typing = { $who } and others are typing…
+
+d-zprw5jt4 = Persona
+    .w-in = in { $written_in }
 
 d-lzqy37mf = Turn steps
 

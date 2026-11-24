@@ -1177,20 +1177,6 @@ impl Checker<'_> {
             )));
             return Some(state.ty);
         }
-        if self.st.ui.composer
-            && let ExprKind::Field { name, .. } = &value.kind
-        {
-            let field = &name.name;
-            self.err(
-                "E108",
-                value.span,
-                format!(
-                    "a composer's text is one person's until they send it, and `{}` is shared by everyone looking, so two people typing here overwrite each other; declare `state {field}: Text` in the view, write `bind: {field}`, and pass it to the action: `send(c, {field}).then(set({field}, \"\"))`",
-                    crate::print::expr_source(value)
-                ),
-            );
-            return None;
-        }
         let ExprKind::Field { base, name } = &value.kind else {
             self.err(
                 "E062",
@@ -1212,6 +1198,27 @@ impl Checker<'_> {
             return None;
         };
         let env = self.env;
+        // A composer's text is one person's until they send it. A field of a record read by its
+        // author alone is theirs, so it may be bound; a field everyone looking shares would have
+        // two people typing into it overwrite each other.
+        if self.st.ui.composer
+            && !env
+                .type_info(&key)
+                .and_then(|t| t.readers.as_ref())
+                .is_some_and(|readers| matches!(readers, crate::meta::ReaderRule::Author { .. }))
+        {
+            self.err(
+                "E108",
+                value.span,
+                format!(
+                    "a composer's text is one person's until they send it, and `{}` is shared by everyone looking, so two people typing here overwrite each other; bind a record its author alone reads (`readers: author`), or declare `state {}: Text` in the view and pass it to the action: `send(c, {})`",
+                    crate::print::expr_source(value),
+                    name.name,
+                    name.name
+                ),
+            );
+            return None;
+        }
         let Some(f) = env.type_info(&key).and_then(|t| t.field(&name.name)) else {
             let names = env
                 .type_info(&key)

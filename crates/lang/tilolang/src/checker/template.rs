@@ -1138,7 +1138,9 @@ impl Checker<'_> {
                     return parent;
                 }
                 let saved = self.enter(&block.scope, extra);
-                if name == "composer" {
+                // A template whose name opens with `composer` is the foot of a conversation: what
+                // it binds is one person's text, never a field everyone looking shares.
+                if name.starts_with("composer") {
                     self.st.ui.composer = true;
                 }
                 self.ui_stmts(&block.body, parent);

@@ -826,6 +826,28 @@ view transcript<R, T>(
     composer: View,
     row: (T) -> View,
 ) {
+    transcript_by(
+        of,
+        items,
+        author: m -> created(m)?.who,
+        unread: unread,
+        composer: composer,
+        row: row,
+    )
+}
+
+/// [`transcript`] with `author` saying who wrote an item where it stands: the person or agent
+/// whose face and name open the run of their messages. An item that answers `.none` opens no
+/// run, which is how a message carried in from another service shows the account that wrote it
+/// there instead of whoever carried it.
+view transcript_by<R, T>(
+    of: R,
+    items: List<T>,
+    author: (T) -> Option<Actor>,
+    unread: Option<T> = .none,
+    composer: View,
+    row: (T) -> View,
+) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         content: {
             ui.Docked {
@@ -839,7 +861,7 @@ view transcript<R, T>(
                         let made = created(m)
                         ui.ListItem(
                             item: m,
-                            author: made?.who,
+                            author: author(m),
                             time: made?.at,
                             read_by: seen_by(of, m),
                         ) {
@@ -881,6 +903,27 @@ view composer(draft: State<RichText>, placeholder: Text, send: Action, speakers:
         }
         ui.Button("Send", icon: .send, icon_only: true) {
             on press: send.then(set(draft, RichText("")))
+        }
+    }
+}
+
+/// The foot of a conversation whose text is a draft record the app keeps, one its author alone
+/// reads (`readers: author`): what is typed is the record's `body`, so it survives the window and
+/// reaches the person's other devices, and `send` is the action that makes the message from it and
+/// empties it, so one press is one change to undo. A record shared by everyone looking cannot be
+/// bound here: two people typing into it would overwrite each other.
+template view composer_draft<D>(
+    draft: D,
+    placeholder: Text,
+    send: Action,
+    speakers: List<Actor> = [],
+) {
+    row(gap: .none) {
+        rich_input(bind: draft.body, placeholder: placeholder, speakers: speakers, fill) {
+            on submit: send
+        }
+        ui.Button("Send", icon: .send, icon_only: true) {
+            on press: send
         }
     }
 }
@@ -1773,9 +1816,7 @@ fn size(bytes: Int) -> Text {
         tenths(n, 1000000, "MB")
     } else if n < 1000000000000 {
         tenths(n, 1000000000, "GB")
-    } else {
-        tenths(n, 1000000000000, "TB")
-    }
+    } else { tenths(n, 1000000000000, "TB") }
 }
 
 /// `n` in units of `unit`, to a tenth when it is not whole: `1.5 kB`, `1 kB`.
@@ -1783,11 +1824,7 @@ fn tenths(n: Int, unit: Int, said: Text) -> Text {
     let parts = (n * 10 + unit / 2) / unit
     let whole = parts / 10
     let rest = parts - whole * 10
-    if rest == 0 {
-        "{whole} {said}"
-    } else {
-        "{whole}.{rest} {said}"
-    }
+    if rest == 0 { "{whole} {said}" } else { "{whole}.{rest} {said}" }
 }
 
 fn picker_size(bytes: Int) -> Text {
