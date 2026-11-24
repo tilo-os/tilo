@@ -129,6 +129,7 @@ mod tasks_places;
 mod tasks_settles;
 mod tasks_time;
 mod tasks_today;
+mod totp_search;
 mod triggers;
 mod tube;
 mod unions;

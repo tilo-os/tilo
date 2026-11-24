@@ -90,6 +90,48 @@
       }
     },
     {
+      "id": "second",
+      "said": "A second account, so the search has to land on the one it names",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Add account"
+            ]
+          },
+          {
+            "wait_for": "Setup link"
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Setup link"
+              }
+            ]
+          },
+          {
+            "type": "otpauth://totp/GitHub:ada@example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub"
+          },
+          {
+            "press_any": [
+              "Fill from the link"
+            ]
+          },
+          {
+            "wait_for": "GitHub"
+          },
+          {
+            "press_any": [
+              "Save"
+            ]
+          },
+          {
+            "wait_for": "GitHub"
+          }
+        ]
+      }
+    },
+    {
       "id": "invalid",
       "said": "Saving with no service name keeps the form and says why",
       "ops": {
@@ -161,6 +203,29 @@
         }
       ],
       "dark": true
+    },
+    {
+      "id": "search",
+      "said": "The system's search finds the second account, and the hit opens that account's page",
+      "ops": [
+        {
+          "search": {
+            "tl": "GitHub"
+          }
+        },
+        {
+          "choose_result": "GitHub"
+        },
+        {
+          "wait_for": "ada@example.com"
+        },
+        {
+          "must_not": [
+            "Add account",
+            "Acme"
+          ]
+        }
+      ]
     }
   ]
 }
