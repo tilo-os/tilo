@@ -2766,8 +2766,6 @@ pub(crate) mod copy_on_write;
 mod delivery_admission;
 #[path = "workspace_refusal_tests.rs"]
 mod refusal;
-#[path = "selective_publication_tests.rs"]
-mod selective_publication;
 
 /// An invitation for `guest_cert` with `nonce`, redeemed by its device.
 fn guest_redemption(
