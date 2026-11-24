@@ -74,6 +74,8 @@ d-q3io7nnf = Fläche
 
 d-e4notqqc = Daten
 
+d-d46t4e64 = Währung
+
 d-qh2jrzar = Berechnen
     .doc = Rechnet einen Ausdruck aus und hält das Ergebnis im Verlauf fest.
     .w-that-expression-is-not-one-this = Diesen Ausdruck kann der Rechner nicht berechnen
@@ -160,6 +162,7 @@ d-3ppmgyve = Rechner
     .w-mod = mod
     .w-earlier = Früher
     .w-quantity = Größe
+    .w-a-rate-has-to-come-from = Ein Kurs muss irgendwoher kommen: Tilo hat hier keine Wechselkursquelle, deshalb rechnet diese Seite Einheiten um und kein Geld.
     .w-amount = Betrag
     .w-from = Von
     .w-swap = Tauschen
@@ -224,6 +227,7 @@ d-ef6s7d6m = Rechnung
     .w-mod = mod
     .w-earlier = Früher
     .w-quantity = Größe
+    .w-a-rate-has-to-come-from = Ein Kurs muss irgendwoher kommen: Tilo hat hier keine Wechselkursquelle, deshalb rechnet diese Seite Einheiten um und kein Geld.
     .w-amount = Betrag
     .w-from = Von
     .w-swap = Tauschen

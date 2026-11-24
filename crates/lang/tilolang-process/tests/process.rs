@@ -35,14 +35,14 @@ mod chat;
 /// An app's calls of another app's action, through the dispatch.
 #[path = "process/children.rs"]
 mod children;
-/// The workspace's action registry, read and called by address.
-#[path = "process/registry.rs"]
-mod registry;
 #[path = "process/native_notes.rs"]
 mod native_notes;
 /// A paste past a mebibyte, kept and undone.
 #[path = "process/paste.rs"]
 mod paste;
+/// The workspace's action registry, read and called by address.
+#[path = "process/registry.rs"]
+mod registry;
 /// What an action returns reaches its invoker over its connection.
 #[path = "process/results.rs"]
 mod results;
@@ -2004,8 +2004,9 @@ fn mail() -> Bundle {
     let provided = tilolang::source::apps_of(&platform);
     let dirs = tilolang::source::dependency_order_with(&dir, &[], &provided)
         .expect("the packages resolve");
-    let built = tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
-        .expect("the packages compile");
+    let built =
+        tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
+            .expect("the packages compile");
     let (package, used) = built.split_last().expect("the package is built last");
     Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
 }
@@ -2025,8 +2026,8 @@ fn published_index(index: &tilo_workspace_service::search::AppContentIndex, sent
 #[test]
 fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
     use tilo_desktop_search::indexed::IndexedContent;
-    use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
     use tilo_desktop_search::model::{Source as _, Target};
+    use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 
     // A live Mail instance, its room filled by the package's own scenario, runs its frames.
     let (mut host, mut window, sent, _inbox, _route) = running_app("ada", MAIL, mail());
@@ -2047,7 +2048,10 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
     // Search reads that index through its production source: a word that appears only inside a
     // message's body (not its subject, its sender or its conversation's snippet) finds the
     // message, with no window running a search of its own.
-    let search = IndexSearch::new(std::sync::Arc::clone(&index), std::sync::Arc::new(|_, _| true));
+    let search = IndexSearch::new(
+        std::sync::Arc::clone(&index),
+        std::sync::Arc::new(|_, _| true),
+    );
     let content = IndexedContent::new(
         std::sync::Arc::new(search),
         tilo_actions::remote::Caller::local_person("ada"),
@@ -3250,16 +3254,7 @@ impl tilolang_tilo::platform_apps::Reading for Followed {
 
 /// The first button of the window, its key and the event it fires.
 fn first_button(window: &Window) -> (String, String) {
-    fn buttons<'a>(node: &'a patch::Node, out: &mut Vec<&'a patch::Node>) {
-        if node.kind == "ui.Button" {
-            out.push(node);
-        }
-        for child in &node.children {
-            buttons(child, out);
-        }
-    }
-    let mut found = Vec::new();
-    buttons(window.root.as_ref().expect("the root is shown"), &mut found);
+    let found = buttons(window);
     let button = found.first().expect("the window shows its button");
     let event = button
         .events
@@ -3268,6 +3263,40 @@ fn first_button(window: &Window) -> (String, String) {
         .expect("the button fires")
         .clone();
     (button.key.clone(), event)
+}
+
+/// The button `label` words, as the key it fires from and the event it fires.
+fn button_labelled(window: &Window, label: &str) -> (String, String) {
+    let button = buttons(window)
+        .into_iter()
+        .find(|button| {
+            button
+                .props
+                .values()
+                .any(|value| format!("{value:?}").contains(label))
+        })
+        .unwrap_or_else(|| panic!("the window shows a `{label}` button: {}", shown(window)));
+    let event = button
+        .events
+        .keys()
+        .next()
+        .expect("the button fires")
+        .clone();
+    (button.key.clone(), event)
+}
+
+fn buttons(window: &Window) -> Vec<&patch::Node> {
+    fn walk<'a>(node: &'a patch::Node, out: &mut Vec<&'a patch::Node>) {
+        if node.kind == "ui.Button" {
+            out.push(node);
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut found = Vec::new();
+    walk(window.root.as_ref().expect("the root is shown"), &mut found);
+    found
 }
 
 /// A package that reads the device's published sound and whose press is the device's own verb:
@@ -3378,6 +3407,51 @@ fn the_workspaces_activity_reaches_the_app_that_reads_it() {
     }]);
     settle(&mut host, &mut window);
     tilo_test_env::wait_until("marking it seen reached the session", || {
+        published
+            .invoked()
+            .contains(&("workspace.activity".to_owned(), "mark-viewed".to_owned()))
+    });
+}
+
+const ACTIVITY: &str = "so.tilo.activity";
+
+/// The Activity app itself marks what it showed as seen: a person's press on its own control is
+/// the activity's verb, asked of the session with the changes the briefs named.
+#[test]
+fn the_activity_app_marks_what_it_showed_as_seen() {
+    let published = Published::install();
+    let platform = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    let lock =
+        tilolang::IdsLock::parse(include_str!("../../../../apps/tl/activity/app.ids")).unwrap();
+    let compiled = tilolang::compile_package(
+        include_str!("../../../../apps/tl/activity/app.tl"),
+        &lock,
+        &platform,
+    )
+    .unwrap_or_else(|diagnostics| panic!("the activity app compiles: {diagnostics:#?}"));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_app("ada", ACTIVITY, Bundle::new(&compiled, []));
+    published.publish(
+        "workspace.activity",
+        r#"{"summary":{"workspace":"Home","away":true,"pending":false,"sources_available":false,"briefs":[{"title":"Tidied the notes","detail":"Renamed three notes.","authors":[],"apps":["Notes"],"resources":[],"changes":3,"actions":[],"first_ms":1700000000000,"last_ms":1700000060000,"entries":["00112233445566778899aabbccddeeff"]}]}}"#,
+    );
+    settle(&mut host, &mut window);
+    assert!(
+        shown(&window).contains("Tidied the notes"),
+        "the summary renders: {}",
+        shown(&window)
+    );
+
+    let (key, event) = button_labelled(&window, "Mark as viewed");
+    window.send(&[ToApp::Fire {
+        level: Level::Root,
+        key,
+        event,
+        value: None,
+        gesture: None,
+    }]);
+    settle(&mut host, &mut window);
+    tilo_test_env::wait_until("the briefs' changes are marked seen", || {
         published
             .invoked()
             .contains(&("workspace.activity".to_owned(), "mark-viewed".to_owned()))

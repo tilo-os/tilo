@@ -71,6 +71,14 @@ view whats_new(h: history.Activity, on_see_history: Option<Action> = .none) {
         if s.away {
             ui.Text("While you were away", role: .heading)
         }
+        // What this device showed as new is seen once the person says so, so a later visit
+        // starts from here rather than counting the same changes again.
+        let shown = s.briefs.flat_map(brief -> brief.entries)
+        if not shown.is_empty() {
+            ui.Button("Mark as viewed", icon: .check) {
+                on press: history.mark_viewed(history.history, entries: shown, later: false)
+            }
+        }
         if let narrative = s.narrative {
             ui.Section("On-device summary") {
                 ui.Text(narrative)
@@ -331,7 +339,9 @@ view detail_card(first: Text, last: Text) {
                     on press: history.split(history.history, from: first, to: last)
                 }
             }
-            if let merged = d.offers.find(o -> o.verb == "merge-groups") {
+            // The offer names the model's verb (`merge`), not this package's action
+            // (`merge-groups`), as undo's offer says `undo` and not `undo-change`.
+            if let merged = d.offers.find(o -> o.verb == "merge") {
                 ui.Button(merged.label) {
                     on press: history.merge_groups(history.history, from: first, to: last)
                 }

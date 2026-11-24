@@ -22,6 +22,7 @@ d-k5cpej2o = Activity
     .w-replay = Replay
     .w-loading-changes = Loading changes
     .w-while-you-were-away = While you were away
+    .w-mark-as-viewed = Mark as viewed
     .w-on-device-summary = On-device summary
     .w-where-you-left-off = Where you left off
     .w-resume = Resume
