@@ -1087,7 +1087,10 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   daemon from who is on the other end of its socket, with no signing step
   added. A caller whose connection ends cancels its call: that is the
   record's status, not a lease beside it. `work::takes_turn` only places
-  work that leaves the starting device.
+  work that leaves the starting device. A call that leaves its device carries its caller's
+  signature: a person's device signs for its person, an agent with its own
+  key, a visitor with theirs, and an app's call travels as the signed call it
+  serves. The receiver never runs a forwarded call as the device that brought it.
 
 ### What goes
 
