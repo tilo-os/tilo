@@ -80,3 +80,27 @@ so-tilo-session-banners-focus-newest = Den neuesten Hinweis fokussieren
 so-tilo-session-banners-read = Ganz lesen
 so-tilo-session-banners-answer-call = Den Anruf annehmen
 so-tilo-session-banners-decline-call = Den Anruf ablehnen
+
+# Wer hier ist: die eigenen Aktionen der Personenliste, die die Gesichter der
+# Leiste und die Karte einer Person wie die jeder anderen App aufrufen.
+people-show = Öffnen, wer hier ist
+people-close = Schließen, wer hier ist
+people-show-person = Eine Person zeigen
+people-follow = Folgen
+people-unfollow = Nicht mehr folgen
+people-wave = Winken
+people-message = Nachricht
+people-go-to = Dorthin gehen, wo sie arbeiten
+people-name = Dein Name
+people-doing = Was du machst
+people-availability = Wie verfügbar du bist
+people-pair-device = Ein Gerät hinzufügen
+people-settings = Deine Einstellungen öffnen
+# Die Einladungen in einen Arbeitsbereich, das Blatt, in dem sie entstehen, und ein Gerät.
+so-tilo-session-invite-invitations = Einladungen auflisten
+so-tilo-session-invite-issue-invitation = Einladungslink erstellen
+so-tilo-session-invite-show-invite = Personen einladen
+so-tilo-session-invite-show-connect = Agent oder Computer verbinden
+so-tilo-session-invite-show-pair-device = Gerät hinzufügen
+so-tilo-session-invite-open-link = Einen Link öffnen
+so-tilo-session-invite-cancel-invitation = Einladung zurückziehen

@@ -462,14 +462,14 @@ fn a_lab_receiver_that_is_not_here_refuses_the_send() {
 }
 
 #[test]
-fn share_opens_the_invitation_sheet_for_the_resource_it_names() {
+fn invite_people_opens_the_invitation_sheet_for_the_resource_it_names() {
     let fake = recording(false);
     let shared = Arc::new(Mutex::new(Vec::new()));
     let mut nearby = nearby(&fake, "workspace-a", Arc::clone(&shared));
     nearby
         .invoke(
             RESOURCE,
-            "share",
+            "invite-people",
             &arguments(serde_json::json!({ "resource": "notes:note:42" })),
         )
         .expect("the sheet opens");

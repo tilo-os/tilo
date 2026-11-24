@@ -1,9 +1,11 @@
 //! [`Avatar`] as a described component.
 
+use vello::peniko::Color;
+
 use crate::component::{Component, Described, Person};
 use crate::icons::Icon;
 
-use super::Avatar;
+use super::{Avatar, PresenceStatus};
 
 /// Who someone is, at a glance: their picture, or their initials on their own colour.
 #[derive(Clone, Component, Debug, Default, PartialEq)]
@@ -24,6 +26,37 @@ pub struct AvatarProps {
     /// Where the person's picture is: a content address (`tilo-blob://<hash>`) or a `data:`
     /// address a record carries, read as `ui.Image` reads one. The initials show until it is here.
     pub picture: Option<String>,
+    /// The presence colour it wears, `rrggbb`, where the workspace assigned one: the colour the
+    /// member row carries, which is not always the one its identity derives.
+    pub colour: Option<String>,
+    /// How they are: `online`, `away`, `busy` or `offline`, drawn as the dot on their face.
+    pub status: Option<String>,
+}
+
+/// The colour a `rrggbb` text names, `None` when it does not name one.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "each channel is a byte of the colour word"
+)]
+fn colour_of(hex: &str) -> Option<Color> {
+    let digits: String = hex.trim().trim_start_matches('#').chars().take(6).collect();
+    let value = u32::from_str_radix(&digits, 16).ok()?;
+    Some(Color::from_rgb8(
+        (value >> 16) as u8,
+        (value >> 8) as u8,
+        value as u8,
+    ))
+}
+
+/// The presence dot a `status` text names.
+fn status_of(status: &str) -> Option<PresenceStatus> {
+    Some(match status.trim() {
+        "online" | "available" => PresenceStatus::Online,
+        "away" => PresenceStatus::Away,
+        "busy" | "focusing" => PresenceStatus::Busy,
+        "offline" | "idle" => PresenceStatus::Offline,
+        _ => return None,
+    })
 }
 
 impl AvatarProps {
@@ -61,6 +94,12 @@ impl Described for Avatar {
         if let Some(picture) = props.picture.filter(|url| !url.is_empty()) {
             avatar = avatar.with_picture_url(picture);
         }
+        if let Some(colour) = props.colour.as_deref().and_then(colour_of) {
+            avatar = avatar.with_presence(colour);
+        }
+        if let Some(status) = props.status.as_deref().and_then(status_of) {
+            avatar = avatar.status(status);
+        }
         avatar
     }
 
@@ -94,6 +133,8 @@ impl Described for Avatar {
                 None => self.picture = super::Picture::None,
             }
         }
+        self.presence = props.colour.as_deref().and_then(colour_of);
+        self.status = props.status.as_deref().and_then(status_of);
         self.dirty = true;
         true
     }

@@ -247,7 +247,7 @@ pub enum NearbySendAction {
     },
     /// Share a resource with people, opening the invitation sheet
     #[effect(kind = "outside")]
-    Share {
+    InvitePeople {
         /// The resource, by the id the catalogue lists it under.
         #[param("The resource")]
         resource: String,
@@ -480,7 +480,7 @@ impl NearbySend {
                 let handle = transfer_handle(&transfer)?;
                 self.answer(NearbyTransferCommand::Retry { handle })
             }
-            NearbySendAction::Share { resource } => {
+            NearbySendAction::InvitePeople { resource } => {
                 (self.share)(&resource).map_err(refused)?;
                 Ok(Invoked::Done(None))
             }

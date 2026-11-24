@@ -367,6 +367,31 @@ session-live-move = Move the card
 session-agents-stop = Stop
 session-people = People
 
+## Who is here: the roster's own actions, which the bar's faces and a person's
+## card call as they call any app's.
+people-show = Open who is here
+people-close = Close who is here
+people-show-person = Show a person
+people-show-person-person = The person, as the list names them
+people-follow = Follow
+people-follow-person = The person, as the list names them
+people-unfollow = Stop following
+people-wave = Wave
+people-wave-person = The person, as the list names them
+people-message = Message
+people-message-person = The person, as the list names them
+people-go-to = Go where they are working
+people-go-to-person = The person, as the list names them
+people-name = Your name
+people-name-name = The name everyone here sees
+people-doing = What you are doing
+people-doing-text = What you are doing, in your own words
+people-availability = How available you are
+people-availability-availability = How available you are: available, focused, away or inactive
+people-pair-device = Add a device
+people-settings = Open your settings
+people-settings-link = The settings page as `settings://devices_access`; yours when empty
+
 ## What the lock screen is called while it is up.
 session-lock-screen = Lock screen
 

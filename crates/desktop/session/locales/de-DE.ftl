@@ -372,6 +372,30 @@ session-live-seek = Springen zu
 session-live-move = Karte verschieben
 session-agents-stop = Stoppen
 session-people = Personen
+## Wer hier ist: die eigenen Aktionen der Personenliste, die die Gesichter der
+## Leiste und die Karte einer Person wie die jeder anderen App aufrufen.
+people-show = Öffnen, wer hier ist
+people-close = Schließen, wer hier ist
+people-show-person = Eine Person zeigen
+people-show-person-person = Die Person, wie die Liste sie nennt
+people-follow = Folgen
+people-follow-person = Die Person, wie die Liste sie nennt
+people-unfollow = Nicht mehr folgen
+people-wave = Winken
+people-wave-person = Die Person, wie die Liste sie nennt
+people-message = Nachricht
+people-message-person = Die Person, wie die Liste sie nennt
+people-go-to = Dorthin gehen, wo sie arbeiten
+people-go-to-person = Die Person, wie die Liste sie nennt
+people-name = Dein Name
+people-name-name = Der Name, den alle hier sehen
+people-doing = Was du machst
+people-doing-text = Was du machst, in deinen eigenen Worten
+people-availability = Wie verfügbar du bist
+people-availability-availability = Wie verfügbar du bist: verfügbar, vertieft, abwesend oder inaktiv
+people-pair-device = Ein Gerät hinzufügen
+people-settings = Deine Einstellungen öffnen
+people-settings-link = Die Einstellungsseite als `settings://devices_access`; deine eigene, wenn leer
 
 ## Wie der Sperrbildschirm heißt, solange er oben ist.
 session-lock-screen = Sperrbildschirm

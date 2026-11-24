@@ -1050,8 +1050,8 @@ impl Roster {
     }
 
     /// Take the waves at this person heard since the last call: the bar says who waved, for a
-    /// moment.
-    fn show_waves(&self) {
+    /// moment. A shell that draws its own faces reads them by this too.
+    pub(crate) fn show_waves(&self) {
         let heard = self.here.borrow_mut().take_waves();
         if let Some(last) = heard.last() {
             *self.wave_notice.borrow_mut() =
@@ -1871,6 +1871,11 @@ impl Client {
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
         self.hosting.roster.show(tree, notes, app_name)
+    }
+
+    /// Take the waves heard since the last look, so a shell that draws its own faces says them.
+    pub(crate) fn show_waves(&self) {
+        self.hosting.roster.show_waves();
     }
 
     /// The waves at this person since the last call, as the bar says them.

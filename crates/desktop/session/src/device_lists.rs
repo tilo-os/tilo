@@ -10,7 +10,6 @@ use tilo_actions::remote::session_actions::INVITE_RESOURCE;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_peer_state::join::Role;
-use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_core::desktop::host::chrome::ChromeIntent;
 use tilo_session_core::desktop::host::contract::DesktopAsk;
@@ -48,7 +47,7 @@ pub(crate) const NOTICE_RESOURCE: &str = "session:notice";
 pub(crate) const WALLPAPER_RESOURCE: &str = "session:wallpaper";
 
 pub(crate) use tilo_device_surfaces::lists::{
-    AgentsEffect, Folder, Folders, Launchpad, LaunchpadCard, SWITCHER_SCOPES, Said, SaidAction,
+    AgentsEffect, Folder, Folders, Invite, InviteEffect, Launchpad, LaunchpadCard, Said, SaidAction,
     SaidEffect, Search, SearchGroup, SearchResult, Tray, TrayEffect, TrayItem, Wallpaper,
 };
 
@@ -82,85 +81,6 @@ fn kind_icon(kind: &str) -> String {
     icon_for_kind(&kind).name().to_owned()
 }
 
-/// What inviting offers: the links into a workspace, the invite sheet, and adding another device or
-/// an agent of the person's.
-#[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.session.invite")]
-pub(crate) enum InviteEffect {
-    /// The invitations this device's person made into a workspace that can still be
-    /// redeemed, in the words the workspace's host lists them by
-    #[effect(kind = "outside")]
-    Invitations {
-        /// The workspace, by its key; the one in front when absent
-        #[param("The workspace, by its key; the one in front when absent")]
-        workspace: Option<String>,
-    },
-    /// Make an invitation into a workspace from this device: the link to hand to whoever is
-    /// being invited, which their device joins with
-    #[effect(kind = "outside")]
-    IssueInvitation {
-        /// The part the invitation brings them in at: `viewer`, `commenter`, `editor`,
-        /// `moderator` or `administrator`; editor when absent
-        #[param(
-            "The part the invitation brings them in at: `viewer`, `commenter`, `editor`, `moderator` or `administrator`"
-        )]
-        role: Option<String>,
-        /// The name the invitation knows them by
-        #[param("The name the invitation knows them by")]
-        invitee_name: Option<String>,
-        /// The person the link is for, by their user key in hex: only a device of theirs may redeem
-        /// it. Anyone holding the link may redeem it when absent
-        #[param(
-            "The person the link is for, by their user key in hex; anyone holding it when absent"
-        )]
-        recipient: Option<String>,
-        /// How long the link works for, in seconds
-        #[param("How long the link works for, in seconds")]
-        expires_in_seconds: Option<u64>,
-        /// The workspace, by its key; the one in front when absent
-        #[param("The workspace, by its key; the one in front when absent")]
-        workspace: Option<String>,
-    },
-    /// Open the invite sheet on a workspace: where a link into it is made, the part it brings
-    /// someone in at picked and the links that still work taken back. An app shares what it shows
-    /// by asking this, so it offers the one sheet the bar's invite button opens.
-    #[effect(screen)]
-    ShowInvite {
-        /// The workspace, by its key; the one in front when absent
-        #[param("The workspace, by its key; the one in front when absent")]
-        workspace: Option<String>,
-    },
-    /// Show how an agent or another computer connects as the person: the setup their own card's
-    /// "Connect an agent or computer" opens. An app that lists what acts as them offers adding to
-    /// it this way.
-    #[effect(screen)]
-    ShowConnect,
-    /// Show how a new device of the person's joins them: Settings' devices page, where "Add a
-    /// device" prints the ticket it logs in with. An app that lists what acts as the person offers
-    /// adding to it this way.
-    #[effect(screen)]
-    ShowPairDevice,
-    /// Open what a `tilo://open#…` link names: the app that keeps it shows it, started first when
-    /// no window of it does. An app that shows a link opens it this way, whoever it was copied
-    /// from.
-    #[effect(screen)]
-    OpenLink {
-        /// The link, a `tilo://open#…` address
-        #[param("The link, a `tilo://open#…` address")]
-        link: String,
-    },
-    /// Cancel the invitation `invite` of a workspace: its link admits nobody from now on
-    #[effect(kind = "outside")]
-    CancelInvitation {
-        /// The invitation's id, 64 hex characters, as listing invitations reports it
-        #[param("The invitation's id, 64 hex characters, as listing invitations reports it")]
-        invite: String,
-        /// The workspace, by its key; the one in front when absent
-        #[param("The workspace, by its key; the one in front when absent")]
-        workspace: Option<String>,
-    },
-}
-
 /// The surfaces the shell shows over its windows: the shell's own views.
 /// What `show-surface` and `close-surface` open and close, whether the person asks on the
 /// shell's surface or on the chrome's above it, so both open the one surface.
@@ -189,6 +109,10 @@ pub(crate) struct Surfaces {
     /// under the bar's trailing end, which the session puts up from a chord, the panel's power
     /// button and its own published verb.
     pub(crate) power: Rc<std::cell::Cell<bool>>,
+    /// Whose card the roster shows, by the person's presence key: empty for the roster itself, and
+    /// `self` for the person at this device. Shared with the people resource the shell reads, so a
+    /// press on a face asks for the card it draws.
+    pub(crate) person: Rc<std::cell::RefCell<String>>,
 }
 
 /// The name the shell's own view gives the emoji picker, in what stands over the windows.
@@ -672,6 +596,14 @@ impl DeviceLists {
             })),
             NOTICE_RESOURCE => Some(reading(&self.said())),
             crate::live_list::RESOURCE => Some(reading(&self.live.read())),
+            INVITE_RESOURCE => Some(reading(&Invite {
+                workspace: self.handle.read(|tree| {
+                    tree.active_workspace()
+                        .map(|workspace| workspace.id().to_string())
+                        .unwrap_or_default()
+                }),
+            })),
+
             _ => None,
         }
     }
@@ -1407,6 +1339,7 @@ mod tests {
             emoji: Rc::new(std::cell::Cell::new(false)),
             about: Rc::new(std::cell::Cell::new(false)),
             power: Rc::new(std::cell::Cell::new(false)),
+            person: Rc::default(),
         }
     }
 

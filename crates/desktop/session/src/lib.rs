@@ -314,6 +314,7 @@ pub mod parts;
 #[cfg(target_os = "linux")]
 mod pass;
 pub mod people;
+mod people_device;
 #[cfg(target_os = "linux")]
 mod person_store;
 #[cfg(target_os = "linux")]

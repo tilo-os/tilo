@@ -86,7 +86,7 @@ so-tilo-device-nearby-send-accept = Eine angebotene Datei behalten
 so-tilo-device-nearby-send-decline = Eine angebotene Datei ablehnen
 so-tilo-device-nearby-send-cancel = Eine Übertragung stoppen
 so-tilo-device-nearby-send-retry-transfer = Eine fehlgeschlagene Übertragung erneut anbieten
-so-tilo-device-nearby-send-share = Eine Ressource mit Personen teilen, über das Einladungsblatt
+so-tilo-device-nearby-send-invite-people = Eine Ressource mit anderen teilen und die Einladung öffnen
 # What a turn says it is doing, as the person reads it on its reply: one line per step, what is
 # being done and what app it is about.
 agent-step-searching = Sucht im Netz nach „{ $what }“…

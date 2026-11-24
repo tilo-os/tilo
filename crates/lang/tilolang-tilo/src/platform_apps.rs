@@ -14,6 +14,10 @@
 //!
 //! One table ([`PUBLISHED`]) maps each app to the committed surface files it is read from, so a
 //! new one is a row, and `tilolang check` and a task's host read the same packages.
+//!
+//! Who is here, the windows this device shares and the invitations into a workspace are the
+//! shell's to draw as `device.people`, `device.shares` and `device.invite`, beside the sound and
+//! the rest.
 
 use serde::Deserialize;
 use tilo_actions::surface::Surface;
@@ -124,6 +128,9 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("said", "Said", "session:notice"),
     ("overlays", "Overlays", "desktop:overlays"),
     ("power_menu", "PowerMenu", "desktop:power-menu"),
+    ("people", "People", "session:people"),
+    ("shares", "Shares", "session:window-share"),
+    ("invite", "Invite", "session:invite"),
     ("nearby_send", "NearbySend", "session:nearby-send"),
     ("devices", "Devices", "session:devices"),
     ("server", "Server", "device:server"),

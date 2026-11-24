@@ -99,6 +99,8 @@ pub enum Overlay {
     /// What happened in the workspace, and what the person opened lately: everything, or one
     /// app's or one type's ([`Overlays::history`]).
     History,
+    /// Who is here: the roster of the workspace's people and agents, and the card of one of them.
+    People,
 }
 
 impl Overlay {
@@ -116,6 +118,7 @@ impl Overlay {
             "quick-settings" => Self::QuickSettings,
             "conversation" => Self::Conversation,
             "history" => Self::History,
+            "people" => Self::People,
             _ => return None,
         })
     }
@@ -134,6 +137,7 @@ impl Overlay {
             Self::QuickSettings => "quick-settings",
             Self::Conversation => "conversation",
             Self::History => "history",
+            Self::People => "people",
         }
     }
 }

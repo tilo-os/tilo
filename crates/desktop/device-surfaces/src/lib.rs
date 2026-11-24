@@ -23,7 +23,9 @@ pub mod live;
 pub mod notifications;
 pub mod osd;
 pub mod overlays;
+pub mod people;
 pub mod quick_settings;
+pub mod shares;
 pub mod time;
 pub mod windows;
 
@@ -90,6 +92,10 @@ pub fn device_surfaces() -> Vec<Surface> {
         quick_settings::controls_surface(),
         // This device's server settings, which its daemon changes (`device:server`).
         tilo_runtime::device::server_settings::surface(),
+        // Who is here, the windows this device shares and the invitations into a workspace.
+        people::surface(),
+        shares::shares_surface(),
+        lists::invite_surface(),
     ]
 }
 

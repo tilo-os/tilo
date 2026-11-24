@@ -54,6 +54,7 @@ use tilo_live::share::{
 use tilo_live::video::{Layer, VideoObject};
 use tilo_service::{Service, Started, Wake};
 use tilo_session_core::desktop::i18n::t;
+use tilo_device_surfaces::shares::ShareEffect;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_window_share::config::FlatpakShareConfig;
 use tilo_window_share::flatpak_share::{EncodedFrame, SharedFlatpakSession};
@@ -2668,7 +2669,7 @@ impl Service for WindowShareService {
         let encoded = tilo_actions::api::encode_json(&[shares_resource()], &address, arguments)?;
         let effect = ShareEffect::from_payload(&encoded.payload)
             .map_err(|error| ApiError::Failed(error.to_string()))?;
-        self.shares.borrow_mut().queue(effect.command());
+        self.shares.borrow_mut().queue(command(&effect));
         Ok(Started::Accepted)
     }
 
@@ -2685,105 +2686,37 @@ impl Service for WindowShareService {
 #[row(kind = "session", label = "Shared windows")]
 pub struct WindowSharesRoot;
 
-/// What a person asks of the shares, declared once: share a window with the workspace, stop it,
-/// let the members viewing it control it, show another member's window, stop showing it.
-#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(
-    operation = "tilo.session.window-share",
-    catalogue = "../session-core/locales"
-)]
-pub enum ShareEffect {
-    /// Share a window with the workspace
-    #[effect(kind = "undoable", label = "session-window-share-share")]
-    Share {
-        /// The window, by the identifier its app may be captured by; left out for the window the
-        /// tab shows
-        #[param(
-            "The window, by the identifier its app may be captured by; left out for the window \
-             the tab shows"
-        )]
-        window: Option<String>,
-        /// The tab this device shows the window in
-        #[param("The tab this device shows the window in")]
-        tab: String,
-        /// The app the window belongs to; left out for the shown window's app
-        #[param("The app the window belongs to; left out for the shown window's app")]
-        app_id: Option<String>,
-        /// The workspace in which it is shared; left out for the one the tab stands in
-        #[param("The workspace in which it is shared; left out for the one the tab stands in")]
-        workspace: Option<String>,
-    },
-    /// Stop sharing the window
-    #[effect(kind = "undoable", label = "session-window-share-stop")]
-    Stop {
-        /// The tab this device shows the window in
-        #[param("The tab this device shows the window in")]
-        tab: String,
-    },
-    /// Let the workspace control the window
-    #[effect(kind = "undoable", label = "session-window-share-allow-input")]
-    AllowRemoteInput {
-        /// The tab this device shows the window in
-        #[param("The tab this device shows the window in")]
-        tab: String,
-        /// Whether they may control it; left out to toggle
-        #[param("Whether they may control it; left out to toggle")]
-        on: Option<bool>,
-    },
-    /// Show another member's shared window
-    #[effect(kind = "undoable", label = "session-window-share-watch")]
-    Watch {
-        /// The tab this device shows the window in
-        #[param("The tab this device shows the window in")]
-        tab: String,
-        /// The workspace in which it is shared
-        #[param("The workspace in which it is shared")]
-        workspace: String,
-    },
-    /// Stop showing it
-    #[effect(kind = "undoable", label = "session-window-share-unwatch")]
-    Unwatch {
-        /// The tab this device shows the window in
-        #[param("The tab this device shows the window in")]
-        tab: String,
-        /// The workspace in which it is shared
-        #[param("The workspace in which it is shared")]
-        workspace: String,
-    },
-}
 
-impl ShareEffect {
-    /// The command this effect queues.
-    fn command(&self) -> ShareCommand {
-        let text = |value: &Option<String>| value.clone().unwrap_or_default().trim().to_owned();
-        match self {
-            Self::Share {
-                window,
-                tab,
-                app_id,
-                workspace,
-            } => ShareCommand::Share {
-                window: text(window),
-                tab: tab_of_text(tab),
-                app_id: text(app_id),
-                workspace: text(workspace),
-            },
-            Self::Stop { tab } => ShareCommand::Stop {
-                tab: tab_of_text(tab),
-            },
-            Self::AllowRemoteInput { tab, on } => ShareCommand::AllowInput {
-                tab: tab_of_text(tab),
-                on: *on,
-            },
-            Self::Watch { tab, workspace } => ShareCommand::Watch {
-                tab: tab_of_text(tab),
-                workspace: workspace.trim().to_owned(),
-            },
-            Self::Unwatch { tab, workspace } => ShareCommand::Unwatch {
-                tab: tab_of_text(tab),
-                workspace: workspace.trim().to_owned(),
-            },
-        }
+/// The command a share effect queues.
+fn command(effect: &ShareEffect) -> ShareCommand {
+    let text = |value: &Option<String>| value.clone().unwrap_or_default().trim().to_owned();
+    match effect {
+        ShareEffect::Share {
+            window,
+            tab,
+            app_id,
+            workspace,
+        } => ShareCommand::Share {
+            window: text(window),
+            tab: tab_of_text(tab),
+            app_id: text(app_id),
+            workspace: text(workspace),
+        },
+        ShareEffect::Stop { tab } => ShareCommand::Stop {
+            tab: tab_of_text(tab),
+        },
+        ShareEffect::AllowRemoteInput { tab, on } => ShareCommand::AllowInput {
+            tab: tab_of_text(tab),
+            on: *on,
+        },
+        ShareEffect::Watch { tab, workspace } => ShareCommand::Watch {
+            tab: tab_of_text(tab),
+            workspace: workspace.trim().to_owned(),
+        },
+        ShareEffect::Unwatch { tab, workspace } => ShareCommand::Unwatch {
+            tab: tab_of_text(tab),
+            workspace: workspace.trim().to_owned(),
+        },
     }
 }
 

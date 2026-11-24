@@ -80,3 +80,27 @@ so-tilo-session-banners-focus-newest = Focus the newest notification
 so-tilo-session-banners-read = Read it in full
 so-tilo-session-banners-answer-call = Answer the call
 so-tilo-session-banners-decline-call = Decline the call
+
+# Who is here: the roster's own actions, which the bar's faces and a person's card
+# call as they call any app's.
+people-show = Open who is here
+people-close = Close who is here
+people-show-person = Show a person
+people-follow = Follow
+people-unfollow = Stop following
+people-wave = Wave
+people-message = Message
+people-go-to = Go where they are working
+people-name = Your name
+people-doing = What you are doing
+people-availability = How available you are
+people-pair-device = Add a device
+people-settings = Open your settings
+# The invitations into a workspace, the sheet they are made in, and adding a device.
+so-tilo-session-invite-invitations = List invitations
+so-tilo-session-invite-issue-invitation = Make an invitation link
+so-tilo-session-invite-show-invite = Invite people
+so-tilo-session-invite-show-connect = Connect an agent or computer
+so-tilo-session-invite-show-pair-device = Add a device
+so-tilo-session-invite-open-link = Open a link
+so-tilo-session-invite-cancel-invitation = Cancel invitation

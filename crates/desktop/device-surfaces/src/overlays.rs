@@ -85,7 +85,7 @@ pub enum OverlayEffect {
     #[effect(kind = "outside")]
     ShowSurface {
         #[param(
-            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer`, `conversation` or `history`"
+            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer`, `conversation`, `history` or `people`"
         )]
         surface: String,
     },
@@ -127,11 +127,11 @@ pub enum OverlayEffect {
     CloseEmoji,
     /// Answer the question waiting on the person's avatar
     #[effect(kind = "outside")]
-    #[effect(row, label = "session-answer-ask")]
+    #[effect(label = "session-answer-ask")]
     AnswerAsk,
     /// Put the question waiting on the person's avatar off for now
     #[effect(kind = "outside")]
-    #[effect(row, label = "session-ask-later")]
+    #[effect(label = "session-ask-later")]
     PutOffAsk,
 }
 
@@ -144,8 +144,8 @@ pub enum OverlayEffect {
 )]
 struct OverlaysSurface {
     /// The surface the shell shows over the windows: `none` at rest, or `overview`, `switcher`,
-    /// `launcher`, `centre`, `quick-settings`, `workspaces`, `composer`, `conversation` or
-    /// `history`.
+    /// `launcher`, `centre`, `quick-settings`, `workspaces`, `composer`, `conversation`,
+    /// `history` or `people`.
     here: String,
     /// Whether the switcher's panel shows: a quick Alt+Tab switches windows and draws nothing.
     switcher_revealed: bool,

@@ -79,6 +79,14 @@ pub enum PeopleAsk {
         client: String,
         ask: tilo_session_core::desktop::launchpad::AgentAsk,
     },
+    /// Follow the person `who` (by their presence key), or stop following when `following` is off:
+    /// the bar keeps their view in front while this person follows them.
+    Follow { who: String, following: bool },
+    /// Wave at the person `who` (by their presence key): their bar says so for a moment.
+    Wave { who: String },
+    /// Add another of this person's devices: the session's sheet prints the link a new one joins
+    /// with.
+    PairDevice,
 }
 
 /// The colour this person wears here: the one they chose in their own settings, else the one their

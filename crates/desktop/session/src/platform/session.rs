@@ -641,6 +641,7 @@ impl Session {
             emoji: Rc::new(std::cell::Cell::new(false)),
             about: Rc::new(std::cell::Cell::new(false)),
             power: Rc::new(std::cell::Cell::new(false)),
+            person: Rc::default(),
         };
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
@@ -1813,6 +1814,7 @@ impl Session {
             emoji,
             shortcut_guide,
             people,
+            people_asks: Rc::default(),
             follow: RefCell::default(),
             invitable,
             hide_top_bar,
@@ -1822,6 +1824,20 @@ impl Session {
         };
         shared.lend_to_apps();
         shared.start_search();
+        // Who is here, as a shell in another language reads it (`session:people`): the roster of
+        // the workspace in front, the person at this device, and the card a face opens. It reads
+        // the same live session and the same surfaces the shell's own bar does.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(crate::people_device::PeopleDevice::new(
+                shared.handle.clone(),
+                Rc::clone(&place_here),
+                shared.sync.clone(),
+                Rc::clone(&shared.people_asks),
+                shared.surfaces.clone(),
+                shared.person.clone(),
+            )));
         // What the person copied is personal: the clipboard publishes the
         // copies itself, as a reading only a caller the workspace grants reads.
         shared

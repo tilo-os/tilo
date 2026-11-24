@@ -11310,7 +11310,7 @@
           ]
         },
         {
-          "id": "share",
+          "id": "invite-people",
           "label": "Share a resource with people, opening the invitation sheet",
           "description": "Share a resource with people, opening the invitation sheet",
           "kind": "outside",
@@ -13399,6 +13399,729 @@
               "type": "int"
             }
           ]
+        }
+      ]
+    },
+    {
+      "kind": "people",
+      "label": "People",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "show",
+          "label": "Open who is here",
+          "description": "Open who is here, or close it when it is up",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "close",
+          "label": "Close who is here",
+          "description": "Close who is here",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "show-person",
+          "label": "Show a person",
+          "description": "Show a person's card in the roster: their devices, what they are doing and the actions they offer. An empty key comes back from a card to the roster",
+          "kind": "read",
+          "params": [
+            {
+              "name": "person",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "follow",
+          "label": "Follow",
+          "description": "Follow a person: the bar keeps their view in front, and says whose view it is",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "person",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "unfollow",
+          "label": "Stop following",
+          "description": "Stop following whoever this person follows",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "wave",
+          "label": "Wave",
+          "description": "Wave at a person: their bar says so for a moment",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "person",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "message",
+          "label": "Message",
+          "description": "Open this person's conversation with someone in Chat",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "person",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "go-to",
+          "label": "Go where they are working",
+          "description": "Go to where a person works: their window of this workspace, or their app",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "person",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-name",
+          "label": "Your name",
+          "description": "Give this person's own card the name everyone here sees",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-doing",
+          "label": "What you are doing",
+          "description": "Say what this person is doing, in their own words; empty stops saying it",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "text",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-availability",
+          "label": "How available you are",
+          "description": "Say how available this person is: `available`, `focusing`, `away` or `idle`",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "availability",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "pair-device",
+          "label": "Add a device",
+          "description": "Add another of this person's devices: the link its camera reads, as the session's own sheet shows it",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "open-settings",
+          "label": "Open your settings",
+          "description": "Open a page of this person's own settings: their accounts, their devices and what they share",
+          "kind": "read",
+          "params": [
+            {
+              "name": "link",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "rows",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Person"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "me",
+          "stored": "value",
+          "type": {
+            "named": "Person"
+          },
+          "readonly": true
+        },
+        {
+          "path": "showing",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "following",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "waved",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "arrived",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "arrived_seen",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Person",
+          "doc": "Someone here in the workspace in front, a person or a piece of software.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "colour",
+              "type": "text"
+            },
+            {
+              "name": "agent",
+              "type": "bool"
+            },
+            {
+              "name": "me",
+              "type": "bool"
+            },
+            {
+              "name": "availability",
+              "type": "text"
+            },
+            {
+              "name": "doing",
+              "type": "text"
+            },
+            {
+              "name": "activity",
+              "type": "text"
+            },
+            {
+              "name": "in_app",
+              "type": "text"
+            },
+            {
+              "name": "call",
+              "type": "text"
+            },
+            {
+              "name": "following",
+              "type": "bool"
+            },
+            {
+              "name": "follower",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "shares",
+      "label": "Shared windows",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "share",
+          "label": "Share a window with the workspace",
+          "description": "Share a window with the workspace",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "window",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "tab",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "app_id",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "workspace",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "stop",
+          "label": "Stop sharing the window",
+          "description": "Stop sharing the window",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "tab",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "allow-remote-input",
+          "label": "Let the workspace control the window",
+          "description": "Let the workspace control the window",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "tab",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "on",
+              "required": false,
+              "schema": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "bool"
+              }
+            }
+          ]
+        },
+        {
+          "id": "watch",
+          "label": "Show a window another member shares",
+          "description": "Show another member's shared window",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "tab",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "workspace",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "unwatch",
+          "label": "Stop showing it",
+          "description": "Stop showing it",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "tab",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "workspace",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "sharing",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SharedWindow"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "watching",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "WatchedWindow"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "ShareViewer",
+          "doc": "One device showing a shared window.",
+          "fields": [
+            {
+              "name": "peer",
+              "type": "int"
+            },
+            {
+              "name": "can_control",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "SharedWindow",
+          "doc": "One window this device shares with a workspace.",
+          "fields": [
+            {
+              "name": "tab",
+              "type": "text"
+            },
+            {
+              "name": "app_id",
+              "type": "text"
+            },
+            {
+              "name": "workspace",
+              "type": "text"
+            },
+            {
+              "name": "input_allowed",
+              "type": "bool"
+            },
+            {
+              "name": "streaming",
+              "type": "bool"
+            },
+            {
+              "name": "waiting_for",
+              "type": "text"
+            },
+            {
+              "name": "viewers",
+              "type": {
+                "list": {
+                  "named": "ShareViewer"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "WatchedWindow",
+          "doc": "A window of another member's this device shows.",
+          "fields": [
+            {
+              "name": "tab",
+              "type": "text"
+            },
+            {
+              "name": "workspace",
+              "type": "text"
+            },
+            {
+              "name": "host",
+              "type": "text"
+            },
+            {
+              "name": "shown_in",
+              "type": "text"
+            },
+            {
+              "name": "waiting_for",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "invite",
+      "label": "Invite",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "invitations",
+          "label": "List invitations",
+          "description": "The invitations this device's person made into a workspace that can still be redeemed, in the words the workspace's host lists them by",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "workspace",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "issue-invitation",
+          "label": "Make an invitation link",
+          "description": "Make an invitation into a workspace from this device: the link to hand to whoever is being invited, which their device joins with",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "role",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "invitee_name",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "recipient",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "expires_in_seconds",
+              "required": false,
+              "schema": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "workspace",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "show-invite",
+          "label": "Invite people",
+          "description": "Open the invite sheet on a workspace: where a link into it is made, the part it brings someone in at picked and the links that still work taken back. An app shares what it shows by asking this, so it offers the one sheet the bar's invite button opens.",
+          "kind": "read",
+          "params": [
+            {
+              "name": "workspace",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "show-connect",
+          "label": "Connect an agent or computer",
+          "description": "Show how an agent or another computer connects as the person: the setup their own card's \"Connect an agent or computer\" opens. An app that lists what acts as them offers adding to it this way.",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "show-pair-device",
+          "label": "Add a device",
+          "description": "Show how a new device of the person's joins them: Settings' devices page, where \"Add a device\" prints the ticket it logs in with. An app that lists what acts as the person offers adding to it this way.",
+          "kind": "read",
+          "params": []
+        },
+        {
+          "id": "cancel-invitation",
+          "label": "Cancel invitation",
+          "description": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "invite",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "workspace",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "workspace",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
         }
       ]
     }

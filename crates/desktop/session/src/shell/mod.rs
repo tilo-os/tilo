@@ -1416,6 +1416,33 @@ impl ShellChrome {
                 self.surfaces.history(&named("app")?, &named("kind")?);
                 true
             }
+            // Who is here: the shell draws its own roster over the windows, so the bar's faces
+            // open the shell's surface rather than the hidden chrome's panel.
+            "toggle-people" => {
+                let name = tilo_session_core::desktop::overlays::Overlay::People.name();
+                if here(name) {
+                    self.surfaces.person.borrow_mut().clear();
+                    self.surfaces.close(name);
+                } else {
+                    self.surfaces.person.borrow_mut().clear();
+                    self.surfaces.open(name);
+                }
+                true
+            }
+            // A person's face, or a row in the roster: the shell's roster opens on their card.
+            "show-person" => {
+                let person = arguments
+                    .get("person")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
+                *self.surfaces.person.borrow_mut() = person;
+                self.surfaces
+                    .open(tilo_session_core::desktop::overlays::Overlay::People.name());
+                true
+            }
+
             // The workspaces are the shell's one workspace surface: the shell's menu, the workspaces
             // a person switches between and the actions on them.
             "workspace-menu" => {
@@ -2282,6 +2309,7 @@ mod tests {
             emoji: std::rc::Rc::new(std::cell::Cell::new(false)),
             about: std::rc::Rc::new(std::cell::Cell::new(false)),
             power: std::rc::Rc::new(std::cell::Cell::new(false)),
+            person: std::rc::Rc::default(),
         }
     }
 

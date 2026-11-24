@@ -32,13 +32,26 @@ impl Shared {
         // A press on one of the person's devices is one of the session's own verbs: the queue it
         // lands in is carried out here, with the asks.
         self.carry_out_presses();
-        // What a person's card asked of the session: Chat's conversation with them.
-        let asked = self.people.borrow().take_asks();
+        // What a person's card asked of the session: Chat's conversation with them. The roster's
+        // own resource asks through the same queue, so one pass carries out both.
+        let mut asked = self.people.borrow().take_asks();
+        asked.extend(self.people_asks.borrow_mut().drain(..));
         for ask in asked {
             match ask {
                 people::PeopleAsk::Message { key } => self.message_person(&key),
                 people::PeopleAsk::Agent { who, client, ask } => self.agent_ask(&who, &client, ask),
                 people::PeopleAsk::GoTo { who } => self.go_to_person(&who),
+                people::PeopleAsk::Follow { who, following } => {
+                    if let Some(sync) = &self.sync {
+                        sync.set_following(following.then_some(who));
+                    }
+                }
+                people::PeopleAsk::Wave { who } => {
+                    if let Some(sync) = &self.sync {
+                        sync.wave(&who);
+                    }
+                }
+                people::PeopleAsk::PairDevice => self.open_add_device(),
                 people::PeopleAsk::Rename(name) => self.name_self(&name),
                 people::PeopleAsk::Status(status) => self.set_own_status(&status),
                 people::PeopleAsk::Availability(chosen) => {
