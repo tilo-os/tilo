@@ -68,6 +68,11 @@ use uuid::Uuid;
 /// connects.
 const MCP_CLIENT: &str = "mcp";
 
+/// The name a plain connection from the person's own account goes by: no app and no agent was
+/// named, so the device gives it one of its own, which may do only what both an agent and the
+/// person may.
+const UNNAMED_AGENT: &str = "agent";
+
 /// Durable collaboration history, where the desktop session keeps it under
 /// the profile's `XDG_STATE_HOME`.
 const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
@@ -702,6 +707,38 @@ impl Daemon {
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
         let caller = Caller::local_person(&self.actor).in_workspace(workspace);
         self.tree_in(workspace, caller)
+    }
+
+    /// The tree a plain connection from the person's own account reaches, and the caller it is
+    /// admitted as there: an unnamed agent of theirs, which may do only what both an agent and
+    /// the person may, even though the account itself is theirs.
+    ///
+    /// # Errors
+    /// The workspace cannot be admitted to now, or the device cannot make the agent's key.
+    pub(crate) fn connection_tree(
+        self: &Arc<Self>,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let time = self.policy_origin.capture().map_err(io::Error::other)?;
+        let base = self.provider_for(&self.workspace)?;
+        let (provider, _) = base.agent_session(&self.workspace, &self.actor, &time, |person| {
+            (
+                device_agent_id(person, UNNAMED_AGENT),
+                UNNAMED_AGENT.to_owned(),
+            )
+        })?;
+        // The connection is that agent's: the caller it acts as here is the agent itself, which
+        // the workspace decides with the delegation its person gave it and nothing more.
+        let caller = provider
+            .session
+            .as_ref()
+            .map(|session| session.acting())
+            .cloned()
+            .ok_or_else(|| io::Error::other("this device made no agent for the connection"))?;
+        let api = self.api()?;
+        let named = self.workspace.clone();
+        let joined = block_on_owned(async move { api.joined(&named, Arc::new(provider)).await })
+            .map_err(io::Error::other)?;
+        Ok((joined, caller))
     }
 
     /// The tree an app the daemon started reaches in `workspace`, and the caller it is there:
@@ -3024,7 +3061,10 @@ impl AdmittedRuntimeSession {
     /// calls own, never who makes them. A run projected into one execution admits only that one.
     fn admits(&self, caller: &Caller) -> bool {
         let Some(projection) = &self.projection else {
-            return caller == self.admission.caller();
+            // A run with no projection admits the device's own admission, and the agent the run
+            // was made for: the connection of an unnamed agent presents the agent itself.
+            return caller == self.admission.caller()
+                || self.agent.as_ref().is_some_and(|agent| caller == agent);
         };
         match (projection.execution_lease(), caller.execution_lease()) {
             (None, Some(lease)) => *caller == projection.clone().in_execution(lease),

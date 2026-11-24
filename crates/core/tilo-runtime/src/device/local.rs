@@ -46,15 +46,16 @@ impl Frames {
         Self::new(move || Ok((Arc::new(answers.clone()) as Tree, Caller::local_system())))
     }
 
-    /// The person's workspace and account, as `daemon` serves them
-    /// ([`Daemon::person_tree`]).
+    /// The person's workspace and account, as a plain connection from their own account reaches
+    /// them ([`Daemon::connection_tree`]): an unnamed agent of theirs, which may do only what
+    /// both an agent and the person may.
     pub(crate) fn of_the_person(daemon: &Arc<Daemon>) -> Self {
         let daemon = Arc::downgrade(daemon);
         Self::new(move || {
             let daemon = daemon
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-            daemon.person_tree()
+            daemon.connection_tree()
         })
     }
 

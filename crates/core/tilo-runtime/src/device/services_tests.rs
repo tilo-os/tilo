@@ -1440,3 +1440,71 @@ fn identity_steps_list_change_and_protect_the_store_without_answering_a_secret()
         1
     );
 }
+
+const CONNECTION_AGENT_TEST: &str =
+    "device::services::tests::a_plain_connection_is_an_unnamed_agent_and_may_not_govern";
+
+/// A connection from the person's own account that names no app is admitted as an unnamed agent
+/// of theirs: it acts for them, and is refused what an agent may not do even though the person
+/// may, the workspace's governance being the person's alone.
+#[test]
+fn a_plain_connection_is_an_unnamed_agent_and_may_not_govern() {
+    use tilo_action_policy::{Answer, Context, Grantee, MemberAccess};
+
+    let Some(root) = isolated_root(CONNECTION_AGENT_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().unwrap();
+    let (_, agent) = daemon.connection_tree().unwrap();
+    assert!(
+        agent.acting().is_agent(),
+        "a plain connection is an agent, never the person: {agent:?}"
+    );
+    let person_key = daemon.workspaces.device_cert().user_public_key;
+    let person = hex::encode(person_key);
+    assert_eq!(
+        agent.acted_for_person(),
+        Some(person.as_str()),
+        "the agent acts for the person whose account connected"
+    );
+    let agent_id = device_agent_id(&person_key, UNNAMED_AGENT);
+    assert_eq!(
+        agent.acting().agent_id(),
+        Some(agent_id.as_str()),
+        "the unnamed agent is the one the device gives it"
+    );
+
+    let policy = daemon
+        .workspaces
+        .policy_of(WorkspaceId::parse(&workspace).unwrap())()
+    .expect("the daemon's workspace has a policy");
+    let delegated: Vec<_> = policy
+        .grants
+        .iter()
+        .filter(|grant| grant.grantee == Grantee::agent(agent_id.clone()))
+        .cloned()
+        .collect();
+    assert!(
+        !delegated.is_empty(),
+        "the workspace grants its agent what its person delegated"
+    );
+    let rename = tilo_action_policy::roles::governance_action(
+        &workspace,
+        tilo_action_policy::roles::governance::RENAME,
+    );
+    let kind = tilo_action_policy::roles::GOVERNANCE_KIND;
+    let cx = Context::at(0);
+    let as_agent = MemberAccess::new(policy.clone(), agent.acting().clone()).granted(delegated);
+    assert_eq!(
+        as_agent.answer(&rename, kind, &cx),
+        Answer::Deny,
+        "an agent never governs a workspace"
+    );
+    let as_person = MemberAccess::person(policy, person.as_str());
+    assert_eq!(
+        as_person.answer(&rename, kind, &cx),
+        Answer::Allow,
+        "the person the account is may rename their workspace"
+    );
+}
