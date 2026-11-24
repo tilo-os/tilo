@@ -911,7 +911,7 @@ impl VaultItems {
         if sealed.kind != ItemKind::CodeGenerator {
             return Err(ItemError::WrongKind);
         }
-        sealed.username = username.trim().to_owned();
+        username.trim().clone_into(&mut sealed.username);
         sealed.code = code;
         self.write(id, &sealed);
         Ok(self.written(id, &sealed))
