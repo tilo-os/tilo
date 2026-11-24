@@ -62,8 +62,11 @@ impl collab_types::SurfaceSource for EarlierBuild {
             return None;
         }
         let file = SurfaceFile::parse(&bytes).ok()?;
-        let resource = file.resource(kind)?.clone();
-        Some(Arc::new(KindSurface(resource)))
+        let resource = match kind {
+            Some(kind) => file.resource(kind)?,
+            None => file.own_resource()?,
+        };
+        Some(Arc::new(KindSurface(resource.clone())))
     }
 }
 
@@ -166,7 +169,7 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
     std::fs::write(store.join(hex::encode(earlier)), SURFACE).unwrap();
     tilo_peer_state::decide_with_surfaces(
         collab_types::Surfaces::from_source(Arc::new(EarlierBuild { dir: store.clone() })),
-        |app| (app == APP).then_some(earlier),
+        move |app| (app == APP).then_some(earlier),
     );
     let (key, cert) = governor_with(DeviceCapabilities::member());
     let server = test_host(dir.path(), &key, &cert).await;
