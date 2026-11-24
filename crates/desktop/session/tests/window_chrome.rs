@@ -868,3 +868,105 @@ fn a_windows_author_is_who_opened_it_person_or_agent() {
     assert_eq!(agent["run"], json!("agent-run:1"));
     assert_eq!(agent["title"], json!("Sort the notes"));
 }
+
+/// The answer a window whose app ended says in its place, as the launch layer leaves it.
+fn ended(what: &str, why: &str) -> tilo_session_core::desktop::state::EndedAnswer {
+    tilo_session_core::desktop::state::EndedAnswer {
+        what: what.to_owned(),
+        why: why.to_owned(),
+        retry: Some("Reopen".to_owned()),
+        details: "exit status: 1".to_owned(),
+    }
+}
+
+#[test]
+fn a_window_whose_app_ended_says_what_became_of_it() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let one = place(&mut session, &notes[0]);
+    session.handle().set_ended_answer(
+        one,
+        Some(ended("Notes stopped working", "It ended unexpectedly")),
+    );
+    let key = one.to_string();
+    until(&mut session, "the answer", |session| {
+        window(session, &key)["ended"]["what"] == json!("Notes stopped working")
+    });
+    let answer = window(&session, &key)["ended"].clone();
+    assert_eq!(answer["why"], json!("It ended unexpectedly"));
+    assert_eq!(answer["retry"], json!("Reopen"));
+    assert_eq!(answer["details"], json!("exit status: 1"));
+}
+
+#[test]
+fn the_crashed_windows_card_offers_reopen_and_dismiss() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let one = place(&mut session, &notes[0]);
+    session.handle().set_ended_answer(
+        one,
+        Some(ended("Notes stopped working", "It ended unexpectedly")),
+    );
+    until(&mut session, "the crashed window's card", |session| {
+        on_screen(session, "App ended").is_some()
+            && on_screen(session, "Notes stopped working").is_some()
+            && on_screen(session, "Reopen").is_some()
+            && on_screen(session, "Dismiss").is_some()
+    });
+}
+
+#[test]
+fn reopening_a_crashed_window_keeps_its_place() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let one = place(&mut session, &notes[0]);
+    let key = one.to_string();
+    let was = band_of(&session, &key).expect("the window stands in a band");
+    session
+        .handle()
+        .set_ended_answer(one, Some(ended("Notes stopped working", "")));
+    until(&mut session, "the card", |session| {
+        on_screen(session, "Reopen").is_some()
+    });
+    press(&mut session, "Reopen");
+    // The app is asked for again in the tab it left, so the place is the one it stood in; when
+    // its window comes the session takes the answer away and the card with it.
+    assert_eq!(
+        band_of(&session, &key).as_deref(),
+        Some(was.as_str()),
+        "the tab keeps the place the window stood in"
+    );
+    session.handle().set_ended_answer(one, None);
+    until(&mut session, "the card gone with the window back", |session| {
+        on_screen(session, "App ended").is_none()
+    });
+}
+
+#[test]
+fn dismissing_the_crashed_windows_card_closes_its_tab() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let one = place(&mut session, &notes[0]);
+    session
+        .handle()
+        .set_ended_answer(one, Some(ended("Notes stopped working", "")));
+    until(&mut session, "the card", |session| {
+        on_screen(session, "Dismiss").is_some()
+    });
+    press(&mut session, "Dismiss");
+    until(&mut session, "the tab gone", |session| {
+        crate::common::place(session, one).is_none()
+    });
+}

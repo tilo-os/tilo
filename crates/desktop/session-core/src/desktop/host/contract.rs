@@ -127,6 +127,9 @@ pub enum DesktopAsk {
     WaitWindow(TabId),
     /// The person chose Force quit on such a window: the host ends its app.
     ForceQuitApp(TabId),
+    /// The person asked again for the app whose window ended in `tab`, as the card's Reopen does:
+    /// the host launches it into that same tab.
+    ReopenEnded(TabId),
     /// The person asked for Settings at the page `link` names, which only
     /// the host can open: its search runs where the workspaces are.
     OpenSettings(String),

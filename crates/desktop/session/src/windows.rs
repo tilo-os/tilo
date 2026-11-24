@@ -92,6 +92,22 @@ pub struct Window {
     pub bar: Option<Bar>,
     /// Who opened it, person or agent, when the workspace's shared desktop says.
     pub author: Option<Author>,
+    /// What it says in place of its app, when the app could not open or stopped.
+    pub ended: Option<Ended>,
+}
+
+/// What a window says in the place its app left, when the app could not open or stopped: the
+/// outcome with the way to ask for it again.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct Ended {
+    /// The sentence it leads with, in the person's words.
+    pub what: String,
+    /// Why, in words they can act on; empty where what happened is all there is to say.
+    pub why: String,
+    /// The label of the button that asks for the app again, when asking can work.
+    pub retry: Option<String>,
+    /// The technical side, kept behind the card's Details.
+    pub details: String,
 }
 
 /// Who opened a window: the member whose hands opened it, person or agent, and the agent's run
@@ -327,6 +343,12 @@ fn window_reading(
         bar_typing: handle.bar_takes_typing() && handle.bar_field(tab.id).is_some(),
         bar: handle.bar_toolbar(tab.id).as_ref().map(bar_of),
         author: author_of(handle, tab.id),
+        ended: handle.ended_answer(tab.id).map(|answer| Ended {
+            what: answer.what,
+            why: answer.why,
+            retry: answer.retry,
+            details: answer.details,
+        }),
     }
 }
 
@@ -441,20 +463,20 @@ fn bar_field(field: Option<tilo_session_core::desktop::state::BarField>) -> &'st
     }
 }
 
-/// Whether `tab` counts as a window for the switcher's walk and the overview's pictures: a card
-/// where an app stopped working, or a place a saved window stood in, is the tab's and not a window
-/// to walk to.
-fn tab_is_window(tab: &Tab) -> bool {
+/// Whether `tab` counts as a window for the switcher's walk and the overview's pictures: a place a
+/// saved window stood in is the tab's and not a window to walk to. A tab that says what became of
+/// its app is a window while it says it: the shell draws the card where the window was.
+fn tab_is_window(tab: &Tab, handle: &DesktopHandle) -> bool {
     !matches!(
         tab.tile,
         TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }
-    )
+    ) || handle.ended_answer(tab.id).is_some()
 }
 
 /// The window currently in front in `tree`'s active workspace — `(strip, group, tab)` — when the
 /// active strip's active group (or its first group) holds an active tab that counts as a window.
 /// Both [`windows`] and [`switcher_walk_empty_in`] derive focus from this one rule.
-fn front_window(tree: &Layout) -> Option<(StripId, u64, u64)> {
+fn front_window(tree: &Layout, handle: &DesktopHandle) -> Option<(StripId, u64, u64)> {
     let front = tree.active_workspace()?;
     let active_strip = tree.active_strip_for(front)?;
     let strip = front.strips.iter().find(|strip| strip.id == active_strip)?;
@@ -469,7 +491,7 @@ fn front_window(tree: &Layout) -> Option<(StripId, u64, u64)> {
     let tab = group
         .tabs
         .iter()
-        .find(|tab| tab.id == group.active_tab && tab_is_window(tab))?;
+        .find(|tab| tab.id == group.active_tab && tab_is_window(tab, handle))?;
     Some((strip.id, group.id, tab.id))
 }
 
@@ -482,7 +504,7 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
     let Some(front) = tree.active_workspace() else {
         return Vec::new();
     };
-    let focused_place = front_window(tree);
+    let focused_place = front_window(tree, handle);
     let focused_tab = focused_place.map(|(_, _, tab)| tab);
     // The tabs the focus history remembers, most recent first.
     let history: Vec<u64> = front
@@ -511,7 +533,7 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
                     .unwrap_or(0);
                 let mut behind = 0_i64;
                 for (index, tab) in group.tabs.iter().enumerate() {
-                    if !tab_is_window(tab) {
+                    if !tab_is_window(tab, handle) {
                         continue;
                     }
                     let tab_index = if index == leading {
@@ -674,9 +696,9 @@ pub(crate) fn switcher_walk_empty_in(handle: &DesktopHandle, scope: SwitcherScop
                 .iter()
                 .flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs)
-                .any(tab_is_window)
+                .any(|tab| tab_is_window(tab, handle))
         }),
-        SwitcherScope::App => front_window(tree).is_none(),
+        SwitcherScope::App => front_window(tree, handle).is_none(),
     })
 }
 

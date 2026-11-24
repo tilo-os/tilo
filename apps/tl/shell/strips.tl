@@ -365,7 +365,11 @@ view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
                     // and a window that answers keeps its body the whole room.
                     let w = shown_window(p)
                     if let window = w {
-                        if window.not_responding {
+                        if window.ended.is_some() {
+                            // The app left this place and said why: the card says what it says,
+                            // with asking for the app again in this same place, or dismissing it.
+                            crashed_card(window)
+                        } else if window.not_responding {
                             stack(gap: .tight, fill) {
                                 hung_window(window)
                                 place_content(p)

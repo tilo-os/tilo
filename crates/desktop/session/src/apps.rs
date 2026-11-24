@@ -878,6 +878,17 @@ impl Apps {
         *self.desktop.borrow_mut() = Some(desktop);
     }
 
+    /// Ask the app that left its answer in `tab` for its window again, in that same tab: what the
+    /// card's Reopen presses, wherever the shell draws the card.
+    pub fn reopen_ended(&self, tab: u64) {
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return;
+        };
+        desktop.with_policy(|policy| {
+            policy.reopen_in(tab);
+        });
+    }
+
     /// The windows the person can see, as the shell last laid them out: the front tab of each group
     /// on the strip in front, and the dialogs floating over those. `None` while no shell is mounted,
     /// when nothing is known about what is in view.

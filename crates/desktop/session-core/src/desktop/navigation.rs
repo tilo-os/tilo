@@ -623,6 +623,25 @@ pub enum ChromeEffect {
         #[param(decimal, "The window, by its tab")]
         tab: String,
     },
+    /// Ask again for the app whose window ended
+    /// The same app, in the same tab, as the card's Reopen does.
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    ReopenEnded {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+    },
+
+    /// Dismiss what a window says in place of its app
+    /// The tab goes with it: nothing comes into it.
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    DismissEnded {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+    },
 
     /// Move a strip
     #[effect(kind = "outside")]
@@ -1470,6 +1489,8 @@ fn admit_chrome(
         | ChromeEffect::BarSidebar { .. }
         | ChromeEffect::BarBack { .. }
         | ChromeEffect::BarForward { .. }
+        | ChromeEffect::ReopenEnded { .. }
+        | ChromeEffect::DismissEnded { .. }
         | ChromeEffect::MoveStrip { .. }
         | ChromeEffect::StepStrip { .. }
         | ChromeEffect::NewWorkspace { .. }

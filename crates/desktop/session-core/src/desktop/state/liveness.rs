@@ -47,6 +47,38 @@ impl DesktopHandle {
         self.shared.borrow().unresponsive.contains(&window)
     }
 
+    /// What the window `tab` says in the place its app left, when the app could not open or
+    /// stopped: the answer the host wrote there, and the way to ask for it again.
+    #[must_use]
+    pub fn ended_answer(&self, tab: TabId) -> Option<super::EndedAnswer> {
+        self.shared.borrow().ended.get(&tab).cloned()
+    }
+
+    /// Put `answer` in `tab`, in the place its app left; `None` takes what it said away, as the
+    /// app's window taking the tab back does. Whether that changed anything.
+    pub fn set_ended_answer(&self, tab: TabId, answer: Option<super::EndedAnswer>) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let changed = match answer {
+            Some(answer) => {
+                let changed = shared.ended.get(&tab) != Some(&answer);
+                shared.ended.insert(tab, answer);
+                changed
+            }
+            None => shared.ended.remove(&tab).is_some(),
+        };
+        if changed {
+            shared.changed();
+        }
+        changed
+    }
+
+    /// The tabs that say what became of an app that is not here: what the shell draws its card
+    /// in, in the place the window was.
+    #[must_use]
+    pub fn ended_tabs(&self) -> Vec<TabId> {
+        self.shared.borrow().ended.keys().copied().collect()
+    }
+
     /// Changes whenever the set of windows whose app stopped answering may
     /// ([`DesktopHandle::set_unresponsive_windows`]).
     #[must_use]

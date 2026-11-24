@@ -774,10 +774,30 @@ impl DesktopPolicy {
     /// the shell yet: the answer waits in the maps the tile source reads.
     pub fn failed_at(&mut self, tab: TabId, asked: &str, answer: Outcome) {
         self.crashed.borrow_mut().insert(tab, asked.to_owned());
+        self.handle.set_ended_answer(
+            tab,
+            Some(tilo_session_core::desktop::state::EndedAnswer {
+                what: answer.what.clone(),
+                why: answer.why.clone(),
+                retry: answer.retry.clone(),
+                details: answer.technical_details.clone(),
+            }),
+        );
         self.answers.borrow_mut().insert(asked.to_owned(), answer);
         // The tab's content stood from the frame it was opened in: the
         // answer takes its place on the shell's next pass.
         self.handle.rebuild(tab);
+    }
+
+    /// Ask the app that left its answer in `tab` for its window again, in that same tab: what
+    /// the card's Reopen does, and a shell's own card asks for by a verb. False for a tab that
+    /// answers for no app.
+    pub fn reopen_in(&mut self, tab: TabId) -> bool {
+        let Some((app, _)) = self.tiles.answer_in(tab) else {
+            return false;
+        };
+        ask_again(&self.held, &self.launches, &app, tab);
+        true
     }
 
     /// Say `answer` in every tab that answers for `asked`, as a [`Self::failed_at`] left them.
@@ -835,6 +855,7 @@ impl DesktopPolicy {
     /// The answer `app` left on the shell goes, `tab` having shown its window
     /// again.
     fn keep_answer_gone(&self, tab: TabId) {
+        self.handle.set_ended_answer(tab, None);
         let app = self.crashed.borrow_mut().remove(&tab);
         let Some(app) = app else {
             return;

@@ -120,6 +120,13 @@ impl Shared {
                         tilo_session_core::desktop::state::LivenessChoice::ForceQuit,
                     );
                 }
+                // The card a window says in place of its app offers Reopen: the app is asked for
+                // its window again, in that same tab.
+                DesktopAsk::ReopenEnded(tab) => {
+                    if let Some(apps) = &self.launch {
+                        apps.reopen_ended(tab);
+                    }
+                }
                 DesktopAsk::ReportProblem => self.report_problem(),
                 // Settings at the page a panel or a card names: the shell's own
                 // search, run here where the workspaces are.

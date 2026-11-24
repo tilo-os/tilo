@@ -52,7 +52,40 @@ view hung_card(w: device.Window) {
     }
 }
 
-/// A window that runs on another device, while nothing of it stands here: which app's window it
+/// The card a window shows where its app left: what happened, why, and the two answers — ask for
+/// the app again in this same place, or dismiss what it says. Reopen keeps the tab, so the window
+/// that comes back lands where this one stood.
+view crashed_card(w: device.Window) {
+    if let e = w.ended {
+        row(fill, align: .center, distribute: .center, padding: .group) {
+            ui.Card {
+                stack(gap: .tight) {
+                    ui.Badge("App ended", tone: .warning)
+                    ui.Text(e.what, role: .title)
+                    if e.why != "" {
+                        ui.Text(e.why, secondary: true)
+                    }
+                    row(gap: .tight, align: .center, wrap: true) {
+                        if let label = e.retry {
+                            ui.Button(label) {
+                                on press: session.reopen_ended(tab: w.key)
+                            }
+                        } else {
+                            ui.Button("Reopen") {
+                                on press: session.reopen_ended(tab: w.key)
+                            }
+                        }
+                        ui.Button("Dismiss", role: .plain) {
+                            on press: session.dismiss_ended(tab: w.key)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A window that runs on another device, while nothing of it stands here: which app's window it/// A window that runs on another device, while nothing of it stands here: which app's window it
 /// is, the device it runs on, and that it opens there. The workspace's layout lists it on every
 /// shell as its device's, so this shell says where it is rather than showing an empty well with
 /// nothing to say why.

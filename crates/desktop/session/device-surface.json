@@ -8227,6 +8227,14 @@
                   "named": "Author"
                 }
               }
+            },
+            {
+              "name": "ended",
+              "type": {
+                "option": {
+                  "named": "Ended"
+                }
+              }
             }
           ]
         },
@@ -8478,6 +8486,30 @@
             },
             {
               "name": "title",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Ended",
+          "doc": "What a window says in the place its app left, when the app could not open or stopped: the outcome with the way to ask for it again.",
+          "fields": [
+            {
+              "name": "what",
+              "type": "text"
+            },
+            {
+              "name": "why",
+              "type": "text"
+            },
+            {
+              "name": "retry",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "details",
               "type": "text"
             }
           ]

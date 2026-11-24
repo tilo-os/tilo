@@ -150,6 +150,8 @@ impl DesktopHandle {
             | ChromeEffect::BarSidebar { .. }
             | ChromeEffect::BarBack { .. }
             | ChromeEffect::BarForward { .. }
+            | ChromeEffect::ReopenEnded { .. }
+            | ChromeEffect::DismissEnded { .. }
             | ChromeEffect::Shortcut { .. }
             | ChromeEffect::FixedShortcut { .. }
             | ChromeEffect::JoinWorkspace
@@ -198,7 +200,9 @@ impl DesktopHandle {
         | ChromeEffect::BarAction { tab, .. }
         | ChromeEffect::BarSidebar { tab }
         | ChromeEffect::BarBack { tab }
-        | ChromeEffect::BarForward { tab }) = verb
+        | ChromeEffect::BarForward { tab }
+        | ChromeEffect::ReopenEnded { tab }
+        | ChromeEffect::DismissEnded { tab }) = verb
         else {
             return None;
         };
@@ -237,6 +241,18 @@ impl DesktopHandle {
             ChromeEffect::BarSidebar { .. } => self.bar_event(tab, ToolbarEvent::ToggleSidebar),
             ChromeEffect::BarBack { .. } => self.bar_event(tab, ToolbarEvent::Back),
             ChromeEffect::BarForward { .. } => self.bar_event(tab, ToolbarEvent::Forward),
+            ChromeEffect::ReopenEnded { .. } => {
+                self.ask(DesktopAsk::ReopenEnded(tab));
+            }
+            ChromeEffect::DismissEnded { .. } => {
+                self.set_ended_answer(tab, None);
+                return Some(
+                    self.dispatch(crate::desktop::navigation::LayoutEffect::CloseTab {
+                        tab: tab.to_string(),
+                    })
+                    .map(|()| Carried::Done),
+                );
+            }
             _ => return None,
         }
         Some(Ok(Carried::Done))

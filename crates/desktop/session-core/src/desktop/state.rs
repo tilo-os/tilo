@@ -180,6 +180,20 @@ pub enum HintReading {
     WithInk,
 }
 
+/// What a window says in the place its app left: the outcome the host wrote when the app could
+/// not open or stopped, with the label of the button that asks for it again.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EndedAnswer {
+    /// The sentence it leads with, in the person's words ("Notes stopped working").
+    pub what: String,
+    /// Why, in words they can act on; empty where what happened is all there is to say.
+    pub why: String,
+    /// The label of the button that asks for the app again, when asking can work.
+    pub retry: Option<String>,
+    /// The technical side, kept behind the card's Details; empty where there is none.
+    pub details: String,
+}
+
 pub struct Shared {
     pub tree: Layout,
     /// The floating windows this device stands in the floating layer's column, and where the
@@ -346,6 +360,9 @@ pub struct Shared {
     /// What the person chose on a window that stopped answering, for the host to carry out
     /// ([`DesktopHandle::take_liveness_choices`]).
     pub liveness: Vec<(TabId, LivenessChoice)>,
+    /// What each window whose app ended says in its place ([`DesktopHandle::set_ended_answer`]):
+    /// the answer the host left in the tab, with the way to ask the app again.
+    pub ended: std::collections::BTreeMap<TabId, EndedAnswer>,
     /// What the shell says over the windows for a while ([`DesktopHandle::notice`]).
     pub notice: Rc<RefCell<ui::widget::toast::Transient<ui::window_toolbar::ToolbarNotice>>>,
     /// The buttons of that notice the person pressed that the shell does not carry out itself,
