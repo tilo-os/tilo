@@ -888,7 +888,7 @@ mod tests {
         let record = crate::device::services::device_root_record().unwrap();
         let root = tilo_identity::store::load_from_path(record).unwrap();
         let copies = daemon.serving().copies().clone();
-        let person = copies.serving_certificate().user_public_key;
+        let person = copies.device_cert().user_public_key;
         let devices = runtime.block_on(async {
             tilo_workspace_service::workspaces::person_workspace::devices::of(&copies, &person)
                 .await

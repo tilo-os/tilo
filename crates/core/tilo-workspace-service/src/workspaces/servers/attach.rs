@@ -60,7 +60,7 @@ pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
     if !super::holds_person_workspace(workspaces).await {
         return Ok(Attached::default());
     }
-    let admin = person_workspace_id(&workspaces.serving_certificate().user_public_key);
+    let admin = person_workspace_id(&workspaces.device_cert().user_public_key);
     // A copy founded in the person's name waits to be founded again
     // ([`super::refound`]): what this pass wrote there would not be carried.
     if workspaces
@@ -71,7 +71,7 @@ pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
         return Ok(Attached::default());
     }
     let servers = read(workspaces).await?;
-    let own = workspaces.serving_certificate().device_public_key;
+    let own = workspaces.device_cert().device_public_key;
     let mut governed = workspaces
         .list()
         .await
@@ -169,7 +169,7 @@ impl Workspaces {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let admin = person_workspace_id(&self.serving_certificate().user_public_key);
+        let admin = person_workspace_id(&self.device_cert().user_public_key);
         runtime.spawn(async move {
             loop {
                 let Some(inner) = workspaces.upgrade() else {

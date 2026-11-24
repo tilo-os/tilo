@@ -145,7 +145,7 @@ async fn recovery_keys(workspaces: &Workspaces) -> Result<Vec<RecoveryKey>, Acti
 /// Answers how the plan
 /// reaches its machine: what the command prints.
 async fn plan_machine(workspaces: &Workspaces, args: &Args) -> Result<Value, ActionCallError> {
-    if !may_admit_devices(workspaces.serving_certificate()) {
+    if !may_admit_devices(workspaces.device_cert()) {
         return Err(ActionCallError::refused(
             "this device may not admit another device; plan it from one of your own devices",
         ));

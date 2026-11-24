@@ -708,7 +708,7 @@ pub async fn hosts_shortcuts(workspaces: &Workspaces) -> bool {
 /// Whether this device is one of its person's always-on servers: it has an
 /// entry among their servers that was not retired.
 async fn always_on(workspaces: &Workspaces) -> bool {
-    let person = workspaces.serving_certificate().user_public_key;
+    let person = workspaces.device_cert().user_public_key;
     server_entry(workspaces, &person)
         .await
         .is_some_and(|entry| !entry.retired)
@@ -747,7 +747,7 @@ pub async fn keep_done(
 /// Whether this device offers compute to its person's workspaces: the person's
 /// entry for it among their servers says so and it was not retired.
 pub async fn offers_compute(workspaces: &Workspaces) -> bool {
-    let person = workspaces.serving_certificate().user_public_key;
+    let person = workspaces.device_cert().user_public_key;
     server_entry(workspaces, &person)
         .await
         .is_some_and(|entry| entry.compute && !entry.retired)
@@ -755,7 +755,7 @@ pub async fn offers_compute(workspaces: &Workspaces) -> bool {
 
 /// This device's entry among the servers of the person whose root is `person`.
 async fn server_entry(workspaces: &Workspaces, person: &[u8; 32]) -> Option<servers::Server> {
-    let device = workspaces.serving_certificate().device_public_key;
+    let device = workspaces.device_cert().device_public_key;
     let servers = servers::read_on(workspaces, &person_workspace_id(person)).await;
     servers
         .ok()?
@@ -783,7 +783,7 @@ async fn eligibility(
     workspace: &str,
     turn: &Turn,
 ) -> Result<(), Ineligible> {
-    let device = workspaces.serving_certificate().device_public_key;
+    let device = workspaces.device_cert().device_public_key;
     match turn {
         Turn::Invocation { requester, job, .. } => {
             if !offers_compute(workspaces).await {
@@ -856,7 +856,7 @@ async fn eligibility(
                 // The workspace's host runs a member's shortcuts for them, as their saved proof
                 // says, so a member's automations go on while none of their own devices is up.
                 Some(Actor::Person(person)) => {
-                    let serving = hex::encode(workspaces.serving_certificate().user_public_key);
+                    let serving = hex::encode(workspaces.device_cert().user_public_key);
                     if *person != serving && !hosts_shortcuts(workspaces).await {
                         return Err(Ineligible::CannotActAs);
                     }

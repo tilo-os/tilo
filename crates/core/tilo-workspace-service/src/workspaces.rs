@@ -1780,14 +1780,6 @@ impl Workspaces {
         held.map_or_else(mode::Mode::default, |held| held.current())
     }
 
-    /// The certificate this host serves its workspaces with: its own, or the
-    /// one a workspace it opened was made with, when a build renamed the
-    /// host's since (see [`record_authority::host_serving`]).
-    #[must_use]
-    pub fn serving_certificate(&self) -> &DeviceCert {
-        &self.inner.host.cert
-    }
-
     /// Stop governing and serving `workspace`: its workspace admits nobody from
     /// now on, which ends its sessions here, and the host leaves it closed
     /// when it opens again. Its files stay on disk. A device releases a

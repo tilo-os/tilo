@@ -293,7 +293,7 @@ impl Workspaces {
             (next.devices, next.users) = (of.devices, of.users);
         }
         if let Ok(record) = devices {
-            let of = BlockedKeys::revoking(&record, &self.serving_certificate().user_public_key);
+            let of = BlockedKeys::revoking(&record, &self.device_cert().user_public_key);
             (next.certified, next.revocations, next.confined) =
                 (of.certified, of.revocations, of.confined);
         }

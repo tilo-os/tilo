@@ -190,7 +190,7 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     let server_device = server
         .workspaces()
         .unwrap()
-        .serving_certificate()
+        .device_cert()
         .device_public_key;
     match postcard::from_bytes::<NeighbourMsg>(&ask).unwrap() {
         NeighbourMsg::DocumentContentWant {

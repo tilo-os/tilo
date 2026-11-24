@@ -597,7 +597,7 @@ mod tests {
                 let workspaces = server.workspaces().unwrap().clone();
                 let lounge = workspaces.create("Lounge").await.unwrap().workspace;
                 let other = workspaces.create("Elsewhere").await.unwrap().workspace;
-                let governor = workspaces.serving_certificate().clone();
+                let governor = workspaces.device_cert().clone();
                 workspaces
                     .author_workspace_document(&lounge, &governor, ("so.tilo.notes", ""), |doc| {
                         doc.put(automerge::ROOT, "picture", picture)

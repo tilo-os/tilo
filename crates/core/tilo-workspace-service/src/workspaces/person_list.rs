@@ -100,7 +100,7 @@ impl Workspaces {
     pub async fn kept_at(&self, workspace: &str) -> Option<KeptAt> {
         let governed = self.workspace(workspace).await.ok()?;
         let governed = governed.lock().await;
-        let own = self.serving_certificate().device_public_key;
+        let own = self.device_cert().device_public_key;
         let hosts = governed.peer().governance().keeping_devices();
         drop(governed);
         // The device keeping it: this one when it does, else the host of this member copy.
@@ -142,7 +142,7 @@ impl Workspaces {
     pub async fn list_known_for(&self, person: &[u8; 32]) -> bool {
         let their_own = person_workspace_id(person);
         let mut known: Vec<(String, String)> = Vec::new();
-        if *person == self.serving_certificate().user_public_key {
+        if *person == self.device_cert().user_public_key {
             // What this host governs is all theirs.
             known.extend(
                 self.list()

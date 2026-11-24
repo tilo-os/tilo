@@ -114,9 +114,9 @@ impl Home {
 /// host that keeps the workspace's keys and is not this device.
 async fn named_in(own: &ServiceWorkspaces, cert: &DeviceCert) -> Option<Device> {
     let person = tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key);
-    // This device's workspace service serves under a key of its own beside the device's: it is a
-    // host of the workspace too, and never this device's server.
-    let service = own.copies().serving_certificate().device_public_key;
+    // This device's workspace service serves as the device's own key, which is a host of the
+    // workspace too, and never this device's server.
+    let service = own.copies().device_cert().device_public_key;
     let hosts: Vec<_> = own
         .copies()
         .hosts(&person)

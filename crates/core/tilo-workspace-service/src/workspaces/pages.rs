@@ -1244,7 +1244,7 @@ impl Workspaces {
                 .unwrap_or_default()
                 .members;
             let own = self.own().is_some();
-            let mine = hex::encode(self.serving_certificate().user_public_key);
+            let mine = hex::encode(self.device_cert().user_public_key);
             let mut showing = Showing {
                 name,
                 members: 0,

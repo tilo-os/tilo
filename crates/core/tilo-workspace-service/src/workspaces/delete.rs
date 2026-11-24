@@ -56,7 +56,7 @@ impl Workspaces {
         let owner = self
             .own()
             .and_then(|own| own.owner_of(workspace))
-            .unwrap_or_else(|| self.serving_certificate().user_public_key);
+            .unwrap_or_else(|| self.device_cert().user_public_key);
         let governed = self
             .inner
             .workspaces

@@ -93,9 +93,20 @@ async fn the_host_answers_its_devices_and_refuses_the_rest() {
     .expect("the invocation runs");
     assert_eq!(receipt.invocation, id);
     assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
+    // The execution the link minted is the link's, not what the app action server reads of who
+    // asked: compare the caller itself.
+    let seen: Vec<_> = actions
+        .callers
+        .lock()
+        .unwrap()
+        .iter()
+        .map(Caller::kept)
+        .collect();
     assert_eq!(
-        *actions.callers.lock().unwrap(),
-        [Caller::authenticated(user.user_pk, a.device_pubkey()).in_workspace(WS.to_string())],
+        seen,
+        [Caller::authenticated(user.user_pk, a.device_pubkey())
+            .in_workspace(WS.to_string())
+            .kept()],
         "the app action server sees the device that asked, nobody else"
     );
 
@@ -183,9 +194,12 @@ async fn a_request_addressed_to_another_device_is_passed_on() {
     .expect("the page runs the invocation");
     assert_eq!(receipt.invocation, id);
     assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
+    let seen: Vec<_> = held.callers.lock().unwrap().iter().map(Caller::kept).collect();
     assert_eq!(
-        *held.callers.lock().unwrap(),
-        [Caller::authenticated(user.user_pk, a.device_pubkey()).in_workspace(WS.to_string())],
+        seen,
+        [Caller::authenticated(user.user_pk, a.device_pubkey())
+            .in_workspace(WS.to_string())
+            .kept()],
         "the page runs the request as the device that signed it"
     );
 

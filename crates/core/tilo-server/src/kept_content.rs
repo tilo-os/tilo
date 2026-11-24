@@ -403,7 +403,7 @@ impl KeptContent {
     /// store of `store`, asking and answered as the device they are certified as.
     #[must_use]
     pub fn new(workspaces: Workspaces, store: Arc<WorkspaceStores>) -> Arc<Self> {
-        let device = workspaces.serving_certificate().device_public_key;
+        let device = workspaces.device_cert().device_public_key;
         Arc::new(Self {
             workspaces,
             device,

@@ -484,7 +484,7 @@ mod tests {
         let server = serving_workspace(state.path()).await;
         let workspaces = server.workspaces().unwrap();
         let workspace = workspaces.create("Old Files").await.unwrap().workspace;
-        let governor = workspaces.serving_certificate();
+        let governor = workspaces.device_cert();
         let stores = server.content();
         let store = stores.get(&workspace).unwrap();
         let clear = b"legacy file kept by this workspace";
@@ -586,7 +586,7 @@ mod tests {
         let server = serving_workspace(state.path()).await;
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Notes").await.unwrap().workspace;
-        let governor = workspaces.serving_certificate().clone();
+        let governor = workspaces.device_cert().clone();
         let stores = server.content();
         let store = stores.get(&workspace).unwrap();
         let picture = store.put(b"a picture written long ago").unwrap();
@@ -686,7 +686,7 @@ mod tests {
         let server = serving_workspace(state.path()).await;
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-        let governor = workspaces.serving_certificate().clone();
+        let governor = workspaces.device_cert().clone();
         let host_device = governor.device_public_key;
         let stores = server.content();
         let store = stores.get(&workspace).unwrap();

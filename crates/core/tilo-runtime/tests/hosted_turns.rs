@@ -134,7 +134,7 @@ async fn viewer(host: &Host) -> (Caller, String, host::Member) {
     workspaces
         .add_member(
             host.workspace(),
-            workspaces.serving_certificate(),
+            workspaces.device_cert(),
             AddMemberRequest {
                 request_id: *blake3::hash(format!("Bo {now}").as_bytes()).as_bytes(),
                 user_public_key: root.verifying_key().to_bytes(),

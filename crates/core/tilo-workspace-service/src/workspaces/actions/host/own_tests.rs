@@ -94,7 +94,7 @@ pub(super) async fn let_in(workspaces: &Workspaces, home: &str, person: [u8; 32]
     workspaces
         .issue(
             home,
-            workspaces.serving_certificate(),
+            workspaces.device_cert(),
             IssueInvitationRequest {
                 request_id: rand::random(),
                 role: Role::Viewer,
@@ -2028,7 +2028,7 @@ async fn subscribe(
     let agents = crate::registry::AgentRegistry::default();
     let environments = crate::environment::EnvironmentRegistry::default();
     let blocked = std::sync::RwLock::new(crate::workspaces::blocked::BlockedKeys::default());
-    let own_user = workspaces.serving_certificate().user_public_key;
+    let own_user = workspaces.device_cert().user_public_key;
     let trust = crate::workspace_access::ServerTrust {
         revocations: &revocations,
         policy: &policy,
@@ -2237,7 +2237,7 @@ async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device
     workspaces
         .set_member_administrator(
             &home,
-            workspaces.serving_certificate(),
+            workspaces.device_cert(),
             rand::random(),
             ada_person,
             None,

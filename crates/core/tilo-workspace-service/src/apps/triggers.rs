@@ -762,7 +762,7 @@ impl Runner {
     /// Arm the shortcuts this device's person saved in the workspaces it keeps now, and every
     /// member's on a device that runs them all ([`crate::work::hosts_shortcuts`]).
     pub async fn arm(&mut self) {
-        let person = hex::encode(self.workspaces.serving_certificate().user_public_key);
+        let person = hex::encode(self.workspaces.device_cert().user_public_key);
         let hosts = crate::work::hosts_shortcuts(&self.workspaces).await;
         let described = self.workspaces.described().await;
         let mut revocations = BTreeMap::new();
@@ -1157,7 +1157,7 @@ impl Runner {
 
     /// Fire the file-changed triggers on what settled in the folders they watch.
     fn files(&mut self, now_ms: i64) {
-        let device = self.workspaces.serving_certificate().device_public_key;
+        let device = self.workspaces.device_cert().device_public_key;
         let changes: Vec<FolderChange> = self.folders.changes();
         let mut firings = Vec::new();
         for change in &changes {
@@ -1195,7 +1195,7 @@ impl Runner {
         let Some(before) = self.joined.replace(now) else {
             return;
         };
-        let device = self.workspaces.serving_certificate().device_public_key;
+        let device = self.workspaces.device_cert().device_public_key;
         let now_ms = tilo_clock::unix_now_ms_i64();
         let mut firings = Vec::new();
         for (workspace, name) in names.iter().filter(|(id, _)| !before.contains(*id)) {

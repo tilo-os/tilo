@@ -279,7 +279,7 @@ async fn a_device_holding_a_workspace_answers_content_as_the_device_it_joined_as
             signer: Arc::new(key.clone()),
         }));
     assert_eq!(
-        member.workspaces().serving_certificate().device_public_key,
+        member.workspaces().device_cert().device_public_key,
         cert.device_public_key,
         "the service signs as the one device it is"
     );
@@ -297,7 +297,7 @@ async fn a_device_holding_a_workspace_answers_content_as_the_device_it_joined_as
     catching_up(&copies, workspace_id).await;
 
     // The serving device asks for the picture, naming itself as every ask does.
-    let serving_device = serving.workspaces().serving_certificate().device_public_key;
+    let serving_device = serving.workspaces().device_cert().device_public_key;
     let ask = postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
         requester: tilo_peer_state::peer_handle(&serving_device),
         app_id: "so.tilo.photos".to_owned(),
@@ -306,8 +306,8 @@ async fn a_device_holding_a_workspace_answers_content_as_the_device_it_joined_as
         have: Vec::new(),
     })
     .unwrap();
-    // What the member answers names the device its link signs as, not the key its service runs
-    // under: the serving device admits the answer for its link's device alone.
+    // What the member answers names the device its link proved: the one key it signs its
+    // records and answers its content with.
     let answered = copies.content_answer(&workspace, &serving_device, &ask);
     assert!(!answered.is_empty(), "the member answers what it keeps");
     for frame in answered {
@@ -319,7 +319,7 @@ async fn a_device_holding_a_workspace_answers_content_as_the_device_it_joined_as
         assert_eq!(
             responder,
             tilo_peer_state::peer_handle(&cert.device_public_key),
-            "the answer is addressed from the device key, not the service's"
+            "the answer is addressed from the device key"
         );
     }
     let mut answers = serving.workspaces().content_answers();
@@ -1115,7 +1115,7 @@ async fn a_serving_devices_write_reaches_a_member_copys_followers() {
         &workspace,
         ("test.app", "record"),
         ("value", "from-the-serving-device"),
-        serving.workspaces().serving_certificate().user_public_key,
+        serving.workspaces().device_cert().user_public_key,
     )
     .await;
     serving

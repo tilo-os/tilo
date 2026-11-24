@@ -1019,7 +1019,7 @@ impl Workspaces {
             return Ok(sent);
         }
         let lease = tilo_peer_state::mail_send_lease(&message);
-        let device = self.serving_certificate().clone();
+        let device = self.device_cert().clone();
         let now = system_time(tilo_clock::unix_now_ns());
         let claimed = self
             .author_own_workspace_state(workspace, &device, |peer| {

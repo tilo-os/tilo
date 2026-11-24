@@ -446,7 +446,7 @@ pub async fn list_workspace(
     name: &str,
     hint: &tilo_peer_state::join::TransportHint,
 ) {
-    let person = writer.serving_certificate().user_public_key;
+    let person = writer.device_cert().user_public_key;
     let own = tilo_server_protocol::servers::person_workspace_id(&person);
     let kept = super::person_list::KeptAt {
         device: hint.host.device_public_key,
@@ -467,7 +467,7 @@ pub async fn list_workspace(
 /// Whether the person's list of workspaces, as `reader`'s copy of their workspace has it, names
 /// `workspace`: `false` while the list has not reached it.
 pub async fn lists(reader: &Workspaces, workspace: &str) -> bool {
-    let person = reader.serving_certificate().user_public_key;
+    let person = reader.device_cert().user_public_key;
     super::person_workspace::read_on::<tilo_user_identity::WorkspaceList>(
         reader,
         &tilo_server_protocol::servers::person_workspace_id(&person),

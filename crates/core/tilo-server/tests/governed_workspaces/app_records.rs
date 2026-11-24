@@ -226,7 +226,7 @@ async fn the_host_lets_go_of_content_no_record_of_the_workspace_names() {
 
     // The note named one picture, then another: both versions are the
     // record's history.
-    let governor = workspaces.serving_certificate().clone();
+    let governor = workspaces.device_cert().clone();
     for picture in [earlier.clone(), format!("tilo.content:{current}")] {
         workspaces
             .author_workspace_document(&hosted.workspace, &governor, (OPENED, ""), |doc| {

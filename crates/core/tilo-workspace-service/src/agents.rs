@@ -1055,7 +1055,7 @@ impl ServerAgents {
     /// removed since takes its triggers with it.
     async fn read_answering(&self, known: &mut Option<BTreeMap<String, BTreeSet<String>>>) {
         let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let me = self.workspaces.serving_certificate().user_public_key;
+        let me = self.workspaces.device_cert().user_public_key;
         let mut answering = Vec::new();
         let mut now = BTreeMap::new();
         let offers = crate::work::offers_compute(&self.workspaces).await;

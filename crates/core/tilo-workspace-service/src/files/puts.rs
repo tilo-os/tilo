@@ -107,7 +107,7 @@ impl Puts {
         if let Some(tree) = self.held.lock().await.get(&workspace) {
             return Ok(Arc::clone(tree));
         }
-        let certificate = self.workspaces.serving_certificate();
+        let certificate = self.workspaces.device_cert();
         let keys = (certificate.device_public_key, certificate.user_public_key);
         let kept_at = self.root.join(workspace.to_string());
         let tree = crate::files::start(&self.workspaces, workspace, &kept_at, keys, None, None)

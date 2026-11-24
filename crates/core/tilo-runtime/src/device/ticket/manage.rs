@@ -361,11 +361,11 @@ impl Fleet {
             .and_then(|(workspaces, id)| workspaces.workspace(id))
             .map(|described| described.name)
             .unwrap_or_default();
-        // The session a computer enters over proves the certificate the workspace service runs
-        // under, which is the device's own unless the service has one of its own.
+        // The session a computer enters over proves the certificate the workspace service
+        // serves under: the device's own, whose one key its service signs with.
         let server_cert = self.workspaces.as_ref().map_or_else(
             || self.cert.clone(),
-            |service| service.copies().serving_certificate().clone(),
+            |service| service.copies().device_cert().clone(),
         );
         Ok(tilo_api::daemon::enter::founded_entry(
             &self.endpoint,

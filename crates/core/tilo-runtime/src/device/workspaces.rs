@@ -1226,8 +1226,8 @@ impl ServiceWorkspaces {
         Self::open_for_test_as(dir, key, cert, server, itself).await
     }
 
-    /// [`Self::open_for_test`], with `itself` the identity its service acts as, when it acts as
-    /// its device rather than under a key of its own.
+    /// [`Self::open_for_test`], with `itself` the identity its service acts as: the device's own,
+    /// carrying the revocations a server holds.
     async fn open_for_test_as(
         dir: &Path,
         key: &SigningKey,

@@ -161,7 +161,7 @@ impl Workspaces {
     /// The workspace `person`'s region is kept in, when this device is one of theirs: a
     /// device of anybody else's keeps none of it.
     fn region_workspace(&self, person: &[u8; 32]) -> Option<String> {
-        (&self.serving_certificate().user_public_key == person).then(|| person_workspace_id(person))
+        (&self.device_cert().user_public_key == person).then(|| person_workspace_id(person))
     }
 
     /// What `person` has of their region, as this device reads it; none where this device

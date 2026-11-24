@@ -319,7 +319,7 @@ impl ServerMachine {
     }
 
     fn device(&self) -> &DeviceCert {
-        self.workspaces.serving_certificate()
+        self.workspaces.device_cert()
     }
 
     fn admin(&self) -> String {

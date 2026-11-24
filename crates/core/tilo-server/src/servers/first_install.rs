@@ -245,7 +245,7 @@ struct EntryChanges {
 impl EntryChanges {
     fn of(workspaces: &Workspaces) -> Self {
         Self {
-            admin: person_workspace_id(&workspaces.serving_certificate().user_public_key),
+            admin: person_workspace_id(&workspaces.device_cert().user_public_key),
             writes: workspaces.document_writes(),
             governance: workspaces.governance_changes(),
         }

@@ -305,7 +305,7 @@ impl Workspaces {
         let transport = vec![self.invitation_hint(workspace, address)?];
         let mut log = workspace.collaboration().clone();
         let issued = log.issue_as(
-            &workspace.governed(self.serving_certificate()),
+            &workspace.governed(self.device_cert()),
             administrator,
             request,
             makes_administrator,
@@ -2163,7 +2163,7 @@ impl JoinWorkspaces for Workspaces {
             let mut replica = shared.lock();
             let mut held = HeldWorkspace::new(
                 &self.inner.host.key,
-                self.serving_certificate(),
+                self.device_cert(),
                 &mut locked,
                 &mut replica,
                 None,

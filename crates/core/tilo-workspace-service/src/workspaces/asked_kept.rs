@@ -63,7 +63,7 @@ impl AskedKeeping for KeptInRecords {
 
 /// Write `change` into its workspace's record, as this host.
 async fn write(workspaces: &Workspaces, change: Change) -> Result<(), String> {
-    let host = workspaces.serving_certificate().clone();
+    let host = workspaces.device_cert().clone();
     let workspace = change.workspace().to_owned();
     workspaces
         .author_workspace_document(&workspace, &host, (PROVIDER, RECORD), |doc| {

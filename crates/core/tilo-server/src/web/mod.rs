@@ -513,7 +513,7 @@ impl Server {
         // Its entry among its person's servers says whether it serves one: read before
         // binding, so a server its person turned off opens no port at all.
         if let Some(workspaces) = self.workspaces() {
-            let cert = workspaces.serving_certificate().clone();
+            let cert = workspaces.device_cert().clone();
             if let Ok(servers) = crate::servers::read(workspaces).await
                 && let Some(entry) = servers.active(&cert.device_public_key)
             {

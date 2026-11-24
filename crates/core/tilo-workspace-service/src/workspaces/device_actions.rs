@@ -1193,7 +1193,7 @@ impl super::Workspaces {
         {
             return member.cert.device_public_key;
         }
-        self.serving_certificate().device_public_key
+        self.device_cert().device_public_key
     }
 
     /// Claim the lease `id` of `workspace` as this device for `ttl_ms`, or let go

@@ -37,8 +37,7 @@
 //! store beside their devices and workspace list: the servers restart into an
 //! update one at a time under a lease of this workspace (`tilo_server::rollout`),
 //! exactly-once work that only a governed workspace orders, and a server takes
-//! no part in the person's store, whose link knows a device by its endpoint id
-//! while a server's endpoint runs on a key of its own.
+//! no part in the person's own store.
 //!
 //! Which workspaces a server holds, and how, is each workspace's governance
 //! alone: its holders list names the server, as a store or a key holder, and
@@ -1096,7 +1095,7 @@ fn validate_label(label: &str) -> Result<String, Refusal> {
 /// # Errors
 /// The action was refused, or the document could not be written.
 pub async fn apply(workspaces: &Workspaces, action: Invoke<Servers>) -> Result<(), String> {
-    let admin = person_workspace_id(&workspaces.serving_certificate().user_public_key);
+    let admin = person_workspace_id(&workspaces.device_cert().user_public_key);
     apply_on(workspaces, &admin, action).await
 }
 
@@ -1138,7 +1137,7 @@ pub async fn admit_planned(
 /// # Errors
 /// The document could not be read.
 pub async fn read(workspaces: &Workspaces) -> Result<Servers, String> {
-    let admin = person_workspace_id(&workspaces.serving_certificate().user_public_key);
+    let admin = person_workspace_id(&workspaces.device_cert().user_public_key);
     read_on(workspaces, &admin).await
 }
 
@@ -1210,7 +1209,7 @@ pub async fn enroll(
     if !holds_person_workspace(workspaces).await {
         return Err("this server holds no Servers workspace yet".into());
     }
-    let cert = workspaces.serving_certificate().clone();
+    let cert = workspaces.device_cert().clone();
     enter(workspaces, &cert, endpoint, relay).await
 }
 
@@ -1227,7 +1226,7 @@ pub async fn admit(
     server: &DeviceCert,
     endpoint: &iroh_base::EndpointAddr,
 ) -> Result<(), String> {
-    if server.user_public_key != workspaces.serving_certificate().user_public_key
+    if server.user_public_key != workspaces.device_cert().user_public_key
         || !server.capabilities.can_own_workspaces
     {
         return Err("only a server of this person is taken in among their servers".into());

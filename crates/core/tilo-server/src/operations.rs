@@ -139,7 +139,7 @@ impl Controls {
         carry_out(
             &self.state_root,
             Some(&self.workspaces),
-            self.workspaces.serving_certificate(),
+            self.workspaces.device_cert(),
             operation,
             self.wait,
         )

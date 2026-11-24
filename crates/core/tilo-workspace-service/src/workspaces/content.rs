@@ -440,7 +440,7 @@ impl Workspaces {
                 return Ok(false);
             }
             replica.workspace().check_workspace_administration(
-                self.serving_certificate().device_public_key,
+                self.device_cert().device_public_key,
                 now,
             )?;
             let mut candidate = replica.clone();
@@ -560,7 +560,7 @@ impl Workspaces {
         // The asker of a surface is this host: a piece is kept when it is
         // addressed to the host's own device, whoever among the members
         // answered with it.
-        let device = self.serving_certificate().device_public_key;
+        let device = self.device_cert().device_public_key;
         let arrived = self.inner.content.surfaces.lock_recover().piece(
             &device,
             frame,
@@ -637,7 +637,7 @@ impl Workspaces {
     /// for it are decided once a member answers with it
     /// ([`crate::surfaces::arrivals`]). The number of devices it reached.
     pub async fn ask_surface(&self, workspace: &str, app: &str, hash: &str) -> usize {
-        let device = self.serving_certificate().device_public_key;
+        let device = self.device_cert().device_public_key;
         let asked = self.inner.content.surfaces.lock_recover().ask(
             &device,
             (),
@@ -773,7 +773,7 @@ impl Workspaces {
     fn answer_from_kept(&self, workspace: &str, asker: &[u8; 32], body: &[u8]) -> Vec<Vec<u8>> {
         // The answer names this device, the one its link proves: one key signs and answers
         // everywhere.
-        let device = self.serving_certificate().device_public_key;
+        let device = self.device_cert().device_public_key;
         neighbour_wire::content::answer(&device, asker, body, |app_id, _, hash| {
             self.app_file(workspace, hash)
                 .or_else(|| {

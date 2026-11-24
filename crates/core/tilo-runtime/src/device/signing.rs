@@ -495,7 +495,7 @@ pub fn answer_sign_in(
 /// service read them.
 pub(crate) fn devices_seen(workspaces: &ServiceWorkspaces) -> tilo_identity::sources::DevicesSeen {
     let copies = workspaces.copies();
-    let person = copies.serving_certificate().user_public_key;
+    let person = copies.device_cert().user_public_key;
     let keys = copies.blocked_keys();
     tilo_identity::sources::DevicesSeen::of_host(
         person,

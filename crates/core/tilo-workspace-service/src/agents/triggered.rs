@@ -388,7 +388,7 @@ pub fn started_here(
     place: &Where,
 ) -> crate::work::Turn {
     turn_of(agent, place).started(
-        workspaces.serving_certificate().device_public_key,
+        workspaces.device_cert().device_public_key,
         tilo_clock::unix_now_ms_i64(),
     )
 }

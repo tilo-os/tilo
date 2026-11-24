@@ -960,20 +960,19 @@ pub struct RouteContentService {
 /// asked again by whoever holds the service ([`RouteContent::retry`]), once the patience of its
 /// last answer passed.
 ///
-/// `device` is this device's own certificate key, which every want names: the device answering
-/// refuses an ask that names another ([`neighbour_wire::content::answer`]), and a member copy's
-/// serving certificate is the device it joined, not its own ([`Workspaces::serving_certificate`]).
+/// A want names this device's own certificate key, the one it is certified as: the device
+/// answering refuses an ask that names another
+/// ([`neighbour_wire::content::answer`]), and one key serves, answers and asks everywhere.
 #[must_use]
 pub fn routes_content(
     workspaces: &Workspaces,
     shelf: Arc<dyn ContentShelf>,
-    device: [u8; 32],
 ) -> RouteContentService {
     let content = RouteContent::new(
         Arc::clone(&shelf),
         Arc::new(MemberPeers {
             workspaces: workspaces.clone(),
-            device,
+            device: workspaces.device_cert().device_public_key,
         }),
     );
     workspaces.serve_content(Arc::new(ShelfContent(shelf)));
@@ -997,8 +996,8 @@ impl WorkspaceContent for ShelfContent {
 /// The workspaces' links as the route of their records' content.
 struct MemberPeers {
     workspaces: Workspaces,
-    /// This device's own certificate key, which a want names: a serving certificate may be the
-    /// one a workspace was made with, which is the device serving a member copy rather than this.
+    /// This device's own certificate key, which a want names, as the one key it serves,
+    /// answers and asks with.
     device: [u8; 32],
 }
 

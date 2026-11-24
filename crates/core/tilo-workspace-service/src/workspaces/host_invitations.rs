@@ -253,7 +253,7 @@ mod tests {
         let issued = workspaces
             .issue(
                 workspace,
-                workspaces.serving_certificate(),
+                workspaces.device_cert(),
                 asked(request_id, Role::Editor, Some(device.user_public_key)),
             )
             .await

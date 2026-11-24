@@ -54,7 +54,7 @@ impl Kept {
 /// The servers' document or the list could not be read, or a workspace could
 /// not be let go of or taken up again from its files.
 pub async fn keep_listed(workspaces: &Workspaces) -> Result<Kept, String> {
-    let own = workspaces.serving_certificate().clone();
+    let own = workspaces.device_cert().clone();
     let person = person_workspace_id(&own.user_public_key);
     if !holds_person_workspace(workspaces).await {
         return Ok(Kept::default());
@@ -139,7 +139,7 @@ async fn keep_again(workspaces: &Workspaces, workspace: &str) -> Result<bool, St
         return Ok(false);
     }
     let governed = GovernedWorkspace::open(path, workspaces.device_keys().as_ref())?;
-    let own = workspaces.serving_certificate().device_public_key;
+    let own = workspaces.device_cert().device_public_key;
     if governed.member.is_some()
         || !governed
             .peer()
@@ -180,7 +180,7 @@ impl Workspaces {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let person = person_workspace_id(&self.serving_certificate().user_public_key);
+        let person = person_workspace_id(&self.device_cert().user_public_key);
         runtime.spawn(async move {
             loop {
                 {

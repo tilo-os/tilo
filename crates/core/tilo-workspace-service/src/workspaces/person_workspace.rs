@@ -37,7 +37,7 @@ pub const NAME: &str = "Servers";
 pub async fn holds_person_workspace(workspaces: &Workspaces) -> bool {
     holds_person_workspace_of(
         workspaces,
-        &workspaces.serving_certificate().user_public_key,
+        &workspaces.device_cert().user_public_key,
     )
     .await
 }
@@ -45,7 +45,7 @@ pub async fn holds_person_workspace(workspaces: &Workspaces) -> bool {
 /// Whether this device holds `person`'s workspace: the workspace names this device among its
 /// holders.
 pub async fn holds_person_workspace_of(workspaces: &Workspaces, person: &[u8; 32]) -> bool {
-    let own = workspaces.serving_certificate();
+    let own = workspaces.device_cert();
     let Some(state) = workspaces.state(&person_workspace_id(person)).await else {
         return false;
     };
@@ -64,7 +64,7 @@ pub async fn holds_person_workspace_of(workspaces: &Workspaces, person: &[u8; 32
 /// # Errors
 /// Another device of the person keeps the workspace, or it could not be made.
 pub async fn found(workspaces: &Workspaces) -> Result<String, String> {
-    let person = workspaces.serving_certificate().user_public_key;
+    let person = workspaces.device_cert().user_public_key;
     let id = person_workspace_id(&person);
     if holds_person_workspace_of(workspaces, &person).await {
         return Ok(id);
@@ -121,7 +121,7 @@ pub fn genesis<R: Resource>(workspace: &str) -> Result<automerge::AutoCommit, St
 /// The id of this device's person's workspace.
 #[must_use]
 pub fn workspace_id(workspaces: &Workspaces) -> String {
-    person_workspace_id(&workspaces.serving_certificate().user_public_key)
+    person_workspace_id(&workspaces.device_cert().user_public_key)
 }
 
 /// Apply `action` to the resource `(app, name)` of this device's person's
@@ -151,7 +151,7 @@ pub async fn apply_on<R: Resource>(
     if workspaces.is_member(workspace).await? {
         return apply_as_member(workspaces, workspace, (app, name), action).await;
     }
-    let cert = workspaces.serving_certificate().clone();
+    let cert = workspaces.device_cert().clone();
     let start = Box::new(genesis::<R>(workspace)?);
     let applied = Box::pin(workspaces.author_workspace_document_from(
         (workspace, &cert),
@@ -179,7 +179,7 @@ async fn apply_as_member<R: Resource>(
     (app, name): (&str, &str),
     action: Invoke<R>,
 ) -> Result<(), String> {
-    let cert = workspaces.serving_certificate().clone();
+    let cert = workspaces.device_cert().clone();
     let start = Box::new(genesis::<R>(workspace)?);
     edit_as_member(workspaces, workspace, (app, name), Some(start), |doc| {
         invoke(doc, &cert, action)
@@ -379,7 +379,7 @@ where
     if workspaces.is_member(workspace).await? {
         return edit_as_member(workspaces, workspace, (app, name), None, edit).await;
     }
-    let cert = workspaces.serving_certificate().clone();
+    let cert = workspaces.device_cert().clone();
     let applied = workspaces
         .author_workspace_document_from((workspace, &cert), (app, name), None, edit)
         .await

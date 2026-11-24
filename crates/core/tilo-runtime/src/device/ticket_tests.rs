@@ -551,7 +551,7 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
         issuer
             .service()
             .workspaces()
-            .serving_certificate()
+            .device_cert()
             .device_public_key,
         "the ticket names the certificate the issuer's session proves as the one it enters"
     );

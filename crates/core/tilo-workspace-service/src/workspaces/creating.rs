@@ -61,7 +61,7 @@ impl super::Workspaces {
     /// Returns why the workspace could not be created, persisted or bound.
     pub async fn create(&self, name: &str) -> Result<WorkspaceSummary, String> {
         let summary = self.create_workspace(name, None).await?;
-        let person = self.serving_certificate().user_public_key;
+        let person = self.device_cert().user_public_key;
         self.list_for(&person, &summary.workspace, &summary.name)
             .await;
         Ok(summary)

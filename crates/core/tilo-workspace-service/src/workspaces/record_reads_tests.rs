@@ -953,7 +953,7 @@ async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() 
             Grantee::person(carol.clone()),
             crate::workspaces::server_controls::settings_node(
                 &own,
-                &workspaces.serving_certificate().device_public_key,
+                &workspaces.device_cert().device_public_key,
                 "server",
             ),
             KindSet::READ,

@@ -112,7 +112,7 @@ pub async fn reconcile_into(
         return let_go(workspaces).await;
     }
     let mut servers = read(workspaces).await?;
-    let cert = workspaces.serving_certificate().clone();
+    let cert = workspaces.device_cert().clone();
     let own = device_id(&cert.device_public_key);
     // Asked to retire, it retires its own entry while every holder still
     // reaches it, before it lets go of everything below.
@@ -158,7 +158,7 @@ pub async fn reconcile_into(
 /// retired while it was away learns it so: every device of its person refuses
 /// it, and its entry in their Servers workspace never reaches it.
 fn revoked(workspaces: &Workspaces) -> bool {
-    let cert = workspaces.serving_certificate();
+    let cert = workspaces.device_cert();
     workspaces
         .revocations()
         .is_revoked(&cert.user_public_key, &cert.device_public_key)
@@ -235,7 +235,7 @@ pub fn follow(
     state_root: PathBuf,
 ) -> tokio::task::JoinHandle<()> {
     let workspaces = workspaces.clone();
-    let admin = person_workspace_id(&workspaces.serving_certificate().user_public_key);
+    let admin = person_workspace_id(&workspaces.device_cert().user_public_key);
     let mut writes = workspaces.document_writes();
     let mut governance = workspaces.governance_changes();
     // A revocation of this device's key changes no document: it reaches the
@@ -316,7 +316,7 @@ async fn apply_now(
 /// stops serving its browsers at once, and one they turned back on serves them again.
 /// An entry that says nothing serves one, as its image comes.
 async fn apply_web(workspaces: &Workspaces) {
-    let cert = workspaces.serving_certificate().clone();
+    let cert = workspaces.device_cert().clone();
     let Ok(servers) = read(workspaces).await else {
         return;
     };

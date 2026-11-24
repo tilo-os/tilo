@@ -125,7 +125,7 @@ async fn found_again(
 /// What the old copy holds could not be kept, the workspace could not be
 /// founded again, or a record could not be written back.
 pub(super) async fn refound(workspaces: &Workspaces) -> Result<bool, String> {
-    let own = workspaces.serving_certificate().clone();
+    let own = workspaces.device_cert().clone();
     let admin = person_workspace_id(&own.user_public_key);
     let kept = kept_at(workspaces, &admin);
     if !found_again(workspaces, &kept, &own, &admin).await? {

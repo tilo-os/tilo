@@ -438,7 +438,6 @@ impl Peer {
             tilo_workspace_service::content::routes_content(
                 workspaces,
                 Arc::new(files::StoreShelf(Arc::clone(&self.store))),
-                key,
             )
         });
         let state = self.state.join(workspace.to_string());

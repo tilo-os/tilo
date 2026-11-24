@@ -614,7 +614,7 @@ async fn admitted_guest(
     workspaces
         .add_member(
             workspace,
-            workspaces.serving_certificate(),
+            workspaces.device_cert(),
             crate::workspaces::AddMemberRequest {
                 request_id: root.verifying_key().to_bytes(),
                 user_public_key: root.verifying_key().to_bytes(),

@@ -97,7 +97,7 @@ async fn two_devices_start_one_turn_and_exactly_one_answers_until_its_claim_goes
     let (desktop, laptop, workspace) = two_devices((one.path(), two.path()), laptop, 41).await;
     desktop.workspaces().run_agents(Arc::new(Keys(true)));
     laptop.workspaces().run_agents(Arc::new(Keys(true)));
-    let desktop_cert = desktop.workspaces().serving_certificate().clone();
+    let desktop_cert = desktop.workspaces().device_cert().clone();
     let (turn, lease) = turn_in("messages-1");
 
     let first = takes_turn(desktop.workspaces(), &workspace, &turn)
@@ -157,7 +157,7 @@ async fn only_a_device_that_acts_as_the_agent_claims_what_it_may_open() {
     );
     let reader = other.1.user_public_key;
     let (desktop, laptop, workspace) = two_devices((one.path(), two.path()), other, 42).await;
-    let desktop_cert = desktop.workspaces().serving_certificate().clone();
+    let desktop_cert = desktop.workspaces().device_cert().clone();
     let (turn, _) = turn_in("messages-2");
     assert_eq!(
         takes_turn(laptop.workspaces(), &workspace, &turn)

@@ -91,7 +91,7 @@ impl Workspaces {
     /// This device did not take them in, or a link could not carry them.
     pub async fn announce_revocations(&self, entries: Vec<RevocationEntry>) -> Result<(), String> {
         self.take_revocations(entries.clone()).await?;
-        let cert = self.serving_certificate().clone();
+        let cert = self.device_cert().clone();
         let entries = entries
             .into_iter()
             .filter(|entry| entry.user_public_key == cert.user_public_key)

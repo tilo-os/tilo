@@ -910,7 +910,7 @@ impl tilo_workspace_service::device_tickets::Issuer for Issuing {
         Box::pin(std::future::ready(Ok(tilo_device_identity::login::Entry {
             workspace: person_workspace_id(&self.cert.user_public_key),
             workspace_name: None,
-            server_cert: self.workspaces.serving_certificate().clone(),
+            server_cert: self.workspaces.device_cert().clone(),
             server: self.reached(),
             site: "https://tilo.test/".to_owned(),
             host_origin: "iroh:laptop".to_owned(),

@@ -304,7 +304,7 @@ pub fn decide(
 /// # Errors
 /// The resource could not be read.
 pub async fn read(workspaces: &Workspaces) -> Result<Floor, String> {
-    let admin = person_workspace_id(&workspaces.serving_certificate().user_public_key);
+    let admin = person_workspace_id(&workspaces.device_cert().user_public_key);
     let Some(bytes) = workspaces
         .resource_document(&admin, FLOOR.0, FLOOR.1)
         .await
@@ -322,8 +322,8 @@ pub async fn read(workspaces: &Workspaces) -> Result<Floor, String> {
 /// # Errors
 /// The action was refused, or the resource could not be written.
 pub async fn apply(workspaces: &Workspaces, action: Invoke<Floor>) -> Result<(), String> {
-    let admin = person_workspace_id(&workspaces.serving_certificate().user_public_key);
-    let cert = workspaces.serving_certificate().clone();
+    let admin = person_workspace_id(&workspaces.device_cert().user_public_key);
+    let cert = workspaces.device_cert().clone();
     workspaces
         .author_workspace_document(&admin, &cert, FLOOR, |doc| {
             let mut replica = Replica::<Floor>::from_doc(std::mem::take(doc));
@@ -349,7 +349,7 @@ pub async fn answer(
     secret_sync: &tilo_seal::SecretKey,
 ) -> Result<usize, String> {
     let floor = read(workspaces).await?;
-    let own = device_id(&workspaces.serving_certificate().device_public_key);
+    let own = device_id(&workspaces.device_cert().device_public_key);
     let pending: Vec<(Id, FloorRequest)> = floor
         .requests
         .iter()
@@ -359,7 +359,7 @@ pub async fn answer(
     if pending.is_empty() {
         return Ok(0);
     }
-    let person = workspaces.serving_certificate().user_public_key;
+    let person = workspaces.device_cert().user_public_key;
     if floor.verified_key(&person).is_none() {
         return Err("the floor key is not signed by the person's root".to_owned());
     }
@@ -405,7 +405,7 @@ pub async fn ask(
     workspaces: &Workspaces,
     asked: Asked,
 ) -> Result<Result<Vec<Approval>, String>, String> {
-    let own = device_id(&workspaces.serving_certificate().device_public_key);
+    let own = device_id(&workspaces.device_cert().device_public_key);
     let servers = super::read(workspaces).await?;
     let entry = servers
         .servers

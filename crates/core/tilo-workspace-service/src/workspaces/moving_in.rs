@@ -220,7 +220,7 @@ impl Workspaces {
     /// [`MovedIn::refused`] and the rest move.
     pub async fn move_in(&self, moving: MovingService) -> Result<MovedIn, String> {
         let key = ed25519_dalek::SigningKey::from_bytes(&moving.key);
-        let own = self.serving_certificate().clone();
+        let own = self.device_cert().clone();
         if key.verifying_key().to_bytes() != moving.cert.device_public_key
             || moving.cert.device_public_key != own.device_public_key
         {

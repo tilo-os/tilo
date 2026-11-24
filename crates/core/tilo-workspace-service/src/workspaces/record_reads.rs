@@ -302,8 +302,8 @@ impl RecordReads {
         {
             return Some(Err(refused()));
         }
-        // The device its person sits at is the one this service's member copies act as: the
-        // service's own key is no caller's.
+        // The device its person sits at is this service's own: one key is the device's, so the
+        // caller this device answers as is its person acting on it.
         let sitting = workspaces.signing_device().device();
         let mine = caller.user_public_key() == Some(&device.user_public_key)
             && caller.device_public_key() == Some(&sitting)

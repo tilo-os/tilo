@@ -353,7 +353,7 @@ fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
             .workspaces()
             .publish(
                 &lounge,
-                host.daemon().workspaces().serving_certificate(),
+                host.daemon().workspaces().device_cert(),
                 tilo_server_protocol::directory::Listing {
                     description: "Everyone".into(),
                     default_role: tilo_peer_state::join::Role::Viewer,
@@ -396,7 +396,7 @@ fn a_tree_a_computers_mount_founds_is_one_a_page_opens() {
             .workspaces()
             .publish(
                 &workspace,
-                host.daemon().workspaces().serving_certificate(),
+                host.daemon().workspaces().device_cert(),
                 tilo_server_protocol::directory::Listing {
                     description: "Everyone".into(),
                     default_role: tilo_peer_state::join::Role::Editor,

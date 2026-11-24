@@ -103,7 +103,7 @@ impl TicketedAgentKeys {
         workspace: WorkspaceId,
         agent: &Agent,
     ) -> Result<(DeviceCert, SigningKey), String> {
-        let device = hex::encode(workspaces.serving_certificate().device_public_key);
+        let device = hex::encode(workspaces.device_cert().device_public_key);
         let certificate = agent
             .runs_on
             .iter()
@@ -135,7 +135,7 @@ impl TicketedAgentKeys {
             return;
         }
         // A key its person revoked stays revoked: no ticket asks for it again.
-        let device = hex::encode(workspaces.serving_certificate().device_public_key);
+        let device = hex::encode(workspaces.device_cert().device_public_key);
         let revoked = agent
             .runs_on
             .iter()
@@ -157,7 +157,7 @@ impl TicketedAgentKeys {
             return;
         }
         let key = Self::key(&workspaces, workspace, &agent.id.0);
-        let here = workspaces.serving_certificate().device_label.clone();
+        let here = workspaces.device_cert().device_label.clone();
         let ask = AgentKeyAsk {
             workspace,
             agent: agent.id.0.clone(),

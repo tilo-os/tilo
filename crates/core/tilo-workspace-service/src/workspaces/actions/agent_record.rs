@@ -516,7 +516,7 @@ impl Workspaces {
         (name, value): (&str, String),
     ) -> Result<(), ActionCallError> {
         let acting = Acting::person(hex::encode(self.signing_device().cert.user_public_key));
-        let device = self.serving_certificate().device_public_key;
+        let device = self.device_cert().device_public_key;
         let invoke = declared(action)?.with_arguments(Map::from_iter([
             ("agent".to_owned(), Value::String(agent.to_owned())),
             ("device".to_owned(), Value::String(hex::encode(device))),

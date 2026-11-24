@@ -694,7 +694,7 @@ async fn a_workspace_the_desktop_founded_moves_here_and_is_the_persons_own() {
         .collect();
     assert_eq!(
         keeping,
-        [own.copies().serving_certificate().device_public_key]
+        [own.copies().device_cert().device_public_key]
     );
 
     let (again, _) = own

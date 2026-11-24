@@ -357,7 +357,7 @@ impl Inner {
 /// The device's own workspace service keeps the person's workspace itself.
 impl PersonStore for Workspaces {
     fn certificate(&self) -> DeviceCert {
-        self.serving_certificate().clone()
+        self.device_cert().clone()
     }
 
     fn held(&self) -> Answer<'_, bool> {
@@ -402,7 +402,7 @@ impl PersonStore for Workspaces {
                 )
                 .await;
             }
-            let cert = self.serving_certificate().clone();
+            let cert = self.device_cert().clone();
             let applied = Box::pin(self.author_workspace_document_from(
                 (&workspace, &cert),
                 (&app, &name),

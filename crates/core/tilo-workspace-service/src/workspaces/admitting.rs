@@ -419,7 +419,7 @@ impl Workspaces {
         invites: &mut std::collections::BTreeSet<[u8; 32]>,
         now: u64,
     ) -> Result<Result<Checked, Admitted>, CollaborationError> {
-        let answering = self.serving_certificate();
+        let answering = self.device_cert();
         let (remote_endpoint, proof_digest, redemption, name, way) = match admission {
             Admitting::Entry {
                 invitation,
@@ -582,7 +582,7 @@ impl Workspaces {
             }
             // The device is sent the workspace as the admission committed it.
             Way::Answered => workspace
-                .governed(self.serving_certificate())
+                .governed(self.device_cert())
                 .filled(bootstrap)
                 .map(Admitted::Joined),
         }
@@ -620,7 +620,7 @@ impl Workspaces {
             let mut replica = shared.lock();
             let mut held = HeldWorkspace::new(
                 key,
-                self.serving_certificate(),
+                self.device_cert(),
                 workspace,
                 &mut replica,
                 Some(keep),
@@ -678,7 +678,7 @@ impl Workspaces {
         }
         Ok(Admission {
             members,
-            writer: self.serving_certificate().clone(),
+            writer: self.device_cert().clone(),
         })
     }
 
