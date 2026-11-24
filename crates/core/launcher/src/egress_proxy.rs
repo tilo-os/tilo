@@ -79,8 +79,21 @@ impl EgressDecision {
         image_shipped: bool,
     ) -> Self {
         let declared = match net_mode {
-            // A manifest's `*.domain` is every name under it, not the domain.
-            "allowlist" => EgressPolicy::from_declared(manifest_hosts.iter().map(String::as_str)),
+            // A manifest's `*.domain` is every name under it, not the domain. A wildcard naming a
+            // public suffix would reach every name someone else may register, so it declares
+            // nothing; the manifest read refuses it, and an older manifest is narrowed here.
+            "allowlist" => EgressPolicy::from_declared(manifest_hosts.iter().filter_map(|host| {
+                match tilo_app_package::validate::public_suffix_wildcard(host) {
+                    Some(domain) => {
+                        tracing::warn!(
+                            %domain,
+                            "ignoring a declared wildcard whose domain is a public suffix"
+                        );
+                        None
+                    }
+                    None => Some(host.as_str()),
+                }
+            })),
             "host" => EgressPolicy::Any,
             "off" | "dns-only" => return EgressDecision::Blocked,
             // A spelling this launcher does not know is not a policy it can enforce.
@@ -1427,6 +1440,20 @@ mod tests {
                 assert!(
                     !policy.permits(host),
                     "a grant must not widen the declared domain past it: {host}"
+                );
+            }
+            // A wildcard naming a public suffix would reach every name someone else may register:
+            // it declares nothing, and a grant with the same spelling does not open it.
+            for suffix in ["*.co.uk", "*.github.io"] {
+                assert_eq!(
+                    EgressDecision::resolve("allowlist", &v(&[suffix]), &[], true),
+                    EgressDecision::Blocked,
+                    "{suffix} names a public suffix, not a service's domain"
+                );
+                assert_eq!(
+                    EgressDecision::resolve("allowlist", &v(&[suffix]), &v(&[suffix]), false),
+                    EgressDecision::Blocked,
+                    "a grant must not open a public-suffix wildcard"
                 );
             }
         }

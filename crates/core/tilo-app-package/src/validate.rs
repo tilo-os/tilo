@@ -240,6 +240,22 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     validate_target(m)
 }
 
+/// A manifest host entry's domain, when that domain is a public suffix
+/// (`*.co.uk`, `*.github.io`): every name under it is every name someone
+/// else may register, not a service's own hosts. The manifest read refuses
+/// such an entry, and the launcher's egress proxy drops it from the
+/// declaration through this same function.
+#[must_use]
+pub fn public_suffix_wildcard(entry: &str) -> Option<&str> {
+    let entry = entry.trim().trim_end_matches('.');
+    let domain = entry
+        .strip_prefix("*.")
+        .or_else(|| entry.strip_prefix('.'))?;
+    let lower = domain.to_ascii_lowercase();
+    let suffix = psl::suffix_str(&lower)?;
+    suffix.eq_ignore_ascii_case(domain).then_some(domain)
+}
+
 /// `[sandbox.net].hosts`: a host name, or `*.domain` for every name under a
 /// domain. The wildcard stands only as the leftmost label, covers only names
 /// under the domain (the domain itself needs its own entry), and cannot name
@@ -273,12 +289,9 @@ pub fn validate_net_hosts(net: &SandboxNet) -> Result<(), ManifestError> {
             if domain.is_empty() {
                 return Err(refuse("*. names no domain"));
             }
-            // Without a public suffix list in the tree, a one-label domain
-            // is the suffix case that can be recognised: `*.com` names no
-            // host of its own to run under.
-            if domain.split('.').count() < 2 {
+            if public_suffix_wildcard(host).is_some() {
                 return Err(refuse(
-                    "*.{a single label} is a public suffix; name the hosts under it",
+                    "the domain is a public suffix; name the hosts under it",
                 ));
             }
             if HostPattern::subdomains_only(domain).is_err() {

@@ -37,6 +37,8 @@ blake3.workspace = true
 getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 hex.workspace = true
+# Public suffix list: a manifest's `*.domain` cannot name a public suffix.
+psl = "2.1.190"
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true

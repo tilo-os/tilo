@@ -636,6 +636,8 @@ mod tests {
             // A public suffix names no host to run under.
             "\"*.com\"",
             "\"*.io\"",
+            "\"*.co.uk\"",
+            "\"*.github.io\"",
             "\"*.\"",
             // Address literals are not hosts.
             "\"10.0.0.5\"",
