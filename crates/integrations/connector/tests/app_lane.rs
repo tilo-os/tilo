@@ -28,7 +28,7 @@ use tilo_actions::remote::call::{
     BridgedCall, CallAudio, CallLink as SaidLink, CallReport as SaidReport,
 };
 use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage, TestProvider, frame_line};
-use tilo_connector::app_lane::{AppLane, CallSetup};
+use tilo_live::app_call::{AppLane, CallSetup};
 use tilo_live::live::Track;
 use tilo_live::live_session::{Join, LiveSession};
 use tilo_live::presence::{Board, Call, Own};
@@ -65,18 +65,30 @@ fn local_relay() -> Relay {
 }
 
 fn setup(relay: Relay, keys: ContentKeys) -> CallSetup {
+    // The session the device's daemon holds, as a local relay serves it here.
+    let session = LiveSession::local(
+        &relay,
+        &Join {
+            scope: Scope::workspace(WORKSPACE.to_owned()),
+            device: BRIDGE,
+            keys: keys.clone().into(),
+            roster: Roster::new([GRACE, BRIDGE]),
+            publish: true,
+            presence: true,
+        },
+    )
+    .expect("a local live session");
+    session.set_calls(BTreeMap::new(), BTreeMap::new());
+    session.set_call_keys(CALL, 0, keys);
     CallSetup {
-        relay,
         workspace: WORKSPACE.to_owned(),
         device: BRIDGE,
         device_name: "home-server".to_owned(),
         person: Some("aa".repeat(32)),
         service: "discord".to_owned(),
-        roster: Roster::new([GRACE, BRIDGE]),
-        keys: keys.clone().into(),
-        rules: BTreeMap::new(),
-        persons: BTreeMap::new(),
-        call_keys: Some((CALL.to_owned(), 0, keys.into())),
+        channel: CALL.to_owned(),
+        generation: 0,
+        session: Arc::new(session),
     }
 }
 
@@ -357,7 +369,7 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
     let roster = Roster::new([GRACE, BRIDGE]);
     let (server, client) = UnixStream::pair().unwrap();
     let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
-    let out: tilo_connector::app_lane::Out = {
+    let out: tilo_live::app_call::Out = {
         let written = Arc::clone(&written);
         Arc::new(move |line: String| {
             let mut stream = written.lock().unwrap();
@@ -542,4 +554,93 @@ fn a_pair_for_another_call_than_the_one_admitted_is_refused() {
             .is_some_and(|why| why.contains(CALL) && why.contains("another-call")),
         "the refusal names both calls: {refusal}"
     );
+}
+
+#[test]
+fn the_app_is_never_handed_a_key() {
+    let runtime = runtime();
+    let _entered = runtime.enter();
+    let relay = local_relay();
+    let keys = keys();
+    let roster = Roster::new([GRACE, BRIDGE]);
+    let (server, client) = UnixStream::pair().unwrap();
+    let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
+    let out: tilo_live::app_call::Out = {
+        let written = Arc::clone(&written);
+        Arc::new(move |line: String| {
+            let mut stream = written.lock().unwrap();
+            let _ = writeln!(stream, "{line}");
+            let _ = stream.flush();
+        })
+    };
+    let lane = AppLane::new(Ok(setup(relay.clone(), keys.clone())), out);
+    serve(server, lane, written);
+
+    let app = App::of(client);
+    let mut grace = Member::new(&relay, &keys, &roster);
+    app.ask(|correlation| RemoteActionMessage::CallCarryRequest {
+        correlation,
+        pair: Some(BridgedCall {
+            outside: OUTSIDE.into(),
+            tilo: CALL.into(),
+        }),
+    });
+    app.ask(|correlation| RemoteActionMessage::CallReport {
+        correlation,
+        report: SaidReport {
+            calls: vec![tilo_actions::remote::call::OutsideCall {
+                call: OUTSIDE.into(),
+                people: vec![tilo_actions::remote::call::OutsidePerson {
+                    account: "7001".into(),
+                    name: "Dana".into(),
+                    ..Default::default()
+                }],
+            }],
+            link: SaidLink::Joined {
+                call: OUTSIDE.into(),
+            },
+            status: String::new(),
+        },
+    });
+    // A frame the workspace says reaches the app opened: the frame itself, never a key.
+    grace.pump();
+    grace.speak(&[7, 8, 9]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !app.said(&[7, 8, 9]) {
+        grace.pump();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the frame reached the app"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Everything the app was ever handed is one of the call lane's own answers or words: no
+    // key, epoch or sealed body is among them.
+    for line in app.lines.lock().unwrap().iter() {
+        let message = line
+            .get("message")
+            .and_then(serde_json::Value::as_object)
+            .expect("every line is one action-wire message");
+        let kind = message.keys().next().expect("a message names its kind");
+        assert!(
+            matches!(
+                kind.as_str(),
+                "CallCarryResponse" | "CallReportResponse" | "CallStatus" | "CallSaid"
+            ),
+            "the app is handed only call words, not {kind}"
+        );
+        let text = serde_json::to_string(line).unwrap();
+        for forbidden in [
+            "\"key\"",
+            "\"keys\"",
+            "\"sealed\"",
+            "\"epoch\"",
+            "\"secret\"",
+        ] {
+            assert!(
+                !text.contains(forbidden),
+                "the app is handed no key material, found {forbidden} in {text}"
+            );
+        }
+    }
 }

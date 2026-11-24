@@ -35,6 +35,11 @@ pub mod carrier;
 #[cfg(feature = "live_session")]
 pub mod grant;
 
+/// The call lane of one app's connection, carried into a workspace's call through the session
+/// the device's daemon holds.
+#[cfg(feature = "app_call")]
+pub mod app_call;
+
 /// What capture and playout need of one workspace's live session, wherever it runs: the
 /// daemon holds it, a desktop reaches it over its link, and a test runs one locally. A page
 /// captures in the browser and reaches its session directly, so it has none of these.

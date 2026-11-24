@@ -101,6 +101,9 @@ pub struct Daemon {
     /// The links of the shells this daemon starts ([`Self::start_shell`]).
     shell_links: Arc<tilo_workspace_service::apps::shell::ShellLinks>,
     workspaces: Arc<ServiceWorkspaces>,
+    /// The device's live session: the one place this device is in each workspace's call and
+    /// presence, which an app's call lane joins through ([`Self::app_call_setup`]).
+    live: std::sync::OnceLock<Arc<super::live_relay::Live>>,
     /// Whether this run walked the old keeper's kept secrets into the person's vault: done once
     /// the workspace is held, so an app launch costs no keyring read after the first.
     pub(crate) old_secrets: std::sync::atomic::AtomicBool,
@@ -169,6 +172,47 @@ pub struct Daemon {
         tilo_device_identity::persist::DeviceKeyLock,
         advisory_lock::FileLock,
     )>,
+}
+
+impl Daemon {
+    /// What an app's call lane needs to carry one of its calls into a workspace's call through
+    /// the live session this device holds: the call it is admitted to, and the session. No key
+    /// material and no relay are part of it.
+    ///
+    /// # Errors
+    ///
+    /// This device runs no live session, the app's workspace has none, or the device is in no
+    /// call the app could carry: the lane refuses every carry with the reason.
+    pub(crate) fn app_call_setup(
+        &self,
+        at: &crate::seats::AppAt,
+    ) -> Result<tilo_live::app_call::CallSetup, String> {
+        let live = self
+            .live
+            .get()
+            .ok_or("this computer's live session is not running")?;
+        let workspace = tilo_desktop_model::WorkspaceId::parse(&at.workspace)
+            .ok_or("that app runs in no workspace")?;
+        let call = live
+            .call_session(workspace)
+            .ok_or("this computer holds no live session for the app's workspace")?;
+        let (channel, generation) = call
+            .session()
+            .call_keys_wanted()
+            .ok_or("this computer is in no call this app can carry")?;
+        Ok(tilo_live::app_call::CallSetup {
+            workspace: at.workspace.clone(),
+            device: self.cert.device_public_key,
+            device_name: tilo_user_identity::device_name(&self.cert.device_label)
+                .unwrap_or_default()
+                .to_owned(),
+            person: Some(hex::encode(self.cert.user_public_key)),
+            service: at.app.clone(),
+            channel,
+            generation,
+            session: call.shared(),
+        })
+    }
 }
 
 /// The services a profile is served as: the person's own runtime, or the same
@@ -2012,6 +2056,7 @@ impl Daemon {
             other_devices: other_devices(&workspaces),
             apps,
             workspaces,
+            live: std::sync::OnceLock::new(),
             old_secrets: std::sync::atomic::AtomicBool::new(false),
             _identity: identity_broker,
             workspace: workspace_id,
@@ -2037,6 +2082,7 @@ impl Daemon {
             dir: identity.place.dir().to_path_buf(),
             _lock: lock,
         };
+        let _ = daemon.live.set(Arc::clone(&live));
         // A person founded while this daemon serves has their root marked in their devices record
         // and their root-only asks served here from then on, without the person's services
         // starting again: the first person a fresh computer founds and every account after it.

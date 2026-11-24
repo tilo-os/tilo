@@ -7,7 +7,7 @@
 //! call as bridged there and the bridge as nobody's face, and it carries each
 //! person on the other side as a bridged participant of their own: a member of
 //! the call, shown by their name there, marked as reached through its service
-//! ([`tilo_live::presence::BridgedMember`]). What the workspace's participants
+//! ([`crate::presence::BridgedMember`]). What the workspace's participants
 //! say is handed to the worker frame by frame, and what the outside call says
 //! is published on the bridge's own audio track, one voice at a time: a speaker
 //! holds the track while they talk, and the next takes it when they pause
@@ -26,19 +26,35 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use collab_types::presence::{Bridged, CallPresence};
-use tilo_live::calls::{CallRule, Directions};
-use tilo_live::frame::LiveKeys;
-use tilo_live::live::Track;
-use tilo_live::live_session::{Join, LiveSession};
-use tilo_live::presence::{self, Board, BridgedMember, Call, LiveCall, Own};
-use tilo_live::relay::Relay;
-use tilo_live::roster::Roster;
-use tilo_live::scope::Scope;
-use tilo_live::voice::{FRAME_SAMPLES, SAMPLE_RATE, VoiceObject};
+pub use tilo_actions::remote::call::{CallLink, OutsideCall, OutsidePerson};
+use crate::calls::CallRule;
+use crate::live::Track;
+use crate::capture::Session as CaptureSession;
+use crate::live_session::Heard;
+use crate::presence::{Board, BridgedMember, Call, LiveCall, Own};
+use crate::voice::{FRAME_SAMPLES, SAMPLE_RATE, VoiceObject};
 use tokio::sync::{broadcast, mpsc, watch};
+use tilo_actions::remote::call::{
+    BridgedCall as WireBridgedCall, CallReport as SaidReport, CallStatus, MAX_CALL_AUDIO_BYTES,
+};
+use tilo_actions::remote::{ActionCallError, CallLanes, RemoteActionMessage, Take, frame_line};
 
-pub use crate::process::{CallsReport, ConnectorProcess, OutsideAudio};
-use crate::protocol::CallLink;
+
+/// The service's calls and the worker's place in them, as it last said.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CallsReport {
+    pub calls: Vec<OutsideCall>,
+    pub link: CallLink,
+}
+
+/// One Opus frame a person said in the outside call the worker is in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutsideAudio {
+    /// Their account on the service.
+    pub speaker: String,
+    /// The 20 ms Opus frame, as the service said it.
+    pub opus: Vec<u8>,
+}
 
 /// How often the live session is read and its presence said: half a voice
 /// frame, so a frame waits at most that long either way.
@@ -77,38 +93,15 @@ pub struct Lane {
     pub speak: mpsc::UnboundedSender<(String, Vec<u8>)>,
 }
 
-impl Lane {
-    /// The lane of a worker this device runs, whose asks and frames are
-    /// handed over as they come.
-    #[must_use]
-    pub fn of(process: &Arc<ConnectorProcess>) -> Self {
-        let (say, mut says) = mpsc::unbounded_channel();
-        let (speak, mut speaks) = mpsc::unbounded_channel();
-        let asks = Arc::clone(process);
-        tokio::spawn(async move {
-            while let Some((call, status)) = says.recv().await {
-                let _ = asks.set_call(call, status).await;
-            }
-        });
-        let speaks_for = Arc::clone(process);
-        tokio::spawn(async move {
-            while let Some((speaker, opus)) = speaks.recv().await {
-                let _ = speaks_for.send_audio(speaker, opus).await;
-            }
-        });
-        Self {
-            calls: process.calls(),
-            audio: process.audio(),
-            say,
-            speak,
-        }
-    }
-}
 
-/// This device's live session and the board it reads everyone's presence on.
-struct Taking {
-    live: LiveSession,
-    board: Board,
+/// Say `frames` through `session`: the daemon seals them as the device's presence.
+fn say_presence(session: &dyn CaptureSession, frames: &[(u32, collab_types::presence::Presence)]) {
+    for (sequence, presence) in frames {
+        let Ok(body) = presence.encode() else {
+            continue;
+        };
+        let _ = session.publish(Track::Presence, *sequence, &body);
+    }
 }
 
 /// The outside speaker who holds the bridge's voice, and the bridge's audio
@@ -177,7 +170,9 @@ impl Voice {
 
 /// A connector's outside call carried into one workspace's call.
 pub struct ConnectorCall {
-    relay: Relay,
+    /// The live session the device's daemon holds: the bridge takes part in the call through
+    /// it, and never seals anything itself.
+    session: Arc<dyn CaptureSession>,
     workspace: String,
     /// This device: the bridge's place in the call.
     device: [u8; 32],
@@ -187,14 +182,8 @@ pub struct ConnectorCall {
     person: Option<String>,
     /// The service the call is bridged to (`discord`).
     service: String,
-    roster: Roster,
-    keys: Option<LiveKeys>,
-    rules: BTreeMap<String, CallRule>,
-    persons: BTreeMap<[u8; 32], String>,
-    /// The call media keys of the generation the host handed over.
-    call_keys: Option<(String, u64, LiveKeys)>,
-    /// The pair carried now, whether the bridge is in the Tilo call, and the
-    /// people on the other side whose voice is carried.
+    /// The pair carried now, whether the bridge is in the Tilo call, and the people on the
+    /// other side whose voice is carried.
     carried: Option<BridgedCall>,
     in_tilo: bool,
     heard_from: BTreeSet<String>,
@@ -204,7 +193,8 @@ pub struct ConnectorCall {
     report: CallsReport,
     /// What the bridge last said of itself, to say it again only when it moved.
     said: String,
-    taking: Option<Taking>,
+    /// The bridge's own presence, and everyone's the session heard.
+    board: Option<Board>,
     voice: Voice,
     /// The worker's asks and the frames it hears.
     say: mpsc::UnboundedSender<(Option<String>, Option<String>)>,
@@ -214,11 +204,11 @@ pub struct ConnectorCall {
 }
 
 impl ConnectorCall {
-    /// The bridge of `workspace`, taking part in its calls on `relay` as
-    /// `device` and reaching the outside service through `lane`.
+    /// The bridge of `workspace`, taking part in its calls through `session`, the live session
+    /// the device's daemon holds, and reaching the outside service through `lane`.
     #[must_use]
     pub fn new(
-        relay: Relay,
+        session: Arc<dyn CaptureSession>,
         workspace: impl Into<String>,
         device: [u8; 32],
         device_name: impl Into<String>,
@@ -227,24 +217,19 @@ impl ConnectorCall {
         lane: Lane,
     ) -> Self {
         Self {
-            relay,
+            session,
             workspace: workspace.into(),
             device,
             device_name: device_name.into(),
             person,
             service: service.into(),
-            roster: Roster::default(),
-            keys: None,
-            rules: BTreeMap::new(),
-            persons: BTreeMap::new(),
-            call_keys: None,
             carried: None,
             in_tilo: false,
             heard_from: BTreeSet::new(),
             asked: None,
             report: CallsReport::default(),
             said: String::new(),
-            taking: None,
+            board: None,
             voice: Voice::new(),
             say: lane.say,
             speak: lane.speak,
@@ -257,48 +242,6 @@ impl ConnectorCall {
     /// which channels are bridged.
     pub fn carry(&mut self, pair: Option<BridgedCall>) {
         self.carried = pair;
-    }
-
-    /// Who may send in the workspace's live session now, the bridge among
-    /// them.
-    pub fn set_roster(&mut self, roster: Roster) {
-        self.roster = roster.clone();
-        if let Some(taking) = &self.taking {
-            taking.live.set_roster(roster);
-        }
-    }
-
-    /// The workspace's keys, which seal its presence.
-    pub fn set_keys(&mut self, keys: impl Into<LiveKeys>) {
-        let keys = keys.into();
-        if let Some(taking) = &self.taking {
-            taking.live.set_keys(keys.clone());
-        }
-        self.keys = Some(keys);
-    }
-
-    /// What the workspace's calls allow, by channel, and the person each
-    /// device is.
-    pub fn set_calls(
-        &mut self,
-        rules: BTreeMap<String, CallRule>,
-        persons: BTreeMap<[u8; 32], String>,
-    ) {
-        if let Some(taking) = &self.taking {
-            taking.live.set_calls(rules.clone(), persons.clone());
-        }
-        self.rules = rules;
-        self.persons = persons;
-    }
-
-    /// Seal and open the media of `channel`'s call under the keys of the
-    /// rule's `generation`.
-    pub fn set_call_keys(&mut self, channel: &str, generation: u64, keys: impl Into<LiveKeys>) {
-        let keys = keys.into();
-        if let Some(taking) = &self.taking {
-            taking.live.set_call_keys(channel, generation, keys.clone());
-        }
-        self.call_keys = Some((channel.to_owned(), generation, keys));
     }
 
     /// Carry the outside call for as long as this bridge runs; leaves both
@@ -341,41 +284,16 @@ impl ConnectorCall {
         self.let_go();
     }
 
-    /// Join the workspace's live session once its keys are here, and say what
-    /// the bridge owes.
+    /// Say what the bridge owes: its own presence when it moved, and the frames that are due.
     fn keep_taking(&mut self) {
-        if let Some(taking) = &self.taking
-            && taking.live.ended()
-        {
-            self.taking = None;
+        if self.board.is_none() {
+            let mut board = Board::new(self.workspace.clone(), self.device);
+            board.say(&self.own());
+            self.board = Some(board);
         }
-        if self.taking.is_none() {
-            let Some(keys) = self.keys.clone() else {
-                return;
-            };
-            let join = Join {
-                scope: Scope::workspace(self.workspace.clone()),
-                device: self.device,
-                keys,
-                roster: self.roster.clone(),
-                publish: true,
-                presence: true,
-            };
-            if let Ok(live) = LiveSession::local(&self.relay, &join) {
-                live.set_calls(self.rules.clone(), self.persons.clone());
-                if let Some((channel, generation, keys)) = &self.call_keys {
-                    live.set_call_keys(channel, *generation, keys.clone());
-                }
-                let mut board = Board::new(self.workspace.clone(), self.device);
-                board.say(&self.own());
-                self.taking = Some(Taking { live, board });
-            }
-        }
-        if let Some(taking) = &mut self.taking {
-            let now = now_ms();
-            if let Some(frames) = taking.board.due(now) {
-                let _ = presence::say(&taking.live, &frames);
-            }
+        let now = now_ms();
+        if let Some(frames) = self.board.as_mut().and_then(|board| board.due(now)) {
+            say_presence(self.session.as_ref(), &frames);
         }
     }
 
@@ -385,27 +303,27 @@ impl ConnectorCall {
         let now = now_ms();
         let own_device = self.device;
         let mut voices = Vec::new();
-        if let Some(taking) = &mut self.taking {
-            while let Some(heard) = taking.live.try_recv() {
-                if heard.sender == own_device {
-                    continue;
-                }
-                match heard.track {
-                    Track::Presence => {
-                        taking.board.heard(heard.sender, &heard.body, now);
-                    }
-                    Track::Audio => voices.push(heard),
-                    _ => {}
-                }
+        while let Some(heard) = self.session.try_recv() {
+            if heard.sender == own_device {
+                continue;
             }
-            if let Some(frames) = taking.board.due(now) {
-                let _ = presence::say(&taking.live, &frames);
+            match heard.track {
+                Track::Presence => {
+                    if let Some(board) = &mut self.board {
+                        board.heard(heard.sender, &heard.body, now);
+                    }
+                }
+                Track::Audio => voices.push(heard),
+                _ => {}
             }
         }
+        if let Some(frames) = self.board.as_mut().and_then(|board| board.due(now)) {
+            say_presence(self.session.as_ref(), &frames);
+        }
         let live = self
-            .taking
+            .board
             .as_ref()
-            .map(|taking| taking.board.calls())
+            .map(Board::calls)
             .unwrap_or_default();
         // Only the carried call's people are handed to the worker, and only
         // while the bridge is in it.
@@ -450,16 +368,8 @@ impl ConnectorCall {
         };
         let who = member.publisher(self.device);
         let person = member.person(self.device);
-        let may = self
-            .rules
-            .get(&pair.tilo)
-            .map_or(Directions::BOTH, |rule| rule.may(Some(&person)));
-        if !may.publish {
-            return;
-        }
-        let Some(taking) = &self.taking else {
-            return;
-        };
+        // The session holds the call's rule: what it lets through is what is heard.
+        let _ = person;
         let Some(object) = self
             .voice
             .take(&frame.speaker, who, frame.opus, Instant::now())
@@ -470,7 +380,7 @@ impl ConnectorCall {
             return;
         };
         let sequence = u32::try_from(object.sequence).unwrap_or(u32::MAX);
-        let _ = taking.live.publish(Track::Audio, sequence, &body);
+        let _ = self.session.publish(Track::Audio, sequence, &body);
     }
 
     /// Carry the pair who is in calls asks for, and let go of the rest.
@@ -480,9 +390,9 @@ impl ConnectorCall {
             return self.let_go();
         };
         let live = self
-            .taking
+            .board
             .as_ref()
-            .map(|taking| taking.board.calls())
+            .map(Board::calls)
             .unwrap_or_default();
         let outside = outside_people(report, &pair.outside);
         let tilo = tilo_callers(&live, &pair.tilo);
@@ -521,8 +431,8 @@ impl ConnectorCall {
             return;
         }
         self.said = text;
-        if let Some(taking) = &mut self.taking {
-            taking.board.say(&own);
+        if let Some(board) = &mut self.board {
+            board.say(&own);
         }
     }
 
@@ -625,7 +535,7 @@ fn session_of(service: &str, account: &str) -> String {
 fn outside_people<'a>(
     report: &'a CallsReport,
     call: &str,
-) -> Vec<&'a crate::protocol::OutsidePerson> {
+) -> Vec<&'a OutsidePerson> {
     report
         .calls
         .iter()
@@ -639,7 +549,7 @@ fn outside_people<'a>(
 fn tilo_callers<'a>(
     live: &'a [LiveCall],
     channel: &str,
-) -> Vec<&'a tilo_live::presence::LiveCaller> {
+) -> Vec<&'a crate::presence::LiveCaller> {
     live.iter()
         .filter(|call| call.channel == channel)
         .flat_map(|call| &call.people)
@@ -648,7 +558,7 @@ fn tilo_callers<'a>(
 }
 
 /// Who is on the Tilo side, as a line for the service.
-fn status(callers: &[&tilo_live::presence::LiveCaller]) -> String {
+fn status(callers: &[&crate::presence::LiveCaller]) -> String {
     let mut names: Vec<String> = callers
         .iter()
         .map(|caller| caller.label.trim().to_owned())
@@ -671,301 +581,233 @@ fn now_ms() -> f64 {
     tilo_clock::unix_now_ms() as f64
 }
 
-#[cfg(test)]
-mod tests {
-    #![allow(
-        clippy::cast_precision_loss,
-        clippy::arithmetic_side_effects,
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing,
-        reason = "in a test these are the assertion, not a hazard"
-    )]
 
-    use std::collections::BTreeMap;
-    use std::sync::Arc;
-    use std::time::Duration;
+/// What a bridge needs to carry one call through the session the device's daemon holds: which
+/// call it was admitted to, and the session itself. No key material is here, and none reaches
+/// the app: the daemon seals and opens everything through `session`.
+#[derive(Clone)]
+pub struct CallSetup {
+    /// The workspace carried into.
+    pub workspace: String,
+    /// This device: the bridge's place in the call.
+    pub device: [u8; 32],
+    /// What the bridge's device calls itself.
+    pub device_name: String,
+    /// The person the bridge's device belongs to, if it belongs to one.
+    pub person: Option<String>,
+    /// The service the app reaches, in its own words.
+    pub service: String,
+    /// The call of the workspace this app was admitted to carry, and its rule's generation. A
+    /// pair that names another channel is refused.
+    pub channel: String,
+    pub generation: u64,
+    /// The live session the device's daemon holds, which the bridge publishes and hears
+    /// through.
+    pub session: Arc<dyn CaptureSession>,
+}
 
-    use key_group::{ContentKeys, KeyGroup, MemberKey};
-    use tilo_live::live::Track;
-    use tilo_live::live_session::{Join, LiveSession};
-    use tilo_live::presence::{Board, Call, Own};
-    use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
-    use tilo_live::roster::Roster;
-    use tilo_live::scope::Scope;
-    use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
-    use tokio::sync::{broadcast, mpsc, watch};
+/// How lines reach the app that spoke them.
+pub type Out = Arc<dyn Fn(String) + Send + Sync>;
 
-    use super::{BridgedCall, ConnectorCall, Lane};
-    use crate::process::{CallsReport, OutsideAudio};
-    use crate::protocol::{CallLink, OutsideCall, OutsidePerson};
+/// One app's call lane on its held connection.
+pub struct AppLane {
+    /// Whether the workspace admitted this app to a call; `Err` is the refusal it gets instead.
+    granted: Result<CallSetup, String>,
+    /// The app's calls and the bridge's place, as the app says.
+    calls: watch::Sender<CallsReport>,
+    /// What the app heard of the outside call.
+    audio: broadcast::Sender<OutsideAudio>,
+    /// Where the bridge's word to the app goes.
+    out: Out,
+    /// The carrier running now, if one is.
+    carried: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
 
-    const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
-    const CALL: &str = "voice-tl";
-    const BRIDGE: [u8; 32] = [7; 32];
-    const GRACE: [u8; 32] = [9; 32];
-
-    fn keys() -> ContentKeys {
-        let workspace = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
-        let owner = MemberKey::generate("owner").unwrap();
-        KeyGroup::create(workspace, owner)
-            .unwrap()
-            .content_keys()
-            .unwrap()
+impl AppLane {
+    /// A lane for the app connection whose lines go to `out`: `granted` is what the workspace
+    /// gave this app, or why it gave none.
+    #[must_use]
+    pub fn new(granted: Result<CallSetup, String>, out: Out) -> Arc<Self> {
+        let (calls, _) = watch::channel(CallsReport::default());
+        let (audio, _) = broadcast::channel(256);
+        Arc::new(Self {
+            granted,
+            calls,
+            audio,
+            out,
+            carried: std::sync::Mutex::new(None),
+        })
     }
 
-    fn relay() -> Relay {
-        struct Nobody;
-        impl RelayAuthority for Nobody {
-            fn admit<'a>(&'a self, _peer: Peer, _proof: &'a [u8]) -> Admission<'a> {
-                Box::pin(std::future::ready(Err(Denied)))
-            }
-        }
-        Relay::new(Arc::new(Nobody))
+    /// Whether the app was granted a call here, and why not when it was not.
+    pub fn granted(&self) -> Result<(), String> {
+        self.granted.clone().map(|_| ())
     }
 
-    struct Member {
-        live: LiveSession,
-        board: Board,
-        voices: Vec<(Option<[u8; 32]>, Vec<u8>)>,
-        sequence: u32,
-    }
-
-    impl Member {
-        fn new(relay: &Relay, device: [u8; 32], keys: &ContentKeys, roster: &Roster) -> Self {
-            let live = LiveSession::local(
-                relay,
-                &Join {
-                    scope: Scope::workspace(WORKSPACE),
-                    device,
-                    keys: keys.clone().into(),
-                    roster: roster.clone(),
-                    publish: true,
-                    presence: true,
-                },
-            )
-            .unwrap();
-            let mut board = Board::new(WORKSPACE, device);
-            board.say(&Own {
-                label: "Grace".into(),
-                device: "laptop".into(),
-                ..Own::default()
-            });
-            Self {
-                live,
-                board,
-                voices: Vec::new(),
-                sequence: 0,
+    /// Carry `pair`, or let go of the one carried.
+    fn carry(&self, pair: Option<WireBridgedCall>) -> Result<(), ActionCallError> {
+        let setup = self
+            .granted
+            .clone()
+            .map_err(|reason| ActionCallError::Refused { reason })?;
+        let mut running = lock(&self.carried);
+        let Some(pair) = pair else {
+            if let Some(carried) = running.take() {
+                carried.abort();
             }
-        }
-
-        fn pump(&mut self) {
-            let now = tilo_clock::unix_now_ms() as f64;
-            while let Some(heard) = self.live.try_recv() {
-                match heard.track {
-                    Track::Presence => {
-                        self.board.heard(heard.sender, &heard.body, now);
-                    }
-                    Track::Audio => {
-                        if let Ok(object) = VoiceObject::decode(&heard.body) {
-                            self.voices.push((object.speaker, object.payload));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(frames) = self.board.due(now) {
-                let _ = tilo_live::presence::say(&self.live, &frames);
-            }
-        }
-
-        fn in_call(&mut self) {
-            self.board.say(&Own {
-                label: "Grace".into(),
-                device: "laptop".into(),
-                call: Some(Call {
-                    call: collab_types::presence::CallPresence {
-                        channel: CALL.into(),
-                        name: "voice".into(),
-                        bridge: None,
-                    },
-                    camera: false,
-                    screen: false,
-                    muted: false,
-                    deafened: false,
-                }),
-                ..Own::default()
+            // The app left: nothing of its old call is said any more.
+            let _ = self.calls.send(CallsReport::default());
+            return Ok(());
+        };
+        if !pair.valid() {
+            return Err(ActionCallError::InvalidRequest {
+                reason: "a carried call names its channel here and the service's own".to_owned(),
             });
         }
-
-        fn speak(&mut self, opus: &[u8]) {
-            let object = VoiceObject {
-                sequence: u64::from(self.sequence),
-                timestamp: u64::from(self.sequence) * u64::from(FRAME_SAMPLES),
-                duration: FRAME_SAMPLES,
-                speaker: None,
-                payload: opus.to_vec(),
-            };
-            self.live
-                .publish(Track::Audio, self.sequence, &object.encode().unwrap())
-                .unwrap();
-            self.sequence = self.sequence.wrapping_add(1);
+        if setup.channel != pair.tilo {
+            return Err(ActionCallError::Refused {
+                reason: format!(
+                    "this app was admitted to the call in {}, not {}",
+                    setup.channel, pair.tilo
+                ),
+            });
         }
-    }
-
-    /// A worker in an outside call: Dana is there, unmuted, and the worker is
-    /// joined. The bridge's lane is the test's.
-    fn joined(channel: &str) -> CallsReport {
-        CallsReport {
-            calls: vec![OutsideCall {
-                call: channel.into(),
-                people: vec![OutsidePerson {
-                    account: "7001".into(),
-                    name: "Dana".into(),
-                    ..OutsidePerson::default()
-                }],
-            }],
-            link: CallLink::Joined {
-                call: channel.into(),
-            },
-        }
-    }
-
-    /// Poll `check`, pumping `grace`, until it answers.
-    async fn until<T>(
-        grace: &mut Member,
-        what: &str,
-        mut check: impl FnMut(&Member) -> Option<T>,
-    ) -> T {
-        let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
-        loop {
-            grace.pump();
-            if let Some(found) = check(grace) {
-                return found;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "{what} did not happen"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
-
-    /// The two directions of a bridged call on the Tilo stack alone: an
-    /// outside frame is published as the bridged person's voice, and a
-    /// participant's voice is handed to the worker, while the bridge is in no
-    /// call and carries nobody.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_bridged_voice_carries_both_ways_on_the_live_session() {
-        let relay = relay();
-        let keys = keys();
-        let roster = Roster::new([GRACE, BRIDGE]);
-        let (say, mut says) = mpsc::unbounded_channel();
-        let (speak, mut speaks) = mpsc::unbounded_channel();
-        let (calls, calls_rx) = watch::channel(CallsReport::default());
-        let (audio, audio_rx) = broadcast::channel(256);
+        let (say, says) = mpsc::unbounded_channel::<(Option<String>, Option<String>)>();
+        let (speak, speaks) = mpsc::unbounded_channel::<(String, Vec<u8>)>();
+        let lane = Lane {
+            calls: self.calls.subscribe(),
+            audio: self.audio.subscribe(),
+            say,
+            speak,
+        };
         let mut bridge = ConnectorCall::new(
-            relay.clone(),
-            WORKSPACE,
-            BRIDGE,
-            "home-server",
-            Some("aa".repeat(32)),
-            "discord",
-            Lane {
-                calls: calls_rx,
-                audio: audio_rx,
-                say,
-                speak,
-            },
+            Arc::clone(&setup.session),
+            setup.workspace.clone(),
+            setup.device,
+            setup.device_name.clone(),
+            setup.person.clone(),
+            setup.service.clone(),
+            lane,
         );
-        bridge.set_roster(roster.clone());
-        bridge.set_keys(keys.clone());
-        bridge.set_calls(BTreeMap::new(), BTreeMap::new());
-        bridge.set_call_keys(CALL, 0, keys.clone());
         bridge.carry(Some(BridgedCall {
-            outside: "voice".into(),
-            tilo: CALL.into(),
+            outside: pair.outside,
+            tilo: pair.tilo,
         }));
-        let carrier = tokio::spawn(bridge.run());
-
-        let mut grace = Member::new(&relay, GRACE, &keys, &roster);
-        grace.live.set_calls(BTreeMap::new(), BTreeMap::new());
-        grace.live.set_call_keys(CALL, 0, keys.clone());
-        grace.in_call();
-
-        // The worker joins the outside call: the bridge joins Tilo's.
-        calls.send(joined("voice")).unwrap();
-        until(&mut grace, "the bridge carries the call", |grace| {
-            grace
-                .board
-                .calls()
-                .iter()
-                .find(|call| call.channel == CALL)
-                .and_then(|call| call.people.iter().find(|person| person.bridge.is_some()))
-                .map(|_| ())
-        })
-        .await;
-        let asked = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some((call, _)) = says.recv().await
-                    && call.as_deref() == Some("voice")
-                {
-                    return;
-                }
-            }
-        })
-        .await;
-        assert!(asked.is_ok(), "the worker was asked into the outside call");
-
-        // Dana says a frame: it is published as her own voice, not the bridge's.
-        let dana = collab_types::presence::stand_in(BRIDGE, "discord:7001");
-        audio
-            .send(OutsideAudio {
-                speaker: "7001".into(),
-                opus: vec![7; 40],
-            })
-            .unwrap();
-        let heard = until(&mut grace, "Dana's voice reaches Tilo", |grace| {
-            grace
-                .voices
-                .iter()
-                .find(|(who, _)| *who == Some(dana))
-                .map(|(_, payload)| payload.clone())
-        })
-        .await;
-        assert_eq!(heard, vec![7; 40]);
-
-        // Grace says a frame: it is handed to the worker, under her device.
-        grace.speak(&[9; 40]);
-        let (who, opus) = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some(frame) = speaks.recv().await {
-                    return frame;
-                }
-            }
-        })
-        .await
-        .expect("Grace's voice reaches the worker");
-        assert_eq!(who, hex::encode(GRACE));
-        assert_eq!(opus, vec![9; 40]);
-
-        // The worker leaves: the bridge says it is in no call and carries nobody.
-        calls
-            .send(CallsReport {
-                calls: Vec::new(),
-                link: CallLink::Idle,
-            })
-            .unwrap();
-        until(&mut grace, "the bridge leaves the call", |grace| {
-            grace
-                .board
-                .calls()
-                .iter()
-                .all(|call| call.channel != CALL)
-                .then_some(())
-        })
-        .await;
-        carrier.abort();
+        if let Some(carried) = running.take() {
+            carried.abort();
+        }
+        *running = Some(tokio::spawn(bridge.run()));
+        drop(running);
+        // What the bridge says of itself and what it heard from the workspace reach the app on
+        // the connection it holds.
+        drop(tokio::spawn(says_status(self.out.clone(), says)));
+        drop(tokio::spawn(said_audio(self.out.clone(), speaks)));
+        Ok(())
     }
+
+    /// The app's word on its calls, as the outside call's people and the bridge's place.
+    fn report(&self, report: SaidReport) -> Result<(), ActionCallError> {
+        if !report.valid() {
+            return Err(ActionCallError::InvalidRequest {
+                reason: "a call report names its calls, its people and its place".to_owned(),
+            });
+        }
+        let calls = report
+            .calls
+            .into_iter()
+            .map(|call| OutsideCall {
+                call: call.call,
+                people: call
+                    .people
+                    .into_iter()
+                    .map(|person| OutsidePerson {
+                        account: person.account,
+                        name: person.name,
+                        avatar_url: person.avatar_url,
+                        avatar: person.avatar,
+                        muted: person.muted,
+                        deafened: person.deafened,
+                    })
+                    .collect(),
+            })
+            .collect();
+        let _ = self.calls.send(CallsReport {
+            calls,
+            link: report.link,
+        });
+        Ok(())
+    }
+
+    /// One frame an outside person said, for the workspace's call.
+    fn heard(&self, frame: &tilo_actions::remote::call::CallAudio) {
+        if !frame.valid() || frame.opus.len() > MAX_CALL_AUDIO_BYTES {
+            return;
+        }
+        let _ = self.audio.send(OutsideAudio {
+            speaker: frame.speaker.clone(),
+            opus: frame.opus.clone(),
+        });
+    }
+}
+
+impl CallLanes for AppLane {
+    fn take(&self, message: &RemoteActionMessage) -> Take {
+        match message {
+            RemoteActionMessage::CallCarryRequest { correlation, pair } => {
+                let result = self.carry(pair.clone());
+                Take::Answer(frame_line(RemoteActionMessage::CallCarryResponse {
+                    correlation: *correlation,
+                    result,
+                }))
+            }
+            RemoteActionMessage::CallReport {
+                correlation,
+                report,
+            } => {
+                let result = self.report(report.clone());
+                Take::Answer(frame_line(RemoteActionMessage::CallReportResponse {
+                    correlation: *correlation,
+                    result,
+                }))
+            }
+            RemoteActionMessage::CallHeard(frame) => {
+                self.heard(frame);
+                Take::Silent
+            }
+            // What the device itself says: an app that sends one back is saying nothing.
+            RemoteActionMessage::CallSaid(_)
+            | RemoteActionMessage::CallStatus(_)
+            | RemoteActionMessage::CallCarryResponse { .. }
+            | RemoteActionMessage::CallReportResponse { .. } => Take::Silent,
+            _ => Take::NotCall,
+        }
+    }
+}
+
+/// What the bridge says of itself, written to the app as it comes.
+async fn says_status(
+    out: Out,
+    mut says: mpsc::UnboundedReceiver<(Option<String>, Option<String>)>,
+) {
+    while let Some((call, status)) = says.recv().await {
+        out(frame_line(RemoteActionMessage::CallStatus(CallStatus {
+            call,
+            status,
+        })));
+    }
+}
+
+/// What the workspace's call said, written to the app frame by frame.
+async fn said_audio(out: Out, mut speaks: mpsc::UnboundedReceiver<(String, Vec<u8>)>) {
+    while let Some((speaker, opus)) = speaks.recv().await {
+        out(frame_line(RemoteActionMessage::CallSaid(
+            tilo_actions::remote::call::CallAudio { speaker, opus },
+        )));
+    }
+}
+
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

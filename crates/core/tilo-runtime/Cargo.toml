@@ -134,7 +134,7 @@ settings-store = { package = "tilo-settings-store", path = "../../desktop/settin
 tilo-workspace-keys = { path = "../workspace-keys" }
 # The relay of the workspaces this device serves, and the person's desktop session's links into
 # it or on to another device's.
-tilo-live = { path = "../tilo-live", features = ["relay", "iroh"] }
+tilo-live = { path = "../tilo-live", features = ["relay", "iroh", "app_call"] }
 # This computer's login, the daemon's place, and Tilo's API the daemon serves as the device.
 tilo-api = { path = "../tilo-api" }
 # The one migration engine, served as this device's actions.
