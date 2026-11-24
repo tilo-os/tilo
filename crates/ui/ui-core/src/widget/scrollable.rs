@@ -1047,11 +1047,11 @@ impl Scrollable {
             }
             (widget.kept_in_view() == Some(name)).then(|| (identity(widget), widget.get_rect()))
         }
-        let Some(name) = self
-            .keep
-            .clone()
-            .or_else(|| self.child.as_ref().and_then(|child| focused_keep(child.as_ref())))
-        else {
+        let Some(name) = self.keep.clone().or_else(|| {
+            self.child
+                .as_ref()
+                .and_then(|child| focused_keep(child.as_ref()))
+        }) else {
             return;
         };
         let Some((identity, rect)) = self

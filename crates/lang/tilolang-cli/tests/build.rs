@@ -770,7 +770,11 @@ hosts = ["gateway.example", "*.example.media"]
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src/tilo.js"), "export const calls = [];\n").unwrap();
     std::fs::create_dir_all(dir.join("node_modules/tilo-sdk-native")).unwrap();
-    std::fs::write(dir.join("node_modules/tilo-sdk-native/index.js"), "module\n").unwrap();
+    std::fs::write(
+        dir.join("node_modules/tilo-sdk-native/index.js"),
+        "module\n",
+    )
+    .unwrap();
     std::fs::write(dir.join("node_modules/vendored.js"), "export {}\n").unwrap();
 
     let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
@@ -796,7 +800,10 @@ hosts = ["gateway.example", "*.example.media"]
         Some(Path::new("main.js")),
         "the runtime's binary runs the package's script"
     );
-    assert!(entrypoint.connection, "the program is the app's held connection");
+    assert!(
+        entrypoint.connection,
+        "the program is the app's held connection"
+    );
     for runtime in ["bun/1.4.5+bun", package::DEFAULT_TILOLANG_RUNTIME] {
         assert!(
             manifest
@@ -819,10 +826,22 @@ hosts = ["gateway.example", "*.example.media"]
         "a program that reaches a host opens a socket: {:?}",
         manifest.sandbox.namespaces
     );
-    assert!(manifest.capabilities.required.iter().any(|name| name == "secrets"));
+    assert!(
+        manifest
+            .capabilities
+            .required
+            .iter()
+            .any(|name| name == "secrets")
+    );
     assert!(manifest.sandbox.services.contains_key("native"));
 
-    for file in ["app.wasm", "app.ids", "surface.toml", "main.js", "src/tilo.js"] {
+    for file in [
+        "app.wasm",
+        "app.ids",
+        "surface.toml",
+        "main.js",
+        "src/tilo.js",
+    ] {
         assert!(
             built.payload.join(file).is_file(),
             "the payload holds {file}"
@@ -836,7 +855,10 @@ hosts = ["gateway.example", "*.example.media"]
         !built.payload.join("node_modules/tilo-sdk-native").exists(),
         "the SDK's native addon is the runtime package's, not a package's copy"
     );
-    assert!(!built.payload.join("app.tl").exists(), "sources are compiled, not shipped");
+    assert!(
+        !built.payload.join("app.tl").exists(),
+        "sources are compiled, not shipped"
+    );
     assert!(!built.payload.join("app.toml").exists());
 }
 

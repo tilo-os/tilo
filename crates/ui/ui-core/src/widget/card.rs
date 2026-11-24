@@ -5,10 +5,10 @@ use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, fr, length, max_content, min_content, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
 use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use super::composition_parts::{Parts, retained_parts};
 use crate::paint::PaintCtx;
@@ -999,10 +999,7 @@ impl CardGrid {
     /// Lift the card the keyboard is on, and only it.
     fn show_selection(&mut self) {
         for (index, card) in self.cards.iter_mut().enumerate() {
-            if let Some(card) = card
-                .as_any_mut()
-                .and_then(|any| any.downcast_mut::<Card>())
-            {
+            if let Some(card) = card.as_any_mut().and_then(|any| any.downcast_mut::<Card>()) {
                 card.set_selected(self.cursor == Some(index));
             }
         }
@@ -1020,9 +1017,7 @@ impl CardGrid {
             .first()
             .map_or(0.0, |card| card.get_rect().height() + self.gap);
         match self.viewport {
-            Some(viewport) if row > 0.0 => {
-                (viewport.height() / row).floor().max(1.0) as usize
-            }
+            Some(viewport) if row > 0.0 => (viewport.height() / row).floor().max(1.0) as usize,
             _ => 1,
         }
     }
@@ -1277,13 +1272,7 @@ impl Widget for CardGrid {
                 .and_then(|cursor| self.cards.get(cursor))
                 .map(|card| card.get_rect())
         {
-            crate::widget::paint_focus_ring(
-                scene,
-                transform,
-                rect,
-                theme.radius_standard,
-                theme,
-            );
+            crate::widget::paint_focus_ring(scene, transform, rect, theme.radius_standard, theme);
         }
     }
 
@@ -1378,11 +1367,7 @@ impl Widget for CardGrid {
             }
             crate::a11y::AccessNode::new(Role::List)
                 .with_name(name.clone())
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .focused(self.focused),
-                )
+                .with_state(AccessState::new().focusable(true).focused(self.focused))
                 .with_children(children)
         })
     }

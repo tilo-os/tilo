@@ -257,7 +257,14 @@ fn offers(meta: &PackageMeta) -> Vec<FleetOffer> {
 fn asked_in_a_field(ty: &str) -> bool {
     matches!(
         inner_type(ty),
-        "Text" | "RichText" | "Date" | "Time" | "Identifier" | "Int" | "Float" | "Bool"
+        "Text"
+            | "RichText"
+            | "Date"
+            | "Time"
+            | "Identifier"
+            | "Int"
+            | "Float"
+            | "Bool"
             | "Duration"
     )
 }
@@ -381,7 +388,10 @@ mod tests {
             ("read", "view")
         );
         assert_eq!(
-            link.asks.iter().map(|asked| asked.name.as_str()).collect::<Vec<_>>(),
+            link.asks
+                .iter()
+                .map(|asked| asked.name.as_str())
+                .collect::<Vec<_>>(),
             ["link"]
         );
     }
@@ -407,7 +417,11 @@ mod tests {
             offer
                 .asks
                 .iter()
-                .map(|asked| (asked.name.as_str(), asked.ty.as_str(), asked.description.as_str()))
+                .map(|asked| (
+                    asked.name.as_str(),
+                    asked.ty.as_str(),
+                    asked.description.as_str()
+                ))
                 .collect::<Vec<_>>(),
             [
                 ("issuer", "text", "Issuer"),

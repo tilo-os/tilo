@@ -2086,5 +2086,4 @@ fn escaping_the_pick_returns_to_the_list_without_running_the_action() {
         "the row the person chose is listed again: {listed:?}"
     );
     assert!(search.take_choice().is_none(), "nothing ran");
-
 }

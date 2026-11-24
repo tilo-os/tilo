@@ -423,9 +423,7 @@ fn fleet_offer(offer: app_fleet::FleetAction) -> tilo_actions::published::Offer<
 }
 
 /// The values a fleet offer asks for, as slices of the compiled-in manifest's own text.
-fn boxed_asks(
-    offer: app_fleet::FleetAction,
-) -> Vec<tilo_actions::published::OfferParam<'static>> {
+fn boxed_asks(offer: app_fleet::FleetAction) -> Vec<tilo_actions::published::OfferParam<'static>> {
     offer
         .asks()
         .map(|param| tilo_actions::published::OfferParam {

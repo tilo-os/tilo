@@ -1276,13 +1276,19 @@ mod tests {
         });
         let written = with_offers(manifest, &[offer]);
         let parsed: toml::Table = toml::from_str(&written).expect("the manifest reads back");
-        let offers: Vec<tilo_app_package::manifest::OfferedAction> =
-            parsed["offers"].clone().try_into().expect("the offer reads");
+        let offers: Vec<tilo_app_package::manifest::OfferedAction> = parsed["offers"]
+            .clone()
+            .try_into()
+            .expect("the offer reads");
         assert_eq!(
             offers[0]
                 .asked()
                 .iter()
-                .map(|asked| (asked.name.as_str(), asked.ty.as_str(), asked.description.as_deref()))
+                .map(|asked| (
+                    asked.name.as_str(),
+                    asked.ty.as_str(),
+                    asked.description.as_deref()
+                ))
                 .collect::<Vec<_>>(),
             [
                 ("issuer", "text", Some("Issuer")),

@@ -25,9 +25,7 @@ fn focus_grid(session: &mut Session) -> ui::accesskit::NodeId {
                 && node.label().is_some_and(|label| label.trim() == "Items")
         })
         .map_or_else(|| panic!("the window shows the grid"), |(id, _)| id);
-    session
-        .window
-        .a11y_action(node, &ui::a11y::Action::Focus);
+    session.window.a11y_action(node, &ui::a11y::Action::Focus);
     settle(session);
     node
 }
@@ -66,11 +64,7 @@ fn the_arrows_move_the_selection_and_enter_opens_the_card_it_is_on() {
     // selected one.
     assert_eq!(selected(&mut session).as_deref(), Some("Alpha"));
     assert!(
-        session
-            .window
-            .a11y()
-            .into_iter()
-            .any(|(id, _)| id == grid),
+        session.window.a11y().into_iter().any(|(id, _)| id == grid),
         "the grid is still the window's"
     );
     // The arrows move it a card at a time; the ends go to the first and the last.
