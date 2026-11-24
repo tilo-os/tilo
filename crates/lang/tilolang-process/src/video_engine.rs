@@ -987,7 +987,7 @@ mod tests {
                 "height": 1080,
                 "media": ["{\"id\":\"m1\",\"name\":\"a.mp4\",\"kind\":\"video\",\"duration\":10.0,\"width\":1920,\"height\":1080,\"path\":\"/media/a.mp4\"}"],
                 "tracks": ["{\"id\":\"t1\",\"name\":\"V1\",\"kind\":\"video\"}"],
-                "clips": ["{\"id\":\"c1\",\"track\":\"t1\",\"media\":\"m1\",\"start\":0.0,\"out_point\":4.0,\"transition\":\"dissolve\",\"keys\":[{\"param\":\"opacity\",\"t\":0.0,\"v\":0.2},{\"param\":\"opacity\",\"t\":2.0,\"v\":1.0}]}"],
+                "clips": ["{\"id\":\"c1\",\"track\":\"t1\",\"media\":\"m1\",\"start\":0.0,\"out_point\":4.0,\"transition\":\"dissolve\",\"keys\":[\"{\\\"param\\\":\\\"opacity\\\",\\\"t\\\":0.0,\\\"v\\\":0.2}\",\"{\\\"param\\\":\\\"opacity\\\",\\\"t\\\":2.0,\\\"v\\\":1.0}\"]}"],
                 "markers": ["{\"id\":\"k1\",\"t\":1.0,\"name\":\"Beat\"}"]
             }"#,
         )
@@ -1002,6 +1002,11 @@ mod tests {
         assert_eq!(project.markers[0].name, "Beat");
         assert_eq!(project.media[0].path, "/media/a.mp4");
         assert!(project.clips[0].anim.is_animated(Param::Opacity));
-        assert_eq!(project.clips[0].anim.sample(Param::Opacity, 1.0), Some(0.6));
+        // Halfway between 0.2 and 1.0: interpolation rounds the last bits, so compare near it.
+        let opacity = project.clips[0].anim.sample(Param::Opacity, 1.0);
+        assert!(
+            opacity.is_some_and(|value| (value - 0.6).abs() < 1e-6),
+            "{opacity:?}"
+        );
     }
 }
