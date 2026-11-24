@@ -135,7 +135,9 @@ pub(crate) async fn answered(
     let Some(workspace_id) = workspace_id else {
         return Ok(first);
     };
-    let (Some(service), Some(store)) = (workspaces.governance(), workspaces.asked_store()) else {
+    let (Some(service), Some(store)) =
+        (workspaces.inner.jobs.governance(), workspaces.asked_store())
+    else {
         return Ok(first);
     };
     let here = service.in_workspace(workspace_id);
@@ -163,7 +165,11 @@ pub(crate) async fn answered(
     let Some(waiting) = kept else {
         return ended_as(&here, caller, request.invocation).await;
     };
-    answering.asked.lock().unwrap().push(waiting.asked.facts.clone());
+    answering
+        .asked
+        .lock()
+        .unwrap()
+        .push(waiting.asked.facts.clone());
     // Their answer, as the person it asks: an approve admits the same call again, which ends
     // when it ran; a decline ends it with nothing done, and the caller's call was refused for
     // want of their yes.
@@ -173,8 +179,10 @@ pub(crate) async fn answered(
         .ok_or_else(|| ActionCallError::Refused {
             reason: "the ask names no person to answer it".into(),
         })?;
-    let answering_as =
-        Caller::authenticated(person, caller.device_public_key().copied().unwrap_or(person));
+    let answering_as = Caller::authenticated(
+        person,
+        caller.device_public_key().copied().unwrap_or(person),
+    );
     let resolution = if answering.approves {
         tilo_actions::remote::asked::Offer::Approve
     } else {
@@ -224,15 +232,9 @@ async fn ended_as(
     invocation: InvocationId,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
     let now = tilo_clock::now();
-    let until = now
-        .checked_add(tilo_test_env::hang_bound())
-        .unwrap_or(now);
+    let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
     settled(tilo_actions::remote::settle_with(
-        here,
-        caller,
-        invocation,
-        None,
-        until,
+        here, caller, invocation, None, until,
     ))
     .await
     .map(|state| state.receipt())
@@ -381,7 +383,7 @@ pub(crate) async fn governed(
     let summary = workspaces.create("Team").await.unwrap();
     // The host's own dispatch where it has one: a person's answer to a call that waits for
     // them comes back to that one, never to one made beside it.
-    let host = workspaces.governance().unwrap_or_else(|| {
+    let host = workspaces.inner.jobs.governance().unwrap_or_else(|| {
         let host = ServiceWorkspaceActions::new();
         host.attach(workspaces.clone());
         host

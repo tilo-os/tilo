@@ -28,6 +28,8 @@ const AGENT: &str = "scout";
 async fn governed(workspaces: &Workspaces) -> (String, WorkspaceId, ServiceWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();
     let service = workspaces
+        .inner
+        .jobs
         .governance()
         .expect("the host's own dispatch governs its workspaces");
     (summary.workspace, summary.workspace_id, service)
