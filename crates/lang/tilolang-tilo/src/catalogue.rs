@@ -1049,6 +1049,7 @@ impl Reader<'_> {
             FieldType::Duration => "Duration".to_owned(),
             FieldType::Identifier => "std.Identifier".to_owned(),
             FieldType::Actor => "Actor".to_owned(),
+            FieldType::Json => "json.Value".to_owned(),
             FieldType::Resource(kind) => self.resource(kind)?,
             FieldType::Named(name) => {
                 let name = rename(name);

@@ -453,6 +453,13 @@ impl Core {
             tilolang::host_meta(),
         )?;
         core.registry.borrow_mut().add(host)?;
+        // The actions a workspace offers, read and called by code: a package whose calls the
+        // host answers over its action connection.
+        let actions = crate::registry::Package::new(
+            crate::ids::ModuleHash("actions".to_owned()),
+            tilolang::actions_meta(),
+        )?;
+        core.registry.borrow_mut().add(actions)?;
         Ok(core)
     }
 

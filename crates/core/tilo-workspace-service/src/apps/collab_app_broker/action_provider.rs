@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tilo_desktop_model::Workspace;
 
 use tilo_actions::remote::{
-    APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND,
+    ACTIONS_PROVIDER, APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND,
     APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, CataloguePage, CatalogueProvider,
     CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
     InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, application_provider,
@@ -1893,6 +1893,12 @@ impl AppBrokerState {
         // A call made from a resource is its caller's only where they may read that resource.
         if let Err(error) = self.may_make_from(caller, request) {
             return Pending::ready(Err(error));
+        }
+        // The language's own view of the registry: the catalogue it reads and an action it calls
+        // by address. Both are answered here, at the dispatch, and the call inside a `call` is
+        // the caller's own child invocation, decided by the target's policy.
+        if request.target.provider == ACTIONS_PROVIDER {
+            return self.invoke_actions(caller, request);
         }
         // An agent asks the person it works for something in its own words:
         // the question goes on this device's sheet, and their answer is the

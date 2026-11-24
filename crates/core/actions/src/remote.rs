@@ -1136,6 +1136,10 @@ pub fn workspace_provider(workspace: &str) -> String {
     format!("{WORKSPACE_PROVIDER}:{workspace}")
 }
 
+/// The provider that answers the language's own view of the registry (`tilo.actions`): the
+/// catalogue read and an action called by its address.
+pub const ACTIONS_PROVIDER: &str = "tilo.actions";
+
 /// The workspace a workspace provider token names, or `None` for an application
 /// provider.
 #[must_use]

@@ -360,6 +360,12 @@ pub struct Invocation {
     /// by its published label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// What the action answered, when it ended well and answered a value: a
+    /// read's result, a record the caller then reads. Set when it settles;
+    /// a failed or refused invocation answers none and says why in
+    /// [`Self::failure`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
     /// How many changes it made to the workspace's records: its edits, and
     /// what it brought in from outside (what a command printed).
     pub changes: usize,

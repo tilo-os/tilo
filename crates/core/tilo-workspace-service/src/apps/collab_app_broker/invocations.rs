@@ -334,6 +334,13 @@ fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation
             None => format!("{}#{}", target.address.resource, target.address.action),
         }),
         summary: None,
+        output: recorded
+            .state
+            .as_ref()
+            .and_then(|state| match &state.update {
+                InvocationUpdate::Succeeded { output, .. } => output.value.clone(),
+                _ => None,
+            }),
         changes: usize::try_from(recorded.changes).unwrap_or(usize::MAX),
         undone: usize::from(recorded.undone),
         records: Vec::new(),
@@ -348,7 +355,7 @@ fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation
 }
 
 /// Who asked for the invocation: its name, its kind, and the member it is.
-fn by(caller: &Caller) -> InvocationBy {
+pub(super) fn by(caller: &Caller) -> InvocationBy {
     let acting = caller.acting();
     let kind = if acting.is_agent() {
         "agent"

@@ -64,7 +64,11 @@ impl Callees {
             .apps
             .get(app)
             .ok_or_else(|| Answered::Refused(format!("this code may use no app {app}")))?;
-        let mut call = if self.published.contains(app) {
+        let mut call = if app == tilolang::ACTIONS_APP {
+            // What the workspace's action registry offers, read and called by address: its
+            // provider is the one the dispatch answers it under, not an app's.
+            actions_call(meta, invocation)
+        } else if self.published.contains(app) {
             published_call(meta, invocation, &self.addresses, |r| self.published_id(r))
         } else if self.native.is(app) {
             native_call(&self.apps, meta, self.native.record(app), invocation)
@@ -87,7 +91,9 @@ impl Callees {
             Answered::Done(output) => self
                 .apps
                 .get(invocation.app())
-                .map_or(Ok(Value::Unit), |meta| result_of(meta, invocation, &output))
+                .map_or(Ok(Value::Unit), |meta| {
+                    result_of(&self.apps, meta, invocation, &output)
+                })
                 .map_or_else(Invoked::Failed, Invoked::Done),
             Answered::Failed(why) => Invoked::Failed(why),
             Answered::Refused(why) => Invoked::Refused(why),
@@ -525,6 +531,16 @@ fn call_of(
     }
 }
 
+/// The API's call for an action of the workspace's action registry (`tilo.actions`): its verb on
+/// the package's resource, and the provider the dispatch answers those verbs under.
+fn actions_call(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
+    let mut call = call_of(&HashMap::new(), meta, invocation)?;
+    if let Some(fields) = call.as_object_mut() {
+        fields.insert("provider".to_owned(), json!(tilolang::ACTIONS_APP));
+    }
+    Ok(call)
+}
+
 /// The id `app`'s api publishes its resource `r` under: a hosted app's documents carry their
 /// app already, a task's do not.
 fn address_of(app: &str, r: &ResourceRef) -> String {
@@ -535,8 +551,15 @@ fn address_of(app: &str, r: &ResourceRef) -> String {
 }
 
 /// What an invocation of `meta`'s action answered (`{value, resources}`), as the program gets
-/// it: a document result as the resource the app says it returned, any other as its value.
-fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Result<Value, String> {
+/// it: a document result as the resource the app says it returned, any other as its value. A
+/// value of a record type another package declares (what `actions.call` answers with the
+/// workspace's invocation record) is read as that package declares its fields.
+fn result_of(
+    apps: &HashMap<String, Meta>,
+    meta: &Meta,
+    invocation: &Invocation,
+    output: &Json,
+) -> Result<Value, String> {
     let Invocation::Action { action, .. } = invocation else {
         return Ok(Value::Unit);
     };
@@ -564,9 +587,218 @@ fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Result<Valu
                 )
             });
     }
-    match output.get("value") {
-        None | Some(Json::Null) => Ok(Value::Unit),
-        Some(value) => from_json(value)
+    let value = match output.get("value") {
+        None | Some(Json::Null) => return Ok(Value::Unit),
+        Some(value) => value,
+    };
+    // A value of a declared type is read from its JSON by what the package declares: fields by
+    // name, cases by variant. A type no package here declares is read as JSON.
+    match parse_ty(&result, &meta.app) {
+        Ok(ty) => declared_value(apps, meta, &ty, value),
+        Err(_) => from_json(value)
             .map_err(|error| format!("the action ran but its answer does not decode: {error}")),
+    }
+}
+
+/// A plain JSON value of `ty`, as the package that declares `ty` reads it: its fields by name
+/// (or by id), a case by its variant's name.
+fn declared_value(
+    apps: &HashMap<String, Meta>,
+    meta: &Meta,
+    ty: &tilolang_runtime::meta::Ty,
+    json: &Json,
+) -> Result<Value, String> {
+    use tilolang_runtime::meta::Ty;
+    use tilolang_runtime::value::{EnumValue, RecordInit};
+    // A value a host already encoded as the runtime's own (`{record, fields}`, `{list}`): read
+    // as it is rather than as plain data of the declared type.
+    if json.as_object().is_some_and(|object| {
+        ["record", "enum", "list", "tuple", "some", "none", "ref"]
+            .iter()
+            .any(|tag| object.contains_key(*tag))
+    }) {
+        return from_json(json);
+    }
+    let inner = |ty: &Ty, json: &Json| declared_value(apps, meta, ty, json);
+    match ty {
+        Ty::Json => Ok(Value::Json(Box::new(json.clone()))),
+        Ty::Option(item) => match json {
+            Json::Null => Ok(Value::none()),
+            value => inner(item, value).map(Value::some),
+        },
+        Ty::List(item) | Ty::Set(item) | Ty::Collection(item) => match json {
+            Json::Array(items) => items
+                .iter()
+                .map(|value| inner(item, value))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::List),
+            other => inner(item, other).map(|one| Value::List(vec![one])),
+        },
+        Ty::Map(item) => match json {
+            Json::Object(entries) => entries
+                .iter()
+                .map(|(key, value)| Ok((Value::text(key), inner(item, value)?)))
+                .collect::<Result<Vec<_>, String>>()
+                .map(Value::Map),
+            _ => from_json(json),
+        },
+        Ty::Tuple(items) => match json {
+            Json::Array(values) => items
+                .iter()
+                .zip(values)
+                .map(|(ty, value)| inner(ty, value))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Tuple),
+            _ => from_json(json),
+        },
+        Ty::Record(key) => {
+            let owner = if key.app == meta.app {
+                meta
+            } else {
+                apps.get(key.app.as_str())
+                    .ok_or_else(|| format!("no package {} is here", key.app))?
+            };
+            let declared = owner
+                .types
+                .iter()
+                .find(|declared| declared.id.eq(&key.name) || declared.name.eq(&key.name))
+                .ok_or_else(|| format!("{} declares no type {}", key.app, key.name))?;
+            let entries = json
+                .as_object()
+                .ok_or_else(|| format!("{} is not an object", declared.name))?;
+            let mut fields = BTreeMap::new();
+            for field in &declared.fields {
+                let Some(value) = entries.get(&field.name).or_else(|| entries.get(&field.id))
+                else {
+                    continue;
+                };
+                let ty = tilolang_runtime::meta::parse_ty(&field.ty, &owner.app)?;
+                fields.insert(field.id.clone(), declared_value(apps, owner, &ty, value)?);
+            }
+            Ok(Value::Rec(RecordInit {
+                ty: declared.id.clone(),
+                fields,
+            }))
+        }
+        Ty::Enum(key) => {
+            let owner = if key.app == meta.app {
+                meta
+            } else {
+                apps.get(key.app.as_str())
+                    .ok_or_else(|| format!("no package {} is here", key.app))?
+            };
+            let declared = owner
+                .enums
+                .iter()
+                .find(|declared| declared.id.eq(&key.name) || declared.name.eq(&key.name))
+                .ok_or_else(|| format!("{} declares no enum {}", key.app, key.name))?;
+            let variant = json
+                .as_str()
+                .ok_or_else(|| format!("{} is not a case name", declared.name))?;
+            Ok(Value::Enum(EnumValue {
+                ty: declared.id.clone(),
+                variant: variant.to_owned(),
+                fields: BTreeMap::new(),
+            }))
+        }
+        _ => from_json(json),
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tilolang_runtime::meta::EffectClass;
+
+    fn callees() -> Callees {
+        let actions = tilolang::actions_meta();
+        let invocations =
+            crate::platform_apps::platform_package("tilo.invocations").expect("its surface reads");
+        Callees {
+            apps: HashMap::from([
+                (actions.app.clone(), actions),
+                (invocations.app.clone(), invocations),
+            ]),
+            ..Callees::default()
+        }
+    }
+
+    fn action(name: &str, args: Vec<(&str, Value)>) -> Invocation {
+        Invocation::Action {
+            app: tilolang::ACTIONS_APP.into(),
+            action: name.to_owned(),
+            name: name.to_owned(),
+            args: args
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+            class: EffectClass::Read,
+            destructive: false,
+            author: None,
+            target: None,
+            from: None,
+            asks: false,
+            shows: Vec::new(),
+        }
+    }
+
+    /// The registry's verbs are called at the dispatch's own provider, on the package's
+    /// resource, with the arguments by name.
+    #[test]
+    fn the_registry_is_called_at_its_own_provider() {
+        let call = callees()
+            .call(&action("catalogue", vec![("query", Value::none())]))
+            .expect("the catalogue is a call");
+        assert_eq!(call["provider"], "tilo.actions");
+        assert_eq!(call["resource"], "tl:tilo.actions");
+        assert_eq!(call["action"], "catalogue");
+    }
+
+    /// What the dispatch answers a call with is the invocation record, read as the package
+    /// declares it: its status a case, its output any value.
+    #[test]
+    fn a_call_answers_the_invocation_record_the_workspace_keeps() {
+        let invocation = action(
+            "call",
+            vec![
+                ("address", Value::text("so.tilo.notes/notes.note:1#write")),
+                ("arguments", Value::Json(Box::default())),
+            ],
+        );
+        let answered = callees().answered(
+            &invocation,
+            Answered::Done(json!({
+                "value": {
+                    "id": "inv-1",
+                    "status": "waiting",
+                    "action": "notes.note:1#write",
+                    "started_ms": 1,
+                    "output": {"titles": ["Take the ferry"]},
+                },
+                "resources": [],
+            })),
+        );
+        let Invoked::Done(Value::Rec(record)) = answered else {
+            panic!("the record is a call's answer: {answered:?}");
+        };
+        assert_eq!(record.ty, "tilo.invocations#Invocation");
+        let Some(Value::Enum(status)) = record.fields.get("Invocation.status") else {
+            panic!("the status is the record's: {:?}", record.fields);
+        };
+        assert_eq!(status.variant, "waiting");
+        assert!(
+            matches!(
+                record.fields.get("Invocation.output"),
+                Some(Value::Opt(Some(_)))
+            ),
+            "the output is the action's answer: {:?}",
+            record.fields
+        );
     }
 }

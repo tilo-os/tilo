@@ -138,6 +138,7 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
         Ty::Set(inner) => FieldType::Set(boxed(inner, types)),
         Ty::Collection(inner) => FieldType::Collection(boxed(inner, types)),
         Ty::Map(inner) => FieldType::Map(boxed(inner, types)),
+        Ty::Json => FieldType::Json,
         _ => FieldType::Any,
     }
 }

@@ -256,6 +256,7 @@ impl PendingInvocation {
 
 // Remote-action provider: the broker as a `tilo_actions::remote::ActionProvider`.
 pub(super) mod action_provider;
+mod actions_registry;
 mod admission_memo;
 mod agent_connection;
 #[cfg(test)]

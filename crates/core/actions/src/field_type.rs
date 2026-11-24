@@ -38,6 +38,9 @@ pub enum FieldType {
     Resource(String),
     /// A record or enum declared in the surface's types.
     Named(String),
+    /// Any JSON value: what an action answers with that no field shape describes
+    /// (a read's output, a parsed document).
+    Json,
     /// A value or none.
     Option(Box<FieldType>),
     List(Box<FieldType>),

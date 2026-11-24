@@ -4187,6 +4187,13 @@ fn callees_of(
         workspace: Some(workspace.to_owned()),
         ..Default::default()
     };
+    // The platform's packages the app uses, which this process has no module for: what the
+    // registry's own verbs (`tilo.actions`) are declared by, and what their answers read as.
+    for app in &bundle.meta.uses {
+        if let Ok(meta) = tilolang_tilo::platform_apps::platform_package(app) {
+            callees.apps.insert(app.clone(), meta);
+        }
+    }
     callees.provide(provided);
     callees
 }

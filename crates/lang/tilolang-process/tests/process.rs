@@ -35,6 +35,9 @@ mod chat;
 /// An app's calls of another app's action, through the dispatch.
 #[path = "process/children.rs"]
 mod children;
+/// The workspace's action registry, read and called by address.
+#[path = "process/registry.rs"]
+mod registry;
 #[path = "process/native_notes.rs"]
 mod native_notes;
 /// A paste past a mebibyte, kept and undone.

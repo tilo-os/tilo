@@ -32,6 +32,7 @@
 )]
 
 pub mod abi;
+pub mod actions;
 pub mod agent;
 pub mod ast;
 pub mod calendar;
@@ -68,6 +69,7 @@ pub mod toolkit;
 pub mod types;
 pub mod written;
 
+pub use actions::{ACTIONS_APP, actions_meta};
 pub use checker::{RESOURCE_TYPE_NAME, resource_key};
 pub use diag::{Diagnostic, Span, diagnostics_json, did_you_mean_about};
 pub use host::{

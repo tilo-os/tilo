@@ -134,6 +134,15 @@
           "title": "What its newest change did, or the summary of the conversation it answered."
         },
         {
+          "path": "output",
+          "stored": "value",
+          "type": {
+            "option": "json"
+          },
+          "readonly": true,
+          "title": "What the action answered when it ended well: a read's result, a record the caller then reads."
+        },
+        {
           "path": "changes",
           "stored": "value",
           "type": "int",

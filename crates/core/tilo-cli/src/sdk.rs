@@ -484,7 +484,9 @@ impl Resolver<'_> {
             FieldType::Union(cases) => Ty::Union(cases.iter().map(|case| self.ty(case)).collect()),
             FieldType::Named(name) => self.names.get(name).cloned().map_or(Ty::Any, Ty::Named),
             FieldType::Resource(kind) => self.kinds.get(kind).cloned().map_or(Ty::Any, Ty::Named),
-            FieldType::Any | FieldType::Reactions | FieldType::Outbox(_) => Ty::Any,
+            FieldType::Any | FieldType::Json | FieldType::Reactions | FieldType::Outbox(_) => {
+                Ty::Any
+            }
         }
     }
 }

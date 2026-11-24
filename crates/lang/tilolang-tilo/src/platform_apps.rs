@@ -472,11 +472,14 @@ pub fn platform_packages_of<'a>(
     apps: impl IntoIterator<Item = &'a str>,
 ) -> Result<Vec<PackageMeta>, String> {
     let named: std::collections::BTreeSet<&str> = apps.into_iter().collect();
-    PUBLISHED
+    packages()
         .iter()
-        .zip(packages())
-        .filter(|(published, _)| named.contains(published.app))
-        .map(|(_, package)| package.clone())
+        .filter(|package| {
+            package
+                .as_ref()
+                .map_or(true, |package| named.contains(package.app.as_str()))
+        })
+        .cloned()
         .collect()
 }
 
@@ -506,7 +509,14 @@ pub fn named_platform_packages(source: &str) -> Result<Vec<PackageMeta>, String>
 fn packages() -> &'static [Result<PackageMeta, String>] {
     static PACKAGES: std::sync::OnceLock<Vec<Result<PackageMeta, String>>> =
         std::sync::OnceLock::new();
-    PACKAGES.get_or_init(|| PUBLISHED.iter().map(package).collect())
+    PACKAGES.get_or_init(|| {
+        let mut packages: Vec<Result<PackageMeta, String>> =
+            PUBLISHED.iter().map(package).collect();
+        // What the workspace's action registry offers, read and called by code: the one package
+        // that is a module of the language as much as an app (`use tilo.actions as actions`).
+        packages.push(Ok(tilolang::actions_meta()));
+        packages
+    })
 }
 
 /// The package of the platform's app `app` alone ([`platform_packages`]): what a view that uses
@@ -515,6 +525,9 @@ fn packages() -> &'static [Result<PackageMeta, String>] {
 /// # Errors
 /// The platform publishes no app `app`, or its surface does not read.
 pub fn platform_package(app: &str) -> Result<PackageMeta, String> {
+    if app == tilolang::ACTIONS_APP {
+        return Ok(tilolang::actions_meta());
+    }
     PUBLISHED
         .iter()
         .find(|published| published.app == app)
@@ -901,6 +914,11 @@ impl Roots {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 mod tests {
     use super::*;
 
@@ -935,5 +953,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Code reads the catalogue and calls an action by address: the two verbs and the record
+    /// they answer compile against the packages the platform publishes.
+    #[test]
+    fn the_registry_packages_are_what_code_names() {
+        let source = r#"app test.registry "Registry"
+
+use tilo.actions as actions
+use tilo.invocations as invocations
+
+type Counter {
+    value: Int merge counter
+}
+
+root Counter
+
+default view counter for Counter
+
+view counter(c: Counter) {
+    text("{c.value}")
+}
+
+action look() -> Int {
+    let found = actions.catalogue(query: .none, app: .none)
+    found.len()
+}
+
+action poke(address: Text, arguments: json.Value) -> Text {
+    let made = actions.call(address: address, arguments: arguments)
+    made.status.label()
+}
+"#;
+        let used = platform_packages_of(["tilo.actions", "tilo.invocations"].into_iter())
+            .expect("the platform's registry packages read");
+        let compiled = tilolang::compile_package(source, &tilolang::IdsLock::new(), &used)
+            .unwrap_or_else(|diagnostics| {
+                panic!("the registry packages compile: {diagnostics:#?}")
+            });
+        assert!(
+            compiled
+                .meta
+                .uses
+                .contains(&tilolang::ACTIONS_APP.to_owned())
+        );
     }
 }
