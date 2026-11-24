@@ -541,8 +541,24 @@ printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycl
   "$medium" "$profiled_medium" "$TILO_VM_ARCH" "$TILO_USER" "$unlock" "$install_mode" "$storage" "$graphics" "$encoder_sha" \
   > "$out/scenario.txt"
 
+# The development medium (tools/ci/publish/installer-medium.sh) is unsigned and
+# carries the unverified-VM marker: its target has no PCR prediction, so
+# tilo-install lets it through the authority preflight only in a VM with the
+# install-proof port. A signed medium still runs the full preflight with the
+# port attached.
+medium_trust="$(python3 - "$(dirname "$medium")/source.json" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        print(json.load(handle).get("trust", ""))
+except FileNotFoundError:
+    pass
+PY
+)"
 proof_arg=()
-[ -z "$expected_target_ref" ] || proof_arg=(--install-proof)
+if [ -n "$expected_target_ref" ] || [ "$medium_trust" = development-unsigned ]; then
+  proof_arg=(--install-proof)
+fi
 if [ "$software_tpm" -eq 1 ]; then
   "$vm" boot-installer "$display_arg" --tpm "${proof_arg[@]}"
 else
