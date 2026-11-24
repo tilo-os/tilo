@@ -37,8 +37,8 @@ const SENDER: &str = include_str!("../../../../../../tools/protocols/airdrop_sen
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// The most the helper may answer with.
 const REPLY_BYTES: u64 = 1024;
-/// How long one helper run may take.
-const HELPER_TIMEOUT: Duration = Duration::from_secs(65);
+/// How long one helper run may take, unless the host lends the attempts another bound.
+pub const HELPER_TIMEOUT: Duration = Duration::from_secs(65);
 /// How long an attempt waits for the person's verification.
 const CONSENT_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long an attempt that ended stays listed, with how it ended.
@@ -70,6 +70,9 @@ pub struct Host {
     pub changed: Box<dyn Fn() + Send + Sync>,
     /// The person's language, for the words a refusal is said in.
     pub language: Box<dyn Fn() -> Option<String> + Send + Sync>,
+    /// How long one helper run may take: a receiver that never answers fails within this bound
+    /// rather than holding the attempt open.
+    pub helper_timeout: Duration,
 }
 
 /// One attempt as it is listed.
@@ -451,7 +454,7 @@ fn helper(
         command.arg("inspect");
         inherit(&mut command, None, None);
     }
-    supervise(inner, command, admitted, HELPER_TIMEOUT)
+    supervise(inner, command, admitted, inner.host.helper_timeout)
 }
 
 fn command() -> Command {
@@ -600,7 +603,7 @@ impl Staged {
             Some(input.as_raw_fd()),
             Some(writable.as_raw_fd()),
         );
-        let reply = supervise(inner, command, admitted, HELPER_TIMEOUT)?;
+        let reply = supervise(inner, command, admitted, inner.host.helper_timeout)?;
         let seals =
             libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
         // SAFETY: fcntl operates only on our anonymous staging descriptor.

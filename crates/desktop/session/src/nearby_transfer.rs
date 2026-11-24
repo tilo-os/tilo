@@ -2272,6 +2272,7 @@ fn receivers(engine: &std::sync::Weak<Inner>, enabled: bool) -> AirDrops {
             }
         }),
         language: Box::new(|| Some(ui::i18n::window_language(&["en-US", "de-DE"]))),
+        helper_timeout: tilo_workspace_service::apps::nearby_send::HELPER_TIMEOUT,
     })
 }
 

@@ -33,7 +33,7 @@ use super::services::{NearbyTransferRequestContext, NearbyTransferServices};
 #[cfg(target_os = "linux")]
 mod airdrop;
 #[cfg(target_os = "linux")]
-pub use airdrop::{AirDrops, Attempt, Host, lab};
+pub use airdrop::{AirDrops, Attempt, HELPER_TIMEOUT, Host, lab};
 
 /// The question a file handed to a receiver that is not one of the person's devices waits on: the
 /// person types the fingerprint of the certificate that receiver showed.

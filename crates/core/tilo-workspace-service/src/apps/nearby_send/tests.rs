@@ -561,6 +561,9 @@ mod a_receiver_that_is_not_one_of_yours {
         port: u16,
         /// The leaf certificate digest it serves, as its trusted console would print it.
         pin: String,
+        /// The digest it serves on every connection after the first, where it rotates: the
+        /// certificate the person verified is not the one the send meets.
+        rotated: Option<String>,
         requests: Arc<Mutex<Vec<String>>>,
         uploads: Arc<Mutex<Vec<Vec<u8>>>>,
         stop: Arc<AtomicBool>,
@@ -569,29 +572,55 @@ mod a_receiver_that_is_not_one_of_yours {
 
     impl Receiver {
         fn start(answer: Answer) -> Self {
-            let material =
-                rcgen::generate_simple_self_signed(vec!["airdrop-fixture.invalid".to_owned()])
-                    .unwrap();
-            let cert = material.cert.der().clone();
-            let pin = hex::encode(Sha256::digest(&cert));
-            let key =
-                rustls::pki_types::PrivatePkcs8KeyDer::from(material.signing_key.serialize_der());
-            let config = Arc::new(
-                rustls::ServerConfig::builder_with_provider(Arc::new(
-                    rustls::crypto::ring::default_provider(),
-                ))
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .with_no_client_auth()
-                .with_single_cert(vec![cert], key.into())
-                .unwrap(),
-            );
+            Self::starting(answer, false, false)
+        }
+
+        /// A receiver whose leaf certificate changes between the inspection the person verifies
+        /// and the send they approve.
+        fn rotating(answer: Answer) -> Self {
+            Self::starting(answer, true, false)
+        }
+
+        /// A receiver that takes the ask and never answers it.
+        fn stalling(answer: Answer) -> Self {
+            Self::starting(answer, false, true)
+        }
+
+        fn starting(answer: Answer, rotate: bool, stall_ask: bool) -> Self {
+            let (configs, pins): (Vec<Arc<rustls::ServerConfig>>, Vec<String>) =
+                (0..(if rotate { 2 } else { 1 }))
+                    .map(|_| {
+                        let material = rcgen::generate_simple_self_signed(vec![
+                            "airdrop-fixture.invalid".to_owned(),
+                        ])
+                        .unwrap();
+                        let cert = material.cert.der().clone();
+                        let pin = hex::encode(Sha256::digest(&cert));
+                        let key = rustls::pki_types::PrivatePkcs8KeyDer::from(
+                            material.signing_key.serialize_der(),
+                        );
+                        let config = Arc::new(
+                            rustls::ServerConfig::builder_with_provider(Arc::new(
+                                rustls::crypto::ring::default_provider(),
+                            ))
+                            .with_safe_default_protocol_versions()
+                            .unwrap()
+                            .with_no_client_auth()
+                            .with_single_cert(vec![cert], key.into())
+                            .unwrap(),
+                        );
+                        (config, pin)
+                    })
+                    .unzip();
+            let pin = pins[0].clone();
+            let rotated = pins.get(1).cloned();
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             listener.set_nonblocking(true).unwrap();
             let port = listener.local_addr().unwrap().port();
             let requests = Arc::new(Mutex::new(Vec::new()));
             let uploads = Arc::new(Mutex::new(Vec::new()));
             let stop = Arc::new(AtomicBool::new(false));
+            let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let state = (
                 Arc::clone(&requests),
                 Arc::clone(&uploads),
@@ -600,7 +629,14 @@ mod a_receiver_that_is_not_one_of_yours {
             let worker = std::thread::spawn(move || {
                 while !state.2.load(Ordering::Acquire) {
                     match listener.accept() {
-                        Ok((socket, _)) => receive(socket, &config, &state.0, &state.1, answer),
+                        Ok((socket, _)) => {
+                            let index =
+                                connections.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                            let config = Arc::clone(&configs[usize::from(index != 0)]);
+                            receive(
+                                socket, &config, &state.0, &state.1, &state.2, answer, stall_ask,
+                            );
+                        }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(5));
                         }
@@ -611,6 +647,7 @@ mod a_receiver_that_is_not_one_of_yours {
             Self {
                 port,
                 pin,
+                rotated,
                 requests,
                 uploads,
                 stop,
@@ -641,7 +678,9 @@ mod a_receiver_that_is_not_one_of_yours {
         config: &rustls::ServerConfig,
         requests: &Mutex<Vec<String>>,
         uploads: &Mutex<Vec<Vec<u8>>>,
+        stop: &AtomicBool,
         answer: Answer,
+        stall_ask: bool,
     ) {
         let _ = socket.set_read_timeout(Some(Duration::from_secs(2)));
         let _ = socket.set_write_timeout(Some(Duration::from_secs(2)));
@@ -681,6 +720,14 @@ mod a_receiver_that_is_not_one_of_yours {
                 body
             };
             let (status, reason, reply): (u16, &str, &[u8]) = match path.as_str() {
+                "/Ask" if stall_ask => {
+                    // The receiver holds the ask and never answers it: the sender's own bound is
+                    // what ends the attempt.
+                    while !stop.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    break;
+                }
                 "/Ask" if answer == Answer::Refuse => (403, "Forbidden", b""),
                 "/Upload" => {
                     uploads.lock_recover().push(body);
@@ -728,8 +775,14 @@ mod a_receiver_that_is_not_one_of_yours {
         listener.local_addr().unwrap().port()
     }
 
-    /// The receivers, under a Files grant over `folder`, asking through the questions returned.
+    /// The receivers, under a Files grant over `folder`, asking through the questions returned,
+    /// with each helper run bounded by the host's own.
     fn receivers(folder: &Path) -> (AirDrops, AskReceiver) {
+        receivers_within(folder, HELPER_TIMEOUT)
+    }
+
+    /// The receivers, with each helper run given at most `timeout`.
+    fn receivers_within(folder: &Path, timeout: Duration) -> (AirDrops, AskReceiver) {
         let grant = folder.to_path_buf();
         let air_drop = AirDrops::new(Host {
             enabled: true,
@@ -744,6 +797,7 @@ mod a_receiver_that_is_not_one_of_yours {
             permitted: Box::new(|| true),
             changed: Box::new(|| {}),
             language: Box::new(|| None),
+            helper_timeout: timeout,
         });
         let (asks, questions) = tilo_actions::asks::channel();
         air_drop.ask_with(asks);
@@ -773,6 +827,15 @@ mod a_receiver_that_is_not_one_of_yours {
             .map(|attempt| attempt.phase)
     }
 
+    /// How the attempt `id` stands, where more than one is listed.
+    fn phase_of(air_drop: &AirDrops, id: [u8; 16]) -> Option<NearbyTransferPhase> {
+        air_drop
+            .attempts()
+            .into_iter()
+            .find(|attempt| attempt.id == id)
+            .map(|attempt| attempt.phase)
+    }
+
     /// The receiver's verification, once its certificate is in.
     fn asked(questions: &AskReceiver) -> (Question, VerifyQuestion) {
         let mut asked = None;
@@ -791,6 +854,11 @@ mod a_receiver_that_is_not_one_of_yours {
 
     /// Hand `file` to the receiver on `port`.
     fn send(air_drop: &AirDrops, file: &Path, port: u16) {
+        start(air_drop, file, port);
+    }
+
+    /// Hand `file` to the receiver on `port`, answering the attempt's id.
+    fn start(air_drop: &AirDrops, file: &Path, port: u16) -> [u8; 16] {
         air_drop
             .start(
                 None,
@@ -799,7 +867,7 @@ mod a_receiver_that_is_not_one_of_yours {
                 "127.0.0.1",
                 port,
             )
-            .expect("the file is handed over");
+            .expect("the file is handed over")
     }
 
     /// Answer `asked` with the fingerprint the person typed.
@@ -958,6 +1026,80 @@ mod a_receiver_that_is_not_one_of_yours {
                 phase(&air_drop) == Some(NearbyTransferPhase::Failed)
             }),
             "the attempt failed"
+        );
+    }
+
+    #[test]
+    fn a_receiver_that_changes_its_certificate_sends_nothing_until_verified_again() {
+        let folder = tempfile::tempdir().expect("the person's files");
+        let (file, bytes) = the_file(folder.path());
+        let receiver = Receiver::rotating(Answer::Accept);
+        let (air_drop, questions) = receivers(folder.path());
+        let changed = receiver.rotated.clone().expect("the fixture rotates");
+
+        // The fingerprint its console printed for the inspection is not the certificate the
+        // receiver shows when the staged bytes would leave: nothing is sent.
+        let first = start(&air_drop, &file, receiver.port);
+        let (question, verification) = asked(&questions);
+        assert_eq!(verification.certificate, receiver.pin);
+        verify(&questions, &question, &receiver.pin);
+        assert!(
+            until(|| phase_of(&air_drop, first) == Some(NearbyTransferPhase::Failed)),
+            "the send meets another certificate and fails"
+        );
+        assert!(
+            receiver.paths().is_empty(),
+            "the changed certificate is refused before any request"
+        );
+
+        // A fresh attempt verifies the certificate the receiver shows now: the one printed for
+        // the first attempt verifies nothing, and the new one sends.
+        let second = start(&air_drop, &file, receiver.port);
+        let (question, verification) = asked(&questions);
+        assert_eq!(
+            verification.certificate, changed,
+            "the sheet names the certificate this attempt met"
+        );
+        verify(&questions, &question, &receiver.pin);
+        assert_eq!(
+            asked(&questions).0,
+            question,
+            "the old fingerprint verifies nothing"
+        );
+        verify(&questions, &question, &changed);
+        assert!(
+            until(|| phase_of(&air_drop, second) == Some(NearbyTransferPhase::Completed)),
+            "the attempt is done"
+        );
+        assert_eq!(receiver.paths(), ["/Discover", "/Ask", "/Upload"]);
+        assert_eq!(
+            extracted(&receiver.uploads()[0]),
+            (NAME.to_owned(), bytes),
+            "the receiver holds exactly the bytes the person approved"
+        );
+    }
+
+    #[test]
+    fn a_receiver_that_never_answers_the_ask_ends_the_attempt_as_failed() {
+        let folder = tempfile::tempdir().expect("the person's files");
+        let (file, _bytes) = the_file(folder.path());
+        let receiver = Receiver::stalling(Answer::Accept);
+        // A receiver that holds the ask is what the helper's own bound is for: a short one keeps
+        // this test quick, and the attempt ends the way a long wait would.
+        let (air_drop, questions) = receivers_within(folder.path(), Duration::from_secs(4));
+
+        let attempt = start(&air_drop, &file, receiver.port);
+        let (question, _) = asked(&questions);
+        verify(&questions, &question, &receiver.pin);
+        assert!(
+            until(|| phase_of(&air_drop, attempt) == Some(NearbyTransferPhase::Failed)),
+            "the attempt ends, saying it failed rather than waiting on the receiver"
+        );
+        assert_eq!(receiver.paths(), ["/Discover", "/Ask"]);
+        assert!(receiver.uploads().is_empty(), "the receiver took nothing");
+        assert!(
+            questions.pending().is_empty(),
+            "the question was answered, never left up"
         );
     }
 }
