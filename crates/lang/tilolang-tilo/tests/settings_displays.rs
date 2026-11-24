@@ -349,7 +349,7 @@ fn the_pane_shows_another_device_s_screens_where_they_stand() {
     host.runtime()
         .set_reading(&devices(), DEVICES_READING)
         .expect("the person's devices are set");
-    let view = displays_pane(&host);
+    let mut view = displays_pane(&host);
     let shown = texts(&view);
     assert!(
         shown.iter().any(|text| text
