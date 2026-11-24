@@ -33,7 +33,6 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         shortcuts::definition(),
         slides::definition(),
         snippets::definition(),
-        speed_test::definition(),
         terminal::definition(),
         totp::definition(),
         typst_editor::definition(),

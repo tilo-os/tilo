@@ -125,7 +125,6 @@
   "shortcuts": {"libraries": 28405858, "tests": 1355995744},
   "slides": {"libraries": 23611650, "tests": 330336264},
   "snippets": {"libraries": 19576107, "tests": 305024312},
-  "speed-test": {"libraries": 7623807, "tests": 754246064},
   "ssh-agent-client": {"libraries": 183619, "tests": 5566176},
   "staging-handoff-model": {"libraries": 7172845, "tests": 6187144},
   "swipe": {"libraries": 41117, "tests": 5703848},

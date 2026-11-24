@@ -198,6 +198,8 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 tilo-vision-service = { path = "../../services/vision" }
 # The code editor's device work: its files, searches, commands and language servers.
 code-engine = { path = "../../engines/code-engine" }
+# The speed test's device work: its one run measuring latency, download and upload.
+speed-engine = { path = "../../engines/speed-engine" }
 # The apps the session runs itself keep their resources in the workspace's store, whose
 # commands are answered by this device's own workspace service.
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }

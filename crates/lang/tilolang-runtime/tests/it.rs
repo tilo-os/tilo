@@ -64,6 +64,8 @@ mod e2e_native;
 mod e2e_native_ui;
 #[path = "e2e_notes.rs"]
 mod e2e_notes;
+#[path = "e2e_speed_test.rs"]
+mod e2e_speed_test;
 #[path = "e2e_std.rs"]
 mod e2e_std;
 #[path = "e2e_tool_context.rs"]

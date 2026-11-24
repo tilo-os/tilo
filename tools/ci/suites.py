@@ -41,7 +41,6 @@ DISCOVERED_PYTHON_DIRS = ("tools/tests", ".codex/hooks")
 # are classified here rather than given a manifest entry of their own.
 NOT_TESTS = frozenset({
     # The generated SDK types of the Speed Test app, which sdk-types verifies are current.
-    "sdk/python/src/tilo/types/speed_test.py",
     # The serial-console runner os/tests/boot_assessment_rollback.sh takes.
     "os/tests/serial_runner.sh",
 })

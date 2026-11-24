@@ -1,0 +1,18 @@
+[package]
+name = "speed-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The speed test's device work: one run that measures latency, download and upload to the nearest Cloudflare test server"
+
+[dependencies]
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+tilo-paths = { path = "../../platform/tilo-paths" }
+tilo-rt = { path = "../../platform/tilo-rt" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

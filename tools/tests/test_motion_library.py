@@ -136,13 +136,6 @@ class MotionLibraryTests(unittest.TestCase):
                     "    travel + (later.1 - travel) * into / span\n"
                     "}\n"
                 ),
-                # A transfer rate over the time it took.
-                "apps/speed-test/src/measure.rs": (
-                    "fn mbps(bytes: u64, elapsed: Duration) -> f64 {\n"
-                    "    let seconds = elapsed.as_secs_f64();\n"
-                    "    bytes as f64 * 8.0 / seconds / 1_000_000.0\n"
-                    "}\n"
-                ),
                 # How many days old a file is.
                 "crates/session/desktop/src/search/files.rs": (
                     "fn f() -> u64 { age.as_secs() / DAY }\n"

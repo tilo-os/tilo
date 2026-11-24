@@ -1,0 +1,45 @@
+{
+  "app": "speed-test",
+  "said": "Speed Test",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.speed-test",
+    "package": "speed-test"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Speed Test before anything is measured",
+      "ops": [
+        { "theme": false },
+        { "launch": true },
+        { "wait_for": "actions" },
+        { "wait_for": "Ready to test" },
+        { "targets": true }
+      ]
+    },
+    {
+      "id": "run",
+      "said": "Start the test: the dial measures and the action becomes Stop",
+      "ops": [
+        { "press": { "tl": "Run speed test" } },
+        { "wait_for": "Stop the test" }
+      ]
+    },
+    {
+      "id": "stop",
+      "said": "Stop the test: the dial goes back to ready",
+      "ops": [
+        { "press": { "tl": "Stop the test" } },
+        { "wait_for": "Ready to test" }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same dial in the dark theme",
+      "ops": [{ "theme": true }, { "wait_for": "Ready to test" }],
+      "dark": true
+    }
+  ]
+}

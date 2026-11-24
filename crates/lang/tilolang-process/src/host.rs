@@ -27,6 +27,9 @@ use tilolang_process::wait::{Wake, wait};
 static API: OnceLock<Arc<Descriptor>> = OnceLock::new();
 
 pub(super) fn main() -> std::process::ExitCode {
+    // The app engines this host answers for: a package's own work, asked for by name through
+    // `engine.start`, `engine.status` and `engine.cancel` (`tilolang_tilo::engine`).
+    speed_engine::register();
     tracing_subscriber::fmt()
         // RUST_LOG, with the launch timing lines kept, as the session's own log keeps them.
         .with_env_filter(tracing_subscriber::EnvFilter::new(

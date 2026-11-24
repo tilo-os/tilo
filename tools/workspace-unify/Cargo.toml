@@ -1012,7 +1012,6 @@ doc = false
 "socket-pktinfo-0_4_1" = { package = "socket-pktinfo", version = "^0.4.1", default-features = false, features = [] }
 "socket2-0_6_3" = { package = "socket2", version = "^0.6.3", default-features = false, features = ["all"] }
 "sorted-index-buffer-0_2_1" = { package = "sorted-index-buffer", version = "^0.2.1", default-features = false, features = [] }
-"speed-test" = { path = "../../apps/speed-test", default-features = false, features = [] }
 "spellbook-0_4_2" = { package = "spellbook", version = "^0.4.2", default-features = false, features = ["default", "default-hasher"] }
 "spin-0_10_1" = { package = "spin", version = "^0.10.1", default-features = false, features = ["mutex", "spin_mutex"] }
 "spin-0_9_9" = { package = "spin", version = "^0.9.9", default-features = false, features = ["barrier", "default", "lazy", "lock_api", "lock_api_crate", "mutex", "once", "rwlock", "spin_mutex", "std"] }
@@ -3808,7 +3807,6 @@ doc = false
 "socket-pktinfo-0_4_1" = { package = "socket-pktinfo", version = "^0.4.1", default-features = false, features = [] }
 "socket2-0_6_3" = { package = "socket2", version = "^0.6.3", default-features = false, features = ["all"] }
 "sorted-index-buffer-0_2_1" = { package = "sorted-index-buffer", version = "^0.2.1", default-features = false, features = [] }
-"speed-test" = { path = "../../apps/speed-test", default-features = false, features = [] }
 "spellbook-0_4_2" = { package = "spellbook", version = "^0.4.2", default-features = false, features = ["default", "default-hasher"] }
 "spin-0_10_1" = { package = "spin", version = "^0.10.1", default-features = false, features = ["mutex", "spin_mutex"] }
 "spin-0_9_9" = { package = "spin", version = "^0.9.9", default-features = false, features = ["barrier", "default", "lazy", "lock_api", "lock_api_crate", "mutex", "once", "rwlock", "spin_mutex", "std"] }
