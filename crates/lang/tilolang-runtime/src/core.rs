@@ -35,11 +35,11 @@ use Imp::{
     EngineRun, EngineStart, EngineStartDone, EngineState, EngineStatus, EngineStream, EntryParts,
     EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart,
     EventPress, EventValue, FieldChanged, FileAt, FileBook, FileBookCover, FileBookInfo,
-    FileCompress, FileCopy, FileCopyTo, FileCrop, FileData, FileEncode, FileExtract, FileFiles, FileHere,
-    FileImageInfo, FileList, FileMarkdown, FileMkdir, FileMove, FileOfBytes, FileOfDocument,
-    FileOfText, FileOpen, FileOpenPath, FilePart, FilePreview, FileReadPath, FileRemove,
-    FileRename, FileResize, FileRestore, FileSize, FileStat, FileText, FileThumbnail, FileTrash,
-    FileTrashEntries, FileTurn, FileWatch, FileWrite, FileZip, FilterLit, Filters, Find,
+    FileCompress, FileCopy, FileCopyTo, FileCrop, FileData, FileEncode, FileExtract, FileFiles,
+    FileHere, FileImageInfo, FileList, FileMarkdown, FileMkdir, FileMove, FileOfBytes,
+    FileOfDocument, FileOfText, FileOpen, FileOpenPath, FilePart, FilePreview, FileReadPath,
+    FileRemove, FileRename, FileResize, FileRestore, FileSize, FileStat, FileText, FileThumbnail,
+    FileTrash, FileTrashEntries, FileTurn, FileWatch, FileWrite, FileZip, FilterLit, Filters, Find,
     FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil, FloatCeilTo,
     FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract, FloatGamma,
     FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FloatMin, FloatPow,
@@ -703,8 +703,17 @@ impl Core {
                 self.web_import(imp, a)
             }
             PageCall => self.page_import(a),
-            FilePart | FileSize | FileHere | FileText | FileData | FileFiles | FileBook | FileBookInfo
-            | FileBookCover | SheetFile | Imp::PresentationFile => self.file_import(imp, a),
+            FilePart
+            | FileSize
+            | FileHere
+            | FileText
+            | FileData
+            | FileFiles
+            | FileBook
+            | FileBookInfo
+            | FileBookCover
+            | SheetFile
+            | Imp::PresentationFile => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip | SheetOfFile | Imp::PresentationOfFile => {
                 self.file_make(imp, a)
             }
