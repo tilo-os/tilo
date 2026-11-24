@@ -197,7 +197,7 @@ impl FirstWorkspace {
 }
 
 /// `person`'s own workspace, at the id their key names.
-fn own_workspace(person: &[u8; 32]) -> WorkspaceId {
+pub(super) fn own_workspace(person: &[u8; 32]) -> WorkspaceId {
     WorkspaceId::parse(&tilo_server_protocol::servers::person_workspace_id(person))
         .expect("a person's workspace id is a workspace id")
 }

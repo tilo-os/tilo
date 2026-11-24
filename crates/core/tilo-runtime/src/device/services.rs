@@ -857,13 +857,27 @@ impl Daemon {
     /// theirs, which may do only what both an agent and the person may, even though the account
     /// itself is theirs.
     ///
+    /// The person's own workspace is opened the first time a connection reaches it, as every
+    /// other caller of the daemon opens it ([`crate::RuntimeServices::workspace`]): founded then
+    /// on a computer that has none yet, so a command run right after the daemon starts is
+    /// answered.
+    ///
     /// # Errors
-    /// The workspace cannot be admitted to now, or the device cannot make the agent's key.
+    /// The person's workspace cannot be opened, the workspace cannot be admitted to now, or the
+    /// device cannot make the agent's key.
     pub(crate) fn connection_tree_in(
         self: &Arc<Self>,
         workspace: Option<&str>,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
         let workspace = workspace.unwrap_or(&self.workspace);
+        if workspace == self.workspace {
+            crate::RuntimeServices::workspace(self.as_ref()).map_err(|why| {
+                io::Error::other(format!(
+                    "this computer could not open your workspace yet ({why}): `tilo status` \
+                     says what its daemon is waiting for"
+                ))
+            })?;
+        }
         let time = self.policy_origin.capture().map_err(io::Error::other)?;
         let base = self.provider_for(workspace)?;
         let (provider, _) = base.agent_session(workspace, &self.actor, &time, |person| {

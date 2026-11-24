@@ -88,9 +88,6 @@ fn the_native_endpoints_frames_carry_a_commands_calls_as_its_account() {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
-    // The person's workspace is founded the first time it is asked for: before a command reaches
-    // it, as `tilo login` and `tilo status` have by then.
-    let workspace = daemon.workspace().expect("the workspace");
     let socket = native_endpoint(&daemon, &root);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -103,6 +100,7 @@ fn the_native_endpoints_frames_carry_a_commands_calls_as_its_account() {
     let calls = runtime
         .block_on(tilo_api::calls::Calls::over(person))
         .unwrap();
+    let workspace = daemon.workspace().expect("the workspace");
     assert_eq!(calls.served_workspace(), Some(workspace.as_str()));
     let listed = runtime
         .block_on(calls.list(Some(workspace.as_str()), None, None))
@@ -156,11 +154,6 @@ fn a_commands_migration_steps_reach_the_devices_own_migrations() {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
-    // The person's workspace is founded before a command reaches it, as `tilo login` and
-    // `tilo status` have by then.
-    let workspace = daemon
-        .workspace()
-        .expect("the device founds its person's workspace");
     daemon.serve_migrations();
     let socket = native_endpoint(&daemon, &root);
     let person = line_client(&socket, OWN);
@@ -186,6 +179,9 @@ fn a_commands_migration_steps_reach_the_devices_own_migrations() {
         .expect("the daemon answered")
         .expect("the person's step is admitted");
     let mut status = receipt.status;
+    let workspace = daemon
+        .workspace()
+        .expect("the step's connection opened the person's workspace");
     // The connection is an agent of the person's: its step waits for their yes, which they give
     // through their own dispatch, as their shell does.
     let questions = tilo_migrate::provider::caller::Steps::new(
@@ -510,6 +506,57 @@ fn a_folder_put_again_sends_none_of_its_bytes() {
                 .iter()
                 .all(|step| matches!(step, ContentPutStep::Have { .. })),
         "a folder the workspace has sends none of its bytes: {steps:?}"
+    );
+}
+
+const FIRST_CONNECT_TEST: &str =
+    "device::local::tests::a_command_right_after_the_daemon_starts_is_answered_in_a_workspace_it_opens";
+
+/// `tilo ls` right after the daemon starts, on a computer whose person has no workspace yet: the
+/// daemon opens it as the command connects, through the one way it opens it for anyone, and the
+/// command is answered there.
+#[test]
+fn a_command_right_after_the_daemon_starts_is_answered_in_a_workspace_it_opens() {
+    let Some(root) = isolated_root(FIRST_CONNECT_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let own = crate::device::first_workspace::own_workspace(
+        &daemon.serving().device_cert().user_public_key,
+    );
+    let held = |serving: Arc<crate::device::workspaces::ServiceWorkspaces>| {
+        tilo_rt::app()
+            .block_on(async move { serving.keeps(own).await })
+            .expect("the runtime asks")
+    };
+    assert!(
+        !held(Arc::clone(daemon.serving())),
+        "nothing founded the person's workspace before the command"
+    );
+    let socket = native_endpoint(&daemon, &root);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let calls = runtime
+        .block_on(tilo_api::calls::Calls::over(line_client(&socket, OWN)))
+        .expect("the command reaches the daemon");
+    let listed = runtime
+        .block_on(calls.list(None, None, None))
+        .expect("the command is answered");
+    assert!(
+        listed.get("rows").and_then(Value::as_array).is_some(),
+        "{listed}"
+    );
+    assert!(
+        held(Arc::clone(daemon.serving())),
+        "the command's connection opened the person's workspace"
+    );
+    assert_eq!(
+        daemon.workspace().expect("the workspace"),
+        own.to_string(),
+        "it is the person's own, the one the daemon opens for anyone"
     );
 }
 
