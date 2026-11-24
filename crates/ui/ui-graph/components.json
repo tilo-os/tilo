@@ -6311,6 +6311,13 @@
       "doc": "A switch: the same two states as a checkbox, for a setting that takes effect at once rather than when a form is sent. Its knob slides to the side it turns to.",
       "props": [
         {
+          "name": "shown",
+          "doc": "Whether it is on, for a view that reads the state rather than binding a place of its own: the switch shows it and turns only through its event, so a change from elsewhere shows when the view is drawn again.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
           "name": "label",
           "doc": "The setting's name, beside the switch at the row's leading edge: the whole row turns it, and assistive technology reads it with the state.",
           "type": {
@@ -6322,6 +6329,13 @@
           "name": "enabled",
           "doc": "Whether it can be turned now.",
           "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "check",
+          "doc": "It was turned: whether it is on now, in the app's words.",
+          "value": "bool"
         }
       ],
       "bindings": [
