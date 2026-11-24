@@ -244,6 +244,8 @@ const MCP_SERVER_ROOTS: &[(&str, &str, &str)] = &[("server", "Server", "mcp.serv
 const MODELS_ROOTS: &[(&str, &str, &str)] = &[("models", "Models", "models")];
 /// The accounts' root, the one resource every account and every verb of them is on.
 const ACCOUNTS_ROOTS: &[(&str, &str, &str)] = &[("accounts", "Accounts", "accounts")];
+/// The app the person's host account is published as: `use tilo.host-account`.
+pub const HOST_ACCOUNT_APP: &str = "tilo.host-account";
 /// The host account's root, the one resource its plan, card, usage and invoices are
 /// read from.
 const HOST_ACCOUNT_ROOTS: &[(&str, &str, &str)] = &[("account", "HostAccount", "host-account")];
