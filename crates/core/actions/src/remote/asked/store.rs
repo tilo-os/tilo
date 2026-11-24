@@ -643,6 +643,17 @@ impl AskedStore {
         kept.moved();
     }
 
+    /// The record `at` as it is kept here.
+    #[must_use]
+    pub fn kept_ask(&self, at: &RecordRef) -> Option<KeptAsk> {
+        self.kept
+            .lock_recover()
+            .records
+            .iter()
+            .find(|record| record.at == *at)
+            .map(Record::kept)
+    }
+
     /// The record of `invocation` as it is kept.
     fn kept_of(&self, invocation: InvocationId) -> Option<KeptAsk> {
         self.kept

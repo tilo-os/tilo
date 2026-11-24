@@ -183,14 +183,10 @@ impl Identity {
     /// Whether a ticket made this computer a device of its person's, rather than it holding their
     /// root: it keeps their workspaces as a member then, and founds none of its own.
     fn joined(&self) -> bool {
-        let holds_root = tilo_identity::store::identity_dir_from_env()
-            .ok()
-            .and_then(|dir| tilo_identity::store::resolve_active_identity(&dir))
-            .and_then(|active| tilo_identity::store::load_metadata_from_path(&active).ok())
-            .is_some_and(|active| {
-                active.single_device && active.group_public_key == self.cert.user_public_key
-            });
-        !holds_root
+        !root_record().is_ok_and(|record| {
+            tilo_identity::store::load_metadata_from_path(&record)
+                .is_ok_and(|active| active.group_public_key == self.cert.user_public_key)
+        })
     }
 
     /// The person's id, hex of their root, as which they act here.
@@ -260,20 +256,29 @@ pub fn restore_a_person(
     restored.map(drop)
 }
 
+/// The person's root this daemon keeps, if it keeps one: what signs a new computer's certificate,
+/// a revocation, an agent's grant and the mark of the device that keeps it. Reading it makes this
+/// process undumpable, so it is read only when one of those is asked for.
+///
+/// # Errors
+/// The identity store does not hand it over.
+pub(crate) fn root() -> anyhow::Result<Option<tilo_identity::store::SigningIdentity>> {
+    match root_record() {
+        Ok(record) => Ok(Some(tilo_identity::store::load_from_path(record)?)),
+        Err(_) => Ok(None),
+    }
+}
+
 /// The record of the person's root this daemon keeps, when it keeps one.
 fn root_record() -> io::Result<std::path::PathBuf> {
-    let dir = tilo_identity::store::identity_dir_from_env()?;
-    tilo_identity::store::resolve_active_identity(&dir)
-        .filter(|record| {
-            tilo_identity::store::load_metadata_from_path(record)
-                .is_ok_and(|metadata| metadata.single_device)
-        })
-        .ok_or_else(|| {
+    tilo_identity::store::held_root(&tilo_identity::store::identity_dir_from_env()?).ok_or_else(
+        || {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 "this computer keeps no root of its person's: another of their devices does",
             )
-        })
+        },
+    )
 }
 
 /// Take identity step `action` (one of the `devices` identity actions) with `args` in the identity
@@ -973,7 +978,7 @@ impl Daemon {
                 (identity.key.clone(), identity.cert.clone()),
                 workspaces.endpoint(),
                 joined.then(|| Arc::clone(&home)),
-                Arc::new(super::person::root),
+                Arc::new(self::root),
                 Some(Arc::clone(&first)),
                 Some(Arc::clone(&workspaces)),
                 identity.place.clone(),
@@ -1083,7 +1088,7 @@ impl Daemon {
         // A device that keeps the person's root says so in their devices record, signed by that
         // root, and answers what their devices without it hand on; every device follows the
         // calls kept for one, to take them up or to show how its own ended.
-        let root = super::person::root().ok().flatten();
+        let root = self::root().ok().flatten();
         let (copies, cert) = (workspaces.copies().clone(), identity.cert.clone());
         let (serving, following) = (Tickets::clone(&tickets), Arc::downgrade(&asked));
         tilo_rt::app().handle().spawn(async move {
@@ -2798,7 +2803,8 @@ pub(crate) fn device_action(
     let (done, answer) = tilo_actions::remote::pending();
     let (invocations, asked, ran) = (Arc::clone(invocations), asked.cloned(), tickets.clone());
     let (caller, workspace) = (caller.clone(), workspace.to_owned());
-    tickets.when_root_marked(move |marked| {
+    let invocation = request.invocation;
+    tickets.root_only_call(workspace.clone(), invocation, move |marked, kept| {
         let answered = if marked {
             run_device_action(&invocations, &ran, &caller, request, &workspace)
         } else {
@@ -2806,7 +2812,7 @@ pub(crate) fn device_action(
                 asked.as_deref(),
                 &caller,
                 &request,
-                workspace,
+                (workspace, kept),
             ))
         };
         answered.then(move |answered| {
@@ -2836,12 +2842,12 @@ fn run_device_action(
 }
 
 /// Keep `request`, which only the person's root signs, for a device of theirs that keeps it, as
-/// the cap of a device that keeps none answers.
+/// the cap of a device that keeps none answers: or follow `kept`, its record kept there already.
 fn hand_on_to_root(
     asked: Option<&super::asked::DeviceAsked>,
     caller: &Caller,
     request: &InvokeRequest,
-    workspace: String,
+    (workspace, kept): (String, Option<tilo_actions::remote::asked::KeptAsk>),
 ) -> Result<InvocationReceipt, ActionCallError> {
     let cap = tilo_action_policy::Cap::ROOTLESS_DEVICE;
     let (Some(asked), true) = (asked, cap.root_only().answered_at_root()) else {
@@ -2862,7 +2868,7 @@ fn hand_on_to_root(
         workspace,
         pressed: None,
     };
-    asked.hand_on(&run, caller, request, facts)
+    asked.hand_on(&run, caller, request, (facts, kept))
 }
 
 impl RuntimeActionProvider {

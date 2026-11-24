@@ -114,7 +114,7 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         action,
         ..CatalogueRow::default()
     };
-    let rows = vec![
+    let mut rows = vec![
         row(None),
         row(Some(descriptor(
             INFO,
@@ -122,52 +122,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
             "What this device is: its key, how it is listed, and the people whose \
                  certificates name it.",
             &[],
-        ))),
-        row(Some(descriptor(
-            ISSUE,
-            "Add a device",
-            "Print a ticket another computer logs in with, approved by the person's root here.",
-            &[
-                ActionParam::optional(
-                    "wait",
-                    ParamType::Boolean,
-                    "Wait for the computer to log in with the ticket.",
-                ),
-                ActionParam::optional(
-                    "plan",
-                    ParamType::Text,
-                    "The planned machine's entry in your Servers workspace, which the \
-                         computer's certification takes into its own.",
-                ),
-                ActionParam::optional(
-                    "server",
-                    ParamType::Boolean,
-                    "The computer is a server, which keeps your workspaces: it gets an \
-                         entry in your Servers workspace.",
-                ),
-            ],
-        ))),
-        row(Some(descriptor(
-            RENAME,
-            "Rename a device",
-            "What one of the person's devices is called in every list.",
-            &[
-                ActionParam::required("device", ParamType::Text, "The device's key."),
-                ActionParam::required("name", ParamType::Text, "Its new name."),
-            ],
-        ))),
-        row(Some(descriptor(
-            REVOKE,
-            "Revoke a device",
-            "End one of the person's devices' logins, everywhere: signed by their root here.",
-            &[
-                ActionParam::required("device", ParamType::Text, "The device's key."),
-                ActionParam::optional(
-                    "reason",
-                    ParamType::Text,
-                    "retired, lost, stolen or compromised.",
-                ),
-            ],
         ))),
         row(Some(descriptor(
             UPDATE,
@@ -278,31 +232,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
             )],
         ))),
         row(Some(descriptor(
-            IDENTITIES,
-            "List the identities",
-            "The person's identities this device keeps, without secrets, and which one new apps \
-                 sign in as.",
-            &[],
-        ))),
-        row(Some(descriptor(
-            USE_IDENTITY,
-            "Use an identity for new apps",
-            "Sign apps opened from now on in as this identity.",
-            &[IDENTITY_ID, IDENTITY_CONFIRM],
-        ))),
-        row(Some(descriptor(
-            REMOVE_IDENTITY,
-            "Remove an identity",
-            "Delete an identity, with its key, from this device.",
-            &[IDENTITY_ID, IDENTITY_CONFIRM],
-        ))),
-        row(Some(descriptor(
-            PROTECT_IDENTITY,
-            "Protect an identity's key",
-            "Move an identity's key from a plain file into protected storage.",
-            &[IDENTITY_ID, IDENTITY_CONFIRM],
-        ))),
-        row(Some(descriptor(
             BACKUP,
             "Back up the person",
             "A backup of the person's root kept here, sealed with a passphrase.",
@@ -313,6 +242,12 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
             )],
         ))),
     ];
+    // The actions a desktop hands on to this daemon, as they are described everywhere.
+    rows.extend(
+        tilo_actions::remote::device_tickets::HANDED_ON
+            .into_iter()
+            .map(|action| row(tilo_actions::remote::device_tickets::descriptor(action))),
+    );
     // A server's turn among its person's servers, which its own daemon answers:
     // the automatic update path asks the machine itself before it reboots.
     let updates = CatalogueResource {
@@ -476,17 +411,7 @@ fn descriptor(
         kind: OperationKind::Effect,
         contract: ActionContract {
             kind: ActionKind::Outside,
-            // Taking a key back is for good: the dispatch asks the person once, as an asked
-            // invocation, whoever asks for it.
-            ..if action == REVOKE {
-                ActionContract {
-                    risk: tilo_actions::RiskLevel::Privileged,
-                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                    ..ActionContract::default()
-                }
-            } else {
-                ActionContract::default()
-            }
+            ..ActionContract::default()
         },
         input: InputSpec::None,
         params: params.to_vec(),
@@ -498,7 +423,9 @@ fn descriptor(
             .tags
             .push(tilo_actions::SECRET_ANSWER_TAG.to_owned());
     }
-    if ROOT_ONLY.contains(&action) {
+    // Only the person's root certifies an agent's key, as it revokes one
+    // ([`tilo_actions::ROOT_ONLY_TAG`]).
+    if action == CERTIFY_AGENT {
         descriptor
             .contract
             .tags
@@ -507,26 +434,9 @@ fn descriptor(
     descriptor
 }
 
-/// The identity an identity step names.
-const IDENTITY_ID: ActionParam = ActionParam::required(
-    "id",
-    ParamType::Text,
-    "The identity's id, as the list answers it.",
-);
-/// The person's explicit word for an identity change.
-const IDENTITY_CONFIRM: ActionParam = ActionParam::required(
-    "confirm",
-    ParamType::Boolean,
-    "The person confirms the change.",
-);
-
 /// The device actions whose answer is a secret ([`tilo_actions::SECRET_ANSWER_TAG`]): handed to
 /// the person once, and kept nowhere here.
 const SECRET_ANSWERS: [&str; 2] = [RECOVERY_WORDS, BACKUP];
-
-/// The device actions only the person's root signs ([`tilo_actions::ROOT_ONLY_TAG`]): a device that
-/// keeps none is capped for them, and they are answered at one that does.
-const ROOT_ONLY: [&str; 2] = [REVOKE, CERTIFY_AGENT];
 
 /// The device actions as the device's one dispatch runs them: it admitted the caller, recorded the
 /// invocation, and follows it here.

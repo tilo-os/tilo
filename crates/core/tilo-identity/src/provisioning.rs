@@ -1039,9 +1039,8 @@ fn ensure_collaboration_identity_in_context(
 /// certificate never stops the computer of the person who can make a new one. One no build reads
 /// proves nothing to anyone, so the device's own goes too; a certificate that reads stays.
 fn drop_unreadable_certificates_of_held_root(identity_dir: &Path, paths: &IdentityPaths) {
-    let Some(root) = crate::store::resolve_active_identity(identity_dir)
+    let Some(root) = crate::store::held_root(identity_dir)
         .and_then(|record| crate::store::load_metadata_from_path(&record).ok())
-        .filter(|metadata| metadata.single_device)
         .map(|metadata| metadata.group_public_key)
     else {
         return;

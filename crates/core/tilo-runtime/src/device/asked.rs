@@ -200,14 +200,20 @@ impl DeviceAsked {
 
     /// Keep `request`, which `caller` made in `run` and only the person's root signs, as its
     /// asked record in the workspace for a device of theirs that keeps that root, showing
-    /// `facts`: it waits under way here until that device ran it, as the record then says.
+    /// `facts`: it waits under way here until that device ran it, as the record then says. Where
+    /// the workspace keeps its record already (`kept`: the call sent again under its id, also
+    /// after a restart), the record is followed as it stands, never written again: the person is
+    /// asked once.
     pub(crate) fn hand_on(
         &self,
         run: &Run,
         caller: &Caller,
         request: &InvokeRequest,
-        mut facts: AskedFacts,
+        (mut facts, kept): (AskedFacts, Option<KeptAsk>),
     ) -> Result<InvocationReceipt, ActionCallError> {
+        if let Some(ask) = kept {
+            return Ok(self.follow(caller, &ask));
+        }
         if let Some(by) = run.asker() {
             facts.by = by;
         }
@@ -223,32 +229,52 @@ impl DeviceAsked {
             return Ok(receipt);
         }
         let workspace = run.workspace();
-        if let Err(why) = self.at_root.write_asked(workspace, caller, request, &facts) {
-            return Err(ActionCallError::Refused {
+        let at = self
+            .at_root
+            .write_asked(workspace, caller, request, &facts)
+            .map_err(|why| ActionCallError::Refused {
                 reason: format!(
                     "it waits for a device of yours that keeps your identity, and could not be \
                      kept for it: {why}"
                 ),
-            });
+            })?;
+        Ok(self.follow(caller, &self.store.kept_ask(&at).ok_or_else(not_waiting)?))
+    }
+
+    /// Follow `ask`, the record of a call `caller` handed on to a device that keeps the person's
+    /// root, as it stands: under way until that device wrote how it ended, which this device then
+    /// shows, forgetting the record.
+    fn follow(&self, caller: &Caller, ask: &KeptAsk) -> InvocationReceipt {
+        let invocation = ask.request.invocation;
+        // Read from here while it waits, also after the device started again.
+        if self.invocations.get(caller, &invocation).is_none() {
+            self.invocations.record(
+                caller,
+                caller,
+                &ask.request,
+                Some(&ask.at.workspace),
+                self.route(caller),
+            );
+            self.invocations.note_waiting(&invocation);
         }
-        // Under way here: the person is asked only at a device that keeps their root.
+        let ended = ask.outcome.clone().filter(InvocationUpdate::is_terminal);
         let state = InvocationState::new(
             invocation,
-            InvocationUpdate::Progress {
+            ended.clone().unwrap_or(InvocationUpdate::Progress {
                 invocation,
                 sequence: 1,
                 phase: asked::AT_ROOT.to_owned(),
                 completed: None,
                 total: None,
                 message: Some(WAITS_FOR_ROOT.to_owned()),
-            },
+            }),
         );
         let receipt = state.receipt();
         Standing::stand(&self.standing, caller, state);
-        self.invocations
-            .record(caller, caller, request, Some(workspace), self.route(caller));
-        self.invocations.note_waiting(&invocation);
-        Ok(receipt)
+        if ended.is_some() {
+            self.store.settled(&ask.at);
+        }
+        receipt
     }
 
     /// Run here what waits for a device that keeps the person's root, with `tickets`: this
@@ -274,33 +300,15 @@ impl DeviceAsked {
         }
         let here = self.store.here().map(str::to_owned);
         for ask in asks {
-            let Some(outcome) = ask.outcome.clone() else {
-                continue;
-            };
-            if !outcome.is_terminal() {
-                continue;
-            }
             let caller = ask.caller.clone().restored();
-            if caller.device_public_key().map(hex::encode) != here {
-                continue;
+            if ask
+                .outcome
+                .as_ref()
+                .is_some_and(InvocationUpdate::is_terminal)
+                && caller.device_public_key().map(hex::encode) == here
+            {
+                self.follow(&caller, &ask);
             }
-            let invocation = ask.request.invocation;
-            // Followed from here after the device started again too: its record reads it here.
-            if self.invocations.get(&caller, &invocation).is_none() {
-                self.invocations.record(
-                    &caller,
-                    &caller,
-                    &ask.request,
-                    Some(&ask.at.workspace),
-                    self.route(&caller),
-                );
-            }
-            Standing::stand(
-                &self.standing,
-                &caller,
-                InvocationState::new(invocation, outcome),
-            );
-            self.store.settled(&ask.at);
         }
     }
 

@@ -130,6 +130,14 @@ impl IdentityLock {
     }
 }
 
+/// The active identity's record in `dir` when this computer keeps its person's root, not a
+/// device that joined them: the one place that says whether a root is kept here.
+pub fn held_root(dir: &std::path::Path) -> Option<PathBuf> {
+    resolve_active_identity(dir).filter(|record| {
+        load_metadata_from_path(record).is_ok_and(|metadata| metadata.single_device)
+    })
+}
+
 /// Active record chosen for newly launched apps.  The selector contains only
 /// an id, never key material.  A malformed selector fails closed to the
 /// backwards-compatible `primary.json`, and a selected symlink is refused.

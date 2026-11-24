@@ -81,10 +81,7 @@ pub fn paths() -> IdentityPaths {
 
 /// The active identity's file, when this computer holds its root.
 fn root_identity() -> Option<PathBuf> {
-    let active = tilo_identity::store::resolve_active_identity(&dir().ok()?)?;
-    tilo_identity::store::load_metadata_from_path(&active)
-        .is_ok_and(|metadata| metadata.single_device)
-        .then_some(active)
+    tilo_identity::store::held_root(&dir().ok()?)
 }
 
 /// Whether this computer keeps a person's root, without reading it: a process

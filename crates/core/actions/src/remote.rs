@@ -524,6 +524,155 @@ pub mod device_tickets {
         }
     }
 
+    /// The device actions a desktop hands on to its daemon.
+    pub const HANDED_ON: [&str; 7] = [
+        ISSUE,
+        RENAME,
+        REVOKE,
+        IDENTITIES,
+        USE_IDENTITY,
+        REMOVE_IDENTITY,
+        PROTECT_IDENTITY,
+    ];
+
+    /// How each of [`HANDED_ON`] is listed, wherever it is: the one description of each.
+    #[must_use]
+    pub fn descriptor(action: &str) -> Option<crate::ActionDescriptor> {
+        use crate::{
+            ActionContract, ActionKind, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
+            ResultSpec, RiskLevel,
+        };
+        const DEVICE: ActionParam =
+            ActionParam::required("device", ParamType::Text, "The device's key, in hex.");
+        let object = |required: &[&str]| ResultSpec::Json {
+            schema: serde_json::json!({ "type": "object", "required": required }),
+        };
+        let effect = |result| ActionContract {
+            kind: ActionKind::Outside,
+            result,
+            ..ActionContract::default()
+        };
+        // What changes an identity, or takes a key back for good, the person confirms.
+        let confirmed = |result| ActionContract {
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            ..effect(result)
+        };
+        let identity = |label, description| {
+            (
+                label,
+                description,
+                OperationKind::Effect,
+                confirmed(object(&["id"])),
+                vec![
+                    ActionParam::required("id", ParamType::Text, "The identity's id, as listed."),
+                    ActionParam::required("confirm", ParamType::Boolean, "You confirm the change."),
+                ],
+            )
+        };
+        let (label, description, kind, mut contract, params) = match action {
+            ISSUE => (
+                "Add a device",
+                "Print a one-use ticket another computer logs in with as one of the person's \
+                 devices.",
+                OperationKind::Effect,
+                effect(object(&["ticket"])),
+                vec![
+                    ActionParam::optional(
+                        "wait",
+                        ParamType::Boolean,
+                        "Wait for the computer to log in with the ticket.",
+                    ),
+                    ActionParam::optional(
+                        "plan",
+                        ParamType::Text,
+                        "The planned machine's entry in your Servers workspace, which the \
+                         computer's certification takes into its own.",
+                    ),
+                    ActionParam::optional(
+                        "server",
+                        ParamType::Boolean,
+                        "The computer is a server, which keeps your workspaces: it gets an entry \
+                         in your Servers workspace.",
+                    ),
+                ],
+            ),
+            RENAME => (
+                "Rename a device",
+                "Name one of the person's devices in every list of them.",
+                OperationKind::Effect,
+                effect(object(&["device", "name"])),
+                vec![
+                    DEVICE,
+                    ActionParam::required("name", ParamType::Text, "What the device is called."),
+                ],
+            ),
+            REVOKE => (
+                "Revoke a device",
+                "Take one of the person's devices back for good: every device of theirs refuses \
+                 it from now on.",
+                OperationKind::Effect,
+                confirmed(object(&["device", "revoked"])),
+                vec![
+                    DEVICE,
+                    ActionParam::optional(
+                        "reason",
+                        ParamType::Text,
+                        "lost, stolen, retired or compromised (retired when none is given).",
+                    ),
+                ],
+            ),
+            IDENTITIES => (
+                "List the identities",
+                "The person's identities this device keeps, without secrets, and which one new \
+                 apps sign in as.",
+                OperationKind::View,
+                ActionContract {
+                    result: ResultSpec::Json {
+                        schema: serde_json::json!({ "type": "array", "items": { "type": "object" } }),
+                    },
+                    ..ActionContract::view()
+                },
+                Vec::new(),
+            ),
+            USE_IDENTITY => identity(
+                "Use an identity for new apps",
+                "Sign apps opened from now on in as this identity.",
+            ),
+            REMOVE_IDENTITY => identity(
+                "Remove an identity",
+                "Delete an identity, with its key, from this device.",
+            ),
+            PROTECT_IDENTITY => identity(
+                "Protect an identity's key",
+                "Move an identity's key from a plain file into protected storage.",
+            ),
+            _ => return None,
+        };
+        // Only the person's root signs a revocation: a device that keeps none is capped for it.
+        if action == REVOKE {
+            contract.tags.push(crate::ROOT_ONLY_TAG.to_owned());
+        }
+        Some(crate::ActionDescriptor {
+            did: None,
+            semantic_identity: None,
+            address: ActionAddress::new(RESOURCE, action),
+            resource_kind: "device".to_owned(),
+            resource_label: "Devices".to_owned(),
+            action_label: label.to_owned(),
+            keywords: Vec::new(),
+            state: crate::ActionState::default(),
+            icon: None,
+            description: Some(description.to_owned()),
+            locus: crate::ExecutionLocus::ClientLocal,
+            kind,
+            contract,
+            input: crate::InputSpec::None,
+            params,
+            view: None,
+        })
+    }
+
     /// What [`REVOKE`] takes back: any key of the person's (a device, an agent's grant, a
     /// script's key) by its key in hex, and why (`retired`, `lost`, `stolen` or `compromised`).
     #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

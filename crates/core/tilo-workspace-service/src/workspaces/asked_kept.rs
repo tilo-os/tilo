@@ -196,6 +196,22 @@ impl Workspaces {
         });
     }
 
+    /// The record `workspace` keeps of the call `invocation` while it waits, as it stands there.
+    pub async fn asked_record(
+        &self,
+        workspace: &str,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<KeptAsk> {
+        let bytes = self
+            .resource_document(workspace, PROVIDER, RECORD)
+            .await
+            .ok()??;
+        read(&bytes)
+            .ok()?
+            .into_iter()
+            .find(|call| call.request.invocation == invocation)
+    }
+
     /// The calls kept to be answered at a device that keeps the person's root, in the records
     /// of every workspace kept here.
     async fn asked_at_root(&self) -> Vec<KeptAsk> {

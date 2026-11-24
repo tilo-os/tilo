@@ -53,21 +53,26 @@ impl Tickets {
         }
     }
 
-    /// Hand `then` whether the person's devices record marks this device as one that keeps their
-    /// root, once it is read.
-    pub(crate) fn when_root_marked(&self, then: impl FnOnce(bool) + Send + 'static) {
+    /// Hand `then`, for a call only the person's root signs, whether their devices record marks
+    /// this device as one that keeps that root, and the record `workspace` keeps of the call
+    /// `invocation` already, where it was handed on before: once both are read.
+    pub(crate) fn root_only_call(
+        &self,
+        workspace: String,
+        invocation: tilo_actions::InvocationId,
+        then: impl FnOnce(bool, Option<tilo_actions::remote::asked::KeptAsk>) + Send + 'static,
+    ) {
         let (workspaces, cert) = (self.0.workspaces.clone(), self.0.cert.clone());
         self.0.runtime.spawn(async move {
-            then(match workspaces {
-                Some(workspaces) => {
-                    tilo_workspace_service::workspaces::person_workspace::devices::keeps_root(
-                        workspaces.copies(),
-                        &cert,
-                    )
-                    .await
-                }
-                None => false,
-            });
+            let Some(workspaces) = workspaces else {
+                return then(false, None);
+            };
+            let copies = workspaces.copies();
+            let marked = tilo_workspace_service::workspaces::person_workspace::devices::keeps_root(
+                copies, &cert,
+            )
+            .await;
+            then(marked, copies.asked_record(&workspace, invocation).await);
         });
     }
 

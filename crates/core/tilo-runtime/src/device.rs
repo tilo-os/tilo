@@ -51,7 +51,6 @@ pub mod package_runs;
 #[cfg(unix)]
 pub mod packages;
 pub mod peer;
-mod person;
 pub(crate) mod presence;
 #[cfg(target_os = "linux")]
 pub mod processes;

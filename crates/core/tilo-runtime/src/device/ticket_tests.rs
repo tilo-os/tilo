@@ -1278,7 +1278,7 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
     let (issuer, state, key, cert, _paths) =
         super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;
     let copies = issuer.copies();
-    let tickets = |root: RootSource, at: &str| {
+    let tickets = |root: RootSource, at: &str, cert: &DeviceCert| {
         Tickets::new(
             (key.clone(), cert.clone()),
             issuer.endpoint(),
@@ -1307,7 +1307,12 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
         (store, invocations, asked)
     };
     let rootless_key = [8; 32];
-    let rootless = tickets(no_root(), "rootless");
+    // Another device of the person's, which their devices record does not mark.
+    let rootless_cert = DeviceCert {
+        device_public_key: rootless_key,
+        ..cert.clone()
+    };
+    let rootless = tickets(no_root(), "rootless", &rootless_cert);
     let (rootless_store, invocations, rootless_asked) = device(rootless_key);
     let follows = Arc::downgrade(&rootless_asked);
     copies.follow_asked_at_root(move |asks| {
@@ -1320,28 +1325,29 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
     let person = tilo_actions::remote::Caller::authenticated(cert.user_public_key, rootless_key);
     let invocation = InvocationId::new();
     let revoked = hex::encode([9; 32]);
+    let revoke = InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                RESOURCE,
+                tilo_device_identity::login::REVOKE,
+            ),
+        },
+        argument: InvokeArgument::Json(json!({"device": revoked}).as_object().unwrap().clone()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
     let receipt = super::services::device_action(
         (&invocations, Some(&rootless_asked)),
         &rootless,
         &person,
-        InvokeRequest {
-            on_behalf_of: None,
-            invocation,
-            target: RemoteActionTarget {
-                provider: PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(
-                    RESOURCE,
-                    tilo_device_identity::login::REVOKE,
-                ),
-            },
-            argument: InvokeArgument::Json(json!({"device": revoked}).as_object().unwrap().clone()),
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        },
+        revoke.clone(),
         &workspace.to_string(),
     )
     .await
@@ -1395,7 +1401,7 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
 
     // A device that keeps the root comes online and takes the record up.
     let holder_key = cert.device_public_key;
-    let holder = tickets(root_in(state.path().to_path_buf()), "holder");
+    let holder = tickets(root_in(state.path().to_path_buf()), "holder", &cert);
     let root = root_in(state.path().to_path_buf())().unwrap().unwrap();
     tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
         copies, &root, &cert,
@@ -1428,6 +1434,30 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
         1,
         "the person is asked there"
     );
+
+    // The device that asked starts again and sends the call again under its id: it follows the
+    // record the workspace keeps, which stays as it was, and the person is still asked once.
+    let (_, invocations, restarted) = device(rootless_key);
+    let again = super::services::device_action(
+        (&invocations, Some(&restarted)),
+        &rootless,
+        &person,
+        revoke,
+        &workspace.to_string(),
+    )
+    .await
+    .expect("the call is followed");
+    assert!(!matches!(
+        again.status,
+        tilo_actions::remote::ReceiptStatus::Completed { .. }
+    ));
+    let kept_again = copies.asked_kept().await;
+    assert_eq!(
+        kept_again.iter().find(|again| again.at == at),
+        Some(ask),
+        "the record is not written again"
+    );
+    assert_eq!(holder_asked.asked_of(&cert.user_public_key).len(), 1);
 
     // The person answers once, there.
     let answering = tilo_actions::remote::Caller::authenticated(cert.user_public_key, holder_key);
