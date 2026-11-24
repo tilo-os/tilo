@@ -240,6 +240,13 @@ fn shows(semantics: Option<&AccessNode>, width: Option<f64>) -> Shows {
         | Role::SpinButton
         // A link is its words, wherever they fit or not, as any link on the web is.
         | Role::Link => {
+            // A link's own controls (its Copy link) are what the browser's own menu offers on
+            // an <a href>, so they never make it a container.
+            let structured = if node.role == Role::Link {
+                node.children.iter().any(|child| child.role != Role::Button)
+            } else {
+                structured
+            };
             if structured {
                 Shows::Structure
             } else if words.is_some() || width.is_none() {
