@@ -713,7 +713,10 @@ fn vault_approval(grant: &Grant, item: &ItemRef) -> Option<AlwaysUse> {
         ) | (
             model_providers::PROVIDER,
             model_providers::SET_KEY_FROM_ITEM
-        ) | (person_vault::PROVIDER, person_vault::FILL_PAGE)
+        ) | (
+            person_vault::PROVIDER,
+            person_vault::FILL_PAGE | person_vault::SIGN
+        )
     ) {
         return None;
     }

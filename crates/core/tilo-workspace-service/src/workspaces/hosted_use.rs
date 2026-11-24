@@ -76,6 +76,7 @@ use tilo_actions::remote::{
 use super::workspace_stores::Store;
 use super::{WorkspaceId, Workspaces};
 
+mod sign;
 mod web_call;
 
 /// The workspace's mail as such a turn reaches it: after [`Workspaces::asked_turn`], the
@@ -232,6 +233,10 @@ impl TurnCall {
     fn of(target: &RemoteActionTarget) -> Option<Self> {
         if *target == person_vault::ask_target() {
             return Some(Self::AskForSecret);
+        }
+        // A signature is addressed at its item, so no catalogue row names its address.
+        if person_vault::signing_item(target).is_some() {
+            return Some(Self::Use);
         }
         if person_vault::described_use(target).is_some() && *target != person_vault::page_target() {
             return Some(Self::Use);
@@ -568,6 +573,8 @@ enum Use {
     Call(web_call::WebCall),
     /// The code of this moment from a code generator's seed.
     Code(ReadCode),
+    /// A signature made with an ssh key.
+    Sign(sign::Sign),
 }
 
 impl Use {
@@ -602,6 +609,14 @@ impl Use {
             (person_vault::PROVIDER, person_vault::CODE) => serde_json::from_value(arguments)
                 .map(Self::Code)
                 .map_err(|_| invalid("reading a code takes the reason it is needed, if any")),
+            (person_vault::PROVIDER, person_vault::SIGN) => serde_json::from_value(arguments)
+                .map(Self::Sign)
+                .map_err(|_| {
+                    invalid(
+                        "a signature names the ssh server it is for as place, what is signed in \
+                         base64 as data and, to sign in a namespace, the namespace",
+                    )
+                }),
             _ => Err(UnknownAction),
         }
     }
@@ -646,6 +661,9 @@ impl Use {
                 ))
             }
             Self::Call(call) => web_call::wanted(call),
+            Self::Sign(signing) => {
+                sign::wanted(signing, target_resource(target, person_vault::ITEM_KIND))
+            }
             // The item the address names is the code generator; it sends nothing anywhere.
             Self::Code(_) => {
                 let item = ItemId::parse(
@@ -664,11 +682,13 @@ impl Use {
             Self::Key(setting) => setting.reason.trim(),
             Self::Call(call) => call.reason.trim(),
             Self::Code(code) => code.reason.trim(),
+            Self::Sign(signing) => signing.reason.trim(),
         }
     }
 
     /// Whether its person's "Always" may stand for it: not for a call,
-    /// whose request the agent writes anew each time.
+    /// whose request the agent writes anew each time. A signature takes it: the key never
+    /// leaves the vault ([`sign`] says why).
     const fn takes_leave(&self) -> bool {
         !matches!(self, Self::Call(_))
     }
@@ -687,6 +707,7 @@ impl Use {
                 let _ = (kind, places);
                 items.code_params(item).map(|_| ())
             }
+            Self::Sign(_) => sign::fits(items, item, places),
             Self::Mail(_) | Self::Key(_) | Self::Call(_) => {
                 items.fits(item, kind, places).map(|_| ())
             }
@@ -698,6 +719,7 @@ impl Use {
     fn sendable(&self, workspaces: &Workspaces, items: &VaultItems) -> Result<(), String> {
         match self {
             Self::Call(call) => web_call::sendable(call, workspaces.call_reach(), items),
+            Self::Sign(signing) => sign::sendable(signing),
             Self::Mail(_) | Self::Key(_) | Self::Code(_) => Ok(()),
         }
     }
@@ -729,6 +751,17 @@ impl Use {
             }
             Self::Call(call) => {
                 web_call::send(workspaces, workspace, call, (by, acting), purpose).await
+            }
+            Self::Sign(signing) => {
+                sign::sign(
+                    workspaces,
+                    workspace,
+                    &signing,
+                    &item,
+                    (by, acting),
+                    purpose,
+                )
+                .await
             }
             Self::Code(_) => {
                 // Read where the vault is, as the turn's person: nothing is written, so no use
@@ -913,6 +946,16 @@ fn use_asked(
             method => method.to_ascii_uppercase(),
         };
         facts.push(Fact::new("Calls", format!("{method} {}", said("url"))));
+    }
+    // What a signature is, never what it signs.
+    if person_vault::signing_item(target).is_some() {
+        facts.push(Fact::new(
+            "Signs",
+            match said("namespace").trim() {
+                "" => "an ssh sign-in".to_owned(),
+                namespace => format!("in the namespace {namespace}"),
+            },
+        ));
     }
     // The account it signs in, where it signs one in.
     if *target == person_accounts::target(person_accounts::ADD_MAIL_WITH_ITEM) {

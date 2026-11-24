@@ -21744,6 +21744,7 @@ dependencies = [
  "rcgen",
  "registry-server",
  "reqwest",
+ "russh",
  "rustix 1.1.6",
  "rustls",
  "serde",

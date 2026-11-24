@@ -110,6 +110,51 @@ pub fn code_target(item: &ItemRef) -> RemoteActionTarget {
     }
 }
 
+/// Sign with the ssh key an item keeps, for one of the ssh servers it belongs to ([`Sign`]),
+/// addressed at the item: `vault.item:<id>#sign` ([`sign_target`]), so a grant covers that one
+/// key. The vault signs where the key is and answers the signature and the key's public line;
+/// the private key never leaves it. Each signature is a use the item remembers.
+pub const SIGN: &str = "sign";
+
+/// The target of [`SIGN`] on `item`: `vault.item:<id>#sign`.
+#[must_use]
+pub fn sign_target(item: &ItemRef) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: ActionAddress::new(item_resource(item), SIGN),
+    }
+}
+
+/// The item a [`SIGN`] at `target` is addressed at; `None` for any other call, or a signature
+/// asked of something that is no item.
+#[must_use]
+pub fn signing_item(target: &RemoteActionTarget) -> Option<ItemRef> {
+    (target.provider == PROVIDER && target.address.action == SIGN)
+        .then(|| ItemRef::parse(&target.address.resource))
+        .flatten()
+}
+
+/// What [`SIGN`] names: the ssh server the signature is for, what is signed, and how.
+///
+/// With a `namespace` the answer is an armored SSHSIG signature of `data`, what
+/// `ssh-keygen -Y sign -n <namespace>` makes (git signs commits in the namespace `git`).
+/// Without one, `data` is an ssh sign-in request for the item's key at that server, and the
+/// answer is the signature blob ssh public-key authentication sends.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Sign {
+    /// The ssh server it signs for, one the item belongs to: `ssh://git.example.com`.
+    pub place: String,
+    /// What is signed, in base64.
+    pub data: String,
+    /// The SSHSIG namespace; empty for an ssh sign-in.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace: String,
+    /// Why whoever asks says it needs the signature; empty when it gave none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
 /// Whether `text` could name where an item belongs: a web address, or a
 /// server by scheme, host and port. A first check for whoever asks for a
 /// secret, before a person is shown the question; the host that keeps the

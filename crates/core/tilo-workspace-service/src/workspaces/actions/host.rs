@@ -1713,6 +1713,8 @@ mod release_tests;
 #[cfg(test)]
 #[cfg(test)]
 mod sign_in_tests;
+#[cfg(all(test, feature = "agents"))]
+mod sign_tests;
 #[cfg(test)]
 mod telling_tests;
 #[cfg(test)]
