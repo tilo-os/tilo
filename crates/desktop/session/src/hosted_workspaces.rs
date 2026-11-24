@@ -498,22 +498,21 @@ mod tests {
         let workspace_id = runtime
             .block_on(device.join(&workspace))
             .expect("the host lets the VM's device in over the workspace's link its copy keeps");
-        let read = runtime
-            .block_on(device.actions(workspace_id).read_record(
-                tilo_actions::remote::ResourceReadRequest {
-                    workspace: workspace.clone(),
-                    app: "so.tilo.browser".to_owned(),
-                    record: "uuid:5c07c075-0000-4000-8000-0000000000aa".to_owned(),
-                    joined: false,
-                    after: None,
-                    wait_ms: None,
-                    answer: tilo_actions::remote::ReadAnswer::Document,
-                },
+        // What the host's actions are, asked as the VM's device over the workspace's link: the host
+        // answers it only for a member it let in.
+        let catalogue = runtime
+            .block_on(tilo_actions::remote::ActionProvider::query(
+                &device.actions(workspace_id),
+                &tilo_actions::remote::Caller::authenticated(
+                    vm.user_public_key,
+                    vm.device_public_key,
+                ),
+                tilo_actions::remote::CatalogueQuery::default(),
             ))
             .expect("the host answers");
         assert!(
-            read.is_ok(),
-            "the host admits the VM's read over the workspace's link: {read:?}"
+            catalogue.is_ok(),
+            "the host admits the VM's ask over the workspace's link: {catalogue:?}"
         );
         device.close();
         runtime.block_on(server.shutdown());
