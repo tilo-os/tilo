@@ -444,3 +444,58 @@ fn people_founded_while_the_daemon_serves_have_their_roots_served_here() {
         );
     }
 }
+
+const FRESH_SYSTEM_TEST: &str = "device::services::second_person_tests::a_fresh_computers_identity_is_founded_through_the_system_admission";
+
+/// A fresh computer's first identity, as `tilo login --new-identity` makes it through the
+/// system unit's daemon: root signs the account in with no person, `devices#found` makes one, and
+/// the root the founding call made is read by the account's uid rather than by looking the
+/// person up while they are being signed in.
+#[test]
+fn a_fresh_computers_identity_is_founded_through_the_system_admission() {
+    let Some(root) = isolated_root(FRESH_SYSTEM_TEST) else {
+        return;
+    };
+    let profile = root.join("profile");
+    std::fs::create_dir_all(&profile).unwrap();
+    tilo_api::daemon::admission::install(
+        tilo_api::daemon::admission::Admission::new(DAEMON, true)
+            .keeping_accounts_in(profile)
+            .unwrap(),
+    );
+    let admission = tilo_api::daemon::admission::here(|| DAEMON);
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let device_keys = tilo_api::calls::device_keys();
+    let device = DeviceOnly::new(
+        tilo_device_identity::persist::load_device_key(&device_keys).unwrap(),
+        tilo_device_identity::login::Place::here(device_keys).unwrap(),
+    );
+    let socket = root.join("native.sock");
+    crate::daemon::serve_for_test(&daemon, device, test_peer, admission, &socket).unwrap();
+
+    let said = signed_in(&socket, ADA);
+    assert_ne!(said["result"]["isError"], true, "{said}");
+    let made = do_here(&socket, ADA, "devices#found", json!({}));
+    assert_ne!(
+        made["result"]["isError"], true,
+        "a fresh account made no person: {made}"
+    );
+    let person = answered_json(&made)["person"]
+        .as_str()
+        .expect("a person is made")
+        .to_owned();
+    let person_key: [u8; 32] = hex::decode(&person)
+        .expect("a person's key is hex")
+        .try_into()
+        .expect("a person's key is 32 bytes");
+    // The root the founding call made is the account's, read by its uid.
+    assert!(
+        super::root_for(ADA).expect("the opened root").is_some(),
+        "the founded account's root is not kept here"
+    );
+    // And their person is theirs once the sign-in is recorded.
+    assert!(
+        super::root_record_for_person(person_key).is_ok(),
+        "the founded person's root is not found for their signed-in account"
+    );
+}

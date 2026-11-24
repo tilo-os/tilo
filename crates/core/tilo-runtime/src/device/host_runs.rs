@@ -85,7 +85,10 @@ impl HostRuns {
             if let Err(error) = devices::keep(&copies, &cert).await {
                 tracing::warn!(%error, "this device is not listed with its person's");
             }
-            if let Ok(Some(root)) = super::services::root_for_person(cert.user_public_key)
+            // The root is this account's own: the person whose workspace this is, read by the
+            // account it runs as, not looked up through a sign-in record.
+            if let Ok(record) = super::services::device_root_record()
+                && let Ok(root) = tilo_identity::store::load_from_path(record)
                 && let Err(error) = devices::mark_root_holder(&copies, &root, &cert).await
             {
                 tracing::warn!(%error, "this device's root is not marked in its person's devices");

@@ -251,7 +251,7 @@ pub(crate) fn root_caller() -> Option<[u8; 32]> {
 
 /// What runs when a person is founded while this daemon serves: their root marked in their
 /// devices record, and their root-only asks served here, without the daemon starting again.
-pub(crate) type PersonFounded = Arc<dyn Fn([u8; 32]) + Send + Sync>;
+pub(crate) type PersonFounded = Arc<dyn Fn([u8; 32], u32) + Send + Sync>;
 
 static PERSON_FOUNDED: std::sync::OnceLock<std::sync::Mutex<Option<PersonFounded>>> =
     std::sync::OnceLock::new();
@@ -265,12 +265,12 @@ pub(crate) fn when_person_founded(hook: PersonFounded) {
 }
 
 /// Run what this daemon does for `person`, founded while it serves.
-pub(crate) fn person_founded(person: [u8; 32]) {
+pub(crate) fn person_founded(person: [u8; 32], uid: u32) {
     let hook = PERSON_FOUNDED
         .get()
         .and_then(|held| held.lock_recover().clone());
     if let Some(hook) = hook {
-        hook(person);
+        hook(person, uid);
     }
 }
 
@@ -370,13 +370,24 @@ pub(crate) fn root_record_for_person(person: [u8; 32]) -> io::Result<std::path::
     // A daemon serving every account of the computer opens a root only while its account is
     // signed in; a person's own service, which is no account's but its owner's, opens its own.
     if let Some(admission) = tilo_api::daemon::admission::installed() {
-        let uid = admission.signed_in_account_for(person).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "this person's account is not signed in on this computer",
-            )
-        })?;
-        return root_record(uid);
+        if let Some(uid) = admission.signed_in_account_for(person) {
+            return root_record(uid);
+        }
+        // A person's own service, which is no account's but its owner's, opens the root kept for
+        // the account it runs as: no sign-in names that account there.
+        if !admission.system() {
+            let uid = rustix::process::geteuid().as_raw();
+            if let Ok(record) = root_record(uid)
+                && tilo_identity::store::load_metadata_from_path(&record)
+                    .is_ok_and(|metadata| metadata.group_public_key == person)
+            {
+                return Ok(record);
+            }
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "this person's account is not signed in on this computer",
+        ));
     }
     if device_person() == Some(person) {
         return device_root_record();
@@ -904,7 +915,9 @@ impl Daemon {
         workspace: &str,
         caller: Caller,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
-        let provider = self.person()?.provider_at(workspace, caller.clone(), None)?;
+        let provider = self
+            .person()?
+            .provider_at(workspace, caller.clone(), None)?;
         let api = self.api()?;
         let named = workspace.to_owned();
         let joined = block_on_owned(async move { api.joined(&named, Arc::new(provider)).await })
@@ -1698,7 +1711,7 @@ impl Daemon {
                 Arc::downgrade(&daemon.tickets),
                 Arc::downgrade(&daemon.workspaces),
             );
-            when_person_founded(Arc::new(move |person: [u8; 32]| {
+            when_person_founded(Arc::new(move |person: [u8; 32], uid: u32| {
                 let (Some(asked), Some(tickets), Some(serving)) =
                     (asked.upgrade(), tickets.upgrade(), serving.upgrade())
                 else {
@@ -1723,7 +1736,9 @@ impl Daemon {
                         );
                         return;
                     };
-                    let Ok(Some(root)) = root_for_person(person) else {
+                    // The root is the one the account `uid` just made, read by the account it
+                    // was made for: nobody looks the person up while they are being founded.
+                    let Ok(Some(root)) = root_for(uid) else {
                         tracing::warn!(
                             person = %hex::encode(person),
                             "a founded person's root is not kept here"
