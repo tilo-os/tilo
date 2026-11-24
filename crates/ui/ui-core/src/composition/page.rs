@@ -204,7 +204,9 @@ fn shows(semantics: Option<&AccessNode>, width: Option<f64>) -> Shows {
         | Role::Tooltip
         | Role::TextInput
         | Role::MultilineTextInput
-        | Role::SpinButton => {
+        | Role::SpinButton
+        // A link is its words, wherever they fit or not, as any link on the web is.
+        | Role::Link => {
             if structured {
                 Shows::Structure
             } else if words.is_some() || width.is_none() {
@@ -228,17 +230,6 @@ fn shows(semantics: Option<&AccessNode>, width: Option<f64>) -> Shows {
         | Role::Generic => {
             if structured || width.is_none() {
                 Shows::Structure
-            } else {
-                Shows::Paint
-            }
-        }
-        // A link is its words, wherever they fit or not: the browser sets them as it sets any
-        // link's.
-        Role::Link => {
-            if structured {
-                Shows::Structure
-            } else if words.is_some() || width.is_none() {
-                Shows::Words
             } else {
                 Shows::Paint
             }

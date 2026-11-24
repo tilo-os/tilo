@@ -278,7 +278,11 @@ fn element_with<'a>(html: &'a str, mark: &str) -> &'a str {
     let at = html
         .find(mark)
         .unwrap_or_else(|| panic!("no element with {mark}: {html}"));
-    &html[html[..at].rfind('<').expect("a tag")..]
+    let open = html
+        .get(..at)
+        .and_then(|before| before.rfind('<'))
+        .expect("a tag");
+    html.get(open..).expect("the element")
 }
 
 /// The number the page gave the element whose tag holds `mark`.
@@ -338,7 +342,7 @@ fn a_link_is_a_link_to_its_address() {
     );
     let html = Page::new().render(&shown(&mut frame));
     let link = element_with(&html, "href=");
-    let open = &link[..link.find('>').expect("a tag")];
+    let open = link.split('>').next().expect("a tag");
     assert!(
         open.starts_with("<a ") && open.contains("href=\"https://tilo.so/docs\""),
         "{open}"
@@ -368,7 +372,7 @@ fn a_fields_focus_words_and_caret_come_from_the_page() {
         .perform_semantic_named(&path, None, &crate::a11y::Action::Focus)
         .expect("the field takes the keyboard");
     let html = page.render(&shown(&mut frame));
-    let body = &html[..html.find('>').expect("the body's tag")];
+    let body = html.split('>').next().expect("the body's tag");
     assert!(
         body.contains(&format!("data-focus=\"{id}\"")),
         "the page puts its caret where the window's is: {body}"
