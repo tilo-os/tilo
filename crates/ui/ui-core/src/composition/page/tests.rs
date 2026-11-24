@@ -308,3 +308,31 @@ fn a_picked_date_is_a_time_on_the_page() {
         "the picked day is a time: {html}"
     );
 }
+
+/// The opening tag of the first element of `html` whose tag holds `mark`, and what follows it.
+fn element_with<'a>(html: &'a str, mark: &str) -> &'a str {
+    let at = html
+        .find(mark)
+        .unwrap_or_else(|| panic!("no element with {mark}: {html}"));
+    &html[html[..at].rfind('<').expect("a tag")..]
+}
+
+/// A link is the browser's own link to its address, saying its words.
+#[test]
+fn a_link_is_a_link_to_its_address() {
+    let mut frame = framed(
+        Box::new(crate::widget::Link::new("https://tilo.so/docs").with_label("Read the docs")),
+        (320, 60),
+    );
+    let html = Page::new().render(&shown(&mut frame));
+    let link = element_with(&html, "href=");
+    let open = &link[..link.find('>').expect("a tag")];
+    assert!(
+        open.starts_with("<a ") && open.contains("href=\"https://tilo.so/docs\""),
+        "{open}"
+    );
+    assert!(
+        link.contains(">Read the docs</a>"),
+        "its words: {link:.300}"
+    );
+}

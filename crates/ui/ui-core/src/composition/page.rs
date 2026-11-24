@@ -221,9 +221,19 @@ fn shows(semantics: Option<&AccessNode>, width: Option<f64>) -> Shows {
                 Shows::Paint
             }
         }
+        // A link is its words, wherever they fit or not: the browser sets them as it sets any
+        // link's.
+        Role::Link => {
+            if structured {
+                Shows::Structure
+            } else if words.is_some() || width.is_none() {
+                Shows::Words
+            } else {
+                Shows::Paint
+            }
+        }
         Role::Button
         | Role::ToggleButton
-        | Role::Link
         | Role::MenuItem
         | Role::Tab
         | Role::ListItem
@@ -474,7 +484,7 @@ impl Page {
         }
         if let Some(access) = semantics {
             self.semantics_attrs(&mut element, access, shows);
-            if shows != Shows::Field && pressable(access) {
+            if shows != Shows::Field && pressable(access) && !followed(&element, access) {
                 act(
                     &mut element,
                     press_of(access),
@@ -560,7 +570,11 @@ impl Page {
         };
         element.id = Some(self.id(key));
         self.semantics_attrs(&mut element, node, shows);
-        if shows != Shows::Field && pressable(node) && node.action_target.is_some() {
+        if shows != Shows::Field
+            && pressable(node)
+            && node.action_target.is_some()
+            && !followed(&element, node)
+        {
             act(&mut element, press_of(node), node.action_target.as_deref());
         }
         if shows == Shows::Field {
@@ -716,6 +730,12 @@ impl Page {
         }
         if element.tag == "button" {
             element.attr("type", "button");
+        }
+        // A link goes where its address names, as any link on the web does.
+        if element.tag == "a"
+            && let Some(address) = address(access)
+        {
+            element.attr("href", address);
         }
     }
 }
@@ -970,6 +990,20 @@ fn pressable(access: &AccessNode) -> bool {
         && (access.action_target.is_some() && !matches!(access.role, Role::Window)
             || crate::a11y::activation_role(access.role)
             || matches!(access.role, Role::Slider | Role::ComboBox))
+}
+
+/// The web address a link node goes to: its value, when it is one.
+fn address(access: &AccessNode) -> Option<&str> {
+    access.value.as_deref().filter(|value| {
+        ["https://", "http://", "mailto:"]
+            .iter()
+            .any(|scheme| value.starts_with(scheme))
+    })
+}
+
+/// Whether a press on `element` is the browser following its link, not the node's action.
+fn followed(element: &Element, access: &AccessNode) -> bool {
+    element.tag == "a" && address(access).is_some()
 }
 
 /// The action a press on a node is.
