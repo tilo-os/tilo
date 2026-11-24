@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::testing::dispatch;
+use crate::theme::Theme;
 use crate::widget::{Button, Checkbox};
 
 fn rest() -> Interaction {
@@ -53,13 +54,14 @@ tilo_test_env::scenario! {
                 )
                 .unwrap();
             widget.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
-            let mut scene = Scene::new();
-            widget.draw(
+            let mut scene = vello::Scene::new();
+            crate::draw::draw_widget(
+                widget,
                 &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
+                vello::kurbo::Affine::IDENTITY,
+                &mut crate::text_render::TextRenderer::new(),
                 &theme,
-                &PresenceCtx::default(),
+                crate::draw::DrawEnv::default(),
             );
             scene.encoding().draw_data.clone()
         };
