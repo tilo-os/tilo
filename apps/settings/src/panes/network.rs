@@ -983,9 +983,8 @@ pub(crate) trait NetworkService: Send + Sync {
 
 struct DeviceNetwork;
 
-/// The session's connectivity resources: the device's network, its VPNs and the hotspot.
+/// The session's connectivity resources: the device's network and the hotspot.
 const NETWORK: &str = "network";
-const VPN: &str = "vpn";
 const TETHERING: &str = "tethering";
 
 /// One saved network's own entry, whose actions take the network from it.
@@ -1223,15 +1222,15 @@ impl NetworkService for DeviceNetwork {
                 }),
             ),
             NetworkChange::Enterprise { config, password } => join_enterprise(config, password),
-            NetworkChange::Vpn { uuid, on, .. } => {
-                ask(VPN, "set-vpn", json!({ "profile": uuid, "on": on }))
-            }
+            NetworkChange::Vpn { uuid, on, .. } => ask(
+                &vpn_profile(uuid),
+                if *on { "connect" } else { "disconnect" },
+                json!({}),
+            ),
             NetworkChange::VpnProfile { uuid, patch, .. } => {
-                ask(&vpn_profile(uuid), "edit-vpn", vpn_arguments(patch))
+                ask(&vpn_profile(uuid), "edit", vpn_arguments(patch))
             }
-            NetworkChange::VpnDelete { uuid, .. } => {
-                ask(&vpn_profile(uuid), "forget-vpn", json!({}))
-            }
+            NetworkChange::VpnDelete { uuid, .. } => ask(&vpn_profile(uuid), "forget", json!({})),
         }
     }
 

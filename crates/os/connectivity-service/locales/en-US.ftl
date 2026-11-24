@@ -7,10 +7,10 @@ so-tilo-connectivity-tethering = Tethering
 
 ## Actions
 
-so-tilo-connectivity-bluetooth-connect = Connect the accessory
-so-tilo-connectivity-bluetooth-disconnect = Disconnect the accessory
-so-tilo-connectivity-bluetooth-forget = Forget the device
-so-tilo-connectivity-bluetooth-pair = Pair a device
+so-tilo-connectivity-bluetooth-accessory-connect = Connect the accessory
+so-tilo-connectivity-bluetooth-accessory-disconnect = Disconnect the accessory
+so-tilo-connectivity-bluetooth-accessory-forget = Forget the device
+so-tilo-connectivity-bluetooth-nearby-pair = Pair a device
 so-tilo-connectivity-bluetooth-scan = Look for accessories
 so-tilo-connectivity-bluetooth-set-bluetooth = Turn Bluetooth on or off
 so-tilo-connectivity-bluetooth-toggle-bluetooth = Bluetooth
@@ -46,9 +46,10 @@ so-tilo-connectivity-saved-network-set-autoconnect = Join by itself in reach
 so-tilo-connectivity-saved-network-set-proxy = Set a proxy
 so-tilo-connectivity-tethering-configure-hotspot = Set up the hotspot
 so-tilo-connectivity-tethering-set-hotspot = Share the connection over Wi-Fi
-so-tilo-connectivity-vpn-edit-vpn = Change the VPN
-so-tilo-connectivity-vpn-forget-vpn = Remove the VPN
 so-tilo-connectivity-vpn-import-vpn = Add a VPN from a file
-so-tilo-connectivity-vpn-set-vpn = Connect or disconnect a VPN
+so-tilo-connectivity-vpn-profile-connect = Connect the VPN
+so-tilo-connectivity-vpn-profile-disconnect = Disconnect the VPN
+so-tilo-connectivity-vpn-profile-edit = Change the VPN
+so-tilo-connectivity-vpn-profile-forget = Remove the VPN
 so-tilo-connectivity-wifi-network-join = Join the network
 so-tilo-connectivity-wifi-network-leave = Leave the network

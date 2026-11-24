@@ -41,8 +41,8 @@ use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading,
 
 use device::{Change, Device, Readings};
 use effects::{
-    BluetoothAction, ModemAction, NetworkAction, SavedNetworkAction, TetheringAction, VpnAction,
-    WifiNetworkAction,
+    BluetoothAccessoryAction, BluetoothAction, BluetoothNearbyAction, ModemAction, NetworkAction,
+    SavedNetworkAction, TetheringAction, VpnAction, VpnProfileAction, WifiNetworkAction,
 };
 use model::{Bluetooth, Modem, Network, Tethering, Vpn};
 
@@ -56,6 +56,12 @@ pub const MODEM: &str = "modem";
 pub const WIFI_NETWORK: &str = "wifi-network";
 /// The kind part of a saved network's address (`saved-network:<id>`).
 pub const SAVED_NETWORK: &str = "saved-network";
+/// The kind part of a paired accessory's address (`bluetooth-accessory:<hardware address>`).
+pub const BLUETOOTH_ACCESSORY: &str = "bluetooth-accessory";
+/// The kind part of a Bluetooth device in reach's address (`bluetooth-nearby:<hardware address>`).
+pub const BLUETOOTH_NEARBY: &str = "bluetooth-nearby";
+/// The kind part of a VPN profile's address (`vpn-profile:<id>`).
+pub const VPN_PROFILE: &str = "vpn-profile";
 
 /// Which resource a change belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,7 +173,7 @@ impl Connectivity {
         readings.vpn.problem = old.vpn.problem.take();
         readings.tethering.pending = std::mem::take(&mut old.tethering.pending);
         readings.tethering.problem = old.tethering.problem.take();
-        address_rows(&mut readings.network);
+        address_rows(&mut readings);
         self.readings = readings;
     }
 
@@ -418,23 +424,69 @@ impl Connectivity {
         let change = match action {
             BluetoothAction::SetBluetooth { on } => Change::Bluetooth(on),
             BluetoothAction::ToggleBluetooth => Change::Bluetooth(!self.readings.bluetooth.on),
-            BluetoothAction::Connect { address } => Change::Connect { address },
-            BluetoothAction::Disconnect { address } => Change::Disconnect { address },
             BluetoothAction::Scan { on } => Change::ScanBluetooth(on),
-            BluetoothAction::Pair { address } => Change::Pair { address },
-            BluetoothAction::Forget { address } => Change::ForgetBluetooth { address },
         };
         self.start(Part::Bluetooth, id, change)
+    }
+
+    /// `action` on the paired accessory whose hardware address is `address`.
+    fn bluetooth_accessory(&mut self, address: &str, action: BluetoothAccessoryAction) -> Started {
+        let id = action.id();
+        let address = address.to_owned();
+        let change = match action {
+            BluetoothAccessoryAction::Connect => Change::Connect { address },
+            BluetoothAccessoryAction::Disconnect => Change::Disconnect { address },
+            BluetoothAccessoryAction::Forget => Change::ForgetBluetooth { address },
+        };
+        self.start(Part::Bluetooth, id, change)
+    }
+
+    /// `action` on the Bluetooth device in reach whose hardware address is `address`: refused
+    /// while the radio is missing or off, when nothing is in reach to pair.
+    fn bluetooth_nearby(
+        &mut self,
+        address: &str,
+        action: BluetoothNearbyAction,
+    ) -> Result<Started, ApiError> {
+        let id = action.id();
+        let bluetooth = &self.readings.bluetooth;
+        if !bluetooth.available {
+            return Err(ApiError::Unavailable {
+                code: "no_adapter".into(),
+                reason: "This device has no Bluetooth".into(),
+            });
+        }
+        if !bluetooth.on {
+            return Err(ApiError::Unavailable {
+                code: "bluetooth_off".into(),
+                reason: "Bluetooth is off".into(),
+            });
+        }
+        let change = match action {
+            BluetoothNearbyAction::Pair => Change::Pair {
+                address: address.to_owned(),
+            },
+        };
+        Ok(self.start(Part::Bluetooth, id, change))
     }
 
     fn vpn(&mut self, action: VpnAction) -> Started {
         let id = action.id();
         let change = match action {
-            VpnAction::SetVpn { profile, on } => Change::Vpn { profile, on },
             VpnAction::ImportVpn { kind, name, text } => Change::ImportVpn { kind, name, text },
-            VpnAction::ForgetVpn { profile } => Change::ForgetVpn { profile },
-            VpnAction::EditVpn {
-                profile,
+        };
+        self.start(Part::Vpn, id, change)
+    }
+
+    /// `action` on the VPN profile whose id is `profile`.
+    fn vpn_profile(&mut self, profile: &str, action: VpnProfileAction) -> Started {
+        let id = action.id();
+        let profile = profile.to_owned();
+        let change = match action {
+            VpnProfileAction::Connect => Change::Vpn { profile, on: true },
+            VpnProfileAction::Disconnect => Change::Vpn { profile, on: false },
+            VpnProfileAction::Forget => Change::ForgetVpn { profile },
+            VpnProfileAction::Edit {
                 name,
                 autoconnect,
                 all_traffic,
@@ -497,9 +549,10 @@ fn child_id(kind: &str, key: &str) -> Option<String> {
         .then(|| format!("{kind}:{key}"))
 }
 
-/// Each network of `network` that is a resource of its own carries its address, the one its
+/// Each row of the readings that is a resource of its own carries its address, the one its
 /// child is published at: a view calls the row's own actions on it, as every caller does.
-fn address_rows(network: &mut Network) {
+fn address_rows(readings: &mut Readings) {
+    let network = &mut readings.network;
     for wifi in &mut network.wifi.networks {
         wifi.address =
             tilo_resource::Handle::new(child_id(WIFI_NETWORK, &wifi.name).unwrap_or_default());
@@ -507,6 +560,20 @@ fn address_rows(network: &mut Network) {
     for saved in &mut network.saved {
         saved.address =
             tilo_resource::Handle::new(child_id(SAVED_NETWORK, &saved.id).unwrap_or_default());
+    }
+    for accessory in &mut readings.bluetooth.accessories {
+        accessory.handle = tilo_resource::Handle::new(
+            child_id(BLUETOOTH_ACCESSORY, &accessory.address).unwrap_or_default(),
+        );
+    }
+    for nearby in &mut readings.bluetooth.nearby {
+        nearby.handle = tilo_resource::Handle::new(
+            child_id(BLUETOOTH_NEARBY, &nearby.address).unwrap_or_default(),
+        );
+    }
+    for profile in &mut readings.vpn.profiles {
+        profile.address =
+            tilo_resource::Handle::new(child_id(VPN_PROFILE, &profile.id).unwrap_or_default());
     }
 }
 
@@ -683,6 +750,25 @@ pub fn tethering_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<Tethering, TetheringAction>("tethering", "Tethering")
 }
 
+/// A paired Bluetooth accessory as a view of another language calls it: the actions offered on
+/// the address its row in the Bluetooth reading carries.
+#[must_use]
+pub fn bluetooth_accessory_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::row_surface::<BluetoothAccessoryRow, BluetoothAccessoryAction>()
+}
+
+/// A Bluetooth device in reach as a view of another language calls it.
+#[must_use]
+pub fn bluetooth_nearby_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::row_surface::<BluetoothNearbyRow, BluetoothNearbyAction>()
+}
+
+/// A VPN profile as a view of another language calls it.
+#[must_use]
+pub fn vpn_profile_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::row_surface::<VpnProfileRow, VpnProfileAction>()
+}
+
 /// The modem resource as a view of another language reads and changes it.
 #[must_use]
 pub fn modem_surface() -> tilo_resource::surface::Surface {
@@ -737,7 +823,7 @@ pub struct SavedNetworkRow;
 #[row(
     kind = "so.tilo.connectivity.bluetooth-accessory",
     label = "Bluetooth accessory",
-    effects = BluetoothAction
+    effects = BluetoothAccessoryAction
 )]
 pub struct BluetoothAccessoryRow;
 
@@ -746,7 +832,7 @@ pub struct BluetoothAccessoryRow;
 #[row(
     kind = "so.tilo.connectivity.bluetooth-nearby",
     label = "Bluetooth device",
-    effects = BluetoothAction
+    effects = BluetoothNearbyAction
 )]
 pub struct BluetoothNearbyRow;
 
@@ -755,7 +841,7 @@ pub struct BluetoothNearbyRow;
 #[row(
     kind = "so.tilo.connectivity.vpn-profile",
     label = "VPN profile",
-    effects = VpnAction
+    effects = VpnProfileAction
 )]
 pub struct VpnProfileRow;
 
@@ -889,13 +975,7 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
         crate::i18n::name("so.tilo.connectivity.bluetooth", "Bluetooth"),
     ));
     if !bluetooth.available {
-        for action in [
-            "set-bluetooth",
-            "toggle-bluetooth",
-            "scan",
-            "pair",
-            "forget",
-        ] {
+        for action in ["set-bluetooth", "toggle-bluetooth", "scan"] {
             unavailable(
                 &mut resource,
                 action,
@@ -904,21 +984,20 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
             );
         }
     } else if !bluetooth.on {
-        for action in ["scan", "pair"] {
+        for action in ["scan"] {
             unavailable(&mut resource, action, "bluetooth_off", "Bluetooth is off");
         }
     }
     let paired = bluetooth.accessories.iter().filter_map(|accessory| {
-        let id = child_id("bluetooth-accessory", &accessory.address)?;
+        let id = child_id(BLUETOOTH_ACCESSORY, &accessory.address)?;
         let action = if accessory.connected {
-            BluetoothAction::DISCONNECT
+            BluetoothAccessoryAction::DISCONNECT
         } else {
-            BluetoothAction::CONNECT
+            BluetoothAccessoryAction::CONNECT
         };
-        let address = accessory.address.clone();
         let bindings = tilo_resource::RowBindings::new()
-            .bind(action, [("address", address.clone().into())])
-            .bind(BluetoothAction::FORGET, [("address", address.into())]);
+            .bind(action, NO_ARGUMENTS)
+            .bind(BluetoothAccessoryAction::FORGET, NO_ARGUMENTS);
         Some(
             tilo_resource::LiveRow::typed_with::<BluetoothAccessoryRow>(
                 id,
@@ -929,11 +1008,9 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
         )
     });
     let nearby = bluetooth.nearby.iter().filter_map(|nearby| {
-        let id = child_id("bluetooth-nearby", &nearby.address)?;
-        let bindings = tilo_resource::RowBindings::new().bind(
-            BluetoothAction::PAIR,
-            [("address", nearby.address.clone().into())],
-        );
+        let id = child_id(BLUETOOTH_NEARBY, &nearby.address)?;
+        let bindings =
+            tilo_resource::RowBindings::new().bind(BluetoothNearbyAction::PAIR, NO_ARGUMENTS);
         Some(
             tilo_resource::LiveRow::typed_with::<BluetoothNearbyRow>(
                 id,
@@ -949,36 +1026,21 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
 /// The `vpn` resource reading `vpn`.
 #[must_use]
 pub fn vpn_resource(vpn: &Vpn) -> ResourceSpec {
-    let mut resource = offer::<VpnAction>(tilo_resource::typed_resource::<VpnReading>(
+    let resource = offer::<VpnAction>(tilo_resource::typed_resource::<VpnReading>(
         VPN,
         crate::i18n::name("so.tilo.connectivity.vpn", "VPN"),
     ));
-    if vpn.profiles.is_empty() {
-        unavailable(
-            &mut resource,
-            "set-vpn",
-            "no_profile",
-            "This device has no VPN profile",
-        );
-    }
     let children = vpn.profiles.iter().filter_map(|profile| {
-        let id = child_id("vpn-profile", &profile.id)?;
+        let id = child_id(VPN_PROFILE, &profile.id)?;
+        let action = if profile.connected {
+            VpnProfileAction::DISCONNECT
+        } else {
+            VpnProfileAction::CONNECT
+        };
         let bindings = tilo_resource::RowBindings::new()
-            .bind(
-                VpnAction::SET_VPN,
-                [
-                    ("profile", profile.id.clone().into()),
-                    ("on", (!profile.connected).into()),
-                ],
-            )
-            .bind(
-                VpnAction::FORGET_VPN,
-                [("profile", profile.id.clone().into())],
-            )
-            .bind(
-                VpnAction::EDIT_VPN,
-                [("profile", profile.id.clone().into())],
-            );
+            .bind(action, NO_ARGUMENTS)
+            .bind(VpnProfileAction::EDIT, NO_ARGUMENTS)
+            .bind(VpnProfileAction::FORGET, NO_ARGUMENTS);
         Some(
             tilo_resource::LiveRow::typed_with::<VpnProfileRow>(
                 id,
@@ -1042,8 +1104,8 @@ impl Service for Connectivity {
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
         let published = self.resources();
-        // A Wi-Fi network's and a saved network's actions are their own, the row named by its
-        // address; a Bluetooth device's and a VPN profile's belong to their parent's vocabulary.
+        // A row that is a resource of its own (a Wi-Fi network, a saved network, a Bluetooth
+        // device, a VPN profile) takes its own actions, the row named by its address.
         let (parent, key) = resource
             .split_once(':')
             .map_or((resource, ""), |(kind, key)| (kind, key));
@@ -1064,13 +1126,27 @@ impl Service for Connectivity {
                 let action = decode::<ModemAction>(&published, resource, action, arguments)?;
                 self.modem(action)
             }
-            BLUETOOTH | "bluetooth-accessory" | "bluetooth-nearby" => {
+            BLUETOOTH => {
                 let action = decode::<BluetoothAction>(&published, resource, action, arguments)?;
                 Ok(self.bluetooth(action))
             }
-            VPN | "vpn-profile" => {
+            BLUETOOTH_ACCESSORY => {
+                let action =
+                    decode::<BluetoothAccessoryAction>(&published, resource, action, arguments)?;
+                Ok(self.bluetooth_accessory(key, action))
+            }
+            BLUETOOTH_NEARBY => {
+                let action =
+                    decode::<BluetoothNearbyAction>(&published, resource, action, arguments)?;
+                self.bluetooth_nearby(key, action)
+            }
+            VPN => {
                 let action = decode::<VpnAction>(&published, resource, action, arguments)?;
                 Ok(self.vpn(action))
+            }
+            VPN_PROFILE => {
+                let action = decode::<VpnProfileAction>(&published, resource, action, arguments)?;
+                Ok(self.vpn_profile(key, action))
             }
             TETHERING => {
                 let action = decode::<TetheringAction>(&published, resource, action, arguments)?;

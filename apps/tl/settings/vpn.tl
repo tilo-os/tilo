@@ -21,7 +21,7 @@ view vpn_pane(page: State<Text>, chosen: State<Text>) {
                 trailing: {
                     row(gap: .tight, align: .center) {
                         ui.Button(if p.connected { "On" } else { "Off" }, toggled: p.connected) {
-                            on press: device.set_vpn(device.vpn, profile: p.id, on: not p.connected)
+                            on press: if p.connected { p.disconnect() } else { p.connect() }
                         }
                         ui.Button(
                             "This VPN",
@@ -149,7 +149,7 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             ) {
                 trailing: {
                     ui.Button(if p.connected { "On" } else { "Off" }, toggled: p.connected) {
-                        on press: device.set_vpn(device.vpn, profile: p.id, on: not p.connected)
+                        on press: if p.connected { p.disconnect() } else { p.connect() }
                     }
                 }
             }
@@ -162,7 +162,7 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
         ui.Section("Settings") {
             ui.TextInput(bind: name, placeholder: p.name)
             ui.Button("Rename", size: .small) {
-                on press: device.edit_vpn(device.vpn, profile: p.id, name: name)
+                on press: p.edit(name: name)
             }
             ui.ListRow(
                 "Joins by itself",
@@ -171,11 +171,7 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             ) {
                 trailing: {
                     ui.Button(if p.autoconnect { "On" } else { "Off" }, toggled: p.autoconnect) {
-                        on press: device.edit_vpn(
-                            device.vpn,
-                            profile: p.id,
-                            autoconnect: not p.autoconnect,
-                        )
+                        on press: p.edit(autoconnect: not p.autoconnect)
                     }
                 }
             }
@@ -186,11 +182,7 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             ) {
                 trailing: {
                     ui.Button(if p.all_traffic { "On" } else { "Off" }, toggled: p.all_traffic) {
-                        on press: device.edit_vpn(
-                            device.vpn,
-                            profile: p.id,
-                            all_traffic: not p.all_traffic,
-                        )
+                        on press: p.edit(all_traffic: not p.all_traffic)
                     }
                 }
             }
@@ -201,7 +193,7 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             }
             ui.TextInput(bind: endpoint, placeholder: "The server, as host:port")
             ui.Button("Change the server", size: .small) {
-                on press: device.edit_vpn(device.vpn, profile: p.id, endpoint: endpoint)
+                on press: p.edit(endpoint: endpoint)
             }
             ui.PropertyList {
                 if let key = p.peer_public_key {
@@ -221,11 +213,7 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             }
             ui.TextInput(bind: keepalive, placeholder: "Seconds between keepalives; 0 for none")
             ui.Button("Change the keepalive", size: .small) {
-                on press: device.edit_vpn(
-                    device.vpn,
-                    profile: p.id,
-                    keepalive: keepalive.to_int() ?? 0,
-                )
+                on press: p.edit(keepalive: keepalive.to_int() ?? 0)
             }
             ui.TextInput(
                 bind: route,
@@ -233,18 +221,10 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             )
             row(gap: .related, align: .center, wrap: true) {
                 ui.Button("Route it", size: .small) {
-                    on press: device.edit_vpn(
-                        device.vpn,
-                        profile: p.id,
-                        allowed_ips: with_entry(p.allowed_ips, route),
-                    )
+                    on press: p.edit(allowed_ips: with_entry(p.allowed_ips, route))
                 }
                 ui.Button("Stop routing it", size: .small) {
-                    on press: device.edit_vpn(
-                        device.vpn,
-                        profile: p.id,
-                        allowed_ips: without_entry(p.allowed_ips, route),
-                    )
+                    on press: p.edit(allowed_ips: without_entry(p.allowed_ips, route))
                 }
             }
             ui.TextInput(
@@ -252,11 +232,7 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
                 placeholder: "Largest packet in bytes; empty to choose automatically",
             )
             ui.Button("Change the packet size", size: .small) {
-                on press: device.edit_vpn(
-                    device.vpn,
-                    profile: p.id,
-                    mtu: mtu.to_int() ?? 0,
-                )
+                on press: p.edit(mtu: mtu.to_int() ?? 0)
             }
         }
         ui.Section("Name servers") {
@@ -273,11 +249,7 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
                             role: .plain,
                             size: .small,
                         ) {
-                            on press: device.edit_vpn(
-                                device.vpn,
-                                profile: p.id,
-                                dns: without_entry(p.dns, server),
-                            )
+                            on press: p.edit(dns: without_entry(p.dns, server))
                         }
                     }
                 }
@@ -285,11 +257,7 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             row(gap: .related, align: .center, wrap: true) {
                 ui.TextInput(bind: dns, placeholder: "A name server's address", fill)
                 ui.Button("Ask it too", size: .small) {
-                    on press: device.edit_vpn(
-                        device.vpn,
-                        profile: p.id,
-                        dns: with_entry(p.dns, dns),
-                    )
+                    on press: p.edit(dns: with_entry(p.dns, dns))
                 }
             }
         }
@@ -303,8 +271,8 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             destructive: true,
             open: confirm_delete,
         ) {
-            on act_primary: device
-                .forget_vpn(device.vpn, profile: p.id)
+            on act_primary: p
+                .forget()
                 .then(set(confirm_delete, false))
                 .then(set(page, "vpn"))
             on act_secondary: set(confirm_delete, false)

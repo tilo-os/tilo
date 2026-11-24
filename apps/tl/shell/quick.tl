@@ -133,9 +133,9 @@ view vpn_tile() {
 /// press, whichever way it flips.
 action toggle_vpn(v: device.Vpn) {
     if let connected = v.profiles.find(p -> p.connected) {
-        device.set_vpn(v, profile: connected.id, on: false)
+        connected.disconnect()
     } else if let first = v.profiles.first() {
-        device.set_vpn(v, profile: first.id, on: true)
+        first.connect()
     }
 }
 
@@ -485,9 +485,9 @@ view bluetooth_section() {
                     value: if let level = accessory.battery { "{level}%" } else { "" },
                 ) {
                     on activate: if accessory.connected {
-                        device.disconnect(device.bluetooth, address: accessory.address)
+                        accessory.disconnect()
                     } else {
-                        device.connect(device.bluetooth, address: accessory.address)
+                        accessory.connect()
                     }
                     trailing: {
                         row(gap: .related, align: .center) {
@@ -501,10 +501,7 @@ view bluetooth_section() {
                                 size: .small,
                                 role: .plain,
                             ) {
-                                on press: device.forget(
-                                    device.bluetooth,
-                                    address: accessory.address,
-                                )
+                                on press: accessory.forget()
                             }
                         }
                     }
@@ -521,7 +518,7 @@ view bluetooth_section() {
             }
             for nearby in b.nearby {
                 ui.ListRow(nearby.name, secondary: "In reach", icon: .bluetooth) {
-                    on activate: device.pair(device.bluetooth, address: nearby.address)
+                    on activate: nearby.pair()
                 }
             }
             if b.on and b.accessories.is_empty() and b.nearby.is_empty() {

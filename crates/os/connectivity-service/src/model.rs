@@ -305,6 +305,11 @@ pub struct Bluetooth {
 )]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Accessory {
+    /// The accessory as the resource it is (`bluetooth-accessory:<hardware address>`): what its
+    /// own actions (`connect`, `disconnect`, `forget`) are called on. The service sets it as it
+    /// publishes the accessory.
+    #[serde(rename = "$address")]
+    pub handle: tilo_resource::Handle<crate::BluetoothAccessoryRow>,
     pub name: String,
     pub address: String,
     /// Battery percentage; `None` when it reports none.
@@ -318,6 +323,10 @@ pub struct Accessory {
 )]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Nearby {
+    /// The device as the resource it is (`bluetooth-nearby:<hardware address>`): what its own
+    /// `pair` is called on.
+    #[serde(rename = "$address")]
+    pub handle: tilo_resource::Handle<crate::BluetoothNearbyRow>,
     pub name: String,
     pub address: String,
     /// Signal during discovery, in dBm.
@@ -359,6 +368,10 @@ pub struct VpnPluginKind {
 )]
 #[serde(default, rename_all = "kebab-case")]
 pub struct VpnProfile {
+    /// The profile as the resource it is (`vpn-profile:<id>`): what its own actions
+    /// (`connect`, `disconnect`, `edit`, `forget`) are called on.
+    #[serde(rename = "$address")]
+    pub address: tilo_resource::Handle<crate::VpnProfileRow>,
     pub name: String,
     /// `NetworkManager`'s id of it, which a rename keeps.
     pub id: String,
@@ -510,6 +523,7 @@ impl From<&os_actions::bluez::DeviceInfo> for Accessory {
             address: device.address.clone(),
             battery: device.battery.filter(|percentage| *percentage > 0),
             connected: device.connected,
+            ..Self::default()
         }
     }
 }
@@ -520,6 +534,7 @@ impl From<&os_actions::bluez::DeviceInfo> for Nearby {
             name: device.name.clone(),
             address: device.address.clone(),
             signal: device.rssi,
+            ..Self::default()
         }
     }
 }

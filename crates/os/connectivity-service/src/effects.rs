@@ -342,20 +342,6 @@ pub enum BluetoothAction {
     #[effect(kind = "outside")]
     #[effect(own_device, icon = "bluetooth", keywords = "bluetooth, headphones")]
     ToggleBluetooth,
-    /// Connect a paired accessory.
-    #[effect(kind = "outside")]
-    #[effect(own_device, row, icon = "bluetooth", on = BluetoothAccessoryRow)]
-    Connect {
-        #[param("The accessory's address")]
-        address: String,
-    },
-    /// Disconnect an accessory.
-    #[effect(kind = "outside")]
-    #[effect(own_device, row, icon = "bluetooth-off", on = BluetoothAccessoryRow)]
-    Disconnect {
-        #[param("The accessory's address")]
-        address: String,
-    },
     /// Look for accessories in reach, or stop looking.
     #[effect(kind = "outside")]
     #[effect(
@@ -368,54 +354,50 @@ pub enum BluetoothAction {
         #[param("Whether to look and show what is in reach")]
         on: bool,
     },
-    /// Pair a device in reach: `BlueZ` bonds with it, trusting it and
-    /// connecting it. What the device asks to compare is a question the
-    /// person answers.
+}
+
+/// A paired Bluetooth accessory's own actions, called on its address
+/// (`bluetooth-accessory:<hardware address>`).
+#[derive(Clone, Copy, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.connectivity.bluetooth-accessory")]
+pub enum BluetoothAccessoryAction {
+    /// Connect the accessory.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "bluetooth", on = BluetoothAccessoryRow)]
+    Connect,
+    /// Disconnect the accessory.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "bluetooth-off", on = BluetoothAccessoryRow)]
+    Disconnect,
+    /// Forget the accessory: its bond, its keys and its trust go, so it must
+    /// be paired again from scratch.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, destructive, icon = "trash-2", on = BluetoothAccessoryRow)]
+    Forget,
+}
+
+/// A Bluetooth device in reach, called on its address
+/// (`bluetooth-nearby:<hardware address>`).
+#[derive(Clone, Copy, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.connectivity.bluetooth-nearby")]
+pub enum BluetoothNearbyAction {
+    /// Pair the device: `BlueZ` bonds with it, trusting it and connecting
+    /// it. What the device asks to compare is a question the person answers.
     #[effect(kind = "outside")]
     #[effect(
         own_device,
+        row,
         icon = "bluetooth",
         keywords = "pair, connect new",
         on = BluetoothNearbyRow
     )]
-    Pair {
-        #[param("The device's address")]
-        address: String,
-    },
-    /// Forget a device: its bond, its keys and its trust go, so it must be
-    /// paired again from scratch.
-    #[effect(kind = "outside")]
-    #[effect(
-        own_device,
-        destructive,
-        icon = "trash-2",
-        on = BluetoothAccessoryRow
-    )]
-    Forget {
-        #[param("The device's address")]
-        address: String,
-    },
+    Pair,
 }
 
 /// The `vpn` resource's actions.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.connectivity.vpn")]
 pub enum VpnAction {
-    /// Connect or disconnect a VPN profile.
-    #[effect(kind = "outside")]
-    #[effect(
-        own_device,
-        idempotent,
-        icon = "shield",
-        keywords = "vpn, tunnel, wireguard",
-        on = VpnProfileRow
-    )]
-    SetVpn {
-        #[param("The profile, by its id")]
-        profile: String,
-        #[param("Whether it is connected")]
-        on: bool,
-    },
     /// Add a VPN from a configuration file's text: `WireGuard`, `OpenVPN` or
     /// a `NetworkManager` key file.
     #[effect(kind = "outside")]
@@ -432,30 +414,38 @@ pub enum VpnAction {
         #[param(secret, "The configuration's text")]
         text: String,
     },
-    /// Remove a VPN profile from this device.
+}
+
+/// A VPN profile's own actions, called on its address
+/// (`vpn-profile:<id>`).
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.connectivity.vpn-profile")]
+pub enum VpnProfileAction {
+    /// Connect the VPN.
     #[effect(kind = "outside")]
     #[effect(
         own_device,
-        destructive,
-        icon = "trash-2",
+        row,
+        icon = "shield",
+        keywords = "vpn, tunnel, wireguard",
         on = VpnProfileRow
     )]
-    ForgetVpn {
-        #[param("The profile, by its id")]
-        profile: String,
-    },
-    /// Change a VPN profile. What is left out stays as it is.
+    Connect,
+    /// Disconnect the VPN.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "shield-off", on = VpnProfileRow)]
+    Disconnect,
+    /// Change the profile. What is left out stays as it is.
     #[effect(kind = "outside")]
     #[effect(
         own_device,
+        row,
         idempotent,
         icon = "shield",
         keywords = "vpn settings, endpoint, allowed ips, mtu",
         on = VpnProfileRow
     )]
-    EditVpn {
-        #[param("The profile, by its id")]
-        profile: String,
+    Edit {
         #[param("What the profile is called")]
         name: Option<String>,
         #[param("Whether it connects by itself")]
@@ -473,6 +463,10 @@ pub enum VpnAction {
         #[param("Seconds between keepalives; 0 sends none")]
         keepalive: Option<u32>,
     },
+    /// Remove the profile from this device.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, destructive, icon = "trash-2", on = VpnProfileRow)]
+    Forget,
 }
 
 /// The `tethering` resource's actions.

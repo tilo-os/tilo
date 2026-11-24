@@ -42,9 +42,9 @@ view bluetooth_pane() {
                         value: if let battery = accessory.battery { "{battery}%" },
                     ) {
                         on activate: if accessory.connected {
-                            device.disconnect(device.bluetooth, address: accessory.address)
+                            accessory.disconnect()
                         } else {
-                            device.connect(device.bluetooth, address: accessory.address)
+                            accessory.connect()
                         }
                         trailing: {
                             row(gap: .tight, align: .center) {
@@ -53,15 +53,9 @@ view bluetooth_pane() {
                                     size: .small,
                                 ) {
                                     on press: if accessory.connected {
-                                        device.disconnect(
-                                            device.bluetooth,
-                                            address: accessory.address,
-                                        )
+                                        accessory.disconnect()
                                     } else {
-                                        device.connect(
-                                            device.bluetooth,
-                                            address: accessory.address,
-                                        )
+                                        accessory.connect()
                                     }
                                 }
                                 ui.Button(
@@ -71,10 +65,7 @@ view bluetooth_pane() {
                                     role: .plain,
                                     size: .small,
                                 ) {
-                                    on press: device.forget(
-                                        device.bluetooth,
-                                        address: accessory.address,
-                                    )
+                                    on press: accessory.forget()
                                 }
                             }
                         }
@@ -88,13 +79,10 @@ view bluetooth_pane() {
                             secondary: if let signal = nearby.signal { "{signal} dBm" } else { "In reach" },
                             icon: .bluetooth,
                         ) {
-                            on activate: device.pair(device.bluetooth, address: nearby.address)
+                            on activate: nearby.pair()
                             trailing: {
                                 ui.Button("Pair", size: .small, role: .primary) {
-                                    on press: device.pair(
-                                        device.bluetooth,
-                                        address: nearby.address,
-                                    )
+                                    on press: nearby.pair()
                                 }
                             }
                         }

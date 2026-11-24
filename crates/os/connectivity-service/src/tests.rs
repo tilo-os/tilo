@@ -61,11 +61,13 @@ impl Fake {
                 address: "AA:BB".into(),
                 battery: Some(80),
                 connected: false,
+                ..Accessory::default()
             }];
             readings.bluetooth.nearby = vec![Nearby {
                 name: "Speaker".into(),
                 address: "AA:CC".into(),
                 signal: Some(-60),
+                ..Nearby::default()
             }];
             readings.vpn.profiles = vec![VpnProfile {
                 name: "Work".into(),
@@ -276,6 +278,7 @@ fn apply_bluetooth(bluetooth: &mut Bluetooth, change: &Change) {
                     address: nearby.address,
                     battery: None,
                     connected: true,
+                    ..Accessory::default()
                 });
             }
         }
@@ -842,11 +845,15 @@ fn accessories_profiles_the_hotspot_and_the_modem_act_from_their_children() {
         child_actions(&service, "bluetooth-accessory:AA:BB"),
         ["connect", "forget"]
     );
+    assert_eq!(
+        child_actions(&service, "vpn-profile:uuid-work"),
+        ["connect", "edit", "forget"]
+    );
     service
         .invoke("bluetooth-accessory:AA:BB", "connect", &Map::new())
         .expect("taken");
     service
-        .invoke("vpn-profile:uuid-work", "set-vpn", &Map::new())
+        .invoke("vpn-profile:uuid-work", "connect", &Map::new())
         .expect("taken");
     service
         .invoke(TETHERING, "set-hotspot", &arguments(json!({"on": true})))
@@ -876,10 +883,9 @@ fn accessories_profiles_the_hotspot_and_the_modem_act_from_their_children() {
         .iter()
         .find(|r| r.id.as_str() == VPN)
         .expect("vpn");
-    assert!(
-        vpn.children[0].actions[0]
-            .bound()
-            .contains(&("on".to_owned(), json!(false))),
+    assert_eq!(
+        vpn.children[0].actions[0].id,
+        "disconnect",
         "once connected, its child disconnects it"
     );
 
@@ -923,9 +929,9 @@ fn accessories_profiles_the_hotspot_and_the_modem_act_from_their_children() {
         .invoke(BLUETOOTH, "set-bluetooth", &arguments(json!({"on": false})))
         .expect("taken");
     service.settle();
-    for action in ["scan", "pair"] {
-        let arguments = arguments(json!({"on": true, "address": "AA:CC"}));
-        let refused = service.invoke(BLUETOOTH, action, &arguments);
+    for (resource, action) in [(BLUETOOTH, "scan"), ("bluetooth-nearby:AA:CC", "pair")] {
+        let arguments = arguments(json!({"on": true}));
+        let refused = service.invoke(resource, action, &arguments);
         assert!(
             matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "bluetooth_off"),
             "{action}: {refused:?}"
@@ -955,10 +961,10 @@ fn accessories_profiles_the_hotspot_and_the_modem_act_from_their_children() {
     assert!(!read(&service, VPN).to_string().contains("very-secret"));
     assert_eq!(
         child_actions(&service, "vpn-profile:uuid-Home"),
-        ["set-vpn", "forget-vpn"]
+        ["connect", "edit", "forget"]
     );
     service
-        .invoke("vpn-profile:uuid-Home", "forget-vpn", &Map::new())
+        .invoke("vpn-profile:uuid-Home", "forget", &Map::new())
         .expect("taken");
     service.settle();
     assert_eq!(
@@ -1062,8 +1068,7 @@ fn what_the_device_lacks_is_unavailable() {
         (NETWORK, "toggle-airplane-mode", json!({})),
         (BLUETOOTH, "set-bluetooth", json!({"on": true})),
         (BLUETOOTH, "scan", json!({"on": true})),
-        (BLUETOOTH, "pair", json!({"address": "AA:CC"})),
-        (VPN, "set-vpn", json!({"profile": "x", "on": true})),
+        ("bluetooth-nearby:AA:CC", "pair", json!({})),
         (TETHERING, "set-hotspot", json!({"on": true})),
         (
             TETHERING,
@@ -1148,33 +1153,24 @@ fn a_modem_takes_the_network_types_it_lists() {
 fn a_vpn_profile_changes_its_settings() {
     let fake = Fake::laptop();
     let mut service = service(&fake);
-    service
-        .invoke(
-            VPN,
-            "set-vpn-name",
-            &arguments(json!({"profile": "uuid-work", "name": "Office"})),
-        )
-        .expect("taken");
-    service
-        .invoke(
-            VPN,
-            "add-vpn-dns",
-            &arguments(json!({"profile": "uuid-work", "server": "10.0.0.1"})),
-        )
-        .expect("taken");
-    service.settle();
+    let edit = |service: &mut Connectivity, patch: Value| {
+        service
+            .invoke("vpn-profile:uuid-work", "edit", &arguments(patch))
+            .expect("taken");
+        service.settle();
+    };
+    edit(&mut service, json!({"name": "Office"}));
+    edit(&mut service, json!({"dns": ["10.0.0.1"]}));
     let vpn = read(&service, VPN);
     assert_eq!(vpn["profiles"][0]["name"], json!("Office"));
     assert_eq!(vpn["profiles"][0]["dns"], json!(["10.0.0.1"]));
+    assert_eq!(
+        vpn["profiles"][0]["$address"],
+        json!("vpn-profile:uuid-work"),
+        "the row carries the address its actions are called on"
+    );
 
-    service
-        .invoke(
-            VPN,
-            "remove-vpn-dns",
-            &arguments(json!({"profile": "uuid-work", "server": "10.0.0.1"})),
-        )
-        .expect("taken");
-    service.settle();
+    edit(&mut service, json!({"dns": []}));
     assert_eq!(read(&service, VPN)["profiles"][0]["dns"], json!([]));
 }
 
