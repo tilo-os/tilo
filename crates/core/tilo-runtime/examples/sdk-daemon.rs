@@ -12,7 +12,6 @@
 //! profile removed when the command ends, whose exit status this answers.
 
 use std::io::{BufRead as _, BufReader, Write as _};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
@@ -148,7 +147,7 @@ fn serving(profile: &Path) -> Result<()> {
 
 /// The daemon's answer to a `status` request on its native endpoint.
 fn status(profile: &Path) -> Result<Value> {
-    let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+    let mut stream = tilo_socket::connect(&profile.join("native.sock"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.write_all(b"{\"native\":\"status\"}\n")?;
     let mut line = String::new();
