@@ -1,0 +1,219 @@
+{
+  "app": "slides",
+  "said": "Slides",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.slides",
+    "package": "slides"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open a deck on its first slide",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        },
+        {
+          "must": [
+            "Add slide",
+            "Present",
+            "All slides",
+            "Properties",
+            "Help",
+            "Insert"
+          ]
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "add-slide",
+      "said": "Add a slide to the deck",
+      "ops": [
+        {
+          "press_any": [
+            "Add slide"
+          ]
+        },
+        {
+          "wait_for": "Insert"
+        }
+      ]
+    },
+    {
+      "id": "add-text",
+      "said": "Put a text box on the slide",
+      "ops": [
+        {
+          "press_any": [
+            "Text"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "style",
+      "said": "Make the chosen words bold and centred",
+      "ops": [
+        {
+          "press_any": [
+            "Bold"
+          ]
+        },
+        {
+          "press_any": [
+            "Center"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fill",
+      "said": "Give the chosen box an accent fill",
+      "ops": [
+        {
+          "press_any": [
+            "accent"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "overview",
+      "said": "See every slide at once",
+      "ops": [
+        {
+          "press_any": [
+            "All slides"
+          ]
+        },
+        {
+          "wait_for": "Back to the editor"
+        },
+        {
+          "press_any": [
+            "Back to the editor"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "help",
+      "said": "Open the keyboard reference",
+      "ops": [
+        {
+          "press_any": [
+            "Help"
+          ]
+        },
+        {
+          "press_any": [
+            "Close"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "present",
+      "said": "Present the deck",
+      "ops": [
+        {
+          "press_any": [
+            "Present"
+          ]
+        },
+        {
+          "wait_for": "Next"
+        }
+      ]
+    },
+    {
+      "id": "step",
+      "said": "Step to the next slide and back",
+      "ops": [
+        {
+          "press_any": [
+            "Next"
+          ]
+        },
+        {
+          "press_any": [
+            "Previous"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "blank",
+      "said": "Blank the screen to black and back",
+      "ops": [
+        {
+          "press_any": [
+            "Black"
+          ]
+        },
+        {
+          "press_any": [
+            "Black"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "presenter",
+      "said": "Show the presenter's view",
+      "ops": [
+        {
+          "press_any": [
+            "Presenter"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "end",
+      "said": "End the presentation",
+      "ops": [
+        {
+          "press_any": [
+            "End"
+          ]
+        },
+        {
+          "wait_for": "actions"
+        }
+      ]
+    },
+    {
+      "id": "export",
+      "said": "Export the deck as PowerPoint",
+      "ops": [
+        {
+          "press_any": [
+            "Export as PowerPoint"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same deck in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        }
+      ]
+    }
+  ]
+}

@@ -243,7 +243,6 @@ HEAVY_PACKAGES = {
     "tilo-media",
     "tilo-doc-pdf",
     "tilo-session",
-    "slides",
     "tilo-ui",
 }
 

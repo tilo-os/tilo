@@ -507,9 +507,6 @@ tilo-control = { path = "../control-cli" }
 # The runtimes a device runs tilolang apps' windows on, signed and installed as a device's own
 # store holds them: Chat's windows run on them as they do on a person's computer.
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
-# Slides, whose deck a test keeps through the workspace service across a restart and finds
-# among the workspace's records.
-slides = { path = "../../../apps/slides" }
 # A Windows program that shows through X11, as a Proton program does: the stand-in draws its
 # window on the X11 display its keeper serves.
 x11rb = { version = "0.13", default-features = false }

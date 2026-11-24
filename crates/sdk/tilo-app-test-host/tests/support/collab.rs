@@ -6,10 +6,6 @@
 //! own), tells the other subscribers on the channel when the record changed,
 //! routes presence to them, and lets integration tests exercise the real UI
 //! SDK shovel without a shell process or process-global service-fd variables.
-#![allow(
-    clippy::significant_drop_tightening,
-    reason = "the hub answers each call from one hold of its channels, so what a page of a record holds never changes under the reader between the change and its heads"
-)]
 
 use std::cell::RefCell;
 use std::collections::HashMap;
