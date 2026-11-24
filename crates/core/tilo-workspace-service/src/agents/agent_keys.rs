@@ -185,6 +185,9 @@ impl crate::workspaces::Workspaces {
 /// What separates the statement an agent's key is made from from anything else a root signs.
 const KEY_DOMAIN: &[u8] = b"tilo-agent-device-key-v1\0";
 
+/// How long a certified grant lasts before the device certifies it again.
+#[cfg(test)]
+pub(crate) const LIFETIME_NS: u64 = 30 * DAY_NS;
 /// How much of a grant may be left when the device certifies it again.
 pub(crate) const RENEW_WITHIN_NS: u64 = 7 * DAY_NS;
 const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;

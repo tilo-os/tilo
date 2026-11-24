@@ -10,6 +10,7 @@ use collab_types::{PeerPresence, PeerPresencePayload, sign_op};
 use ed25519_dalek::SigningKey;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
+use tokio::sync::oneshot;
 
 struct Workspace {
     state: Arc<AppBrokerState>,
@@ -1080,9 +1081,9 @@ impl crate::apps::services::PublishedResources for DeviceServer {
 /// is decided as the app it was admitted as, and the device's published resource is never asked.
 #[tokio::test(flavor = "current_thread")]
 async fn an_apps_own_connection_is_never_answered_as_another_app() {
+    use tilo_actions::api::ActionAddress;
     use tilo_actions::remote::{
-        ActionAddress, InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage,
-        ResourceReadRequest,
+        InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage, ResourceReadRequest,
     };
 
     tokio::task::LocalSet::new()

@@ -253,6 +253,13 @@ mod tests {
         ) -> Result<(), String> {
             Err("no agent keys here".into())
         }
+
+        fn made(
+            &self,
+            _key: &[u8; 32],
+        ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
+            None
+        }
     }
 
     /// A turn's open of Browser in the workspace `HERE`, on a server that places no windows.

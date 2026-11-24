@@ -615,8 +615,9 @@ async fn a_shell_without_its_daemon_refuses_an_apps_join_saying_why() {
 /// frame names.
 #[tokio::test(flavor = "current_thread")]
 async fn an_apps_connection_is_refused_the_persons_shell() {
+    use tilo_actions::api::ActionAddress;
     use tilo_actions::remote::{
-        ActionAddress, InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage,
+        InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage,
     };
     let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),

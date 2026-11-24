@@ -833,6 +833,18 @@ impl Opened {
             let arguments = action.map_or_else(Map::new, |(meta, declared)| {
                 named_arguments(meta, declared, &stamp.args, &published)
             });
+            // The member whose change this one copies, when a writer copied one: the facet
+            // records it as their actor bytes.
+            let origin = change
+                .message()
+                .and_then(tilo_actions::ActionContext::from_change_message)
+                .and_then(|context| {
+                    context
+                        .facets
+                        .into_iter()
+                        .find(|facet| facet.key == tilo_actions::ORIGIN_FACET)
+                        .map(|facet| facet.value)
+                });
             events.push((
                 DocumentEvent {
                     workspace: workspace.to_owned(),
@@ -850,7 +862,7 @@ impl Opened {
                     before: None,
                     after: None,
                     caused_by: None,
-                    origin: None,
+                    origin,
                     incoming_message: false,
                     housekeeping: false,
                     shortcut: None,

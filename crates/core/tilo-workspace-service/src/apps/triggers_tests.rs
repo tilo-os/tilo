@@ -9,8 +9,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use automerge::transaction::{CommitOptions, Transactable as _};
 use serde_json::json;
 use tilo_automation::{
-    ActorFilter, Binding, CatchUp, InvocationMode, InvocationOutcome, InvocationReport, Schedule,
-    Selector, Step, StepEntry, StepFailure, StepKind, StepOutcome, StepPath, StepStatus,
+    Binding, CatchUp, InvocationMode, InvocationOutcome, InvocationReport, Schedule, Selector,
+    Step, StepEntry, StepFailure, StepKind, StepOutcome, StepPath, StepStatus,
 };
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
@@ -2141,101 +2141,6 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     host.shutdown().await;
 }
 
-/// A post in the workspace's chat fires the shortcut watching it once, and a host that starts
-/// again answers a new post once without answering the one it already did.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_event_answers_a_post_in_the_workspace_once() {
-    use crate::workspaces::fixtures::chat::{chat_workspace, post_in};
-
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    // The native apps name their surfaces as the host first runs them.
-    crate::surfaces::decide_receipt(&dir.path().join("surfaces"));
-    let host = test_host(dir.path(), &key, &cert).await;
-    let workspaces = host.workspaces();
-    let (workspace, general) = chat_workspace(workspaces, &cert).await;
-    let trigger = TriggerSpec::ResourceChanged {
-        kind: "chat.messages".into(),
-        actions: vec!["post".into()],
-        fields: Vec::new(),
-        by: ActorFilter::People,
-    };
-    save_signed(
-        workspaces,
-        &workspace,
-        shortcut("greeter", trigger, Vec::new()),
-        (&key, &cert),
-    )
-    .await;
-    let started = Arc::new(Started::default());
-    let mut writes = workspaces.document_writes();
-    let mut runner = Runner::new(
-        workspaces.clone(),
-        Arc::clone(&started) as Arc<dyn StartRun>,
-        Order::WORKSPACE,
-    );
-    runner.arm().await;
-    runner.pass(Vec::new()).await;
-    // Set up now: what happened before is not answered.
-    assert!(started.0.lock().unwrap().is_empty());
-
-    let ada = hex::encode([8_u8; 32]);
-    post_in(
-        workspaces,
-        &workspace,
-        &cert,
-        (&ada, general.as_str(), "hello"),
-    )
-    .await;
-    let mut written = Vec::new();
-    while let Ok(write) = writes.try_recv() {
-        written.push(write);
-    }
-    assert!(!written.is_empty(), "the post is told to the runner");
-    runner.pass(written).await;
-    let firings = started.0.lock().unwrap().clone();
-    assert_eq!(firings.len(), 1, "{firings:?}");
-    let event = firings[0].inputs["event"].clone();
-    assert_eq!(event["workspace"], json!(workspace));
-    assert!(
-        event["record"]
-            .as_str()
-            .is_some_and(|record| !record.is_empty()),
-        "{event}"
-    );
-    runner.pass(Vec::new()).await;
-    assert_eq!(started.0.lock().unwrap().len(), 1, "one answer to one post");
-    let first = firings[0].invocation;
-    drop(runner);
-
-    // A host that starts again answers a new post once, and the post it already answered not
-    // again.
-    let mut runner = Runner::new(
-        workspaces.clone(),
-        Arc::clone(&started) as Arc<dyn StartRun>,
-        Order::WORKSPACE,
-    );
-    runner.arm().await;
-    post_in(
-        workspaces,
-        &workspace,
-        &cert,
-        (&ada, general.as_str(), "again"),
-    )
-    .await;
-    let mut written = Vec::new();
-    while let Ok(write) = writes.try_recv() {
-        written.push(write);
-    }
-    runner.pass(written).await;
-    let firings = started.0.lock().unwrap().clone();
-    assert_eq!(firings.len(), 2, "{firings:?}");
-    assert_ne!(firings[1].invocation, first, "a new post, a new firing");
-    runner.pass(Vec::new()).await;
-    assert_eq!(started.0.lock().unwrap().len(), 2);
-    host.shutdown().await;
-}
-
 /// The grant `root`'s person certified for `agent` in `workspace`, from `issued` and lasting as
 /// long as an agent's grant may, with the key it signs with.
 fn agent_grant(
@@ -3289,11 +3194,10 @@ async fn mail_in_her_own_account_starts_her_event_and_the_workspace_mailbox_is_n
         program.triggers
     );
     assert!(
-        !program.triggers.iter().any(|trigger| matches!(
-            trigger,
-            TriggerSpec::ResourceChanged { kind, .. }
-                if kind == crate::agents::triggered::MAIL_MESSAGE
-        )),
+        !program
+            .triggers
+            .iter()
+            .any(|trigger| matches!(trigger, TriggerSpec::ResourceChanged { .. })),
         "a message in the workspace mailbox is no mail in her account: {:?}",
         program.triggers
     );

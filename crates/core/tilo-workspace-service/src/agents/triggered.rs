@@ -824,7 +824,7 @@ impl MayRead for crate::apps::collab_app_broker::AppBrokerState {
 /// Why `agent`, acting for the person who asked, may not start a turn on `place` in
 /// `workspace`: what triggered it is gone, or the agent may not read it. `None` when the agent
 /// may read it.
-async fn unreadable(
+pub(crate) async fn unreadable(
     workspaces: &crate::workspaces::Workspaces,
     broker: Option<&dyn MayRead>,
     agent: &str,

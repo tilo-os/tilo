@@ -155,6 +155,7 @@ async fn keep_scout(workspaces: &crate::workspaces::Workspaces, workspace: &str,
                 .as_author(owner);
             made.apply(
                 WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    avatar: None,
                     name: tilo_resource::NonBlank::parse("Scout").unwrap(),
                     id: Some(SCOUT.into()),
                     model: None,

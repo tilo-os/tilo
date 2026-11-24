@@ -225,7 +225,6 @@ mod tests {
     )]
 
     use super::*;
-    use crate::workspaces::actions::tests::governed;
     use crate::workspaces::tests::{governor, test_host};
     use tilo_action_policy::{Answer, KindSet, Rule, TreePath};
     use tilo_actions::remote::ReceiptStatus;
@@ -338,14 +337,17 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
-        let (workspace, _, _) = governed(&workspaces).await;
+        let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
 
         let chat = workspaces
             .providers()
             .get("record:so.tilo.chat:")
             .expect("tl Chat's records are served on this device");
-        assert_eq!(chat.app, "so.tilo.chat", "decided by tl Chat's own grants");
+        assert_eq!(
+            &*chat.app, "so.tilo.chat",
+            "decided by tl Chat's own grants"
+        );
         assert_eq!(chat.reach, Reach::Devices);
 
         let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key)
@@ -376,7 +378,7 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
-        let (workspace, _, _) = governed(&workspaces).await;
+        let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
         let person = hex::encode(owner.user_public_key);
         workspaces
@@ -454,7 +456,7 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
-        let (workspace, _, _) = governed(&workspaces).await;
+        let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
         let records = records(&workspaces);
 
