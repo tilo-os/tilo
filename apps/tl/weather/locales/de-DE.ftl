@@ -331,6 +331,7 @@ d-53e2mq4f = Ortsleiste
     .w-refresh = Aktualisierung
     .w-show-first = Zuerst zeigen
     .w-move-to-top = Nach oben
+    .w-rename = Umbenennen
     .w-remove-place = Ort entfernen
 
 d-gbetzns2 = Vorhersage
@@ -585,3 +586,9 @@ d-lklrcz7r = Vorhersage übernehmen
     .doc = Die Vorhersage eines Dienstes, in die Messung dieses Geräts geschrieben: die aktuelle Messung, ein Tag Stunden und eine Woche Tage.
 
 d-lklrcz7r-body = Inhalt
+d-ghfrburs = Umbenennen
+    .doc = Benennt einen Ort um, dem die Person folgt.
+    .did = benannte einen Ort um
+    .w-a-place-needs-a-name = Ein Ort braucht einen Namen
+
+d-mcbmxei2 = Ort umbenennen

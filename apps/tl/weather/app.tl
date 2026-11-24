@@ -254,6 +254,16 @@ action move_to_top(w: Locations, place: Place) (icon: .arrow_up, label: "Move to
     w.places.move(place, to: 0)
 }
 
+/// Renames a place the person follows.
+action rename_place(w: Locations, place: Place, name: Text) (
+    icon: .pencil,
+    label: "Rename",
+    did: "renamed a place",
+) {
+    require name.trim() != "" "A place needs a name"
+    place.name = name.trim()
+}
+
 /// Removes a place from the list; what was read of it goes with it. Undo brings it back.
 destructive action remove_place(w: Locations, place: Place) (
     icon: .trash_2,
@@ -1287,6 +1297,9 @@ view place_bar(w: Locations, place: Place) {
         }
         ui.Button("Move to top", icon: .arrow_up) {
             on press: move_to_top(w, place)
+        }
+        ui.Button("Rename", icon: .pencil) {
+            on press: rename_place(w, place)
         }
         ui.Button("Remove place", icon: .trash_2, role: .destructive) {
             on press: remove_place(w, place)

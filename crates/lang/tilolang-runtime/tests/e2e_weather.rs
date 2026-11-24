@@ -514,6 +514,48 @@ mod cases {
             );
         }
 
+        phase a_place_is_renamed_and_the_forecast_stays_where_it_was;
+        {
+            let weather = Weather::new(false);
+            let place = weather.save("Amsterdam", 52.374, 4.8897);
+            weather.call(
+                "rename_place",
+                &[
+                    ("w", Value::resource(&weather.root)),
+                    ("place", Value::resource(&place)),
+                    ("name", Value::text("  Home  ")),
+                ],
+            );
+            assert_eq!(
+                weather.field(&place, "name"),
+                json!("Home"),
+                "the typed name, trimmed"
+            );
+            assert_eq!(
+                weather.field(&place, "latitude"),
+                json!(52.374),
+                "renaming keeps where the place is"
+            );
+            // The place's bar offers the rename beside its other commands.
+            let mut forecast = weather.window(
+                "forecast",
+                vec![
+                    Value::resource(&weather.root),
+                    Value::resource(&place),
+                    Value::Bool(false),
+                ],
+            );
+            forecast.poll_patches().unwrap();
+            let labels: Vec<String> = of_kind(forecast.tree(), "ui.Button")
+                .into_iter()
+                .map(|button| text(button, "label"))
+                .collect();
+            assert!(
+                labels.iter().any(|label| label == "Rename"),
+                "the place's bar offers Rename: {labels:?}"
+            );
+        }
+
         phase a_refresh_reads_the_forecast_and_the_air_and_the_window_draws_it_in_the_persons_units;
         {
             let weather = Weather::new(true);
