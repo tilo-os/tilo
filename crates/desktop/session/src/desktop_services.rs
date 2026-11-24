@@ -173,6 +173,15 @@ impl DesktopServices {
         let mut services: Vec<Box<dyn Service>> = vec![Box::new(self.notifications.clone())];
         if let Some(portal) = &self.portal {
             services.push(Box::new(portal.clone()));
+            // The camera, the microphone, the screen and the location: what the machine's
+            // switches say of them, what the portal and the sound server say uses them, and the
+            // answers the person gave about them.
+            services.push(Box::new(crate::privacy::Privacy::new(
+                Some(portal.captures().clone()),
+                Some(portal.consents().clone()),
+            )));
+        } else {
+            services.push(Box::new(crate::privacy::Privacy::new(None, None)));
         }
         if let Some((tray, _)) = &self.tray {
             services.push(Box::new(tilo_tray::service::TrayService::new(Arc::clone(

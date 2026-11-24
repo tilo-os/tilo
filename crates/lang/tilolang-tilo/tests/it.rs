@@ -92,6 +92,7 @@ mod rich_text;
 mod scenarios;
 mod spaces;
 mod settings_panes;
+mod settings_permissions;
 mod shell_media;
 mod suggest;
 mod surface;

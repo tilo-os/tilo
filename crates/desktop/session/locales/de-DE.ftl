@@ -194,6 +194,8 @@ session-magnifier-zoom-in = Stärker vergrößern
 session-magnifier-zoom-out = Weniger vergrößern
 session-displays = Bildschirme
 session-input-devices = Eingabegeräte
+session-privacy = Privatsphäre
+session-workspace-access = Zugriff im Arbeitsbereich
 wireless-unavailable = Kabellose Bildschirme sind gerade nicht verfügbar
 wireless-unavailable-detail = Versuch es gleich noch einmal.
 wireless-search-failed = Die Suche nach kabellosen Bildschirmen ist fehlgeschlagen
@@ -241,7 +243,7 @@ session-bluetooth-timed-out = Der Umzug hat zu lange gedauert.
 session-bluetooth-unknown = Das ist keine Bluetooth-Adresse.
 session-notifications = Benachrichtigungszentrum
 session-time = Uhrzeit
-session-input = Tastatur
+session-keyboard = Tastatur
 session-clock = Uhr
 
 session-nearby-send = In der Nähe senden

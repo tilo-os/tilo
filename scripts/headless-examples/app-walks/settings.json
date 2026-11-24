@@ -191,6 +191,26 @@
       "budget_ms": 20000
     },
     {
+      "id": "permissions",
+      "said": "Open Permissions and see what this device's camera, microphone and screen are doing, and what the workspaces gave their apps",
+      "ops": [
+        {
+          "press": "Permissions"
+        },
+        {
+          "wait_for": "Workspace access"
+        },
+        {
+          "must": [
+            "This device",
+            "Your answers",
+            "Workspace access"
+          ]
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
       "id": "about",
       "said": "Open About and see the system it runs",
       "ops": [

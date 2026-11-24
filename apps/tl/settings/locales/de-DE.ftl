@@ -230,6 +230,7 @@ d-i67tvpqg = Settings window
     .w-accounts-and-access = Konten und Zugriff
     .w-accounts = Konten
     .w-users = Benutzer
+    .w-permissions = Berechtigungen
     .w-agent-models = Agentenmodelle
     .w-devices-and-access = Geräte und Zugriff
     .w-continuity = Kontinuität
@@ -1428,3 +1429,21 @@ d-w6qsucia = Kontrast jetzt prüfen
 
 d-w6qsucia-theme = Thema
 
+
+d-laci57k4 = Permissions pane
+    .w-this-device = Dieses Gerät
+    .w-these-permissions-belong-to-this-device = Diese Berechtigungen gehören zu diesem Gerät. Sie ändern nicht, was ein anderer Arbeitsbereich erlaubt.
+    .w-this-device-s-privacy-can-t = Die Privatsphäre dieses Geräts ist hier nicht lesbar; diese Angaben sind unbekannt und nicht etwa ungenutzt.
+    .w-blocked = Blockiert
+    .w-in-use-by = In Benutzung durch { $name }
+    .w-not-in-use = Nicht in Benutzung
+    .w-your-answers = Deine Antworten
+    .w-what-you-answered-when-an-application = Was du geantwortet hast, als eine Anwendung um Kamera, Mikrofon, Bildschirm oder Tastatur und Zeiger gebeten hat. Eine Antwort gilt nur auf dem Gerät, das sie nennt.
+    .w-no-application-has-a-lasting-answer = Keine Anwendung hat eine dauerhafte Antwort auf einem deiner Geräte.
+    .w-allowed = Erlaubt
+    .w-refused = Abgelehnt
+    .w-workspace-access = Zugriff im Arbeitsbereich
+    .w-what-the-workspaces-here-give-their = Was die Arbeitsbereiche hier ihren Anwendungen, Personen und Agenten über ihre eigenen Dokumente hinaus geben. Geändert wird das im Arbeitsbereich selbst, unter seinen Berechtigungen.
+    .w-workspace-access-can-t-be-checked = Der Zugriff im Arbeitsbereich ist nicht prüfbar; es ist unbekannt, was die Arbeitsbereiche vergeben haben. Versuche es erneut, wenn der Desktop fertig gestartet ist.
+    .w-no-workspace-here-gives-anything-beyond = Kein Arbeitsbereich hier gibt etwas über seine eigenen Dokumente hinaus.
+    .w-this-workspace = Dieser Arbeitsbereich

@@ -4799,13 +4799,14 @@ mod surface_tests {
     /// governance tree, named after what it holds. Each is a resource type of its own, so a verb
     /// several offer (`list` on the members, the invitations and the servers) is one action of
     /// each, named by its type.
-    const RESOURCES: [(&str, &str); 11] = [
+    const RESOURCES: [(&str, &str); 12] = [
         ("members", "Members"),
         ("member", "Member"),
         ("invitations", "Invitations"),
         ("waiting", "Wait list"),
         ("servers", "Servers"),
         ("content", "Content"),
+        ("access", "Access"),
         ("trust", "Trust"),
         ("registries", "Registries"),
         ("apps", "Apps"),
@@ -4874,6 +4875,45 @@ mod surface_tests {
                 // The content reads as its owners' limits and the content a limit refused: what
                 // every host is handed as `workspace.content` (`tilolang_tilo`'s
                 // `Host::give_content`), each refusal only to whoever reads it.
+                // The workspace's grants read as what its apps, people and agents were given
+                // beyond their own documents: what the session publishes as `workspace/access`,
+                // in the words the workspace's Permissions tab lists them.
+                if *kind == "access" {
+                    resource["fields"] = json!([
+                        { "path": "known", "type": "bool", "readonly": true },
+                        {
+                            "path": "workspaces",
+                            "type": { "list": { "named": "WorkspaceAccess" } },
+                            "readonly": true,
+                        },
+                    ]);
+                    resource["types"] = json!([
+                        {
+                            "name": "WorkspaceAccess",
+                            "doc": "The grants one workspace gives.",
+                            "fields": [
+                                { "name": "name", "type": "text", "title": "What the workspace is called." },
+                                {
+                                    "name": "grants",
+                                    "type": { "list": { "named": "AccessEntry" } },
+                                    "title": "What it gives, in the order its Permissions tab lists them.",
+                                },
+                            ],
+                        },
+                        {
+                            "name": "AccessEntry",
+                            "doc": "One grant a workspace gives.",
+                            "fields": [
+                                { "name": "id", "type": "text", "title": "What revoking it names." },
+                                { "name": "section", "type": "text", "title": "Who holds it: people, agents or apps." },
+                                { "name": "holder", "type": "text", "title": "Whom it is given to." },
+                                { "name": "allows", "type": "text", "title": "What it allows." },
+                                { "name": "expiry", "type": "text", "title": "How long it lasts." },
+                                { "name": "granted_by", "type": "text", "title": "Who gave it, where the workspace knows." },
+                            ],
+                        },
+                    ]);
+                }
                 if *kind == "content" {
                     resource["fields"] = json!([
                         { "path": "file_bytes", "type": "int", "readonly": true },

@@ -9224,6 +9224,208 @@
       ]
     },
     {
+      "kind": "privacy",
+      "label": "Privacy",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "capabilities",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Posture"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "answers",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Answer"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Answer",
+          "doc": "One answer the person gave about a device of theirs, and how long it stands.",
+          "fields": [
+            {
+              "name": "app",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "capability",
+              "type": {
+                "named": "Capability"
+              }
+            },
+            {
+              "name": "allowed",
+              "type": "bool"
+            },
+            {
+              "name": "standing",
+              "type": {
+                "named": "Standing"
+              }
+            },
+            {
+              "name": "until_unix_ms",
+              "type": "int"
+            },
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "this_device",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Capability",
+          "doc": "One device of the machine a person is asked about, and the application leaves it alone.",
+          "cases": [
+            {
+              "name": "camera",
+              "label": "Camera"
+            },
+            {
+              "name": "microphone",
+              "label": "Microphone"
+            },
+            {
+              "name": "screen",
+              "label": "Screen"
+            },
+            {
+              "name": "location",
+              "label": "Location"
+            },
+            {
+              "name": "input",
+              "label": "Input"
+            },
+            {
+              "name": "system-audio",
+              "label": "System audio"
+            }
+          ]
+        },
+        {
+          "name": "InUse",
+          "doc": "One application using a device of this machine now.",
+          "fields": [
+            {
+              "name": "app",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Posture",
+          "doc": "One device's posture on this machine, as a person reads it.",
+          "fields": [
+            {
+              "name": "capability",
+              "type": {
+                "named": "Capability"
+              }
+            },
+            {
+              "name": "present",
+              "type": "bool"
+            },
+            {
+              "name": "switch",
+              "type": {
+                "named": "SwitchState"
+              }
+            },
+            {
+              "name": "muted",
+              "type": "bool"
+            },
+            {
+              "name": "mute_known",
+              "type": "bool"
+            },
+            {
+              "name": "watched",
+              "type": "bool"
+            },
+            {
+              "name": "in_use",
+              "type": {
+                "list": {
+                  "named": "InUse"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Standing",
+          "doc": "How long an answer the person gave stands.",
+          "cases": [
+            {
+              "name": "once",
+              "label": "Once"
+            },
+            {
+              "name": "session",
+              "label": "Session"
+            },
+            {
+              "name": "until",
+              "label": "Until"
+            },
+            {
+              "name": "until-revoked",
+              "label": "Until revoked"
+            }
+          ]
+        },
+        {
+          "name": "SwitchState",
+          "doc": "Whether the machine's own switch lets its camera or microphone be used.",
+          "cases": [
+            {
+              "name": "unavailable",
+              "label": "Unavailable"
+            },
+            {
+              "name": "allowed",
+              "label": "Allowed"
+            },
+            {
+              "name": "software-blocked",
+              "label": "Software blocked"
+            },
+            {
+              "name": "hardware-blocked",
+              "label": "Hardware blocked"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "notifications",
       "label": "Notifications",
       "version": 1,

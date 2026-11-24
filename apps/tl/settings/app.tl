@@ -109,6 +109,9 @@ view settings_window(s: Settings) {
                     ui.NavItem("users", "Users", icon: .user) {
                         on select: open_pane("users")
                     }
+                    ui.NavItem("permissions", "Permissions", icon: .shield) {
+                        on select: open_pane("permissions")
+                    }
                     ui.NavItem("agent_models", "Agent models", icon: .sparkles) {
                         on select: open_pane("agent_models")
                     }
@@ -204,6 +207,8 @@ view settings_window(s: Settings) {
                         themes_pane(s)
                     } else if s.pane == "users" {
                         users_pane()
+                    } else if s.pane == "permissions" {
+                        permissions_pane()
                     } else if s.pane == "about" {
                         about_pane()
                     } else {
@@ -274,7 +279,11 @@ fn pane_title(pane: Text) -> Text {
         "Storage"
     } else if pane == "updates" {
         "Updates"
-    } else if pane == "users" { "Users" } else if pane == "about" { "About" } else { "Appearance" }
+    } else if pane == "users" {
+        "Users"
+    } else if pane == "permissions" {
+        "Permissions"
+    } else if pane == "about" { "About" } else { "Appearance" }
 }
 
 /// One setting: what it is, a line about it, and the control that changes it at the row's

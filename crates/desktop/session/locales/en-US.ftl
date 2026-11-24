@@ -189,6 +189,8 @@ session-magnifier-zoom-in = Magnify more
 session-magnifier-zoom-out = Magnify less
 session-displays = Displays
 session-input-devices = Input devices
+session-privacy = Privacy
+session-workspace-access = Workspace access
 wireless-unavailable = Wireless displays aren't available right now
 wireless-unavailable-detail = Try again in a moment.
 wireless-search-failed = Couldn't look for wireless displays
@@ -236,7 +238,7 @@ session-bluetooth-timed-out = The move took too long.
 session-bluetooth-unknown = That is not a Bluetooth address.
 session-notifications = Notification centre
 session-time = Time
-session-input = Keyboard
+session-keyboard = Keyboard
 session-clock = Clock
 
 session-nearby-send = Nearby Send

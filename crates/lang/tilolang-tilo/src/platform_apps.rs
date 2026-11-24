@@ -122,6 +122,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("displays", "Displays", "session:displays"),
     ("screen", "Screen", "session:screen"),
     ("input_devices", "InputDevices", "session:input-devices"),
+    ("privacy", "Privacy", "session:privacy"),
     ("notifications", "Notifications", "session:notifications"),
     ("osd", "Osd", "session:osd"),
     ("vpn", "Vpn", "vpn"),
@@ -183,8 +184,11 @@ pub const WORKSPACE_MEMBERS: &str = "workspace/members";
 /// the content a limit refused, which every host serves its runtime from what it decides by
 /// ([`crate::content::Host::give_content`]).
 pub const WORKSPACE_CONTENT: &str = "workspace/content";
+/// Where the workspace's grants are read: what its apps, people and agents were given beyond
+/// their own documents, which the session publishes for the workspaces it shows.
+pub const WORKSPACE_ACCESS: &str = "workspace/access";
 /// The workspace's roots a view names (`use tilo.workspace as workspace`): its members, its
-/// content, and the record of its agents, which the session publishes.
+/// content, the record of its agents and its grants, which the session publishes.
 const WORKSPACE_ROOTS: &[(&str, &str, &str)] = &[
     ("members", "Members", WORKSPACE_MEMBERS),
     ("content", "Content", WORKSPACE_CONTENT),
@@ -193,6 +197,7 @@ const WORKSPACE_ROOTS: &[(&str, &str, &str)] = &[
         "WorkspaceAgent",
         "workspace:tilo.workspace.agent",
     ),
+    ("access", "Access", WORKSPACE_ACCESS),
 ];
 
 /// The resource the workspace's members are read as, of the type its package reads it as.
@@ -202,6 +207,16 @@ pub fn workspace_members() -> crate::runtime::ResourceRef {
         doc: WORKSPACE_MEMBERS.to_owned(),
         item: None,
         ty: format!("{WORKSPACE_APP}#Members"),
+    }
+}
+
+/// The resource the workspace's grants are read as, of the type its package reads it as.
+#[must_use]
+pub fn workspace_access() -> crate::runtime::ResourceRef {
+    crate::runtime::ResourceRef {
+        doc: WORKSPACE_ACCESS.to_owned(),
+        item: None,
+        ty: format!("{WORKSPACE_APP}#Access"),
     }
 }
 

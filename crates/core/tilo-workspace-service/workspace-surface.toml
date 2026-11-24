@@ -204,6 +204,33 @@ fields = [
 ]
 
 [[resources]]
+kind = "workspace.access"
+label = "Access"
+version = 1
+fields = [
+  { path = "known", type = "bool", readonly = true },
+  { path = "workspaces", type = { list = { named = "WorkspaceAccess" } }, readonly = true },
+]
+
+[[resources.types]]
+name = "WorkspaceAccess"
+fields = [
+  { name = "name", type = "text" },
+  { name = "grants", type = { list = { named = "AccessEntry" } } },
+]
+
+[[resources.types]]
+name = "AccessEntry"
+fields = [
+  { name = "id", type = "text" },
+  { name = "section", type = "text" },
+  { name = "holder", type = "text" },
+  { name = "allows", type = "text" },
+  { name = "expiry", type = "text" },
+  { name = "granted_by", type = "text" },
+]
+
+[[resources]]
 kind = "workspace.trust"
 label = "Trust"
 version = 1

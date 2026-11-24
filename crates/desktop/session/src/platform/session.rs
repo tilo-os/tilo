@@ -1619,6 +1619,14 @@ impl Session {
         services
             .borrow_mut()
             .add(Box::new(crate::input_devices::Served::new()));
+        // What the workspaces' apps, people and agents were given beyond their own documents, as
+        // the workspace settings list them: Settings reads one summary, and changes nothing here.
+        services
+            .borrow_mut()
+            .add(Box::new(crate::workspace_access::Served::new(
+                handle.clone(),
+                options.person.clone(),
+            )));
         services
             .borrow_mut()
             .add(Box::new(crate::keyboard::KeyboardService::new(

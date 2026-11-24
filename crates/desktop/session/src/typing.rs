@@ -41,7 +41,7 @@ impl Served {
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![offer::<NoEffect>(
-            tilo_resource::LiveRow::typed::<InputRoot>(RESOURCE, crate::i18n::t("session-input"))
+            tilo_resource::LiveRow::typed::<InputRoot>(RESOURCE, crate::i18n::t("session-keyboard"))
                 .into_resource(),
         )]
     }
@@ -90,7 +90,9 @@ mod tests {
         assert!(served.poll(), "typing is news");
         assert_eq!(served.read(RESOURCE).unwrap()["typing"], true);
         assert!(
-            served.wakes_in().is_some_and(|left| left <= Duration::from_secs(3)),
+            served
+                .wakes_in()
+                .is_some_and(|left| left <= Duration::from_secs(3)),
             "the service wakes for the pause"
         );
         typed_at.set(Instant::now().checked_sub(Duration::from_secs(4)));

@@ -20158,6 +20158,7 @@ dependencies = [
  "tilo-key-group",
  "tilo-live",
  "tilo-liveness",
+ "tilo-location",
  "tilo-lock",
  "tilo-mcp",
  "tilo-media",
