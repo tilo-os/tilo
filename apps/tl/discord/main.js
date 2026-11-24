@@ -530,7 +530,9 @@ export async function carryFromWorkspace({ calls, current, log = () => {}, stop 
 /// What one change of a bridged conversation's message means, done on Discord's side.
 async function carryChange({ calls, account, event, target, known, log }) {
   const there = known.get(target.message) ?? null;
-  const fields = await readMessage(calls, target);
+  // What the change is says whether the message is gone, which needs no read: a record can still
+  // read while the change that removed it arrives.
+  const fields = event.what === "removed" ? null : await readMessage(calls, target);
   if (!fields) {
     if (!there) return;
     // The message is gone here: what the bridge sent there goes too.

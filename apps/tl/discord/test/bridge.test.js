@@ -49,9 +49,10 @@ function account(overrides = {}) {
 
 /// One change as the SDK's watch reports it: generic words, the record it is of and the item in
 /// it that moved, and who made it.
-function change({ record = RECORD, item, actor = { by: JSON.parse(ADA) }, time = 1000 } = {}) {
+function change({ record = RECORD, item, actor = { by: JSON.parse(ADA) }, time = 1000, what } = {}) {
   return {
     kind: "change",
+    ...(what ? { what } : {}),
     path: "chat",
     change: `change-${item}`,
     sentence: "a message moved",
@@ -262,9 +263,9 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
     `https://discord.com/api/v10/channels/456/messages/9001/reactions/${encodeURIComponent("🎉")}`,
   );
 
-  // And a deletion, once the message is gone from the workspace.
-  workspace.reads.delete(message);
-  workspace.say(change({ item: "messages/m1", time: 4000 }));
+  // And a deletion, once the change says the message is gone from the workspace: no read is
+  // needed for that, even while the record may still read.
+  workspace.say(change({ item: "messages/m1", time: 4000, what: "removed" }));
   await until(() => workspace.requests.length >= 4, "the deletion");
   const deleted = workspace.requests[3];
   expect(deleted.method).toBe("DELETE");
