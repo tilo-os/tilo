@@ -299,7 +299,7 @@ fn the_dispatch_sends_a_record_action_to_the_device_holding_its_workspace() {
         workspace: hosted.to_owned(),
         provider: Arc::clone(&provider),
     };
-    providers.place_on_hosts(Arc::new(move |workspace| {
+    providers.place_on_hosts(Arc::new(move |workspace: &str| {
         crate::apps::services::HostedWorkspaces::host_actions(&elsewhere, workspace)
     }));
     let request = || InvokeRequest {

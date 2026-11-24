@@ -1513,7 +1513,9 @@ fn broker_services(
         .workspaces
         .copies()
         .providers()
-        .place_on_hosts(Arc::new(move |workspace| placed.host_actions(workspace)));
+        .place_on_hosts(Arc::new(move |workspace: &str| {
+            placed.host_actions(workspace)
+        }));
     // This device's server settings: the one copy its daemon keeps, read and changed by the apps
     // attached to it here and by a desktop session's apps over the shell link.
     let server_settings: Arc<dyn PublishedResources> = Arc::new(
@@ -1521,10 +1523,11 @@ fn broker_services(
     );
     // Everything this device publishes to the apps attached to it: each resource served by the
     // provider that keeps it, through one table.
-    let published: Arc<dyn PublishedResources> = Arc::new(
-        super::published::Published::new()
-            .serving(&[super::server_settings::SERVER], Arc::clone(&server_settings)),
-    );
+    let published: Arc<dyn PublishedResources> =
+        Arc::new(super::published::Published::new().serving(
+            &[super::server_settings::SERVER],
+            Arc::clone(&server_settings),
+        ));
     Ok(ProcessServices {
         // The records of the workspaces this device keeps, read for the apps, agents and programs
         // it serves: each capture opens the record's document here, and counts it.

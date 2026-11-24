@@ -271,7 +271,6 @@ impl ActionProvider for OnHost {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
 
     use super::placed_on_host;
@@ -304,7 +303,6 @@ mod tests {
             runs_work,
             label: String::new(),
             cloud: false,
-            moderates: false,
             origin: None,
             workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).unwrap(),
             endpoint_addr: iroh::EndpointAddr::new(

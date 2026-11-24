@@ -32,7 +32,7 @@ struct Device {
     engine: std::sync::Arc<Engine>,
     network: Client,
     /// The session's question sheet: what its person is asked here.
-    questions: tilo_service::AskReceiver,
+    _questions: tilo_service::AskReceiver,
     _state: tempfile::TempDir,
 }
 
@@ -72,7 +72,7 @@ impl Device {
         Self {
             engine,
             network,
-            questions,
+            _questions: questions,
             _state: state,
         }
     }
@@ -366,7 +366,6 @@ fn a_workspace_the_daemon_holds_elsewhere_is_listed_and_let_go_once_this_device_
         runs_work: true,
         label: String::new(),
         cloud: false,
-        moderates: false,
         origin: None,
         workspace_id: tilo_peer_state::join::WorkspaceId::parse(&notes.to_string())
             .expect("a workspace id"),

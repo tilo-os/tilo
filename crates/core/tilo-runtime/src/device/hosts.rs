@@ -14,7 +14,7 @@
 //! decided here.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use tilo_actions::remote::ActionProvider;
 use tilo_desktop_model::WorkspaceId;
@@ -27,7 +27,8 @@ use super::workspaces::ServiceWorkspaces;
 
 /// The hosts this device reaches its hosted workspaces' actions on.
 pub(crate) struct Hosts {
-    workspaces: Arc<ServiceWorkspaces>,
+    /// The workspaces this device holds: held weakly, since their dispatch holds these hosts.
+    workspaces: Weak<ServiceWorkspaces>,
     /// Each workspace's host as last asked, by workspace and the host's device key: a host that
     /// changed is reached anew.
     reached: Mutex<HashMap<WorkspaceId, ([u8; 32], RemoteDevice)>>,
@@ -37,7 +38,7 @@ impl Hosts {
     /// The hosts of the workspaces `workspaces` holds.
     pub(crate) fn of(workspaces: &Arc<ServiceWorkspaces>) -> Arc<Self> {
         Arc::new(Self {
-            workspaces: Arc::clone(workspaces),
+            workspaces: Arc::downgrade(workspaces),
             reached: Mutex::default(),
         })
     }
@@ -46,19 +47,25 @@ impl Hosts {
 impl HostedWorkspaces for Hosts {
     fn host_actions(&self, workspace: &str) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
         let id = WorkspaceId::parse(workspace)?;
-        let own = self.workspaces.device_cert().device_public_key;
-        let host = standing::host_elsewhere(&self.workspaces.peer(id)?, &own)?;
-        let mut reached = self.reached.lock_recover();
-        if let Some((device, actions)) = reached.get(&id)
-            && *device == host.device
-        {
-            return Some(Arc::new(actions.clone()));
+        let workspaces = self.workspaces.upgrade()?;
+        let own = workspaces.device_cert().device_public_key;
+        let host = standing::host_elsewhere(&workspaces.peer(id)?, &own)?;
+        let kept = self
+            .reached
+            .lock_recover()
+            .get(&id)
+            .filter(|(device, _)| *device == host.device)
+            .map(|(_, actions)| actions.clone());
+        if let Some(actions) = kept {
+            return Some(Arc::new(actions));
         }
-        let service = self.workspaces.copies().action_service();
+        let service = workspaces.copies().action_service();
         // A server keys its endpoint apart from the device it signs as.
         service.keyed_apart(host.device, *host.address.id.as_bytes());
-        let actions = service.remote(&self.workspaces.endpoint(), &host.address, workspace);
-        reached.insert(id, (host.device, actions.clone()));
+        let actions = service.remote(&workspaces.endpoint(), &host.address, workspace);
+        self.reached
+            .lock_recover()
+            .insert(id, (host.device, actions.clone()));
         Some(Arc::new(actions))
     }
 }
