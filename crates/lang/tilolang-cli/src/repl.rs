@@ -16,7 +16,7 @@
 mod editor;
 mod render;
 pub mod style;
-pub mod tilo;
+pub use tilo_app_builder::tilo;
 
 use std::ffi::OsString;
 use std::path::PathBuf;

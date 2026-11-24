@@ -1,7 +1,8 @@
-//! The `tilo` command, run as a program of its own, which the REPL reaches the person's workspace
-//! through: `tilo mcp --as-me` answers MCP's JSON-RPC, a line each way on its standard input and
-//! output, as the person (`crates/core/tilo-cli/src/mcp/person.rs`). How `tilo` signs in (this
-//! computer's login, a desktop, a key file) is `tilo`'s; the REPL only speaks the lines.
+//! The `tilo` command, run as a program of its own, which `tilolang` reaches the person's workspace
+//! through (the REPL, `tilolang push`): `tilo mcp --as-me` answers MCP's JSON-RPC, a line each way
+//! on its standard input and output, as the person (`crates/core/tilo-cli/src/mcp/person.rs`). How
+//! `tilo` signs in (this computer's login, a desktop, a key file) is `tilo`'s; `tilolang` only speaks
+//! the lines.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -11,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value as Json, json};
 
 /// What a person reads when no `tilo` command is installed beside `tilolang` or on `PATH`.
-pub const TILO_MISSING: &str = "The REPL works in your workspace through the `tilo` command, \
+pub const TILO_MISSING: &str = "tilolang works in your workspace through the `tilo` command, \
      which isn't installed here: install it with `curl -fsSL https://tilo.sh | sh`.";
 
 /// The most of `tilo`'s own error output kept, to say why it ended.
@@ -127,7 +128,7 @@ impl Tilo {
             &json!({
                 "protocolVersion": "2025-06-18",
                 "capabilities": {},
-                "clientInfo": {"name": "tilolang repl", "version": env!("CARGO_PKG_VERSION")},
+                "clientInfo": {"name": "tilolang", "version": env!("CARGO_PKG_VERSION")},
             }),
         );
         let opened = match opened {
@@ -167,7 +168,25 @@ impl Tilo {
     ///
     /// # Errors
     /// The call was refused, or `tilo` ended.
-    pub fn call(&mut self, tool: &str, mut arguments: Json) -> Result<Json, String> {
+    pub fn call(&mut self, tool: &str, arguments: Json) -> Result<Json, String> {
+        self.call_in(tool, arguments, None)
+    }
+
+    /// [`Self::call`], kept in History as a step of `invocation` (`{id, title}`): every call under
+    /// one invocation is one change there, titled as it says.
+    ///
+    /// # Errors
+    /// The call was refused, or `tilo` ended.
+    pub fn call_in(
+        &mut self,
+        tool: &str,
+        mut arguments: Json,
+        invocation: Option<&Json>,
+    ) -> Result<Json, String> {
+        let mut meta = json!({"structured": true});
+        if let (Some(fields), Some(invocation)) = (meta.as_object_mut(), invocation) {
+            fields.insert("invocation".into(), invocation.clone());
+        }
         if let (Some(fields), Some(workspace)) = (arguments.as_object_mut(), &self.workspace) {
             fields.insert("workspace".into(), json!(workspace));
         }
@@ -177,7 +196,7 @@ impl Tilo {
                 &json!({
                     "name": tool,
                     "arguments": arguments,
-                    "_meta": {"so.tilo.mcp": {"structured": true}},
+                    "_meta": {"so.tilo.mcp": meta},
                 }),
             )
             .map_err(|error| error.message)?;

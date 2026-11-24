@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 
 pub mod compiler;
-use launcher::loader_preflight::{read_dynamic_section, read_interpreter};
+use sandbox_core::loader_preflight::{read_dynamic_section, read_interpreter};
 
 /// The authenticated SDK identity selected by the developer, not by its manifest.
 #[derive(Debug, Clone)]

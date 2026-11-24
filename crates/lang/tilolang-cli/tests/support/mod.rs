@@ -1,5 +1,7 @@
 //! What the command's tests share: the packages they build, copied into a scratch directory.
 
+pub mod installed;
+
 use std::path::{Path, PathBuf};
 
 /// The packages `apps/tl`.

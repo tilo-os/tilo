@@ -31,6 +31,19 @@ const MAX_NAME_BYTES: u64 = 4096;
 const MAX_OBJECTS: usize = 256;
 const MAX_LD_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Canonical absolute ELF interpreter paths re-exposed from the runtime bundle.
+pub const CANONICAL_LOADER_PATHS: &[&str] = &[
+    "/lib64/ld-linux-x86-64.so.2",
+    "/lib/ld-linux-x86-64.so.2",
+    "/lib/ld-linux.so.2",
+    "/usr/lib64/ld-linux-x86-64.so.2",
+    "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+    "/lib/ld-linux-aarch64.so.1",
+    "/lib64/ld-linux-aarch64.so.1",
+    "/usr/lib64/ld-linux-aarch64.so.1",
+    "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
+];
+
 /// The host's loader cache, which the system read profile binds into every sandbox at the same path.
 pub const LD_SO_CACHE: &str = "/etc/ld.so.cache";
 
@@ -730,7 +743,7 @@ mod tests {
     fn reads_the_needed_libraries_of_a_real_dynamically_linked_binary() {
         let exe = std::env::current_exe().unwrap();
         let interpreter = read_interpreter(&exe).unwrap().unwrap();
-        assert!(crate::sandbox::CANONICAL_LOADER_PATHS.contains(&interpreter.as_str()));
+        assert!(CANONICAL_LOADER_PATHS.contains(&interpreter.as_str()));
         let loader = read_dynamic_section(Path::new(&interpreter))
             .unwrap()
             .unwrap();

@@ -54,9 +54,9 @@ pub fn mismatches(manifest: &Manifest, provided: &ProvidedInterfaces) -> Vec<Mis
         .iter()
         .filter_map(|(service, requirement)| {
             let served = provided.served(service);
-            if served.is_some_and(|(oldest, current)| {
-                (oldest..=current).contains(&requirement.version)
-            }) {
+            if served
+                .is_some_and(|(oldest, current)| (oldest..=current).contains(&requirement.version))
+            {
                 return None;
             }
             let need = match requirement.requirement {

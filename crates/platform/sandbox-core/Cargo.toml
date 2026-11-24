@@ -5,7 +5,7 @@ edition = "2024"
 publish = true
 license = "MIT"
 readme = "../../../docs/crates/supporting-crate.md"
-description = "Landlock ruleset construction and seccomp-bpf deny-list compilation shared by every Tilo confinement path."
+description = "Landlock ruleset construction, seccomp-bpf deny-list compilation and the dynamic loader's view of an app, shared by every Tilo confinement path."
 repository.workspace = true
 homepage.workspace = true
 

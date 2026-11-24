@@ -27,21 +27,14 @@ pub const IDENTITY_SERVICE: &str = "identity";
 pub const SHELL_UI_SERVICE: &str = "shell-ui";
 /// Version of the launcher-written shell-UI authentication envelope.
 pub const SHELL_UI_LAUNCH_PROTOCOL: u16 = 1;
-/// The session shell's authenticated file chooser (`tilo_dialogs::shell`), served alongside any desktop
-/// portal.
-pub const CHOOSER_SERVICE: &str = "chooser";
-/// The person's clipboard, served by the session to the apps it starts, in either language: they
-/// run with no display of their own, so the selection is not theirs to offer or read.
-pub const CLIPBOARD_SERVICE: &str = "clipboard";
-const CHOOSER_PROTOCOL: u16 = 1;
+pub use runtime_portal::session_services::{
+    CHOOSER as CHOOSER_SERVICE, CLIPBOARD as CLIPBOARD_SERVICE, MESSAGING as MESSAGING_SERVICE,
+    MODEL_GATEWAY as MODEL_GATEWAY_SERVICE, chooser_handshake,
+};
 pub const COMPAT_SERVICE: &str = "compat";
 /// The system interface: the image-owned grant through which the device's control panel reaches the
 /// system services it drives ([`crate::system_authority`]).
 pub const SYSTEM_SERVICE: &str = "system";
-/// Hosted model planning is performed by this per-user, desktop-owned gateway.
-pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
-/// The person's messaging accounts (`tilo-messaging`).
-pub const MESSAGING_SERVICE: &str = "messaging";
 /// The connections an account's sign-in makes to the account's own servers, made by the session
 /// for Settings, whose sandbox has no network (`tilo_account_probe::connect`).
 pub const ACCOUNTS_SERVICE: &str = "accounts";
@@ -136,14 +129,16 @@ use tilo_app_id::apps::SETTINGS as SETTINGS_APP_ID;
 pub const COMPAT_HANDOFF_PROTOCOL: u16 = 1;
 /// The compatibility service's handoff: a little-endian `u32` length, then JSON.
 pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
-/// The model gateway's handoff: a little-endian `u32` length, then JSON.
-const MODEL_GATEWAY_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024);
 /// The collaboration handoff: what an app says first on the connection to its session's services,
 /// before the wire starts.
 pub use runtime_portal::launch_handoff::{
     FRAMING as COLLAB_LAUNCH_FRAMING, MAGIC as COLLAB_LAUNCH_MAGIC,
     PROTOCOL_VERSION as COLLAB_LAUNCH_PROTOCOL_VERSION,
 };
+// The model gateway's handoff: a little-endian `u32` length, then JSON.
+#[cfg(test)]
+use runtime_portal::session_services::APP_ID_FRAMING as MODEL_GATEWAY_HANDOFF_FRAMING;
+use runtime_portal::session_services::write_app_id as write_model_gateway_handoff;
 
 /// One resolved service handoff: the launcher's own end of the connection, plus the in-sandbox fd
 /// number the app should find it at.
@@ -352,18 +347,6 @@ fn write_identity_handshake_negotiated(
     stream.flush()
 }
 
-/// The first line the launcher writes on a chooser connection: the app and the workspace it runs in,
-/// read by the shell before anything the app sends.
-pub fn chooser_handshake(app_id: &str, workspace_id: &str) -> serde_json::Result<Vec<u8>> {
-    let mut frame = serde_json::to_vec(&serde_json::json!({
-        "protocol": CHOOSER_PROTOCOL,
-        "app_id": app_id,
-        "workspace_id": workspace_id,
-    }))?;
-    frame.push(b'\n');
-    Ok(frame)
-}
-
 /// Connect the session shell's chooser service on the app's behalf and name the app and its workspace
 /// before the sandboxed app can write to it.
 pub fn resolve_chooser_bind(
@@ -398,10 +381,7 @@ fn resolve_chooser_bind_at(
             return Ok(None);
         }
     };
-    chooser_handshake(app_id, workspace_id)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
-        .and_then(|frame| stream.write_all(&frame))
-        .and_then(|()| stream.flush())
+    runtime_portal::session_services::write_chooser_handshake(&mut stream, app_id, workspace_id)
         .map_err(|source| ServiceError::OpenFailed {
             path: path.to_path_buf(),
             source,
@@ -425,47 +405,24 @@ pub fn resolve_clipboard_bind(no_services: bool) -> Option<ResolvedService> {
     if no_services {
         return None;
     }
-    let path = socket_for(CLIPBOARD_SERVICE);
-    if path.exists() {
-        return resolve_clipboard_bind_at(&path, false);
-    }
-    serve_os_clipboard()
+    tilo_clipboard::service::for_app(&socket_for(CLIPBOARD_SERVICE)).map(clipboard_bind)
 }
 
-/// The clipboard this process serves where no session does: the app's end of a socket pair whose
-/// other end answers from the operating system's clipboard.
-fn serve_os_clipboard() -> Option<ResolvedService> {
-    let (app, serving) = UnixStream::pair().ok()?;
-    std::thread::Builder::new()
-        .name("tilo-clipboard-os".into())
-        .spawn(move || {
-            let side = tilo_clipboard::service::BackendSide::new(tilo_clipboard::os());
-            tilo_clipboard::service::serve(serving, &side);
-        })
-        .ok()?;
-    Some(ResolvedService {
-        name: CLIPBOARD_SERVICE.to_string(),
-        host: OwnedFd::from(app),
-        child_fd: CLIPBOARD_CHILD_FD,
-    })
-}
-
+/// The session's clipboard at `path`, never this process's own.
+#[cfg(test)]
 fn resolve_clipboard_bind_at(path: &Path, no_services: bool) -> Option<ResolvedService> {
-    if no_services || !path.exists() {
+    if no_services {
         return None;
     }
-    let stream = match tilo_files::native::socket::connect(path) {
-        Ok(stream) => stream,
-        Err(error) => {
-            tracing::warn!(%error, path = %path.display(), "clipboard service refused connection");
-            return None;
-        }
-    };
-    Some(ResolvedService {
+    tilo_clipboard::service::connect_session(path).map(clipboard_bind)
+}
+
+fn clipboard_bind(stream: UnixStream) -> ResolvedService {
+    ResolvedService {
         name: CLIPBOARD_SERVICE.to_string(),
         host: OwnedFd::from(stream),
         child_fd: CLIPBOARD_CHILD_FD,
-    })
+    }
 }
 
 /// Connect the session's render broker on the app's behalf and name the app and its workspace before
@@ -866,16 +823,6 @@ fn write_compat_handoff(
     let bytes = serde_json::to_vec(&value)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     COMPAT_HANDOFF_FRAMING.write(stream, &bytes)?;
-    stream.flush()
-}
-
-fn write_model_gateway_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(&serde_json::json!({
-        "protocol": 1,
-        "app_id": app_id,
-    }))
-    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    MODEL_GATEWAY_HANDOFF_FRAMING.write(stream, &bytes)?;
     stream.flush()
 }
 

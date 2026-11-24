@@ -41,6 +41,7 @@ pub mod sources;
 pub mod standalone;
 pub mod surface;
 pub mod targets;
+pub mod tilo;
 
 use scaffold_files::{app_catalog, app_surface, headless_actions};
 
@@ -6709,63 +6710,36 @@ fn session_workspace() -> Option<String> {
     (!workspace.is_empty()).then(|| workspace.to_owned())
 }
 
-/// Hand the app the session's model gateway when its manifest declares it, connected and authenticated
-/// for the app the way the launcher does (`launcher::services`), so features served by the gateway
-/// (Canvas's select subject, Photos' analysis) work in a dev session as they do in a login. Nothing is
-/// attached when no gateway runs in the session.
+/// Hand the app the session's model gateway when its manifest declares it, connected and named for
+/// the app the way the launcher does (`runtime_portal::session_services`), so features served by the
+/// gateway (Canvas's select subject, Photos' analysis) work in a dev session as they do in a login.
+/// Nothing is attached when no gateway runs in the session.
 #[cfg(target_os = "linux")]
 fn attach_model_gateway(
     command: &mut ProcessCommand,
     app_dir: &Path,
 ) -> Option<std::os::fd::OwnedFd> {
-    use std::os::fd::AsRawFd as _;
+    use runtime_portal::session_services::{MODEL_GATEWAY, write_app_id};
     let source = std::fs::read_to_string(app_dir.join("tilo-app.toml")).ok()?;
     let manifest = tilo_app_package::Manifest::from_toml_str(&source).ok()?;
-    let name = launcher::services::MODEL_GATEWAY_SERVICE;
-    let requirement = manifest.sandbox.services.get(name)?;
-    // A dev session may run without one: what the app requires, it asks for here as optional, and says
+    manifest.sandbox.services.get(MODEL_GATEWAY)?;
+    // A dev session may run without one: what the app requires, it runs without here, and says
     // what is missing.
-    let wanted = std::collections::BTreeMap::from([(
-        name.to_owned(),
-        tilo_app_package::ServiceReq {
-            requirement: tilo_app_package::Requirement::Optional,
-            ..requirement.clone()
-        },
-    )]);
-    let context = launcher::services::ServiceLaunchContext {
-        app_id: &manifest.package.id,
-        workspace_id: None,
-    };
-    let resolved =
-        match launcher::services::resolve_service_binds_for_launch(&wanted, false, context) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                eprintln!("[tilolang] the session's model gateway is unavailable: {error}");
-                return None;
-            }
-        };
-    let Some(service) = resolved.into_iter().next() else {
-        eprintln!(
-            "[tilolang] no model gateway answers at {}; the app runs without it",
-            launcher::services::socket_for(name).display()
-        );
-        return None;
-    };
-    let fd = service.host;
-    // SAFETY: `fd` is an open descriptor this process owns; F_GETFD and F_SETFD only read and change
-    // its close-on-exec flag.
-    let inheritable = unsafe {
-        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
-        flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) == 0
-    };
-    if !inheritable {
-        return None;
+    let path = tilo_paths::xdg::service_socket(MODEL_GATEWAY);
+    let connected = tilo_files::native::socket::connect(&path).and_then(|mut stream| {
+        write_app_id(&mut stream, &manifest.package.id)?;
+        Ok(stream)
+    });
+    match connected {
+        Ok(stream) => hand_service(command, MODEL_GATEWAY, stream.into()),
+        Err(error) => {
+            eprintln!(
+                "[tilolang] no model gateway answers at {} ({error}); the app runs without it",
+                path.display()
+            );
+            None
+        }
     }
-    command.env(
-        launcher::sandbox::svc_env_var(name),
-        fd.as_raw_fd().to_string(),
-    );
-    Some(fd)
 }
 
 /// Hand the app the session shell's file chooser, the way the launcher hands one to an app the shell
@@ -6778,46 +6752,50 @@ fn attach_session_chooser(
     command: &mut ProcessCommand,
     app_dir: &Path,
 ) -> Option<std::os::fd::OwnedFd> {
-    use std::os::fd::AsRawFd as _;
+    use runtime_portal::session_services::{CHOOSER, write_chooser_handshake};
     let workspace = session_workspace()?;
     let source = std::fs::read_to_string(app_dir.join("tilo-app.toml")).ok()?;
     let manifest = tilo_app_package::Manifest::from_toml_str(&source).ok()?;
-    let chooser = match launcher::services::resolve_chooser_bind(
-        &manifest.package.id,
-        Some(&workspace),
-        false,
-    ) {
-        Ok(chooser) => chooser?,
-        Err(error) => {
-            eprintln!("[tilolang] the session's file chooser is unavailable: {error}");
-            return None;
-        }
-    };
-    let fd = chooser.host;
-    let inheritable = unsafe {
-        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
-        flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) == 0
-    };
-    if !inheritable {
+    let path = tilo_paths::xdg::service_socket(CHOOSER);
+    if !path.exists() {
         return None;
     }
-    command.env(
-        launcher::sandbox::svc_env_var(&chooser.name),
-        fd.as_raw_fd().to_string(),
-    );
-    Some(fd)
+    let connected = tilo_files::native::socket::connect(&path).and_then(|mut stream| {
+        write_chooser_handshake(&mut stream, &manifest.package.id, &workspace)?;
+        Ok(stream)
+    });
+    match connected {
+        Ok(stream) => hand_service(command, CHOOSER, stream.into()),
+        Err(error) => {
+            eprintln!("[tilolang] the session's file chooser is unavailable: {error}");
+            None
+        }
+    }
 }
 
 /// Hand the app the person's clipboard the way the launcher does in a login: the one service both
-/// languages copy and paste through. Nothing is attached when the session serves none.
+/// languages copy and paste through, the session's or this process serving the computer's own.
 #[cfg(target_os = "linux")]
 fn attach_session_clipboard(
     command: &mut ProcessCommand,
     _app_dir: &Path,
 ) -> Option<std::os::fd::OwnedFd> {
+    use runtime_portal::session_services::CLIPBOARD;
+    let clipboard = tilo_clipboard::service::for_app(&tilo_paths::xdg::service_socket(CLIPBOARD))?;
+    hand_service(command, CLIPBOARD, clipboard.into())
+}
+
+/// Let the app inherit `fd` as service `name`'s descriptor: the end this process keeps until the app
+/// has started, or `None` when it cannot be inherited.
+#[cfg(target_os = "linux")]
+fn hand_service(
+    command: &mut ProcessCommand,
+    name: &str,
+    fd: std::os::fd::OwnedFd,
+) -> Option<std::os::fd::OwnedFd> {
     use std::os::fd::AsRawFd as _;
-    let clipboard = launcher::services::resolve_clipboard_bind(false)?;
-    let fd = clipboard.host;
+    // SAFETY: `fd` is an open descriptor this process owns; F_GETFD and F_SETFD only read and change
+    // its close-on-exec flag.
     let inheritable = unsafe {
         let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
         flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) == 0
@@ -6826,7 +6804,7 @@ fn attach_session_clipboard(
         return None;
     }
     command.env(
-        launcher::sandbox::svc_env_var(&clipboard.name),
+        runtime_portal::session_services::fd_env(name),
         fd.as_raw_fd().to_string(),
     );
     Some(fd)

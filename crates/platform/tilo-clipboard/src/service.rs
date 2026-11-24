@@ -550,6 +550,52 @@ impl ClipboardSide for BackendSide {
     }
 }
 
+/// The clipboard connection an app is handed, the one service a Rust app and a tilolang instance
+/// both reach their copy and paste through: the session's, connected at `session_socket`, where a
+/// session serves one, so a copy is the person's copy on their other devices too. Where none does
+/// (the person's own desktop, or a dev run outside a session), this process serves the same wire
+/// from the operating system's clipboard ([`crate::os`]) on a thread that lives as long as the
+/// app. `None` when neither can be had, and the app's copies and pastes are then refused.
+#[cfg(unix)]
+#[must_use]
+pub fn for_app(session_socket: &std::path::Path) -> Option<Stream> {
+    if session_socket.exists() {
+        return connect_session(session_socket);
+    }
+    serve_os()
+}
+
+/// The session's clipboard at `path`; `None` where nothing answers there.
+#[cfg(unix)]
+#[must_use]
+pub fn connect_session(path: &std::path::Path) -> Option<Stream> {
+    if !path.exists() {
+        return None;
+    }
+    match tilo_socket::connect(path) {
+        Ok(stream) => Some(stream),
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "clipboard service refused connection");
+            None
+        }
+    }
+}
+
+/// The app's end of a connection this process answers from the operating system's clipboard.
+#[cfg(unix)]
+#[must_use]
+pub fn serve_os() -> Option<Stream> {
+    let (app, serving) = tilo_socket::pair().ok()?;
+    std::thread::Builder::new()
+        .name("tilo-clipboard-os".into())
+        .spawn(move || {
+            let side = BackendSide::new(crate::os());
+            serve(serving, &side);
+        })
+        .ok()?;
+    Some(app)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

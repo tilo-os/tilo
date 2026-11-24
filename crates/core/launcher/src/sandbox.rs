@@ -26,18 +26,7 @@ pub fn runtime_library_path(version: &str) -> PathBuf {
 /// The selected signed SDK's catalog, private to this application's namespace.
 pub const RUNTIME_FONT_CATALOG_PATH: &str = "/run/tilo-fonts";
 
-/// Canonical absolute ELF interpreter paths re-exposed from the runtime bundle.
-pub const CANONICAL_LOADER_PATHS: &[&str] = &[
-    "/lib64/ld-linux-x86-64.so.2",
-    "/lib/ld-linux-x86-64.so.2",
-    "/lib/ld-linux.so.2",
-    "/usr/lib64/ld-linux-x86-64.so.2",
-    "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
-    "/lib/ld-linux-aarch64.so.1",
-    "/lib64/ld-linux-aarch64.so.1",
-    "/usr/lib64/ld-linux-aarch64.so.1",
-    "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
-];
+pub use sandbox_core::loader_preflight::CANONICAL_LOADER_PATHS;
 
 /// Plan for exposing a filtered D-Bus proxy into the sandbox.
 #[derive(Debug, Clone)]
@@ -754,9 +743,7 @@ pub struct ServiceBind {
 }
 
 /// The env var name the entrypoint reads to find an opened service fd.
-pub fn svc_env_var(name: &str) -> String {
-    format!("TILO_SVC_{}_FD", name.to_uppercase())
-}
+pub use runtime_portal::session_services::fd_env as svc_env_var;
 
 /// Render a [`CapabilityPlan`]'s paths as bwrap binds.
 pub fn push_capability_binds(argv: &mut Vec<String>, capabilities: &CapabilityPlan) {

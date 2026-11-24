@@ -55,6 +55,8 @@ pub mod process_link;
 #[cfg(unix)]
 pub mod request_rendezvous;
 pub mod service_socket;
+/// The session services a launcher connects on an app's behalf, and what it says first on each.
+pub mod session_services;
 /// The actions connection a session hands a surface app.
 pub mod surface_actions;
 pub mod tools;
@@ -150,7 +152,7 @@ pub fn service_fd(name: &str) -> Option<RawFd> {
     }
     #[cfg(unix)]
     {
-        let var_name = format!("TILO_SVC_{}_FD", name.to_uppercase());
+        let var_name = session_services::fd_env(name);
         let raw = env::var(&var_name).ok()?;
         let Ok(fd) = raw.parse::<RawFd>() else {
             eprintln!(

@@ -22,6 +22,7 @@ mod layout_check;
 mod native_types;
 mod outside_repo;
 mod package_platform;
+mod push;
 mod repl;
 mod support;
 
