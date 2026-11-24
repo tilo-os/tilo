@@ -89,6 +89,17 @@ async fn resolve(
         resolution: answer,
         ..Resolve::default()
     };
+    answered(service, workspace_id, who, record, &resolving).await
+}
+
+/// `resolving` given to the asked record `record` by `who`.
+async fn answered(
+    service: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    who: (&DeviceCert, &Caller),
+    record: &asked::RecordRef,
+    resolving: &Resolve,
+) -> Result<InvocationReceipt, ActionCallError> {
     let request = calling(
         RemoteActionTarget {
             provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
@@ -128,6 +139,15 @@ async fn logins(
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
 ) -> usize {
+    places(service, workspace_id, who).await.len()
+}
+
+/// Where each item `caller`'s vault lists belongs, in the order it lists them.
+async fn places(
+    service: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    who: (&DeviceCert, &Caller),
+) -> Vec<Value> {
     let listing = calling(person_vault::target(person_vault::LIST), json!({}));
     let receipt = invoked(service, workspace_id, who, listing).await.unwrap();
     let ReceiptStatus::Completed { output } = receipt.status else {
@@ -135,7 +155,8 @@ async fn logins(
     };
     output.value.unwrap()["items"]
         .as_array()
-        .map_or(0, Vec::len)
+        .map(|items| items.iter().map(|item| item["belongsTo"].clone()).collect())
+        .unwrap_or_default()
 }
 
 /// An agent's change waits in its record for its person, who alone finds it among what waits
@@ -254,5 +275,77 @@ async fn a_call_that_waits_is_its_persons_alone_and_their_approve_carries_it_out
         .await
         .unwrap();
     assert!(left.questions.is_empty(), "{left:?}");
+    server.shutdown().await;
+}
+
+/// A call whose action offers no form to change (the vault keeps what an agent hands it as it
+/// is) is not changed by its person's approve: an edit is refused with what it named, the call
+/// still waits, and their approve as asked keeps what the agent asked for.
+#[tokio::test]
+async fn a_call_whose_action_offers_no_form_runs_only_as_it_was_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    workspaces.keep_asked_in(&Arc::new(AskedStore::default()));
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let agent = as_ada.clone().delegated_to(AGENT);
+    let her = (&ada, &as_ada);
+    let before = places(&service, workspace_id, her).await;
+
+    let adding = keeping("https://example.test");
+    invoked(&service, workspace_id, (&ada, &agent), adding.clone())
+        .await
+        .unwrap();
+    let asked_now = waiting(&service, workspace_id, her).await.unwrap();
+    assert!(
+        asked_now.questions[0].facts.form.is_empty(),
+        "{asked_now:?}"
+    );
+    let changing = Resolve {
+        resolution: Offer::Approve,
+        edits: vec![tilo_actions::DraftEdit {
+            path: vec!["belongsTo".into()],
+            text: "https://edited.test".into(),
+        }],
+        ..Resolve::default()
+    };
+    let refused = answered(
+        &service,
+        workspace_id,
+        her,
+        &asked_now.questions[0].record,
+        &changing,
+    )
+    .await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason == "belongsTo cannot be changed here"),
+        "{refused:?}"
+    );
+    let still = waiting(&service, workspace_id, her).await.unwrap();
+    assert_eq!(still.questions.len(), 1, "it still waits: {still:?}");
+
+    resolve(
+        &service,
+        workspace_id,
+        her,
+        &still.questions[0].record,
+        Offer::Approve,
+    )
+    .await
+    .unwrap();
+    let kept = ended(&service, workspace_id, (&ada, &agent), adding.invocation).await;
+    assert!(
+        matches!(kept, InvocationUpdate::Succeeded { .. }),
+        "{kept:?}"
+    );
+    let after = places(&service, workspace_id, her).await;
+    assert_eq!(after.len(), before.len() + 1, "{after:?}");
+    assert!(
+        after.contains(&json!(["https://example.test"])),
+        "{after:?}"
+    );
     server.shutdown().await;
 }

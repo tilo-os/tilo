@@ -499,6 +499,7 @@ fn approved() -> Approval {
         chosen: Vec::new(),
         typed: Vec::new(),
         files: Vec::new(),
+        arguments: None,
     }
 }
 

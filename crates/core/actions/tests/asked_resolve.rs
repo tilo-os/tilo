@@ -595,3 +595,120 @@ fn a_call_is_kept_once_and_a_person_has_a_bounded_number_waiting() {
         .write_asked(WORKSPACE, &scout(), &set_alarm(), &facts())
         .expect("an answer makes room again");
 }
+
+/// Ada changes the call through the form its ask offers as she approves it: the dispatch is
+/// handed the call with her change, carrying the arguments so changed in her approve, and that
+/// call alone is the one her approve admits, once; the call as it was asked, or with other
+/// arguments, is not. A decline changes nothing, nor does an edit to what the form does not
+/// offer, and the record stays asked for her to answer.
+#[test]
+fn an_approve_runs_the_call_as_its_person_changed_it() {
+    use tilo_actions::remote::asked::{FORGED, admit_frame};
+    use tilo_actions::{DraftEdit, DraftField, DraftValue};
+    let host = host();
+    let call = set_alarm();
+    let facts = AskedFacts {
+        form: vec![DraftField {
+            path: vec!["at".into()],
+            label: "At".into(),
+            value: DraftValue::Text {
+                text: "07:00".into(),
+            },
+            editable: true,
+            multiline: false,
+            shows: None,
+            role: None,
+        }],
+        ..facts()
+    };
+    let at = host
+        .records
+        .write_asked(WORKSPACE, &scout(), &call, &facts)
+        .unwrap();
+    let mut hers = serde_json::Map::new();
+    hers.insert("at".into(), "07:30".into());
+    let edit = |path: &str, text: &str| DraftEdit {
+        path: vec![path.into()],
+        text: text.into(),
+    };
+    let changing = |resolution, edits: Vec<DraftEdit>| Resolve {
+        resolution,
+        edits,
+        ..Resolve::default()
+    };
+
+    assert_eq!(
+        refusal(answered(host.store.resolve(
+            &at,
+            &ada(),
+            &changing(Offer::Decline, vec![edit("at", "07:30")])
+        ))),
+        "A decline changes no arguments"
+    );
+    // Only what the form offers changes: neither an argument it does not name, nor where the
+    // call goes.
+    for path in ["repeat", "workspace", "target"] {
+        assert_eq!(
+            refusal(answered(host.store.resolve(
+                &at,
+                &ada(),
+                &changing(Offer::Approve, vec![edit(path, "elsewhere")])
+            ))),
+            format!("{path} cannot be changed here")
+        );
+    }
+    assert_eq!(host.records.asked_of(&ADA).len(), 1, "it is still asked");
+
+    answered(host.store.resolve(
+        &at,
+        &ada(),
+        &changing(Offer::Approve, vec![edit("at", "07:30")]),
+    ))
+    .unwrap();
+    let Some(Handed::Readmit(caller, handed)) = host.dispatch.0.lock().unwrap().pop() else {
+        panic!("the approve is handed back");
+    };
+    assert_eq!(caller, scout());
+    assert_eq!(handed.invocation, call.invocation);
+    assert_eq!(
+        handed.argument,
+        InvokeArgument::Json(hers.clone()),
+        "hers run"
+    );
+    assert_eq!(
+        handed
+            .approval()
+            .and_then(|approval| approval.arguments.as_deref().cloned()),
+        Some(hers.clone())
+    );
+    assert!(tilo_actions::remote::asked::same_call(&call, &handed));
+
+    let refused = |request: &InvokeRequest| match admit_frame(Some(&host.store), request) {
+        Err(ActionCallError::Refused { reason }) => assert_eq!(reason, FORGED),
+        other => panic!("only the call she approved is admitted: {other:?}"),
+    };
+    let mut as_asked = (*handed).clone();
+    as_asked.argument = call.argument;
+    refused(&as_asked);
+    let mut other = (*handed).clone();
+    let mut others = serde_json::Map::new();
+    others.insert("at".into(), "03:00".into());
+    other.argument = InvokeArgument::Json(others.clone());
+    if let Some(Confirmation::Asked(approval)) = &mut other.confirmation {
+        approval.arguments = Some(Box::new(others));
+    }
+    refused(&other);
+    // Her approve, carried by the call she changed, aimed elsewhere: another action, or the
+    // same record of another workspace. What she changed is the call's arguments, never where
+    // it goes.
+    let mut elsewhere = (*handed).clone();
+    elsewhere.target.address = ActionAddress::new("clocks.alarms", "delete-alarm");
+    refused(&elsewhere);
+    let mut other_workspace = (*handed).clone();
+    if let Some(Confirmation::Asked(approval)) = &mut other_workspace.confirmation {
+        approval.record.workspace = "another-workspace".into();
+    }
+    refused(&other_workspace);
+    admit_frame(Some(&host.store), &handed).expect("the call she approved goes on");
+    refused(&handed);
+}

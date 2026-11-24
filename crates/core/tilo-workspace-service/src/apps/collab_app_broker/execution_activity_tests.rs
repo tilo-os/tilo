@@ -593,6 +593,16 @@ async fn an_agents_ask_shows_its_person_what_would_run() {
         ["Buy milk"],
         "{facts:?}"
     );
+    // What the person may change before approving, as the action's contract draws it.
+    assert_eq!(
+        facts
+            .form
+            .iter()
+            .map(|field| (field.path.clone(), field.value.line(), field.editable))
+            .collect::<Vec<_>>(),
+        [(vec!["text".to_owned()], "Buy milk".to_owned(), true)],
+        "{facts:?}"
+    );
     assert!(
         matches!(&facts.by, tilo_actions::remote::asked::AskedBy::Agent(named) if named.id == "scribe"),
         "{facts:?}"

@@ -68,6 +68,34 @@ struct Record {
     dispatch: String,
     /// What it needs to admit the call again ([`AskedDispatch::context`]).
     context: serde_json::Value,
+    /// The arguments as its person changed them with their approve, which the call was admitted
+    /// again with: kept beside the call as it was asked.
+    edited: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// The arguments `answer` changes `record`'s call to, through the form its ask offers
+/// ([`AskedFacts::form`]): each edit sets one field the form lets the person change, keeping its
+/// type. `None` where it changes none.
+fn edited_arguments(
+    record: &Record,
+    answer: &Resolve,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, ActionCallError> {
+    if answer.edits.is_empty() {
+        return Ok(None);
+    }
+    if answer.resolution == Offer::Decline {
+        return Err(refused("A decline changes no arguments"));
+    }
+    let super::super::InvokeArgument::Json(arguments) = &record.request.argument else {
+        return Err(refused("This call takes no arguments to change"));
+    };
+    let form = crate::Draft {
+        fields: record.facts.form.clone(),
+        ..crate::Draft::default()
+    };
+    form.apply_edits(arguments, &answer.edits)
+        .map(Some)
+        .map_err(|why| refused(&why))
 }
 
 impl Record {
@@ -83,6 +111,7 @@ impl Record {
             context: self.context.clone(),
             taken: None,
             outcome: None,
+            edited: self.edited.clone(),
         }
     }
 }
@@ -220,6 +249,7 @@ impl AskedStore {
                 relayed: false,
                 dispatch: ask.dispatch,
                 context: ask.context,
+                edited: None,
             });
         }
         kept.moved();
@@ -331,6 +361,7 @@ impl AskedStore {
             relayed: false,
             dispatch: name.to_owned(),
             context,
+            edited: None,
         };
         self.keep(&record.kept());
         kept.records.push(record);
@@ -352,9 +383,12 @@ impl AskedStore {
         let Some(record) = kept.find(&approval.record) else {
             return false;
         };
+        // The arguments its person changed, if they did, are the ones the approve carries.
+        let as_changed = approval.arguments.as_deref() == record.edited.as_ref();
         let admitted = record.status == Status::Running
             && !record.relayed
             && record.invocation == request.invocation
+            && as_changed
             && super::same_call(&record.request, request);
         if admitted {
             record.relayed = true;
@@ -463,6 +497,7 @@ impl AskedStore {
             return Err(refused("This question does not offer that answer"));
         }
         admits_what_it_takes(&record.facts, answer)?;
+        let edited = edited_arguments(record, answer)?;
         let choices = record.facts.choices.len();
         match (answer.resolution, answer.choice) {
             (Offer::Decline, None) => {}
@@ -489,11 +524,18 @@ impl AskedStore {
             Admitted::Declined(caller, record.invocation, dispatch)
         } else {
             record.status = Status::Running;
+            record.edited.clone_from(&edited);
             let mut request = record.request.clone();
+            // The person's arguments, where they changed them: the dispatch admits the call with
+            // them as a fresh call with them would be, so the action's contract checks them.
+            if let Some(arguments) = &edited {
+                request.argument = super::super::InvokeArgument::Json(arguments.clone());
+            }
             request.confirmation = Some(super::super::Confirmation::Asked(Approval {
                 chosen: answer.chosen.clone(),
                 typed: answer.typed.iter().cloned().map(Zeroizing::new).collect(),
                 files: answer.files.clone(),
+                arguments: edited.map(Box::new),
                 ..Approval::new(at.clone(), answer.choice)
             }));
             match grant {
@@ -577,7 +619,12 @@ impl AskedStore {
             };
             let caller = ask.caller.restored();
             if status == Status::Running {
-                resumed.push((caller.clone(), ask.request.clone(), ask.context.clone()));
+                // As its person answered it: with the arguments they changed, where they did.
+                let mut request = ask.request.clone();
+                if let Some(arguments) = &ask.edited {
+                    request.argument = super::super::InvokeArgument::Json(arguments.clone());
+                }
+                resumed.push((caller.clone(), request, ask.context.clone()));
             }
             kept.records.push(Record {
                 invocation: ask.request.invocation,
@@ -591,6 +638,7 @@ impl AskedStore {
                 relayed: false,
                 dispatch: ask.dispatch,
                 context: ask.context,
+                edited: ask.edited,
             });
         }
         if kept.records.len() != before {
@@ -682,6 +730,7 @@ impl AskedStore {
             .filter(|record| record.status == Status::Running)
         {
             record.status = Status::Asked;
+            record.edited = None;
             let ask = record.kept();
             kept.moved();
             drop(kept);

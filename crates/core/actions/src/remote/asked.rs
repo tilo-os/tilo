@@ -204,7 +204,8 @@ pub struct AskedFacts {
     #[serde(default)]
     pub conversation: Option<String>,
     /// What the person types or records with their answer, in order: the approve carries one
-    /// entry per take ([`Resolve::typed`]).
+    /// entry per take ([`Resolve::typed`]). A take is a value the call needs that is none of its
+    /// arguments; changing an argument is a field of [`Self::form`].
     #[serde(default)]
     pub takes: Vec<Take>,
     /// The action whose own call by the person answers this, `<provider>/<resource>#<action>`,
@@ -233,6 +234,13 @@ pub struct AskedFacts {
     /// offered.
     #[serde(default)]
     pub effect: Option<crate::ActionKind>,
+    /// What the person may change in the call's arguments before they approve it, as the
+    /// action's contract draws them ([`crate::Draft::render`]): each field they may change, by
+    /// its path in the arguments, with its value as asked. Empty where nothing may change.
+    /// A field here changes one of the call's arguments; a take ([`Self::takes`]) is a value
+    /// the call needs that is none of its arguments.
+    #[serde(default)]
+    pub form: Vec<crate::DraftField>,
 }
 
 /// The dispatch a call only the person's root signs is kept under, made on a device that keeps
@@ -459,6 +467,11 @@ pub struct Approval {
     /// The files they picked, as URIs ([`AskedFacts::files`]).
     #[serde(default)]
     pub files: Vec<String>,
+    /// The arguments as the person changed them before approving ([`Resolve::edits`]): the
+    /// call carries exactly these, and is the same call as the one kept with them in place of
+    /// its own ([`same_call`]). `None` where they changed nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Box<serde_json::Map<String, serde_json::Value>>>,
 }
 
 impl Approval {
@@ -471,6 +484,7 @@ impl Approval {
             chosen: Vec::new(),
             typed: Vec::new(),
             files: Vec::new(),
+            arguments: None,
         }
     }
 }
@@ -522,6 +536,16 @@ pub struct Resolve {
     /// The files picked, as URIs ([`AskedFacts::files`]).
     #[serde(default, deserialize_with = "none_is_empty")]
     pub files: Vec<String>,
+    /// What the person changed in the call before approving, each a field of
+    /// [`AskedFacts::form`] set to what they wrote: the call runs with its arguments so changed,
+    /// admitted again as a fresh call with them would be, so the action's own contract checks
+    /// them. Only with an approve.
+    #[serde(
+        default,
+        deserialize_with = "none_is_empty",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub edits: Vec<crate::DraftEdit>,
 }
 
 /// A list a caller left out as nothing (`null`, as a view passes an option it did not give)
@@ -600,14 +624,20 @@ pub fn answering_person(caller: &super::Caller) -> Option<&str> {
     acting.person_id().filter(|person| !person.is_empty())
 }
 
-/// Whether `a` and `b` are the same call: the same target and the same arguments, byte for byte
-/// as they travel.
+/// Whether `call` is the call `kept`: the same target and the same arguments, byte for byte as
+/// they travel. Where `call` carries a person's approve that changed the arguments
+/// ([`Approval::arguments`]), it is the kept call with those in place of its own.
 #[must_use]
-pub fn same_call(a: &super::InvokeRequest, b: &super::InvokeRequest) -> bool {
-    let bytes = |request: &super::InvokeRequest| {
-        serde_json::to_vec(&(&request.target, &request.argument)).ok()
+pub fn same_call(kept: &super::InvokeRequest, call: &super::InvokeRequest) -> bool {
+    let bytes = |target: &super::RemoteActionTarget, argument: &super::InvokeArgument| {
+        serde_json::to_vec(&(target, argument)).ok()
     };
-    matches!((bytes(a), bytes(b)), (Some(a), Some(b)) if a == b)
+    let edited = call
+        .approval()
+        .and_then(|approval| approval.arguments.as_deref().cloned())
+        .map(super::InvokeArgument::Json);
+    let kept = bytes(&kept.target, edited.as_ref().unwrap_or(&kept.argument));
+    matches!((kept, bytes(&call.target, &call.argument)), (Some(a), Some(b)) if a == b)
 }
 
 /// The dispatch that keeps a call waiting in its asked record, as the person's answer reaches
@@ -676,6 +706,11 @@ pub struct KeptAsk {
     /// which it forgets the record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<crate::InvocationUpdate>,
+    /// The call's arguments as its person changed them when they approved it
+    /// ([`Resolve::edits`]), beside the call as it was asked ([`Self::request`]): what runs, and
+    /// what a device that takes it again after a restart runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Where a host keeps the asked records that wait, across its restarts: each kept once it is

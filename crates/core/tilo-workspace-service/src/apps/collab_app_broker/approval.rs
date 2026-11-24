@@ -251,6 +251,12 @@ pub(super) fn described(
             .into_iter()
             .map(|(label, value)| Fact::new(label, value))
             .collect();
+        // What the person may change before they approve: the fields the contract lets them.
+        facts.form = draft
+            .fields
+            .into_iter()
+            .filter(|field| field.editable)
+            .collect();
     }
     let kind = descriptor.contract.kind;
     facts.destructive = kind == tilo_actions::ActionKind::Outside;
