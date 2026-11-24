@@ -1183,6 +1183,12 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   accepted only when the called action declares it, read from the registry and
   never from the call, and only from the device that keeps that record; history
   still names the caller, and every projection shows the declared effects.
+  A device placed for one record alone, such as a hosted Browser's environment,
+  carries that confinement in its certificate: the placing host, for the person,
+  certifies it for that one record, short-lived and refused once stopped. Every
+  replica admits its writes to that record and nothing else, with no member row
+  and no keys, and history names the person. It never enters a workspace or
+  redeems an invitation.
   Reads work the same way: a record, page, search or view opened for a person
   reads with that person's grants, never with those of the person whose
   device serves it.
