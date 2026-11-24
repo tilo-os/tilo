@@ -27,11 +27,11 @@
 //! apps' resources are the store's, never the process's.
 #![cfg(any(unix, windows))]
 
+pub mod approved_checks;
 #[cfg(all(
     feature = "app-launch",
     any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
 ))]
-pub mod approved_checks;
 pub mod backups_engine;
 pub mod call;
 #[cfg(feature = "app-launch")]
