@@ -2228,7 +2228,7 @@ mod tests {
                 );
                 std::thread::park_timeout(Duration::from_millis(5));
             };
-            handle.choose_search_row(at, None);
+            handle.choose_search_row(at, None, None);
             for _ in 0..3 {
                 pass.step(&mut windows);
             }

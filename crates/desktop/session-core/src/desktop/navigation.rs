@@ -231,6 +231,10 @@ pub enum LayoutEffect {
         /// The line its action asks for.
         #[param("The line the row's action asks for")]
         argument: Option<String>,
+        /// How it is opened: `here` for a tab in front, `beside` for a window beside it, `more`
+        /// for the row's own way. Left out, the row opens as a plain choice does.
+        #[param("How it opens: here, beside or more")]
+        way: Option<String>,
     },
 
     /// Choose a launchpad card

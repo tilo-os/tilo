@@ -1571,6 +1571,32 @@ tilo_test_env::scenario! {
             "{group} is not offered itself again"
         );
     }
+
+    phase choosing_a_row_with_a_modifier_the_caller_names_opens_it_that_way;
+    {
+        let mut search = DesktopSearch::new();
+        search.open(data());
+        settled(&mut search);
+        search.set_query("sheets");
+        settled(&mut search);
+        let index = search
+            .rows
+            .iter()
+            .position(|row| row.title == "Sheets")
+            .expect("the app's row");
+        assert!(
+            search.choose_with(index, None, Some(ui::search::ActivationModifier::Ctrl)),
+            "the row is there to choose"
+        );
+        assert_eq!(
+            search.take_choice(),
+            Some(Target::Launch {
+                app: "so.tilo.sheets".into(),
+                place: LaunchPlace::Beside,
+            }),
+            "a caller that names the modifier opens the row beside"
+        );
+    }
 }
 
 /// An app whose rows for a query come after it is asked, as a framework
@@ -2053,4 +2079,5 @@ fn escaping_the_pick_returns_to_the_list_without_running_the_action() {
         "the row the person chose is listed again: {listed:?}"
     );
     assert!(search.take_choice().is_none(), "nothing ran");
+
 }

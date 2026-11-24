@@ -319,8 +319,9 @@ pub struct Shared {
     /// say on that row.
     pub search_refusal: Option<(tilo_desktop_search::Target, String)>,
     /// The rows a caller of the published search chose, with the argument each one's action asks
-    /// for, taken on the next update pass.
-    pub search_asks: Vec<(usize, Option<String>)>,
+    /// for and the modifier it was chosen with (`here`, `beside` or `more`), taken on the next
+    /// update pass.
+    pub search_asks: Vec<(usize, Option<String>, Option<String>)>,
     /// The open search, as last shown: its query and rows, and whether it is still filling in.
     pub shown_search: search::ShownSearch,
     /// The windows whose shown tab has drawn what it shows, as of the last update pass

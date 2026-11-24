@@ -450,12 +450,18 @@ impl DesktopPass {
         }
         self.take_up_typed_ahead();
         let choices = std::mem::take(&mut self.handle.shared.borrow_mut().search_asks);
-        for (index, argument) in choices {
+        for (index, argument, way) in choices {
             let mut search = search.borrow_mut();
             if !search.is_open() {
                 break;
             }
-            search.choose(index, argument);
+            let held = match way.as_deref() {
+                Some("here") => Some(ui::search::ActivationModifier::Shift),
+                Some("beside") => Some(ui::search::ActivationModifier::Ctrl),
+                Some("more") => Some(ui::search::ActivationModifier::Alt),
+                _ => None,
+            };
+            search.choose_with(index, argument, held);
         }
         let ask = self.handle.shared.borrow_mut().typed_ask.take();
         if let Some(ask) = ask {

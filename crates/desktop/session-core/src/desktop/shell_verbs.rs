@@ -148,9 +148,10 @@ impl ShellVerbs {
                     .handle
                     .open_search(Scope::Workspace, Some(query.clone())),
             },
-            LayoutEffect::ChooseSearchRow { row, argument } => self.handle.choose_search_row(
+            LayoutEffect::ChooseSearchRow { row, argument, way } => self.handle.choose_search_row(
                 usize::try_from(*row).unwrap_or(usize::MAX),
                 argument.clone(),
+                way.clone(),
             ),
             LayoutEffect::Launchpad { card } => {
                 if card == "apps" {

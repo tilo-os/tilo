@@ -740,6 +740,11 @@ name = "argument"
 required = false
 type = "text"
 
+[[resources.verbs.params]]
+name = "way"
+required = false
+type = "text"
+
 [[resources.verbs]]
 id = "launchpad"
 kind = "outside"

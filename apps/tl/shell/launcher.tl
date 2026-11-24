@@ -21,11 +21,14 @@
 /// The launcher, with the person's last query in the field.
 view launcher() {
     state query: Text = device.overlays.spotlight
+    // The kinds a search's rows are narrowed to: empty shows every kind.
+    state chosen_kinds: List<Text> = []
     let search = device.search
     let typed = query.trim() != ""
     // The search's rows are for what is typed now, not for an earlier query: a query typed on
     // since narrows back to the apps and windows here until "Search everywhere" runs again.
     let current = typed and search.open and search.query.trim().lower() == query.trim().lower()
+    let present_kinds = search.groups.map(g -> g.kind)
     ui.FloatingPanel {
         header: {
             ui.Autocomplete(
@@ -37,21 +40,28 @@ view launcher() {
                 filter: false,
                 max_visible: 10,
                 status: launcher_status(search, typed, current),
+                kinds: if current { present_kinds } else { [] },
+                chosen: chosen_kinds,
             ) {
                 on accept(choice): choose_launcher_row(choice, current)
+                on alternate(choice): choose_launcher_row_as(choice, current)
+                on filter_kind(kind): set(chosen_kinds, toggled_kind(chosen_kinds, kind))
+                on adjust(step): step_level(step)
                 on cancel: close_launcher()
                 if current and not search.groups.is_empty() {
                     for group in search.groups {
-                        ui.Suggestion("group:{group.kind}", label: group.kind, header: true)
-                        for row in group.rows {
-                            ui.Suggestion(
-                                "row:{row.index.to_text()}",
-                                label: row.title,
-                                subtitle: if row.subtitle != "" {
-                                    row.subtitle
-                                } else { row.facts.at(0) ?? "" },
-                                icon: group.icon,
-                            )
+                        if kind_shown(chosen_kinds, search.groups.map(g -> g.kind), group.kind) {
+                            ui.Suggestion("group:{group.kind}", label: group.kind, header: true)
+                            for row in group.rows {
+                                ui.Suggestion(
+                                    "row:{row.index.to_text()}",
+                                    label: row.title,
+                                    subtitle: if row.subtitle != "" {
+                                        row.subtitle
+                                    } else { row.facts.at(0) ?? "" },
+                                    icon: group.icon,
+                                )
+                            }
                         }
                     }
                 } else {
@@ -100,6 +110,26 @@ view launcher() {
                         ui.Suggestion("do:overview", label: "Overview", icon: .layout_grid)
                         ui.Suggestion("do:workspaces", label: "Workspaces", icon: .layers)
                         ui.Suggestion("do:notifications", label: "Notifications", icon: .bell)
+                        if let volume = device.sound.volume {
+                            ui.Suggestion(
+                                "level:volume",
+                                label: "Volume",
+                                detail: "{percent(volume)}%",
+                                icon: .volume_2,
+                                adjustable: true,
+                            )
+                        }
+                        if let display = bright_display() {
+                            if let level = display.brightness {
+                                ui.Suggestion(
+                                    "level:brightness",
+                                    label: "Brightness",
+                                    detail: "{percent(level)}%",
+                                    icon: .sun,
+                                    adjustable: true,
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -169,6 +199,78 @@ fn apps_matching(query: Text) -> List<device.App> {
     device.apps.installed
         .filter(a -> a.name.lower().contains(needle) or a.key.lower().contains(needle))
         .sort_by(a -> a.name)
+}
+
+/// `chosen` with the kind `kind` added or taken out.
+fn toggled_kind(chosen: List<Text>, kind: Text) -> List<Text> {
+    if chosen.contains(kind) {
+        chosen.filter(k -> k != kind)
+    } else { [chosen, [kind]].flat_map(s -> s) }
+}
+
+/// Whether a group of `kind` is shown while `chosen` narrows the kinds `present`: a group no
+/// chosen kind names is shown, so a search that changed its kinds never shows nothing.
+fn kind_shown(chosen: List<Text>, present: List<Text>, kind: Text) -> Bool {
+    if chosen.is_empty() {
+        true
+    } else if not present.any(k -> chosen.contains(k)) { true } else { chosen.contains(kind) }
+}
+
+/// A level as a person reads it, in percent.
+fn percent(level: Float) -> Text {
+    (level * 100.0).round().to_text()
+}
+
+/// The display a brightness key is about: the one in front when it can be dimmed, else the
+/// first that can.
+fn bright_display() -> Option<device.Display> {
+    let displays = device.displays
+    if let front = displays.focused {
+        if let display = displays.displays.find(d -> d.connector == front and d.brightness != .none) {
+            return .some(display)
+        }
+    }
+    displays.displays.find(d -> d.brightness != .none)
+}
+
+/// Steps the value of the row `step` names (`1` up, `-1` down), as Left and Right do on an
+/// adjustable row: the volume or the brightness in front, by a twentieth.
+action step_level(step: Text) {
+    let delta = (step.split("\t").at(0) ?? "0").to_int() ?? 0
+    let row = step.split("\t").at(1) ?? ""
+    if row == "level:volume" {
+        if let volume = device.sound.volume {
+            device.set_volume(device.sound, (volume + delta.to_float() * 0.05).clamp(0.0, 1.0))
+        }
+    } else if row == "level:brightness" {
+        if let display = bright_display() {
+            if let level = display.brightness {
+                device.set_display_brightness(
+                    device.displays,
+                    display.connector,
+                    (level + delta.to_float() * 0.05).clamp(0.0, 1.0),
+                )
+            }
+        }
+    }
+}
+
+/// What choosing a row with a modifier held does: a row the search found opens the way `here`
+/// (a tab in front), `beside` (a window beside it) or `more` (the row's own way) names, and
+/// every other row opens as it does plainly.
+action choose_launcher_row_as(packed: Text, current: Bool) {
+    let way = packed.split("\t").at(0) ?? ""
+    let choice = packed.split("\t").at(1) ?? ""
+    let kind = choice.split(":").at(0) ?? ""
+    let argument = choice.split(":").at(1) ?? ""
+    if way != "" and kind == "row" {
+        if let at = argument.to_int() {
+            session.choose_search_row(row: at, way: way)
+            close_launcher()
+            return
+        }
+    }
+    choose_launcher_row(choice, current)
 }
 
 /// What choosing the row the person reached does, read off the row's value: opening an

@@ -3,12 +3,15 @@
 /// writes a chord as a string, so a German keyboard's legends and a Mac's Command key read
 /// right.
 /// The keys of the launcher: typing searches, the arrows walk the rows, Tab and Shift+Tab walk
-/// the groups, Enter opens, Esc closes.
+/// the groups, Enter opens, a modifier with it opens the row another way, Esc closes.
 view key_hints_launcher() {
     ui.KeyHints {
         ui.KeyHint(["Up", "Down"], "Choose")
         ui.KeyHint(["Tab"], "Next group")
         ui.KeyHint(["Enter"], "Open")
+        ui.KeyHint(["Shift", "Enter"], "Open as a tab")
+        ui.KeyHint(["Ctrl", "Enter"], "Open beside")
+        ui.KeyHint(["Alt", "Enter"], "More actions")
         ui.KeyHint(["Esc"], "Close")
     }
 }

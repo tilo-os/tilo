@@ -377,9 +377,13 @@ impl DesktopHandle {
     }
 
     /// Choose the open search's row `index` ([`Self::search_rows`]), with `argument` the line its
-    /// action asks for, on the next update pass.
-    pub fn choose_search_row(&self, index: usize, argument: Option<String>) {
-        self.shared.borrow_mut().search_asks.push((index, argument));
+    /// action asks for and `way` the modifier it was chosen with (`here`, `beside` or `more`), on
+    /// the next update pass.
+    pub fn choose_search_row(&self, index: usize, argument: Option<String>, way: Option<String>) {
+        self.shared
+            .borrow_mut()
+            .search_asks
+            .push((index, argument, way));
     }
 }
 

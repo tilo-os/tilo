@@ -698,7 +698,7 @@ impl SessionKeys {
                 Key::Named(NamedKey::Enter) => {
                     let at = reached.1.or(first_app).unwrap_or(0);
                     if !rows.is_empty() {
-                        handle.choose_search_row(at.min(rows.len().saturating_sub(1)), None);
+                        handle.choose_search_row(at.min(rows.len().saturating_sub(1)), None, None);
                         // The shell's launcher is its own surface over the shell: choosing a row
                         // leaves it, as the palette leaves search.
                         self.overlays

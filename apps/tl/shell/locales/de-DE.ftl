@@ -635,6 +635,8 @@ d-dpqvjh2f = Launcher
     .w-overview = Übersicht
     .w-workspaces = Arbeitsbereiche
     .w-notifications = Benachrichtigungen
+    .w-volume = Lautstärke
+    .w-brightness = Helligkeit
     .w-open = Öffnen
 
 d-outvdzmi = Layouts
@@ -745,6 +747,12 @@ d-luuijvwf = Tastenhinweise Launcher
     .w-next-group = Nächste Gruppe
     .w-enter = Eingabe
     .w-open = Öffnen
+    .w-shift = Umschalt
+    .w-open-as-a-tab = Als Tab öffnen
+    .w-ctrl = Strg
+    .w-open-beside = Daneben öffnen
+    .w-alt = Alt
+    .w-more-actions = Weitere Aktionen
     .w-esc = Esc
     .w-close = Schließen
 
@@ -1424,6 +1432,18 @@ d-rs2j4mmu = Launcher-Zeile wählen
 d-rs2j4mmu-choice = Wahl
 
 d-rs2j4mmu-current = Aktuell
+
+d-t34ri7fm = Eine Stufe ändern
+    .doc = Ändert den Wert der Zeile, die `step` nennt (`1` hoch, `-1` runter), wie Links und Rechts es auf einer verstellbaren Zeile tun: die Lautstärke oder die Helligkeit vorn, um ein Zwanzigstel.
+
+d-t34ri7fm-step = Stufe
+
+d-6o7nacnz = Launcher-Zeile anders öffnen
+    .doc = Was das Wählen einer Zeile mit gehaltener Taste tut: eine Zeile, die die Suche fand, öffnet sich so, wie `here` (ein Tab vorn), `beside` (ein Fenster daneben) oder `more` (der eigene Weg der Zeile) es nennt, und jede andere Zeile öffnet sich, wie sie es schlicht tut.
+
+d-6o7nacnz-packed = Gepackt
+
+d-6o7nacnz-current = Aktuell
 
 d-q6bzrju7 = Oberfläche öffnen
     .doc = Öffnet die Fläche `surface` der Shell (`overview`, `workspaces`, `centre`), wie es die eigenen Bedienelemente der Leiste tun.

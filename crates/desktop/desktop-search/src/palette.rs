@@ -1575,10 +1575,21 @@ impl DesktopSearch {
     /// action row ([`Target::Action`]) runs only from its window, through
     /// the host's action API. Returns whether there was such a row.
     pub fn choose(&mut self, index: usize, argument: Option<String>) -> bool {
+        self.choose_with(index, argument, self.palette.held_modifier())
+    }
+
+    /// Choose the shown row `index` as a caller that knows the modifier `held` the person held:
+    /// the way its action opens (a tab here, a window beside) follows it.
+    pub fn choose_with(
+        &mut self,
+        index: usize,
+        argument: Option<String>,
+        held: Option<ActivationModifier>,
+    ) -> bool {
         let Some(hit) = self.rows.get(index).cloned() else {
             return false;
         };
-        self.choose_hit(hit, argument, self.palette.held_modifier());
+        self.choose_hit(hit, argument, held);
         true
     }
 
