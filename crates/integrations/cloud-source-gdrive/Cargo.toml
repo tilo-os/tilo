@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "Google Drive accounts as a cloud-source provider: Drive API v3 ids and parents, the changes feed, ranged reads, resumable uploads, revisions, native documents and exports."

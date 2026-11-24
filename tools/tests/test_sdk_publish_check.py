@@ -326,6 +326,25 @@ class ScratchTreeTests(unittest.TestCase):
             self.assertEqual((repo / "vendor/fork/Cargo.toml").read_text(), fork)
 
 
+class ReadmeTests(unittest.TestCase):
+    def package(self, crate, readme):
+        return {"description": "d", "license": "MIT", "repository": check.REPOSITORY, "dependencies": [],
+                "manifest_path": str(crate / "Cargo.toml"), "readme": readme}
+
+    def test_a_published_crate_needs_a_readme_that_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            crate = Path(directory) / "crates/example"
+            crate.mkdir(parents=True)
+            self.assertEqual(check.own_blockers(self.package(crate, None), set()), ["no README"])
+            self.assertEqual(check.own_blockers(self.package(crate, "README.md"), set()), ["no README"],
+                             "a readme the manifest names but the tree lacks")
+            (crate / "README.md").write_text("# example\n")
+            self.assertEqual(check.own_blockers(self.package(crate, "README.md"), set()), [])
+            (Path(directory) / "shared.md").write_text("# shared\n")
+            self.assertEqual(check.own_blockers(self.package(crate, "../../shared.md"), set()), [],
+                             "a readme outside the crate, which cargo copies into the package")
+
+
 class OversizeTests(unittest.TestCase):
     def test_a_package_over_the_limit_names_its_biggest_files(self):
         with tempfile.TemporaryDirectory() as directory:

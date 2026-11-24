@@ -5,6 +5,7 @@ edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "Lock a std Mutex or RwLock whatever a panicking holder left behind: the guard of a poisoned lock instead of an error."

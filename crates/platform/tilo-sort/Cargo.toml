@@ -5,6 +5,7 @@ edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "Stable slice sorting compiled once for every call site, instead of a copy of std's sort for every comparator."

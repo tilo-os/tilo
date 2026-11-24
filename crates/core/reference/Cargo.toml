@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "Addresses of things in documents: a selection in any app carried as a resource reference beside the text, so whoever reads it knows what \"this\" meant."
 repository.workspace = true
 homepage.workspace = true

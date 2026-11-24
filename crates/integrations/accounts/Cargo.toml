@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
+readme = "../../../docs/crates/supporting-crate.md"
 description = "The shared online-accounts model: the workspace's account list and one sealed credential vault for every Tilo app."
 repository.workspace = true
 homepage.workspace = true

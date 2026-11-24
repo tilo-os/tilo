@@ -191,6 +191,11 @@ def own_blockers(package: dict, local: set[str]) -> list[str]:
     for field in ("description", "license", "repository"):
         if not package.get(field):
             found.append(f"no {field}")
+    # crates.io shows the README as the crate's page. Cargo finds a README.md beside the manifest
+    # on its own; a crate nobody starts from names docs/crates/supporting-crate.md.
+    readme = package.get("readme")
+    if not readme or not (pathlib.Path(package["manifest_path"]).parent / readme).is_file():
+        found.append("no README")
     for dep in package["dependencies"]:
         if dep["kind"] == "dev":
             continue

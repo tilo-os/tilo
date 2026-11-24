@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "RFC 5545 recurrence rules shared by Tilo apps and the language runtime: RRULE/EXDATE text, expansion in a named zone, and the repeat presets a picker shows."
 repository.workspace = true
 homepage.workspace = true

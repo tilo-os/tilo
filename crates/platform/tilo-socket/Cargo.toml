@@ -5,6 +5,7 @@ edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "Local sockets named by a path of any length: Unix-domain sockets where the kernel's fixed path buffer would refuse a deep profile or state root, and named pipes kept to one account on Windows."

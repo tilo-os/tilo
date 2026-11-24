@@ -6,6 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
+readme = "../../../docs/crates/supporting-crate.md"
 description = "The device's installed packages: one registry of installed and preinstalled packages, and installs whose payload bytes live in the fs content store and are materialised once by reflink."
 repository.workspace = true
 homepage.workspace = true

@@ -5,6 +5,7 @@ edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "The one async runtime model for Tilo processes: an app runtime off the UI thread, bounded daemon runtimes, a CPU pool, a file-I/O pool, named threads, and the host background executors and wake routing."

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "The Tilo desktop settings: one Automerge document per profile, the person's sections written to their record first, one forgiving read, one holder per profile."

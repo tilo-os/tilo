@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "Sealed local secret vaults: XChaCha20-Poly1305 files and the ownership of their key"

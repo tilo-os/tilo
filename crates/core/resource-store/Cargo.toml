@@ -5,6 +5,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "The resource store: every resource of a workspace in documents it places itself, indexed in the commit that changes it, with paged, filtered and counted queries, whichever language declared it."

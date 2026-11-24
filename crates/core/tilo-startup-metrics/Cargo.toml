@@ -3,6 +3,7 @@ name = "tilo-startup-metrics"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 publish = true
 repository.workspace = true
 homepage.workspace = true

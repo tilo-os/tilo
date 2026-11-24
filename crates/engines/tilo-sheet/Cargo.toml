@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "A spreadsheet's engine: the cells as typed, the values formulas compute, the formats they show in, smart fill, and the .xlsx/.ods/.csv interchange, with no toolkit."
 repository.workspace = true
 homepage.workspace = true

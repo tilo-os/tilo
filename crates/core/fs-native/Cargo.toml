@@ -5,6 +5,7 @@ edition = "2024"
 autotests = false
 publish = true
 license.workspace = true
+readme = "../../../docs/crates/supporting-crate.md"
 description = "Native local backend: fanotify change journal, Btrfs capture epochs, incremental FastCDC manifests and pre-content placeholder hydration."
 repository.workspace = true
 homepage.workspace = true

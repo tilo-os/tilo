@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "The wasm host layer every guest in Tilo executes on: per-call fuel, memory and table limits, module loading, one failure type, and the rule that an instance whose call failed is never called again."
 repository.workspace = true
 homepage.workspace = true

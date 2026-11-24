@@ -5,6 +5,7 @@ edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "Anonymous shared memory between processes: a sealed memfd on Linux, unlinked POSIX shared memory on macOS, and the read-only view of either."

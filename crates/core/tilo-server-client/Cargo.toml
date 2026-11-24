@@ -5,6 +5,7 @@ edition = "2024"
 publish = true
 description = "Client side of the Tilo server every peer shares: the frame codec both ends of a server stream use, the co-edit payloads, device certification and the device-signer boundary."
 license = "MIT OR Apache-2.0"
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 

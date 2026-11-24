@@ -6,6 +6,7 @@ publish = true
 # A desktop's session reaches the server protocol that carries this crate's boot-open report,
 # so it is on the client side, which is MIT end to end (LICENSING.md).
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "Wire protocol for unlocking an encrypted Tilo disk with a sibling device's consent."
 repository.workspace = true
 homepage.workspace = true

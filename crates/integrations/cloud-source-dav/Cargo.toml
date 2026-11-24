@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "WebDAV and Nextcloud accounts as a cloud-source provider: PROPFIND listings, sync-collection, ranged reads, conditional and chunked uploads, versions."

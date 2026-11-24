@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
+readme = "../../../docs/crates/supporting-crate.md"
 description = "Hold an iroh endpoint's relays back until something needs the device dialable, and find the workspace's devices on the local network without telling anyone else."
 repository.workspace = true
 homepage.workspace = true

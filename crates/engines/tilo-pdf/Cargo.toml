@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
+readme = "../../../docs/crates/supporting-crate.md"
 description = "Tilo's PDF engine API: rendering, text layer, selection, search, forms, annotations and export. pdfium in a sandboxed helper on Linux and macOS; the pure-Rust hayro renderer in process on the web and wherever pdfium is missing."
 repository.workspace = true
 homepage.workspace = true

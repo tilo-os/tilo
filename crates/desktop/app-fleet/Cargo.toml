@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "What every Tilo app's signed manifest says about it, compiled in: names, keywords, platforms, documents and closed actions."
 repository.workspace = true
 homepage.workspace = true

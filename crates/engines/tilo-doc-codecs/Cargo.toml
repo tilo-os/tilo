@@ -6,6 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "Import/export projections between file formats and qdoc document resources, plus the format-provider registry"
 repository.workspace = true
 homepage.workspace = true

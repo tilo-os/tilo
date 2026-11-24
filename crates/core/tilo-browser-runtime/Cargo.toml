@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
+readme = "../../../docs/crates/supporting-crate.md"
 description = "The Tilo web entry's runtime in the browser: sign-in, admission and pairing for the entry pages."
 repository.workspace = true
 homepage.workspace = true
