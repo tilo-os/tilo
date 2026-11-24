@@ -129,9 +129,9 @@ impl Session {
     }
 
     /// Keep each record the services keep themselves in the content store of the workspace it
-    /// stands in: the session's own records' large parts are offered on their routes, where the
-    /// workspace's devices fetch them, sealed under the secret its members hold
-    /// ([`crate::content::ContentService::store`]).
+    /// stands in: the session's own records' large parts are kept on the device's one content
+    /// shelf, where the workspace's devices fetch them, sealed under the secret its members hold
+    /// ([`crate::record_content::RecordContent::store`]).
     fn lend_record_content(&self, services: &mut tilo_service::Services) {
         let Some(workspace) = self
             .shared

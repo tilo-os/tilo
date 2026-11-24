@@ -134,9 +134,10 @@ hex.workspace = true
 # The prefix hash of a transfer that starts at the top of its object.
 blake3.workspace = true
 tilo-service = { path = "../service" }
-# The content a record references, kept under this session's state and served
-# to the apps that read the record.
+# The content a record references: the bytes are the device's daemon's, kept on the one shelf its
+# records' content lives on, and a session reaches them on the socket it serves as the session.
 tilo-content = { path = "../../core/content" }
+tilo-fs-client = { path = "../../core/tilo-fs-client" }
 # The MLS vault's master key: the Secret Service on Linux, the Keychain on
 # macOS, or the store a headless machine names with `TILO_SECRETS_DIR`.
 # A fresh vault master key is drawn from getrandom's `SysRng`.

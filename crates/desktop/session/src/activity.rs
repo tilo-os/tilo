@@ -186,9 +186,9 @@ struct Inner {
     /// The session's action API, once its apps run here.
     #[cfg(target_os = "linux")]
     api: RefCell<Option<Arc<crate::mcp_server::Host>>>,
-    /// The records' content this device keeps.
+    /// The records' content this device's daemon keeps, read back by its address.
     #[cfg(target_os = "linux")]
-    content: RefCell<Option<Arc<crate::content::ContentService>>>,
+    content: RefCell<Option<Arc<crate::record_content::RecordContent>>>,
     /// What the apps publish, whose actions say in their own words what each of their changes
     /// did, and what of it History last learned.
     #[cfg(target_os = "linux")]
@@ -530,7 +530,7 @@ impl Activity {
 
     /// Read the output of command runs from `content` .
     #[cfg(target_os = "linux")]
-    pub(crate) fn attach_content(&self, content: Arc<crate::content::ContentService>) {
+    pub(crate) fn attach_content(&self, content: Arc<crate::record_content::RecordContent>) {
         *self.0.content.borrow_mut() = Some(content);
     }
 

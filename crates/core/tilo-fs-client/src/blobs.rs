@@ -281,6 +281,12 @@ enum Job {
         scope: BlobScope,
         reply: Answer<u64>,
     },
+    Want {
+        workspace: String,
+        app: String,
+        hash: String,
+        reply: Answer<()>,
+    },
     Public(PublicJob),
 }
 
@@ -352,6 +358,9 @@ struct Worker {
 pub struct BlobClient {
     worker: Arc<Worker>,
     target: u64,
+    /// The scope a session's client was opened for, when it was: what a want names, since the
+    /// host fetches a record's content under the scope its record lives in.
+    scope: Option<BlobScope>,
 }
 
 impl std::fmt::Debug for BlobClient {
@@ -425,10 +434,42 @@ impl BlobClient {
             return Err(BlobError::InvalidScope);
         }
         let scope = BlobScope::new(workspace, app)?;
-        let target = self.call(|reply| Job::Scope { scope, reply })?;
+        let target = self.call(|reply| Job::Scope {
+            scope: scope.clone(),
+            reply,
+        })?;
         Ok(Self {
             worker: Arc::clone(&self.worker),
             target,
+            scope: Some(scope),
+        })
+    }
+
+    /// Ask the host for `hash` of this client's scope, which this device does not keep: a host
+    /// that can fetch it from the workspace's other devices starts, and a later read answers it.
+    /// Asks once per call, and the host decides whether it is asked again; the content this
+    /// device already keeps, or already wants, is not asked for again by the host either.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::InvalidScope`] on a client that names no scope, or a connection error.
+    pub fn want(&self, hash: &str) -> Result<(), BlobError> {
+        let Some(scope) = &self.scope else {
+            return Err(BlobError::InvalidScope);
+        };
+        if !valid_hash(hash) {
+            return Err(BlobError::InvalidHash);
+        }
+        let (workspace, app, hash) = (
+            scope.workspace().to_owned(),
+            scope.app().to_owned(),
+            hash.to_owned(),
+        );
+        self.call(|reply| Job::Want {
+            workspace,
+            app,
+            hash,
+            reply,
         })
     }
 
@@ -803,6 +844,7 @@ impl BlobClient {
         Ok(Self {
             worker: Arc::new(Worker { jobs, session }),
             target: ROOT,
+            scope: None,
         })
     }
 }
@@ -1207,6 +1249,29 @@ async fn run_job(job: Job, session: &Session) {
                     FsReply::Scope(id) => Ok(session.issue_id_for(
                         crate::handle_reply(Some(id), &session.root).map_err(BlobError::from)?,
                     )),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
+                }
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        Job::Want {
+            workspace,
+            app,
+            hash,
+            reply,
+        } => {
+            let result = async {
+                match session
+                    .root
+                    .call(FsRequest::SessionWant {
+                        workspace,
+                        app,
+                        hash,
+                    })
+                    .await?
+                {
+                    FsReply::Empty => Ok(()),
                     _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
             }

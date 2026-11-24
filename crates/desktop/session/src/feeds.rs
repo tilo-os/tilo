@@ -1,6 +1,7 @@
 //! What the session tells its services as it runs.
 //! Both follow the session's revision: the portal hears which apps run, which exited and when the
-//! screen locked, and the capture broker hears what the person took away.
+//! screen locked, and the capture broker hears what the person took away. The Files mounts hear
+//! the same from the device's daemon, which serves them their workspaces' trees.
 
 use crate::background::running_apps;
 

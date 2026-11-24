@@ -90,11 +90,13 @@ fn session_of(key: &SigningKey, label: &str, state: &Path) -> Member {
         Vec::new(),
     );
     let sync = Rc::new(sync);
+    let (content, media, content_socket) = device_content();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             state: Some(state.to_path_buf()),
             sync: Some(Rc::clone(&sync)),
+            content_socket: Some(content_socket),
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -107,6 +109,8 @@ fn session_of(key: &SigningKey, label: &str, state: &Path) -> Member {
         session,
         sync,
         _said: said,
+        _content: content,
+        _media: media,
     }
 }
 

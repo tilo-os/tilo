@@ -148,6 +148,13 @@ pub enum FsRequest {
         app: String,
     },
     SessionRefreshPublic,
+    /// The session asked for `hash` of `scope`, which this device does not keep: what a host
+    /// that can fetch it from elsewhere starts, and the session reads again once it has it.
+    SessionWant {
+        workspace: String,
+        app: String,
+        hash: String,
+    },
     // DocumentBlobs
     Put {
         bytes: Vec<u8>,

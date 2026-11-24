@@ -159,8 +159,6 @@ pub mod connectors;
 #[cfg(target_os = "linux")]
 mod contacts;
 #[cfg(target_os = "linux")]
-mod content;
-#[cfg(target_os = "linux")]
 pub mod controller_nav;
 #[cfg(target_os = "linux")]
 pub mod controllers;
@@ -346,6 +344,8 @@ mod published_workspace;
 pub mod quick_settings;
 #[cfg(target_os = "linux")]
 mod ready;
+#[cfg(target_os = "linux")]
+mod record_content;
 #[cfg(target_os = "linux")]
 pub mod recovery;
 #[cfg(target_os = "linux")]

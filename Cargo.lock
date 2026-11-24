@@ -20414,6 +20414,7 @@ dependencies = [
  "tilo-files",
  "tilo-frame-metrics",
  "tilo-fs",
+ "tilo-fs-client",
  "tilo-fs-protocol",
  "tilo-identity",
  "tilo-identity-authority",

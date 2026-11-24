@@ -139,6 +139,15 @@ pub trait BlobBackend: Send + Sync + 'static {
     fn refresh_public(self: Arc<Self>) -> BlobFuture<u32> {
         Box::pin(async { 0 })
     }
+
+    /// A session asked for `hash` of `scope`, which this device does not keep: a backend that can
+    /// fetch it from elsewhere starts now, and the session reads it again once it is here. Only a
+    /// session's own ask reaches this; an app's read of what its workspace lacks does not, since
+    /// an app asks for content through its record's route instead. Called on a blocking thread,
+    /// off the connection a session is served on.
+    fn fetching(&self, scope: &BlobScope, hash: &str) {
+        let _ = (scope, hash);
+    }
 }
 
 fn no_public_content() -> BlobError {
@@ -499,6 +508,21 @@ impl ServeObject for SessionServer {
                         on_runtime(&self.runtime, Arc::clone(&self.backend).refresh_public())
                             .await?;
                     Ok(FsReply::Refreshed(refreshed))
+                }
+                FsRequest::SessionWant {
+                    workspace,
+                    app,
+                    hash,
+                } => {
+                    let scope =
+                        BlobScope::new(workspace, app).map_err(|error| error.to_string())?;
+                    let hash = checked_hash(hash)?;
+                    // Off this connection's own answer: what fetches the content comes back to
+                    // the store this connection is served from, and would wait on itself here.
+                    let backend = Arc::clone(&self.backend);
+                    self.runtime
+                        .spawn_blocking(move || backend.fetching(&scope, &hash));
+                    Ok(FsReply::Empty)
                 }
                 _ => Err("unexpected session media request".into()),
             }

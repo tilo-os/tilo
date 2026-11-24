@@ -21,9 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
 use tilo_actions::ApiError;
-use tilo_broker_core::services::{
-    ContentStoreServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
-};
+use tilo_broker_core::services::{WorkspaceAuthority, WorkspaceAuthorityHandle};
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
 use tilo_workspace_keys::KeyProvider;
@@ -437,10 +435,6 @@ pub struct Hosted {
     /// what it dials the hosts of its workspaces from. `None` when the
     /// session runs none.
     pub endpoint: Option<std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>>,
-    /// The content the workspaces' records reference: where an app keeps
-    /// what its record names, and the route an app asks the workspace's other
-    /// devices for what it lacks.
-    pub document_content: Option<std::sync::Arc<crate::content::ContentService>>,
     /// Where an app's offloadable action runs: the device's daemon places the turn on the
     /// workspace's other devices, over the shell link it started this session on.
     pub action_offload: Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>>,
@@ -742,7 +736,8 @@ fn claim_earlier_owners(tree: &mut tilo_desktop_model::Layout, names: &Names) {
     }
     for workspace in &mut tree.workspaces {
         if workspace
-            .policy.owner()
+            .policy
+            .owner()
             .is_some_and(|owner| names.earlier.iter().any(|earlier| earlier == owner))
         {
             workspace.policy.set_owner(names.person.clone());
@@ -1076,7 +1071,6 @@ fn broker_services(
         engine,
         view,
         endpoint: _,
-        document_content,
         action_offload,
         journal_root,
         lists,
@@ -1241,12 +1235,11 @@ fn broker_services(
         document_index_changes: BrokerService::when(records.map(|records| {
             records as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>
         })),
-        // Content a record references is kept on this device beside the
-        // workspace's records, and asked of the workspace's other devices.
-        content_store: BrokerService::when(
-            document_content
-                .as_ref()
-                .map(|content| content.puts() as std::sync::Arc<dyn ContentStoreServices>),
+        // Content a record references is the device's daemon's: an app's content calls reach it
+        // on the connection the router joins there, and this session keeps none of its own.
+        content_store: BrokerService::unserved(
+            "record content is kept by the device's daemon, which an app reaches on its \
+             own connection there",
         ),
         workspace_control: BrokerService::unserved(
             "the person creates and joins workspaces from the session, not on an app's behalf",
@@ -1309,7 +1302,10 @@ fn broker_services(
                 as std::sync::Arc<dyn tilo_workspace_service::apps::services::WorkspaceGrants>
         })),
         launchable_catalogue: BrokerService::when(launchable_catalogue),
-        document_content: BrokerService::when(document_content.map(|content| content.route())),
+        document_content: BrokerService::unserved(
+            "record content is kept by the device's daemon, which an app reaches on its \
+             own connection there",
+        ),
         // This session's channel keys, when it holds workspaces: a route's keys
         // reach its apps through them, and an endpoint follows their changes
         // here instead of asking again every second.
@@ -1700,7 +1696,6 @@ mod tests {
             nearby: None,
             engine: None,
             view: None,
-            document_content: None,
             action_offload: None,
             journal_root: None,
             lists,
@@ -1720,38 +1715,24 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_app_wire_serves_an_app_what_this_session_keeps_for_it;
 
-        phase an_app_keeps_and_asks_for_content_through_the_services_of_this_session;
-        // An app's `offerBlob`, `wantBlob` and `subscribeBlobs`, and the content
-        // put links, are served by the app wire this session keeps: the same store
-        // and the same asks of the workspace's other devices. A session that
-        // keeps no content hands the broker none of it.
+        phase an_apps_content_is_the_device_daemons_to_keep;
+        // An app's `offerBlob`, `wantBlob`, `subscribeBlobs` and the content put links reach the
+        // device's daemon on the connection the router joins for it, where its records are: this
+        // session's broker keeps none of its own, and says so rather than answering from a second
+        // store.
         {
-            let kept = crate::content::ContentService::open(None);
             let wake: Wake = std::sync::Arc::new(|| ());
             let with = host_services(
                 Link::new(wake),
                 std::sync::Arc::new(Launches::default()),
                 None,
-                Hosted {
-                    document_content: Some(kept),
-                    ..hosted()
-                },
+                hosted(),
                 None,
                 None,
             );
             assert!(
-                with.document_content.is_some(),
-                "the broker asks the workspace through this session's app wire"
-            );
-            assert!(
-                with.content_store.is_some(),
-                "and uploads into the store this device keeps"
-            );
-
-            let without = services(None);
-            assert!(
-                without.document_content.is_none() && without.content_store.is_none(),
-                "a session that keeps content hands the broker no content app wire"
+                with.document_content.is_none() && with.content_store.is_none(),
+                "a record's content is the device's daemon's, and an app reaches it there"
             );
         }
 

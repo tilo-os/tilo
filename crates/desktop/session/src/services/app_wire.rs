@@ -158,8 +158,7 @@ pub(crate) struct Collaboration<'a> {
     /// What the broker hands the apps that have a record open: the one this session hands a
     /// sibling's writes to, so those reach the apps on the route this device's own writes do.
     pub fanout: std::sync::Arc<FanoutState>,
-    /// The records' content this session keeps and asks the workspaces for.
-    pub content: Option<std::sync::Arc<crate::content::ContentService>>,
+
     /// What notes the workspaces' records changing, for the roles that follow them.
     pub records: Option<std::sync::Arc<crate::resource_index::RecordChanges>>,
     /// The programs agents write in this session's tasks, run by it.
@@ -239,7 +238,6 @@ pub(crate) fn start_app_wire(
         view,
         sealed,
         fanout,
-        content,
         records,
         task_programs,
         session_actions,
@@ -377,7 +375,6 @@ pub(crate) fn start_app_wire(
                     agent_sessions: services.agent_sessions,
                     sealed,
                     own_device,
-                    document_content: content.clone(),
                     action_offload,
                     engine,
                     view,

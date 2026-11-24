@@ -75,13 +75,28 @@ pub struct DocumentMedia {
     store: Arc<ContentStore>,
     /// The public content this device keeps, where it keeps any.
     public: Option<Arc<PublicContent>>,
+    /// What a session's ask for content this device does not keep reaches: the host's record
+    /// content, which asks the workspace's other devices and keeps what they answer here, where
+    /// the session's next read finds it.
+    fetching: std::sync::RwLock<Option<Arc<dyn Fn(&BlobScope, &str) + Send + Sync>>>,
+    /// When each scope's address was last asked for among those open: a session reads again as it
+    /// waits, and the host is asked once a moment rather than once a read.
+    asked: std::sync::Mutex<std::collections::HashMap<(BlobScope, String), std::time::Instant>>,
 }
+
+/// How long after a want the same address is asked for again: a session's wait reads it often,
+/// and the host asks the workspace's devices on its own patience.
+const ASK_AGAIN: std::time::Duration = std::time::Duration::from_millis(500);
+/// Wants this device remembers to keep from asking again; past it, they are forgotten.
+const ASKED_KEPT: usize = 1024;
 
 impl DocumentMedia {
     pub fn new(store: Arc<ContentStore>) -> Arc<Self> {
         Arc::new(Self {
             store,
             public: None,
+            fetching: std::sync::RwLock::new(None),
+            asked: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -90,7 +105,48 @@ impl DocumentMedia {
         Arc::new(Self {
             store,
             public: Some(public),
+            fetching: std::sync::RwLock::new(None),
+            asked: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
+    }
+
+    /// Answer a session's ask for content this device lacks through `fetch` from now on: the
+    /// host's record content, which asks the workspace's other devices for it and keeps what they
+    /// answer on this device's store. Until a host installs one, a session's ask starts nothing.
+    pub fn fetch_through(&self, fetch: Arc<dyn Fn(&BlobScope, &str) + Send + Sync>) {
+        if let Ok(mut held) = self.fetching.write() {
+            *held = Some(fetch);
+        }
+    }
+
+    /// Start fetching `hash` of `scope` from elsewhere, when a host fetches at all, once a moment:
+    /// the session that asked reads again as it waits.
+    fn started_fetching(&self, scope: &BlobScope, hash: &str) {
+        let fetch = self
+            .fetching
+            .read()
+            .ok()
+            .and_then(|held| held.as_ref().map(Arc::clone));
+        let Some(fetch) = fetch else {
+            return;
+        };
+        {
+            let Ok(mut asked) = self.asked.lock() else {
+                return;
+            };
+            let key = (scope.clone(), hash.to_owned());
+            let now = std::time::Instant::now();
+            if let Some(last) = asked.get(&key)
+                && now.duration_since(*last) < ASK_AGAIN
+            {
+                return;
+            }
+            if asked.len() >= ASKED_KEPT {
+                asked.clear();
+            }
+            asked.insert(key, now);
+        }
+        fetch(scope, hash);
     }
 
     fn public(&self) -> Result<&Arc<PublicContent>, BlobError> {
@@ -321,6 +377,10 @@ impl BlobBackend for DocumentMedia {
                 None => 0,
             }
         })
+    }
+
+    fn fetching(&self, scope: &BlobScope, hash: &str) {
+        self.started_fetching(scope, hash);
     }
 }
 

@@ -42,8 +42,6 @@ use tilo_session_core::desktop::state::DesktopHandle;
 #[cfg(target_os = "linux")]
 use super::Entering;
 #[cfg(target_os = "linux")]
-use crate::content;
-#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 use crate::engine::Engine;
 #[cfg(target_os = "linux")]
@@ -60,8 +58,6 @@ use tilo_identity::identity_store::DeviceIdentity;
 #[cfg(target_os = "linux")]
 use tilo_network_actor::{WorkspaceId, native_ingress};
 #[cfg(target_os = "linux")]
-use tilo_workspace_service::content::ContentSources;
-
 #[cfg(target_os = "linux")]
 mod adopt;
 #[cfg(target_os = "linux")]
@@ -334,12 +330,9 @@ pub(crate) struct Local {
     /// The member's devices the peer network heard at another peer protocol version since the last
     /// call: what the person is answered.
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
-    /// The records' content this session keeps and asks the workspaces for: `None` until the
-    /// session hands its content service over ([`Self::attach_content`]).
-    content: RefCell<Option<Arc<content::ContentService>>>,
-    /// The devices each workspace's record content reaches this one from: those heard on its topic,
-    /// and its hosts.
-    topologies: RefCell<std::collections::BTreeMap<WorkspaceId, content::Topology>>,
+    /// The devices each workspace's topic carries to this session: those heard on it, and its
+    /// hosts, which the members they reach are behind.
+    topologies: RefCell<std::collections::BTreeMap<WorkspaceId, Topology>>,
     /// This device's fabric, when it is a certified device of the person's: `None` on a session
     /// that takes part as nobody.
     fabric: Option<Arc<SessionFabric>>,
@@ -365,34 +358,44 @@ pub(crate) struct Local {
     test_said: RefCell<Vec<tilo_live::share::Said>>,
 }
 
-/// Whether the person of `device` may read `workspace`'s files, as the workspace's people and
-/// grants decide it now; `false` for a device the workspace does not admit.
-#[cfg(target_os = "linux")]
-fn reads_files(engine: Option<&Engine>, workspace: &str, device: EndpointId) -> bool {
-    let (Some(engine), Some(identity)) =
-        (engine, tilo_desktop_model::WorkspaceId::parse(workspace))
-    else {
-        return false;
-    };
-    let now = tilo_clock::wall();
-    engine
-        .owner()
-        .with_current(identity, |view| {
-            let member = view
-                .peer()
-                .permissions(*device.as_bytes(), now)
-                .map_err(|error| error.to_string())?;
-            let Some(person) = member.person_id() else {
-                return Ok(false);
-            };
-            let policy = view.peer().governance().governed_policy()?;
-            let context = tilo_action_policy::Context::at_time(now);
-            Ok(
-                tilo_workspace_service::files::access::decide(&policy, workspace, person, &context)
-                    .is_some(),
-            )
-        })
-        .unwrap_or(false)
+/// The devices a workspace's topic carries to this session, as what the workspace says here
+/// reports them: those that published there, and the workspace's hosts, which the members they
+/// reach are behind. A record's content is not routed here: the device's daemon keeps it and
+/// asks the workspace's devices itself; these are the devices live rows follow.
+#[derive(Debug, Default)]
+struct Topology {
+    peers: std::collections::BTreeSet<EndpointId>,
+    hosts: std::collections::BTreeSet<EndpointId>,
+}
+
+impl Topology {
+    /// `device` said something on the workspace's topic.
+    fn heard(&mut self, device: EndpointId) -> bool {
+        self.peers.insert(device)
+    }
+
+    /// `host` serves the workspace: what its topic publishes, and the members it reports reaching.
+    fn host(&mut self, host: EndpointId) -> bool {
+        self.hosts.insert(host)
+    }
+
+    /// `device` left the workspace's topic, or the host that reached it did.
+    fn left(&mut self, device: EndpointId) -> bool {
+        let peer = self.peers.remove(&device);
+        let host = self.hosts.remove(&device);
+        peer || host
+    }
+
+    /// The devices of the workspace this session reaches now: those heard on its topic and the
+    /// hosts that serve it, never `own` , this device.
+    fn devices(&self, own: EndpointId) -> std::collections::BTreeSet<EndpointId> {
+        self.peers
+            .iter()
+            .chain(self.hosts.iter())
+            .filter(|device| **device != own)
+            .copied()
+            .collect()
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -426,51 +429,25 @@ impl Local {
                 _ => {}
             }
         }
-        // What a workspace's members say about a record's content is the records' own content service's to
-        // take, and the devices it can be handed over from follow them.
-        self.follow_content_sources(event, client);
-        if self.keep_content(event, client) {
-            return true;
-        }
+        // The devices a workspace's topic carries are the ones live rows follow; a record's
+        // content is the device's daemon's, which asks them itself.
+        self.follow_present_devices(event, client);
         false
     }
 
-    /// Hand `event` to the content store when it is one of a record's content messages; whether it
-    /// was, in which case nothing else here takes it. Every such message reached here through the
-    /// workspace's policy, which admitted the device that sent it; the bytes of the workspace's
-    /// files go only to a device whose person may read them.
-    fn keep_content(&self, event: &Event, client: &SessionClient) -> bool {
-        let Some(content) = self.content.borrow().clone() else {
-            return false;
-        };
-        let Event::Msg { ws, peer, msg } = event else {
-            return false;
-        };
-        let Some(workspace) = client.workspace_id(*ws) else {
-            return false;
-        };
-        let engine = self.engine.as_deref();
-        let may_read = |app: &str| {
-            app != fs_protocol::tree::FILES_APP || reads_files(engine, &workspace, *peer)
-        };
-        content.heard(*ws, &workspace, *peer, msg, &may_read)
-    }
-
-    /// Keep what reached here of the devices a workspace's content can be handed over from: those
-    /// that said anything on its topic, the hosts that serve it and the members they report, and
-    /// those that left. A record's content follows them ([`content::ContentService::sources_changed`]).
-    fn follow_content_sources(&self, event: &Event, client: &SessionClient) {
-        let Some(content) = self.content.borrow().clone() else {
-            return;
-        };
+    /// Keep what reached here of the devices a workspace's topic carries: those that said
+    /// anything on it, the hosts that serve it and the members they report, and those that left.
+    /// What live rows follow of the workspace follows them; a record's content is the device's
+    /// daemon's to route, and it hears the workspace's devices itself.
+    fn follow_present_devices(&self, event: &Event, client: &SessionClient) {
         let (ws, changed) = match event {
             Event::Msg { ws, peer, .. } => (
                 *ws,
-                self.content_devices(*ws, |devices| devices.heard(*peer)),
+                self.present_devices(*ws, |devices| devices.heard(*peer)),
             ),
             Event::HostReady { ws, peer, .. } => (
                 *ws,
-                self.content_devices(*ws, |devices| devices.host(*peer)),
+                self.present_devices(*ws, |devices| devices.host(*peer)),
             ),
             Event::HostMember {
                 ws,
@@ -481,7 +458,7 @@ impl Local {
                 let (host, device, active) = (*host, *device, *active);
                 (
                     *ws,
-                    self.content_devices(*ws, |devices| {
+                    self.present_devices(*ws, |devices| {
                         let served = devices.host(host);
                         let member = if active {
                             devices.heard(device)
@@ -494,22 +471,19 @@ impl Local {
             }
             Event::PeerLeft { ws, peer } => (
                 *ws,
-                self.content_devices(*ws, |devices| devices.left(*peer)),
+                self.present_devices(*ws, |devices| devices.left(*peer)),
             ),
             _ => return,
         };
         if !changed {
             return;
         }
-        let (sources, connected) = {
+        let connected = {
             let workspace = client.workspace_id(ws);
             let topologies = self.topologies.borrow();
             match (workspace, topologies.get(&ws)) {
-                (Some(id), Some(topology)) => (
-                    topology.sources(client.publisher()),
-                    Some((id, topology.devices(client.publisher()))),
-                ),
-                _ => (ContentSources::default(), None),
+                (Some(id), Some(topology)) => Some((id, topology.devices(client.publisher()))),
+                _ => None,
             }
         };
         // The devices the workspace reaches are the ones live rows follow: a row live on a device
@@ -519,16 +493,11 @@ impl Local {
                 devices.iter().map(|device| *device.as_bytes()).collect();
             self.live_rows.reach(&workspace, devices.iter().copied());
         }
-        content.sources_changed(ws, sources);
     }
 
     /// Apply `change` to the devices this session reaches in the workspace on `ws`; whether that
     /// was news.
-    fn content_devices(
-        &self,
-        ws: WorkspaceId,
-        change: impl FnOnce(&mut content::Topology) -> bool,
-    ) -> bool {
+    fn present_devices(&self, ws: WorkspaceId, change: impl FnOnce(&mut Topology) -> bool) -> bool {
         let mut topologies = self.topologies.borrow_mut();
         let Some(topology) = topologies.get_mut(&ws) else {
             return false;
@@ -806,24 +775,6 @@ impl Local {
             fabric.attach_nearby(Arc::clone(&nearby));
         }
         self.nearby.replace(Some(nearby));
-    }
-
-    /// Hand the records' content store its place on this client: the workspaces' topics are the
-    /// records' routes, and what it asks for and answers there travels with this device's own
-    /// messages.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn attach_content(
-        &self,
-        content: Arc<content::ContentService>,
-        publisher: EndpointId,
-    ) {
-        content.bind(
-            HostOutbox {
-                commands: self.commands.clone(),
-            },
-            publisher,
-        );
-        self.content.replace(Some(content));
     }
 
     /// The actions one of the person's devices sent this one since the last call, for the session's
@@ -1717,7 +1668,11 @@ impl Client {
             return;
         };
         if let Err(error) = live_session.say(said) {
-            tracing::debug!(%workspace, %error, "a shared window's word was not said");
+            // The share it belongs to ended with the session: nothing of it is left to say it to.
+            tilo_failure::ignored!(
+                "the share the word belongs to has ended",
+                tracing::debug!(%workspace, %error, "a shared window's word was not said")
+            );
         }
     }
 
@@ -1879,12 +1834,6 @@ impl Client {
         *self.hosting.local.session.borrow_mut() = Some(session);
     }
 
-    /// Hand the records' content store its place on this client.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn attach_content(&self, content: Arc<content::ContentService>) {
-        self.hosting.local.attach_content(content, self.publisher());
-    }
-
     /// This device's workspaces, when this session holds any.
     #[must_use]
     #[cfg(target_os = "linux")]
@@ -2044,7 +1993,6 @@ impl Local {
                 engine,
                 link,
                 versions,
-                content: RefCell::new(None),
                 topologies: RefCell::new(std::collections::BTreeMap::new()),
                 fabric,
                 nearby: RefCell::new(None),
@@ -2081,7 +2029,6 @@ impl Local {
             engine: None,
             link: None,
             versions,
-            content: RefCell::new(None),
             topologies: RefCell::new(std::collections::BTreeMap::new()),
             fabric: None,
             nearby: RefCell::new(None),

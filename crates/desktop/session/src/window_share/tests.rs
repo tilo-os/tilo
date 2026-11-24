@@ -47,13 +47,13 @@ use tilo_session_core::desktop::verbs::SHELL_RESOURCE;
 
 use tilo_session_core::desktop::verbs::WINDOW_KIND;
 
-use tilo_session_core::desktop::verbs::tab_resource_id;
 use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
     CanvasPlace, GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
     WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_live::share::{Control, InputEvent as SharedInput, Said};
+use tilo_session_core::desktop::verbs::tab_resource_id;
 use tokio::sync::mpsc::UnboundedReceiver;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_keyboard, wl_keyboard::WlKeyboard,
@@ -272,6 +272,9 @@ struct Member {
     sync: Rc<Client>,
     /// What the session says to the peer actor, kept so it has somewhere to go.
     _said: UnboundedReceiver<Cmd>,
+    /// The device's content store, on the socket its session reaches it at.
+    _content: tempfile::TempDir,
+    _media: tilo_runtime::profile::MediaHost,
 }
 
 fn member(seed: u8, shell: Layout) -> Member {
@@ -302,6 +305,20 @@ fn member_as(seed: u8, shell: Layout, salt: u16, person: Option<String>) -> Memb
     )
 }
 
+/// One device's content store, on the socket its session reaches it at, as the daemon serves it:
+/// the one shelf its records' content is kept on.
+fn device_content() -> (
+    tempfile::TempDir,
+    tilo_runtime::profile::MediaHost,
+    std::path::PathBuf,
+) {
+    let content = tempfile::tempdir().expect("a content store");
+    let socket = content.path().join("blobs.sock");
+    let media = tilo_runtime::profile::MediaHost::start(&content.path().join("store"), &socket)
+        .expect("the device serves its content");
+    (content, media, socket)
+}
+
 /// One device of the workspace whose shell spreads over `outputs` .
 fn member_on(
     seed: u8,
@@ -326,11 +343,13 @@ fn member_on(
         Some(person) => sync.taking_part_as(&person),
         None => sync,
     });
+    let (content, media, content_socket) = device_content();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             salt,
             sync: Some(Rc::clone(&sync)),
+            content_socket: Some(content_socket),
             ..Options::default()
         },
         outputs,
@@ -344,6 +363,8 @@ fn member_on(
         session,
         sync,
         _said: said,
+        _content: content,
+        _media: media,
     }
 }
 
@@ -958,7 +979,7 @@ fn a_window_the_session_does_not_run_is_read_and_pictured() {
     let address = answered["content"].as_str().expect("the picture's address");
     let hash = tilo_actions::content_hash(address).expect("a content address");
     assert!(
-        host.session.content.puts().holds(&workspace, hash),
+        host.session.content.holds(&workspace, hash),
         "the picture is kept as content of the workspace the window stands in: {answered}"
     );
     assert_eq!(

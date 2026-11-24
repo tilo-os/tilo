@@ -1481,6 +1481,22 @@ impl Daemon {
             brokers,
             Arc::clone(&fanout),
         )?;
+        // A session reads content through this device's one store, and what it asks for that the
+        // store lacks is asked of the workspace's devices by the record content the broker routes:
+        // what one of them answers is kept here, where the session's next read finds it.
+        if let Some(content) = workspaces.record_content_service() {
+            media.fetch_content_through(Arc::new(
+                move |scope: &runtime_fs::blobs::BlobScope, hash: &str| {
+                    content.want(
+                        &tilo_workspace_service::content::CrdtRoute::app(
+                            scope.app(),
+                            scope.workspace(),
+                        ),
+                        hash,
+                    );
+                },
+            ));
+        }
         // The device's record of every invocation it was asked for is what the workspace's
         // dispatch reads and follows; the workspace service writes what a model call cost into
         // it as it answers.

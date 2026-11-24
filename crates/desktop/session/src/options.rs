@@ -48,6 +48,9 @@ pub struct Options {
     /// The apps this device lists — installed here, the machine's own and those a person can get —
     /// as search, the app sheets and the tool service read them.
     pub lists: crate::lists::Lists,
+    /// The records' content, as this session reaches it: the socket the device's daemon serves
+    /// its content store on. `None` reaches the one the launcher named the daemon's.
+    pub content_socket: Option<std::path::PathBuf>,
     /// The action host: what open apps publish and run, and where what is chosen in search runs by
     /// address. Without one, search finds the desktop's own and starts nothing.
     pub apps: Option<Rc<dyn AppActions>>,
@@ -364,6 +367,7 @@ impl Default for Options {
             backlights: None,
             search: SearchOptions::default(),
             lists: crate::lists::Lists::default(),
+            content_socket: None,
             apps: None,
             launch: None,
             setup: None,

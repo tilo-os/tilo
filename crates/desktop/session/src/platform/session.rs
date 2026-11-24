@@ -743,13 +743,10 @@ impl Session {
         {
             found.read_from(document_reads.clone(), daemon.clone());
         }
-        // The content the workspaces' records reference: kept beside their
-        // records under this session's state, and asked of the workspace's
-        // other devices on the topic the records travel.
-        let document_content = crate::content::ContentService::open(options.state.as_deref());
-        if let Some(sync) = &sync {
-            sync.attach_content(std::sync::Arc::clone(&document_content));
-        }
+        // The content the workspaces' records reference: the device's daemon keeps it on the one
+        // shelf its records' content lives on, beside their records, and serves it on its
+        // document-media socket, where this session reads and keeps it.
+        let record_content = crate::record_content::open(options.content_socket.clone());
         // What other members send here is the workspaces' to admit: their
         // policies are read from the shell this session shows.
         if let Some(sync) = &sync {
@@ -1210,7 +1207,6 @@ impl Session {
                     broker: std::sync::Arc::clone(&channels_broker),
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
-                content: Some(std::sync::Arc::clone(&document_content)),
                 records: resource_index,
                 fanout: std::sync::Arc::clone(&channels_fanout),
                 task_programs,
@@ -1334,7 +1330,7 @@ impl Session {
             let apps = Rc::clone(launch);
             activity.attach_published(Rc::new(move || apps.published_rows()));
         }
-        activity.attach_content(std::sync::Arc::clone(&document_content));
+        activity.attach_content(std::sync::Arc::clone(&record_content));
         let control = crate::test_control::Control::open(&options, std::sync::Arc::clone(&host));
         tilo_startup_metrics::mark("control-socket-open");
         let server = crate::mcp_server::mount_named(
@@ -2010,7 +2006,7 @@ impl Session {
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             app_wire,
-            content: document_content,
+            content: record_content,
             control,
             liveness,
             automation,

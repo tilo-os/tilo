@@ -70,6 +70,8 @@ pub fn lock(root: &Path) -> io::Result<advisory_lock::FileLock> {
 /// content store and capability, on the host's private profile.
 pub struct MediaHost {
     store: Arc<tilo_fs::ContentStore>,
+    /// The store's serving side, as a session's ask for content this device lacks reaches it.
+    media: Arc<tilo_fs::document_media::DocumentMedia>,
     _server: std::thread::JoinHandle<()>,
     runtime: Option<tokio::runtime::Runtime>,
 }
@@ -90,10 +92,12 @@ impl MediaHost {
         let media = tilo_fs::document_media::DocumentMedia::new(Arc::clone(&store));
         let server = {
             let _entered = runtime.enter();
-            tilo_fs::document_media::serve_socket(socket, media).map_err(io::Error::other)?
+            tilo_fs::document_media::serve_socket(socket, Arc::clone(&media))
+                .map_err(io::Error::other)?
         };
         Ok(Self {
             store,
+            media,
             _server: server,
             runtime: Some(runtime),
         })
@@ -102,6 +106,16 @@ impl MediaHost {
     /// The content store, which the profile's workspace files share.
     pub fn store(&self) -> Arc<tilo_fs::ContentStore> {
         Arc::clone(&self.store)
+    }
+
+    /// Answer a session's ask for content this device does not keep through `fetch` from now on:
+    /// the profile's record content, which asks the workspace's other devices and keeps what they
+    /// answer on this store, where the session's next read finds it.
+    pub fn fetch_content_through(
+        &self,
+        fetch: Arc<dyn Fn(&runtime_fs::blobs::BlobScope, &str) + Send + Sync>,
+    ) {
+        self.media.fetch_through(fetch);
     }
 }
 

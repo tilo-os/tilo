@@ -14,13 +14,13 @@ use tilo_compositor::Compositor;
 use tilo_compositor::capture::Target;
 use tilo_session_core::surfaces::{Look, Shot};
 
-use crate::content::ContentService;
+use crate::record_content::RecordContent;
 
 /// The session's pictures: `compositor`'s read-back of a window, kept as
 /// content of the workspace the window stands in.
 pub(crate) fn look<'a>(
     compositor: &'a mut Compositor,
-    content: Option<&'a ContentService>,
+    content: Option<&'a RecordContent>,
 ) -> Look<'a> {
     Look::over(move |window: u64, workspace: &str| {
         let identifier = compositor

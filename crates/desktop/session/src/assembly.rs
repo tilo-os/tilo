@@ -585,10 +585,11 @@ pub struct Session {
     #[cfg(target_os = "linux")]
     pub(crate) app_wire: Option<crate::app_wire::AppWire>,
     /// The content its workspaces' records reference, and what a window it
-    /// does not run is pictured into: the address is read by any caller of
-    /// the action protocol.
+    /// does not run is pictured into: the device's daemon keeps it on the one
+    /// shelf its records' content lives on, and this session reads and keeps
+    /// it there by the address any caller of the action protocol names.
     #[cfg(target_os = "linux")]
-    pub(crate) content: std::sync::Arc<crate::content::ContentService>,
+    pub(crate) content: std::sync::Arc<crate::record_content::RecordContent>,
     /// The control socket `tilo-control` drives this session over: the
     /// development and the device admin's sockets, when the launcher names
     /// them, and the one a program inside an app reaches.
