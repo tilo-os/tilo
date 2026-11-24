@@ -1586,8 +1586,11 @@ impl Widget for Stage {
                 if !self.still {
                     *ctx.focus_target = Some(ctx.node_id);
                 }
-                // A place's edge or corner first: dragging it sizes the place.
-                if let Some((index, trailing, bottom)) = self.edge_at(local) {
+                // A place's edge or corner first: dragging it sizes the place. A stage that
+                // takes nothing of its own keeps every place at the size its view gave it.
+                if !self.still
+                    && let Some((index, trailing, bottom)) = self.edge_at(local)
+                {
                     let laid = self.laid.borrow();
                     let from = laid.get(index).copied().unwrap_or_default();
                     self.edge = Some(Edge {
@@ -1731,7 +1734,9 @@ impl Widget for Stage {
             return None;
         }
         let local = point - self.rect.origin().to_vec2();
-        if let Some((_, trailing, bottom)) = self.edge_at(local) {
+        if !self.still
+            && let Some((_, trailing, bottom)) = self.edge_at(local)
+        {
             return Some(match (trailing, bottom) {
                 (true, true) => CursorIcon::SeResize,
                 (true, false) => CursorIcon::EResize,
