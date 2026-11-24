@@ -1222,6 +1222,10 @@ impl AppBrokerState {
             .into_iter()
             .filter(|registered| registered.reach.listed())
             .filter(|registered| registered.reach.devices() || local)
+            // An app's calls are registered as this broker itself ([`AppCalls`]): what they offer
+            // is the app's surface, listed here already, and asking that registration for its rows
+            // would ask this listing again.
+            .filter(|registered| application_provider(&registered.provider).is_none())
             .collect();
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let first = rows.len();
