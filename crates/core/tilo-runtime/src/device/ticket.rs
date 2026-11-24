@@ -243,8 +243,8 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         row(Some(descriptor(
             PERSONAL_DEVICES,
             "List your devices",
-            "The devices your root certified, the keys it took back, and whether this computer \
-             keeps your root.",
+            "The devices your root certified, each with the revocation it signed, and whether \
+             this computer keeps your root.",
             &[],
         ))),
         row(Some(descriptor(

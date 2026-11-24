@@ -3,8 +3,8 @@
 //! devices are the record of the person's own workspace ([`person_workspace::devices`]), which
 //! this device holds and every device of theirs reads and writes; a list of them reads that record
 //! and joins who is here for online. A revocation is signed by the person's root on the device
-//! that holds it and marked in the record, and the marked record is what every host refuses the
-//! device by.
+//! that holds it and kept in the record's entry of the device it names, root-signed, and every
+//! host verifies it there and refuses the device by it.
 //!
 //! [`RENAME`]: tilo_actions::remote::device_tickets::RENAME
 //! [`REVOKE`]: tilo_actions::remote::device_tickets::REVOKE
@@ -43,12 +43,12 @@ impl TicketServer {
     }
 
     /// End the login of the device `args` names, signed by the person's root here: the record of
-    /// their own workspace marks it taken back, and every host that holds the record refuses it
-    /// as the change arrives, ending its links there.
+    /// their own workspace keeps the entry the root signed, and every host that holds the record
+    /// refuses the device as the change arrives, ending its links there.
     ///
     /// # Errors
     /// The device is this one, this device does not hold the person's root, or the record
-    /// refused the mark.
+    /// refused the entry.
     pub async fn revoke(&self, args: &Value) -> Result<Value, String> {
         let device = device_in(args)?.ok_or("name the device to revoke by its key")?;
         let (cert, _) = self.0.issuer.device()?;
@@ -93,14 +93,8 @@ impl TicketServer {
         };
         tilo_user_identity::sign_revocation_entry(&mut entry, &*root)
             .map_err(|error| error.to_string())?;
-        self.0.issuer.keep_revocation(&entry);
-        if !listed.device.revoked {
-            person_workspace::apply(
-                &workspaces,
-                DEVICES,
-                Devices::REVOKE_DEVICE.with(key.clone()),
-            )
-            .await?;
+        if !listed.device.revoked(&listed.cert) {
+            person_workspace::devices::revoke(&workspaces, &person, &entry).await?;
         }
         // This device refuses the key at once; every other host as the record's change reaches it,
         // and the hosts of the workspaces this device holds as the revocation it announces does:

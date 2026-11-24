@@ -177,6 +177,24 @@ pub fn verify_revocation_entry(entry: &RevocationEntry) -> Result<(), Revocation
     Ok(())
 }
 
+/// Whether `entry` is the root's own revocation of `cert`: signed by the root that certified it,
+/// and naming that root and that device. An entry anything else signed, or one about another
+/// device, revokes nothing and a reader leaves it out.
+#[must_use]
+pub fn revokes(entry: &RevocationEntry, cert: &DeviceCert) -> bool {
+    entry.user_public_key == cert.user_public_key
+        && entry.revoked_device_public_key == cert.device_public_key
+        && verify_revocation_entry(entry).is_ok()
+}
+
+/// The revocation `text` (postcard in hex) holds, when it is `cert`'s root's own revocation of it:
+/// an entry anything else signed, one about another device, or one that does not read, is none.
+#[must_use]
+pub fn revocation_of(text: &str, cert: &DeviceCert) -> Option<RevocationEntry> {
+    let entry: RevocationEntry = postcard::from_bytes(&hex::decode(text).ok()?).ok()?;
+    revokes(&entry, cert).then_some(entry)
+}
+
 /// Whether revocations refuse `cert`, given when each key was first revoked
 /// by a root (`revoked_at(root, key)`), asked only of the root that
 /// certified the key: its device's revocation counts from its time when `at_ns`

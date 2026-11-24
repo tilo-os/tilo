@@ -36,8 +36,7 @@ use tilo_unlock_protocol::{
     UnlockRequest, decode_frame, encode_frame, frame_len,
 };
 use tilo_user_identity::{
-    CertifiedFleet, DeviceCert, DeviceCertification, device_cert_signing_digest,
-    verify_device_cert,
+    CertifiedFleet, DeviceCert, DeviceCertification, device_cert_signing_digest, verify_device_cert,
 };
 
 /// The kind the session's sheet reads a disk-unlock request as.
@@ -355,7 +354,9 @@ impl Unlock {
                 .get("release")?
                 .as_str()
                 .and_then(|release| hex::decode(release).ok())
-                .and_then(|release| postcard::from_bytes::<tilo_unlock_protocol::Release>(&release).ok())
+                .and_then(|release| {
+                    postcard::from_bytes::<tilo_unlock_protocol::Release>(&release).ok()
+                })
         })
         .await
         .ok()
@@ -479,9 +480,11 @@ impl Unlock {
             AutoApproval::unsigned(person, enrollee, vec![chain], tilo_clock::unix_now_ns())
         });
         let approval_digest = match &approval {
-            Some(approval) => Some(approval.digest().ok_or_else(|| {
-                refused("the unlock policy could not be encoded".into())
-            })?),
+            Some(approval) => Some(
+                approval
+                    .digest()
+                    .ok_or_else(|| refused("the unlock policy could not be encoded".into()))?,
+            ),
             None => None,
         };
         let mut args = serde_json::json!({
@@ -734,7 +737,6 @@ pub(crate) fn slot_name(slot: &SlotId) -> String {
 /// The person's devices, as the daemon that holds their record lists them, and whether it keeps
 /// their root.
 fn read_ownership() -> Option<Ownership> {
-    use tilo_user_identity::RevocationEntry;
     let answer = tilo_api::daemon::this_computer()
         .ok()?
         .act(
@@ -753,20 +755,14 @@ fn read_ownership() -> Option<Ownership> {
             .and_then(serde_json::Value::as_str)
             .and_then(|cert| hex::decode(cert).ok())
             .and_then(|cert| postcard::from_bytes::<DeviceCert>(&cert).ok());
-        if let Some(cert) = cert {
-            let _ = fleet.certify(cert);
-        }
-    }
-    for entry in answer
-        .get("revocations")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let entry = entry
-            .as_str()
-            .and_then(|entry| hex::decode(entry).ok())
-            .and_then(|entry| postcard::from_bytes::<RevocationEntry>(&entry).ok());
+        let Some(cert) = cert else { continue };
+        // The record keeps the root's revocation of the device beside its certificate: it is the
+        // root's only when that root's own signature verifies it.
+        let entry = device
+            .get("revocation")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|entry| tilo_user_identity::revocation_of(entry, &cert));
+        let _ = fleet.certify(cert);
         if let Some(entry) = entry {
             let _ = fleet.revoke(entry);
         }

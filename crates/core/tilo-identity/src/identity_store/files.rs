@@ -60,8 +60,8 @@ impl IdentityStore for Files {
             return Err("this device has no identity to sign in with".into());
         }
         let trust = crate::sources::device_trust();
-        // The record of the person's devices marks this one taken back: it signs nothing more as
-        // them, whether or not its root's signed entry reached this host.
+        // The record of the person's devices holds this one's root-signed revocation: it signs
+        // nothing more as them.
         if trust.and_then(|trust| trust.revoked(&cert.user_public_key, &cert.device_public_key))
             == Some(true)
         {

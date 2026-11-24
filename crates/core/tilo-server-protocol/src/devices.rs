@@ -97,7 +97,8 @@ pub struct FleetRecords {
 /// here now (`here`), whose devices are online. `this` is the device the list is shown on.
 ///
 /// A device is listed when `person`'s root signed its certificate: an entry another root signed,
-/// kept under another key, or whose certificate does not read, is left out.
+/// kept under another key, or whose certificate does not read, is left out. One is revoked when
+/// the entry the record keeps beside its certificate is that root's own signature.
 #[must_use]
 pub fn fleet(
     person: &[u8; 32],
@@ -174,10 +175,11 @@ pub fn fleet(
                     .collect::<Vec<_>>()
                     .join(" "),
                 current,
-                revoked: device
-                    .get("revoked")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false),
+                // The record keeps the root's revocation of the device beside its certificate:
+                // it is the root's only when that root's own signature verifies it.
+                revoked: text("revocation")
+                    .and_then(|entry| tilo_user_identity::revocation_of(&entry, &cert))
+                    .is_some(),
                 kind: device
                     .get("kind")
                     .and_then(|kind| serde_json::from_value::<KeyKind>(kind.clone()).ok())

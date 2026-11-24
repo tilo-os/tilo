@@ -298,10 +298,13 @@ impl PeerRegistrar {
                     .and_then(serde_json::Value::as_str)
                     .and_then(|bytes| hex::decode(bytes).ok())
                     .and_then(|bytes| postcard::from_bytes(&bytes).ok())?;
+                // The record keeps the root's revocation of a device beside its certificate: the
+                // entry is taken only when that root's own signature verifies it.
                 let revoked = listed
-                    .get("revoked")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
+                    .get("revocation")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|entry| tilo_user_identity::revocation_of(entry, &kept))
+                    .is_some();
                 // Every device of the person's but this one: this device asks the others, and
                 // holds the half like any other, so a person with two has one to ask at boot.
                 (kept.user_public_key == cert.user_public_key

@@ -686,7 +686,9 @@ impl Personal {
             .map(|devices| devices.get().listed(&person))
             .unwrap_or_default()
             .into_iter()
-            .filter(|listed| listed.device.kind == KeyKind::Device && !listed.device.revoked)
+            .filter(|listed| {
+                listed.device.kind == KeyKind::Device && !listed.device.revoked(&listed.cert)
+            })
             .map(|listed| {
                 (
                     listed.cert.device_public_key,

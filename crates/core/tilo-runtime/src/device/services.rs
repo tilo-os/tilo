@@ -980,8 +980,8 @@ impl Daemon {
             tilo_rt::app().handle(),
         );
         apps.device_grants().keep_in(std::sync::Arc::new(personal));
-        // The person's devices, as the record of their own workspace and the revocations their
-        // hosts keep answer: what `tilo-identity` admits a device by, and the one copy of it.
+        // The person's devices, as the record of their own workspace holds them, each revocation
+        // the root's own signature: what `tilo-identity` admits a device by, and the one copy of it.
         let devices = std::sync::Arc::new(tilo_identity::sources::DevicesTrust::new());
         devices.reading({
             let workspaces = std::sync::Arc::downgrade(&workspaces);

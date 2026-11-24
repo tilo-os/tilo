@@ -77,7 +77,8 @@ impl Workspaces {
     }
 
     /// Mark the device `entry` names taken back in its person's record, where
-    /// this host holds it and the record holds that device of theirs: every
+    /// this host holds it and the record holds that device of theirs: the
+    /// root-signed entry is kept in the entry of the device it names, and every
     /// list of their devices shows it revoked.
     pub(super) async fn mark_revoked(&self, entry: &RevocationEntry) {
         let person = entry.user_public_key;
@@ -86,15 +87,12 @@ impl Workspaces {
         let held = devices
             .listed(&person)
             .into_iter()
-            .any(|listed| listed.key == key && !listed.device.revoked);
+            .any(|listed| listed.key == key && !listed.device.revoked(&listed.cert));
         if !held {
             return;
         }
-        if let Err(error) = self
-            .apply_devices(&person, Devices::REVOKE_DEVICE.with(key))
-            .await
-        {
-            tracing::warn!(%error, "a revoked device is not marked in its person's record");
+        if let Err(error) = devices::revoke(self, &person, entry).await {
+            tracing::warn!(%error, "a revoked device is not kept in its person's record");
         }
         self.refresh_names(&person).await;
     }
@@ -334,16 +332,15 @@ impl Workspaces {
 
     /// Bring the names the host answers a pairing from up to date with
     /// `person`'s devices as their own workspace lists them, each marked
-    /// where it was taken back.
+    /// where their root's revocation of it holds.
     async fn refresh_names(&self, person: &[u8; 32]) {
-        let revocations = self.revocations();
         let known: DeviceNames = self
             .devices_of(person)
             .await
             .listed(person)
             .into_iter()
             .map(|listed| {
-                let refused = listed.device.revoked || revocations.refuses(&listed.cert);
+                let refused = listed.device.revoked(&listed.cert);
                 (listed.key, (listed.device.called(&listed.cert), refused))
             })
             .collect();

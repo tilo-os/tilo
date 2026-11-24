@@ -44,9 +44,9 @@ pub trait GroupKeySource: collab_types::signer::MaybeSendSync + 'static {
     }
 }
 
-/// The person's devices as the running host knows them: the keys their root certified and the
-/// ones it took back, from the record of their own workspace and the revocations their hosts
-/// keep.
+/// The person's devices as the running host knows them: the keys their root certified and the ones
+/// it took back, from the record of their own workspace, each revocation the root's own signature
+/// verified there.
 ///
 /// A host installs its answer once ([`install_device_trust`]); this crate asks it wherever it
 /// admits a device, so a device the person revoked is refused at the next call and nothing keeps
@@ -88,39 +88,52 @@ pub fn device_trust() -> Option<&'static Arc<dyn DeviceTrust>> {
 }
 
 /// The person's devices as a host read them from the record that holds them: the keys their root
-/// certified, the ones it took back, and the revocations it signed, for `person`.
+/// certified and the revocations it signed, for `person`.
 ///
 /// A host gathers one of these from its own copy of their record; [`DevicesTrust`] answers every
 /// admission from it, so a daemon that keeps the record and a session that reads the record from
-/// that daemon answer the same way.
+/// that daemon answer the same way. A revocation is the root's own signature, checked as the record
+/// is read; one that does not verify is left out and refuses nothing.
 #[derive(Clone, Debug)]
 pub struct DevicesSeen {
     /// The person whose devices were read.
     pub person: [u8; 32],
     /// The keys their root certified, as the record lists them.
     pub certified: BTreeSet<[u8; 32]>,
-    /// The keys the record marks taken back.
-    pub revoked: BTreeSet<[u8; 32]>,
-    /// The revocations their root signed, as the host holding them keeps them.
+    /// The revocations their root signed, as the record holds them: the keys they name are the
+    /// ones this host refuses.
     pub revocations: Vec<RevocationEntry>,
 }
 
 impl DevicesSeen {
-    /// What a host holds of `person`'s devices: the keys the record lists, the ones it marks
-    /// taken back, and the revocations their root signed.
+    /// What a host holds of `person`'s devices: the keys the record lists, and the revocations
+    /// their root signed there. An entry that root did not sign, or one about another person, is
+    /// dropped here, so nothing below this seam can take an unverified claim for a revocation.
     #[must_use]
     pub fn of_host(
         person: [u8; 32],
         certified: impl IntoIterator<Item = [u8; 32]>,
-        revoked: impl IntoIterator<Item = [u8; 32]>,
-        revocations: Vec<RevocationEntry>,
+        revocations: impl IntoIterator<Item = RevocationEntry>,
     ) -> Self {
         Self {
             person,
             certified: certified.into_iter().collect(),
-            revoked: revoked.into_iter().collect(),
-            revocations,
+            revocations: revocations
+                .into_iter()
+                .filter(|entry| {
+                    entry.user_public_key == person
+                        && tilo_user_identity::verify_revocation_entry(entry).is_ok()
+                })
+                .collect(),
         }
+    }
+
+    /// Whether the root of `person` took `device` back, as the entries the record holds say.
+    #[must_use]
+    pub fn revoked(&self, device: &[u8; 32]) -> bool {
+        self.revocations
+            .iter()
+            .any(|entry| entry.revoked_device_public_key == *device)
     }
 
     /// A number that changes whenever what this answers changes: a cache of something derived
@@ -131,10 +144,6 @@ impl DevicesSeen {
         hasher.update(&self.person);
         for key in &self.certified {
             hasher.update(b"certified");
-            hasher.update(key);
-        }
-        for key in &self.revoked {
-            hasher.update(b"revoked");
             hasher.update(key);
         }
         // The host keeps revocations in whatever order it read them: what they say, not the
@@ -199,7 +208,7 @@ impl DevicesTrust {
 impl DeviceTrust for DevicesTrust {
     fn revoked(&self, person: &[u8; 32], device: &[u8; 32]) -> Option<bool> {
         let seen = self.seen()?;
-        (seen.person == *person).then(|| seen.revoked.contains(device))
+        (seen.person == *person).then(|| seen.revoked(device))
     }
 
     fn enrolled(&self, cert: &DeviceCert) -> Option<bool> {

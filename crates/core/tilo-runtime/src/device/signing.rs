@@ -16,10 +16,9 @@ use tilo_user_identity::{
     device_cert_signing_digest,
 };
 use tilo_workspace_service::workspaces::{Workspaces, person_workspace};
-use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
 
-use super::workspaces::{ServiceWorkspaces, block_on_owned};
 use super::services::root_record;
+use super::workspaces::{ServiceWorkspaces, block_on_owned};
 
 /// How long an agent's grant this daemon certifies lasts, and how much of it may be left when it
 /// is certified again.
@@ -61,7 +60,8 @@ pub(crate) fn sign_tab(tab: &tilo_device_identity::login::Tab) -> io::Result<Dev
 }
 
 /// The daemon's `devices#personalDevices` answer: the person's devices as their record lists them,
-/// the revocations their root signed, and whether this daemon keeps that root.
+/// each with the revocation their root signed and kept there, and whether this daemon keeps that
+/// root.
 ///
 /// # Errors
 /// This daemon holds no workspace service, or its root cannot be read.
@@ -70,15 +70,9 @@ pub fn personal_devices(workspaces: Option<&Arc<ServiceWorkspaces>>) -> io::Resu
         workspaces.ok_or_else(|| io::Error::other("this daemon holds no workspaces"))?;
     let copies = workspaces.copies().clone();
     let person = copies.serving_certificate().user_public_key;
-    let devices = block_on_owned(async move { person_workspace::devices::of(&copies, &person).await });
+    let devices =
+        block_on_owned(async move { person_workspace::devices::of(&copies, &person).await });
     let listed = devices.listed(&person);
-    let revocations = workspaces
-        .copies()
-        .revocations()
-        .iter()
-        .filter(|entry| entry.user_public_key == person)
-        .map(|entry| hex::encode(postcard::to_allocvec(entry).unwrap_or_default()))
-        .collect::<Vec<_>>();
     Ok(json!({
         "person": hex::encode(person),
         "key_holder": root_record().is_ok(),
@@ -86,10 +80,15 @@ pub fn personal_devices(workspaces: Option<&Arc<ServiceWorkspaces>>) -> io::Resu
             .iter()
             .map(|listed| json!({
                 "certificate": hex::encode(postcard::to_allocvec(&listed.cert).unwrap_or_default()),
-                "revoked": listed.device.revoked,
+                // The root's own signature over this device, kept in the record's entry of it:
+                // a reader takes it only after checking it against the root the certificate names.
+                "revocation": listed
+                    .device
+                    .revocation(&listed.cert)
+                    .and_then(|entry| postcard::to_allocvec(&entry).ok())
+                    .map(hex::encode),
             }))
             .collect::<Vec<_>>(),
-        "revocations": revocations,
     }))
 }
 
@@ -117,8 +116,7 @@ pub(crate) async fn certify_agent_in(
     let listed = devices.listed(&person);
     if listed
         .iter()
-        .any(|listed| listed.cert.device_public_key == grant && listed.device.revoked)
-        || copies.revocations().is_revoked(&person, &grant)
+        .any(|listed| listed.cert.device_public_key == grant && listed.device.revoked(&listed.cert))
     {
         return Ok(AgentCertified {
             identity,
@@ -218,9 +216,10 @@ pub fn certify_agent(
     if certified.revoked {
         return Ok(json!({ "revoked": true }));
     }
-    let cert = certified.cert.as_ref().ok_or_else(|| {
-        io::Error::other("the person's root gave no certificate for the key")
-    })?;
+    let cert = certified
+        .cert
+        .as_ref()
+        .ok_or_else(|| io::Error::other("the person's root gave no certificate for the key"))?;
     let cert = tilo_user_identity::canonical::canonical_bytes(cert)
         .map_err(|error| io::Error::other(error.to_string()))?;
     Ok(json!({
@@ -253,9 +252,8 @@ pub fn enrol_boot_key(
     let workspaces =
         workspaces.ok_or_else(|| io::Error::other("this daemon holds no workspaces"))?;
     let copies = workspaces.copies().clone();
-    let devices = block_on_owned(async move {
-        person_workspace::devices::of(&copies, &person).await
-    });
+    let devices =
+        block_on_owned(async move { person_workspace::devices::of(&copies, &person).await });
     let enrollee = args
         .get("device")
         .and_then(Value::as_str)
@@ -347,8 +345,9 @@ pub fn release_half(args: &Value) -> io::Result<Value> {
             .and_then(Value::as_str)
             .ok_or_else(|| io::Error::other(format!("{field} is needed")))
     };
-    let cert: DeviceCert = postcard::from_bytes(&hex::decode(entry("cert")?).unwrap_or_default())
-        .map_err(|error| io::Error::other(format!("the boot key's certificate: {error}")))?;
+    let cert: DeviceCert =
+        postcard::from_bytes(&hex::decode(entry("cert")?).unwrap_or_default())
+            .map_err(|error| io::Error::other(format!("the boot key's certificate: {error}")))?;
     let sealed: SealedSiblingHalf =
         postcard::from_bytes(&hex::decode(entry("sealed_half")?).unwrap_or_default())
             .map_err(|error| io::Error::other(format!("the sealed half: {error}")))?;
@@ -379,7 +378,10 @@ pub fn release_half(args: &Value) -> io::Result<Value> {
 ///
 /// # Errors
 /// This daemon keeps no root, the ask does not read, or it could not sign.
-pub fn answer_sign_in(keys: &tilo_device_identity::IdentityPaths, args: &Value) -> io::Result<Value> {
+pub fn answer_sign_in(
+    keys: &tilo_device_identity::IdentityPaths,
+    args: &Value,
+) -> io::Result<Value> {
     use tilo_server_client::certification::{GrantAsk, SignInAsk, answer_sign_in};
     let text = |field: &str| -> io::Result<String> {
         args.get(field)
@@ -436,16 +438,17 @@ pub fn answer_sign_in(keys: &tilo_device_identity::IdentityPaths, args: &Value) 
         .map_err(|error| io::Error::other(error.to_string()))?;
     let cert = tilo_device_identity::persist::read_device_cert(&keys.device_cert)
         .map_err(|error| io::Error::other(error.to_string()))?;
-    let signed = block_on_owned(async move {
-        answer_sign_in(&root, &device, &cert.device_label, &ask).await
-    })
-    .map_err(|error| io::Error::other(error.to_string()))?;
+    let signed =
+        block_on_owned(
+            async move { answer_sign_in(&root, &device, &cert.device_label, &ask).await },
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
     Ok(json!({ "proof": signed.proof, "grant": signed.grant }))
 }
 
 /// The person's devices as this daemon holds them for `tilo-identity`
-/// ([`tilo_identity::sources::DeviceTrust`]): the record's marks and the revocations its hosts
-/// keep, as the workspace service read them.
+/// ([`tilo_identity::sources::DeviceTrust`]): the record's entries, each revocation verified against
+/// the root that signed it, as the workspace service read them.
 pub(crate) fn devices_seen(workspaces: &ServiceWorkspaces) -> tilo_identity::sources::DevicesSeen {
     let copies = workspaces.copies();
     let person = copies.serving_certificate().user_public_key;
@@ -453,13 +456,7 @@ pub(crate) fn devices_seen(workspaces: &ServiceWorkspaces) -> tilo_identity::sou
     tilo_identity::sources::DevicesSeen::of_host(
         person,
         keys.certified_keys().copied(),
-        keys.revoked_keys().copied(),
-        copies
-            .revocations()
-            .iter()
-            .filter(|entry| entry.user_public_key == person)
-            .cloned()
-            .collect(),
+        keys.revocations().iter().cloned(),
     )
 }
 
@@ -509,15 +506,14 @@ impl tilo_workspace_service::agents::agent_keys::AgentGrants for GrantsOf {
             .workspaces
             .upgrade()
             .ok_or("this computer's daemon holds no workspaces")?;
-        Ok(workspaces
-            .copies()
+        let keys = workspaces.copies().blocked_keys();
+        Ok(keys
             .revocations()
             .iter()
-            .filter(|entry| {
+            .find(|entry| {
                 entry.user_public_key == *person && entry.revoked_device_public_key == *key
             })
-            .cloned()
-            .next())
+            .cloned())
     }
 }
 
@@ -526,4 +522,3 @@ impl tilo_workspace_service::agents::agent_keys::AgentGrants for GrantsOf {
 pub use tilo_device_identity::login::{
     ANSWER_SIGN_IN, ENROL_BOOT_KEY, PERSONAL_DEVICES, RELEASE_HALF,
 };
-

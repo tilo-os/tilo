@@ -49,7 +49,7 @@ impl Refusal {
 }
 
 /// The person's devices: every device their identity root certified, less the
-/// revocations from that root this host holds.
+/// ones their root's revocation in the person's devices record refuses.
 #[derive(Clone)]
 pub struct PersonalDevices {
     workspaces: Workspaces,
@@ -59,7 +59,7 @@ pub struct PersonalDevices {
 
 impl PersonalDevices {
     /// The devices of the person `this`, this device's own certificate, names, with the
-    /// revocations `workspaces`, this device's own service, holds.
+    /// revocations the record of their devices in `workspaces`, this device's own service, holds.
     #[must_use]
     pub fn new(workspaces: Workspaces, this: &DeviceCert) -> Self {
         Self {
@@ -80,15 +80,20 @@ impl PersonalDevices {
         tilo_user_identity::verify_device_cert_at(certificate, now_ns(SystemTime::now()))
             .map_err(|error| Refusal::NotCertified(error.to_string()))?;
         // A grant a revoked device minted ends with it.
-        if self.revocations().refuses(certificate) {
+        if self.workspaces.blocked_keys().revokes(certificate) {
             return Err(Refusal::Revoked);
         }
         Ok(())
     }
 
-    /// The revocations this device's own service holds.
+    /// The revocations the record of the person's devices holds, as a verifier takes them: each
+    /// entry the root signed, checked into a list as it is read.
     pub(crate) fn revocations(&self) -> RevocationList {
-        self.workspaces.revocations()
+        let mut list = RevocationList::new();
+        for entry in self.workspaces.blocked_keys().revocations() {
+            let _ = list.insert(entry.clone());
+        }
+        list
     }
 }
 

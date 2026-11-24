@@ -22,14 +22,16 @@
 //! again until the operator unblocks it.
 //!
 //! A device the person took back is refused the same way: the record of their
-//! devices ([`DEVICES`]) marks it revoked, and every host that holds that
-//! record reads the mark with the blocked keys and refuses the key as revoked
-//! once the change arrives, on every protocol, until its certificate ends.
+//! devices ([`DEVICES`]) holds the root-signed revocation of it, and every host
+//! that holds that record reads the entry with the blocked keys and refuses the
+//! key as revoked once the change arrives, on every protocol, until its
+//! certificate ends.
 
 use std::collections::BTreeSet;
 
 use tilo_lock::RwLockRecover as _;
 use tilo_resource::{Collection, Id, Model, Refusal, resource};
+use tilo_user_identity::RevocationEntry;
 
 use super::Workspaces;
 use super::person_workspace;
@@ -104,15 +106,18 @@ fn key_id(text: &str) -> Result<Id, Refusal> {
 }
 
 /// The keys this host refuses now, as the records say them: those the operator
-/// blocks, and the devices of theirs the record of their devices marks revoked.
-/// It holds what that record certifies too, so a host asked whether a key is one
-/// of the person's answers from here ([`crate::sources`] is filled from it).
+/// blocks, and the devices of theirs the record of their devices holds a
+/// revocation for. It holds what that record certifies too, so a host asked
+/// whether a key is one of the person's answers from here ([`crate::sources`] is
+/// filled from it).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockedKeys {
     devices: BTreeSet<[u8; 32]>,
     users: BTreeSet<[u8; 32]>,
-    revoked: BTreeSet<[u8; 32]>,
     certified: BTreeSet<[u8; 32]>,
+    /// The root-signed revocations the record of the person's devices holds, each checked
+    /// against the root that certified the device it names.
+    revocations: Vec<RevocationEntry>,
 }
 
 impl BlockedKeys {
@@ -129,14 +134,14 @@ impl BlockedKeys {
         Self {
             devices: keys(&state.devices),
             users: keys(&state.users),
-            revoked: BTreeSet::new(),
             certified: BTreeSet::new(),
+            revocations: Vec::new(),
         }
     }
 
-    /// What the record of `person`'s devices says: the keys their root certified, and the ones it
-    /// took back. Nothing blocked: each key is the one its root certified, so an entry another
-    /// root signed counts for nothing.
+    /// What the record of `person`'s devices says: the keys their root certified, and the entries
+    /// it signed for them. Nothing blocked: each key is the one its root certified, and an entry
+    /// another root signed counts for nothing.
     #[must_use]
     pub(crate) fn revoking(record: &Devices, person: &[u8; 32]) -> Self {
         let listed = record.listed(person);
@@ -145,11 +150,7 @@ impl BlockedKeys {
                 .iter()
                 .map(|listed| listed.cert.device_public_key)
                 .collect(),
-            revoked: listed
-                .into_iter()
-                .filter(|listed| listed.device.revoked)
-                .map(|listed| listed.cert.device_public_key)
-                .collect(),
+            revocations: record.revocations(person),
             ..Self::default()
         }
     }
@@ -159,15 +160,18 @@ impl BlockedKeys {
         self.certified.iter()
     }
 
-    /// The keys the record of the person's devices marks taken back.
-    pub fn revoked_keys(&self) -> impl Iterator<Item = &[u8; 32]> {
-        self.revoked.iter()
+    /// The revocations the record of the person's devices holds, each the root's own signature.
+    #[must_use]
+    pub fn revocations(&self) -> &[RevocationEntry] {
+        &self.revocations
     }
 
     /// Whether the root of the person's devices took `device` back.
     #[must_use]
     pub fn revokes_key(&self, device: &[u8; 32]) -> bool {
-        self.revoked.contains(device)
+        self.revocations
+            .iter()
+            .any(|entry| entry.revoked_device_public_key == *device)
     }
 
     /// Whether the record of the person's devices holds `device`.
@@ -183,9 +187,17 @@ impl BlockedKeys {
         let mut generation = (self.devices.len() as u64)
             ^ ((self.users.len() as u64) << 8)
             ^ ((self.certified.len() as u64) << 16)
-            ^ ((self.revoked.len() as u64) << 24);
-        for key in self.certified.iter().chain(&self.revoked) {
-            let head = u64::from_le_bytes(key.get(..8).and_then(|head| head.try_into().ok()).unwrap_or_default());
+            ^ ((self.revocations.len() as u64) << 24);
+        for key in self.certified.iter().chain(
+            self.revocations
+                .iter()
+                .map(|entry| &entry.revoked_device_public_key),
+        ) {
+            let head = u64::from_le_bytes(
+                key.get(..8)
+                    .and_then(|head| head.try_into().ok())
+                    .unwrap_or_default(),
+            );
             generation = generation.rotate_left(1) ^ head;
         }
         generation
@@ -197,14 +209,14 @@ impl BlockedKeys {
         self.devices.contains(device) || self.users.contains(user)
     }
 
-    /// Whether the record of the person's keys marks `cert` revoked: its own key, or the grant
-    /// key that minted it, since a minted key is that grant narrowed and never outlives it.
+    /// Whether the record of the person's devices holds a revocation for `cert`: its own key, or
+    /// the grant key that minted it, since a minted key is that grant narrowed and never outlives
+    /// it.
     #[must_use]
-    pub(crate) fn revokes(&self, cert: &tilo_user_identity::DeviceCert) -> bool {
-        self.revoked.contains(&cert.device_public_key)
+    pub fn revokes(&self, cert: &tilo_user_identity::DeviceCert) -> bool {
+        self.revokes_key(&cert.device_public_key)
             || cert.issuer.as_ref().is_some_and(|issuer| {
-                issuer.capabilities.agent.is_some()
-                    && self.revoked.contains(&issuer.device_public_key)
+                issuer.capabilities.agent.is_some() && self.revokes_key(&issuer.device_public_key)
             })
     }
 }
@@ -258,7 +270,7 @@ impl Workspaces {
         }
         if let Ok(record) = devices {
             let of = BlockedKeys::revoking(&record, &self.serving_certificate().user_public_key);
-            (next.certified, next.revoked) = (of.certified, of.revoked);
+            (next.certified, next.revocations) = (of.certified, of.revocations);
         }
         self.keep_blocked(next);
     }

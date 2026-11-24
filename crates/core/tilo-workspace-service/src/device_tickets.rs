@@ -102,11 +102,6 @@ pub trait Issuer: Send + Sync + 'static {
         Vec::new()
     }
 
-    /// Keep `entry`, a revocation the person's root just signed here, where this device keeps
-    /// what its root signed: nowhere by default. The hosts refuse the key by the record of the
-    /// person's devices, which the revocation marks.
-    fn keep_revocation(&self, _entry: &tilo_user_identity::RevocationEntry) {}
-
     /// Take the certified computer `cert` in as `role`: by default through [`Self::servers`].
     fn admit<'a>(
         &'a self,

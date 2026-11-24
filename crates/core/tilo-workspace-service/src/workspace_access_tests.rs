@@ -829,12 +829,11 @@ fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
     );
 }
 
-/// A device the record of its person's devices marks revoked is refused as
-/// revoked, as the mark arrives and with no signed entry on the list: the
-/// record is what a host refuses it by. A mark on an entry another root
-/// certified revokes nothing.
+/// A device the record of its person's devices holds the root's revocation for is refused as
+/// revoked, as the entry arrives. The root of that record signs nothing about another person's
+/// device, so a record holding an entry it did not sign refuses nothing.
 #[test]
-fn a_device_the_persons_record_marks_revoked_is_refused() {
+fn a_device_the_persons_record_holds_a_revocation_for_is_refused() {
     use crate::workspaces::blocked::BlockedKeys;
     use crate::workspaces::person_workspace::devices::Devices;
 
@@ -847,39 +846,61 @@ fn a_device_the_persons_record_marks_revoked_is_refused() {
         1_000,
     );
     let person = laptop.user_public_key;
+    let revoking = |root: &SigningKey, device: [u8; 32]| {
+        let mut entry = RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: device,
+            revoked_at_ns: 1,
+            reason: RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, root).expect("the root signs");
+        hex::encode(postcard::to_allocvec(&entry).expect("the entry encodes"))
+    };
     let mut record = Devices::default();
     for cert in [&laptop, &stranger] {
-        let key = hex::encode(cert.device_public_key);
         record
             .keep_device(
-                key.clone(),
-                hex::encode(postcard::to_allocvec(cert).unwrap()),
+                hex::encode(cert.device_public_key),
+                hex::encode(postcard::to_allocvec(cert).expect("the certificate encodes")),
             )
             .expect("the record keeps the device");
-        record
-            .revoke_device(key)
-            .expect("the record marks the device");
     }
+    record
+        .revoke_device(
+            hex::encode(laptop.device_public_key),
+            revoking(&root, laptop.device_public_key),
+        )
+        .expect("the root's entry takes the laptop back");
+    assert!(
+        record
+            .revoke_device(
+                hex::encode(stranger.device_public_key),
+                revoking(&root, stranger.device_public_key),
+            )
+            .is_err(),
+        "only the root that certified a device revokes it"
+    );
     let on = |cert: &DeviceCert| peer(cert.user_public_key, cert.device_public_key, true, None);
     assert_ne!(
         server.trust().cert(&on(&laptop), NOW),
         Err(DenyReason::Revoked),
-        "nothing refuses the laptop before the mark arrives"
+        "nothing refuses the laptop before the record's entry arrives"
     );
 
     *server.blocked.write().unwrap() = BlockedKeys::revoking(&record, &person);
     assert_eq!(
         server.trust().cert(&on(&laptop), NOW),
         Err(DenyReason::Revoked),
-        "the marked laptop is refused as revoked"
+        "the record's root-signed entry is what refuses the laptop"
     );
     assert!(
         server.revocations.read().unwrap().is_empty(),
-        "no signed entry told this host"
+        "the record is the one place the revocation is kept"
     );
     assert_ne!(
         server.trust().cert(&on(&stranger), NOW),
         Err(DenyReason::Revoked),
-        "a mark on a key another root certified revokes nothing"
+        "an entry naming a device another root certified revokes nothing"
     );
 }

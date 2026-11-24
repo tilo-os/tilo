@@ -73,7 +73,6 @@ pub mod canonical;
 pub mod cert;
 pub mod certification;
 pub mod clock;
-pub mod workspace_list;
 pub mod endpoint_delegation;
 pub mod fleet;
 pub mod image;
@@ -84,6 +83,7 @@ pub mod root_statement;
 pub mod sign;
 pub mod sign_in;
 pub mod signed_approval;
+pub mod workspace_list;
 
 pub use approval::{
     APPROVAL_REQUEST_TAG, APPROVAL_RESPONSE_TAG, APPROVAL_SCHEMA_VERSION, ApprovalError,
@@ -107,7 +107,6 @@ pub use certification::{
     verify_issued_cert,
 };
 pub use clock::CertificateClockError;
-pub use workspace_list::{ListedWorkspace, WorkspaceList};
 pub use endpoint_delegation::{
     ENDPOINT_DELEGATION_PREIMAGE_TAG, EndpointDelegation, EndpointDelegationError,
     MAX_LIFETIME_NS as MAX_ENDPOINT_DELEGATION_LIFETIME_NS, sign_endpoint_delegation,
@@ -132,14 +131,15 @@ pub use projection::{
 };
 pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
-    revocation_signing_digest, sign_revocation_entry, sign_revocation_entry_async,
-    verify_revocation_entry,
+    revocation_of, revocation_signing_digest, revokes, sign_revocation_entry,
+    sign_revocation_entry_async, verify_revocation_entry,
 };
 pub use sign::{CallbackSigner, SignError, StatementSigner};
 pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, agent_endpoint_audience, sign_in_digest};
 pub use signed_approval::{
     Answered, HOST_APPROVAL_PREIMAGE_TAG, HostApproval, HostApprovalError, Parties,
 };
+pub use workspace_list::{ListedWorkspace, WorkspaceList};
 
 use serde::{Deserialize, Serialize};
 

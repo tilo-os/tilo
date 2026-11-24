@@ -148,7 +148,7 @@ impl TicketedAgentKeys {
                 )
                 .ok()
             })
-            .is_some_and(|cert| workspaces.revocations().refuses(&cert));
+            .is_some_and(|cert| workspaces.blocked_keys().revokes(&cert));
         if revoked {
             return;
         }
@@ -258,7 +258,8 @@ impl AgentKeys for TicketedAgentKeys {
             .workspaces
             .upgrade()
             .ok_or("this device's workspaces stopped")?;
-        let entry = workspaces
+        let keys = workspaces.blocked_keys();
+        let entry = keys
             .revocations()
             .iter()
             .find(|entry| {
@@ -404,12 +405,12 @@ fn granted(
     Ok(())
 }
 
-/// Whether `cert` holds now on `workspaces`' device: it verifies, has not run out, and no
-/// revocation the device holds from the person's root refuses it.
+/// Whether `cert` holds now on `workspaces`' device: it verifies, has not run out, and the record
+/// of the person's devices holds no root-signed revocation of it.
 fn holds(cert: &DeviceCert, workspaces: &crate::workspaces::Workspaces) -> Result<(), String> {
     tilo_user_identity::verify_device_cert_at(cert, tilo_clock::unix_now_ns())
         .map_err(|error| format!("the certificate of the key does not hold: {error}"))?;
-    if workspaces.revocations().refuses(cert) {
+    if workspaces.blocked_keys().revokes(cert) {
         return Err("the agent's person revoked the key".to_owned());
     }
     Ok(())

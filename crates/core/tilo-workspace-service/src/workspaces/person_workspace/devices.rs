@@ -6,23 +6,25 @@
 //! answers who a key is; what it may do stays in each workspace's grants.
 //!
 //! Each entry holds the device's certificate, the name the person gave it, the
-//! agent it runs and whether their root took it back: what every list of their
-//! devices reads, on any device of theirs, with whether it is online now from
-//! presence beside it. Each device writes its own facts (what it is, its
-//! speaker groups, its disk unlock, when it was last with a host), each the
+//! agent it runs and the revocation their root signed for it: what every list
+//! of their devices reads, on any device of theirs, with whether it is online
+//! now from presence beside it. Each device writes its own facts (what it is,
+//! its speaker groups, its disk unlock, when it was last with a host), each the
 //! postcard bytes of its type in hex under its name, and a Wi-Fi passphrase one
 //! of them learned is kept for all of them, sealed to the devices that may open
 //! it. The workspace carries all of it to every device of the person, a device
 //! that comes up later included.
 //!
-//! The device that keeps the person's root is marked so, signed by that root as
-//! a revocation is ([`Devices::mark_root_holder`]): what the person's other
-//! devices, which keep none, are capped by, and where they leave what only the
-//! root signs to be answered.
+//! What the person's root signs lives in their record: the mark of the device
+//! that keeps it ([`Devices::mark_root_holder`]) and the revocation of one it
+//! takes back ([`Devices::revoke_device`]), each a signature a reader checks
+//! against that root where it reads the record. A revocation is kept once, in
+//! the entry of the device it names, and an entry anything else signed is no
+//! revocation and every reader leaves it out.
 
 use tilo_resource::{Collection, Id, Model, Refusal, resource};
-use tilo_user_identity::DeviceCert;
 use tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
+use tilo_user_identity::{DeviceCert, RevocationEntry, revocation_of, revokes};
 
 /// The resource of the person's devices in their own workspace.
 pub const DEVICES: (&str, &str) = ("so.tilo.devices", "devices");
@@ -99,9 +101,10 @@ pub struct Device {
     /// The agent the key runs ("Claude Code"), as the sessions it opened said:
     /// a computer set up with `tilo login` is a device an agent works on.
     pub agent: Option<String>,
-    /// The person's root took it back ([`Devices::revoke_device`]): it stays
-    /// listed, marked, and every device of theirs refuses it.
-    pub revoked: bool,
+    /// The revocation the person's root signed for it, postcard in hex
+    /// ([`Devices::revoke_device`]): it stays listed, marked, and every device of theirs refuses
+    /// it. A reader verifies it against that root ([`Device::revocation`]).
+    pub revocation: Option<String>,
     /// It keeps the person's root: their root's signature over
     /// [`root_holder_digest`] of its key, hex ([`Devices::mark_root_holder`]).
     pub keeps_root: Option<String>,
@@ -126,6 +129,23 @@ impl Device {
         self.keeps_root
             .as_deref()
             .is_some_and(|signature| root_signed(cert, signature))
+    }
+
+    /// The revocation the person's root signed for it, when the entry the record holds verifies
+    /// against that root: one anything else signed, or one naming another root or another device,
+    /// is no revocation and reads as none.
+    #[must_use]
+    pub fn revocation(&self, cert: &DeviceCert) -> Option<RevocationEntry> {
+        tilo_failure::ignored!(
+            "a revocation in the person's devices record is the root's own signature",
+            revocation_of(self.revocation.as_deref()?, cert)
+        )
+    }
+
+    /// Whether the person's root took it back, as the entry the record holds says.
+    #[must_use]
+    pub fn revoked(&self, cert: &DeviceCert) -> bool {
+        self.revocation(cert).is_some()
     }
 
     /// What a list calls it: the name the person gave it, else `cert`'s label.
@@ -178,8 +198,20 @@ impl Devices {
     pub fn root_holders(&self, person: &[u8; 32]) -> Vec<[u8; 32]> {
         self.listed(person)
             .into_iter()
-            .filter(|listed| !listed.device.revoked && listed.device.keeps_root(&listed.cert))
+            .filter(|listed| {
+                !listed.device.revoked(&listed.cert) && listed.device.keeps_root(&listed.cert)
+            })
             .map(|listed| listed.cert.device_public_key)
+            .collect()
+    }
+
+    /// The revocations the record holds, each verified against the root that certified the device
+    /// it names: an entry that does not verify is left out, never trusted.
+    #[must_use]
+    pub fn revocations(&self, person: &[u8; 32]) -> Vec<RevocationEntry> {
+        self.listed(person)
+            .into_iter()
+            .filter_map(|listed| listed.device.revocation(&listed.cert))
             .collect()
     }
 
@@ -261,9 +293,10 @@ impl Devices {
         let taken = self
             .devices
             .iter()
-            .filter(|(id, other)| id.as_str() != device && !other.revoked)
-            .filter_map(|(_, other)| other.cert().map(|cert| other.called(&cert)))
-            .any(|label| label == name);
+            .filter(|(id, _)| id.as_str() != device)
+            .filter_map(|(_, other)| other.cert().map(|cert| (other, cert)))
+            .filter(|(other, cert)| !other.revoked(cert))
+            .any(|(other, cert)| other.called(&cert) == name);
         if taken {
             return Err(Refusal::new(format!(
                 "another of your devices is already called “{name}”"
@@ -297,15 +330,35 @@ impl Devices {
         Ok(())
     }
 
-    /// Mark `device` taken back: the person's root revoked it, and every host
-    /// that holds this record refuses it from the moment the mark arrives.
+    /// Mark `device` taken back with `revocation`, the entry the person's root signed over it
+    /// (postcard in hex, [`RevocationEntry`]): checked against the root its certificate names, so
+    /// only that root's own signature marks one of their devices, and every host that holds this
+    /// record refuses the device from the moment the entry arrives.
     #[action]
-    pub fn revoke_device(&mut self, device: String) -> Result<(), Refusal> {
+    pub fn revoke_device(&mut self, device: String, revocation: String) -> Result<(), Refusal> {
         let kept = self
             .devices
             .get_mut(&Id::from_raw(device))
             .ok_or_else(|| Refusal::new("that key is not one of your devices"))?;
-        kept.revoked = true;
+        validate_hex(&revocation)?;
+        let entry: RevocationEntry = hex::decode(&revocation)
+            .map_err(|error| {
+                Refusal::new(format!("a revocation is postcard bytes in hex: {error}"))
+            })
+            .and_then(|bytes| {
+                postcard::from_bytes(&bytes).map_err(|error| {
+                    Refusal::new(format!("a revocation is a signed entry: {error}"))
+                })
+            })?;
+        let cert = kept
+            .cert()
+            .ok_or_else(|| Refusal::new("that device's certificate does not read"))?;
+        if !revokes(&entry, &cert) {
+            return Err(Refusal::new(
+                "only the person's root revokes one of their devices",
+            ));
+        }
+        kept.revocation = Some(revocation);
         Ok(())
     }
 
@@ -385,13 +438,36 @@ impl Devices {
 
 /// Keep `cert`, a key the person's root certified on this device, in the record of their own
 /// workspace `workspaces` holds: the one way a device, an agent's grant and a script's key alike
-/// become an entry every device of theirs lists, and revokes by its mark.
+/// become an entry every device of theirs lists, and where a revocation their root signed waits.
 ///
 /// # Errors
 /// The certificate does not encode, this device holds no copy of the person's workspace, or the
 /// record refused it.
 pub async fn keep(workspaces: &super::Workspaces, cert: &DeviceCert) -> Result<(), String> {
     super::apply(workspaces, DEVICES, Devices::keeping(cert)?).await
+}
+
+/// Keep `entry`, the root of `person`'s revocation of one of their devices, in the record of their
+/// own workspace `workspaces` holds: the one way a device becomes one every host of theirs refuses.
+///
+/// # Errors
+/// The entry does not encode, this device holds no copy of their workspace, or the record refused
+/// the entry.
+pub async fn revoke(
+    workspaces: &super::Workspaces,
+    person: &[u8; 32],
+    entry: &RevocationEntry,
+) -> Result<(), String> {
+    let key = hex::encode(entry.revoked_device_public_key);
+    let entry = hex::encode(postcard::to_allocvec(entry).map_err(|error| error.to_string())?);
+    let workspace = tilo_server_protocol::servers::person_workspace_id(person);
+    super::apply_on(
+        workspaces,
+        &workspace,
+        DEVICES,
+        Devices::REVOKE_DEVICE.with((key, entry)),
+    )
+    .await
 }
 
 /// The record of `person`'s devices as `workspaces` holds it: empty where this device holds no
