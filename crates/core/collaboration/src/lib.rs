@@ -172,7 +172,7 @@ pub use broker::SessionServices;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
     EndpointChannelKeys, SessionResource, display_control, has_resource_connection,
-    resource_command, wifi_continuity_command,
+    resource_command,
 };
 // Committed reads live with the broker worker that retains them. Without the
 // broker transport no committed capture can exist, but the type stays part of
@@ -251,13 +251,10 @@ mod portable_committed {
 pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 
 pub use collab_types::{CommitAuthor, CommitPart, DocumentMutation, UnitMutation, WorkspaceCommit};
+pub use runtime_collab::NearbyTransferPhase;
 /// The verb an app publishes a check its project's host approved under, whatever language the
 /// app is written in: the broker runs a check only for an invocation of it.
 pub use runtime_collab::approved_checks::ACTION_ID as APPROVED_CHECK_ACTION;
-pub use runtime_collab::{
-    NearbyTransferPhase, NetworkWakeStatus, PortableWifiSecurity, WifiContinuityCommand,
-    WifiContinuityReply,
-};
 pub use runtime_collab::{file_clipboard, recall};
 
 pub use collab_types::MemberId;
@@ -265,16 +262,6 @@ use collab_types::presence::PresenceKey;
 pub use collab_types::presence::{Member, Person, PersonId, PresencePayload};
 
 use std::sync::mpsc;
-
-/// Invoke the shell's launcher-authenticated, sealed Wi-Fi continuity path.
-/// Without the broker transport there is no certified collaboration service
-/// to carry it, so this reports the service as unavailable.
-#[cfg(not(feature = "broker-transport"))]
-pub fn wifi_continuity_command(
-    _command: runtime_collab::WifiContinuityCommand,
-) -> Result<runtime_collab::WifiContinuityReply, String> {
-    Err("Wi-Fi continuity requires the certified collaboration service".to_string())
-}
 
 /// The native display control service is unavailable without an admitted broker.
 #[cfg(not(feature = "broker-transport"))]

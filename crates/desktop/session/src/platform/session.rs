@@ -155,6 +155,16 @@ impl Session {
         if let Err(reason) = &daemon_link {
             tracing::error!(%reason, "this session reads and writes no workspace");
         }
+        // The person's other devices join the networks this one shares through the daemon.
+        #[cfg(target_os = "linux")]
+        if daemon_link.is_ok() {
+            options
+                .wifi_sharing
+                .attach(tilo_session_client::daemon_documents::DaemonShell::new(
+                    daemon_link.clone(),
+                    tilo_rt::app().handle().clone(),
+                ));
+        }
         // What the session keeps for the next one is the device's, as its daemon keeps its
         // records: read and written on the same link. Records the caller handed in are its own
         // and stay: a test, or a computer whose device keeps them another way.

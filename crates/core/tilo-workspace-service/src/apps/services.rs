@@ -219,15 +219,6 @@ pub trait RealtimeServices: Send + Sync {
 
     fn disconnect(&self, peer_id: u64);
 }
-/// The host's Wi-Fi credential continuity across the person's devices: the broker admits only the
-/// certified Settings route. A host without radios installs none.
-pub trait WifiContinuityServices: Send + Sync {
-    /// Runs one validated Wi-Fi continuity command.
-    fn command(
-        &self,
-        command: runtime_collab::WifiContinuityCommand,
-    ) -> runtime_collab::WifiContinuityReply;
-}
 
 /// Original Browser connection, minted only from certified launcher ownership.
 #[derive(Clone)]
@@ -758,7 +749,6 @@ pub struct ProcessServices {
     /// Every app's live activity, as the host presents it; without it no app shows anything
     /// outside its windows.
     pub live_activities: Option<Arc<runtime_collab::LiveActivities>>,
-    pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
     pub browser_service_sessions: Option<Arc<dyn BrowserServiceSessionServices>>,
     pub file_clipboard: Option<Arc<dyn FileClipboardServices>>,
     /// What each application declared it may do on the API; without it none declared anything.
@@ -812,6 +802,7 @@ impl ProcessServices {
         "audio_output",
         "workspace_memberships",
         "agents",
+        "present_devices",
         "agent_sessions",
         "native_certificates",
         "local_person",
@@ -829,13 +820,9 @@ impl ProcessServices {
         "content_store",
         "workspace_control",
         "realtime",
-        "speakers",
-        "drives",
-        "applications",
         "settings",
         "display_control",
         "live_activities",
-        "wifi_continuity",
         "browser_service_sessions",
         "file_clipboard",
         "app_action_access",

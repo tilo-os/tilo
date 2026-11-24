@@ -30,7 +30,7 @@ use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, 
 use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
 use tilo_workspace_service::apps::services::{
     BrowserServiceSessionServices, Caller, DisplayControlServices, ProcessServices,
-    PublishedResources, Reading, ResourceWatch, WifiContinuityServices, WorkspaceMemberships,
+    PublishedResources, Reading, ResourceWatch, WorkspaceMemberships,
 };
 use tilo_workspace_service::workspaces::providers::Providers;
 use tokio::sync::{mpsc, oneshot};
@@ -1357,7 +1357,6 @@ fn broker_services(
         live_activities: BrokerService::served(live_activities),
         // The passphrases are the person's, kept by the device's daemon, which a session in a
         // workspace's VM has none of.
-        wifi_continuity: BrokerService::when(None::<std::sync::Arc<dyn WifiContinuityServices>>),
         // The session is the owner of the person's account secrets: Browser
         // resolves, lists and forgets its website sessions here, Settings seals
         // an account's secret, and Mail is released the one it keeps. Every

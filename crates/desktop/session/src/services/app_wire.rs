@@ -490,20 +490,6 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         }),
         continuations: options.launches.notes(),
         records,
-        // Where this computer's networks wake it and what it saved: the passphrases are the
-        // daemon's, which this session asks them of.
-        wifi_continuity: crate::wifi_continuity::WifiContinuity::new(
-            tilo_session_client::daemon_documents::DaemonShell::new(
-                Ok(shell.clone()),
-                tilo_rt::app().handle().clone(),
-            ),
-        )
-        .map(|wifi| {
-            std::sync::Arc::new(wifi)
-                as std::sync::Arc<
-                    dyn tilo_workspace_service::apps::services::WifiContinuityServices,
-                >
-        }),
         published: std::sync::Arc::clone(link) as _,
         workspace_nodes: crate::workspace_nodes::WorkspaceNodes::service(view),
         settings,

@@ -49,6 +49,30 @@ pub enum SavedNetworkAction {
         #[param("The proxy server as host:port; nothing for no proxy")]
         server: Option<String>,
     },
+    /// Wake this device from sleep when a wake packet arrives over the network, or stop.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        row,
+        idempotent,
+        icon = "power",
+        keywords = "wake on lan, wake on wlan, magic packet",
+        on = SavedNetworkRow
+    )]
+    SetWake {
+        #[param("Whether the network wakes this device")]
+        on: bool,
+    },
+    /// Share the Wi-Fi network's password with your other devices, so they join it too.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        row,
+        icon = "share-2",
+        keywords = "wifi password, other devices, continuity",
+        on = SavedNetworkRow
+    )]
+    ShareWithDevices,
 }
 
 /// The `network` resource's actions.

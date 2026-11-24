@@ -23,7 +23,7 @@ use tilo_workspace_service::apps::collab_app_broker::{AudioOutputServices, Nativ
 use tilo_workspace_service::apps::seat::{self, MediaContext, SeatReading, SeatView, calls};
 use tilo_workspace_service::apps::services::{
     BrowserServiceSessionServices, DisplayControlContext, DisplayControlServices,
-    PublishedResources, WifiContinuityServices,
+    PublishedResources,
 };
 
 /// How long a wait for a change is held here before it is answered as it stands: the daemon asks
@@ -63,10 +63,6 @@ pub(crate) struct SeatParts {
     /// Files' clipboard, whose copies reach the compositor's loop: the same
     /// `crate::file_clipboard::NativeFileClipboard` the loop takes the published copies from.
     pub file_clipboard: Option<Arc<crate::file_clipboard::NativeFileClipboard>>,
-    /// Wi-Fi credentials carried between the person's devices, over this session's fabric:
-    /// `crate::wifi_continuity::WifiContinuity::new(fabric)`, `None` without a fabric. The
-    /// seat's only until the device's daemon reaches the radios itself.
-    pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
     /// The workspaces' agents as the records this session reads name them, and the agent
     /// sessions it serves: whom the daemon's broker admits as an agent, and whether a turn's
     /// session goes.
@@ -558,12 +554,6 @@ impl SeatProvider {
                     other => failed(format!("agents take no {other}")),
                 }
             }
-            (calls::WIFI_CONTINUITY, calls::COMMAND) => {
-                let Some(wifi) = parts.wifi_continuity.clone() else {
-                    return unserved("Wi-Fi continuity");
-                };
-                blocking(move || Ok(wifi.command(field(&arguments, "command")?)))
-            }
             (service, call) => failed(format!("the seat serves no {service}#{call}")),
         }
     }
@@ -790,7 +780,6 @@ mod tests {
             keyboard_shortcuts: crate::keyboard_shortcuts::servable(),
             service_sessions: None,
             file_clipboard: None,
-            wifi_continuity: None,
             agents: Some(agents),
         }
     }

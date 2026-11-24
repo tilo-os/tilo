@@ -930,7 +930,6 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                 Service::AudioOutput,
                 Service::NativeMedia,
                 Service::Realtime,
-                Service::WifiContinuity,
                 Service::BrowserServiceSession,
                 Service::ApprovedCheck,
                 Service::LocalFile,

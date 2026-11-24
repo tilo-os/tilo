@@ -1,31 +1,121 @@
-//! Wi-Fi continuity for the person's certified devices: Settings asks here whether this device's
-//! interfaces can wake it, and shares the passphrase it learned with the person's other devices,
-//! or joins with one they shared. The passphrases are the person's and the device's daemon keeps
-//! them in their own workspace ([`tilo_runtime::device::wifi`]); this session reads only what this
-//! computer's NetworkManager holds, and hands the daemon a passphrase only sealed to this device.
+//! Wi-Fi between the person's certified devices: a saved network's password is shared with their
+//! other devices (`share-with-devices` on its `saved-network` row), and a network one of them
+//! shared is joined without asking for its password. The passwords are the person's and the
+//! device's daemon keeps them in their own workspace ([`tilo_runtime::device::wifi`]); this session
+//! reads only what this computer's `NetworkManager` holds, and hands the daemon a password only
+//! sealed to this device.
+
+use std::sync::{Arc, OnceLock};
 
 use ed25519_dalek::SigningKey;
-use runtime_collab::{WifiContinuityCommand as Command, WifiContinuityReply as Reply};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+use tilo_connectivity_service::device::{Change, Device, Readings};
 use tilo_runtime::device::wifi::{LOOKUP, PROVIDER, RESOURCE, SHARE, lookup_arguments, permitted};
 use tilo_session_client::daemon_documents::DaemonShell;
-use tilo_workspace_service::apps::services::WifiContinuityServices;
 use tilo_workspace_service::workspaces::person_workspace::wifi::{Credential, Security};
 
-/// This session's answer to Settings' Wi-Fi continuity commands.
+/// This device's way to the person's other devices, which the session attaches once its daemon's
+/// link is up: until then, and on a computer with no identity of theirs, nothing is shared.
+#[derive(Clone, Default)]
+pub struct WifiSharing(Arc<OnceLock<WifiContinuity>>);
+
+impl WifiSharing {
+    /// Share through `daemon`, as this device's person.
+    pub(crate) fn attach(&self, daemon: DaemonShell) {
+        if let Some(wifi) = WifiContinuity::new(daemon) {
+            let _ = self.0.set(wifi);
+        }
+    }
+
+    /// `device`, sharing its saved networks' passwords with the person's other devices and joining
+    /// the networks they shared.
+    #[must_use]
+    pub fn device(&self, device: Arc<dyn Device>) -> SharingDevice {
+        SharingDevice {
+            device,
+            sharing: self.clone(),
+        }
+    }
+
+    fn wifi(&self) -> Result<&WifiContinuity, String> {
+        self.0.get().ok_or_else(|| {
+            "this device is not signed in to Tilo, so it has no other devices to share with"
+                .to_owned()
+        })
+    }
+}
+
+/// A device whose saved Wi-Fi passwords the person's other devices share.
+pub struct SharingDevice {
+    device: Arc<dyn Device>,
+    sharing: WifiSharing,
+}
+
+impl Device for SharingDevice {
+    fn read(&self) -> Readings {
+        self.device.read()
+    }
+
+    fn change(&self, change: &Change) -> Result<(), String> {
+        match change {
+            Change::ShareWifi { profile } => {
+                permitted()?;
+                share_saved_profile(self.sharing.wifi()?, profile)
+            }
+            // A protected network this device cannot join without its password, which another of
+            // the person's devices shared, is joined with the password they shared.
+            Change::Join {
+                network,
+                password: None,
+                hidden,
+            } => {
+                self.device
+                    .change(change)
+                    .or_else(|refused| match self.shared_password(network) {
+                        Some(password) => self.device.change(&Change::Join {
+                            network: network.clone(),
+                            password: Some(password),
+                            hidden: *hidden,
+                        }),
+                        None => Err(refused),
+                    })
+            }
+            _ => self.device.change(change),
+        }
+    }
+}
+
+impl SharingDevice {
+    /// The password of `network` one of the person's devices shared, opened here.
+    fn shared_password(&self, network: &str) -> Option<String> {
+        permitted().ok()?;
+        let wifi = self.sharing.wifi().ok()?;
+        [Security::Wpa3, Security::Wpa2]
+            .into_iter()
+            .find_map(|security| match wifi.lookup(network, security) {
+                Ok(found) => found,
+                Err(error) => {
+                    tracing::warn!(%error, "a shared Wi-Fi password was not looked up");
+                    None
+                }
+            })
+    }
+}
+
+/// The daemon's shared passwords, as this session asks them.
 pub(crate) struct WifiContinuity {
     daemon: DaemonShell,
-    /// The person's own workspace, where the daemon keeps the passphrases.
+    /// The person's own workspace, where the daemon keeps the passwords.
     workspace: String,
-    /// This device's key: what a passphrase crosses the dispatch sealed to.
+    /// This device's key: what a password crosses the dispatch sealed to.
     key: SigningKey,
 }
 
 impl WifiContinuity {
     /// The Wi-Fi continuity of this device's person, through `daemon`: `None` on a computer with
     /// no identity of theirs.
-    pub(crate) fn new(daemon: DaemonShell) -> Option<Self> {
+    fn new(daemon: DaemonShell) -> Option<Self> {
         let identity = tilo_session_client::identity::device_identity()?;
         let key = SigningKey::from_bytes(&identity.signer.endpoint_secret()?);
         Some(Self {
@@ -65,14 +155,14 @@ impl WifiContinuity {
             .map_err(|_| "the daemon's connection stopped before it answered".to_owned())?
     }
 
-    /// The passphrase of `ssid` the person's devices share, opened here.
+    /// The password of `ssid` the person's devices share, opened here.
     fn lookup(&self, ssid: &str, security: Security) -> Result<Option<String>, String> {
         let answer = self.ask(LOOKUP, lookup_arguments(ssid, security))?;
         let Some(credential) = answer["credential"].as_str() else {
             return Ok(None);
         };
         let credential = Credential::from_hex(credential)
-            .ok_or("the daemon answered a passphrase that does not read")?;
+            .ok_or("the daemon answered a password that does not read")?;
         credential
             .open(&self.key)
             .map(|password| Some(password.to_string()))
@@ -81,7 +171,7 @@ impl WifiContinuity {
 
     /// Share `password` of `ssid` with the person's devices: sealed to this device for the daemon,
     /// which seals it to each of theirs.
-    fn share(&self, ssid: &str, security: Security, password: &str) -> Result<String, String> {
+    fn share(&self, ssid: &str, security: Security, password: &str) -> Result<(), String> {
         let own = self.key.verifying_key().to_bytes();
         let sealed = Credential::seal(
             ssid,
@@ -94,102 +184,80 @@ impl WifiContinuity {
         .map_err(|refused| refused.to_string())?;
         let mut arguments = Map::new();
         arguments.insert("credential".to_owned(), json!(sealed.to_hex()));
-        let answer = self.ask(SHARE, arguments)?;
-        Ok(answer["ssid"].as_str().unwrap_or(ssid).to_owned())
+        self.ask(SHARE, arguments).map(|_| ())
     }
 }
 
-/// The security Settings names, as a passphrase is kept for it.
-const fn security(security: runtime_collab::PortableWifiSecurity) -> Security {
-    match security {
-        runtime_collab::PortableWifiSecurity::Wpa2 => Security::Wpa2,
-        runtime_collab::PortableWifiSecurity::Wpa3 => Security::Wpa3,
-    }
-}
-
-/// Settings' words for why it was not done, as short as the wire takes.
-fn rejected(reason: &str) -> Reply {
-    Reply::Rejected {
-        reason: reason.chars().take(128).collect(),
-    }
-}
-
-impl WifiContinuityServices for WifiContinuity {
-    fn command(&self, command: Command) -> Reply {
-        match command {
-            Command::NetworkWake {
-                profile_uuid,
-                enabled,
-            } => match network_wake(&profile_uuid, enabled) {
-                Ok(status) => Reply::NetworkWake {
-                    status: runtime_collab::NetworkWakeStatus {
-                        profile: status.profile,
-                        interface: status.interface,
-                        configured: status.configured,
-                        supported: status.supported,
-                        applied: status.applied,
-                        problem: status
-                            .problem
-                            .map(|problem| problem.chars().take(128).collect()),
-                    },
-                },
-                Err(reason) => rejected(&reason),
-            },
-            Command::Lookup {
-                ssid,
-                security: mode,
-            } => {
-                if permitted().is_err() {
-                    return Reply::NotFound;
-                }
-                match self.lookup(&ssid, security(mode)) {
-                    Ok(Some(password)) => Reply::Password { password },
-                    Ok(None) => Reply::NotFound,
-                    Err(error) => {
-                        tracing::warn!(%error, "a shared Wi-Fi passphrase was not looked up");
-                        Reply::NotFound
-                    }
-                }
-            }
-            Command::Share {
-                ssid,
-                security: mode,
-                password,
-            } => {
-                let password = zeroize::Zeroizing::new(password);
-                match permitted().and_then(|()| self.share(&ssid, security(mode), &password)) {
-                    Ok(ssid) => Reply::Shared { ssid },
-                    Err(reason) => rejected(&reason),
-                }
-            }
-            Command::ShareSavedProfile { profile_uuid } => {
-                match permitted().and_then(|()| share_saved_profile(self, &profile_uuid)) {
-                    Ok(ssid) => Reply::Shared { ssid },
-                    Err(reason) => rejected(&reason),
-                }
-            }
-        }
-    }
-}
-
-fn network_wake(
-    profile_uuid: &str,
-    enabled: Option<bool>,
-) -> Result<os_actions::network_wake::NetworkWakeStatus, String> {
-    match enabled {
-        Some(enabled) => os_actions::network_wake::configure(profile_uuid, enabled),
-        None => os_actions::network_wake::status(profile_uuid),
-    }
-}
-
-/// Share the passphrase of the profile `profile_uuid` saved on this machine,
-/// reading only the parts that can travel between the person's devices.
-fn share_saved_profile(wifi: &WifiContinuity, profile_uuid: &str) -> Result<String, String> {
+/// Share the password of the profile `profile_uuid` saved on this machine, reading only the parts
+/// that can travel between the person's devices.
+fn share_saved_profile(wifi: &WifiContinuity, profile_uuid: &str) -> Result<(), String> {
     let profile = os_actions::portable_wifi_profile_secret(profile_uuid)?;
     let security = match profile.security {
         os_actions::WifiSecurity::Wpa2 => Security::Wpa2,
         os_actions::WifiSecurity::Wpa3 => Security::Wpa3,
-        _ => return Err("only a passphrase network's profile is shared".to_owned()),
+        _ => return Err("only a network with a password is shared".to_owned()),
     };
     wifi.share(&profile.ssid, security, &profile.password)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use tilo_connectivity_service::device::{Change, Device, Readings};
+
+    use super::WifiSharing;
+
+    /// A device that records what it is asked and refuses a join without a password.
+    #[derive(Default)]
+    struct Radio(Mutex<Vec<Change>>);
+
+    impl Device for Radio {
+        fn read(&self) -> Readings {
+            Readings::default()
+        }
+
+        fn change(&self, change: &Change) -> Result<(), String> {
+            self.0.lock().unwrap().push(change.clone());
+            match change {
+                Change::Join { password: None, .. } => Err("the network needs a password".into()),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    /// Before the session reaches the daemon, sharing a saved network says why it cannot and asks
+    /// nothing of the radio, a join that needs a password fails as the radio said, and every
+    /// other change reaches the radio as it is.
+    #[test]
+    fn a_device_not_yet_reaching_the_daemon_shares_nothing_and_joins_as_the_radio_does() {
+        let radio = Arc::new(Radio::default());
+        let device = WifiSharing::default().device(Arc::clone(&radio) as Arc<dyn Device>);
+
+        let refused = device
+            .change(&Change::ShareWifi {
+                profile: "uuid-home".into(),
+            })
+            .expect_err("nothing to share with");
+        assert!(!refused.is_empty(), "the refusal says why");
+        assert!(
+            radio.0.lock().unwrap().is_empty(),
+            "the radio is not asked to share"
+        );
+
+        let join = Change::Join {
+            network: "Home".into(),
+            password: None,
+            hidden: false,
+        };
+        assert_eq!(
+            device.change(&join),
+            Err("the network needs a password".into()),
+            "with no password shared, the radio's own refusal"
+        );
+        device
+            .change(&Change::Wifi(false))
+            .expect("the radio takes it");
+        assert_eq!(*radio.0.lock().unwrap(), [join, Change::Wifi(false)]);
+    }
 }

@@ -197,6 +197,10 @@ pub struct Options {
     /// the daemon started.
     #[cfg(unix)]
     pub shell_daemon: Option<Box<dyn std::any::Any>>,
+    /// How the connectivity service shares a saved network's password with the person's other
+    /// devices: the session attaches the device's daemon to it once its link is up.
+    #[cfg(target_os = "linux")]
+    pub wifi_sharing: crate::wifi_continuity::WifiSharing,
 }
 
 /// Which machine a session draws on.
@@ -415,6 +419,8 @@ impl Default for Options {
             shell_link: None,
             #[cfg(unix)]
             shell_daemon: None,
+            #[cfg(target_os = "linux")]
+            wifi_sharing: crate::wifi_continuity::WifiSharing::default(),
         }
     }
 }

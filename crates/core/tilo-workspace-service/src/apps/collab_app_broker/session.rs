@@ -785,51 +785,6 @@ pub(super) fn delegate_realtime_command(
         .map_err(BrokerError::failed)
 }
 
-/// The only application that may carry Wi-Fi credentials between devices.
-use tilo_app_id::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
-
-pub(super) fn delegate_wifi_continuity_command(
-    services: &ProcessServices,
-    route_app: &str,
-    claimed_app: &str,
-    command: &[u8],
-) -> Result<Vec<u8>, BrokerError> {
-    if route_app != WIFI_CONTINUITY_APP_ID {
-        return Err(BrokerError::failed(
-            "Wi-Fi continuity is restricted to the certified Settings application".into(),
-        ));
-    }
-    if claimed_app != route_app {
-        return Err(BrokerError::failed(
-            "Wi-Fi continuity app id must match the certified connection route".into(),
-        ));
-    }
-    if command.len() > runtime_collab::MAX_WIFI_CONTINUITY_WIRE_BYTES {
-        return Err(BrokerError::failed(
-            "Wi-Fi continuity command exceeds the local protocol bound".into(),
-        ));
-    }
-    let command = match serde_json::from_slice::<runtime_collab::WifiContinuityCommand>(command) {
-        Ok(command) if command.valid() => command,
-        Ok(_) => {
-            return Err(BrokerError::failed(
-                "Wi-Fi continuity command is structurally invalid".into(),
-            ));
-        }
-        Err(error) => return Err(BrokerError::failed(error.to_string())),
-    };
-    let service = services.wifi_continuity.as_ref().ok_or_else(|| {
-        BrokerError::failed("Wi-Fi continuity is unsupported by this host".into())
-    })?;
-    match serde_json::to_vec(&service.command(command)) {
-        Ok(reply) if reply.len() <= runtime_collab::MAX_WIFI_CONTINUITY_WIRE_BYTES => Ok(reply),
-        Ok(_) => Err(BrokerError::failed(
-            "Wi-Fi continuity reply exceeds the local protocol bound".into(),
-        )),
-        Err(error) => Err(BrokerError::failed(error.to_string())),
-    }
-}
-
 pub(super) fn delegate_browser_service_session_command(
     services: &ProcessServices,
     context: &crate::apps::services::BrowserServiceSessionRequestContext,

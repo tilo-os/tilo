@@ -327,9 +327,6 @@ pub enum Service {
     NativeMedia,
     /// A realtime command and its reply, JSON.
     Realtime,
-    /// `WifiContinuityCommand` -> `WifiContinuityReply`, JSON; the Settings
-    /// app's only.
-    WifiContinuity,
     /// `BrowserServiceSessionCommand` -> `BrowserServiceSessionReply`; the
     /// Browser's only.
     BrowserServiceSession,

@@ -75,8 +75,8 @@ open-uri = "via-host"
 # `TILO_SVC_USH_FD`.
 ush    = "required@45"
 # Authenticated permission prompt for the device shell.
-collab = "optional@45"
-tilo-fs = "optional@45"
+collab = "optional@47"
+tilo-fs = "optional@47"
 
 [entrypoint]
 bin             = "bin/terminal"

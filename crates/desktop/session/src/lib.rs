@@ -448,7 +448,7 @@ mod wake;
 #[cfg(target_os = "linux")]
 mod wallpapers;
 #[cfg(target_os = "linux")]
-mod wifi_continuity;
+pub mod wifi_continuity;
 #[cfg(target_os = "linux")]
 mod window_follow;
 #[cfg(target_os = "linux")]

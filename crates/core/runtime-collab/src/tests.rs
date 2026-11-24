@@ -126,65 +126,6 @@ fn try_connect_without_env_returns_service_fd_missing() {
     }
 }
 
-tilo_test_env::scenario! {
-    fn wifi_continuity_is_bounded_redacted_and_bound_to_a_local_profile;
-
-    phase wifi_continuity_contract_is_bounded_and_redacts_secrets;
-    {
-        let command = WifiContinuityCommand::Share {
-            ssid: "Studio".into(),
-            security: PortableWifiSecurity::Wpa3,
-            password: "correct horse battery staple".into(),
-        };
-        assert!(command.valid());
-        assert!(!format!("{command:?}").contains("correct horse"));
-        let encoded = serde_json::to_vec(&command).expect("encode Wi-Fi command");
-        assert!(encoded.len() < MAX_WIFI_CONTINUITY_WIRE_BYTES);
-        assert_eq!(
-            serde_json::from_slice::<WifiContinuityCommand>(&encoded)
-                .expect("decode Wi-Fi command"),
-            command
-        );
-
-        assert!(
-            !WifiContinuityCommand::Share {
-                ssid: "Studio".into(),
-                security: PortableWifiSecurity::Wpa2,
-                password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
-            }
-            .valid()
-        );
-        assert!(
-            !WifiContinuityReply::Password {
-                password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
-            }
-            .valid()
-        );
-    }
-
-    phase saved_wifi_profile_reference_requires_an_exact_local_uuid;
-    {
-        assert!(
-            WifiContinuityCommand::ShareSavedProfile {
-                profile_uuid: "12345678-1234-1234-1234-123456789abc".into(),
-            }
-            .valid()
-        );
-        for invalid in [
-            "profile-name",
-            "../../secret",
-            "12345678-1234-1234-1234-123456789abz",
-        ] {
-            assert!(
-                !WifiContinuityCommand::ShareSavedProfile {
-                    profile_uuid: invalid.into(),
-                }
-                .valid()
-            );
-        }
-    }
-}
-
 #[test]
 fn a_marked_rejection_is_a_rejection() {
     let marked = format!("{LOCAL_DOCUMENT_REJECTED}{LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING}");

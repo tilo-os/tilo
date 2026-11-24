@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use runtime_portal::NotAvailable;
 
-use crate::MAX_WIFI_CONTINUITY_WIRE_BYTES;
 use crate::wire::{
     Changes, ContextUpdate, Event, Handle, InvocationCall, LiveActivityCall, Operation,
     Publication, Read, Receipt, Reply, Report, Service, SettingsCall, Topic,
@@ -16,9 +15,8 @@ use crate::wire::{
 };
 use crate::{ChannelContext, Invocation};
 use crate::{
-    ExportedAction, SurfaceDelta, WifiContinuityCommand, WifiContinuityReply,
-    WorkspaceControlEvent, WorkspaceControlInput, audio_output, committed_document, file_clipboard,
-    native_media,
+    ExportedAction, SurfaceDelta, WorkspaceControlEvent, WorkspaceControlInput, audio_output,
+    committed_document, file_clipboard, native_media,
 };
 
 /// Where a connection's calls hand the host descriptors, if it can.
@@ -418,44 +416,6 @@ type OpenRecords = std::sync::Mutex<std::collections::HashMap<String, std::sync:
 /// (an app's whole documents), under the connection's frame.
 const MAX_RESOURCE_WIRE_BYTES: usize = 56 << 20;
 
-/// Encode one `what` control command, refusing it when it is invalid or
-/// larger than `max_bytes`.
-fn encode_bounded_command<C: serde::Serialize>(
-    what: &str,
-    command: &C,
-    valid: bool,
-    max_bytes: usize,
-) -> Result<Vec<u8>, NotAvailable> {
-    if !valid {
-        return Err(refused(format!("invalid {what} command")));
-    }
-    let command_json = serde_json::to_vec(command)
-        .map_err(|error| refused(format!("encode {what} command: {error}")))?;
-    if command_json.len() > max_bytes {
-        return Err(refused(format!("{what} command exceeds wire bound")));
-    }
-    Ok(command_json)
-}
-
-/// Decode one `what` control reply, refusing it when it is larger than
-/// `max_bytes` or fails its own validity check.
-fn decode_bounded_reply<R: serde::de::DeserializeOwned>(
-    what: &str,
-    bytes: &[u8],
-    max_bytes: usize,
-    valid: impl FnOnce(&R) -> bool,
-) -> Result<R, NotAvailable> {
-    if bytes.len() > max_bytes {
-        return Err(refused(format!("{what} reply exceeds wire bound")));
-    }
-    let decoded: R = serde_json::from_slice(bytes)
-        .map_err(|error| refused(format!("decode {what} reply: {error}")))?;
-    if !valid(&decoded) {
-        return Err(refused(format!("invalid {what} reply")));
-    }
-    Ok(decoded)
-}
-
 impl RecordHandle {
     /// The record this handle's calls name.
     #[must_use]
@@ -766,34 +726,6 @@ impl RecordHandle {
             let _ = &self.descriptors;
             Err("selected descriptors require Unix".into())
         }
-    }
-
-    /// Use the shell-owned sealed Wi-Fi secret bridge from the authenticated
-    /// Settings route.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the command or reply violates its wire
-    /// contract or the host refuses it.
-    pub async fn wifi_continuity_command(
-        &self,
-        command: &WifiContinuityCommand,
-    ) -> Result<WifiContinuityReply, NotAvailable> {
-        let command_json = encode_bounded_command(
-            "Wi-Fi continuity",
-            command,
-            command.valid(),
-            MAX_WIFI_CONTINUITY_WIRE_BYTES,
-        )?;
-        let reply = self
-            .command(Service::WifiContinuity, command_json, &[])
-            .await?;
-        decode_bounded_reply(
-            "Wi-Fi continuity",
-            &reply,
-            MAX_WIFI_CONTINUITY_WIRE_BYTES,
-            WifiContinuityReply::valid,
-        )
     }
 
     /// Subscribe to lifecycle edges addressed to this exact application.
