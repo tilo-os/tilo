@@ -624,6 +624,19 @@ view appearance_pane() {
         setting("Hide the top bar", "Give the screen to what it shows on this device") {
             ui.Toggle(bind: on_device.hide_top_bar)
         }
+        // The hints are the person's own record, on every device of theirs: the shell writes
+        // what they learn, and these change the same record through its actions.
+        let hints = settings.control_hints
+        setting("Show control hints", "A short tip beside a control, the first time it helps") {
+            ui.Toggle(shown: hints.learned.enabled, label: "Show control hints") {
+                on check(on): settings.show_control_hints(hints, enabled: on)
+            }
+        }
+        setting("Tips you have seen", "Show every control hint again, as if new") {
+            ui.Button("Show them again", icon: .rotate_ccw, role: .plain) {
+                on press: settings.show_control_hints_again(hints)
+            }
+        }
     }
     ui.Section("Widgets") {
         widget_setting(
