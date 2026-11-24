@@ -1262,9 +1262,6 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         // A first line that is an action frame says the connection speaks the action wire,
         // answered as whoever its account is admitted as.
         let line = first.strip_suffix(b"\n").unwrap_or(&first);
-        // Whether the first line asks what this device is, read before anything admits it.
-        let asked_status = serde_json::from_slice::<Value>(line)
-            .is_ok_and(|request| request == json!({"native": "status"}));
         if crate::device::local::is_frame(line) {
             let input = BufReader::new(io::Cursor::new(rest).chain(follow));
             return self.frames.serve(stream, line, input);
@@ -1309,39 +1306,24 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             }
             return;
         }
-        // What this device is, answered before a session is admitted: asking founds no
-        // workspace and waits for none, since a desktop about to hand its workspaces over asks,
-        // and a computer whose person's part is still starting must say how it stands.
-        if asked_status {
-            if let Ok(answer) = serde_json::to_vec(&(self.status)()) {
-                let _ = (&stream).write_all(&answer);
-                let _ = (&stream).write_all(b"\n");
-            }
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-            return;
-        }
         let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
-        let server = match (self.session_factory)() {
-            Ok(server) => Arc::new(server.with_media(self.media.clone())),
-            Err(error) => {
-                // Told why, as an agent whose person revoked its key is.
-                tracing::debug!(%error, "native MCP session admission unavailable");
-                crate::device::serve::refuse(&stream, &error.to_string());
-                return;
-            }
+        // The session is admitted by the first request that needs one, never by a connection's
+        // coming: a connection that only asks what this device is (a desktop about to hand its
+        // workspaces over, a computer whose person's part is still starting) must be answered
+        // without founding a workspace or waiting for one, and goes on asking as it likes.
+        let admit = || {
+            Ok::<_, io::Error>(Arc::new(
+                (self.session_factory)()?.with_media(self.media.clone()),
+            ))
         };
-        if let Some(agents) = &self.agents {
-            agents.visit();
-        }
-        let agent = self.agents.as_deref();
         if let Err(error) = serve_connection(
             &stream,
             input,
-            &server,
+            &admit,
             &(self.status)(),
             &self.search,
             seated,
-            agent,
+            self.agents.clone(),
         ) {
             tracing::debug!(%error, "native runtime client disconnected");
         }
@@ -1437,16 +1419,18 @@ fn serve_seat(
 }
 
 /// Answer one native connection: the daemon's own requests in order, and
-/// MCP requests as [`serve_lines`] does, overlapping one another. An `agent`'s connection hears
-/// first what [`Presence::answer_first`] answers.
+/// MCP requests as [`serve_lines`] does, overlapping one another. The session is admitted by
+/// `admit` the first time a request needs one, so a connection that only asks what this device
+/// is is answered without one. An `agent`'s connection hears first what [`Presence::answer_first`]
+/// answers.
 fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>(
     stream: &Stream,
     input: impl Read + Send + 'static,
-    server: &Arc<McpServer<H>>,
+    admit: &dyn Fn() -> io::Result<Arc<McpServer<H>>>,
     status: &Status,
     search: &OnceLock<Arc<tilo_os_search::OsSearch>>,
     seated: Option<&Seated>,
-    agent: Option<&Presence>,
+    agent: Option<Arc<Presence>>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -1458,6 +1442,9 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     // An agent whose person revoked its key acts no further: its next request is answered why,
     // and the connection ends there.
     let ending = tilo_mcp::lines::Ending::default();
+    // The session this connection reaches, admitted by the first request that needs one: what
+    // this device is is answered without it, so asking founds no workspace and waits for none.
+    let mut session: Option<Arc<McpServer<H>>> = None;
     let answer = |value: Value| {
         if let Some(answer) = seated.and_then(|seated| seated.answer(&value)) {
             return answer;
@@ -1472,13 +1459,31 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
             }));
         }
         let native = value.get("native").and_then(Value::as_str);
-        Answer::InOrder(match native {
-            Some("status") if value == json!({"native":"status"}) => {
-                let status = status.clone();
-                Box::pin(async move { Ok(Some(status)) })
+        if native == Some("status") && value == json!({"native":"status"}) {
+            let status = status.clone();
+            return Answer::InOrder(Box::pin(async move { Ok(Some(status)) }));
+        }
+        let server = if let Some(server) = session.clone() {
+            server
+        } else {
+            match admit() {
+                Ok(admitted) => {
+                    if let Some(agents) = &agent {
+                        agents.visit();
+                    }
+                    session = Some(Arc::clone(&admitted));
+                    admitted
+                }
+                Err(error) => {
+                    // Told why, as an agent whose person revoked its key is.
+                    tracing::debug!(%error, "native MCP session admission unavailable");
+                    return ending.refusing(&value, error.to_string());
+                }
             }
+        };
+        Answer::InOrder(match native {
             Some("activate") => {
-                Box::pin(async move { Ok(Some(answer_activate(server, &value).await)) })
+                Box::pin(async move { Ok(Some(answer_activate(&server, &value).await)) })
             }
             Some(tilo_host_search::OPEN) => Box::pin(async move {
                 Ok(Some(match search.get() {
@@ -1487,14 +1492,14 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
                 }))
             }),
             _ => {
-                if let Some(refused) = ending.answer(server, &value) {
+                if let Some(refused) = ending.answer(&server, &value) {
                     return refused;
                 }
                 return match &agent {
                     Some(agents) => agents
                         .answer_first(value)
-                        .unwrap_or_else(|value| mcp_answer(server, value)),
-                    None => mcp_answer(server, value),
+                        .unwrap_or_else(|value| mcp_answer(&server, value)),
+                    None => mcp_answer(&server, value),
                 };
             }
         })

@@ -158,6 +158,13 @@ impl Ending {
         H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
     {
         let why = server.ended()?;
+        Some(self.refusing(request, why))
+    }
+
+    /// The answer to `request` that ends the connection, saying `why`: what [`Self::answer`]
+    /// answers a request its caller may no longer make, and what a connection answers the
+    /// request it could not admit a session for ([`Self::check`] ends it after that answer).
+    pub fn refusing(&self, request: &Value, why: String) -> Answer<'static> {
         let id = request.get("id").cloned();
         let reply = id.map(|id| {
             if request.get("method").and_then(Value::as_str) == Some("tools/call") {
@@ -168,7 +175,7 @@ impl Ending {
             }
         });
         *self.0.lock_recover() = Some(why);
-        Some(Answer::InOrder(Box::pin(async move { Ok(reply) })))
+        Answer::InOrder(Box::pin(async move { Ok(reply) }))
     }
 
     /// What ends the connection once a request was answered that its caller acts no further:

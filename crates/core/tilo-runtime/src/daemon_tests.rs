@@ -116,14 +116,15 @@ tilo_test_env::scenario! {
             std::thread::spawn(move || {
                 for _ in 0..2 {
                     let (stream, _) = listener.accept().unwrap();
+                    let server = std::sync::Arc::new(tilo_mcp::McpServer::for_person(
+                        host.clone(),
+                        "workspace".into(),
+                        "owner",
+                    ));
                     super::serve_connection(
                         &stream.try_clone().unwrap(),
                         stream,
-                        &std::sync::Arc::new(tilo_mcp::McpServer::for_person(
-                            host.clone(),
-                            "workspace".into(),
-                            "owner",
-                        )),
+                        &|| Ok::<_, std::io::Error>(std::sync::Arc::clone(&server)),
                         &super::Status {
                             version: 1,
                             pid: 1,
@@ -171,14 +172,15 @@ tilo_test_env::scenario! {
         let serving = {
             let host = host.clone();
             std::thread::spawn(move || {
+                let server = std::sync::Arc::new(tilo_mcp::McpServer::for_person(
+                    host,
+                    "workspace".into(),
+                    "owner",
+                ));
                 super::serve_connection(
                     &served.try_clone().unwrap(),
                     served,
-                    &std::sync::Arc::new(tilo_mcp::McpServer::for_person(
-                        host,
-                        "workspace".into(),
-                        "owner",
-                    )),
+                    &|| Ok::<_, std::io::Error>(std::sync::Arc::clone(&server)),
                     &super::Status {
                         version: 1,
                         pid: 1,
