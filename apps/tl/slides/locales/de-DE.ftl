@@ -819,3 +819,25 @@ d-c2gzexjw = Element löschen
     .did = hat ein Objekt gelöscht
 
 d-c2gzexjw-target = Ziel
+
+d-dkv3i4hb = Folientitel
+    .w-slide = Folie { $value }
+
+d-xu7dwqfl = Ausrichtung
+    .w-left = links
+    .w-center = zentriert
+    .w-right = rechts
+    .w-justify = Blocksatz
+
+d-2ho5tmd3 = Rollenfarbe
+    .w-ffffff = #FFFFFF
+
+d-we3lyr6i = Lesbar auf
+    .w-ffffff = #FFFFFF
+
+d-24lcblxm = Zoom
+    .w-zoom-fit = Zoom: Einpassen
+    .w-zoom = Zoom: { $percent }%
+
+d-itas7y2z = Deckname
+    .w-untitled-deck = Unbenanntes Deck

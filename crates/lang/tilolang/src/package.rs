@@ -475,7 +475,12 @@ fn anchors_of(env: &Env, view: &str) -> Vec<AnchorMeta> {
 
 /// The views `env` expands where they are called, as the metadata that names their anchors and
 /// the views they call: `env`'s own templates, never a library's.
-fn template_views(env: &Env, ir: &crate::ir::Module) -> Vec<ViewMeta> {
+fn template_views(
+    env: &Env,
+    ir: &crate::ir::Module,
+    shows: &[crate::ir::ViewShow],
+    app: &str,
+) -> Vec<ViewMeta> {
     env.templates
         .iter()
         .filter(|t| t.ns.is_none())
@@ -506,7 +511,7 @@ fn template_views(env: &Env, ir: &crate::ir::Module) -> Vec<ViewMeta> {
                 state: Vec::new(),
                 presents: None,
                 row_of: None,
-                show: None,
+                shows: shows_of(shows, &id, &v.name.name, app),
                 capture_protected: false,
             })
         })
@@ -970,7 +975,7 @@ fn build_meta(
             }
         }
     }
-    meta.template_views = template_views(env, ir);
+    meta.template_views = template_views(env, ir, shows, app);
     meta
 }
 
