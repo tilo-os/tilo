@@ -15,6 +15,9 @@ use tilo_actions::remote::{ActionCallError, ReceiptStatus, application_open_targ
 use crate::host;
 
 const CHAT: &str = ui::apps::CHAT;
+/// Chat's package under the tree's `apps/tl`, which the device installs to run it: the open a
+/// test makes reaches the app's windowless instance.
+const CHAT_PACKAGE: &str = "chat";
 /// The channel a test makes in the workspace's chat, and posts into.
 pub(crate) const CHANNEL: &str = "chat";
 /// What the agent says in the chat.
@@ -167,7 +170,7 @@ async fn listed_by_key(key: &host::Key) -> (String, bool) {
 /// signed by the agent's session.
 #[test]
 fn an_agent_posts_to_chat_a_page_made_after_it_joined() {
-    host::run(|host| async move {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
         let agent = host.agent();
         // A first call makes the device's actions join the workspace, before Chat exists there:
         // a listing writes nothing.
@@ -206,7 +209,7 @@ fn an_agent_posts_to_chat_a_page_made_after_it_joined() {
 /// key's agent lists it and posts into it as the person's own desktop does.
 #[test]
 fn an_agent_posts_to_chat_a_persons_own_workspace_began_with() {
-    host::run(|host| async move {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
         opens(host.as_ref())
             .await
             .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
@@ -242,7 +245,7 @@ const BATCH: usize = 32;
 /// whole batch back.
 #[test]
 fn a_batch_of_posts_is_one_step_and_one_undo_takes_it_back() {
-    host::run(|host| async move {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
         opens(host.as_ref())
             .await
             .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
@@ -291,7 +294,7 @@ fn a_batch_of_posts_is_one_step_and_one_undo_takes_it_back() {
 /// a daemon started again on them reads.
 #[test]
 fn the_chats_api_posts_are_held_in_the_workspaces_records() {
-    host::run(|host| async move {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
         opens(host.as_ref())
             .await
             .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
