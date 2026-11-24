@@ -210,7 +210,10 @@ def builder_license_findings(root: Path, metadata: dict) -> list[str]:
 
 def builder_licenses_range(root: Path, push: "Push") -> int:
     """Refuse a push whose manifests put a crate LICENSING.md does not allow under a builder
-    crate; a push that changes no manifest and not the policy cannot, and is not asked."""
+    crate; a push that changes no manifest and not the policy cannot, and is not asked, and
+    neither is a workspace that publishes no builder crates (no policy names any)."""
+    if not (root / LICENSE_POLICY).is_file():
+        return 0
     if not any(Path(path).name == WORKSPACE_MANIFEST or path == LICENSE_POLICY for path in push.files):
         return 0
     try:
