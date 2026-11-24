@@ -2281,6 +2281,10 @@ mod agent_turn_tests;
 #[path = "person_devices_tests.rs"]
 mod person_devices_tests;
 
+#[cfg(all(test, feature = "apps"))]
+#[path = "connection_turn_tests.rs"]
+mod connection_turn_tests;
+
 #[cfg(all(test, feature = "agents"))]
 #[path = "own_agent_tests.rs"]
 mod own_agent_tests;

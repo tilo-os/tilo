@@ -53,6 +53,20 @@
 //! [`LINUX_RESOURCE`]). A device takes it when it runs Linux machines
 //! ([`HostLinux`]) and has room for one more, unless the workspace's machine
 //! is kept on another device already: a machine stays where its disk is.
+//!
+//! An app that keeps a long-lived connection to an outside service (a chat
+//! bridge's gateway, a mail account's fetching) runs on exactly one device of
+//! the workspace at a time ([`Turn::Connection`]). A device takes it when it
+//! has what the app needs ([`HostConnections`]): the app installed, every
+//! capability the app declares given to it, and power. An always-on server
+//! claims it at once; any other device once [`Order::server_grace`] passed
+//! since it saw the turn free. The device that holds the lease runs the app's
+//! process with no window and renews its claim while the connection runs; it
+//! stops the process as soon as it cannot write its claim, another device
+//! holds the lease, or it went longer without renewing than the claim stays
+//! live (asleep, suspended), so it never runs the connection beside the device
+//! that took over. That device takes the turn once the claim it no longer
+//! renews is over.
 
 use std::fmt;
 
@@ -213,6 +227,20 @@ pub enum Turn {
         /// change that started it was seen.
         came_up_ms: Option<i64>,
     },
+    /// An app's long-lived connection to an outside service: its process,
+    /// run with no window on exactly one device of the workspace for as long
+    /// as that device renews its claim.
+    Connection {
+        /// The app whose process keeps the connection.
+        app: String,
+        /// The capabilities the app declares it needs (`network.http`,
+        /// `secrets`): only a device that gives it every one takes the turn.
+        needs: Vec<String>,
+        /// When this device saw the turn free, ms since the epoch: a device
+        /// that is not an always-on server claims [`Order::server_grace`]
+        /// after it.
+        came_up_ms: Option<i64>,
+    },
 }
 
 /// The lease ids of every turn that runs `address` once all start with this.
@@ -237,6 +265,7 @@ impl Turn {
         match self {
             Self::Invocation { id, .. } => format!("invocation/{}", id.0),
             Self::Linux { id, .. } => format!("linux/{}", id.0),
+            Self::Connection { app, .. } => format!("connection/{app}"),
             Self::Once {
                 address, inputs, ..
             } => {
@@ -258,6 +287,25 @@ impl Turn {
             starter: None,
             came_up_ms: None,
         }
+    }
+
+    /// The turn that keeps `app`'s connection, which needs every capability in `needs`.
+    #[must_use]
+    pub fn connection(app: impl Into<String>, needs: Vec<String>) -> Self {
+        Self::Connection {
+            app: app.into(),
+            needs,
+            came_up_ms: None,
+        }
+    }
+
+    /// This connection turn, seen free by this device at `at_ms`.
+    #[must_use]
+    pub fn free_since(mut self, at_ms: i64) -> Self {
+        if let Self::Connection { came_up_ms, .. } = &mut self {
+            *came_up_ms = Some(at_ms);
+        }
+        self
     }
 
     /// This turn, acting as `who`: only a device that can act as them takes it.
@@ -301,6 +349,7 @@ impl Turn {
         match self {
             Self::Invocation { requester, .. } | Self::Linux { requester, .. } => Some(*requester),
             Self::Once { starter, .. } => *starter,
+            Self::Connection { .. } => None,
         }
     }
 
@@ -315,7 +364,7 @@ impl Turn {
     const fn came_up_ms(&self) -> Option<i64> {
         match self {
             Self::Invocation { .. } | Self::Linux { .. } => None,
-            Self::Once { came_up_ms, .. } => *came_up_ms,
+            Self::Once { came_up_ms, .. } | Self::Connection { came_up_ms, .. } => *came_up_ms,
         }
     }
 }
@@ -349,6 +398,14 @@ pub enum Ineligible {
     RunsNoAgents,
     /// This device does not act for the person the turn acts as.
     CannotActAs,
+    /// This device runs no app's connection.
+    RunsNoConnections,
+    /// The app whose connection it is is not installed on this device.
+    NotInstalled,
+    /// This device does not give the app a capability it needs.
+    LacksCapability,
+    /// This device runs on its battery.
+    OnBattery,
 }
 
 impl fmt::Display for Ineligible {
@@ -366,6 +423,10 @@ impl fmt::Display for Ineligible {
             Self::MachineElsewhere => "the workspace's Linux machine is kept on another device",
             Self::RunsNoAgents => "this device runs no agents",
             Self::CannotActAs => "this device does not act for the person the turn acts as",
+            Self::RunsNoConnections => "this device runs no app's connection",
+            Self::NotInstalled => "the app is not installed on this device",
+            Self::LacksCapability => "this device does not give the app a capability it needs",
+            Self::OnBattery => "this device runs on its battery",
         })
     }
 }
@@ -412,12 +473,17 @@ pub struct Claim {
     workspace: String,
     lease: String,
     device: [u8; 32],
+    /// Whether a renewal that was not written loses the turn: a connection
+    /// must not run on where no device reads that it still does.
+    written_only: bool,
 }
 
 impl Claim {
     /// Push the claim out again. `false` once another device claimed the turn,
     /// as it does after two devices claimed it at once and their claims met:
-    /// the device that renews then stops the work.
+    /// the device that renews then stops the work. For a connection turn,
+    /// `false` too when the renewal could not be written: the other devices
+    /// read the claim going silent, and one of them takes the turn over.
     pub async fn renew(&self) -> bool {
         if self
             .workspaces
@@ -435,6 +501,9 @@ impl Claim {
             .await
         {
             tracing::warn!(lease = %self.lease, %error, "a turn's claim was not renewed");
+            if self.written_only {
+                return false;
+            }
         }
         self.workspaces
             .lease_holder(&self.workspace, &self.lease)
@@ -520,6 +589,7 @@ pub async fn takes_turn_in(
             workspace: workspace.to_owned(),
             lease,
             device,
+            written_only: matches!(turn, Turn::Connection { .. }),
         }),
         Some(holder) => Err(NotTaken::TakenBy(holder)),
         None => Err(NotTaken::Unwritten(
@@ -536,6 +606,14 @@ async fn turn_comes(
     device: [u8; 32],
     order: Order,
 ) -> Option<i64> {
+    if let Turn::Connection { came_up_ms, .. } = turn {
+        if always_on(workspaces).await {
+            return None;
+        }
+        let wait = i64::try_from(order.server_grace.as_millis()).unwrap_or(i64::MAX);
+        let came_up = came_up_ms.unwrap_or_else(tilo_clock::unix_now_ms_i64);
+        return Some(came_up.saturating_add(wait));
+    }
     if turn.starter().is_none_or(|starter| starter == device) {
         return None;
     }
@@ -616,6 +694,19 @@ async fn server_entry(workspaces: &Workspaces, person: &[u8; 32]) -> Option<serv
         .cloned()
 }
 
+/// Whether this device may take `turn` in `workspace` now, or why not: what a device that
+/// holds a turn for long asks again while it keeps it.
+///
+/// # Errors
+/// Why this device may not take it.
+pub async fn eligible(
+    workspaces: &Workspaces,
+    workspace: &str,
+    turn: &Turn,
+) -> Result<(), Ineligible> {
+    eligibility(workspaces, workspace, turn).await
+}
+
 /// Whether this device may take `turn` in `workspace`, or why not.
 async fn eligibility(
     workspaces: &Workspaces,
@@ -663,6 +754,24 @@ async fn eligibility(
                 None if linux.has_room() => Ok(()),
                 None => Err(Ineligible::NoRoomForLinux),
             }
+        }
+        Turn::Connection { app, needs, .. } => {
+            let host = workspaces
+                .host_connections()
+                .ok_or(Ineligible::RunsNoConnections)?;
+            if !host.installed(app) {
+                return Err(Ineligible::NotInstalled);
+            }
+            if !needs
+                .iter()
+                .all(|capability| host.gives(workspace, app, capability))
+            {
+                return Err(Ineligible::LacksCapability);
+            }
+            if !host.on_power() {
+                return Err(Ineligible::OnBattery);
+            }
+            Ok(())
         }
         Turn::Once {
             address,
@@ -729,6 +838,37 @@ pub trait HostLinux: Send + Sync {
     /// What answers the machine's actions here: a run, a terminal, a branch
     /// or delete of the machine, a Browser.
     fn runs(&self) -> Arc<dyn ActionProvider + Send + Sync>;
+}
+
+/// The apps whose long-lived connection this device runs ([`Turn::Connection`]):
+/// what [`takes_turn`] asks before it lets the device take one, and what the
+/// device that holds the lease starts and stops the app's process with.
+pub trait HostConnections: Send + Sync {
+    /// The apps installed here that keep a connection, each with the
+    /// capabilities it declares it needs.
+    fn connections(&self) -> Vec<(String, Vec<String>)>;
+
+    /// Whether `app` is installed on this device.
+    fn installed(&self, app: &str) -> bool;
+
+    /// Whether this device gives `app` the capability `capability` in `workspace`.
+    fn gives(&self, workspace: &str, app: &str, capability: &str) -> bool;
+
+    /// Whether this device runs on external power, or has no battery.
+    fn on_power(&self) -> bool;
+
+    /// Start `app`'s process in `workspace` with no window, unless it runs
+    /// there already.
+    ///
+    /// # Errors
+    /// Why the process did not start.
+    fn start(&self, workspace: &str, app: &str) -> Result<(), String>;
+
+    /// Whether the process this device started for `app` in `workspace` runs.
+    fn runs(&self, workspace: &str, app: &str) -> bool;
+
+    /// Stop the process this device started for `app` in `workspace`.
+    fn stop(&self, workspace: &str, app: &str);
 }
 
 /// The agent engine a device runs, as [`takes_turn`] asks it about an agent.

@@ -16,7 +16,12 @@
 //! [`Event`] it hands the dispatcher, placed the same way. So are the events a connector on this
 //! device reports ([`ConnectorEvents`]): each is a firing of every armed shortcut whose connector
 //! trigger names its app, source and matching fields.
+//!
+//! The same look keeps the apps' long-lived connections this device may run
+//! ([`Turn::Connection`]): it takes each one whose turn is this device's, runs the app's process
+//! with no window while it renews the claim, and stops the process when it may no longer.
 
+mod connections;
 pub mod folders;
 #[cfg(feature = "agents")]
 mod mail;
@@ -610,6 +615,8 @@ pub struct Runner {
     /// The fingerprint of who was here each workspace was last seen, by workspace: a webhook
     /// on presence fires when it changes, and the first look only learns it.
     presence: BTreeMap<String, String>,
+    /// The apps' long-lived connections this device holds ([`Turn::Connection`]).
+    connections: connections::Connections,
 }
 
 impl Runner {
@@ -641,6 +648,7 @@ impl Runner {
             invocations: None,
             seen_invocations: BTreeMap::new(),
             presence: BTreeMap::new(),
+            connections: connections::Connections::default(),
         }
     }
 
@@ -795,6 +803,9 @@ impl Runner {
         self.connector_events(now_ms);
         self.take_turns().await;
         self.tend(now_ms).await;
+        self.connections
+            .tend(&self.workspaces, self.order, now_ms)
+            .await;
     }
 
     /// Fire the triggers on every event the connectors this device runs reported
@@ -1431,6 +1442,12 @@ impl Runner {
     #[must_use]
     pub fn going(&self) -> Vec<&Firing> {
         self.going.values().map(|going| &going.firing).collect()
+    }
+
+    /// The apps' connections this device holds the lease of, each by its workspace and app.
+    #[must_use]
+    pub fn connections_held(&self) -> Vec<(String, String)> {
+        self.connections.held()
     }
 }
 

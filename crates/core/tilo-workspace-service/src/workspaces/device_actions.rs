@@ -67,6 +67,8 @@ pub(crate) struct DeviceWork {
     moved: tokio::sync::watch::Sender<u64>,
     /// The agent engine this device runs, once it runs one.
     agents: std::sync::RwLock<Option<Arc<dyn crate::work::AgentEngine>>>,
+    /// The apps whose connection this device runs, once an embedder installed them.
+    connections: std::sync::RwLock<Option<Arc<dyn crate::work::HostConnections>>>,
     /// The workspaces this device holds, as the action service decides them:
     /// who may ask is what each workspace's members say.
     workspaces: Arc<WorkspacesMap>,
@@ -259,6 +261,7 @@ impl DeviceWork {
             linux_running: std::sync::Mutex::default(),
             moved: tokio::sync::watch::Sender::new(0),
             agents: std::sync::RwLock::new(None),
+            connections: std::sync::RwLock::new(None),
             workspaces,
             turns: std::sync::OnceLock::new(),
             log: std::sync::Mutex::default(),
@@ -348,9 +351,10 @@ impl DeviceWork {
                     work.run_linux(claim, &caller, *run, completer).await;
                     return;
                 }
-                // The take action asks for no action that runs once: the agent
-                // engine, the trigger runner and the app's own process take those.
-                Turn::Once { .. } => {
+                // The take action asks for no action that runs once and no
+                // connection: the agent engine, the trigger runner and the app's own
+                // process take those.
+                Turn::Once { .. } | Turn::Connection { .. } => {
                     work.log.lock_recover().abandon(&invocation);
                     completer.complete(Err(ActionCallError::UnknownAction));
                     return;
@@ -878,6 +882,18 @@ impl super::Workspaces {
             peer.opens_app_record(device, app, resource, tilo_clock::wall())
         })
         .await
+    }
+
+    /// The apps whose connection this device runs ([`Self::run_connections`]).
+    pub(crate) fn host_connections(&self) -> Option<Arc<dyn crate::work::HostConnections>> {
+        self.inner.jobs.connections.read_recover().clone()
+    }
+
+    /// Take the connection turns of the apps `connections` runs here from now
+    /// on ([`crate::work::Turn::Connection`]): the device's trigger runner
+    /// claims each where this device has what the app needs.
+    pub fn run_connections(&self, connections: Arc<dyn crate::work::HostConnections>) {
+        *self.inner.jobs.connections.write_recover() = Some(connections);
     }
 
     /// The agent engine this device runs, which takes the turns of agents'
