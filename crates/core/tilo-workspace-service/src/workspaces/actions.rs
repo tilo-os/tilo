@@ -3832,7 +3832,9 @@ impl ActionProvider for InWorkspace {
                 .find(|installed| installed.release.app == app)?;
             let hash = installed.release.surface;
             if hash.is_empty() {
-                return None;
+                // A release that names no surface leaves it unknown, never empty: the package
+                // installed here says what it publishes.
+                return collab_types::app_surface::bytes_of(&app).map(<[u8]>::to_vec);
             }
             if let Some(bytes) = crate::surfaces::read(&hash) {
                 return Some(bytes);

@@ -37,12 +37,38 @@ fn native_target() -> (&'static str, &'static str, &'static str) {
 
 /// A signed package of `app` at `version`, a GUI app the desktop would start.
 fn author(app: &str, version: &str) -> Vec<u8> {
+    author_carrying(app, version, None)
+}
+
+/// The surface a book of sheets publishes: one resource and its two actions.
+const SURFACE: &str = r#"format = 2
+
+[[resources]]
+kind = "sheets.book"
+label = "Book"
+version = 1
+
+[[resources.verbs]]
+id = "recalculate"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "clear"
+destructive = true
+kind = "undoable"
+"#;
+
+/// A signed package of `app` at `version` that carries `surface`, when it publishes one.
+fn author_carrying(app: &str, version: &str, surface: Option<&str>) -> Vec<u8> {
     let identity = SigningIdentity::from_signing_key(SigningKey::from_bytes(&PUBLISHER));
     let publisher = hex::encode(identity.public_key_bytes());
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
     std::fs::write(payload.join("bin/app"), b"#!/bin/true\ntilo app\n").unwrap();
+    if let Some(surface) = surface {
+        std::fs::write(payload.join("surface.toml"), surface).unwrap();
+    }
     let (architecture, isa, _) = native_target();
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
         r#"
@@ -78,8 +104,9 @@ type = "gui"
     tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap()
 }
 
-/// The owner-signed catalogue offering `tapp` as `app` at `version`, downloaded from `url`.
-fn catalogue(app: &str, version: &str, url: &str, tapp: &[u8]) -> String {
+/// The owner-signed catalogue offering `tapp` as `app` at `version`, downloaded from `url`, its
+/// version naming `surface` (empty for none).
+fn catalogue(app: &str, version: &str, url: &str, tapp: &[u8], surface: &str) -> String {
     let publisher = SigningKey::from_bytes(&PUBLISHER);
     let (architecture, _, isa) = native_target();
     let mut entry = RegistryEntry {
@@ -105,7 +132,7 @@ fn catalogue(app: &str, version: &str, url: &str, tapp: &[u8]) -> String {
                 tapp_root_hash_hex: app_registry::tapp::load(tapp).unwrap().package_id.to_hex(),
                 tapp_size_bytes: tapp.len() as u64,
                 tapp_blake3_hex: blake3::hash(tapp).to_hex().to_string(),
-                tapp_surface_hex: app_registry::publisher::entry::surface_hex(tapp).unwrap(),
+                tapp_surface_hex: surface.into(),
                 target: registry_types::RegistryTarget {
                     platform: registry_types::TILO_OS_PLATFORM.into(),
                     architecture: architecture.into(),
@@ -146,6 +173,12 @@ struct Registry {
 
 impl Registry {
     fn start(app: &str, version: &str, tapp: &[u8], served: Vec<u8>) -> Self {
+        let surface = app_registry::publisher::entry::surface_hex(tapp).unwrap();
+        Self::naming(app, version, tapp, served, &surface)
+    }
+
+    /// A registry whose catalogue names `surface` for the version, whatever `tapp` carries.
+    fn naming(app: &str, version: &str, tapp: &[u8], served: Vec<u8>, surface: &str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let entries = Arc::new(catalogue(
@@ -153,6 +186,7 @@ impl Registry {
             version,
             &format!("http://127.0.0.1:{port}/app.tapp"),
             tapp,
+            surface,
         ));
         let served = Arc::new(served);
         std::thread::spawn(move || {
@@ -378,5 +412,84 @@ fn an_app_no_workspace_names_any_more_goes_only_when_the_follower_installed_it()
     assert!(
         found(OTHERWISE),
         "an app installed some other way is never the follower's to remove"
+    );
+}
+
+/// The actions the surface `app` publishes on this device names, by resource kind and id.
+fn published(app: &str) -> Vec<String> {
+    let kept =
+        collab_types::app_surface::bytes_of(app).expect("the device knows what the app publishes");
+    let file =
+        collab_types::surface::SurfaceFile::from_json(std::str::from_utf8(kept).unwrap()).unwrap();
+    file.resources
+        .iter()
+        .flat_map(|resource| {
+            resource
+                .verbs
+                .iter()
+                .map(move |verb| format!("{}#{}", resource.kind, verb.id))
+        })
+        .collect()
+}
+
+#[test]
+fn an_offer_that_names_no_surface_installs_with_every_action_its_bytes_carry() {
+    const APP: &str = "so.tilo.follower-unnamed-surface";
+    let (_dir, cache, _env) = device();
+    let tapp = author_carrying(APP, "1.4.0", Some(SURFACE));
+    // The registry names no surface, so the release made from its offer names none either.
+    let mut release = release_of(APP, "1.4.0", &tapp);
+    release.surface.clear();
+    let registries = Registry::naming(APP, "1.4.0", &tapp, tapp.clone(), "").listed();
+
+    cache.fetch_offered(&release, &TrustLists::default(), &registries);
+    assert!(
+        cache.runs(&release.package),
+        "a surface the offer does not name is unknown, never a reason to refuse"
+    );
+    assert_eq!(
+        published(APP),
+        ["sheets.book#recalculate", "sheets.book#clear"],
+        "every action the package carries is published, as its own bytes say"
+    );
+}
+
+#[test]
+fn a_release_recorded_without_a_surface_still_installs_with_every_action() {
+    const APP: &str = "so.tilo.follower-old-release";
+    let (_dir, cache, _env) = device();
+    let tapp = author_carrying(APP, "1.4.0", Some(SURFACE));
+    // Recorded before releases named their surface; the registry names it now.
+    let mut release = release_of(APP, "1.4.0", &tapp);
+    release.surface.clear();
+    let registries = Registry::start(APP, "1.4.0", &tapp, tapp.clone()).listed();
+
+    cache.fetch_offered(&release, &TrustLists::default(), &registries);
+    assert!(cache.runs(&release.package), "the old release installs");
+    assert_eq!(
+        published(APP),
+        ["sheets.book#recalculate", "sheets.book#clear"],
+        "with every action its package carries"
+    );
+}
+
+#[test]
+fn a_package_carrying_another_surface_than_its_release_names_installs_nothing() {
+    const APP: &str = "so.tilo.follower-carried-surface";
+    let (_dir, cache, _env) = device();
+    let tapp = author_carrying(APP, "1.4.0", Some(SURFACE));
+    let mut release = release_of(APP, "1.4.0", &tapp);
+    release.surface = "5e".repeat(32);
+    // The offer names none, so only the bytes can say the package is not that version.
+    let registries = Registry::naming(APP, "1.4.0", &tapp, tapp.clone(), "").listed();
+
+    cache.fetch_offered(&release, &TrustLists::default(), &registries);
+    assert!(
+        !cache.runs(&release.package),
+        "the bytes' surface decides, and it is not the one the release names"
+    );
+    assert!(
+        collab_types::app_surface::bytes_of(APP).is_none(),
+        "nothing of a refused package is published"
     );
 }

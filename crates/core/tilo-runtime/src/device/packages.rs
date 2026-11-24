@@ -889,9 +889,13 @@ impl PackageCache {
                 }) else {
                     continue;
                 };
-                if !offer
-                    .tapp_surface_hex
-                    .eq_ignore_ascii_case(&release.surface)
+                // An offer that names another surface than the release is not that version. One
+                // of them naming none says nothing: the bytes are checked as they arrive.
+                if !release.surface.is_empty()
+                    && !offer.tapp_surface_hex.is_empty()
+                    && !offer
+                        .tapp_surface_hex
+                        .eq_ignore_ascii_case(&release.surface)
                 {
                     return Err(format!(
                         "{} offers version {} with another surface than the workspace records",
@@ -1009,17 +1013,6 @@ impl PackageCache {
                 app_cli::runtime_offer_from_enabled(&runtime)
             })?
             .ok_or_else(|| format!("no repository offers the runtime {runtime}"))?;
-            let needed = tilo_peer_state::workspace_membership::AppRelease {
-                app: offer.package_id.clone(),
-                version: offer.version.clone(),
-                surface: offer.tapp_surface_hex.clone(),
-                package: offer.tapp_root_hash_hex.clone(),
-                publisher: offer.publisher_pubkey_hex.clone(),
-                file: None,
-                dev: false,
-                pinned: false,
-                payload: tilo_peer_state::workspace_membership::AppPayload::Tapp,
-            };
             let staged = tempfile::NamedTempFile::new_in(self.writer.content.dir())
                 .map_err(|error| error.to_string())?;
             let rows = &self.writer.rows;
@@ -1028,6 +1021,19 @@ impl PackageCache {
             })
             .map_err(|error| error.to_string())?;
             let runtime_bytes = std::fs::read(staged.path()).map_err(|error| error.to_string())?;
+            // The runtime is held to the surface its own bytes carry: an offer may name none.
+            let needed = tilo_peer_state::workspace_membership::AppRelease {
+                app: offer.package_id.clone(),
+                version: offer.version.clone(),
+                surface: app_registry::publisher::entry::surface_hex(&runtime_bytes)
+                    .map_err(|error| format!("the runtime {runtime}'s surface: {error:#}"))?,
+                package: offer.tapp_root_hash_hex.clone(),
+                publisher: offer.publisher_pubkey_hex.clone(),
+                file: None,
+                dev: false,
+                pinned: false,
+                payload: tilo_peer_state::workspace_membership::AppPayload::Tapp,
+            };
             let payload_from = registries
                 .enabled()
                 .find(|registry| registry.name == offer.registry)
@@ -1048,16 +1054,28 @@ impl PackageCache {
         lists: &TrustLists,
         payload_from: Option<String>,
     ) -> bool {
-        // The surface the workspace decides the app's changes against is the one it runs. A
-        // version that publishes no surface (`release.surface` empty) is held to none.
-        let surface = app_registry::publisher::entry::surface_hex(bytes);
-        if !release.surface.is_empty()
-            && !surface
-                .as_ref()
-                .is_ok_and(|surface| surface.eq_ignore_ascii_case(&release.surface))
-        {
+        // The surface the package's own bytes carry is the one it publishes. The workspace's
+        // release names it, and a package that carries another is not that version. A release
+        // that names none (one recorded before releases named their surface) leaves it unknown:
+        // the bytes say what the package publishes.
+        let surface = match package_surface(bytes) {
+            Ok(surface) => surface,
+            Err(error) => {
+                self.writer.rows.arrived(&release.app);
+                tracing::warn!(app = %release.app, %error, "the package's surface does not read: it is not installed");
+                return false;
+            }
+        };
+        let carried = surface.as_ref().map_or("", |(hash, _)| hash.as_str());
+        if !release.surface.is_empty() && !carried.eq_ignore_ascii_case(&release.surface) {
             self.writer.rows.arrived(&release.app);
-            tracing::warn!(app = %release.app, ?surface, "a package's surface is not the one the workspace records");
+            tracing::warn!(
+                app = %release.app,
+                version = %release.version,
+                recorded = %release.surface,
+                carried,
+                "the package carries another surface than the version the workspace runs: it is not installed"
+            );
             return false;
         }
         let hash = blake3::hash(bytes).to_hex();
@@ -1092,6 +1110,11 @@ impl PackageCache {
         self.writer.rows.arrived(&release.app);
         match applied {
             Ok(_) => {
+                // What the package publishes is known here from now on, as it is for a package
+                // installed before this device started: its types and actions.
+                if let Some((_, file)) = &surface {
+                    tilo_workspace_service::apps::register_package_surface(&release.app, file);
+                }
                 tracing::info!(app = %release.app, version = %release.version, "installed the version a workspace runs");
                 true
             }
@@ -1101,6 +1124,26 @@ impl PackageCache {
             }
         }
     }
+}
+
+/// The surface the package `bytes` carries: its hash in the form it is kept by, as a release
+/// names it, and its `surface.toml`. `None` for a package that publishes none.
+fn package_surface(bytes: &[u8]) -> Result<Option<(String, Vec<u8>)>, String> {
+    let mut blobs = std::collections::BTreeMap::new();
+    let tapp =
+        tilo_app_package::tapp::read(bytes, &mut blobs).map_err(|error| error.to_string())?;
+    let Some(hash) = tapp.meta.collection.entries.get("surface.toml") else {
+        return Ok(None);
+    };
+    let file = blobs
+        .remove(hash)
+        .ok_or("the package names a surface.toml it does not carry")?;
+    let (_, kept) = collab_types::surface::SurfaceFile::kept(&file)
+        .map_err(|error| format!("the package's surface.toml: {error}"))?;
+    Ok(Some((
+        blake3::hash(kept.as_bytes()).to_hex().to_string(),
+        file,
+    )))
 }
 
 #[cfg(test)]
