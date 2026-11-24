@@ -2778,6 +2778,32 @@ mod tests {
         (dir, store)
     }
 
+    /// A write `key` made in the clear, as a device with no keys to seal under
+    /// it writes one: a snapshot of `bytes` of `record`.
+    fn unsealed_message(key: &SigningKey, record: &str, seq: u64) -> NeighbourMsg {
+        let payload = collab_types::DocumentMutation::Snapshot(vec![seq as u8; 32])
+            .encode()
+            .unwrap();
+        let mut op = SignedOp::new_unsigned(
+            payload,
+            ArtifactId::new(),
+            Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+            AttestationId::new(),
+            OpKind::Change,
+            at(seq),
+            seq,
+        );
+        sign_op(&mut op, key).unwrap();
+        NeighbourMsg::AppDocument {
+            peer: peer_handle(&key.verifying_key().to_bytes()),
+            app_id: APP.into(),
+            cluster_id: CLUSTER.into(),
+            document_id: record.into(),
+            envelope: Box::new(op),
+            readers: None,
+        }
+    }
+
     fn cursor(lineage: Lineage, after_seq: u64) -> Cursor {
         Cursor { lineage, after_seq }
     }
@@ -3869,12 +3895,52 @@ mod tests {
         assert_eq!(last.frames.len(), 1);
     }
 
+    /// A write a device made in the clear is kept and served across a
+    /// restart: the host store a device's store replaced kept every commit
+    /// its device made, sealed or not. A sealed op is [`Frame::of`]'s, and a
+    /// member's unsealed op is no frame at all.
+    #[test]
+    fn a_write_kept_in_the_clear_is_served_after_a_restart() {
+        let (dir, store) = open();
+        let key = device(3);
+        let message = unsealed_message(&key, "note:clear", 3);
+        assert_eq!(Frame::of(&message), Err(Refusal::NotSealed));
+        let kept = Frame::unsealed(&message).unwrap();
+        assert_eq!(
+            kept.retention,
+            ContentRetention::Checkpoint,
+            "a snapshot starts its record over"
+        );
+        let sealed = frame(&key, 4, ContentRetention::Delta);
+        assert_eq!(
+            Frame::of(&sealed.message),
+            Ok(sealed.clone()),
+            "a sealed op is kept as the frame it declares"
+        );
+        assert_eq!(
+            Frame::unsealed(&sealed.message),
+            Err(Refusal::NotSealed),
+            "a sealed op is not a frame kept in the clear"
+        );
+        assert_eq!(store.retain(workspace(), &kept).unwrap(), Retained::New);
+        assert_eq!(
+            store.replay(workspace(), &[], Budget::default()).unwrap().frames,
+            vec![message.clone()]
+        );
+        drop(store);
+        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+        assert_eq!(
+            reopened.replay(workspace(), &[], Budget::default()).unwrap().frames,
+            vec![message],
+            "a restart serves the write still"
+        );
+    }
+
     /// The workspace's own published changes are kept, each beside the
     /// others in the order they were made: a device that links later is
     /// replayed them before the records they govern. A change already here
     /// is not kept twice, one that changes nothing is not kept, and neither
-    /// is another workspace's.
-    #[test]
+    /// is another workspace's.    #[test]
     fn a_workspace_keeps_the_changes_it_publishes_in_order() {
         let (dir, store) = open();
         let publish = |workspace: WorkspaceId, change: &[u8]| NeighbourMsg::SyncResp {

@@ -216,7 +216,16 @@ impl WorkspaceDocuments {
             link.carry(author, &message)?;
             return Ok(host_order());
         }
-        if let Ok(frame) = tilo_peer_state::store::Frame::of(&message) {
+        // This host's own writes are kept even where it has no keys to seal
+        // them: a device or holder that links later is replayed them.
+        let frame = match tilo_peer_state::store::Frame::of(&message) {
+            Ok(frame) => Some(frame),
+            Err(tilo_peer_state::store::Refusal::NotSealed) if author == self.device => {
+                tilo_peer_state::store::Frame::unsealed(&message).ok()
+            }
+            Err(_) => None,
+        };
+        if let Some(frame) = frame {
             self.store
                 .retain(workspace_id, &frame)
                 .map_err(|error| error.to_string())?;
