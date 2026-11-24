@@ -492,6 +492,51 @@ view member_row(p: Member) {
     }
 
     #[test]
+    fn the_window_search_replaces_what_it_found() {
+        let writer = Writer::new();
+        writer.one(
+            "replace_body",
+            vec![
+                Value::resource(&writer.doc),
+                Value::text("Monday stands. Monday goes.\n\nMonday stays."),
+            ],
+        );
+        let mut view = writer.window();
+        let shell = of_kind(view.tree(), "ui.NavShell")[0].key.clone();
+        view.fire_with(&shell, "search", Some(&Value::text("Monday")))
+            .unwrap();
+        view.poll_patches().unwrap();
+
+        let replacement = of_kind(view.tree(), "ui.TextInput")
+            .into_iter()
+            .find(|field| field.props.get("placeholder") == Some(&Value::text("The replacement")))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the search line takes a replacement:\n{}",
+                    dump(view.tree())
+                )
+            })
+            .key
+            .clone();
+        view.edit(&replacement, &Value::text("Tuesday")).unwrap();
+        view.poll_patches().unwrap();
+        let all = control(&view, "ui.Button", "Replace all");
+        view.press(&all).unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(
+            writer.markdown().trim(),
+            "Tuesday stands. Tuesday goes.\n\nTuesday stays.",
+            "every passage the search found is written over"
+        );
+        assert!(
+            of_kind(view.tree(), "ui.Button")
+                .iter()
+                .any(|button| button.props.get("label") == Some(&Value::text("Replace"))),
+            "the line writes one over too"
+        );
+    }
+
+    #[test]
     fn the_windows_toolbar_and_outline_are_there() {
         let writer = Writer::new();
         let window = writer

@@ -248,6 +248,26 @@ d-acwew27t = Bild löschen~present
 d-6mswb2vv = Kommentieren~present
 
 d-xxexkmsk = Writer
+    .w-crop = Zuschneiden
+    .w-flip-horizontally = Horizontal spiegeln
+    .w-flip-vertically = Vertikal spiegeln
+    .w-free = Frei
+    .w-in-line = Im Textfluss
+    .w-larger = Größer
+    .w-line-spacing = Zeilenabstand
+    .w-none = Keine
+    .w-picture = Bild
+    .w-placement = Platzierung
+    .w-replace = Ersetzen
+    .w-replace-all = Alle ersetzen
+    .w-replace-with = { $found } ersetzen durch
+    .w-show-it-all-again = Wieder ganz zeigen
+    .w-smaller = Kleiner
+    .w-text-wraps = Text umfließt
+    .w-the-replacement = Der Ersatz
+    .w-with-the-caret-in-a-picture = Mit dem Cursor in einem Bild ändern diese es.
+    .w-zoom-in = Vergrößern
+    .w-zoom-out = Verkleinern
     .w-bold = Fett
     .w-italic = Kursiv
     .w-underline = Unterstrichen
@@ -361,6 +381,7 @@ d-qgcdvpjd = Dateimenü
     .w-start-from-meeting-notes = Mit Besprechungsnotizen beginnen
 
 d-aeni6cqw = Statusleiste
+    .w-pages = { $page_count } Seiten
     .w-words = { $words ->
         [one] { $words } Wort
        *[other] { $words } Wörter

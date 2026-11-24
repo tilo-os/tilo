@@ -19,6 +19,10 @@ view writer(d: Document) {
     state heading_lines: List<Text> = []
     state heading_levels: List<Int> = []
     state reveal: Option<Text> = .none
+    // The words the window's search holds, and what they are replaced with: the page's search
+    // finds, and the app writes the replacement over what was found.
+    state found: Text = ""
+    state replacement: Text = ""
     // How much larger the page reads than its own size, and how many sheets it fills at the width
     // it is laid out at: the editor reports the count as the width and the words change.
     state zoom: Float = 1.0
@@ -37,6 +41,7 @@ view writer(d: Document) {
         // moves there and the caret stands at its start.
         on search(words: Text): set(reveal, words_place(d, words, asked))
             .then(set(asked, asked + 1))
+            .then(set(found, words))
         actions: {
             toolbar(d, format_ask, asked, panel, ruler, outline, zoom)
             spacer()
@@ -68,6 +73,9 @@ view writer(d: Document) {
             stack(fill: 1.0) {
                 if ruler {
                     ruler_band(d, format_ask, asked)
+                }
+                if found.trim() != "" {
+                    find_and_replace(d, found, replacement)
                 }
                 if d.notice != "" {
                     ui.Banner(
@@ -140,6 +148,22 @@ view writer(d: Document) {
                 }
                 status_band(d, page_count, zoom)
             }
+        }
+    }
+}
+
+/// The line under the title while the window's search holds words: the words the page was
+/// searched for, and what a person may write over them. The search is the window's, as every
+/// window's is; replacing is the app's, and it is one action, taken back as one change.
+template view find_and_replace(d: Document, found: Text, replacement: State<Text>) {
+    row(gap: .related, align: .center, padding: .related) {
+        text("Replace {found} with", role: .caption, secondary: true)
+        ui.TextInput(bind: replacement, placeholder: "The replacement", fill)
+        ui.Button("Replace", icon: .arrow_right) {
+            on press: replace_text(d, found, replacement)
+        }
+        ui.Button("Replace all", icon: .chevrons_right) {
+            on press: replace_text(d, found, replacement, all: true)
         }
     }
 }
