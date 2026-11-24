@@ -2931,10 +2931,12 @@ impl DirectSync {
         let device = self.device();
         let (hello, bootstraps) = {
             let replica = self.0.replica.lock();
-            let cert = replica
-                .certificates()
-                .into_iter()
-                .find(|certificate| certificate.device_public_key == device)
+            // A holder of the workspace is no member, and is named by the
+            // address it signed among those keeping it: the same name a
+            // member device is in the roster by ([`certified`]). A device
+            // placed to serve one record without a roster row comes with the
+            // certificate its host placed it with.
+            let cert = certified(&replica, device)
                 .or_else(|| self.0.placed.clone())
                 .ok_or("this device is not in the workspace roster")?;
             let revocations = replica
@@ -3736,16 +3738,13 @@ impl DirectSync {
         self.0.replica.id()
     }
 
-    /// This device's certificate in the replica's roster, the one its key signs for, or the
-    /// one it was placed with where the roster lists it nowhere.
+    /// This device's certificate in the replica's roster, or the one the address naming it
+    /// among the workspace's holders carries: the one its key signs for. A device placed to
+    /// serve one record without a roster row comes with the certificate its host placed it with.
     fn certificate(&self) -> Result<tilo_user_identity::DeviceCert, String> {
         let device = self.device();
-        self.0
-            .replica
-            .lock()
-            .certificates()
-            .into_iter()
-            .find(|certificate| certificate.device_public_key == device)
+        let replica = self.0.replica.lock();
+        certified(&replica, device)
             .or_else(|| self.0.placed.clone())
             .ok_or_else(|| "this device is not in the workspace roster".into())
     }

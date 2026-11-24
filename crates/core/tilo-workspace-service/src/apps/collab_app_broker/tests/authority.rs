@@ -63,57 +63,6 @@ async fn native_media_raw_admitted_channel_has_no_local_process_authority() {
         .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn network_wake_rpc_keeps_host_queries_outside_the_settings_sandbox() {
-    struct HostNetwork(Mutex<Vec<std::thread::ThreadId>>);
-    impl crate::apps::services::WifiContinuityServices for HostNetwork {
-        fn command(
-            &self,
-            command: runtime_collab::WifiContinuityCommand,
-        ) -> runtime_collab::WifiContinuityReply {
-            self.0.lock().unwrap().push(std::thread::current().id());
-            let runtime_collab::WifiContinuityCommand::NetworkWake { profile_uuid, .. } = command
-            else {
-                panic!("the RPC must preserve the typed wake request");
-            };
-            runtime_collab::WifiContinuityReply::NetworkWake {
-                status: runtime_collab::NetworkWakeStatus {
-                    profile: profile_uuid,
-                    interface: Some("wlp1s0".into()),
-                    configured: true,
-                    supported: Some(true),
-                    applied: Some(true),
-                    problem: None,
-                },
-            }
-        }
-    }
-    tokio::task::LocalSet::new().run_until(async {
-        let service = Arc::new(HostNetwork(Mutex::new(Vec::new())));
-        let base = local_directory_fixture();
-        let mut fixture = local_directory_fixture_with_authority(
-            base.membership.as_ref().unwrap().authority(),
-            ProcessServices { wifi_continuity: Some(service.clone()), ..Default::default() },
-            Some(71), None,
-        );
-        fixture.route =
-            CrdtRoute::app(WIFI_CONTINUITY_APP_ID, collab_types::person_workspace(&[0; 32]).to_string());
-        let client = fixture.invocation_channel();
-        let command = runtime_collab::WifiContinuityCommand::NetworkWake {
-            profile_uuid: "11111111-1111-4111-8111-111111111111".into(), enabled: Some(true),
-        };
-        let reply = client.wifi_continuity_command(&command).await.unwrap();
-        assert!(reply.valid());
-        assert!(matches!(reply, runtime_collab::WifiContinuityReply::NetworkWake { status } if status.applied == Some(true)));
-        assert_ne!(service.0.lock().unwrap().as_slice(), [std::thread::current().id()]);
-        // The route decides the app, never the caller: another app's
-        // channel is refused.
-        fixture.route.app_id = "so.tilo.browser".into();
-        assert!(fixture.invocation_channel().wifi_continuity_command(&command).await.is_err());
-        assert_eq!(service.0.lock().unwrap().len(), 1);
-    }).await;
-}
-
 #[cfg(test)]
 #[tokio::test(flavor = "current_thread")]
 async fn file_clipboard_raw_admitted_channel_cannot_mint_local_ownership() {

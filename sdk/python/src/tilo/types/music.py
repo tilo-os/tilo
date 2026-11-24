@@ -120,7 +120,7 @@ QueueMovedArgs = TypedDict("QueueMovedArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -181,7 +181,7 @@ class Notice(Resource):
 
 class Track(Resource):
     """Track — `tl.so.tilo.music.Track`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     wapyyydf: str  # key
     zpnajesf: str  # title
     pzaz5i7w: str  # artist
@@ -263,7 +263,7 @@ class Track(Resource):
 
 class Album(Resource):
     """Album — `tl.so.tilo.music.Album`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     xlmick3d: str  # key
     ui7q6nc2: str  # title
     c36cztfw: str  # artist
@@ -313,7 +313,7 @@ class Album(Resource):
 
 class Artist(Resource):
     """Artist — `tl.so.tilo.music.Artist`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     a3jwtsne: str  # key
     aht5vji7: str  # name
     p7suhaoo: int  # subscribers
@@ -343,7 +343,7 @@ class Artist(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.music.Playlist`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     zliedtfz: str  # key
     rtkxqj2p: str  # title
     htibtwee: str  # subtitle
@@ -370,7 +370,7 @@ class Playlist(Resource):
 
 class SpotifyDevice(Resource):
     """SpotifyDevice — `tl.so.tilo.music.SpotifyDevice`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     @property
     def _4ruem7bk(self) -> str:
         """key (`4ruem7bk` on the wire)."""
@@ -387,7 +387,7 @@ class SpotifyDevice(Resource):
 
 class SpotifyQueueItem(Resource):
     """SpotifyQueueItem — `tl.so.tilo.music.SpotifyQueueItem`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     r4rop6xj: str  # key
     teom6gyk: str  # title
     b4nh57k6: str  # artist
@@ -398,7 +398,7 @@ class SpotifyQueueItem(Resource):
 
 class Section(Resource):
     """Section — `tl.so.tilo.music.Section`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     jsrmddga: str  # key
     @property
     def _2kqqdved(self) -> str:
@@ -413,7 +413,7 @@ class Section(Resource):
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.music.Suggestion`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     qh34h2ch: str  # key
     xh6birha: str  # section
     a5bkjkyq: str  # kind
@@ -439,7 +439,7 @@ class Suggestion(Resource):
 
 class Mixtape(Resource):
     """Mixtape — `tl.so.tilo.music.Mixtape`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     @property
     def _5d2oxk4b(self) -> str:
         """name (`5d2oxk4b` on the wire)."""
@@ -504,7 +504,7 @@ class Mixtape(Resource):
 
 class Taste(Resource):
     """Taste — `tl.so.tilo.music.Taste`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     nhxvxvrt: bool  # followed_artists
     fygjzxca: bool  # liked_songs
     splmmoir: bool  # saved_albums
@@ -516,7 +516,7 @@ class Taste(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.music.Library`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     hkr3ia6d: str  # name
     cp5uymkx: list[Entry[Track]]  # tracks
     phkx3ocv: list[Entry[Album]]  # albums
@@ -564,6 +564,10 @@ class Library(Resource):
     def open_audio_file(self, *, file: Any) -> Track:
         """Opens an audio file: the file a person picked, or one Files handed over, and plays it. The song it already made opens instead of a second copy, so its place in history stays one."""
         return self.action("open_audio_file", file=file)
+
+    def open_link(self, *, link: str) -> Any:
+        """Opens a `music://` link: the song it names plays, and the album, artist or playlist it names opens on its page. A shell hands a link here whether or not a window of Music is open, and what this returns opens in the window; a link this library holds nothing for shows the library."""
+        return self.action("open_link", link=link)
 
     def add_to_queue(self, *, t: Track) -> None:
         """Adds a song to what follows."""
@@ -718,12 +722,12 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"session", "open_audio_file", "add_to_queue", "add_to_queue_many", "play_next", "play_next_many", "lyrics_now", "hide_rec", "hide_rec_many", "restore_rec", "restore_rec_many", "search", "open_suggestion", "lyrics_of", "note_failure", "note_failure_many", "new_mixtape", "set_catalogue", "connect_spotify", "finish_spotify", "disconnect_spotify", "spotify_devices", "transfer_playback", "remote_play", "remote_pause", "remote_next", "remote_previous", "spotify_now", "spotify_queue", "queue_on_spotify", "spotify_more", "update_taste", "update_taste_many", "dismiss_artist", "dismiss_artist_many", "prefer_artist", "prefer_artist_many"})
+    __actions__ = frozenset({"session", "open_audio_file", "open_link", "add_to_queue", "add_to_queue_many", "play_next", "play_next_many", "lyrics_now", "hide_rec", "hide_rec_many", "restore_rec", "restore_rec_many", "search", "open_suggestion", "lyrics_of", "note_failure", "note_failure_many", "new_mixtape", "set_catalogue", "connect_spotify", "finish_spotify", "disconnect_spotify", "spotify_devices", "transfer_playback", "remote_play", "remote_pause", "remote_next", "remote_previous", "spotify_now", "spotify_queue", "queue_on_spotify", "spotify_more", "update_taste", "update_taste_many", "dismiss_artist", "dismiss_artist_many", "prefer_artist", "prefer_artist_many"})
 
 
 class Music(Resource):
     """Music — `tl.so.tilo.music`."""
-    __surface__ = "so.tilo.music@7eb5918c11804f06"
+    __surface__ = "so.tilo.music@4532807ac4e7fdf3"
     def queue_moved(self,
         *,
         p: Any,

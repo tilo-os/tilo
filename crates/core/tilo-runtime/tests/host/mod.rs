@@ -176,7 +176,7 @@ where
 /// Write the daemon's errors, and every line the apps it starts write to their standard streams,
 /// to this process's error output, which the test's own log keeps: an app that ends at its start
 /// says why there, as it does in a device's log. `RUST_LOG` adds to it.
-fn say_what_went_wrong() {
+pub fn say_what_went_wrong() {
     let directives = tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref());
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(directives))

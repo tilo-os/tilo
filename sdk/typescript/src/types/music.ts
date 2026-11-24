@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.music@7eb5918c11804f06";
+export const SURFACE = "so.tilo.music@4532807ac4e7fdf3";
 
 /** The arguments of `remove_offline`. */
 export interface RemoveOfflineArgs {
@@ -418,6 +418,10 @@ export interface Library extends tilo.Resource {
   open_audio_file(args: {
     file: unknown;
   }): Promise<Track>;
+  /** Opens a `music://` link: the song it names plays, and the album, artist or playlist it names opens on its page. A shell hands a link here whether or not a window of Music is open, and what this returns opens in the window; a link this library holds nothing for shows the library. */
+  open_link(args: {
+    link: string;
+  }): Promise<unknown>;
   /** Adds a song to what follows. */
   add_to_queue(args: {
     t: Track;
@@ -528,7 +532,7 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["session", "open_audio_file", "add_to_queue", "add_to_queueMany", "play_next", "play_nextMany", "lyrics_now", "hide_rec", "hide_recMany", "restore_rec", "restore_recMany", "search", "open_suggestion", "lyrics_of", "note_failure", "note_failureMany", "new_mixtape", "set_catalogue", "connect_spotify", "finish_spotify", "disconnect_spotify", "spotify_devices", "transfer_playback", "remote_play", "remote_pause", "remote_next", "remote_previous", "spotify_now", "spotify_queue", "queue_on_spotify", "spotify_more", "update_taste", "update_tasteMany", "dismiss_artist", "dismiss_artistMany", "prefer_artist", "prefer_artistMany"] as const;
+export const LIBRARY_ACTIONS = ["session", "open_audio_file", "open_link", "add_to_queue", "add_to_queueMany", "play_next", "play_nextMany", "lyrics_now", "hide_rec", "hide_recMany", "restore_rec", "restore_recMany", "search", "open_suggestion", "lyrics_of", "note_failure", "note_failureMany", "new_mixtape", "set_catalogue", "connect_spotify", "finish_spotify", "disconnect_spotify", "spotify_devices", "transfer_playback", "remote_play", "remote_pause", "remote_next", "remote_previous", "spotify_now", "spotify_queue", "queue_on_spotify", "spotify_more", "update_taste", "update_tasteMany", "dismiss_artist", "dismiss_artistMany", "prefer_artist", "prefer_artistMany"] as const;
 
 /** The `tl.so.tilo.music.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {

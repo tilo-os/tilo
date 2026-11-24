@@ -53,26 +53,20 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     /// Records of this application's trees (a chain's next part, a
     /// container's child) that a peer wrote and no window here holds:
     /// whatever follows those trees holds them. Session-local.
-    ResourcesArrived {
-        records: Vec<String>,
-    },
+    ResourcesArrived { records: Vec<String> },
     /// The records another device wrote into this workspace's store. A window that keeps no
     /// document of its own, whose views read the store a record at a time, reads again what it
     /// read of these and nothing of the records not named: every view of a resource shows the
     /// change without re-reading the workspace. A window that holds the documents themselves
     /// has applied them already and needs no telling. Session-local.
-    RecordsMoved {
-        records: Vec<String>,
-    },
+    RecordsMoved { records: Vec<String> },
     /// The workspace's hosts sent everything they hold of the on-demand
     /// record on `route` (`neighbour_wire::document_sync`) this endpoint read,
     /// and it was not among it, or no host of the workspace is connected:
     /// what reads it shows it unavailable until it arrives, which its
     /// committed read delivers as ever. Session-local; minted by the SDK
     /// endpoint from its committed read.
-    ResourceUnavailable {
-        route: RouteSpec,
-    },
+    ResourceUnavailable { route: RouteSpec },
     /// Session chrome asked this app to bind its viewport/view mode to a
     /// member, or release that binding. This is local session control:
     /// it is never published to collaboration peers.
@@ -125,9 +119,7 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     },
     /// The invocation owner requested cooperative cancellation. Delivered at
     /// most once; the app-side job decides the next safe stopping boundary.
-    InvocationCancellation {
-        id: u64,
-    },
+    InvocationCancellation { id: u64 },
     /// The session's answer to a the toolkit's `CollabRequest::RemoteAction`.
     RemoteAction {
         message: tilo_actions::remote::RemoteActionMessage,
@@ -165,12 +157,9 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     },
     /// over its shell link. Kept in its place so an event a host wrote still
     /// reads as itself.
-    RetiredNearbyTransferCommandResult {
-        request_id: u64,
-    },
+    RetiredNearbyTransferCommandResult { request_id: u64 },
     /// Retired with the results above.
     RetiredNearbyTransferChanged,
-    Realtime(collab_types::realtime::RealtimeEvent),
     /// The store's answer to the app's resource command `request_id`, in the store's encoding
     /// (`tilo_resource_store::wire::Reply`).
     ResourceCommandResult {

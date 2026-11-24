@@ -4023,6 +4023,14 @@ fn caller_wait(request: &InvokeRequest) -> Option<std::time::Duration> {
 }
 
 impl ActionProvider for InWorkspace {
+    /// A record is read by the workspaces this host keeps, for a caller it holds a certificate
+    /// of there, so a person's device reads their own workspace's list from the server holding
+    /// it as it reads it from any holder.
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        let workspaces = self.server.shared.workspaces.get().cloned()?;
+        Some(workspaces.resource_reads())
+    }
+
     /// The surface the workspace's package `app` publishes, from the
     /// workspace's own content: the version its governance keeps names the
     /// hash, and a member that has the bytes answers for them. No app has to
@@ -4458,6 +4466,9 @@ impl GovernedServer {
             | RemoteActionMessage::Cancel { invocation } => {
                 self.governance.admitted(caller, invocation)
             }
+            // A record of a workspace this host keeps: read through the one reader of the
+            // workspaces it holds, decided by that workspace's governance for who asks.
+            RemoteActionMessage::ResourceRead { .. } => true,
             _ => false,
         }
     }

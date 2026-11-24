@@ -31,8 +31,8 @@ use tilo_test_env::within;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use super::support::{
-    WORKSPACE, enrol, in_workspace, route, start_host as start_server, start_peer, wait_keyed,
-    workspace, written,
+    WORKSPACE, commit_native, enrol, in_workspace, route, start_host as start_server, start_peer,
+    wait_keyed, workspace, written,
 };
 
 /// The person's second workspace, where a write waits.
@@ -43,7 +43,7 @@ const ELSEWHERE: &str = "3c9e5b7a-41d2-4f6b-8a10-7e2f9d0c6b35";
 fn write(doc: &mut AutoCommit, text: &str) -> DocumentMutation {
     let before = doc.get_heads();
     doc.put(ROOT, text, true).unwrap();
-    doc.commit();
+    commit_native(doc);
     if before.is_empty() {
         DocumentMutation::Snapshot(doc.save())
     } else {

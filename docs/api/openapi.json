@@ -7765,7 +7765,37 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Sends what the builder holds to the address it names, in the environment in use."
+        "description": "Sends what the builder holds to the address it names, in the environment in use, and answers\nthe response the engine wrote: its status, status text, headers, size and body. An agent or a\nscript calling `send` reads the answer in this one call instead of following a job.\n\nA person at the window sends with `start_send` instead, which starts the same request as a\njob they can stop while it waits: this action holds its caller until the answer arrives, so\nthere is nothing to cancel, which is why the window never calls it for its Send control."
+      },
+      "tl.so.tilo.api-tester.Workspace.start_send.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Starts what `send` sends as a job the person at the window can stop, and leaves its answer to\n`trigger watch_send`. A person pressing Send must be able to stop waiting, which an action\nthat waits for the answer cannot do; a caller that needs the answer in the call uses `send`."
+      },
+      "tl.so.tilo.api-tester.Workspace.send_failed.Arguments": {
+        "type": "object",
+        "properties": {
+          "why": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "why"
+        ],
+        "description": "Ends a send that got no answer from the engine, saying why in the window."
+      },
+      "tl.so.tilo.api-tester.Workspace.settle_send.Arguments": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "description": "Folds what a send's job said of itself into the window, and answers the response the job\nbrought when it came back with one."
       },
       "tl.so.tilo.api-tester.Workspace.cancel_send.Arguments": {
         "type": "object",
@@ -10007,6 +10037,7 @@
               "title",
               "capture",
               "login_notice",
+              "print_notice",
               "find_text"
             ],
             "type": "string"
@@ -10570,6 +10601,30 @@
         ],
         "description": "Open an address in the page's own window."
       },
+      "tl.so.tilo.browser.Page.submit_address.Arguments": {
+        "type": "object",
+        "properties": {
+          "typed": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "typed"
+        ],
+        "description": "What Enter in the address does: what follows an extension's keyword goes to the extension,\nwhich hears of it and goes where it sends the page; anything else is an address to go to."
+      },
+      "tl.so.tilo.browser.Page.choose_omnibox.Arguments": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "description": "The person chose one of the rows under the address: the extension hears what it stands for."
+      },
       "tl.so.tilo.browser.Page.back.Arguments": {
         "type": "object",
         "properties": {},
@@ -10845,6 +10900,36 @@
         "properties": {},
         "required": [],
         "description": "Opens the engine's developer tools for this page: its console, its elements and its network."
+      },
+      "tl.so.tilo.browser.Page.print_page.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Writes the page as a PDF and hands it to Print Centre, where the person chooses the printer\nand how it prints. The engine answers with the file once it has written it; a page with\nnothing open has nothing to print."
+      },
+      "tl.so.tilo.browser.Page.note_print.Arguments": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "path",
+          "name",
+          "message"
+        ],
+        "description": "Hands the PDF the engine wrote to Print Centre, through its own action, so the person\nchooses the printer and how it prints there; the copy the engine wrote goes. The window\nraises it once the engine is done; a person, agent or script never does."
       },
       "tl.so.tilo.browser.Page.mute.Arguments": {
         "type": "object",
@@ -11533,6 +11618,135 @@
           "id"
         ],
         "description": "Writes what installing, turning on or removing an extension came to, in the person's words.\nThe window raises it; a person, agent or script never does."
+      },
+      "tl.so.tilo.browser.Page.open_side_panel.Arguments": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.Extension",
+            "type": "object"
+          }
+        },
+        "required": [
+          "e"
+        ],
+        "description": "Asks the extension for its side panel beside the page: its own page says what the panel shows,\nand the page's window shows it there."
+      },
+      "tl.so.tilo.browser.Page.close_panel.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Closes the extension's page the page's window showed beside or over this one: its side panel,\nor the page it asked the person to sign in on, which ends as turned down."
+      },
+      "tl.so.tilo.browser.Page.remember_panel.Arguments": {
+        "type": "object",
+        "properties": {
+          "open": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "interactive": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "open",
+          "kind",
+          "id",
+          "url",
+          "interactive"
+        ],
+        "description": "Writes the extension's page the page's window shows beside this one into its record, or takes\nit away. The window raises it; a person, agent or script never does."
+      },
+      "tl.so.tilo.browser.Page.remember_omnibox.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "text",
+          "rows"
+        ],
+        "description": "Writes the extension the address addresses, and the rows it offers, into the page's record; an\nempty identifier takes them away, since the address no longer addresses one. The window\nraises it; a person, agent or script never does."
+      },
+      "tl.so.tilo.browser.Page.typed_address.Arguments": {
+        "type": "object",
+        "properties": {
+          "typed": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "typed"
+        ],
+        "description": "What the person typed in the page's address: when it starts with an extension's keyword and a\nspace, what follows is the extension's, which hears of each change."
+      },
+      "tl.so.tilo.browser.Page.address_left.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The person left the address without Enter: the extension hears of it."
+      },
+      "tl.so.tilo.browser.Page.enter_omnibox.Arguments": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "description": "The person pressed Enter, or chose one of the rows: the extension hears what it was given."
       },
       "tl.so.tilo.browser.Page.note_extension_updates.Arguments": {
         "type": "object",
@@ -12308,6 +12522,211 @@
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
+      "tl.so.tilo.browser.Panel.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.Panel.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "kind",
+              "ext",
+              "url"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.Panel.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "interactive"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.Panel.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.browser.Omnibox.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.Omnibox.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "ext",
+              "name",
+              "text"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.Omnibox.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.Omnibox.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.browser.OmniboxRow.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.OmniboxRow.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title",
+              "content"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.OmniboxRow.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.OmniboxRow.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.browser.Addressed.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.Addressed.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "ext",
+              "name",
+              "text"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.Addressed.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.Addressed.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
       "tl.so.tilo.browser.Extension.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -12324,7 +12743,8 @@
               "name",
               "version",
               "description",
-              "permissions"
+              "permissions",
+              "keyword"
             ],
             "type": "string"
           },
@@ -12343,7 +12763,8 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "enabled"
+              "enabled",
+              "side_panel"
             ],
             "type": "string"
           },
@@ -21188,6 +21609,51 @@
         ],
         "description": "Reports a person to the workspace's moderators, for how they behave here rather than for one\nmessage: what the reporter says is the whole of it, and the moderators decide it as any other\nreport."
       },
+      "tl.so.tilo.chat.Conversations.ban.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "who",
+          "reason"
+        ],
+        "description": "Bans a person from the workspace: they leave it and stay out until a moderator lifts the ban.\nThe workspace's own ban decides who may, its owners and moderators; Chat keeps the ban on the\nmoderators' Reports page as a decided report, which overturning lifts."
+      },
       "tl.so.tilo.chat.Conversations.ask_for_sub_agent.Arguments": {
         "type": "object",
         "properties": {
@@ -21416,6 +21882,191 @@
         ],
         "description": "Renames a voice channel. A call in it is untouched."
       },
+      "tl.so.tilo.chat.Hearing.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chat.Hearing.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.Hearing.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.Hearing.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.chat.Hearing.set_hearing.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "percent": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "who",
+          "percent"
+        ],
+        "description": "Plays `who` in calls on this device at `percent` of as they arrive, and hears them again if\nthey were silenced. Only this device plays them so; nobody else hears a difference."
+      },
+      "tl.so.tilo.chat.Hearing.silence.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "who"
+        ],
+        "description": "Silences `who` in calls on this device, or hears them again at the level they had. Only\nthis person stops hearing them; everyone else in the call still does."
+      },
+      "tl.so.tilo.chat.Heard.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chat.Heard.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.Heard.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "silenced"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.Heard.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
       "tl.so.tilo.chat.TextChannel.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -21610,6 +22261,21 @@
           "definition"
         ],
         "description": "Sends a view as a message: its title as what the message says, its definition for anyone\nwho reads it to add to their own views."
+      },
+      "tl.so.tilo.chat.TextChannel.share_window.Arguments": {
+        "type": "object",
+        "properties": {
+          "window": {
+            "type": "string"
+          },
+          "can_edit": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "window"
+        ],
+        "description": "Shares one of the person's windows live into a conversation: the shell shares the window with\nthe workspace, as its own window bar does, and the message refers to that share, so the\nconversation shows the window live where the message stands. Its sharer chooses whether the\nmembers viewing it may control it."
       },
       "tl.so.tilo.chat.TextChannel.relay.Arguments": {
         "type": "object",
@@ -22008,6 +22674,62 @@
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
+      "tl.so.tilo.chat.LiveShare.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.chat.LiveShare.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "window",
+              "workspace",
+              "title",
+              "app_name",
+              "icon"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.LiveShare.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "can_edit",
+              "ended"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.chat.LiveShare.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
       "tl.so.tilo.chat.OutsideEmoji.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -22164,6 +22886,24 @@
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
+      "tl.so.tilo.chat.Message.set_share_access.Arguments": {
+        "type": "object",
+        "properties": {
+          "can_edit": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "can_edit"
+        ],
+        "description": "Lets the members viewing a window shared into a conversation control it, or only view it: the\nshell's share changes, and the message says so."
+      },
+      "tl.so.tilo.chat.Message.stop_sharing.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Stops sharing a window shared into a conversation: the shell's share ends, and the message\nsays the window is no longer shared in its place."
+      },
       "tl.so.tilo.chat.Message.relay_reaction.Arguments": {
         "type": "object",
         "properties": {
@@ -22274,7 +23014,9 @@
         "properties": {
           "field": {
             "description": "The name of the field to set.",
-            "enum": [],
+            "enum": [
+              "banned"
+            ],
             "type": "string"
           },
           "value": {
@@ -22315,7 +23057,13 @@
         "required": [
           "why"
         ],
-        "description": "Overturns what was decided about a report, saying why: the report is open again, for a\nmoderator to decide anew, and the decision overturned stays in its history."
+        "description": "Overturns what was decided about a report, saying why: the report is open again, for a\nmoderator to decide anew, and the decision overturned stays in its history. A ban it decided\nis lifted, so the person may come back."
+      },
+      "tl.so.tilo.chat.Report.ban_reported.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Settles a report by banning the person it is about from the workspace, as [`ban`] does."
       },
       "tl.so.tilo.chat.Thread.$create.Arguments": {
         "type": "object",
@@ -22488,6 +23236,21 @@
         ],
         "description": "Sends a view as a message: its title as what the message says, its definition for anyone\nwho reads it to add to their own views."
       },
+      "tl.so.tilo.chat.Thread.share_window.Arguments": {
+        "type": "object",
+        "properties": {
+          "window": {
+            "type": "string"
+          },
+          "can_edit": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "window"
+        ],
+        "description": "Shares one of the person's windows live into a conversation: the shell shares the window with\nthe workspace, as its own window bar does, and the message refers to that share, so the\nconversation shows the window live where the message stands. Its sharer chooses whether the\nmembers viewing it may control it."
+      },
       "tl.so.tilo.chat.Thread.relay.Arguments": {
         "type": "object",
         "properties": {
@@ -22629,6 +23392,16 @@
           "written_in"
         ],
         "description": "Posts a message written on another service, as it was written there: who wrote it, as that\nservice names them, where and when. A bridge relays another service's conversation this\nway; the message's history names the bridge, and the message says whom it relays."
+      },
+      "tl.so.tilo.chat.Thread.archive_thread.Arguments": {
+        "type": "object",
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "description": "Sets a thread aside once its talk is done, keeping everything said in it, or reopens it. Its\nchip says so under the message it started from; a reply in it reopens it. The person who\nstarted it or a moderator does this."
       },
       "tl.so.tilo.chat.Thread.continue_answer.Arguments": {
         "type": "object",
@@ -22953,6 +23726,21 @@
           "definition"
         ],
         "description": "Sends a view as a message: its title as what the message says, its definition for anyone\nwho reads it to add to their own views."
+      },
+      "tl.so.tilo.chat.Direct.share_window.Arguments": {
+        "type": "object",
+        "properties": {
+          "window": {
+            "type": "string"
+          },
+          "can_edit": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "window"
+        ],
+        "description": "Shares one of the person's windows live into a conversation: the shell shares the window with\nthe workspace, as its own window bar does, and the message refers to that share, so the\nconversation shows the window live where the message stands. Its sharer chooses whether the\nmembers viewing it may control it."
       },
       "tl.so.tilo.chat.Direct.relay.Arguments": {
         "type": "object",
@@ -23765,6 +24553,38 @@
           "name"
         ],
         "description": "One you added."
+      },
+      "tilo.workspace.emoji.rename-emoji.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "to"
+        ],
+        "description": "One you added: its picture and who added it stay. Reactions and text that wrote its old `:name:` no longer draw it."
+      },
+      "tilo.workspace.emoji.rename-any-emoji.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "to"
+        ],
+        "description": "Someone else's emoji: the workspace's roles decide who may."
       },
       "tilo.workspace.emoji.remove-any-emoji.Arguments": {
         "type": "object",
@@ -30352,6 +31172,206 @@
         "required": [],
         "description": "Stops the language server, as a person pressing \"Try again\" after a failure does."
       },
+      "tl.so.tilo.code-editor.Project.show_problems.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows the file's problems under the code, as the window's own key does anywhere in it."
+      },
+      "tl.so.tilo.code-editor.Project.show_terminal.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows the project's terminal under the code, as Ctrl+J does anywhere in the window."
+      },
+      "tl.so.tilo.code-editor.Project.show_search_results.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows what the project search found under the code, as Ctrl+Shift+F does anywhere in the\nwindow."
+      },
+      "tl.so.tilo.code-editor.Project.ensure_settings.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "This person's settings, made by their own first change so they are theirs to read and write."
+      },
+      "tl.so.tilo.code-editor.Project.zoom_in.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows the code one step larger: the editor's own text size, kept for the person on every\ndevice."
+      },
+      "tl.so.tilo.code-editor.Project.zoom_out.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows the code one step smaller."
+      },
+      "tl.so.tilo.code-editor.Project.zoom_reset.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows the code at its own size again."
+      },
+      "tl.so.tilo.code-editor.Settings.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.code-editor.Settings.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.code-editor.Settings.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.console.SessionLink.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.console.SessionLink.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "run",
+              "instruction"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.console.SessionLink.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.console.AgentCard.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.console.AgentCard.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "client"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.console.AgentCard.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.console.AgentCard.stop_agent.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Stops the client's working session, keeping its grant."
+      },
+      "tl.so.tilo.console.AgentCard.take_over_agent.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Stops the client's session and opens what it changed last, or the workspace it worked in."
+      },
+      "tl.so.tilo.console.AgentCard.undo_agent_session.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Takes back every change of the client's newest session, when the history says it can."
+      },
+      "tl.so.tilo.console.AgentCard.revoke_agent.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Takes back the grant the client came in by."
+      },
+      "tl.so.tilo.console.AgentCard.let_agent_go_on.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Lets a stopped client's calls through again."
+      },
       "tl.so.tilo.console.Window.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -30394,6 +31414,36 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.console.Window.publish.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Gives each of the newest sessions the history lists, and each client that acted here, a\nresource of its own, so each can be linked to, found and opened outside this window. An\ninsert under a key a resource already stands under leaves that resource as it stands, so a\nreading that answers again changes nothing twice."
+      },
+      "tl.so.tilo.console.Window.session_link.Arguments": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "description": "The resource of the session `run`, made now when the window has not published it yet: every\nway of opening a session goes through it, so the list, a link, search and another app open\nthe same window."
+      },
+      "tl.so.tilo.console.Window.agent_card.Arguments": {
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "client"
+        ],
+        "description": "The card of `client`, made now when the window has not published it yet: every way of opening\na client's card goes through it."
       },
       "tl.so.tilo.contacts.Labeled.$create.Arguments": {
         "type": "object",
@@ -36531,7 +37581,7 @@
         "required": [
           "op"
         ],
-        "description": "Sends a message through a channel's webhook, as the bridge plans it. The call arrives as the\nJSON the bridge's program writes, and is read as the record the worker's shape declares."
+        "description": "Sends a message through a channel's webhook, as the bridge plans it. The call arrives as the\nJSON the bridge's program writes, and is read as the record its shape declares."
       },
       "tl.so.tilo.discord.preview.Discord.edit_there.Arguments": {
         "type": "object",
@@ -38462,56 +39512,6 @@
         "required": [],
         "description": "What the outside service said is taken in."
       },
-      "tl.so.tilo.discord.preview.Perform.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.discord.preview.Perform.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "account",
-              "op"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.Perform.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.discord.preview.Perform.$origin.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "What the outside service said is taken in."
-      },
       "tl.so.tilo.discord.preview.Accounts.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -39519,6 +40519,24 @@
           "name"
         ],
         "description": "A drive's name in the words of the person reading it, by its serial."
+      },
+      "tl.so.tilo.disks.Disks.open_in_files.Arguments": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "description": "Opens a mounted folder in Files."
+      },
+      "tl.so.tilo.disks.Disks.open_usage.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opens Disk Usage, where a folder's use is measured."
       },
       "tl.so.tilo.disks.mount_first.Arguments": {
         "type": "object",
@@ -50276,7 +51294,8 @@
               "severity",
               "unit",
               "boot",
-              "search"
+              "search",
+              "selected"
             ],
             "type": "string"
           },
@@ -50362,6 +51381,18 @@
           "value"
         ],
         "description": "Narrows the records to those holding `value`."
+      },
+      "tl.so.tilo.logs.Logs.choose.Arguments": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "description": "Shows one record's detail."
       },
       "tl.so.tilo.logs.Logs.clear_filters.Arguments": {
         "type": "object",
@@ -51199,6 +52230,18 @@
           "name"
         ],
         "description": "One file the message came with, as a file of its own: what Save puts in Files, and what an\nagent reads or hands another app."
+      },
+      "tl.so.tilo.mail.Message.open_attachment.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Opens a file a message came with in the app that opens its kind, as Files opens one: the file\nreaches that app as the same content both read, never as a path neither has."
       },
       "tl.so.tilo.mail.Picture.$create.Arguments": {
         "type": "object",
@@ -53784,6 +54827,22 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.monitor.Monitor.apply_cadence.Arguments": {
+        "type": "object",
+        "properties": {
+          "ms": {
+            "type": "integer"
+          },
+          "paused": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ms",
+          "paused"
+        ],
+        "description": "Keeps this device's reading at the cadence the person watches it by."
+      },
       "tl.so.tilo.monitor.end_app.Arguments": {
         "type": "object",
         "properties": {
@@ -54694,6 +55753,18 @@
           "file"
         ],
         "description": "Opens an audio file: the file a person picked, or one Files handed over, and plays it. The\nsong it already made opens instead of a second copy, so its place in history stays one."
+      },
+      "tl.so.tilo.music.Library.open_link.Arguments": {
+        "type": "object",
+        "properties": {
+          "link": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "link"
+        ],
+        "description": "Opens a `music://` link: the song it names plays, and the album, artist or playlist it names\nopens on its page. A shell hands a link here whether or not a window of Music is open, and what\nthis returns opens in the window; a link this library holds nothing for shows the library."
       },
       "tl.so.tilo.music.Library.add_to_queue.Arguments": {
         "type": "object",
@@ -57916,6 +58987,63 @@
         ],
         "description": "Marks text on a page: a highlight, an underline, a strikethrough or a squiggle over the lines\na selection covers, in the reader's colour."
       },
+      "tl.so.tilo.pdf-viewer.Document.mark_selection.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.pdf-viewer.Page",
+            "type": "object"
+          },
+          "style": {
+            "type": "string"
+          },
+          "colour": {
+            "type": "string"
+          },
+          "first": {
+            "type": "integer"
+          },
+          "last": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "p",
+          "style",
+          "colour",
+          "first",
+          "last"
+        ],
+        "description": "Marks exactly the words a selection covers: the runs of `p` from `first` to `last`, both\ncounted in, as a highlight, an underline, a strikethrough or a squiggle in the colour the\nreader holds. This is how a person marks lines of text they selected, the way the words are\nread; dragging a box still marks the words the box covers."
+      },
       "tl.so.tilo.pdf-viewer.Document.draw_ink.Arguments": {
         "type": "object",
         "properties": {
@@ -58693,6 +59821,107 @@
           "y"
         ],
         "description": "Signs a page where the person pressed: the signature they drew, else their name set in the\nsignature's box."
+      },
+      "tl.so.tilo.pdf-viewer.Document.move_signature.Arguments": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.pdf-viewer.Signature",
+            "type": "object"
+          },
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "s",
+          "x",
+          "y"
+        ],
+        "description": "Puts a placed signature at another point of its page: its top-leading corner as fractions of\nthe page's box. It is a change like any other, so everyone looking sees it move and one undo\ntakes the move back."
+      },
+      "tl.so.tilo.pdf-viewer.Document.move_placed_signature.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.pdf-viewer.Page",
+            "type": "object"
+          },
+          "who": {
+            "type": "string"
+          },
+          "at": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "p",
+          "who",
+          "at"
+        ],
+        "description": "Moves the signature `who` names, as the place over its page reports it: its new corner as\nwhole points of the page."
       },
       "tl.so.tilo.pdf-viewer.Document.sign_with_name.Arguments": {
         "type": "object",
@@ -63288,7 +64517,9 @@
         "properties": {
           "field": {
             "description": "The name of the field to set.",
-            "enum": [],
+            "enum": [
+              "showing"
+            ],
             "type": "string"
           },
           "value": {
@@ -63346,6 +64577,22 @@
         ],
         "description": "Takes the file the person chose as what will be printed."
       },
+      "tl.so.tilo.print-centre.PrintCentre.print_file.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Takes a document another app hands over as what this window prints, and shows the print\nform so the person chooses the printer and how it prints: the one action an app calls to\nprint a file it made. The file's bytes are the workspace's content, so the app that hands\nit over never needs this window's own files."
+      },
+      "tl.so.tilo.print-centre.PrintCentre.clear_showing.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Leaves the place another app asked this window to show, so the person's own choice stands."
+      },
       "tl.so.tilo.print-centre.PrintCentre.send_to_printer.Arguments": {
         "type": "object",
         "properties": {},
@@ -63369,6 +64616,63 @@
         "properties": {},
         "required": [],
         "description": "Asks how far the scan has got; a page that arrived is added to the document."
+      },
+      "tl.so.tilo.print-centre.PrintCentre.crop_page.Arguments": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.print-centre.ScannedPage",
+            "type": "object"
+          },
+          "left": {
+            "type": "number"
+          },
+          "top": {
+            "type": "number"
+          },
+          "right": {
+            "type": "number"
+          },
+          "bottom": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "page",
+          "left",
+          "top",
+          "right",
+          "bottom"
+        ],
+        "description": "Crops a scanned page to the part the person kept, in fractions of the picture a viewer\nshows. The text read off the whole page no longer describes it, so it is cleared."
       },
       "tl.so.tilo.print-centre.PrintCentre.remove_page.Arguments": {
         "type": "object",
@@ -63410,6 +64714,12 @@
           "page"
         ],
         "description": "Throws a scanned page away."
+      },
+      "tl.so.tilo.print-centre.PrintCentre.new_scanned_document.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Starts a new scanned document: the pages it held go. The change is the person's own and is\ntaken back from history; it is refused while a page is still being scanned, so a scan in\nflight is never thrown away."
       },
       "tl.so.tilo.print-centre.PrintCentre.move_page.Arguments": {
         "type": "object",
@@ -64677,6 +65987,49 @@
         ],
         "description": "Takes in a theme saved with Export, from this workspace or another: every role, tuned value\nand glass shader, once it is admitted and keeps every contrast floor. Importing names it by\nits own name, so what a person exported under a name comes back under one."
       },
+      "tl.so.tilo.settings.ProblemReport.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.settings.ProblemReport.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "body"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.settings.ProblemReport.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
       "tl.so.tilo.settings.move_screen.Arguments": {
         "type": "object",
         "properties": {
@@ -64736,6 +66089,55 @@
         ],
         "description": "Move the screen picked to where the pointer was let go, in the desktop's own pixels, snapped\nto a small grid: a drag too small to mean anything is not a change."
       },
+      "tl.so.tilo.settings.set_sdr_brightness.Arguments": {
+        "type": "object",
+        "properties": {
+          "displays": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.device.Displays",
+            "type": "object"
+          },
+          "display": {
+            "type": "string"
+          },
+          "nits": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "displays",
+          "display",
+          "nits"
+        ],
+        "description": "Set how bright ordinary content looks in HDR, from the slider's value in cd/m²."
+      },
       "tl.so.tilo.settings.open_pane.Arguments": {
         "type": "object",
         "properties": {
@@ -64760,6 +66162,92 @@
         ],
         "description": "Show the pane a setting is on, as search's own row for a setting runs it."
       },
+      "tl.so.tilo.settings.open_manage_page.Arguments": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host-account.HostAccount",
+            "type": "object"
+          }
+        },
+        "required": [
+          "account"
+        ],
+        "description": "Opens the provider's page where a card, a plan and the invoices change, in the app that\nopens web addresses: the provider's own page, never a form Tilo draws. The page is the one\nthe account names, so nothing an app or an agent passes can open another, and an account\nthat names none opens nothing."
+      },
+      "tl.so.tilo.settings.open_invoice.Arguments": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.tilo.host-account.HostAccount",
+            "type": "object"
+          },
+          "invoice": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "invoice"
+        ],
+        "description": "Opens one of the account's invoices on the provider's page. The invoice is the account's\nown, looked up by its id, so only a page the account names opens and an id it does not\nhold opens nothing."
+      },
       "tl.so.tilo.settings.set_processors_room.Arguments": {
         "type": "object",
         "properties": {
@@ -64783,6 +66271,18 @@
           "percent"
         ],
         "description": "The memory this device keeps free for the people at it."
+      },
+      "tl.so.tilo.settings.send_problem_report.Arguments": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "description": "Files this computer's record of a problem as a problem report in the workspace's feedback\nchannel, where the people who make Tilo read what went wrong, with the record's own words."
       },
       "tl.so.tilo.settings.review_contrast.Arguments": {
         "type": "object",
@@ -70777,10 +72277,8 @@
             "type": "object"
           }
         },
-        "required": [
-          "from"
-        ],
-        "description": "Copies every field of one trigger onto another."
+        "required": [],
+        "description": "Copies every field of one trigger onto another, or the type's own defaults onto it when none is\nnamed: a trigger built here is a value no action takes, so the action builds what it copies."
       },
       "tl.so.tilo.shortcuts.Offer.$create.Arguments": {
         "type": "object",
@@ -76017,6 +77515,18 @@
         ],
         "description": "Opens a `.flatpakref`: it joins the catalogue as a card, and installing it stays a separate\nstep the person takes.\nOpens a `.flatpakref`: a repository's app, which the source installs itself. The package\nreview reaches it through `import_package`, which opens both kinds of file."
       },
+      "tl.so.tilo.store.Store.open_link.Arguments": {
+        "type": "object",
+        "properties": {
+          "link": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "link"
+        ],
+        "description": "Opens a `tilo-store:` link: the app (`tilo-store:app/<identity>`), or runtime\n(`tilo-store:runtime/<identity>`) it names, or the catalogue. A shell hands a link here\nwhether or not a window of the Store is open, and what this returns opens in the window; a\nlink this catalogue holds nothing for shows the catalogue with why."
+      },
       "tl.so.tilo.store.Store.review_runtime.Arguments": {
         "type": "object",
         "properties": {
@@ -77576,8 +79086,8 @@
         "properties": {
           "kind": {
             "choice_labels": {
-              "area": "An ongoing responsibility that has no end, only what is done next",
-              "project": "A finite goal: the work ends, and so does the project"
+              "area": "Area",
+              "project": "Project"
             },
             "enum": [
               "project",
@@ -77673,12 +79183,12 @@
           },
           "status": {
             "choice_labels": {
-              "backlog": "Written down, not planned yet",
-              "cancelled": "Not to be done",
-              "done": "Done and checked by its person",
-              "in_progress": "Someone is working on it",
-              "in_review": "Done by whoever worked on it, waiting for a person to look",
-              "todo": "Planned: the next thing to pick up"
+              "backlog": "Backlog",
+              "cancelled": "Cancelled",
+              "done": "Done",
+              "in_progress": "In progress",
+              "in_review": "In review",
+              "todo": "Todo"
             },
             "enum": [
               "backlog",
@@ -77955,12 +79465,12 @@
           },
           "status": {
             "choice_labels": {
-              "backlog": "Written down, not planned yet",
-              "cancelled": "Not to be done",
-              "done": "Done and checked by its person",
-              "in_progress": "Someone is working on it",
-              "in_review": "Done by whoever worked on it, waiting for a person to look",
-              "todo": "Planned: the next thing to pick up"
+              "backlog": "Backlog",
+              "cancelled": "Cancelled",
+              "done": "Done",
+              "in_progress": "In progress",
+              "in_review": "In review",
+              "todo": "Todo"
             },
             "enum": [
               "backlog",
@@ -78215,12 +79725,12 @@
         "properties": {
           "status": {
             "choice_labels": {
-              "backlog": "Written down, not planned yet",
-              "cancelled": "Not to be done",
-              "done": "Done and checked by its person",
-              "in_progress": "Someone is working on it",
-              "in_review": "Done by whoever worked on it, waiting for a person to look",
-              "todo": "Planned: the next thing to pick up"
+              "backlog": "Backlog",
+              "cancelled": "Cancelled",
+              "done": "Done",
+              "in_progress": "In progress",
+              "in_review": "In review",
+              "todo": "Todo"
             },
             "enum": [
               "backlog",
@@ -78239,7 +79749,7 @@
         "required": [
           "status"
         ],
-        "description": "Puts a task in a column of the board, at the place `at` among the tasks already there: what a\ncard's drag names."
+        "description": "Puts a task in a column of the board, at the place `at` among the tasks already there: what a\ncard's drag names. A drop in its own column only moves it among the column's tasks."
       },
       "tl.so.tilo.tasks.Task.check.Arguments": {
         "type": "object",
@@ -78656,12 +80166,12 @@
           },
           "kind": {
             "choice_labels": {
-              "answer": "An answer of the person the work is for: the task needs them",
-              "change": "A resource of the workspace changing",
-              "people": "Answers of several people",
-              "pieces": "Its pieces, the tasks under it: it goes on when none of them is still to be worked on",
-              "reply": "A reply: in a mail thread, a conversation",
-              "time": "A moment: nothing else ends it"
+              "answer": "An answer",
+              "change": "A change",
+              "people": "Answers",
+              "pieces": "Its pieces",
+              "reply": "A reply",
+              "time": "A moment"
             },
             "enum": [
               "time",
@@ -78716,8 +80226,8 @@
           },
           "by": {
             "choice_labels": {
-              "agent": "The agent working on it, which holds itself to it",
-              "person": "Its person's"
+              "agent": "Its agent",
+              "person": "Its person"
             },
             "enum": [
               "person",
@@ -78763,11 +80273,11 @@
         "properties": {
           "why": {
             "choice_labels": {
-              "budget": "Its budget in money is spent",
-              "failed": "It could not go on: the line says what failed",
-              "lost_worker": "Its agent sessions were interrupted and did not come back",
-              "person": "A person stopped it",
-              "time": "Its budget in working time is spent"
+              "budget": "Out of money",
+              "failed": "Failed",
+              "lost_worker": "Interrupted",
+              "person": "Stopped by a person",
+              "time": "Out of time"
             },
             "enum": [
               "failed",
@@ -78973,12 +80483,12 @@
           },
           "status": {
             "choice_labels": {
-              "backlog": "Written down, not planned yet",
-              "cancelled": "Not to be done",
-              "done": "Done and checked by its person",
-              "in_progress": "Someone is working on it",
-              "in_review": "Done by whoever worked on it, waiting for a person to look",
-              "todo": "Planned: the next thing to pick up"
+              "backlog": "Backlog",
+              "cancelled": "Cancelled",
+              "done": "Done",
+              "in_progress": "In progress",
+              "in_review": "In review",
+              "todo": "Todo"
             },
             "enum": [
               "backlog",
@@ -79200,12 +80710,12 @@
           },
           "status": {
             "choice_labels": {
-              "backlog": "Written down, not planned yet",
-              "cancelled": "Not to be done",
-              "done": "Done and checked by its person",
-              "in_progress": "Someone is working on it",
-              "in_review": "Done by whoever worked on it, waiting for a person to look",
-              "todo": "Planned: the next thing to pick up"
+              "backlog": "Backlog",
+              "cancelled": "Cancelled",
+              "done": "Done",
+              "in_progress": "In progress",
+              "in_review": "In review",
+              "todo": "Todo"
             },
             "enum": [
               "backlog",
@@ -80252,6 +81762,454 @@
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
+      "tl.so.tilo.tube.PairedDevice.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.PairedDevice.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "name",
+              "last_error"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.PairedDevice.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "approved",
+              "revoked"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.PairedDevice.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.PairedDevice.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.tube.GrayjayPairAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.GrayjayPairAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "invite"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjayPairAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjayPairAsk.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.GrayjayPairAsk.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.tube.GrayjaySyncAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.GrayjaySyncAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjaySyncAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjaySyncAsk.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.GrayjaySyncAsk.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.tube.GrayjayPeer.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.GrayjayPeer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjayPeer.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjayPeer.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.GrayjayPeer.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.tube.GrayjaySubscription.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.GrayjaySubscription.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "url",
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjaySubscription.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjaySubscription.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.GrayjaySubscription.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.tube.GrayjayJob.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.GrayjayJob.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "state",
+              "answer",
+              "error"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjayJob.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjayJob.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.GrayjayJob.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.tube.GrayjayOutcome.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.GrayjayOutcome.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "error"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjayOutcome.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "ok"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjayOutcome.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.GrayjayOutcome.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.tube.GrayjayRead.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.tube.GrayjayRead.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjayRead.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.tube.GrayjayRead.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.tube.GrayjayRead.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
       "tl.so.tilo.tube.YouTube.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -80272,7 +82230,11 @@
               "search_state",
               "search_trouble",
               "feed_state",
-              "trouble"
+              "trouble",
+              "sync_working",
+              "sync_job",
+              "sync_notice",
+              "sync_trouble"
             ],
             "type": "string"
           },
@@ -80292,7 +82254,8 @@
             "description": "The name of the field to set.",
             "enum": [
               "history_cleared",
-              "online"
+              "online",
+              "sync_started"
             ],
             "type": "string"
           },
@@ -80512,6 +82475,142 @@
           "speed"
         ],
         "description": "How fast the person watches: every video here starts at this speed, on every device."
+      },
+      "tl.so.tilo.tube.YouTube.pair_device.Arguments": {
+        "type": "object",
+        "properties": {
+          "invite": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "invite"
+        ],
+        "description": "Pairs a Grayjay device from the invite its Sync screen shows. The invite carries where the\ndevice answers and the one-time code that opens the pairing; the device is recorded waiting\nfor the person's approval, which is what lets it read and write anything here."
+      },
+      "tl.so.tilo.tube.YouTube.approve_device.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.tube.PairedDevice",
+            "type": "object"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "description": "Approves a device that paired: Grayjay shows the same fingerprint on both ends."
+      },
+      "tl.so.tilo.tube.YouTube.revoke_device.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.tube.PairedDevice",
+            "type": "object"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "description": "Revokes a device: its key can no longer read or write anything here."
+      },
+      "tl.so.tilo.tube.YouTube.sync_devices.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Exchanges with every approved device now: reads the subscriptions and watch history Grayjay\nholds, and sends this client's subscriptions that way."
+      },
+      "tl.so.tilo.tube.YouTube.auto_sync.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The approved devices are exchanged with on the timer, as Grayjay's own app does while it is\nopen, so what either app adds reaches the other without anyone pressing. Nothing runs until\na person has synced once by hand."
+      },
+      "tl.so.tilo.tube.YouTube.poll_grayjay.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Follows the Grayjay operation under way, once a second, so its end reaches the window\nwithout anyone asking by hand."
+      },
+      "tl.so.tilo.tube.YouTube.keep_paired.Arguments": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "description": "Keeps the device a pairing made, waiting for the person's approval: the fingerprint beside\nit is what Grayjay shows on the other end."
+      },
+      "tl.so.tilo.tube.YouTube.keep_exchange.Arguments": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "description": "Keeps what an exchange came to: how each device stands, the subscriptions the other apps\nhold, and the videos they watched."
       },
       "tl.so.tilo.tube.YouTube.search.Arguments": {
         "type": "object",
@@ -83964,6 +86063,185 @@
         ],
         "description": "What a drag of the timeline committed: a clip moved or trimmed. A clip moved among `with`, the\nclips chosen, moves them all."
       },
+      "tl.so.tilo.video-editor.Project.move_to.Arguments": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.video-editor.Clip",
+            "type": "object"
+          },
+          "start": {
+            "type": "number"
+          },
+          "track": {
+            "type": "string"
+          },
+          "with": {
+            "items": {
+              "pick": "resource",
+              "properties": {
+                "app": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "record": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "app",
+                "kind",
+                "id",
+                "label"
+              ],
+              "resource_kind": "tl.so.tilo.video-editor.Clip",
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "c",
+          "start",
+          "track",
+          "with"
+        ],
+        "description": "Moves a clip to `start`, as a drag on the timeline lands it, and every other clip among `with`,\nthe clips chosen, by as much. A clip moved alone goes onto the track `track` names when that is\nanother track of its kind, unlocked, with room for it there."
+      },
+      "tl.so.tilo.video-editor.Project.trim_to.Arguments": {
+        "type": "object",
+        "properties": {
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.video-editor.Clip",
+            "type": "object"
+          },
+          "start": {
+            "type": "number"
+          },
+          "length": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "c",
+          "start",
+          "length"
+        ],
+        "description": "Trims a clip to start at `start` and last `length`, as a drag on its edge on the timeline\nlands it: a moved start trims its head, else its tail."
+      },
+      "tl.so.tilo.video-editor.Project.move_marker.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.video-editor.Marker",
+            "type": "object"
+          },
+          "at": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "k",
+          "at"
+        ],
+        "description": "Moves a marker to `at`, on the frame nearest it."
+      },
       "tl.so.tilo.video-editor.Project.moved.Arguments": {
         "type": "object",
         "properties": {
@@ -85041,26 +87319,6 @@
           "at"
         ],
         "description": "Draws the frame the preview shows at `at`."
-      },
-      "tl.so.tilo.video-editor.Project.seek_at.Arguments": {
-        "type": "object",
-        "properties": {
-          "x": {
-            "type": "number"
-          },
-          "span": {
-            "type": "number"
-          },
-          "scroll": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "x",
-          "span",
-          "scroll"
-        ],
-        "description": "Draws the frame at the ruler's place `x`, as a drag along it asks for."
       },
       "tl.so.tilo.video-editor.Project.preview_cut.Arguments": {
         "type": "object",
@@ -86415,47 +88673,6 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.video-editor.SavedMarker.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.video-editor.Drawn.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.video-editor.Drawn.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.video-editor.Drawn.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -88925,6 +91142,30 @@
         ],
         "description": ""
       },
+      "settings.input.set-caps-lock.Arguments": {
+        "type": "object",
+        "properties": {
+          "behaviour": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "behaviour"
+        ],
+        "description": ""
+      },
+      "settings.input.set-compose-key.Arguments": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "description": ""
+      },
       "settings.input.set-paste-shortcut.Arguments": {
         "type": "object",
         "properties": {
@@ -88976,6 +91217,29 @@
         ],
         "description": ""
       },
+      "settings.input-device.set-keyboard-sources.Arguments": {
+        "type": "object",
+        "properties": {
+          "keyboard": {
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "active": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "keyboard",
+          "sources",
+          "active"
+        ],
+        "description": ""
+      },
       "settings.input-device.use-shared-layouts.Arguments": {
         "type": "object",
         "properties": {
@@ -89016,6 +91280,11 @@
       "settings.input-device.inspect-keyboard.Arguments": {
         "type": "object",
         "properties": {
+          "shape": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
           "level": {
             "maximum": 4294967295,
             "minimum": 0,
@@ -89023,15 +91292,12 @@
           },
           "extra_levels": {
             "type": "boolean"
-          },
-          "key": {
-            "type": "string"
           }
         },
         "required": [
+          "shape",
           "level",
-          "extra_levels",
-          "key"
+          "extra_levels"
         ],
         "description": ""
       },
@@ -89187,6 +91453,48 @@
           "mode",
           "action"
         ],
+        "description": ""
+      },
+      "settings.personal-dictionary.add.Arguments": {
+        "type": "object",
+        "properties": {
+          "spelling": {
+            "type": "string"
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "spelling"
+        ],
+        "description": ""
+      },
+      "settings.personal-dictionary.remove.Arguments": {
+        "type": "object",
+        "properties": {
+          "spelling": {
+            "type": "string"
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "spelling"
+        ],
+        "description": ""
+      },
+      "settings.personal-dictionary.clear.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
         "description": ""
       },
       "settings.power.set-suspend-plugged-in.Arguments": {
@@ -89542,6 +91850,42 @@
         "type": "object",
         "properties": {},
         "required": [],
+        "description": ""
+      },
+      "settings.shortcuts.rebind-command.Arguments": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "chord": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "action",
+          "chord"
+        ],
+        "description": ""
+      },
+      "settings.shortcuts.reset-command.Arguments": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "action"
+        ],
         "description": ""
       },
       "settings.shortcuts.set-action-chords.Arguments": {
@@ -91261,6 +93605,24 @@
     {
       "app": "so.tilo.api-tester",
       "resource": "tl.so.tilo.api-tester.Workspace",
+      "action": "start_send",
+      "arguments": "#/components/schemas/tl.so.tilo.api-tester.Workspace.start_send.Arguments"
+    },
+    {
+      "app": "so.tilo.api-tester",
+      "resource": "tl.so.tilo.api-tester.Workspace",
+      "action": "send_failed",
+      "arguments": "#/components/schemas/tl.so.tilo.api-tester.Workspace.send_failed.Arguments"
+    },
+    {
+      "app": "so.tilo.api-tester",
+      "resource": "tl.so.tilo.api-tester.Workspace",
+      "action": "settle_send",
+      "arguments": "#/components/schemas/tl.so.tilo.api-tester.Workspace.settle_send.Arguments"
+    },
+    {
+      "app": "so.tilo.api-tester",
+      "resource": "tl.so.tilo.api-tester.Workspace",
       "action": "cancel_send",
       "arguments": "#/components/schemas/tl.so.tilo.api-tester.Workspace.cancel_send.Arguments"
     },
@@ -92521,6 +94883,18 @@
     {
       "app": "so.tilo.browser",
       "resource": "tl.so.tilo.browser.Page",
+      "action": "submit_address",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.submit_address.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "choose_omnibox",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.choose_omnibox.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
       "action": "back",
       "arguments": "#/components/schemas/tl.so.tilo.browser.Page.back.Arguments"
     },
@@ -92637,6 +95011,18 @@
       "resource": "tl.so.tilo.browser.Page",
       "action": "developer_tools",
       "arguments": "#/components/schemas/tl.so.tilo.browser.Page.developer_tools.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "print_page",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.print_page.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "note_print",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.note_print.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -92817,6 +95203,48 @@
       "resource": "tl.so.tilo.browser.Page",
       "action": "note_extension",
       "arguments": "#/components/schemas/tl.so.tilo.browser.Page.note_extension.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "open_side_panel",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.open_side_panel.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "close_panel",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.close_panel.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "remember_panel",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.remember_panel.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "remember_omnibox",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.remember_omnibox.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "typed_address",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.typed_address.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "address_left",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.address_left.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "enter_omnibox",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.enter_omnibox.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -93129,6 +95557,102 @@
       "resource": "tl.so.tilo.browser.ExtensionNotice",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.browser.ExtensionNotice.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Panel",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Panel.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Panel",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Panel.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Panel",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Panel.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Panel",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Panel.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Omnibox",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Omnibox.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Omnibox",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Omnibox.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Omnibox",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Omnibox.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Omnibox",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Omnibox.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.OmniboxRow",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.OmniboxRow.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.OmniboxRow",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.OmniboxRow.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.OmniboxRow",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.OmniboxRow.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.OmniboxRow",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.OmniboxRow.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Addressed",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Addressed.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Addressed",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Addressed.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Addressed",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Addressed.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Addressed",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Addressed.$scenario.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -96403,6 +98927,12 @@
     {
       "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Conversations",
+      "action": "ban",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.ban.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
       "action": "ask_for_sub_agent",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.ask_for_sub_agent.Arguments"
     },
@@ -96498,6 +99028,66 @@
     },
     {
       "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Hearing",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Hearing.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Hearing",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Hearing.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Hearing",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Hearing.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Hearing",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Hearing.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Hearing",
+      "action": "set_hearing",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Hearing.set_hearing.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Hearing",
+      "action": "silence",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Hearing.silence.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Heard",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Heard.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Heard",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Heard.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Heard",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Heard.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Heard",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Heard.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.TextChannel",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.$create.Arguments"
@@ -96549,6 +99139,12 @@
       "resource": "tl.so.tilo.chat.TextChannel",
       "action": "send_view",
       "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.send_view.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
+      "action": "share_window",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.share_window.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -96624,6 +99220,30 @@
     },
     {
       "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.LiveShare",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.LiveShare.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.LiveShare",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.LiveShare.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.LiveShare",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.LiveShare.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.LiveShare",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.LiveShare.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.OutsideEmoji",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.chat.OutsideEmoji.$create.Arguments"
@@ -96687,6 +99307,18 @@
       "resource": "tl.so.tilo.chat.Message",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Message.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Message",
+      "action": "set_share_access",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Message.set_share_access.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Message",
+      "action": "stop_sharing",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Message.stop_sharing.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -96756,6 +99388,12 @@
     },
     {
       "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Report",
+      "action": "ban_reported",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Report.ban_reported.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Thread",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.$create.Arguments"
@@ -96799,8 +99437,20 @@
     {
       "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Thread",
+      "action": "share_window",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.share_window.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
       "action": "relay",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.relay.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
+      "action": "archive_thread",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.archive_thread.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -96879,6 +99529,12 @@
       "resource": "tl.so.tilo.chat.Direct",
       "action": "send_view",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.send_view.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
+      "action": "share_window",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.share_window.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -97125,6 +99781,18 @@
       "resource": "tilo.workspace.emoji",
       "action": "remove-emoji",
       "arguments": "#/components/schemas/tilo.workspace.emoji.remove-emoji.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tilo.workspace.emoji",
+      "action": "rename-emoji",
+      "arguments": "#/components/schemas/tilo.workspace.emoji.rename-emoji.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tilo.workspace.emoji",
+      "action": "rename-any-emoji",
+      "arguments": "#/components/schemas/tilo.workspace.emoji.rename-any-emoji.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -99299,6 +101967,66 @@
       "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.restart_server.Arguments"
     },
     {
+      "app": "so.tilo.code-editor",
+      "resource": "tl.so.tilo.code-editor.Project",
+      "action": "show_problems",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.show_problems.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "tl.so.tilo.code-editor.Project",
+      "action": "show_terminal",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.show_terminal.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "tl.so.tilo.code-editor.Project",
+      "action": "show_search_results",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.show_search_results.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "tl.so.tilo.code-editor.Project",
+      "action": "ensure_settings",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.ensure_settings.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "tl.so.tilo.code-editor.Project",
+      "action": "zoom_in",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.zoom_in.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "tl.so.tilo.code-editor.Project",
+      "action": "zoom_out",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.zoom_out.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "tl.so.tilo.code-editor.Project",
+      "action": "zoom_reset",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.zoom_reset.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "tl.so.tilo.code-editor.Settings",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Settings.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "tl.so.tilo.code-editor.Settings",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Settings.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "tl.so.tilo.code-editor.Settings",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Settings.edit-flag.Arguments"
+    },
+    {
       "app": "so.tilo.console",
       "resource": "tilolang.personal",
       "action": "view-state",
@@ -99336,6 +102064,72 @@
     },
     {
       "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.SessionLink",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.console.SessionLink.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.SessionLink",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.console.SessionLink.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.SessionLink",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.console.SessionLink.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.AgentCard",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.console.AgentCard.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.AgentCard",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.console.AgentCard.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.AgentCard",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.console.AgentCard.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.AgentCard",
+      "action": "stop_agent",
+      "arguments": "#/components/schemas/tl.so.tilo.console.AgentCard.stop_agent.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.AgentCard",
+      "action": "take_over_agent",
+      "arguments": "#/components/schemas/tl.so.tilo.console.AgentCard.take_over_agent.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.AgentCard",
+      "action": "undo_agent_session",
+      "arguments": "#/components/schemas/tl.so.tilo.console.AgentCard.undo_agent_session.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.AgentCard",
+      "action": "revoke_agent",
+      "arguments": "#/components/schemas/tl.so.tilo.console.AgentCard.revoke_agent.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.AgentCard",
+      "action": "let_agent_go_on",
+      "arguments": "#/components/schemas/tl.so.tilo.console.AgentCard.let_agent_go_on.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
       "resource": "tl.so.tilo.console.Window",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.console.Window.$create.Arguments"
@@ -99351,6 +102145,24 @@
       "resource": "tl.so.tilo.console.Window",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.console.Window.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.Window",
+      "action": "publish",
+      "arguments": "#/components/schemas/tl.so.tilo.console.Window.publish.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.Window",
+      "action": "session_link",
+      "arguments": "#/components/schemas/tl.so.tilo.console.Window.session_link.Arguments"
+    },
+    {
+      "app": "so.tilo.console",
+      "resource": "tl.so.tilo.console.Window",
+      "action": "agent_card",
+      "arguments": "#/components/schemas/tl.so.tilo.console.Window.agent_card.Arguments"
     },
     {
       "app": "so.tilo.contacts",
@@ -102480,30 +105292,6 @@
     },
     {
       "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.Perform",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Perform.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.Perform",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Perform.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.Perform",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Perform.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.Perform",
-      "action": "$origin",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Perform.$origin.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
       "resource": "tl.so.tilo.discord.preview.Accounts",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Accounts.$create.Arguments"
@@ -103053,6 +105841,18 @@
       "resource": "tl.so.tilo.disks.Disks",
       "action": "name_drive",
       "arguments": "#/components/schemas/tl.so.tilo.disks.Disks.name_drive.Arguments"
+    },
+    {
+      "app": "so.tilo.disks",
+      "resource": "tl.so.tilo.disks.Disks",
+      "action": "open_in_files",
+      "arguments": "#/components/schemas/tl.so.tilo.disks.Disks.open_in_files.Arguments"
+    },
+    {
+      "app": "so.tilo.disks",
+      "resource": "tl.so.tilo.disks.Disks",
+      "action": "open_usage",
+      "arguments": "#/components/schemas/tl.so.tilo.disks.Disks.open_usage.Arguments"
     },
     {
       "app": "so.tilo.disks",
@@ -107425,6 +110225,12 @@
     {
       "app": "so.tilo.logs",
       "resource": "tl.so.tilo.logs.Logs",
+      "action": "choose",
+      "arguments": "#/components/schemas/tl.so.tilo.logs.Logs.choose.Arguments"
+    },
+    {
+      "app": "so.tilo.logs",
+      "resource": "tl.so.tilo.logs.Logs",
       "action": "clear_filters",
       "arguments": "#/components/schemas/tl.so.tilo.logs.Logs.clear_filters.Arguments"
     },
@@ -107901,6 +110707,12 @@
       "resource": "tl.so.tilo.mail.Message",
       "action": "attachment",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Message.attachment.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
+      "action": "open_attachment",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.open_attachment.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -108984,6 +111796,12 @@
     },
     {
       "app": "so.tilo.monitor",
+      "resource": "tl.so.tilo.monitor.Monitor",
+      "action": "apply_cadence",
+      "arguments": "#/components/schemas/tl.so.tilo.monitor.Monitor.apply_cadence.Arguments"
+    },
+    {
+      "app": "so.tilo.monitor",
       "resource": "tl.so.tilo.monitor",
       "action": "end_app",
       "arguments": "#/components/schemas/tl.so.tilo.monitor.end_app.Arguments"
@@ -109473,6 +112291,12 @@
       "resource": "tl.so.tilo.music.Library",
       "action": "open_audio_file",
       "arguments": "#/components/schemas/tl.so.tilo.music.Library.open_audio_file.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "tl.so.tilo.music.Library",
+      "action": "open_link",
+      "arguments": "#/components/schemas/tl.so.tilo.music.Library.open_link.Arguments"
     },
     {
       "app": "so.tilo.music",
@@ -110641,6 +113465,12 @@
     {
       "app": "so.tilo.pdf-viewer",
       "resource": "tl.so.tilo.pdf-viewer.Document",
+      "action": "mark_selection",
+      "arguments": "#/components/schemas/tl.so.tilo.pdf-viewer.Document.mark_selection.Arguments"
+    },
+    {
+      "app": "so.tilo.pdf-viewer",
+      "resource": "tl.so.tilo.pdf-viewer.Document",
       "action": "draw_ink",
       "arguments": "#/components/schemas/tl.so.tilo.pdf-viewer.Document.draw_ink.Arguments"
     },
@@ -110727,6 +113557,18 @@
       "resource": "tl.so.tilo.pdf-viewer.Document",
       "action": "place_signature",
       "arguments": "#/components/schemas/tl.so.tilo.pdf-viewer.Document.place_signature.Arguments"
+    },
+    {
+      "app": "so.tilo.pdf-viewer",
+      "resource": "tl.so.tilo.pdf-viewer.Document",
+      "action": "move_signature",
+      "arguments": "#/components/schemas/tl.so.tilo.pdf-viewer.Document.move_signature.Arguments"
+    },
+    {
+      "app": "so.tilo.pdf-viewer",
+      "resource": "tl.so.tilo.pdf-viewer.Document",
+      "action": "move_placed_signature",
+      "arguments": "#/components/schemas/tl.so.tilo.pdf-viewer.Document.move_placed_signature.Arguments"
     },
     {
       "app": "so.tilo.pdf-viewer",
@@ -112495,6 +115337,18 @@
     {
       "app": "so.tilo.print-centre",
       "resource": "tl.so.tilo.print-centre.PrintCentre",
+      "action": "print_file",
+      "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintCentre.print_file.Arguments"
+    },
+    {
+      "app": "so.tilo.print-centre",
+      "resource": "tl.so.tilo.print-centre.PrintCentre",
+      "action": "clear_showing",
+      "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintCentre.clear_showing.Arguments"
+    },
+    {
+      "app": "so.tilo.print-centre",
+      "resource": "tl.so.tilo.print-centre.PrintCentre",
       "action": "send_to_printer",
       "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintCentre.send_to_printer.Arguments"
     },
@@ -112519,8 +115373,20 @@
     {
       "app": "so.tilo.print-centre",
       "resource": "tl.so.tilo.print-centre.PrintCentre",
+      "action": "crop_page",
+      "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintCentre.crop_page.Arguments"
+    },
+    {
+      "app": "so.tilo.print-centre",
+      "resource": "tl.so.tilo.print-centre.PrintCentre",
       "action": "remove_page",
       "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintCentre.remove_page.Arguments"
+    },
+    {
+      "app": "so.tilo.print-centre",
+      "resource": "tl.so.tilo.print-centre.PrintCentre",
+      "action": "new_scanned_document",
+      "arguments": "#/components/schemas/tl.so.tilo.print-centre.PrintCentre.new_scanned_document.Arguments"
     },
     {
       "app": "so.tilo.print-centre",
@@ -113208,9 +116074,33 @@
     },
     {
       "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings.ProblemReport",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.ProblemReport.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings.ProblemReport",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.ProblemReport.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings.ProblemReport",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.ProblemReport.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
       "resource": "tl.so.tilo.settings",
       "action": "move_screen",
       "arguments": "#/components/schemas/tl.so.tilo.settings.move_screen.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings",
+      "action": "set_sdr_brightness",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.set_sdr_brightness.Arguments"
     },
     {
       "app": "so.tilo.settings",
@@ -113227,6 +116117,18 @@
     {
       "app": "so.tilo.settings",
       "resource": "tl.so.tilo.settings",
+      "action": "open_manage_page",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.open_manage_page.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings",
+      "action": "open_invoice",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.open_invoice.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings",
       "action": "set_processors_room",
       "arguments": "#/components/schemas/tl.so.tilo.settings.set_processors_room.Arguments"
     },
@@ -113235,6 +116137,12 @@
       "resource": "tl.so.tilo.settings",
       "action": "set_memory_room",
       "arguments": "#/components/schemas/tl.so.tilo.settings.set_memory_room.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings",
+      "action": "send_problem_report",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.send_problem_report.Arguments"
     },
     {
       "app": "so.tilo.settings",
@@ -116599,6 +119507,12 @@
     {
       "app": "so.tilo.store",
       "resource": "tl.so.tilo.store.Store",
+      "action": "open_link",
+      "arguments": "#/components/schemas/tl.so.tilo.store.Store.open_link.Arguments"
+    },
+    {
+      "app": "so.tilo.store",
+      "resource": "tl.so.tilo.store.Store",
       "action": "review_runtime",
       "arguments": "#/components/schemas/tl.so.tilo.store.Store.review_runtime.Arguments"
     },
@@ -118296,6 +121210,246 @@
     },
     {
       "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.PairedDevice",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.PairedDevice.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.PairedDevice",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.PairedDevice.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.PairedDevice",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.PairedDevice.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.PairedDevice",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.PairedDevice.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.PairedDevice",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.PairedDevice.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayPairAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPairAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayPairAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPairAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayPairAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPairAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayPairAsk",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPairAsk.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayPairAsk",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPairAsk.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjaySyncAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySyncAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjaySyncAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySyncAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjaySyncAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySyncAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjaySyncAsk",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySyncAsk.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjaySyncAsk",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySyncAsk.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayPeer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPeer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayPeer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPeer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayPeer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPeer.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayPeer",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPeer.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayPeer",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayPeer.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjaySubscription",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySubscription.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjaySubscription",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySubscription.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjaySubscription",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySubscription.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjaySubscription",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySubscription.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjaySubscription",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjaySubscription.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayJob",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayJob.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayJob",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayJob.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayJob",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayJob.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayJob",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayJob.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayJob",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayJob.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayOutcome",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayOutcome.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayOutcome",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayOutcome.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayOutcome",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayOutcome.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayOutcome",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayOutcome.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayOutcome",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayOutcome.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayRead",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayRead.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayRead",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayRead.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayRead",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayRead.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayRead",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayRead.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.GrayjayRead",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.GrayjayRead.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.YouTube",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.$create.Arguments"
@@ -118395,6 +121549,54 @@
       "resource": "tl.so.tilo.tube.YouTube",
       "action": "set_speed",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.set_speed.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "pair_device",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.pair_device.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "approve_device",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.approve_device.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "revoke_device",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.revoke_device.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "sync_devices",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.sync_devices.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "auto_sync",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.auto_sync.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "poll_grayjay",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.poll_grayjay.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "keep_paired",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.keep_paired.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "keep_exchange",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.keep_exchange.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -119599,6 +122801,24 @@
     {
       "app": "so.tilo.video-editor",
       "resource": "tl.so.tilo.video-editor.Project",
+      "action": "move_to",
+      "arguments": "#/components/schemas/tl.so.tilo.video-editor.Project.move_to.Arguments"
+    },
+    {
+      "app": "so.tilo.video-editor",
+      "resource": "tl.so.tilo.video-editor.Project",
+      "action": "trim_to",
+      "arguments": "#/components/schemas/tl.so.tilo.video-editor.Project.trim_to.Arguments"
+    },
+    {
+      "app": "so.tilo.video-editor",
+      "resource": "tl.so.tilo.video-editor.Project",
+      "action": "move_marker",
+      "arguments": "#/components/schemas/tl.so.tilo.video-editor.Project.move_marker.Arguments"
+    },
+    {
+      "app": "so.tilo.video-editor",
+      "resource": "tl.so.tilo.video-editor.Project",
       "action": "moved",
       "arguments": "#/components/schemas/tl.so.tilo.video-editor.Project.moved.Arguments"
     },
@@ -119793,12 +123013,6 @@
       "resource": "tl.so.tilo.video-editor.Project",
       "action": "preview",
       "arguments": "#/components/schemas/tl.so.tilo.video-editor.Project.preview.Arguments"
-    },
-    {
-      "app": "so.tilo.video-editor",
-      "resource": "tl.so.tilo.video-editor.Project",
-      "action": "seek_at",
-      "arguments": "#/components/schemas/tl.so.tilo.video-editor.Project.seek_at.Arguments"
     },
     {
       "app": "so.tilo.video-editor",
@@ -120345,24 +123559,6 @@
       "resource": "tl.so.tilo.video-editor.SavedMarker",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.video-editor.SavedMarker.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.video-editor",
-      "resource": "tl.so.tilo.video-editor.Drawn",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.video-editor.Drawn.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.video-editor",
-      "resource": "tl.so.tilo.video-editor.Drawn",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.video-editor.Drawn.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.video-editor",
-      "resource": "tl.so.tilo.video-editor.Drawn",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.video-editor.Drawn.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.lang.views",
@@ -121441,6 +124637,18 @@
     {
       "app": "so.tilo.settings.sections",
       "resource": "settings.input",
+      "action": "set-caps-lock",
+      "arguments": "#/components/schemas/settings.input.set-caps-lock.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.input",
+      "action": "set-compose-key",
+      "arguments": "#/components/schemas/settings.input.set-compose-key.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.input",
       "action": "set-paste-shortcut",
       "arguments": "#/components/schemas/settings.input.set-paste-shortcut.Arguments"
     },
@@ -121449,6 +124657,12 @@
       "resource": "settings.input-device",
       "action": "set-keyboard-layouts",
       "arguments": "#/components/schemas/settings.input-device.set-keyboard-layouts.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.input-device",
+      "action": "set-keyboard-sources",
+      "arguments": "#/components/schemas/settings.input-device.set-keyboard-sources.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",
@@ -121521,6 +124735,24 @@
       "resource": "settings.input-device",
       "action": "set-pad-dial",
       "arguments": "#/components/schemas/settings.input-device.set-pad-dial.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.personal-dictionary",
+      "action": "add",
+      "arguments": "#/components/schemas/settings.personal-dictionary.add.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.personal-dictionary",
+      "action": "remove",
+      "arguments": "#/components/schemas/settings.personal-dictionary.remove.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.personal-dictionary",
+      "action": "clear",
+      "arguments": "#/components/schemas/settings.personal-dictionary.clear.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",
@@ -121659,6 +124891,18 @@
       "resource": "settings.shortcuts",
       "action": "reset-all",
       "arguments": "#/components/schemas/settings.shortcuts.reset-all.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.shortcuts",
+      "action": "rebind-command",
+      "arguments": "#/components/schemas/settings.shortcuts.rebind-command.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.shortcuts",
+      "action": "reset-command",
+      "arguments": "#/components/schemas/settings.shortcuts.reset-command.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",

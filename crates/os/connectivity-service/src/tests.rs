@@ -245,6 +245,16 @@ fn apply_network(network: &mut Network, change: &Change) {
                 profile.roaming = *on;
             }
         }
+        Change::Wake { profile, on } => {
+            for saved in &mut network.saved {
+                if saved.id == *profile {
+                    saved.wake = Some(crate::model::NetworkWake {
+                        on: *on,
+                        ..crate::model::NetworkWake::default()
+                    });
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -743,11 +753,25 @@ fn the_wired_link_and_saved_networks_are_controlled_from_their_resources() {
 
     assert_eq!(
         child_actions(&service, "saved-network:uuid-home"),
-        ["join", "set-autoconnect", "forget", "set-proxy"]
+        [
+            "join",
+            "set-autoconnect",
+            "forget",
+            "set-proxy",
+            "set-wake",
+            "share-with-devices"
+        ]
     );
     assert_eq!(
         child_actions(&service, "saved-network:uuid-office"),
-        ["join", "set-autoconnect", "forget", "set-proxy"],
+        [
+            "join",
+            "set-autoconnect",
+            "forget",
+            "set-proxy",
+            "set-wake",
+            "share-with-devices"
+        ],
         "a network with no proxy is given one by its own action"
     );
     let saved = &read(&service, NETWORK)["saved"];
@@ -884,8 +908,7 @@ fn accessories_profiles_the_hotspot_and_the_modem_act_from_their_children() {
         .find(|r| r.id.as_str() == VPN)
         .expect("vpn");
     assert_eq!(
-        vpn.children[0].actions[0].id,
-        "disconnect",
+        vpn.children[0].actions[0].id, "disconnect",
         "once connected, its child disconnects it"
     );
 
@@ -1188,4 +1211,45 @@ fn the_connectivity_resources_are_surfaces() {
         assert_eq!(surface.kind.as_str(), kind);
         assert_eq!(surface.label, label);
     }
+}
+
+/// A saved network wakes this device when asked to, and sharing its password with the person's
+/// other devices is asked of the device, which says why when it cannot.
+#[test]
+fn a_saved_network_wakes_the_device_and_its_password_is_shared_by_the_device() {
+    let fake = Fake::laptop();
+    let mut service = service(&fake);
+    assert_eq!(read(&service, NETWORK)["saved"][0]["wake"], Value::Null);
+    service
+        .invoke(
+            "saved-network:uuid-home",
+            "set-wake",
+            &arguments(json!({"on": true})),
+        )
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::Wake {
+            profile: "uuid-home".into(),
+            on: true,
+        })
+    );
+    assert_eq!(
+        read(&service, NETWORK)["saved"][0]["wake"]["on"],
+        json!(true)
+    );
+
+    let before = fake.changes().len();
+    service
+        .invoke("saved-network:uuid-home", "share-with-devices", &Map::new())
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes()[before..].to_vec(),
+        [Change::ShareWifi {
+            profile: "uuid-home".into(),
+        }],
+        "the device is asked to share it"
+    );
 }

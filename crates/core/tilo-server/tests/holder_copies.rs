@@ -298,6 +298,94 @@ async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
     within("the server it was made on stops", made_on.stop()).await;
 }
 
+/// Another person's server holds the workspace, reads and carries what it
+/// decides, and is refused when it writes as a member: a naming lets a device
+/// keep and carry a workspace, never write in it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_holder_of_another_person_carries_the_workspace_and_writes_no_member_change() {
+    use tilo_test_env::within;
+    let site = TestUser::fresh("Site");
+    let made_on_server = site.enrol("server", DeviceCapabilities::member());
+    let other = TestUser::fresh("Other");
+    let other_server = other.enrol("server", DeviceCapabilities::member());
+    let made_on = within(
+        "the server the workspace is made on starts",
+        serve_on(&site, &made_on_server, WorkSetting::own_person()),
+    )
+    .await;
+    let workspaces = made_on.host.workspaces().clone();
+    let workspace = within("the workspace is made", workspaces.create("Notes"))
+        .await
+        .unwrap();
+    let mut takes = WorkSetting::own_person();
+    takes.from =
+        tilo_server_protocol::WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());
+    let holder = within("the holder starts", serve_on(&other, &other_server, takes)).await;
+    within(
+        "the server it was made on attaches the holder",
+        workspaces.attach_server(
+            &workspace.workspace,
+            other_server.device_pubkey(),
+            holder.host.node_addr(),
+            CopyRole::KeyHolder,
+        ),
+    )
+    .await
+    .unwrap();
+
+    // It reads the workspace: the server it was made on is named among its
+    // holders there.
+    let named = within(
+        "the holder names the workspace's holders",
+        holder.host.workspaces().hosts(&workspace.workspace),
+    )
+    .await
+    .unwrap();
+    assert!(
+        named
+            .iter()
+            .any(|hint| hint.host.device_public_key == made_on_server.device_pubkey()),
+        "the holder reads the server the workspace was made on among its holders"
+    );
+    // It carries what the workspace decides.
+    let wanted = CopyPolicy {
+        key_holders: 2,
+        stores: 0,
+    };
+    within(
+        "the server it was made on chooses two key holders",
+        workspaces.choose_copies(&workspace.workspace, Some(wanted)),
+    )
+    .await
+    .unwrap();
+    copies_once(
+        &holder,
+        &workspace.workspace,
+        "the holder takes in what the server it was made on decides",
+        |status| status.chosen && status.policy == wanted,
+    )
+    .await;
+
+    // It writes no member's change: holding makes nobody a member.
+    let refused = within(
+        "the holder writes no member's change",
+        holder.host.workspaces().commit_own_change(
+            &workspace.workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Revoke {
+                grant: tilo_action_policy::GrantId::new("none"),
+            },
+            None,
+        ),
+    )
+    .await;
+    assert!(
+        refused.is_err(),
+        "a holder writes no member's change: {refused:?}"
+    );
+    within("the holder stops", holder.stop()).await;
+    within("the server it was made on stops", made_on.stop()).await;
+}
+
 /// What the holder answers `message` on `actions`, the link its asker holds to it.
 async fn ask(actions: &RemoteDevice, message: RemoteActionMessage) -> RemoteActionMessage {
     tilo_test_env::within("the holder answers", actions.ask_message(message))

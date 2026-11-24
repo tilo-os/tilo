@@ -808,6 +808,16 @@ env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 on = ["dispatch", "idle"]
 heavy = true
 
+# The shell package against the session's declared actions (apps/tl/session/surface.toml), the
+# compile a session starting it runs: a shell calling an action the session no longer declares
+# fails here by name, at push time, rather than as every session test and walk dying at startup.
+# Its key is the shell's and the session's files, which tilolang-tilo includes in its build.
+[[check]]
+name = "shell-compiles"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "cargo test --locked -p tilolang-tilo --test it -- shell_compiles::"
+env = { CARGO_PROFILE_DEV_DEBUG = "0" }
+
 # Every app's committed surface.toml against its code, on every change: an
 # app's types, its actions and its stored fields are what the SDK's generated
 # types, the OS's view of an app that is not running and another device's
@@ -1866,6 +1876,18 @@ run = "TILO_FILES_SPEED=full cargo test --locked --release -p tilo-server --test
 requires = ["arch=x86_64"]
 timeout_secs = 3600
 on = ["dispatch", "idle"]
+
+[[check]]
+name = "kept-content-3gib"
+# A member's 3 GiB folder reaches their own server whole when nobody set a content limit: the files
+# are generated and streamed a piece at a time, then read back from the store and hashed, and no
+# refusal may be published. It writes and hashes gigabytes, which an unoptimized build takes tens of
+# minutes over, so it runs in release and is dispatched rather than run with every change that
+# reaches the server.
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "cargo test --locked --release -p tilo-server --test it kept_limits::a_three_gib_folder_reaches_its_own_server_whole -- --ignored --nocapture"
+timeout_secs = 3600
+on = ["dispatch"]
 
 [[check]]
 name = "perf-server"

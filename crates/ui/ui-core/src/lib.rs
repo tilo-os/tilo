@@ -261,7 +261,6 @@ pub mod presence;
 pub mod profiling;
 pub mod query_text;
 pub use tilo_ui_paint::raster;
-pub mod realtime_continuity;
 pub mod storage;
 /// Where each settings section is kept, and so published: `settings/<section>` for the person's,
 /// `devices/<device>/settings/<section>` for the device's.

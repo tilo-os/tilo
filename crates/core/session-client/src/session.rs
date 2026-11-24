@@ -374,6 +374,7 @@ fn session_task(
         emptied: false,
         live_sessions_due: BTreeSet::new(),
         kept: BTreeMap::new(),
+        wants_held: BTreeMap::new(),
         live_sessions: live_session::LiveSessions::default(),
         record,
         workspace_keys,
@@ -547,6 +548,9 @@ struct Task {
     live_sessions_due: BTreeSet<WorkspaceId>,
     /// What this device keeps of each workspace's content ([`Cmd::KeepContent`]).
     kept: BTreeMap<WorkspaceId, Arc<dyn crate::content::Kept>>,
+    /// The asks for content a workspace's link was not up to carry yet
+    /// ([`Cmd::WantContent`]): sent when it opens.
+    wants_held: BTreeMap<WorkspaceId, Vec<Vec<u8>>>,
     /// This page's own live session per joined workspace
     /// ([`crate::session::live_session`]).
     live_sessions: live_session::LiveSessions,
@@ -1051,24 +1055,38 @@ impl Task {
         // A workspace this session is told to join but does not hold here yet — a page's or a
         // program's, whose records travel over this device's own copy of it: the device takes it
         // in as a member of it first, and its link carries what the copy then holds.
+        //
+        // The host proves this device before the entry is asked to let it in: the proof is
+        // where a host says why it serves this device no link at all — a device its person
+        // removed, a certificate it refused — and that answer stands whatever the entry would
+        // say. A device the proof lets through only because the workspace has not admitted it
+        // yet is taken in and proved again.
+        let mut reached: Option<Arc<dyn Transport>> = None;
         let sync = match self.owner_link(workspace_id) {
             Ok(sync) => sync,
             Err(_) if !self.owner.contains_workspace(workspace_id) => {
+                match self.reach(Purpose::Records).await {
+                    Ok(link) => reached = Some(Arc::new(link) as Arc<dyn Transport>),
+                    Err(error) if stops_session(&error) => return Err(error),
+                    Err(_) => {}
+                }
                 self.take_in(workspace_id).await?;
                 self.owner_link(workspace_id)
                     .map_err(LinkError::Unavailable)?
             }
             Err(error) => return Err(LinkError::Unavailable(error)),
         };
-        let link = self.reach(Purpose::Records).await?;
-        let transport: Arc<dyn Transport> = Arc::new(link);
+        let transport = match reached {
+            Some(transport) => transport,
+            None => Arc::new(self.reach(Purpose::Records).await?) as Arc<dyn Transport>,
+        };
         let dialed = sync
             .dial_over(
                 Arc::clone(&transport),
                 self.config.server_cert.device_public_key,
             )
             .await
-            .map_err(|refusal| LinkError::Refused(refusal.to_string()))?;
+            .map_err(dialed_refusal)?;
         let reading = sync.reader();
         let answers = sync.answers();
         let running = sync.clone();
@@ -1234,6 +1252,17 @@ impl Task {
     /// `workspace_id`'s link listens: whatever this device writes reaches it from now on.
     fn link_up(&mut self, workspace_id: WorkspaceId) {
         self.emptied = false;
+        // An ask for content the workspace's link was not yet up to carry goes on it now: a
+        // page that asks as it joins loses nothing to the order its link opens in.
+        if let Some(held) = self.wants_held.remove(&workspace_id)
+            && let Some(link) = self.links.get(&workspace_id)
+        {
+            for request in held {
+                if let Ok(message) = neighbour_wire::NeighbourMsg::decode(&request) {
+                    let _ = link.sync.send(message);
+                }
+            }
+        }
         if self.joined(workspace_id) {
             self.reports.change(|status| {
                 status.workspaces.insert(workspace_id, true);
@@ -1427,13 +1456,19 @@ impl Task {
         message: String,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> bool {
+        self.stop(code, message);
+        self.wait_for_reconnect(commands).await
+    }
+
+    /// Stop the session with `code`, in the words its page shows: its links end and its phase
+    /// says failed, until the person asks for a connection again.
+    fn stop(&mut self, code: &'static str, message: String) {
         self.fail(code, message);
         self.reports.change(|status| {
             status.phase = TransportPhase::Failed;
             status.authenticated = false;
         });
         self.drop_links("the session stopped");
-        self.wait_for_reconnect(commands).await
     }
 
     /// Whether a session the host left holding nothing goes on: it stays
@@ -1558,7 +1593,7 @@ impl Task {
         match command {
             Command::Client(Cmd::Join(workspace_id)) => {
                 if self.join(workspace_id) {
-                    let _ = self.dial_link(workspace_id).await;
+                    self.dial_joined(workspace_id).await;
                 }
                 true
             }
@@ -1583,13 +1618,13 @@ impl Task {
                     }
                     self.place(workspace_id);
                 } else if self.join(workspace_id) {
-                    let _ = self.dial_link(workspace_id).await;
+                    self.dial_joined(workspace_id).await;
                 }
                 true
             }
             Command::Placed(workspace_id) => {
                 if self.placing.remove(&workspace_id).is_some() && self.join(workspace_id) {
-                    let _ = self.dial_link(workspace_id).await;
+                    self.dial_joined(workspace_id).await;
                 }
                 true
             }
@@ -1760,6 +1795,18 @@ impl Task {
     }
 
     /// Take part in `workspace_id`'s link, now or as soon as it is dialled.
+    /// Dial `workspace_id`'s link now, as the command that just joined it does: a host that
+    /// refuses this device outright ends the session there with that reason, and a dial that
+    /// only did not answer is the next connection's to try again.
+    async fn dial_joined(&mut self, workspace_id: WorkspaceId) {
+        let Err(error) = self.dial_link(workspace_id).await else {
+            return;
+        };
+        if let Refusal::Final(code, message) = refusal(&error) {
+            self.stop(code, message);
+        }
+    }
+
     fn join(&mut self, workspace_id: WorkspaceId) -> bool {
         if self.workspaces.contains(&workspace_id) {
             return true;
@@ -1782,6 +1829,7 @@ impl Task {
             transport.close(0, message.as_bytes());
         }
         self.workspaces.remove(&workspace_id);
+        self.wants_held.remove(&workspace_id);
         self.live_sessions_due.remove(&workspace_id);
         self.opened_records
             .retain(|(workspace, _), _| *workspace != workspace_id);
@@ -2446,6 +2494,22 @@ fn refusal(error: &LinkError) -> Refusal {
             "host-update-required",
             "This workspace’s host needs to update to keep working together.".to_owned(),
         ),
+    }
+}
+
+/// Whether `error`, a failed dial, is the host's own answer that asking again cannot change
+/// ([`Refusal::Final`]): a device it removed, a certificate it refused, or a host set up again.
+fn stops_session(error: &LinkError) -> bool {
+    matches!(refusal(error), Refusal::Final(..))
+}
+
+/// Why a host turned this device away as the dial ended, as the session reads it: a key its
+/// person's root retired is the one refusal the host says typed and the session stops on
+/// ([`LinkError::DeviceRevoked`]), and every other reason is the host's words.
+fn dialed_refusal(refusal: tilo_server_protocol::refusal::Refusal) -> LinkError {
+    match refusal {
+        tilo_server_protocol::refusal::Refusal::Revoked(_) => LinkError::DeviceRevoked,
+        other => LinkError::Refused(other.to_string()),
     }
 }
 
@@ -4073,8 +4137,14 @@ impl Task {
     }
 
     /// Ask the workspace on `workspace_id` for content its records reference.
-    fn want_content(&self, workspace_id: WorkspaceId, request: &[u8]) {
+    fn want_content(&mut self, workspace_id: WorkspaceId, request: &[u8]) {
+        // A workspace whose link is not up yet has its ask held for the link's opening: a
+        // page asks as it joins, and the link dials behind the join.
         let Some(link) = self.links.get(&workspace_id) else {
+            let held = self.wants_held.entry(workspace_id).or_default();
+            if !held.iter().any(|waiting| waiting == request) {
+                held.push(request.to_vec());
+            }
             return;
         };
         if let Ok(message) = neighbour_wire::NeighbourMsg::decode(request) {
@@ -4732,6 +4802,30 @@ mod tests {
         );
         assert_eq!(code(LinkError::Sign("locked".into())), "reachability");
         assert_eq!(code(LinkError::Refused("io: closed".into())), "unexplained");
+    }
+
+    /// A dial the host ends with a key its person's root retired is the one refusal it says
+    /// typed: the session stops with `device-revoked` rather than trying the host again.
+    #[test]
+    fn a_dial_the_host_ends_with_a_retired_key_is_the_removal_it_says() {
+        let entry = tilo_user_identity::RevocationEntry {
+            user_public_key: [1; 32],
+            revoked_device_public_key: [2; 32],
+            revoked_at_ns: 7,
+            reason: tilo_user_identity::RevocationReason::Retired,
+            signature: [3; 64],
+        };
+        let refused = dialed_refusal(tilo_server_protocol::refusal::Refusal::Revoked(Box::new(
+            entry,
+        )));
+        assert!(matches!(refused, LinkError::DeviceRevoked), "{refused:?}");
+        assert!(stops_session(&refused));
+        let other = dialed_refusal(tilo_server_protocol::refusal::Refusal::Offline);
+        assert!(!stops_session(&other));
+        assert!(
+            matches!(refusal(&other), Refusal::Unexplained),
+            "another refusal is the host's words, tried again"
+        );
     }
 
     /// A page that lists nobody says why: each workspace's live session names what it

@@ -159,76 +159,6 @@ pub trait WorkspaceControlServices: Send + Sync {
     ) -> Result<std::rc::Rc<dyn WorkspaceControlSession>, String>;
 }
 
-/// The broker-authenticated identity passed to native realtime continuity.
-/// The service never accepts caller-supplied routing or peer ownership.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "peer, app and workspace ids are the three distinct identities this context carries"
-)]
-pub struct RealtimeRequestContext {
-    peer_id: u64,
-    app_id: String,
-    workspace_id: String,
-}
-
-impl RealtimeRequestContext {
-    pub(crate) fn authenticated(
-        peer_id: u64,
-        app_id: impl Into<String>,
-        workspace_id: impl Into<String>,
-    ) -> Self {
-        Self {
-            peer_id,
-            app_id: app_id.into(),
-            workspace_id: workspace_id.into(),
-        }
-    }
-
-    #[must_use]
-    pub const fn peer_id(&self) -> u64 {
-        self.peer_id
-    }
-
-    #[must_use]
-    pub fn app_id(&self) -> &str {
-        &self.app_id
-    }
-
-    #[must_use]
-    pub fn workspace_id(&self) -> &str {
-        &self.workspace_id
-    }
-}
-
-/// Native realtime continuity: the host binds portal capture leases and certified device-fabric
-/// state, while the broker owns admission, route binding, wire bounds and disconnect cleanup.
-pub trait RealtimeServices: Send + Sync {
-    /// Runs one realtime continuity command.
-    fn command(
-        &self,
-        context: &RealtimeRequestContext,
-        command_json: &[u8],
-    ) -> Result<Vec<u8>, String>;
-
-    /// Subscribes to realtime continuity events for this context.
-    fn subscribe(
-        &self,
-        context: &RealtimeRequestContext,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>, String>;
-
-    fn disconnect(&self, peer_id: u64);
-}
-/// The host's Wi-Fi credential continuity across the person's devices: the broker admits only the
-/// certified Settings route. A host without radios installs none.
-pub trait WifiContinuityServices: Send + Sync {
-    /// Runs one validated Wi-Fi continuity command.
-    fn command(
-        &self,
-        command: runtime_collab::WifiContinuityCommand,
-    ) -> runtime_collab::WifiContinuityReply;
-}
-
 /// Original Browser connection, minted only from certified launcher ownership.
 #[derive(Clone)]
 pub struct BrowserServiceSessionRequestContext {
@@ -750,7 +680,6 @@ pub struct ProcessServices {
     /// The device content store content puts go to; without it that api is not offered.
     pub content_store: Option<Arc<dyn ContentStoreServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
-    pub realtime: Option<Arc<dyn RealtimeServices>>,
     /// The session's settings, which apps reach through their channel; without it apps have none beyond
     /// their own process.
     pub settings: Option<Arc<dyn settings_store::SettingsSource>>,
@@ -758,7 +687,6 @@ pub struct ProcessServices {
     /// Every app's live activity, as the host presents it; without it no app shows anything
     /// outside its windows.
     pub live_activities: Option<Arc<runtime_collab::LiveActivities>>,
-    pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
     pub browser_service_sessions: Option<Arc<dyn BrowserServiceSessionServices>>,
     pub file_clipboard: Option<Arc<dyn FileClipboardServices>>,
     /// What each application declared it may do on the API; without it none declared anything.
@@ -812,6 +740,7 @@ impl ProcessServices {
         "audio_output",
         "workspace_memberships",
         "agents",
+        "present_devices",
         "agent_sessions",
         "native_certificates",
         "local_person",
@@ -828,14 +757,9 @@ impl ProcessServices {
         "document_index_changes",
         "content_store",
         "workspace_control",
-        "realtime",
-        "speakers",
-        "drives",
-        "applications",
         "settings",
         "display_control",
         "live_activities",
-        "wifi_continuity",
         "browser_service_sessions",
         "file_clipboard",
         "app_action_access",

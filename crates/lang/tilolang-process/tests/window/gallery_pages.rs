@@ -288,3 +288,79 @@ fn a_radio_group_chooses_by_its_radios() {
         })
     });
 }
+
+/// Whether `point` stands in `rect`, a `Composed`'s `[x, y, width, height]`.
+fn holds(rect: [f64; 4], (x, y): (f64, f64)) -> bool {
+    let [left, top, width, height] = rect;
+    (left..=left + width).contains(&x) && (top..=top + height).contains(&y)
+}
+
+/// Every scroller in `composition` that has an offset to read.
+fn scrollers(composition: &Composition) -> Vec<&Composed> {
+    nodes(composition)
+        .into_iter()
+        .filter(|node| node.widget == "Scrollable" && node.scroll.is_some())
+        .collect()
+}
+
+/// The scroller that shows the page's content at `point`: the one under the pointer whose
+/// content is taller than its viewport.
+fn content_scroller_at(composition: &Composition, point: (f64, f64)) -> Option<&Composed> {
+    scrollers(composition).into_iter().find(|node| {
+        holds(node.rect, point)
+            && node
+                .scroll
+                .is_some_and(|[_, content, viewport]| content > viewport + 1.0)
+    })
+}
+
+/// Every scroller of `composition` with its box and offset, for a failure to say what stood
+/// where.
+fn describe(composition: &Composition) -> String {
+    scrollers(composition)
+        .iter()
+        .map(|node| {
+            let (path, rect, scroll) = (&node.path, node.rect, node.scroll);
+            format!("{path} rect={rect:?} scroll={scroll:?}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n  ")
+}
+
+/// The wheel over a long page's content moves it: the harness hands the window the wheel a real
+/// one gets, at the pointer it last saw, and the page under it scrolls.
+#[test]
+fn the_wheel_over_the_page_scrolls_its_content() {
+    crate::support::installed("gallery");
+    let mut app = TestApp::<TlApp>::drive_at("controls", (1280, 800)).expect("the scenario stages");
+    let harness = app.harness();
+    let composition = pick(harness, "Controls");
+    // The content column's right edge: over the page, not the sidebar.
+    let point = (1270.0, 400.0);
+    let page = content_scroller_at(&composition, point).unwrap_or_else(|| {
+        panic!(
+            "the page's content scrolls under {point:?}:\n  {}",
+            describe(&composition)
+        )
+    });
+    let path = page.path.clone();
+    let start = page.scroll.expect("its offset")[0];
+    assert!(start.abs() < f64::EPSILON, "the page starts at its top");
+    harness.hover_at(point.0, point.1);
+    harness.scroll(0.0, -3.0);
+    let composition = until(
+        harness,
+        "the wheel moves the page's content",
+        |composition| {
+            scrollers(composition)
+                .into_iter()
+                .any(|node| node.path == path && node.scroll.is_some_and(|[offset, ..]| offset > 0.0))
+        },
+    );
+    let offset = scrollers(&composition)
+        .into_iter()
+        .find(|node| node.path == path)
+        .and_then(|node| node.scroll)
+        .expect("the page's scroller")[0];
+    assert!(offset > 0.0, "the wheel moves the page's content: {offset}");
+}

@@ -201,6 +201,26 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
     })
     .await;
 
+    // As the login does, the device founds the workspace it keeps its own lists in and hands
+    // it to the server, with the change naming the server among its holders.
+    let person = tilo_test_env::within(
+        "the device founds its own workspace",
+        tilo_workspace_service::workspaces::person_workspace::found(own.copies()),
+    )
+    .await
+    .expect("the person's own workspace");
+    tilo_test_env::within(
+        "the server holds the person's own workspace",
+        own.copies().attach_server(
+            &person,
+            server_cert.device_public_key,
+            server.node_addr(),
+            tilo_peer_state::CopyRole::KeyHolder,
+        ),
+    )
+    .await
+    .expect("the server takes the person's own workspace");
+
     // With no login to name it, the copy names the person's server: the host that keeps the
     // workspace's keys and is not this device. The account asked there answers.
     let hosts = own.copies().hosts(&workspace).await.unwrap();
@@ -212,7 +232,7 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
         "the server signs as the device its endpoint is keyed by"
     );
     let account = crate::device::account::Account::at(&own, &found.endpoint_addr, &workspace);
-    tilo_test_env::within(
+    let listed = tilo_test_env::within(
         "the server answers the account its copy names",
         account.listed(
             &laptop_cert.user_public_key,
@@ -222,6 +242,13 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
     )
     .await
     .expect("the person's workspace list");
+    assert!(
+        listed
+            .workspaces
+            .iter()
+            .any(|listed| listed.workspace == person),
+        "the list the server answers names the person's own workspace: {listed:?}"
+    );
 
     entered.close();
     server.shutdown().await;

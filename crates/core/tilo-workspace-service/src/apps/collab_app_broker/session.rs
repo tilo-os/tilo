@@ -419,26 +419,6 @@ impl JoinedChannel {
             .state
             .subscribe_shown_actions(current.broker_actor(), route.cluster_id, actions))
     }
-
-    pub(super) fn realtime_context(
-        &self,
-    ) -> Result<crate::apps::services::RealtimeRequestContext, BrokerError> {
-        self.state
-            .revalidate_admission(&self.route(), &self.verified_identity)?;
-        let route = self.route();
-        if route.app_id.is_empty() || route.cluster_id.is_empty() {
-            return Err(BrokerError::failed(
-                "realtime continuity requires an exact certified app/workspace route".into(),
-            ));
-        }
-        Ok(
-            crate::apps::services::RealtimeRequestContext::authenticated(
-                self.connection_id,
-                route.app_id,
-                route.cluster_id,
-            ),
-        )
-    }
 }
 
 /// The `AppSettings` capability of the app `route` certifies: its own
@@ -763,70 +743,6 @@ pub(super) fn live_activity_capability(
         (None, None) => Err(BrokerError::failed(
             "this host presents no live activities".into(),
         )),
-    }
-}
-
-pub(super) fn delegate_realtime_command(
-    services: &ProcessServices,
-    context: &crate::apps::services::RealtimeRequestContext,
-    claimed_app: &str,
-    command: &[u8],
-) -> Result<Vec<u8>, BrokerError> {
-    if claimed_app != context.app_id() {
-        return Err(BrokerError::failed(
-            "realtime app id must match the certified connection route".into(),
-        ));
-    }
-    let service = services.realtime.as_ref().ok_or_else(|| {
-        BrokerError::failed("realtime continuity is unsupported by this host".into())
-    })?;
-    service
-        .command(context, command)
-        .map_err(BrokerError::failed)
-}
-
-/// The only application that may carry Wi-Fi credentials between devices.
-use tilo_app_id::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
-
-pub(super) fn delegate_wifi_continuity_command(
-    services: &ProcessServices,
-    route_app: &str,
-    claimed_app: &str,
-    command: &[u8],
-) -> Result<Vec<u8>, BrokerError> {
-    if route_app != WIFI_CONTINUITY_APP_ID {
-        return Err(BrokerError::failed(
-            "Wi-Fi continuity is restricted to the certified Settings application".into(),
-        ));
-    }
-    if claimed_app != route_app {
-        return Err(BrokerError::failed(
-            "Wi-Fi continuity app id must match the certified connection route".into(),
-        ));
-    }
-    if command.len() > runtime_collab::MAX_WIFI_CONTINUITY_WIRE_BYTES {
-        return Err(BrokerError::failed(
-            "Wi-Fi continuity command exceeds the local protocol bound".into(),
-        ));
-    }
-    let command = match serde_json::from_slice::<runtime_collab::WifiContinuityCommand>(command) {
-        Ok(command) if command.valid() => command,
-        Ok(_) => {
-            return Err(BrokerError::failed(
-                "Wi-Fi continuity command is structurally invalid".into(),
-            ));
-        }
-        Err(error) => return Err(BrokerError::failed(error.to_string())),
-    };
-    let service = services.wifi_continuity.as_ref().ok_or_else(|| {
-        BrokerError::failed("Wi-Fi continuity is unsupported by this host".into())
-    })?;
-    match serde_json::to_vec(&service.command(command)) {
-        Ok(reply) if reply.len() <= runtime_collab::MAX_WIFI_CONTINUITY_WIRE_BYTES => Ok(reply),
-        Ok(_) => Err(BrokerError::failed(
-            "Wi-Fi continuity reply exceeds the local protocol bound".into(),
-        )),
-        Err(error) => Err(BrokerError::failed(error.to_string())),
     }
 }
 

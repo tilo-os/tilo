@@ -29,6 +29,7 @@ __all__ = [
     "SetUnitArgs",
     "SetBootArgs",
     "SetSearchArgs",
+    "ChooseArgs",
     "ClearFiltersArgs",
 ]
 
@@ -52,13 +53,18 @@ SetSearchArgs = TypedDict("SetSearchArgs", {
 })
 """The arguments of `set_search`."""
 
+ChooseArgs = TypedDict("ChooseArgs", {
+    "key": "str",
+})
+"""The arguments of `choose`."""
+
 ClearFiltersArgs = TypedDict("ClearFiltersArgs", {
 })
 """The arguments of `clear_filters`."""
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.logs@ebe6ea8372974b5d"
+    __surface__ = "so.tilo.logs@8f6a67d584534406"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -119,7 +125,7 @@ class Notice(Resource):
 
 class Logs(Resource):
     """Logs — `tl.so.tilo.logs.Logs`."""
-    __surface__ = "so.tilo.logs@ebe6ea8372974b5d"
+    __surface__ = "so.tilo.logs@8f6a67d584534406"
     @property
     def _6e5izmwp(self) -> str:
         """severity (`6e5izmwp` on the wire)."""
@@ -132,6 +138,7 @@ class Logs(Resource):
     vzywk5iy: str  # boot
     yuygrdvc: str  # search
     rumvop3c: bool  # following
+    cctmzqe2: str  # selected
 
     def made_export(self) -> str:
         """The records an export writes, one JSON object a line."""
@@ -169,6 +176,14 @@ class Logs(Resource):
         """Runs `set_search` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_search", items)
 
+    def choose(self, *, key: str) -> None:
+        """Shows one record's detail."""
+        return self.action("choose", key=key)
+
+    def choose_many(self, items: list[ChooseArgs]) -> list[dict[str, Any]]:
+        """Runs `choose` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("choose", items)
+
     def clear_filters(self) -> None:
         """Clears every journal filter."""
         return self.action("clear_filters")
@@ -188,12 +203,12 @@ class Logs(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"made_export", "set_severity", "set_severity_many", "set_unit", "set_unit_many", "set_boot", "set_boot_many", "set_search", "set_search_many", "clear_filters", "clear_filters_many", "follow", "poll_tail"})
+    __actions__ = frozenset({"made_export", "set_severity", "set_severity_many", "set_unit", "set_unit_many", "set_boot", "set_boot_many", "set_search", "set_search_many", "choose", "choose_many", "clear_filters", "clear_filters_many", "follow", "poll_tail"})
 
 
 class ExportEntry(Resource):
     """ExportEntry — `tl.so.tilo.logs.ExportEntry`."""
-    __surface__ = "so.tilo.logs@ebe6ea8372974b5d"
+    __surface__ = "so.tilo.logs@8f6a67d584534406"
     @property
     def _37kvzek7(self) -> int:
         """realtime_us (`37kvzek7` on the wire)."""
@@ -229,14 +244,14 @@ class ExportEntry(Resource):
 
 class ExportField(Resource):
     """ExportField — `tl.so.tilo.logs.ExportField`."""
-    __surface__ = "so.tilo.logs@ebe6ea8372974b5d"
+    __surface__ = "so.tilo.logs@8f6a67d584534406"
     mj25pae6: str  # name
     pnqueidz: str  # value
 
 
 class TiloLogs(Resource):
     """Logs — `tl.so.tilo.logs`."""
-    __surface__ = "so.tilo.logs@ebe6ea8372974b5d"
+    __surface__ = "so.tilo.logs@8f6a67d584534406"
     def copy_entry(self, *, entry: Any) -> None:
         """Copies one record, with its time, unit, program and message."""
         return self.action("copy_entry", entry=entry)

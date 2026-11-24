@@ -12,7 +12,7 @@ use collab_types::DocumentMutation;
 use tilo_session_client::Outbox;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{enrol, ready, route, start_host, start_peer};
+use crate::support::{commit_native, enrol, ready, route, start_host, start_peer};
 
 fn noise(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
@@ -55,6 +55,7 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "checkpoint", noise(5 * 1024 * 1024 / 2, 1))
         .unwrap();
+    commit_native(&mut doc);
     author
         .write(route(), &DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -62,6 +63,7 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
     // after them builds on them.
     doc.put(ROOT, "file", noise(3 * 1024 * 1024 / 2, 1_000))
         .unwrap();
+    commit_native(&mut doc);
     author
         .write(
             route(),
@@ -75,6 +77,7 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
             noise(8 * 1024, index as u64 + 2),
         )
         .unwrap();
+        commit_native(&mut doc);
         author
             .write(
                 route(),

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@66fb84ff706b3fcb";
+export const SURFACE = "so.tilo.chat@e8d4764e347966ce";
 
 /** One emoji of the workspace. */
 export interface Emoji {
@@ -139,6 +139,18 @@ export interface RenameVoiceChannelArgs {
   name: string;
 }
 
+/** The arguments of `set_hearing`. */
+export interface SetHearingArgs {
+  who: string;
+  percent: number;
+}
+
+/** The arguments of `silence`. */
+export interface SilenceArgs {
+  who: string;
+  on?: boolean;
+}
+
 /** The arguments of `bridge`. */
 export interface TextChannelBridgeArgs {
   service: string;
@@ -191,6 +203,15 @@ export interface DeleteBlockArgs {
   block: string;
 }
 
+/** The arguments of `set_share_access`. */
+export interface SetShareAccessArgs {
+  can_edit: boolean;
+}
+
+/** The arguments of `stop_sharing`. */
+export interface StopSharingArgs {
+}
+
 /** The arguments of `relay_reaction`. */
 export interface RelayReactionArgs {
   emoji: string;
@@ -214,14 +235,14 @@ export interface DecideArgs {
   decision: string;
 }
 
-/** The arguments of `overturn`. */
-export interface OverturnArgs {
-  why: string;
-}
-
 /** The arguments of `summarize`. */
 export interface ThreadSummarizeArgs {
   summary: string;
+}
+
+/** The arguments of `archive_thread`. */
+export interface ArchiveThreadArgs {
+  archived?: boolean;
 }
 
 /** The arguments of `delete`. */
@@ -310,6 +331,18 @@ export interface AddEmojiArgs {
 /** The arguments of `remove-emoji`. */
 export interface RemoveEmojiArgs {
   name: string;
+}
+
+/** The arguments of `rename-emoji`. */
+export interface RenameEmojiArgs {
+  name: string;
+  to: string;
+}
+
+/** The arguments of `rename-any-emoji`. */
+export interface RenameAnyEmojiArgs {
+  name: string;
+  to: string;
 }
 
 /** The arguments of `remove-any-emoji`. */
@@ -438,6 +471,11 @@ export interface Conversations extends tilo.Resource {
     who: string;
     reason: string;
   }): Promise<ChatReport>;
+  /** Bans a person from the workspace: they leave it and stay out until a moderator lifts the ban. The workspace's own ban decides who may, its owners and moderators; Chat keeps the ban on the moderators' Reports page as a decided report, which overturning lifts. */
+  ban(args: {
+    who: string;
+    reason: string;
+  }): Promise<ChatReport>;
   /** Asks the assistant to start a sub-agent for `job`, in the direct conversation it answers in: the record's own `start-sub-agent` is the assistant's to call there, and the sub-agent reports in that conversation, where the person follows it. None where the workspace keeps no conversation with the assistant yet. */
   ask_for_sub_agent(args: {
     agent: unknown;
@@ -447,7 +485,7 @@ export interface Conversations extends tilo.Resource {
 
 /** The actions `Conversations` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CONVERSATIONS_ACTIONS = ["new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "conversation_with", "write_to", "delete_channel", "delete_channelMany", "delete_category", "delete_categoryMany", "move_channel", "move_channelMany", "move_category", "move_categoryMany", "report_person", "ask_for_sub_agent"] as const;
+export const CONVERSATIONS_ACTIONS = ["new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "conversation_with", "write_to", "delete_channel", "delete_channelMany", "delete_category", "delete_categoryMany", "move_channel", "move_channelMany", "move_category", "move_categoryMany", "report_person", "ban", "ask_for_sub_agent"] as const;
 
 /** The `tl.so.tilo.chat.Conversations` kind at `path`. */
 export function conversations(ws: tilo.Workspace, path: string): Conversations {
@@ -527,6 +565,50 @@ export function voiceChannel(ws: tilo.Workspace, path: string): VoiceChannel {
   return resourceProxy(ws, path, SURFACE, VOICECHANNEL_ACTIONS) as unknown as VoiceChannel;
 }
 
+/** Hearing — `tl.so.tilo.chat.Hearing`. */
+export interface Hearing extends tilo.Resource {
+  ua6lm2xh: Array<tilo.Entry<Heard>>;  // people
+  /** Plays `who` in calls on this device at `percent` of as they arrive, and hears them again if they were silenced. Only this device plays them so; nobody else hears a difference. */
+  set_hearing(args: {
+    who: string;
+    percent: number;
+  }): Promise<void>;
+  /** Runs `set_hearing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_hearingMany(items: SetHearingArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Silences `who` in calls on this device, or hears them again at the level they had. Only this person stops hearing them; everyone else in the call still does. */
+  silence(args: {
+    who: string;
+    on?: boolean;
+  }): Promise<void>;
+  /** Runs `silence` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  silenceMany(items: SilenceArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Hearing` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const HEARING_ACTIONS = ["set_hearing", "set_hearingMany", "silence", "silenceMany"] as const;
+
+/** The `tl.so.tilo.chat.Hearing` kind at `path`. */
+export function hearing(ws: tilo.Workspace, path: string): Hearing {
+  return resourceProxy(ws, path, SURFACE, HEARING_ACTIONS) as unknown as Hearing;
+}
+
+/** Heard — `tl.so.tilo.chat.Heard`. */
+export interface Heard extends tilo.Resource {
+  a2np4gvd: string;  // who
+  u4nfj5zx: number;  // percent
+  xtnm4w32: boolean;  // silenced
+}
+
+/** The actions `Heard` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const HEARD_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.chat.Heard` kind at `path`. */
+export function heard(ws: tilo.Workspace, path: string): Heard {
+  return resourceProxy(ws, path, SURFACE, HEARD_ACTIONS) as unknown as Heard;
+}
+
 /** TextChannel — `tl.so.tilo.chat.TextChannel`. */
 export interface TextChannel extends tilo.Resource {
   x3haugpo: string;  // name
@@ -567,6 +649,11 @@ export interface TextChannel extends tilo.Resource {
   send_view(args: {
     title: string;
     definition: string;
+  }): Promise<Message>;
+  /** Shares one of the person's windows live into a conversation: the shell shares the window with the workspace, as its own window bar does, and the message refers to that share, so the conversation shows the window live where the message stands. Its sharer chooses whether the members viewing it may control it. */
+  share_window(args: {
+    window: string;
+    can_edit?: boolean;
   }): Promise<Message>;
   /** Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays. */
   relay(args: {
@@ -623,7 +710,7 @@ export interface TextChannel extends tilo.Resource {
 
 /** The actions `TextChannel` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TEXTCHANNEL_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "send", "summarize", "summarizeMany", "send_view", "relay", "rename_channel", "rename_channelMany", "set_topic", "set_topicMany", "archive_channel", "archive_channelMany", "continue_answer", "delete", "deleteMany", "report", "start_thread"] as const;
+export const TEXTCHANNEL_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "rename_channel", "rename_channelMany", "set_topic", "set_topicMany", "archive_channel", "archive_channelMany", "continue_answer", "delete", "deleteMany", "report", "start_thread"] as const;
 
 /** The `tl.so.tilo.chat.TextChannel` kind at `path`. */
 export function textChannel(ws: tilo.Workspace, path: string): TextChannel {
@@ -645,6 +732,26 @@ export const OUTSIDEAUTHOR_ACTIONS = [] as const;
 /** The `tl.so.tilo.chat.OutsideAuthor` kind at `path`. */
 export function outsideAuthor(ws: tilo.Workspace, path: string): OutsideAuthor {
   return resourceProxy(ws, path, SURFACE, OUTSIDEAUTHOR_ACTIONS) as unknown as OutsideAuthor;
+}
+
+/** LiveShare — `tl.so.tilo.chat.LiveShare`. */
+export interface LiveShare extends tilo.Resource {
+  noscllor: string;  // window
+  n4s3rmdn: string;  // workspace
+  k535m2ok: string;  // title
+  ntg5vyds: string;  // app_name
+  dzpk5b7g: string;  // icon
+  a4wmd33j: boolean;  // can_edit
+  jfgns7zp: boolean;  // ended
+}
+
+/** The actions `LiveShare` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LIVESHARE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.chat.LiveShare` kind at `path`. */
+export function liveShare(ws: tilo.Workspace, path: string): LiveShare {
+  return resourceProxy(ws, path, SURFACE, LIVESHARE_ACTIONS) as unknown as LiveShare;
 }
 
 /** OutsideEmoji — `tl.so.tilo.chat.OutsideEmoji`. */
@@ -673,6 +780,7 @@ export interface Message extends tilo.Resource {
   t2kepujk: string;  // reasoning
   ofad24rc: Record<string, string[]>;  // reactions
   dh6346no: string;  // sent_view
+  "4upqznm4": LiveShare | null;  // live_share
   wqxsenb3: OutsideAuthor | null;  // outside
   bbu6225x: Array<tilo.Entry<OutsideEmoji>>;  // outside_emoji
   tz5yw5dt: string;  // by
@@ -701,6 +809,16 @@ export interface Message extends tilo.Resource {
   }): Promise<void>;
   /** Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteBlockMany(items: DeleteBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Lets the members viewing a window shared into a conversation control it, or only view it: the shell's share changes, and the message says so. */
+  set_share_access(args: {
+    can_edit: boolean;
+  }): Promise<void>;
+  /** Runs `set_share_access` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_share_accessMany(items: SetShareAccessArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Stops sharing a window shared into a conversation: the shell's share ends, and the message says the window is no longer shared in its place. */
+  stop_sharing(): Promise<void>;
+  /** Runs `stop_sharing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  stop_sharingMany(items: StopSharingArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Relays a reaction someone gave a message where it was written, as that place names them: the counterpart of `relay` for a reaction. A bridge carrying another service's conversation here makes these, so a reaction made there shows under the person's name rather than the bridge's; `given` false takes it back. The reaction's history names the bridge, and the message says whom it relays. */
   relay_reaction(args: {
     emoji: string;
@@ -729,7 +847,7 @@ export interface Message extends tilo.Resource {
 
 /** The actions `Message` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGE_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "relay_reaction", "relay_reactionMany", "pin", "pinMany", "react", "reactMany", "copy_text"] as const;
+export const MESSAGE_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "set_share_access", "set_share_accessMany", "stop_sharing", "stop_sharingMany", "relay_reaction", "relay_reactionMany", "pin", "pinMany", "react", "reactMany", "copy_text"] as const;
 
 /** The `tl.so.tilo.chat.Message` kind at `path`. */
 export function message(ws: tilo.Workspace, path: string): Message {
@@ -744,23 +862,24 @@ export interface ChatReport extends tilo.Resource {
   bmfbgqt6: string;  // reason
   "3oner4zg": string;  // decision
   maczz6ef: string;  // overturned
+  "5gbnohgv": boolean;  // banned
   /** Settles a report: what a moderator decided about it. A report whose decision was overturned is decided again this way. */
   decide(args: {
     decision: string;
   }): Promise<void>;
   /** Runs `decide` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   decideMany(items: DecideArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Overturns what was decided about a report, saying why: the report is open again, for a moderator to decide anew, and the decision overturned stays in its history. */
+  /** Overturns what was decided about a report, saying why: the report is open again, for a moderator to decide anew, and the decision overturned stays in its history. A ban it decided is lifted, so the person may come back. */
   overturn(args: {
     why: string;
   }): Promise<void>;
-  /** Runs `overturn` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  overturnMany(items: OverturnArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Settles a report by banning the person it is about from the workspace, as [`ban`] does. */
+  ban_reported(): Promise<void>;
 }
 
 /** The actions `ChatReport` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CHATREPORT_ACTIONS = ["decide", "decideMany", "overturn", "overturnMany"] as const;
+export const CHATREPORT_ACTIONS = ["decide", "decideMany", "overturn", "ban_reported"] as const;
 
 /** The `tl.so.tilo.chat.Report` kind at `path`. */
 export function chatReport(ws: tilo.Workspace, path: string): ChatReport {
@@ -793,6 +912,11 @@ export interface Thread extends tilo.Resource {
     title: string;
     definition: string;
   }): Promise<Message>;
+  /** Shares one of the person's windows live into a conversation: the shell shares the window with the workspace, as its own window bar does, and the message refers to that share, so the conversation shows the window live where the message stands. Its sharer chooses whether the members viewing it may control it. */
+  share_window(args: {
+    window: string;
+    can_edit?: boolean;
+  }): Promise<Message>;
   /** Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays. */
   relay(args: {
     body: string;
@@ -806,6 +930,12 @@ export interface Thread extends tilo.Resource {
     outside_emoji?: OutsideEmoji[];
     member?: string;
   }): Promise<Message>;
+  /** Sets a thread aside once its talk is done, keeping everything said in it, or reopens it. Its chip says so under the message it started from; a reply in it reopens it. The person who started it or a moderator does this. */
+  archive_thread(args?: {
+    archived?: boolean;
+  }): Promise<void>;
+  /** Runs `archive_thread` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  archive_threadMany(items: ArchiveThreadArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Asks the agent that wrote `m` to carry on where its answer stopped: a reply to it from the person, naming the agent, which the agent's next turn reads with the answer before it. An answer that ran out of room, was stopped or broke off is finished this way, not written again from its start. */
   continue_answer(args: {
     m: Message;
@@ -825,7 +955,7 @@ export interface Thread extends tilo.Resource {
 
 /** The actions `Thread` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const THREAD_ACTIONS = ["send", "summarize", "summarizeMany", "send_view", "relay", "continue_answer", "delete", "deleteMany", "report"] as const;
+export const THREAD_ACTIONS = ["send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "archive_thread", "archive_threadMany", "continue_answer", "delete", "deleteMany", "report"] as const;
 
 /** The `tl.so.tilo.chat.Thread` kind at `path`. */
 export function thread(ws: tilo.Workspace, path: string): Thread {
@@ -875,6 +1005,11 @@ export interface Direct extends tilo.Resource {
     title: string;
     definition: string;
   }): Promise<Message>;
+  /** Shares one of the person's windows live into a conversation: the shell shares the window with the workspace, as its own window bar does, and the message refers to that share, so the conversation shows the window live where the message stands. Its sharer chooses whether the members viewing it may control it. */
+  share_window(args: {
+    window: string;
+    can_edit?: boolean;
+  }): Promise<Message>;
   /** Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays. */
   relay(args: {
     body: string;
@@ -912,7 +1047,7 @@ export interface Direct extends tilo.Resource {
 
 /** The actions `Direct` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DIRECT_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "unread_count", "send", "summarize", "summarizeMany", "send_view", "relay", "continue_answer", "delete", "deleteMany", "report", "start_thread"] as const;
+export const DIRECT_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "unread_count", "send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "continue_answer", "delete", "deleteMany", "report", "start_thread"] as const;
 
 /** The `tl.so.tilo.chat.Direct` kind at `path`. */
 export function direct(ws: tilo.Workspace, path: string): Direct {
@@ -1110,6 +1245,20 @@ export interface WorkspaceEmoji extends tilo.Resource {
   }): Promise<void>;
   /** Runs `remove-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeEmojiMany(items: RemoveEmojiArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** One you added: its picture and who added it stay. Reactions and text that wrote its old `:name:` no longer draw it. */
+  renameEmoji(args: {
+    name: string;
+    to: string;
+  }): Promise<void>;
+  /** Runs `rename-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  renameEmojiMany(items: RenameEmojiArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Someone else's emoji: the workspace's roles decide who may. */
+  renameAnyEmoji(args: {
+    name: string;
+    to: string;
+  }): Promise<void>;
+  /** Runs `rename-any-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  renameAnyEmojiMany(items: RenameAnyEmojiArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Someone else's emoji: the workspace's roles decide who may. */
   removeAnyEmoji(args: {
     name: string;
@@ -1120,7 +1269,7 @@ export interface WorkspaceEmoji extends tilo.Resource {
 
 /** The actions `WorkspaceEmoji` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACEEMOJI_ACTIONS = ["addEmoji", "addEmojiMany", "removeEmoji", "removeEmojiMany", "removeAnyEmoji", "removeAnyEmojiMany"] as const;
+export const WORKSPACEEMOJI_ACTIONS = ["addEmoji", "addEmojiMany", "removeEmoji", "removeEmojiMany", "renameEmoji", "renameEmojiMany", "renameAnyEmoji", "renameAnyEmojiMany", "removeAnyEmoji", "removeAnyEmojiMany"] as const;
 
 /** The `tilo.workspace.emoji` kind at `path`. */
 export function workspaceEmoji(ws: tilo.Workspace, path: string): WorkspaceEmoji {

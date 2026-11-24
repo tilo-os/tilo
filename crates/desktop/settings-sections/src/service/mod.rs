@@ -24,6 +24,7 @@
 
 pub mod agent_models;
 mod i18n;
+pub mod languages;
 pub mod shortcuts_table;
 
 use serde_json::{Map, Value};
@@ -173,6 +174,13 @@ impl SettingsService {
             }
         }
         resources.push(agent_models::Served::resource());
+        // The languages this desktop speaks, as Region's page offers them.
+        resources.push(
+            tilo_resource::typed_resource::<languages::LanguagesReading>(
+                languages::RESOURCE,
+                i18n::t("settings-languages"),
+            ),
+        );
         resources.push(tilo_resource::typed_resource::<
             shortcuts_table::ShortcutsTableReading,
         >(
@@ -362,6 +370,9 @@ impl Service for SettingsService {
     fn read(&self, resource: &str) -> Option<Value> {
         if resource == agent_models::RESOURCE {
             return self.agent_models.read(resource);
+        }
+        if resource == languages::RESOURCE {
+            return serde_json::to_value(languages::Languages::spoken()).ok();
         }
         if resource == shortcuts_table::RESOURCE {
             // The table read from the person's shortcuts section as it is stored now.

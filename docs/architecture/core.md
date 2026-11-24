@@ -174,7 +174,7 @@ action and carried out by the system under the workspace's grants) are the
 system's. An app is its resource types, its actions' code and its views.
 An app's own process reaches the records of its app id whose kinds its manifest
 declares, and its own windows' records, in any workspace it is installed in;
-another app's records or windows only through that app's actions.
+another app's records or windows only through that app's actions. A file a person chooses for an app is a grant to that app on the file's tree node, so it follows renames, shows in the file's sharing and can be revoked there.
 
 There is no ceiling on what an app can be, and no step down that loses the
 model. An app climbs in steps:
@@ -198,9 +198,10 @@ Underneath, both are actors acting for a person, like a person acting for
 themselves, and one call can run through several of them: an automation a
 person set up, run by an agent. Every actor in that chain must allow the
 call (`tilo_action_policy::Acting`, `admit_invocation`).
-The person an agent acts for is in its key's certificate, signed by that person
-when the agent is created and revoked when it is removed. Every replica reads it
-from the write's signature chain, so it decides the same way without opening the
+The person an agent acts for is the root its key's certificate chains to, read
+from each call's signature chain; an agent is the pair of its id and that person,
+in grants, reader sets, answers and history alike. Only that person's answers and
+stops count for it, so every replica decides the same way without opening the
 agent's record, which holds everything else about the agent.
 
 An agent or an automation acts with a subset of its person's permissions,
@@ -1198,6 +1199,10 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   an invocation carries that invocation and its id, signed by the device running
   the app; it runs as the original caller, bounded by both the caller's access and
   the app's grants, and only while that invocation is live.
+  Such a call is not asked again when the invocation was delivered to that same
+  connection and the parent action declares the call's effect: the consent the
+  parent was given covers it, and history records it under the parent. A call the
+  parent doesn't declare asks as any other.
   An action declares its effects in the one registry: the app, kind and verb each
   step writes. A recorded step on another resource or verb than the call named is
   accepted only when the called action declares it, read from the registry and

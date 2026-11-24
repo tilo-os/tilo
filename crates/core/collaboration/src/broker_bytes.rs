@@ -236,14 +236,6 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::PublishActionDirectory { app_id, .. } => {
             std::mem::size_of::<SdkCommand>().checked_add(app_id.capacity())
         }
-        SdkCommand::WifiContinuity {
-            app_id, command, ..
-        } => {
-            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
-            meter.string_capacity(app_id);
-            serialized_bytes(command, &mut meter);
-            meter.finish()
-        }
         SdkCommand::DisplayControl { command, .. } => {
             std::mem::size_of::<SdkCommand>().checked_add(command.capacity())
         }
@@ -553,10 +545,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             "RetiredNearbyTransferCommandResult"
         }
         CollabEvent::RetiredNearbyTransferChanged => "RetiredNearbyTransferChanged",
-        CollabEvent::Realtime(event) => {
-            serialized_bytes(event, &mut meter);
-            "Realtime"
-        }
     };
     (kind, meter.finish())
 }

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.code-editor@207d27b091030c88";
+export const SURFACE = "so.tilo.code-editor@5305c907565048a5";
 
 /** What an entry of the project is: code that is written, or a place that holds entries. One of "file", "folder". */
 export type EntryKind = "file" | "folder";
@@ -316,6 +316,18 @@ export interface ToggleFormatOnSaveArgs {
 
 /** The arguments of `restart_server`. */
 export interface RestartServerArgs {
+}
+
+/** The arguments of `zoom_in`. */
+export interface ZoomInArgs {
+}
+
+/** The arguments of `zoom_out`. */
+export interface ZoomOutArgs {
+}
+
+/** The arguments of `zoom_reset`. */
+export interface ZoomResetArgs {
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -994,6 +1006,7 @@ export interface Project extends tilo.Resource {
   w3quhvl4: boolean;  // search_truncated
   b5q44glb: Found[];  // found
   vwrqicgc: string;  // trouble
+  qenijz3o: Array<tilo.Entry<Settings>>;  // settings
   /** Starts a file called `name` in `folder`, holding `text`: what a person types in the project, what a drop makes, and where an import lands. */
   new_file(args?: {
     name?: string;
@@ -1271,15 +1284,49 @@ export interface Project extends tilo.Resource {
   restart_server(): Promise<void>;
   /** Runs `restart_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   restart_serverMany(items: RestartServerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Shows the file's problems under the code, as the window's own key does anywhere in it. */
+  show_problems(): Promise<void>;
+  /** Shows the project's terminal under the code, as Ctrl+J does anywhere in the window. */
+  show_terminal(): Promise<void>;
+  /** Shows what the project search found under the code, as Ctrl+Shift+F does anywhere in the window. */
+  show_search_results(): Promise<void>;
+  /** This person's settings, made by their own first change so they are theirs to read and write. */
+  ensure_settings(): Promise<Settings>;
+  /** Shows the code one step larger: the editor's own text size, kept for the person on every device. */
+  zoom_in(): Promise<void>;
+  /** Runs `zoom_in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  zoom_inMany(items: ZoomInArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Shows the code one step smaller. */
+  zoom_out(): Promise<void>;
+  /** Runs `zoom_out` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  zoom_outMany(items: ZoomOutArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Shows the code at its own size again. */
+  zoom_reset(): Promise<void>;
+  /** Runs `zoom_reset` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  zoom_resetMany(items: ZoomResetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["new_file", "new_folder", "rename", "renameMany", "move_entry", "move_entryMany", "move_after", "move_afterMany", "delete", "deleteMany", "find_in_window", "find_in_windowMany", "check", "checkMany", "open_folder", "open_folderMany", "read_into", "read_intoMany", "read_folder_into", "read_folder_intoMany", "read_text", "read_textMany", "open_file", "open_fileMany", "save", "saveMany", "write", "overwrite", "overwriteMany", "reload", "reloadMany", "save_all", "save_allMany", "save_into", "save_intoMany", "move_on_disk", "move_on_diskMany", "import_dropped", "import_droppedMany", "run", "runMany", "stop", "stopMany", "rerun", "rerunMany", "rerun_test", "rerun_testMany", "run_", "run_Many", "clear_commands", "clear_commandsMany", "open_terminal", "open_terminalMany", "poll", "pollMany", "reveal_item", "reveal_itemMany", "go_to_line", "go_to_lineMany", "search_project", "search_projectMany", "stop_search", "stop_searchMany", "open_hit", "open_hitMany", "ensure_server", "ensure_serverMany", "announce", "poll_server", "poll_serverMany", "read_answer", "read_answerMany", "complete", "completeMany", "hover", "hoverMany", "definition", "definitionMany", "accept_completion", "accept_completionMany", "format_file", "format_fileMany", "toggle_language_servers", "toggle_language_serversMany", "toggle_format_on_save", "toggle_format_on_saveMany", "restart_server", "restart_serverMany"] as const;
+export const PROJECT_ACTIONS = ["new_file", "new_folder", "rename", "renameMany", "move_entry", "move_entryMany", "move_after", "move_afterMany", "delete", "deleteMany", "find_in_window", "find_in_windowMany", "check", "checkMany", "open_folder", "open_folderMany", "read_into", "read_intoMany", "read_folder_into", "read_folder_intoMany", "read_text", "read_textMany", "open_file", "open_fileMany", "save", "saveMany", "write", "overwrite", "overwriteMany", "reload", "reloadMany", "save_all", "save_allMany", "save_into", "save_intoMany", "move_on_disk", "move_on_diskMany", "import_dropped", "import_droppedMany", "run", "runMany", "stop", "stopMany", "rerun", "rerunMany", "rerun_test", "rerun_testMany", "run_", "run_Many", "clear_commands", "clear_commandsMany", "open_terminal", "open_terminalMany", "poll", "pollMany", "reveal_item", "reveal_itemMany", "go_to_line", "go_to_lineMany", "search_project", "search_projectMany", "stop_search", "stop_searchMany", "open_hit", "open_hitMany", "ensure_server", "ensure_serverMany", "announce", "poll_server", "poll_serverMany", "read_answer", "read_answerMany", "complete", "completeMany", "hover", "hoverMany", "definition", "definitionMany", "accept_completion", "accept_completionMany", "format_file", "format_fileMany", "toggle_language_servers", "toggle_language_serversMany", "toggle_format_on_save", "toggle_format_on_saveMany", "restart_server", "restart_serverMany", "show_problems", "show_terminal", "show_search_results", "ensure_settings", "zoom_in", "zoom_inMany", "zoom_out", "zoom_outMany", "zoom_reset", "zoom_resetMany"] as const;
 
 /** The `tl.so.tilo.code-editor.Project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {
   return resourceProxy(ws, path, SURFACE, PROJECT_ACTIONS) as unknown as Project;
+}
+
+/** Settings — `tl.so.tilo.code-editor.Settings`. */
+export interface Settings extends tilo.Resource {
+  douj4xux: number;  // editor_zoom
+}
+
+/** The actions `Settings` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SETTINGS_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.code-editor.Settings` kind at `path`. */
+export function settings(ws: tilo.Workspace, path: string): Settings {
+  return resourceProxy(ws, path, SURFACE, SETTINGS_ACTIONS) as unknown as Settings;
 }
 
 /** Code Editor — `tl.so.tilo.code-editor`. */

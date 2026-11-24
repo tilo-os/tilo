@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@d19fb600e9008ee5";
+export const SURFACE = "so.tilo.tube@b4f09b8acd372be4";
 
 /** The arguments of `subscribe`. */
 export interface SubscribeArgs {
@@ -94,6 +94,43 @@ export interface SetCommentsArgs {
 /** The arguments of `set_speed`. */
 export interface SetSpeedArgs {
   speed: number;
+}
+
+/** The arguments of `pair_device`. */
+export interface PairDeviceArgs {
+  invite: string;
+}
+
+/** The arguments of `approve_device`. */
+export interface ApproveDeviceArgs {
+  device: PairedDevice;
+}
+
+/** The arguments of `revoke_device`. */
+export interface RevokeDeviceArgs {
+  device: PairedDevice;
+}
+
+/** The arguments of `sync_devices`. */
+export interface SyncDevicesArgs {
+}
+
+/** The arguments of `auto_sync`. */
+export interface AutoSyncArgs {
+}
+
+/** The arguments of `poll_grayjay`. */
+export interface PollGrayjayArgs {
+}
+
+/** The arguments of `keep_paired`. */
+export interface KeepPairedArgs {
+  answer: string;
+}
+
+/** The arguments of `keep_exchange`. */
+export interface KeepExchangeArgs {
+  answer: string;
 }
 
 /** The arguments of `filter_search`. */
@@ -396,6 +433,137 @@ export function watchEntry(ws: tilo.Workspace, path: string): WatchEntry {
   return resourceProxy(ws, path, SURFACE, WATCHENTRY_ACTIONS) as unknown as WatchEntry;
 }
 
+/** PairedDevice — `tl.so.tilo.tube.PairedDevice`. */
+export interface PairedDevice extends tilo.Resource {
+  eqjnywdb: string;  // key
+  xzt7hvjd: string;  // name
+  r6hetdhx: string[];  // addresses
+  qshipefo: number;  // port
+  rb3itb6c: boolean;  // approved
+  dtjxddej: boolean;  // revoked
+  dtxc67xp: string;  // approved_at
+  "3rbysfau": string;  // last_synced
+  ovgswiz5: string;  // last_error
+}
+
+/** The actions `PairedDevice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PAIREDDEVICE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.PairedDevice` kind at `path`. */
+export function pairedDevice(ws: tilo.Workspace, path: string): PairedDevice {
+  return resourceProxy(ws, path, SURFACE, PAIREDDEVICE_ACTIONS) as unknown as PairedDevice;
+}
+
+/** GrayjayPairAsk — `tl.so.tilo.tube.GrayjayPairAsk`. */
+export interface GrayjayPairAsk extends tilo.Resource {
+  vjm7bxs2: string;  // invite
+}
+
+/** The actions `GrayjayPairAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const GRAYJAYPAIRASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.GrayjayPairAsk` kind at `path`. */
+export function grayjayPairAsk(ws: tilo.Workspace, path: string): GrayjayPairAsk {
+  return resourceProxy(ws, path, SURFACE, GRAYJAYPAIRASK_ACTIONS) as unknown as GrayjayPairAsk;
+}
+
+/** GrayjaySyncAsk — `tl.so.tilo.tube.GrayjaySyncAsk`. */
+export interface GrayjaySyncAsk extends tilo.Resource {
+  ldigr4fm: GrayjayPeer[];  // peers
+  "2ubtnp7s": GrayjaySubscription[];  // subscriptions
+}
+
+/** The actions `GrayjaySyncAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const GRAYJAYSYNCASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.GrayjaySyncAsk` kind at `path`. */
+export function grayjaySyncAsk(ws: tilo.Workspace, path: string): GrayjaySyncAsk {
+  return resourceProxy(ws, path, SURFACE, GRAYJAYSYNCASK_ACTIONS) as unknown as GrayjaySyncAsk;
+}
+
+/** GrayjayPeer — `tl.so.tilo.tube.GrayjayPeer`. */
+export interface GrayjayPeer extends tilo.Resource {
+  "73ossitw": string;  // key
+  u7p5waf7: string;  // name
+  eqe3dx4x: string[];  // addresses
+  b5mgdh6x: number;  // port
+}
+
+/** The actions `GrayjayPeer` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const GRAYJAYPEER_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.GrayjayPeer` kind at `path`. */
+export function grayjayPeer(ws: tilo.Workspace, path: string): GrayjayPeer {
+  return resourceProxy(ws, path, SURFACE, GRAYJAYPEER_ACTIONS) as unknown as GrayjayPeer;
+}
+
+/** GrayjaySubscription — `tl.so.tilo.tube.GrayjaySubscription`. */
+export interface GrayjaySubscription extends tilo.Resource {
+  "5k7gvetf": string;  // url
+  o4wrklpp: string;  // name
+}
+
+/** The actions `GrayjaySubscription` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const GRAYJAYSUBSCRIPTION_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.GrayjaySubscription` kind at `path`. */
+export function grayjaySubscription(ws: tilo.Workspace, path: string): GrayjaySubscription {
+  return resourceProxy(ws, path, SURFACE, GRAYJAYSUBSCRIPTION_ACTIONS) as unknown as GrayjaySubscription;
+}
+
+/** GrayjayJob — `tl.so.tilo.tube.GrayjayJob`. */
+export interface GrayjayJob extends tilo.Resource {
+  "4nyda52b": string;  // state
+  c7tscegn: string;  // answer
+  tshqcr4u: string;  // error
+}
+
+/** The actions `GrayjayJob` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const GRAYJAYJOB_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.GrayjayJob` kind at `path`. */
+export function grayjayJob(ws: tilo.Workspace, path: string): GrayjayJob {
+  return resourceProxy(ws, path, SURFACE, GRAYJAYJOB_ACTIONS) as unknown as GrayjayJob;
+}
+
+/** GrayjayOutcome — `tl.so.tilo.tube.GrayjayOutcome`. */
+export interface GrayjayOutcome extends tilo.Resource {
+  xil726fb: string;  // key
+  zkmfyff4: boolean;  // ok
+  mp7b4zg2: string;  // error
+}
+
+/** The actions `GrayjayOutcome` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const GRAYJAYOUTCOME_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.GrayjayOutcome` kind at `path`. */
+export function grayjayOutcome(ws: tilo.Workspace, path: string): GrayjayOutcome {
+  return resourceProxy(ws, path, SURFACE, GRAYJAYOUTCOME_ACTIONS) as unknown as GrayjayOutcome;
+}
+
+/** GrayjayRead — `tl.so.tilo.tube.GrayjayRead`. */
+export interface GrayjayRead extends tilo.Resource {
+  oow4nbb2: GrayjayOutcome[];  // peers
+  "2vaamao3": GrayjaySubscription[];  // subscriptions
+  iddsonzh: string[];  // history
+}
+
+/** The actions `GrayjayRead` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const GRAYJAYREAD_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.GrayjayRead` kind at `path`. */
+export function grayjayRead(ws: tilo.Workspace, path: string): GrayjayRead {
+  return resourceProxy(ws, path, SURFACE, GRAYJAYREAD_ACTIONS) as unknown as GrayjayRead;
+}
+
 /** YouTube — `tl.so.tilo.tube.YouTube`. */
 export interface YouTube extends tilo.Resource {
   olrung72: string;  // title
@@ -422,6 +590,12 @@ export interface YouTube extends tilo.Resource {
   nnvco6w3: string;  // feed_state
   r3ksw6bn: string;  // trouble
   qv7t2mza: boolean;  // online
+  dmc6hhdb: Array<tilo.Entry<PairedDevice>>;  // devices
+  bnycbpqz: string;  // sync_working
+  "5siq65eg": string;  // sync_job
+  drdwq4ha: string;  // sync_notice
+  rx6sx3au: string;  // sync_trouble
+  slqvuard: boolean;  // sync_started
   /** Plays the queue from its oldest video: what was put on it first plays first, and the rest follow in that order, so autoplay goes on down the queue. */
   play_queue(): Promise<void>;
   /** The session this app plays through: the one it has, or one made now. It is kept both in `playing`, which a view reads, and in `sessions`, so the record is a resource of its own. */
@@ -484,6 +658,48 @@ export interface YouTube extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_speed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_speedMany(items: SetSpeedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Pairs a Grayjay device from the invite its Sync screen shows. The invite carries where the device answers and the one-time code that opens the pairing; the device is recorded waiting for the person's approval, which is what lets it read and write anything here. */
+  pair_device(args: {
+    invite: string;
+  }): Promise<void>;
+  /** Runs `pair_device` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  pair_deviceMany(items: PairDeviceArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Approves a device that paired: Grayjay shows the same fingerprint on both ends. */
+  approve_device(args: {
+    device: PairedDevice;
+  }): Promise<void>;
+  /** Runs `approve_device` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  approve_deviceMany(items: ApproveDeviceArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Revokes a device: its key can no longer read or write anything here. */
+  revoke_device(args: {
+    device: PairedDevice;
+  }): Promise<void>;
+  /** Runs `revoke_device` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  revoke_deviceMany(items: RevokeDeviceArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Exchanges with every approved device now: reads the subscriptions and watch history Grayjay holds, and sends this client's subscriptions that way. */
+  sync_devices(): Promise<void>;
+  /** Runs `sync_devices` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  sync_devicesMany(items: SyncDevicesArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The approved devices are exchanged with on the timer, as Grayjay's own app does while it is open, so what either app adds reaches the other without anyone pressing. Nothing runs until a person has synced once by hand. */
+  auto_sync(): Promise<void>;
+  /** Runs `auto_sync` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  auto_syncMany(items: AutoSyncArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Follows the Grayjay operation under way, once a second, so its end reaches the window without anyone asking by hand. */
+  poll_grayjay(): Promise<void>;
+  /** Runs `poll_grayjay` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  poll_grayjayMany(items: PollGrayjayArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps the device a pairing made, waiting for the person's approval: the fingerprint beside it is what Grayjay shows on the other end. */
+  keep_paired(args: {
+    answer: string;
+  }): Promise<void>;
+  /** Runs `keep_paired` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keep_pairedMany(items: KeepPairedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps what an exchange came to: how each device stands, the subscriptions the other apps hold, and the videos they watched. */
+  keep_exchange(args: {
+    answer: string;
+  }): Promise<void>;
+  /** Runs `keep_exchange` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keep_exchangeMany(items: KeepExchangeArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them. The answer arrives through the platform's network, never the app's. */
   search(args?: {
     query?: string;
@@ -529,7 +745,7 @@ export interface YouTube extends tilo.Resource {
 
 /** The actions `YouTube` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const YOUTUBE_ACTIONS = ["play_queue", "session", "play_items", "play_itemsMany", "autoplay_next", "delete_history", "delete_historyMany", "set_autoplay", "set_autoplayMany", "set_quality", "set_qualityMany", "set_sponsorblock", "set_sponsorblockMany", "set_dearrow", "set_dearrowMany", "set_dislikes", "set_dislikesMany", "set_comments", "set_commentsMany", "set_speed", "set_speedMany", "search", "filter_search", "filter_searchMany", "filter_length", "filter_published", "end_search", "end_searchMany", "refresh_feed", "load_trending", "open_link", "like_comment", "like_commentMany", "play_again"] as const;
+export const YOUTUBE_ACTIONS = ["play_queue", "session", "play_items", "play_itemsMany", "autoplay_next", "delete_history", "delete_historyMany", "set_autoplay", "set_autoplayMany", "set_quality", "set_qualityMany", "set_sponsorblock", "set_sponsorblockMany", "set_dearrow", "set_dearrowMany", "set_dislikes", "set_dislikesMany", "set_comments", "set_commentsMany", "set_speed", "set_speedMany", "pair_device", "pair_deviceMany", "approve_device", "approve_deviceMany", "revoke_device", "revoke_deviceMany", "sync_devices", "sync_devicesMany", "auto_sync", "auto_syncMany", "poll_grayjay", "poll_grayjayMany", "keep_paired", "keep_pairedMany", "keep_exchange", "keep_exchangeMany", "search", "filter_search", "filter_searchMany", "filter_length", "filter_published", "end_search", "end_searchMany", "refresh_feed", "load_trending", "open_link", "like_comment", "like_commentMany", "play_again"] as const;
 
 /** The `tl.so.tilo.tube.YouTube` kind at `path`. */
 export function youTube(ws: tilo.Workspace, path: string): YouTube {

@@ -1,6 +1,6 @@
 //! What an app reaches of a record by what its signed manifest declares: its own records and the
 //! workspace's to change, another app's only to read where it declares that read, and in the
-//! person's own workspace only the records of theirs it declares.
+//! person's own workspace only its windows' records and the records of theirs it declares.
 
 use super::{AppReach, app_reach, persons_record};
 use tilo_actions::remote::ResourceAddress;
@@ -221,4 +221,52 @@ fn contextual_views_reach_the_profile_with_their_own_kind() {
     let views = person_record(app, &document);
     assert_eq!(persons_record(app, &views), Ok(()));
     assert!(persons_record("so.tilo.notes", &views).is_err());
+}
+
+/// The records the framework keeps for an app's windows, the default document a window opens and
+/// the view a device keeps of it, are the app's own in every workspace it runs in, the person's
+/// own among them. Another app reaches none of them; one that declares it reads the app's kinds
+/// reads a window's document as any of its records, but never the view a device keeps of it.
+#[test]
+fn an_apps_windows_records_are_its_own_in_every_workspace() {
+    collab_types::app_surface::register_package("test.lang-notes", NOTES);
+    collab_types::app_surface::register_package("test.lang-board", BOARD);
+    collab_types::app_surface::register_package("test.lang-chat", CHAT);
+    let window = collab_types::document::DocumentId::window_default(0x2a);
+    let first = collab_types::document::DocumentId::workspace_default();
+    let view = format!("derived:view.d0a1b@{}", window.as_str());
+    let records = [window.as_str(), first.as_str(), view.as_str()];
+    let shared = |app: &str, record: &str| ResourceAddress {
+        record: record.into(),
+        ..workspace_record(app)
+    };
+    for record in records {
+        for (own_workspace, address) in [
+            (true, person_record("test.lang-notes", record)),
+            (false, shared("test.lang-notes", record)),
+        ] {
+            assert_eq!(
+                app_reach("test.lang-notes", &address, own_workspace),
+                Ok(AppReach::Changes),
+                "its own window's {record}, own workspace {own_workspace}"
+            );
+            assert!(
+                app_reach("test.lang-chat", &address, own_workspace).is_err(),
+                "not another app's window's {record}, own workspace {own_workspace}"
+            );
+        }
+    }
+    assert!(
+        app_reach("test.lang-board", &shared("test.lang-notes", &view), false).is_err(),
+        "a declared read of an app's kinds reaches no view of its windows"
+    );
+    assert!(
+        app_reach(
+            "test.lang-notes",
+            &person_record("test.lang-notes", "derived:view.d0a1b@tab:000000000000002a"),
+            true
+        )
+        .is_err(),
+        "a view of anything but a window's default document is no window's record"
+    );
 }

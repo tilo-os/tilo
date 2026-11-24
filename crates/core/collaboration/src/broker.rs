@@ -38,15 +38,12 @@ pub(super) mod committed_document;
 #[path = "inbound_bridge.rs"]
 mod inbound_bridge;
 use inbound_bridge::InboundBridge;
-#[path = "realtime_stream.rs"]
-mod realtime_stream;
-#[path = "record_sync.rs"]
-mod record_sync;
-use realtime_stream::spawn_realtime_stream;
 #[path = "broker_key_fetch.rs"]
 mod key_fetch;
 #[path = "broker_key_schedule.rs"]
 mod key_schedule;
+#[path = "record_sync.rs"]
+mod record_sync;
 #[path = "broker_route_join.rs"]
 mod route_join;
 use key_fetch::{
@@ -100,47 +97,13 @@ const SDK_DOCUMENT_EVENT_BYTES: usize =
     collab_types::MAX_DOCUMENT_TRANSFER_BYTES + SDK_EVENT_QUEUE_BYTES;
 /// Re-check interval while an inbound document event waits for budget.
 const SDK_DOCUMENT_EVENT_RETRY: Duration = Duration::from_millis(250);
-const WIFI_CONTINUITY_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The transport's outbound queue as the process reaches it from outside: the
 /// session's published resources ([`SessionResource`]) and the device commands
-/// ([`wifi_continuity_command`]).
+/// (the display control).
 static PUBLISHED_COMMAND_BRIDGE: std::sync::OnceLock<
     std::sync::Mutex<Option<tokio_mpsc::WeakSender<QueuedSdkCommand>>>,
 > = std::sync::OnceLock::new();
-
-/// Invoke the shell's launcher-authenticated, sealed Wi-Fi continuity path.
-/// Callers should run this off the frame thread; the bounded timeout turns a
-/// lost broker into an ordinary unavailable result.
-pub fn wifi_continuity_command(
-    command: runtime_collab::WifiContinuityCommand,
-) -> Result<runtime_collab::WifiContinuityReply, String> {
-    let sender = PUBLISHED_COMMAND_BRIDGE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .map_err(|_| "Wi-Fi continuity bridge is unavailable".to_string())?
-        .as_ref()
-        .and_then(tokio_mpsc::WeakSender::upgrade)
-        .ok_or_else(|| {
-            "Wi-Fi continuity requires the certified collaboration service".to_string()
-        })?;
-    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-    let state = BridgeState::new();
-    if !enqueue_sdk_command(
-        &sender,
-        SdkCommand::WifiContinuity {
-            app_id: "so.tilo.settings".into(),
-            command,
-            reply: reply_tx,
-        },
-        &state,
-    ) {
-        return Err("Wi-Fi continuity command queue is unavailable".into());
-    }
-    reply_rx
-        .recv_timeout(WIFI_CONTINUITY_TIMEOUT)
-        .map_err(|_| "Wi-Fi continuity service did not respond".to_string())?
-}
 
 /// How long a store command waits for its workspace's answer.
 const RESOURCE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -991,11 +954,6 @@ enum SdkCommand {
     PublishActionDirectory {
         app_id: String,
         requests: mpsc::SyncSender<ActionDirectoryRequest>,
-    },
-    WifiContinuity {
-        app_id: String,
-        command: runtime_collab::WifiContinuityCommand,
-        reply: mpsc::SyncSender<Result<runtime_collab::WifiContinuityReply, String>>,
     },
     DisplayControl {
         origin: runtime_collab::settings::DisplayOrigin,
@@ -3616,24 +3574,6 @@ async fn drive_shovel(
                 if let Some(wake) = wake {
                     wake.wake();
                 }
-            }
-            SdkCommand::WifiContinuity {
-                app_id: _,
-                command,
-                reply,
-            } => {
-                let result = if let Some(key) = primary.as_ref()
-                    && let Some(route) = routes.get_mut(key)
-                {
-                    route
-                        .channel
-                        .wifi_continuity_command(&command)
-                        .await
-                        .map_err(|error| error.to_string())
-                } else {
-                    Err("primary collaboration route is unavailable".into())
-                };
-                let _ = reply.send(result);
             }
             SdkCommand::DisplayControl {
                 command,

@@ -45,6 +45,7 @@ where
         own_process(&test, apps);
         return;
     }
+    host::say_what_went_wrong();
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
     let keeping = Arc::new(Keeping::start(&profile));
     let runtime = tokio::runtime::Builder::new_multi_thread()

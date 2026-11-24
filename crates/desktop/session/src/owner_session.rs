@@ -237,6 +237,9 @@ pub(crate) struct OwnerDevices {
     others: RefCell<Option<(u64, Vec<(DeviceId, OwnerSession, Vec<wake::WakeRoute>)>)>>,
     /// When this device may say its session again, after its daemon did not take it.
     quiet_until: Cell<Option<Instant>>,
+    /// The daemon did not take what this device last said of its session: said off the loop, so
+    /// the loop hears it on its next pass ([`Self::take_missed`]).
+    missed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// What this device is ([`crate::platform::fabric::DeviceAbout`]), postcard in hex, and its
     /// certificate the same way: what it keeps of itself in the record, through its daemon too.
     about: Option<(String, String)>,
@@ -266,6 +269,7 @@ impl OwnerDevices {
             cert,
             others: RefCell::default(),
             quiet_until: Cell::new(None),
+            missed: std::sync::Arc::default(),
             about,
         }
     }
@@ -335,10 +339,15 @@ impl OwnerDevices {
         }
         let keep =
             Devices::KEEP_FACT.with((key, certificate.clone(), name.to_owned(), value.to_owned()));
-        if let Err(error) = self.record.invoke(&keep) {
-            tracing::warn!(%error, name, "what this device says of itself reaches the person's devices later");
-            self.quiet_until.set(Instant::now().checked_add(SAY_AGAIN));
-        }
+        // Said off the loop: the follow shows it once the daemon wrote it, and until then, or
+        // when the daemon did not take it, it is not said again for a few seconds.
+        self.quiet_until.set(Instant::now().checked_add(SAY_AGAIN));
+        let name = name.to_owned();
+        self.record.invoke_unwaited(&keep, move |kept| {
+            if let Err(error) = kept {
+                tracing::warn!(%error, name, "what this device says of itself reaches the person's devices later");
+            }
+        });
     }
 
     /// Ask the person's devices to wake the device `name` names, by its key or its label.
@@ -399,8 +408,9 @@ impl OwnerDevices {
         others
     }
 
-    /// Say `session` as this device's: through its daemon, which writes it into the record. Whether
-    /// the daemon took it; one that did not is not asked again for a few seconds.
+    /// Say `session` as this device's: through its daemon, which writes it into the record, off
+    /// the loop. Whether it was said; one the daemon did not take is heard on a later pass
+    /// ([`Self::take_missed`]), and the daemon is not asked again for a few seconds.
     fn say(&self, session: OwnerSession) -> bool {
         if self
             .quiet_until
@@ -409,17 +419,29 @@ impl OwnerDevices {
         {
             return false;
         }
-        match self.record.invoke(&Devices::saying_session(
-            &self.cert.device_public_key,
-            session,
-        )) {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(%error, "this device's session reaches the person's devices later");
-                self.quiet_until.set(Instant::now().checked_add(SAY_AGAIN));
-                false
-            }
+        let missed = std::sync::Arc::clone(&self.missed);
+        self.record.invoke_unwaited(
+            &Devices::saying_session(&self.cert.device_public_key, session),
+            move |said| {
+                if let Err(error) = said {
+                    tracing::warn!(%error, "this device's session reaches the person's devices later");
+                    missed.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            },
+        );
+        true
+    }
+
+    /// Whether the daemon did not take what this device last said of its session: it is said
+    /// again once the daemon may be asked again.
+    fn take_missed(&self) -> bool {
+        let missed = self
+            .missed
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
+        if missed {
+            self.quiet_until.set(Instant::now().checked_add(SAY_AGAIN));
         }
+        missed
     }
 }
 
@@ -482,6 +504,14 @@ impl Session {
         // What this device says of itself is what it is now: a lock or unlock followed this pass is
         // said on the same one.
         let locked = self.compositor.locked();
+        if self
+            .shared
+            .owner_devices
+            .as_ref()
+            .is_some_and(OwnerDevices::take_missed)
+        {
+            self.shared.owner_session.unsaid();
+        }
         if let Some(said) = self.shared.owner_session.to_say(locked, input_ms, using)
             && let Some(devices) = self.shared.owner_devices.as_ref()
             && !devices.say(said)

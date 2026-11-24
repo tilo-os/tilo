@@ -3893,8 +3893,27 @@ fn a_conversation_offers_its_actions_at_its_window() {
         );
     }
 
-    // Archiving at the window files it out of the inbox, as the list's menu does.
-    session.window.press_named("Archive");
+    // Archiving at the window files it out of the inbox, as the list's menu does. The list's
+    // rows offer Archive too, so the press is the conversation window's own control, the one
+    // standing at the trailing edge of the pane the conversation opened in.
+    let archive = session
+        .window
+        .a11y()
+        .into_iter()
+        .filter(|(_, node)| {
+            node.role() == ui::accesskit::Role::Button
+                && node.label().map(str::trim) == Some("Archive")
+        })
+        .max_by(|a, b| {
+            let left = a.1.bounds().map_or(f64::MIN, |rect| rect.x0);
+            let right = b.1.bounds().map_or(f64::MIN, |rect| rect.x0);
+            left.total_cmp(&right)
+        })
+        .expect("the conversation's window offers Archive")
+        .0;
+    session
+        .window
+        .a11y_action(archive, &ui::a11y::Action::Activate);
     session.settle();
     assert!(
         !matches!(session.value_of(&plan, "boxes"), RtValue::List(ref boxes)

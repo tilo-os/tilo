@@ -15,7 +15,7 @@ use std::io::{self, Read as _, Write as _};
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle, RawHandle};
 use std::sync::Arc;
 
-use tilo_socket::Stream;
+use tilo_socket::{Descriptor as Carried, Stream};
 
 use super::{MAX_FDS, MAX_PACKET, invalid};
 use crate::handles;
@@ -28,33 +28,10 @@ const VALUE: usize = size_of::<u64>();
 /// A connection a packet carries, or a link packets go on, or a buffer a packet hands down (a
 /// section, `tilo_shm`'s shared memory here).
 pub struct Descriptor {
-    held: Held,
+    /// The handle itself, in the platform's one descriptor type.
+    carried: Carried,
+    /// Which way handles move on this link.
     peer: Peer,
-}
-
-/// What a descriptor's handle is.
-enum Held {
-    /// A pipe: a connection or a link.
-    Pipe(Stream),
-    /// Any other handle: a section.
-    Other(OwnedHandle),
-}
-
-impl Held {
-    fn handle(&self) -> RawHandle {
-        match self {
-            Self::Pipe(stream) => stream.as_raw_handle(),
-            Self::Other(handle) => handle.as_raw_handle(),
-        }
-    }
-}
-
-/// What a caller that wanted a connection was handed instead.
-fn no_pipe() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "a handle handed on as a connection is no pipe",
-    )
 }
 
 /// Who moves the handles on a link.
@@ -85,7 +62,7 @@ impl Descriptor {
     #[must_use]
     pub fn new(stream: Stream) -> Self {
         Self {
-            held: Held::Pipe(stream),
+            carried: Carried::from(stream),
             peer: Peer::Found,
         }
     }
@@ -97,7 +74,7 @@ impl Descriptor {
     /// The system's error asking which end of a pipe it is.
     pub fn from_handle(handle: OwnedHandle) -> io::Result<Self> {
         Ok(Self {
-            held: held(handle)?,
+            carried: Carried::from_handle(handle)?,
             peer: Peer::Found,
         })
     }
@@ -105,7 +82,7 @@ impl Descriptor {
     /// This process's end of the link to the process `started`, which it started.
     pub(crate) fn to_started(stream: Stream, started: handles::Peer) -> Self {
         Self {
-            held: Held::Pipe(stream),
+            carried: Carried::from(stream),
             peer: Peer::Held(Arc::new(started)),
         }
     }
@@ -113,7 +90,7 @@ impl Descriptor {
     /// The link the process that started this one handed it.
     pub(crate) fn from_starter(stream: Stream) -> Self {
         Self {
-            held: Held::Pipe(stream),
+            carried: Carried::from(stream),
             peer: Peer::Starter,
         }
     }
@@ -141,10 +118,7 @@ impl Descriptor {
     /// # Errors
     /// `InvalidInput` for a handle that is no pipe (a section).
     pub fn stream(&self) -> io::Result<&Stream> {
-        match &self.held {
-            Held::Pipe(stream) => Ok(stream),
-            Held::Other(_) => Err(no_pipe()),
-        }
+        self.carried.stream()
     }
 
     /// The connection, owned.
@@ -152,19 +126,13 @@ impl Descriptor {
     /// # Errors
     /// `InvalidInput` for a handle that is no pipe (a section).
     pub fn into_stream(self) -> io::Result<Stream> {
-        match self.held {
-            Held::Pipe(stream) => Ok(stream),
-            Held::Other(_) => Err(no_pipe()),
-        }
+        self.carried.into_stream()
     }
 
     /// The handle, owned: a section to map, or a pipe to hand on.
     #[must_use]
     pub fn into_handle(self) -> OwnedHandle {
-        match self.held {
-            Held::Pipe(stream) => stream.into_handle(),
-            Held::Other(handle) => handle,
-        }
+        self.carried.into_handle()
     }
 
     /// A second handle on the same connection, carrying handles as this one does.
@@ -173,10 +141,7 @@ impl Descriptor {
     /// The handle could not be duplicated.
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
-            held: match &self.held {
-                Held::Pipe(stream) => Held::Pipe(stream.try_clone()?),
-                Held::Other(handle) => Held::Other(handle.try_clone()?),
-            },
+            carried: self.carried.try_clone()?,
             peer: self.peer.clone(),
         })
     }
@@ -191,29 +156,15 @@ impl TryFrom<OwnedHandle> for Descriptor {
         Self::from_handle(handle)
     }
 }
-
-/// `handle` as what it is: a pipe, or any other handle.
-fn held(handle: OwnedHandle) -> io::Result<Held> {
-    // SAFETY: a live handle, only asked its type.
-    let kind =
-        unsafe { windows_sys::Win32::Storage::FileSystem::GetFileType(handle.as_raw_handle()) };
-    if kind == windows_sys::Win32::Storage::FileSystem::FILE_TYPE_PIPE {
-        Stream::from_handle(handle).map(Held::Pipe)
-    } else {
-        Ok(Held::Other(handle))
-    }
-}
-
 impl AsRawHandle for Descriptor {
     fn as_raw_handle(&self) -> RawHandle {
-        self.held.handle()
+        self.carried.as_raw_handle()
     }
 }
 
 impl AsHandle for Descriptor {
     fn as_handle(&self) -> BorrowedHandle<'_> {
-        // SAFETY: the handle this descriptor owns, borrowed for as long as it lives.
-        unsafe { BorrowedHandle::borrow_raw(self.held.handle()) }
+        self.carried.as_handle()
     }
 }
 
@@ -226,7 +177,7 @@ impl fmt::Debug for Descriptor {
         };
         formatter
             .debug_struct("Descriptor")
-            .field("handle", &self.held.handle())
+            .field("handle", &self.carried.as_raw_handle())
             .field("peer", &peer)
             .finish()
     }

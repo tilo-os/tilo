@@ -27,7 +27,7 @@ __all__ = [
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.lang.today@c9b858dd30e357ea"
+    __surface__ = "so.tilo.lang.today@ce8abb26a5ca4555"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -88,11 +88,11 @@ class Notice(Resource):
 
 class Today(Resource):
     """Today — `tl.so.tilo.lang.today.Today`."""
-    __surface__ = "so.tilo.lang.today@c9b858dd30e357ea"
+    __surface__ = "so.tilo.lang.today@ce8abb26a5ca4555"
 
 class LangToday(Resource):
     """Today — `tl.so.tilo.lang.today`."""
-    __surface__ = "so.tilo.lang.today@c9b858dd30e357ea"
+    __surface__ = "so.tilo.lang.today@ce8abb26a5ca4555"
     def morning_cleanup(self,
         *,
         list: Any,

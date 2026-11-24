@@ -183,11 +183,12 @@ pub(crate) enum AppReach {
     Reads,
 }
 
-/// What `app` reaches of `address` by what its manifest declares: its own records, a record of no
-/// app and one every app of the workspace opens ([`collab_types::WORKSPACE_DOCUMENTS`]) to read and
-/// change; another app's record, read-only, where it declares that it reads that app's kinds. In
-/// the person's own workspace (`own_workspace`) only the records of theirs it declares
-/// ([`persons_record`]). Anything else is refused, saying why.
+/// What `app` reaches of `address` by what its manifest declares: its own records, its windows'
+/// among them ([`window_record`]), a record of no app and one every app of the workspace opens
+/// ([`collab_types::WORKSPACE_DOCUMENTS`]) to read and change; another app's record, read-only,
+/// where it declares that it reads that app's kinds, but never the view a device keeps of one of
+/// its windows. In the person's own workspace (`own_workspace`) only its windows' records and the
+/// records of theirs it declares ([`persons_record`]). Anything else is refused, saying why.
 pub(crate) fn app_reach(
     app: &str,
     address: &ResourceAddress,
@@ -198,6 +199,13 @@ pub(crate) fn app_reach(
     }
     if address.app.is_empty() || address.app == app {
         return Ok(AppReach::Changes);
+    }
+    // What a device keeps of another app's window is that window's, in any workspace.
+    if collab_types::document::DocumentId::is_window_view(&address.record) {
+        return Err(format!(
+            "{app} reaches no view of {}'s windows",
+            address.app
+        ));
     }
     // A workspace record is changed from any app's window of its workspace; the workspace's
     // grants on its owner decide each change.
@@ -214,14 +222,21 @@ pub(crate) fn app_reach(
     Ok(AppReach::Reads)
 }
 
-/// Whether `app` reaches `address` in the person's own workspace: its own record of the
-/// workspace naming no record, which holds none; one of the workspace's records, when it is the
-/// record's app or declares that it reads that app's kinds; or a record of the person's whose
-/// kind its manifest declares (its own, or another app's it reads). The person's workspace holds
-/// nothing else for an app.
+/// Whether `record` is one an app's window keeps in the workspace it runs in: its default
+/// document, or the view a device keeps of it. An app reaches its own windows' records in every
+/// workspace it is installed in, the person's own among them; there is no other store of them.
+fn window_record(record: &str) -> bool {
+    collab_types::document::DocumentId::is_window_record(record)
+}
+
+/// Whether `app` reaches `address` in the person's own workspace: its own record naming no
+/// record; its own windows' records ([`window_record`]), as in any workspace; one of the
+/// workspace's records, when it is the record's app or declares that it reads that app's kinds;
+/// or a record of the person's whose kind its manifest declares (its own, or another app's it
+/// reads). The person's workspace holds nothing else for an app.
 pub(crate) fn persons_record(app: &str, address: &ResourceAddress) -> Result<(), String> {
     let own = address.app.is_empty() || address.app == app;
-    if own && address.record.is_empty() {
+    if own && (address.record.is_empty() || window_record(&address.record)) {
         return Ok(());
     }
     if collab_types::shared_workspace_document(&address.app, &address.record).is_some() {
@@ -234,7 +249,7 @@ pub(crate) fn persons_record(app: &str, address: &ResourceAddress) -> Result<(),
         ));
     }
     let kind = collab_types::person_resource_type(&address.record)
-        .ok_or("an app reaches the person's workspace only for one of their records")?;
+        .ok_or("an app reaches the person's workspace only for its windows and their records")?;
     if !collab_types::app_surface::keeps_person_resource(app, kind) {
         return Err(format!(
             "{app} declares no record of the person's of kind {kind}"

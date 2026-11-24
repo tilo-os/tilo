@@ -40,8 +40,8 @@ use tokio::task::block_in_place;
 #[path = "../../../../apps/phone/tests/support/mod.rs"]
 mod phone;
 use crate::support::{
-    Device, HostSettings, TestHost, enrol, entry_grant, record_of, redeem, start_host_serving,
-    start_peer, start_workspace_host_relaying,
+    Device, HostSettings, TestHost, commit_native, enrol, entry_grant, record_of, redeem,
+    start_host_serving, start_peer, start_workspace_host_relaying,
 };
 
 /// The laptop, the Android phone and the person's server, with no tilo.sh: every address here
@@ -605,7 +605,7 @@ async fn flow_newcomer_joins_on_the_web_and_opens_an_app_as_a_page() {
     tilo_desktop_model::person_view::PersonView::default()
         .write(&mut doc)
         .unwrap();
-    doc.commit();
+    commit_native(&mut doc);
     let opened =
         flow::try_written_entered(&page, &view, &DocumentMutation::Snapshot(doc.save())).await;
     assert!(

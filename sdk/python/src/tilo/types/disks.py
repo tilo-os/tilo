@@ -34,7 +34,7 @@ NameDriveArgs = TypedDict("NameDriveArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.disks@3d00ea4ee6e24efd"
+    __surface__ = "so.tilo.disks@5d78ccc3c7eb6c6b"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -95,7 +95,7 @@ class Notice(Resource):
 
 class Disks(Resource):
     """Disks — `tl.so.tilo.disks.Disks`."""
-    __surface__ = "so.tilo.disks@3d00ea4ee6e24efd"
+    __surface__ = "so.tilo.disks@5d78ccc3c7eb6c6b"
     @property
     def _6mf2skfm(self) -> dict[str, str]:
         """names (`6mf2skfm` on the wire)."""
@@ -117,14 +117,22 @@ class Disks(Resource):
         """Runs `name_drive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("name_drive", items)
 
+    def open_in_files(self, *, path: str) -> None:
+        """Opens a mounted folder in Files."""
+        return self.action("open_in_files", path=path)
+
+    def open_usage(self) -> None:
+        """Opens Disk Usage, where a folder's use is measured."""
+        return self.action("open_usage")
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"name_drive", "name_drive_many"})
+    __actions__ = frozenset({"name_drive", "name_drive_many", "open_in_files", "open_usage"})
 
 
 class TiloDisks(Resource):
     """Disks — `tl.so.tilo.disks`."""
-    __surface__ = "so.tilo.disks@3d00ea4ee6e24efd"
+    __surface__ = "so.tilo.disks@5d78ccc3c7eb6c6b"
     def mount_first(self, *, drive: Any) -> None:
         """Mounts the drive's first partition, which is what a drive without a filesystem of its own holds."""
         return self.action("mount_first", drive=drive)

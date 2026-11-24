@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The page module and what it runs: `tilolang_web.js`, `tilolang_web_bg.wasm` and
 # `tilolang_web.d.ts` (wasm-bindgen's `web` target); `apps.json`, every file of the apps in
-# `apps/tl` by its path and the manifest and surface of every native app in `apps/` that has
+# `apps/tl` by its path (a package's `media/` base64) and the manifest and surface of every native app in `apps/` that has
 # both (what a package `use`s as metadata), which `open_app` and `compile_package` take as they
 # are; and `fonts/`,
 # the product catalog's startup fonts a page hands over (`add_font`) before it opens an app and
@@ -22,11 +22,17 @@ wasm-bindgen --target web --out-dir "$out" \
   "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/$profile/tilolang_web.wasm"
 
 python3 - "$out/apps.json" <<'PY'
-import json, pathlib, sys
+import base64, json, pathlib, sys
 names = {"app.ids", "tilo-app.toml", "surface.toml"}
 files = {}
 for path in sorted(pathlib.Path("apps/tl").rglob("*")):
-    if path.is_file() and (path.suffix in {".tl", ".ftl"} or path.name in names):
+    if not path.is_file():
+        continue
+    # A package's `media/**` is what its views and scenarios name as `pkg:media/…`: bytes, so
+    # the map carries them base64, as `open_app` reads them.
+    if "media" in path.relative_to("apps/tl").parts[1:-1]:
+        files[path.as_posix()] = base64.b64encode(path.read_bytes()).decode("ascii")
+    elif path.suffix in {".tl", ".ftl"} or path.name in names:
         files[path.as_posix()] = path.read_text(encoding="utf-8")
 # A directory with a manifest and a surface is a native app a package can `use`: its metadata is
 # what the package compiles against, as a `tilolang build` search reads it.

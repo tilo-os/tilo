@@ -31,6 +31,14 @@ __all__ = [
     "QueuedVideo",
     "PlaybackPrefs",
     "WatchEntry",
+    "PairedDevice",
+    "GrayjayPairAsk",
+    "GrayjaySyncAsk",
+    "GrayjayPeer",
+    "GrayjaySubscription",
+    "GrayjayJob",
+    "GrayjayOutcome",
+    "GrayjayRead",
     "YouTube",
     "Tube",
     "SubscribeArgs",
@@ -48,6 +56,14 @@ __all__ = [
     "SetDislikesArgs",
     "SetCommentsArgs",
     "SetSpeedArgs",
+    "PairDeviceArgs",
+    "ApproveDeviceArgs",
+    "RevokeDeviceArgs",
+    "SyncDevicesArgs",
+    "AutoSyncArgs",
+    "PollGrayjayArgs",
+    "KeepPairedArgs",
+    "KeepExchangeArgs",
     "FilterSearchArgs",
     "EndSearchArgs",
     "LikeCommentArgs",
@@ -125,6 +141,43 @@ SetSpeedArgs = TypedDict("SetSpeedArgs", {
 })
 """The arguments of `set_speed`."""
 
+PairDeviceArgs = TypedDict("PairDeviceArgs", {
+    "invite": "str",
+})
+"""The arguments of `pair_device`."""
+
+ApproveDeviceArgs = TypedDict("ApproveDeviceArgs", {
+    "device": "PairedDevice",
+})
+"""The arguments of `approve_device`."""
+
+RevokeDeviceArgs = TypedDict("RevokeDeviceArgs", {
+    "device": "PairedDevice",
+})
+"""The arguments of `revoke_device`."""
+
+SyncDevicesArgs = TypedDict("SyncDevicesArgs", {
+})
+"""The arguments of `sync_devices`."""
+
+AutoSyncArgs = TypedDict("AutoSyncArgs", {
+})
+"""The arguments of `auto_sync`."""
+
+PollGrayjayArgs = TypedDict("PollGrayjayArgs", {
+})
+"""The arguments of `poll_grayjay`."""
+
+KeepPairedArgs = TypedDict("KeepPairedArgs", {
+    "answer": "str",
+})
+"""The arguments of `keep_paired`."""
+
+KeepExchangeArgs = TypedDict("KeepExchangeArgs", {
+    "answer": "str",
+})
+"""The arguments of `keep_exchange`."""
+
 FilterSearchArgs = TypedDict("FilterSearchArgs", {
     "kind": "str",
 })
@@ -142,7 +195,7 @@ LikeCommentArgs = TypedDict("LikeCommentArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -203,7 +256,7 @@ class Notice(Resource):
 
 class Channel(Resource):
     """Channel — `tl.so.tilo.tube.Channel`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     @property
     def _26ctwf34(self) -> str:
         """key (`26ctwf34` on the wire)."""
@@ -268,7 +321,7 @@ class Channel(Resource):
 
 class Video(Resource):
     """Video — `tl.so.tilo.tube.Video`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     irzy3c7m: str  # key
     fpxk5w7b: str  # title
     mhkply6c: str  # channel_key
@@ -388,7 +441,7 @@ class Video(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.tube.Playlist`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     ow7glfos: str  # key
     ljyc7mx2: str  # title
     bzfmd6pg: str  # channel_key
@@ -427,7 +480,7 @@ class Playlist(Resource):
 
 class Comment(Resource):
     """Comment — `tl.so.tilo.tube.Comment`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     pv4laajx: str  # key
     li4xiefh: str  # video_key
     @property
@@ -457,7 +510,7 @@ class Comment(Resource):
 
 class Segment(Resource):
     """Segment — `tl.so.tilo.tube.Segment`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     uakovynu: str  # key
     pvlf5o2c: str  # video_key
     qlgpeq35: str  # category
@@ -468,7 +521,7 @@ class Segment(Resource):
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.tube.Reply`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     y4coaxks: str  # comment
     kwxg57v6: str  # video
     @property
@@ -497,20 +550,20 @@ class Reply(Resource):
 
 class Subscription(Resource):
     """Subscription — `tl.so.tilo.tube.Subscription`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     slhmwv67: str  # key
     ynf67l6e: str  # name
 
 
 class QueuedVideo(Resource):
     """QueuedVideo — `tl.so.tilo.tube.QueuedVideo`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     o3xolmld: str  # key
 
 
 class PlaybackPrefs(Resource):
     """PlaybackPrefs — `tl.so.tilo.tube.PlaybackPrefs`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     @property
     def _5twttwwn(self) -> str:
         """member (`5twttwwn` on the wire)."""
@@ -537,7 +590,7 @@ class PlaybackPrefs(Resource):
 
 class WatchEntry(Resource):
     """WatchEntry — `tl.so.tilo.tube.WatchEntry`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     noppuxpb: str  # key
     stuii7l7: str  # title
     j37y2bbw: str  # channel_name
@@ -554,9 +607,118 @@ class WatchEntry(Resource):
     rqajp43d: int  # left_ms
 
 
+class PairedDevice(Resource):
+    """PairedDevice — `tl.so.tilo.tube.PairedDevice`."""
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
+    eqjnywdb: str  # key
+    xzt7hvjd: str  # name
+    r6hetdhx: list[str]  # addresses
+    qshipefo: int  # port
+    rb3itb6c: bool  # approved
+    dtjxddej: bool  # revoked
+    dtxc67xp: str  # approved_at
+    @property
+    def _3rbysfau(self) -> str:
+        """last_synced (`3rbysfau` on the wire)."""
+        return self.fields["3rbysfau"]
+
+    @_3rbysfau.setter
+    def _3rbysfau(self, value: str) -> None:
+        self.edit("3rbysfau", value=value)
+    ovgswiz5: str  # last_error
+
+
+class GrayjayPairAsk(Resource):
+    """GrayjayPairAsk — `tl.so.tilo.tube.GrayjayPairAsk`."""
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
+    vjm7bxs2: str  # invite
+
+
+class GrayjaySyncAsk(Resource):
+    """GrayjaySyncAsk — `tl.so.tilo.tube.GrayjaySyncAsk`."""
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
+    ldigr4fm: list[GrayjayPeer]  # peers
+    @property
+    def _2ubtnp7s(self) -> list[GrayjaySubscription]:
+        """subscriptions (`2ubtnp7s` on the wire)."""
+        return self.fields["2ubtnp7s"]
+
+    @_2ubtnp7s.setter
+    def _2ubtnp7s(self, value: list[GrayjaySubscription]) -> None:
+        self.edit("2ubtnp7s", value=value)
+
+
+class GrayjayPeer(Resource):
+    """GrayjayPeer — `tl.so.tilo.tube.GrayjayPeer`."""
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
+    @property
+    def _73ossitw(self) -> str:
+        """key (`73ossitw` on the wire)."""
+        return self.fields["73ossitw"]
+
+    @_73ossitw.setter
+    def _73ossitw(self, value: str) -> None:
+        self.edit("73ossitw", value=value)
+    u7p5waf7: str  # name
+    eqe3dx4x: list[str]  # addresses
+    b5mgdh6x: int  # port
+
+
+class GrayjaySubscription(Resource):
+    """GrayjaySubscription — `tl.so.tilo.tube.GrayjaySubscription`."""
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
+    @property
+    def _5k7gvetf(self) -> str:
+        """url (`5k7gvetf` on the wire)."""
+        return self.fields["5k7gvetf"]
+
+    @_5k7gvetf.setter
+    def _5k7gvetf(self, value: str) -> None:
+        self.edit("5k7gvetf", value=value)
+    o4wrklpp: str  # name
+
+
+class GrayjayJob(Resource):
+    """GrayjayJob — `tl.so.tilo.tube.GrayjayJob`."""
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
+    @property
+    def _4nyda52b(self) -> str:
+        """state (`4nyda52b` on the wire)."""
+        return self.fields["4nyda52b"]
+
+    @_4nyda52b.setter
+    def _4nyda52b(self, value: str) -> None:
+        self.edit("4nyda52b", value=value)
+    c7tscegn: str  # answer
+    tshqcr4u: str  # error
+
+
+class GrayjayOutcome(Resource):
+    """GrayjayOutcome — `tl.so.tilo.tube.GrayjayOutcome`."""
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
+    xil726fb: str  # key
+    zkmfyff4: bool  # ok
+    mp7b4zg2: str  # error
+
+
+class GrayjayRead(Resource):
+    """GrayjayRead — `tl.so.tilo.tube.GrayjayRead`."""
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
+    oow4nbb2: list[GrayjayOutcome]  # peers
+    @property
+    def _2vaamao3(self) -> list[GrayjaySubscription]:
+        """subscriptions (`2vaamao3` on the wire)."""
+        return self.fields["2vaamao3"]
+
+    @_2vaamao3.setter
+    def _2vaamao3(self, value: list[GrayjaySubscription]) -> None:
+        self.edit("2vaamao3", value=value)
+    iddsonzh: list[str]  # history
+
+
 class YouTube(Resource):
     """YouTube — `tl.so.tilo.tube.YouTube`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
     olrung72: str  # title
     ihhzrm3f: list[Entry[Channel]]  # channels
     qnfjkti5: list[Entry[Video]]  # videos
@@ -602,6 +764,19 @@ class YouTube(Resource):
     nnvco6w3: str  # feed_state
     r3ksw6bn: str  # trouble
     qv7t2mza: bool  # online
+    dmc6hhdb: list[Entry[PairedDevice]]  # devices
+    bnycbpqz: str  # sync_working
+    @property
+    def _5siq65eg(self) -> str:
+        """sync_job (`5siq65eg` on the wire)."""
+        return self.fields["5siq65eg"]
+
+    @_5siq65eg.setter
+    def _5siq65eg(self, value: str) -> None:
+        self.edit("5siq65eg", value=value)
+    drdwq4ha: str  # sync_notice
+    rx6sx3au: str  # sync_trouble
+    slqvuard: bool  # sync_started
 
     def play_queue(self) -> None:
         """Plays the queue from its oldest video: what was put on it first plays first, and the rest follow in that order, so autoplay goes on down the queue."""
@@ -695,6 +870,70 @@ class YouTube(Resource):
         """Runs `set_speed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_speed", items)
 
+    def pair_device(self, *, invite: str) -> None:
+        """Pairs a Grayjay device from the invite its Sync screen shows. The invite carries where the device answers and the one-time code that opens the pairing; the device is recorded waiting for the person's approval, which is what lets it read and write anything here."""
+        return self.action("pair_device", invite=invite)
+
+    def pair_device_many(self, items: list[PairDeviceArgs]) -> list[dict[str, Any]]:
+        """Runs `pair_device` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("pair_device", items)
+
+    def approve_device(self, *, device: PairedDevice) -> None:
+        """Approves a device that paired: Grayjay shows the same fingerprint on both ends."""
+        return self.action("approve_device", device=device)
+
+    def approve_device_many(self, items: list[ApproveDeviceArgs]) -> list[dict[str, Any]]:
+        """Runs `approve_device` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("approve_device", items)
+
+    def revoke_device(self, *, device: PairedDevice) -> None:
+        """Revokes a device: its key can no longer read or write anything here."""
+        return self.action("revoke_device", device=device)
+
+    def revoke_device_many(self, items: list[RevokeDeviceArgs]) -> list[dict[str, Any]]:
+        """Runs `revoke_device` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("revoke_device", items)
+
+    def sync_devices(self) -> None:
+        """Exchanges with every approved device now: reads the subscriptions and watch history Grayjay holds, and sends this client's subscriptions that way."""
+        return self.action("sync_devices")
+
+    def sync_devices_many(self, items: list[SyncDevicesArgs]) -> list[dict[str, Any]]:
+        """Runs `sync_devices` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("sync_devices", items)
+
+    def auto_sync(self) -> None:
+        """The approved devices are exchanged with on the timer, as Grayjay's own app does while it is open, so what either app adds reaches the other without anyone pressing. Nothing runs until a person has synced once by hand."""
+        return self.action("auto_sync")
+
+    def auto_sync_many(self, items: list[AutoSyncArgs]) -> list[dict[str, Any]]:
+        """Runs `auto_sync` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("auto_sync", items)
+
+    def poll_grayjay(self) -> None:
+        """Follows the Grayjay operation under way, once a second, so its end reaches the window without anyone asking by hand."""
+        return self.action("poll_grayjay")
+
+    def poll_grayjay_many(self, items: list[PollGrayjayArgs]) -> list[dict[str, Any]]:
+        """Runs `poll_grayjay` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("poll_grayjay", items)
+
+    def keep_paired(self, *, answer: str) -> None:
+        """Keeps the device a pairing made, waiting for the person's approval: the fingerprint beside it is what Grayjay shows on the other end."""
+        return self.action("keep_paired", answer=answer)
+
+    def keep_paired_many(self, items: list[KeepPairedArgs]) -> list[dict[str, Any]]:
+        """Runs `keep_paired` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep_paired", items)
+
+    def keep_exchange(self, *, answer: str) -> None:
+        """Keeps what an exchange came to: how each device stands, the subscriptions the other apps hold, and the videos they watched."""
+        return self.action("keep_exchange", answer=answer)
+
+    def keep_exchange_many(self, items: list[KeepExchangeArgs]) -> list[dict[str, Any]]:
+        """Runs `keep_exchange` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep_exchange", items)
+
     def search(self,
         *,
         query: str | None = None,
@@ -763,10 +1002,10 @@ class YouTube(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"play_queue", "session", "play_items", "play_items_many", "autoplay_next", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_quality", "set_quality_many", "set_sponsorblock", "set_sponsorblock_many", "set_dearrow", "set_dearrow_many", "set_dislikes", "set_dislikes_many", "set_comments", "set_comments_many", "set_speed", "set_speed_many", "search", "filter_search", "filter_search_many", "filter_length", "filter_published", "end_search", "end_search_many", "refresh_feed", "load_trending", "open_link", "like_comment", "like_comment_many", "play_again"})
+    __actions__ = frozenset({"play_queue", "session", "play_items", "play_items_many", "autoplay_next", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_quality", "set_quality_many", "set_sponsorblock", "set_sponsorblock_many", "set_dearrow", "set_dearrow_many", "set_dislikes", "set_dislikes_many", "set_comments", "set_comments_many", "set_speed", "set_speed_many", "pair_device", "pair_device_many", "approve_device", "approve_device_many", "revoke_device", "revoke_device_many", "sync_devices", "sync_devices_many", "auto_sync", "auto_sync_many", "poll_grayjay", "poll_grayjay_many", "keep_paired", "keep_paired_many", "keep_exchange", "keep_exchange_many", "search", "filter_search", "filter_search_many", "filter_length", "filter_published", "end_search", "end_search_many", "refresh_feed", "load_trending", "open_link", "like_comment", "like_comment_many", "play_again"})
 
 
 class Tube(Resource):
     """YouTube — `tl.so.tilo.tube`."""
-    __surface__ = "so.tilo.tube@d19fb600e9008ee5"
+    __surface__ = "so.tilo.tube@b4f09b8acd372be4"
 

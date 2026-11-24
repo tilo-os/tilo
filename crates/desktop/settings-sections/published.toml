@@ -97,6 +97,13 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "choose-language"
+kind = "undoable"
+params = [
+  { name = "language", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "use-theme"
 kind = "undoable"
 params = [
@@ -1796,6 +1803,21 @@ fields = [
   { name = "chord", type = "text" },
 ]
 
+[[resources]]
+kind = "settings.languages"
+label = "Languages"
+version = 1
+fields = [
+  { path = "languages", type = { list = { named = "Language" } }, readonly = true },
+]
+
+[[resources.types]]
+name = "Language"
+fields = [
+  { name = "tag", type = "text" },
+  { name = "name", type = "text" },
+]
+
 [[roots]]
 name = "appearance"
 kind = "settings.appearance"
@@ -1965,4 +1987,9 @@ published = "settings/agent-models"
 name = "shortcuts_table"
 kind = "settings.shortcuts-table"
 published = "settings/shortcuts-table"
+
+[[roots]]
+name = "languages"
+kind = "settings.languages"
+published = "settings/languages"
 

@@ -95,19 +95,19 @@ __all__ = [
 ]
 
 Kind = Literal["project", "area"]
-"""Which kind of project this is."""
+"""Which kind of project this is: a finite goal whose work ends with it, or an ongoing responsibility that has no end, only what is done next."""
 
 Status = Literal["backlog", "todo", "in_progress", "in_review", "done", "cancelled"]
-"""Where a task stands in its work: a board's columns, fixed so that every task of the workspace reads in the same place in the same column."""
+"""Where a task stands in its work: a board's columns, fixed so that every task of the workspace reads in the same place in the same column. Backlog is written down and not planned yet; todo is the next thing to pick up; in progress is being worked on; in review is done by whoever worked on it and waits for a person to look; done is checked by its person; cancelled is not to be done."""
 
 WaitKind = Literal["time", "reply", "change", "answer", "people", "pieces"]
-"""What a wait waits for: the kinds a session of an agent tells apart."""
+"""What a wait waits for: the kinds a session of an agent tells apart. A moment ends at its time; a reply in a mail thread or a conversation; a change in a resource of the workspace; an answer of the person the work is for; answers of several people; and its pieces, the tasks under it, which let it go on when none of them is still to be worked on."""
 
 StoppedWhy = Literal["failed", "budget", "time", "lost_worker", "person"]
-"""Why a task's work stopped."""
+"""Why a task's work stopped: it could not go on, its budget in money or in working time is spent, its agent sessions were interrupted and did not come back, or a person stopped it."""
 
 BudgetBy = Literal["person", "agent"]
-"""Whose budget a task's work spends."""
+"""Whose budget a task's work spends: its person's, or the agent working on it."""
 
 Priority = Literal["none", "low", "medium", "high", "urgent"]
 """How much a task matters, most urgent last."""
@@ -389,7 +389,7 @@ LabelManyArgs = TypedDict("LabelManyArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -450,14 +450,14 @@ class Notice(Resource):
 
 class Person(Resource):
     """Person — `tl.so.tilo.tasks.Person`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     ktw2jimm: str  # name
     hgptkohm: str  # role
 
 
 class Project(Resource):
     """Project — `tl.so.tilo.tasks.Project`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     sgnau7vd: str  # name
     rsoasw3n: Kind  # kind
     c5pgzhqt: str  # notes
@@ -562,7 +562,7 @@ class Project(Resource):
 
 class Wait(Resource):
     """Wait — `tl.so.tilo.tasks.Wait`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     @property
     def _4fz6j3rg(self) -> WaitKind:
         """kind (`4fz6j3rg` on the wire)."""
@@ -585,7 +585,7 @@ class Wait(Resource):
 
 class Stopped(Resource):
     """Stopped — `tl.so.tilo.tasks.Stopped`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     ps5lbw2w: StoppedWhy  # why
     @property
     def _5yqkyqzr(self) -> str:
@@ -600,7 +600,7 @@ class Stopped(Resource):
 
 class Resumed(Resource):
     """Resumed — `tl.so.tilo.tasks.Resumed`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     @property
     def _66a5tqcs(self) -> str:
         """cause (`66a5tqcs` on the wire)."""
@@ -614,7 +614,7 @@ class Resumed(Resource):
 
 class Work(Resource):
     """Work — `tl.so.tilo.tasks.Work`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     finhtl5k: str  # folder
     ckijp22f: str  # note
     @property
@@ -656,7 +656,7 @@ class Work(Resource):
 
 class Origin(Resource):
     """Origin — `tl.so.tilo.tasks.Origin`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     @property
     def _3saq3nij(self) -> str:
         """author (`3saq3nij` on the wire)."""
@@ -693,7 +693,7 @@ class Origin(Resource):
 
 class Task(Resource):
     """Task — `tl.so.tilo.tasks.Task`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     @property
     def _2y3yxgz4(self) -> int:
         """number (`2y3yxgz4` on the wire)."""
@@ -853,7 +853,7 @@ class Task(Resource):
         status: Status,
         at: int | None = None,
     ) -> None:
-        """Puts a task in a column of the board, at the place `at` among the tasks already there: what a card's drag names."""
+        """Puts a task in a column of the board, at the place `at` among the tasks already there: what a card's drag names. A drop in its own column only moves it among the column's tasks."""
         args: dict[str, Any] = {}
         args["status"] = status
         if at is not None:
@@ -1271,7 +1271,7 @@ class Task(Resource):
 
 class Related(Resource):
     """Related — `tl.so.tilo.tasks.Related`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     h62xalud: Task  # task
     @property
     def _27gmtaed(self) -> str:
@@ -1285,7 +1285,7 @@ class Related(Resource):
 
 class Tasks(Resource):
     """Tasks — `tl.so.tilo.tasks.Tasks`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     lg5gedbh: list[Entry[Task]]  # items
     mdhllpbo: list[Entry[Project]]  # projects
     c7peh6l3: list[Entry[Origin]]  # origins
@@ -1369,7 +1369,7 @@ class Tasks(Resource):
 
 class TiloTasks(Resource):
     """Tasks — `tl.so.tilo.tasks`."""
-    __surface__ = "so.tilo.tasks@0ece4bf9ddf57aad"
+    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
     def new_tasks(self,
         *,
         titles: list[str],

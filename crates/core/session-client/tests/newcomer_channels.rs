@@ -26,7 +26,8 @@ use tilo_session_client::device::{Entering, entry_request};
 use tilo_user_identity::{DeviceCert, UserIdentity};
 
 use crate::support::{
-    enrol, enter_page, hears, in_workspace, start_workspace_host_relaying, wait_for, wait_keyed,
+    commit_native, enrol, enter_page, hears, in_workspace, start_workspace_host_relaying, wait_for,
+    wait_keyed,
 };
 use collab_types::WorkspaceId;
 
@@ -41,6 +42,7 @@ fn change(base: &mut automerge::AutoCommit, key: &str) -> DocumentMutation {
     let mut doc = base.fork();
     doc.save_incremental();
     doc.put(automerge::ROOT, key, key).unwrap();
+    commit_native(&mut doc);
     DocumentMutation::Incremental(doc.save_incremental())
 }
 
@@ -132,6 +134,7 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
         use automerge::transaction::Transactable as _;
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "windows", "none").unwrap();
+        commit_native(&mut doc);
         doc
     };
     member

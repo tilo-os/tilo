@@ -1,10 +1,10 @@
 //! The Wi-Fi passphrases the person's devices share, kept by this device's daemon in the person's
-//! own workspace ([`Devices::keep_wifi`]): Settings shares the passphrase this device learned with
-//! the person's other devices, or joins with one they shared. Each passphrase is sealed to every
+//! own workspace ([`Devices::keep_wifi`]): a saved network's `share-with-devices` shares the
+//! passphrase this device learned with the person's other devices, and a join without one uses
+//! the passphrase they shared. Each passphrase is sealed to every
 //! device of theirs ([`Credential`]) and never travels or stays in the clear.
 //!
-//! The daemon's broker answers Settings with it ([`WifiContinuityServices`]), and a desktop
-//! session's broker reaches the same through the device's dispatch ([`PROVIDER`]): its `lookup`
+//! The desktop session reaches it through the device's dispatch ([`PROVIDER`]): its `lookup`
 //! answers the passphrase sealed to this device alone, and its `share` takes one sealed to this
 //! device alone, so what the dispatch records of either call holds no passphrase either.
 
@@ -17,7 +17,6 @@ use tilo_actions::contract::{ActionContract, ActionKind, ConfirmationPolicy, Ris
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending};
 use tilo_actions::{ActionFailure, ActionOutput, ExecutionLocus, OperationKind};
-use tilo_workspace_service::apps::services::WifiContinuityServices;
 use tilo_workspace_service::workspaces::PersonResources;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices, KeyKind};
 use tilo_workspace_service::workspaces::person_workspace::wifi::{Credential, Security, Zeroizing};
@@ -155,75 +154,6 @@ fn lookup(
         .collect::<Vec<_>>();
     kept.sort_by_key(|credential| std::cmp::Reverse(credential.sealed_unix_ms));
     kept.iter().find_map(|credential| credential.open(key).ok())
-}
-
-/// The security Settings names, as a passphrase is kept for it.
-const fn security(security: runtime_collab::PortableWifiSecurity) -> Security {
-    match security {
-        runtime_collab::PortableWifiSecurity::Wpa2 => Security::Wpa2,
-        runtime_collab::PortableWifiSecurity::Wpa3 => Security::Wpa3,
-    }
-}
-
-impl WifiContinuityServices for Wifi {
-    fn command(
-        &self,
-        command: runtime_collab::WifiContinuityCommand,
-    ) -> runtime_collab::WifiContinuityReply {
-        use runtime_collab::{WifiContinuityCommand as Command, WifiContinuityReply as Reply};
-        let rejected = |reason: String| Reply::Rejected {
-            reason: reason.chars().take(128).collect(),
-        };
-        match command {
-            Command::Lookup {
-                ssid,
-                security: mode,
-            } => self
-                .password(&ssid, security(mode))
-                .map_or(Reply::NotFound, |password| Reply::Password {
-                    password: password.to_string(),
-                }),
-            Command::Share {
-                ssid,
-                security: mode,
-                password,
-            } => {
-                let password = Zeroizing::new(password);
-                match self.share(&ssid, security(mode), &password) {
-                    Ok(()) => Reply::Shared { ssid },
-                    Err(reason) => rejected(reason),
-                }
-            }
-            // Where this computer's network wakes it and what it saved are its desktop session's
-            // to read.
-            Command::NetworkWake { .. } | Command::ShareSavedProfile { .. } => {
-                rejected("this device's desktop session reads its saved networks".to_owned())
-            }
-        }
-    }
-}
-
-/// The person's Wi-Fi continuity as the apps attached to this daemon reach it: the passphrases
-/// are the daemon's, and what this computer's networks wake and saved is asked of the desktop
-/// session serving its seat.
-pub(crate) struct WithSeat {
-    pub(crate) daemon: Arc<Wifi>,
-    pub(crate) seat: Arc<dyn WifiContinuityServices>,
-}
-
-impl WifiContinuityServices for WithSeat {
-    fn command(
-        &self,
-        command: runtime_collab::WifiContinuityCommand,
-    ) -> runtime_collab::WifiContinuityReply {
-        use runtime_collab::WifiContinuityCommand as Command;
-        match command {
-            Command::NetworkWake { .. } | Command::ShareSavedProfile { .. } => {
-                self.seat.command(command)
-            }
-            Command::Lookup { .. } | Command::Share { .. } => self.daemon.command(command),
-        }
-    }
 }
 
 /// The two actions, as the device's dispatch lists them.

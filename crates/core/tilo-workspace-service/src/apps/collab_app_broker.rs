@@ -22,7 +22,6 @@ mod catalogue;
 mod routing;
 mod shown_actions;
 use tilo_actions::remote::argument_digest;
-use tilo_app_id::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
 mod invocation;
 use authority::*;
 #[cfg(test)]
@@ -175,13 +174,6 @@ use crate::apps::services::{ProcessServices, WorkspaceAuthorityHandle as Workspa
 use collab_types::Role as CapRole;
 #[cfg(test)]
 use tilo_action_policy::Grantee;
-
-#[cfg(test)]
-mod realtime_service_boundary_tests;
-
-#[cfg(test)]
-#[path = "collab_app_broker/device_continuity_service_boundary_tests.rs"]
-mod device_continuity_service_boundary_tests;
 
 mod agent_cert;
 use agent_cert::admit_listed_agent;

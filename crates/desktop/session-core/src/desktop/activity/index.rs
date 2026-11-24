@@ -389,7 +389,7 @@ impl WorkspaceHistoryIndex {
     fn undone_in(doc: &AutoCommit) -> HashSet<HistoryEntryId> {
         ui::history_source::steps::undone(doc)
             .iter()
-            .filter_map(|change| ui::history_source::entry_id_from_hash(change))
+            .map(|change| ui::history_source::entry_id_from_hash(change))
             .collect()
     }
 

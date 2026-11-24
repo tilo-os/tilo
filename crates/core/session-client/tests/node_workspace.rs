@@ -58,7 +58,7 @@ use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
 use crate::support::https::DevHttps;
-use crate::support::{ready, start_peer, wait_for};
+use crate::support::{commit_native, ready, start_peer, wait_for};
 
 const INSTALL_TOKEN: &str = "provisioned-install-token-0123";
 /// Text only the document's readers ever see.
@@ -117,8 +117,10 @@ async fn workspaces(peer: &Link, request: WorkspacesRequest) -> WorkspacesReply 
 fn plan() -> (Vec<u8>, Vec<u8>) {
     let mut doc = automerge::AutoCommit::new();
     doc.put(automerge::ROOT, "title", SECRET).unwrap();
+    commit_native(&mut doc);
     let snapshot = doc.save();
     doc.put(automerge::ROOT, "owner", "Ada").unwrap();
+    commit_native(&mut doc);
     (snapshot, doc.save_incremental())
 }
 

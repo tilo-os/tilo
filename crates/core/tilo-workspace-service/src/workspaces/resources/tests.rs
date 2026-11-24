@@ -1167,9 +1167,10 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
     let context = context(&workspace, &cert);
     let records = &workspaces.inner.records;
     let before = records.retained(created.workspace_id).await.unwrap();
-    // Peer-state's admission refuses the first write: this device holds no keys
-    // of the record's channel yet, so nothing is retained, nothing reads, and
-    // whoever follows the workspace's records is not woken.
+    // A device that takes part in the record's group opens it as it writes; this one is not let
+    // into it yet and cannot open it itself, so the first write is refused: nothing is
+    // retained, nothing reads, and whoever follows the workspace's records is not woken.
+    keys.hold_nothing();
     let mut watches = workspaces.document_writes();
     let refused = workspaces
         .resource_command(&context, put_signed_issue("Refused"))
@@ -1188,9 +1189,10 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
         watches.try_recv().is_err(),
         "a refused write wakes no follower"
     );
-    // The channel's keys make the next writes admission's to take.
+    // Let in, the device holds the group's keys and the next writes are admission's to take.
+    let_in(&keys, &workspace).await;
     workspaces
-        .own_route_keys(&route, true)
+        .own_route_keys(&route, false)
         .await
         .unwrap()
         .unwrap();
@@ -1610,9 +1612,9 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
     server.shutdown().await;
 }
 
-/// A write this device cannot seal, its readers' keys not being here yet, is refused, and
-/// nothing of it stays readable: the app never shows what no member will receive. Once the
-/// keys are here, the same write goes through.
+/// A write this device cannot seal, the group of its readers not having let it in yet, is
+/// refused, and nothing of it stays readable: the app never shows what no member will receive.
+/// Once the keys are here, the same write goes through.
 #[tokio::test]
 async fn a_write_this_device_cannot_send_is_not_read_back() {
     let dir = tempfile::tempdir().unwrap();
@@ -1627,6 +1629,8 @@ async fn a_write_this_device_cannot_send_is_not_read_back() {
     let created = workspaces.create("Tasks").await.unwrap();
     let workspace = created.workspace;
     let context = context(&workspace, &cert);
+    // Not let into the readers' group, the device cannot open it to write.
+    keys.hold_nothing();
     let put = |title: &str, invocation: &str| Command::Put {
         kind: KIND.to_owned(),
         id: "i-1".to_owned(),
@@ -1660,7 +1664,7 @@ async fn a_write_this_device_cannot_send_is_not_read_back() {
     drop(workspaces);
     server.shutdown().await;
 
-    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     workspaces.set_member_device(Arc::new(super::super::MemberDevice {
         cert,
@@ -1686,12 +1690,7 @@ async fn a_write_this_device_cannot_send_is_not_read_back() {
         "the refusal must not leave a retained frame"
     );
 
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: APP.into(),
-        cluster_id: workspace.clone(),
-        document: String::new(),
-    };
-    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    let_in(&keys, &workspace).await;
     workspaces
         .resource_command(&context, put("Sent", "i2"))
         .await
@@ -1703,4 +1702,17 @@ async fn a_write_this_device_cannot_send_is_not_read_back() {
     );
     drop(workspaces);
     server.shutdown().await;
+}
+
+/// Let the device holding `keys` into `workspace`'s every-member group, as the group lets a
+/// device in: the keys another device of the group opened handed to it.
+async fn let_in(keys: &TestGroupKeys, workspace: &str) {
+    use super::super::GroupKeys as _;
+    let group = TestGroupKeys::default();
+    group
+        .group_keys(workspace, collab_types::EVERY_MEMBER, true)
+        .await
+        .expect("the group takes part")
+        .expect("the group opens");
+    keys.hand_every_member_of(&group, workspace);
 }

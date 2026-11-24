@@ -583,19 +583,6 @@ pub(crate) fn root_record_for_person(person: [u8; 32]) -> io::Result<std::path::
     ))
 }
 
-/// The root this computer keeps for `person`, when their account is signed in here.
-///
-/// # Errors
-/// The identity store does not hand it over.
-pub(crate) fn root_for_person(
-    person: [u8; 32],
-) -> anyhow::Result<Option<tilo_identity::store::SigningIdentity>> {
-    match root_record_for_person(person) {
-        Ok(record) => Ok(Some(tilo_identity::store::load_from_path(record)?)),
-        Err(_) => Ok(None),
-    }
-}
-
 /// Whether this computer keeps `person`'s root while their account is signed in here.
 #[must_use]
 pub(crate) fn holds_root_for_person(person: [u8; 32]) -> bool {
@@ -1620,10 +1607,9 @@ impl Daemon {
             tilo_rt::app().handle(),
         );
         // The Wi-Fi passphrases the person's devices share are kept there too, sealed to each of
-        // them: Settings shares and joins with them through this daemon's broker, and a desktop
-        // session's broker through the device's dispatch.
-        let wifi = super::wifi::Wifi::new(personal.clone(), identity.key.clone());
-        wifi.register(&workspaces.copies().providers());
+        // them: the desktop session shares and joins with them through the device's dispatch.
+        super::wifi::Wifi::new(personal.clone(), identity.key.clone())
+            .register(&workspaces.copies().providers());
         // Nearby Send between the person's devices: the offers and transfers answered over the
         // action service this daemon already serves, staged and kept on the device's content
         // shelf, and read by their shell as the resource it lists.
@@ -1722,9 +1708,7 @@ impl Daemon {
                 keys: &workspaces.keys(),
                 creation: Arc::clone(&creation),
                 files: Arc::clone(&files_daemons),
-                wifi,
                 key_sessions: key_sessions.as_ref(),
-                personal: personal.clone(),
                 nearby: Arc::clone(&nearby),
                 shell_links: &shell_links,
                 shell_dispatch: &shell_dispatch,
@@ -2404,11 +2388,6 @@ struct BrokerParts<'a> {
     creation: Arc<RecordCreation>,
     /// The files daemons mounting this device's workspaces, whose stores keep their files' bytes.
     files: Arc<tilo_workspace_service::files::socket::Daemons>,
-    /// The Wi-Fi passphrases the person's devices share.
-    wifi: Arc<super::wifi::Wifi>,
-    /// What is the person's alone, kept in their own workspace: their devices, which Nearby
-    /// Send lists.
-    personal: tilo_workspace_service::workspaces::PersonResources,
     /// Nearby Send's offers and transfers, which this device's shell reads and its person
     /// answers.
     nearby: Arc<super::nearby::Nearby>,
@@ -2749,13 +2728,6 @@ fn broker_services(
         // What an app publishes of what it holds, on its connection here: the device's one
         // search index keeps it after the app closes.
         search_index: parts.workspaces.search_index_services(),
-        // Settings shares the passphrase of a network with the person's other devices, and joins
-        // with one they shared.
-        // What this computer's networks wake and saved is its desktop session's to read.
-        wifi_continuity: Some(Arc::new(super::wifi::WithSeat {
-            daemon: parts.wifi,
-            seat: forwarded.wifi_continuity,
-        })),
         ..ProcessServices::default()
     })
 }

@@ -65,7 +65,8 @@ __all__ = [
     "KeepCredentialArgs",
     "SetSchemeArgs",
     "ForgetCredentialArgs",
-    "SendArgs",
+    "StartSendArgs",
+    "SendFailedArgs",
     "CancelSendArgs",
     "PollSendArgs",
     "OpenSentArgs",
@@ -193,9 +194,14 @@ ForgetCredentialArgs = TypedDict("ForgetCredentialArgs", {
 })
 """The arguments of `forget_credential`."""
 
-SendArgs = TypedDict("SendArgs", {
+StartSendArgs = TypedDict("StartSendArgs", {
 })
-"""The arguments of `send`."""
+"""The arguments of `start_send`."""
+
+SendFailedArgs = TypedDict("SendFailedArgs", {
+    "why": "str",
+})
+"""The arguments of `send_failed`."""
 
 CancelSendArgs = TypedDict("CancelSendArgs", {
 })
@@ -236,7 +242,7 @@ SetBodyModeArgs = TypedDict("SetBodyModeArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -297,7 +303,7 @@ class Notice(Resource):
 
 class Row(Resource):
     """Row — `tl.so.tilo.api-tester.Row`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     gmr3auev: str  # key
     @property
     def _5i27urp3(self) -> str:
@@ -312,7 +318,7 @@ class Row(Resource):
 
 class Credentials(Resource):
     """Credentials — `tl.so.tilo.api-tester.Credentials`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     wu5jqin3: AuthScheme  # scheme
     eimiw54w: str  # username
     bq35bust: str  # header
@@ -321,7 +327,7 @@ class Credentials(Resource):
 
 class Request(Resource):
     """Request — `tl.so.tilo.api-tester.Request`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     zerzgb7o: str  # name
     plszv7l4: HttpMethod  # method
     @property
@@ -416,7 +422,7 @@ class Request(Resource):
 
 class Answer(Resource):
     """Answer — `tl.so.tilo.api-tester.Answer`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     cmtsv52e: int  # status
     s2rpes4w: str  # status_text
     bmbte2qq: int  # duration_ms
@@ -446,14 +452,14 @@ class Answer(Resource):
 
 class AnswerHeader(Resource):
     """AnswerHeader — `tl.so.tilo.api-tester.AnswerHeader`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     q5ydbtzd: str  # name
     vyjpofsi: str  # value
 
 
 class Environment(Resource):
     """Environment — `tl.so.tilo.api-tester.Environment`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     @property
     def _2kunn2pf(self) -> str:
         """name (`2kunn2pf` on the wire)."""
@@ -499,7 +505,7 @@ class Environment(Resource):
 
 class Variable(Resource):
     """Variable — `tl.so.tilo.api-tester.Variable`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     i3e2wno7: str  # key
     qqgvzyfe: str  # value
     @property
@@ -528,7 +534,7 @@ class Variable(Resource):
 
 class Sent(Resource):
     """Sent — `tl.so.tilo.api-tester.Sent`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     ikluhyoi: str  # route
     fwwi364f: HttpMethod  # method
     w7aoohfv: str  # url
@@ -554,7 +560,7 @@ class Sent(Resource):
 
 class SavedCollection(Resource):
     """SavedCollection — `tl.so.tilo.api-tester.SavedCollection`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     @property
     def _6bygepf4(self) -> str:
         """name (`6bygepf4` on the wire)."""
@@ -590,7 +596,7 @@ class SavedCollection(Resource):
 
 class Workspace(Resource):
     """Workspace — `tl.so.tilo.api-tester.Workspace`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     bqk5mejh: list[Entry[SavedCollection]]  # collections
     @property
     def _7idvazp5(self) -> list[Entry[Environment]]:
@@ -738,13 +744,29 @@ class Workspace(Resource):
         """Runs `forget_credential` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("forget_credential", items)
 
-    def send(self) -> None:
-        """Sends what the builder holds to the address it names, in the environment in use."""
+    def send(self) -> str:
+        """Sends what the builder holds to the address it names, in the environment in use, and answers the response the engine wrote: its status, status text, headers, size and body. An agent or a script calling `send` reads the answer in this one call instead of following a job. A person at the window sends with `start_send` instead, which starts the same request as a job they can stop while it waits: this action holds its caller until the answer arrives, so there is nothing to cancel, which is why the window never calls it for its Send control."""
         return self.action("send")
 
-    def send_many(self, items: list[SendArgs]) -> list[dict[str, Any]]:
-        """Runs `send` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("send", items)
+    def start_send(self) -> None:
+        """Starts what `send` sends as a job the person at the window can stop, and leaves its answer to `trigger watch_send`. A person pressing Send must be able to stop waiting, which an action that waits for the answer cannot do; a caller that needs the answer in the call uses `send`."""
+        return self.action("start_send")
+
+    def start_send_many(self, items: list[StartSendArgs]) -> list[dict[str, Any]]:
+        """Runs `start_send` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("start_send", items)
+
+    def send_failed(self, *, why: str) -> None:
+        """Ends a send that got no answer from the engine, saying why in the window."""
+        return self.action("send_failed", why=why)
+
+    def send_failed_many(self, items: list[SendFailedArgs]) -> list[dict[str, Any]]:
+        """Runs `send_failed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("send_failed", items)
+
+    def settle_send(self, *, state: str) -> str:
+        """Folds what a send's job said of itself into the window, and answers the response the job brought when it came back with one."""
+        return self.action("settle_send", state=state)
 
     def cancel_send(self) -> None:
         """Stops waiting for the service to answer."""
@@ -832,12 +854,12 @@ class Workspace(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_request", "new_collection", "delete_collection", "delete_collection_many", "save_request", "open_request", "open_request_many", "rename_draft", "rename_draft_many", "delete_request", "delete_request_many", "delete_opened_request", "delete_opened_request_many", "new_environment", "delete_environment", "delete_environment_many", "delete_active_environment", "delete_active_environment_many", "use_environment", "use_environment_many", "no_environment", "no_environment_many", "keep_credential", "keep_credential_many", "set_scheme", "set_scheme_many", "forget_credential", "forget_credential_many", "send", "send_many", "cancel_send", "cancel_send_many", "poll_send", "poll_send_many", "open_sent", "open_sent_many", "save_sent", "delete_sent", "delete_sent_many", "copy_body", "copy_headers", "copy_request", "dismiss_notice", "dismiss_notice_many", "keep_answer", "keep_answer_many", "record_sent", "record_sent_many", "set_body_mode", "set_body_mode_many"})
+    __actions__ = frozenset({"new_request", "new_collection", "delete_collection", "delete_collection_many", "save_request", "open_request", "open_request_many", "rename_draft", "rename_draft_many", "delete_request", "delete_request_many", "delete_opened_request", "delete_opened_request_many", "new_environment", "delete_environment", "delete_environment_many", "delete_active_environment", "delete_active_environment_many", "use_environment", "use_environment_many", "no_environment", "no_environment_many", "keep_credential", "keep_credential_many", "set_scheme", "set_scheme_many", "forget_credential", "forget_credential_many", "send", "start_send", "start_send_many", "send_failed", "send_failed_many", "settle_send", "cancel_send", "cancel_send_many", "poll_send", "poll_send_many", "open_sent", "open_sent_many", "save_sent", "delete_sent", "delete_sent_many", "copy_body", "copy_headers", "copy_request", "dismiss_notice", "dismiss_notice_many", "keep_answer", "keep_answer_many", "record_sent", "record_sent_many", "set_body_mode", "set_body_mode_many"})
 
 
 class SendAsk(Resource):
     """SendAsk — `tl.so.tilo.api-tester.SendAsk`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     natoiy5b: str  # method
     xg26wm2t: str  # url
     @property
@@ -889,13 +911,13 @@ class SendAsk(Resource):
 
 class KeepAsk(Resource):
     """KeepAsk — `tl.so.tilo.api-tester.KeepAsk`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     qxcspakn: str  # value
 
 
 class ForgetAsk(Resource):
     """ForgetAsk — `tl.so.tilo.api-tester.ForgetAsk`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     @property
     def _42ltyzyi(self) -> str:
         """reference (`42ltyzyi` on the wire)."""
@@ -908,13 +930,13 @@ class ForgetAsk(Resource):
 
 class KeptCredential(Resource):
     """KeptCredential — `tl.so.tilo.api-tester.KeptCredential`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     haaxlsd4: str  # reference
 
 
 class SendState(Resource):
     """SendState — `tl.so.tilo.api-tester.SendState`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     tgafs5zj: str  # state
     vvonqua3: str  # answer
     or6k3lr7: str  # error
@@ -922,7 +944,7 @@ class SendState(Resource):
 
 class Answered(Resource):
     """Answered — `tl.so.tilo.api-tester.Answered`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     s4gqhsru: int  # status
     kqbtxrg4: str  # status_text
     @property
@@ -951,7 +973,7 @@ class Answered(Resource):
 
 class Replay(Resource):
     """Replay — `tl.so.tilo.api-tester.Replay`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     @property
     def _7fy3fg22(self) -> str:
         """name (`7fy3fg22` on the wire)."""
@@ -982,7 +1004,7 @@ class Replay(Resource):
 
 class ApiTester(Resource):
     """API Tester — `tl.so.tilo.api-tester`."""
-    __surface__ = "so.tilo.api-tester@9fba4a5e2e926436"
+    __surface__ = "so.tilo.api-tester@49fd293a1113805a"
     def forget_value(self, *, reference: str) -> None:
         """Takes a stored value off this device."""
         return self.action("forget_value", reference=reference)

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.print-centre@802f2b547814cacf";
+export const SURFACE = "so.tilo.print-centre@5d24eec2895e5c2b";
 
 /** The arguments of `turn_page`. */
 export interface TurnPageArgs {
@@ -41,6 +41,15 @@ export interface AbsorbDocumentArgs {
   file: unknown;
 }
 
+/** The arguments of `print_file`. */
+export interface PrintFileArgs {
+  file: unknown;
+}
+
+/** The arguments of `clear_showing`. */
+export interface ClearShowingArgs {
+}
+
 /** The arguments of `send_to_printer`. */
 export interface SendToPrinterArgs {
 }
@@ -57,9 +66,22 @@ export interface ScanPageArgs {
 export interface PollScanArgs {
 }
 
+/** The arguments of `crop_page`. */
+export interface CropPageArgs {
+  page: ScannedPage;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
 /** The arguments of `remove_page`. */
 export interface RemovePageArgs {
   page: ScannedPage;
+}
+
+/** The arguments of `new_scanned_document`. */
+export interface NewScannedDocumentArgs {
 }
 
 /** The arguments of `move_page`. */
@@ -259,6 +281,7 @@ export interface PrintCentre extends tilo.Resource {
   lz7ue3si: Array<tilo.Entry<PrintDocument>>;  // documents
   iysceybl: Array<tilo.Entry<ScanSession>>;  // scans
   qxaoly4s: PrinterOptions;  // options
+  juk2pzrk: string;  // showing
   /** The person's document being printed, made the first time it is wanted. */
   document_of(): Promise<PrintDocument>;
   /** The person's scanned document, made the first time it is wanted. */
@@ -273,6 +296,16 @@ export interface PrintCentre extends tilo.Resource {
   }): Promise<void>;
   /** Runs `absorb_document` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   absorb_documentMany(items: AbsorbDocumentArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes a document another app hands over as what this window prints, and shows the print form so the person chooses the printer and how it prints: the one action an app calls to print a file it made. The file's bytes are the workspace's content, so the app that hands it over never needs this window's own files. */
+  print_file(args: {
+    file: unknown;
+  }): Promise<void>;
+  /** Runs `print_file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  print_fileMany(items: PrintFileArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Leaves the place another app asked this window to show, so the person's own choice stands. */
+  clear_showing(): Promise<void>;
+  /** Runs `clear_showing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clear_showingMany(items: ClearShowingArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Prints the chosen document on the chosen printer, with the form's settings. */
   send_to_printer(): Promise<void>;
   /** Runs `send_to_printer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -289,12 +322,26 @@ export interface PrintCentre extends tilo.Resource {
   poll_scan(): Promise<void>;
   /** Runs `poll_scan` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   poll_scanMany(items: PollScanArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Crops a scanned page to the part the person kept, in fractions of the picture a viewer shows. The text read off the whole page no longer describes it, so it is cleared. */
+  crop_page(args: {
+    page: ScannedPage;
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  }): Promise<void>;
+  /** Runs `crop_page` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  crop_pageMany(items: CropPageArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Throws a scanned page away. */
   remove_page(args: {
     page: ScannedPage;
   }): Promise<void>;
   /** Runs `remove_page` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   remove_pageMany(items: RemovePageArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Starts a new scanned document: the pages it held go. The change is the person's own and is taken back from history; it is refused while a page is still being scanned, so a scan in flight is never thrown away. */
+  new_scanned_document(): Promise<void>;
+  /** Runs `new_scanned_document` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  new_scanned_documentMany(items: NewScannedDocumentArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Moves a scanned page to `order`, and the page that stood there to where it was. */
   move_page(args: {
     page: ScannedPage;
@@ -357,7 +404,7 @@ export interface PrintCentre extends tilo.Resource {
 
 /** The actions `PrintCentre` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PRINTCENTRE_ACTIONS = ["document_of", "scan_of", "ask_options", "ask_optionsMany", "absorb_document", "absorb_documentMany", "send_to_printer", "send_to_printerMany", "poll_print", "poll_printMany", "scan_page", "scan_pageMany", "poll_scan", "poll_scanMany", "remove_page", "remove_pageMany", "move_page", "move_pageMany", "document_to_save", "choose_printer", "choose_printerMany", "set_two_sided", "set_two_sidedMany", "set_print_option", "set_print_optionMany", "set_resolution", "set_resolutionMany", "set_scan_colour", "set_scan_colourMany", "set_scan_source", "set_scan_sourceMany", "set_ocr_language", "set_ocr_languageMany", "set_scanner", "set_scannerMany"] as const;
+export const PRINTCENTRE_ACTIONS = ["document_of", "scan_of", "ask_options", "ask_optionsMany", "absorb_document", "absorb_documentMany", "print_file", "print_fileMany", "clear_showing", "clear_showingMany", "send_to_printer", "send_to_printerMany", "poll_print", "poll_printMany", "scan_page", "scan_pageMany", "poll_scan", "poll_scanMany", "crop_page", "crop_pageMany", "remove_page", "remove_pageMany", "new_scanned_document", "new_scanned_documentMany", "move_page", "move_pageMany", "document_to_save", "choose_printer", "choose_printerMany", "set_two_sided", "set_two_sidedMany", "set_print_option", "set_print_optionMany", "set_resolution", "set_resolutionMany", "set_scan_colour", "set_scan_colourMany", "set_scan_source", "set_scan_sourceMany", "set_ocr_language", "set_ocr_languageMany", "set_scanner", "set_scannerMany"] as const;
 
 /** The `tl.so.tilo.print-centre.PrintCentre` kind at `path`. */
 export function printCentre(ws: tilo.Workspace, path: string): PrintCentre {

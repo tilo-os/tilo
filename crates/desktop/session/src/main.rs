@@ -669,7 +669,11 @@ fn start(
             windows_manager.clone(),
             Some(wake.handle()),
         ));
-    let (mut services, _following) = services(&wake, power.clone(), machine, windows);
+    // Where the connectivity service shares a saved network's password with the person's other
+    // devices, which the session reaches once the device's daemon is linked.
+    let wifi_sharing = tilo_session::wifi_continuity::WifiSharing::default();
+    let (mut services, _following) =
+        services(&wake, power.clone(), machine, windows, &wifi_sharing);
     let (capture, captures) =
         tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
     // The portal's side of the desktop, which the session answers.
@@ -727,6 +731,7 @@ fn start(
         test_control,
         admin_control,
         hosted_browser,
+        wifi_sharing,
         ..device_options(machine, config)
     };
     // The link this computer's service handed this session, which its reads and writes go over.
@@ -1260,6 +1265,7 @@ fn services(
     power: Option<tilo_session_power::PowerLink>,
     machine: tilo_session::Machine,
     windows: Option<std::sync::Arc<dyn tilo_system_service::windows_apps::WindowsManager>>,
+    wifi_sharing: &tilo_session::wifi_continuity::WifiSharing,
 ) -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     use std::sync::Arc;
     use tilo_connectivity_service::{Connectivity, device::OsDevice};
@@ -1293,7 +1299,10 @@ fn services(
             Err(error) => tracing::warn!(%error, "the power service did not start"),
         }
     }
-    match Connectivity::new(Arc::new(OsDevice), Some(wake.handle())) {
+    match Connectivity::new(
+        Arc::new(wifi_sharing.device(Arc::new(OsDevice))),
+        Some(wake.handle()),
+    ) {
         Ok(connectivity) => {
             match connectivity.follow() {
                 Ok(follow) => following.push(Box::new(follow)),

@@ -155,6 +155,16 @@ impl Session {
         if let Err(reason) = &daemon_link {
             tracing::error!(%reason, "this session reads and writes no workspace");
         }
+        // The person's other devices join the networks this one shares through the daemon.
+        #[cfg(target_os = "linux")]
+        if daemon_link.is_ok() {
+            options
+                .wifi_sharing
+                .attach(tilo_session_client::daemon_documents::DaemonShell::new(
+                    daemon_link.clone(),
+                    tilo_rt::app().handle().clone(),
+                ));
+        }
         // What the session keeps for the next one is the device's, as its daemon keeps its
         // records: read and written on the same link. Records the caller handed in are its own
         // and stay: a test, or a computer whose device keeps them another way.
@@ -712,8 +722,17 @@ impl Session {
             .ok()
         });
         // What this device holds is read only once the channel service is up: before, nothing reads.
+        // The listing is the daemon's to answer and may take as long as its store does, so it is
+        // read on a thread of its own: the session starts at once, and what it notes reaches the
+        // roles when it arrives.
         if let Some(index) = &resource_index {
-            index.sweep();
+            let index = std::sync::Arc::clone(index);
+            if let Err(error) = std::thread::Builder::new()
+                .name("record-sweep".into())
+                .spawn(move || index.sweep())
+            {
+                tracing::warn!(%error, "the records this device holds are not noted");
+            }
         }
         // The workspaces' records the session reads and writes itself, where the daemon holds
         // them: what a window carries to another workspace.
@@ -1620,10 +1639,13 @@ impl Session {
         // dimmed in software follows at once.
         displays_service.watch(&options.wake.handle());
         // The keyboards, pointers and drawing tablets attached now, each by the identity its
-        // settings are kept under: what a pane lists to change one.
+        // settings are kept under: what a pane lists to change one, and which keyboard typed last,
+        // read on a worker so neither the pane nor the chord that switches source waits on the
+        // disk.
+        let inputs = crate::input_devices::Inputs::new();
         services
             .borrow_mut()
-            .add(Box::new(crate::input_devices::Served::new()));
+            .add(Box::new(crate::input_devices::Served::new(inputs.clone())));
         // What the workspaces' apps, people and agents were given beyond their own documents, as
         // the workspace settings list them: Settings reads one summary, and changes nothing here.
         services
@@ -1781,6 +1803,8 @@ impl Session {
             apps: action_apps,
             restore: RefCell::new(restore),
             drives: options.drives,
+            #[cfg(target_os = "linux")]
+            inputs,
             asks,
             box_ask: Cell::default(),
             feedback,

@@ -394,3 +394,75 @@ fn the_spelling_pane_keeps_words_in_the_personal_dictionary() {
         }
     }
 }
+
+/// The Region pane offers the languages this desktop speaks, each in its own words, and asking
+/// for one is the appearance section's own `choose-language` — the same verb a shortcut, an agent
+/// and a script change the language through.
+#[test]
+fn the_region_pane_offers_the_languages_the_desktop_speaks() {
+    let (host, _) = settings();
+    let languages =
+        ResourceRef::parse_id("settings/languages", "so.tilo.settings.sections#Languages")
+            .expect("the languages' resource");
+    host.runtime()
+        .set_reading(
+            &languages,
+            r#"{"languages": [{"tag": "en", "name": "English"}, {"tag": "de", "name": "Deutsch"}]}"#,
+        )
+        .expect("the languages the desktop speaks");
+    let appearance = ResourceRef::parse_id(
+        "settings/appearance",
+        "so.tilo.settings.sections#Appearance",
+    )
+    .expect("the appearance's resource");
+    host.runtime()
+        .set_reading(&appearance, "{}")
+        .expect("the appearance the person chose");
+    invoke(&host, "open_pane", vec![Value::text("region")]);
+    let view = open_view(&host, "region_pane");
+    let shown = texts(&view);
+    let kinds: Vec<&str> = crate::fixtures::nodes(view.tree())
+        .into_iter()
+        .map(|node| node.kind.as_str())
+        .collect();
+    assert!(
+        shown.contains(&"English".to_owned()),
+        "{shown:?} kinds={kinds:?}"
+    );
+    assert!(shown.contains(&"Deutsch".to_owned()), "{shown:?}");
+
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    // The second language's button, after the row that follows the device's.
+    let use_it: Vec<String> = view
+        .tree()
+        .of_kind("ui.Button")
+        .into_iter()
+        .filter(|node| node.props.get("label") == Some(&Value::text("Use it")))
+        .map(|node| node.key.clone())
+        .collect();
+    assert_eq!(use_it.len(), 2, "one for each language: {shown:?}");
+    view.press(&use_it[1]).expect("German is chosen");
+
+    let sent = sent.borrow();
+    let [
+        Invocation::Action {
+            app, name, args, ..
+        },
+    ] = sent.as_slice()
+    else {
+        panic!("one verb of the appearance: {sent:?}");
+    };
+    assert_eq!(
+        (app.as_str(), name.as_str()),
+        ("so.tilo.settings.sections", "choose-language"),
+        "the appearance section's own verb, as its surface publishes it"
+    );
+    assert_eq!(
+        args.iter()
+            .find(|(named, _)| named == "language")
+            .map(|(_, value)| value.clone()),
+        Some(Value::Opt(Some(Box::new(Value::text("de"))))),
+        "the language by the tag a setting holds"
+    );
+}

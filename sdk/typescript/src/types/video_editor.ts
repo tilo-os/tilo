@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-editor@a6a9c3696deccca9";
+export const SURFACE = "so.tilo.video-editor@4e7740a3328993b0";
 
 /** How a title's lines sit in its box. One of "left", "centre", "right". */
 export type Align = "left" | "centre" | "right";
@@ -274,6 +274,27 @@ export interface CommitDragArgs {
   with: Clip[];
 }
 
+/** The arguments of `move_to`. */
+export interface MoveToArgs {
+  c: Clip;
+  start: number;
+  track: string;
+  with: Clip[];
+}
+
+/** The arguments of `trim_to`. */
+export interface TrimToArgs {
+  c: Clip;
+  start: number;
+  length: number;
+}
+
+/** The arguments of `move_marker`. */
+export interface MoveMarkerArgs {
+  k: Marker;
+  at: number;
+}
+
 /** The arguments of `split_clip`. */
 export interface SplitClipArgs {
   c: Clip;
@@ -409,13 +430,6 @@ export interface DeleteMediaArgs {
 /** The arguments of `preview`. */
 export interface PreviewArgs {
   at: number;
-}
-
-/** The arguments of `seek_at`. */
-export interface SeekAtArgs {
-  x: number;
-  span: number;
-  scroll: number;
 }
 
 /** The arguments of `preview_cut`. */
@@ -956,6 +970,30 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `commit_drag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   commit_dragMany(items: CommitDragArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves a clip to `start`, as a drag on the timeline lands it, and every other clip among `with`, the clips chosen, by as much. A clip moved alone goes onto the track `track` names when that is another track of its kind, unlocked, with room for it there. */
+  move_to(args: {
+    c: Clip;
+    start: number;
+    track: string;
+    with: Clip[];
+  }): Promise<void>;
+  /** Runs `move_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_toMany(items: MoveToArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Trims a clip to start at `start` and last `length`, as a drag on its edge on the timeline lands it: a moved start trims its head, else its tail. */
+  trim_to(args: {
+    c: Clip;
+    start: number;
+    length: number;
+  }): Promise<void>;
+  /** Runs `trim_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  trim_toMany(items: TrimToArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves a marker to `at`, on the frame nearest it. */
+  move_marker(args: {
+    k: Marker;
+    at: number;
+  }): Promise<void>;
+  /** Runs `move_marker` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_markerMany(items: MoveMarkerArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Moves the clips `cs`, and the sound linked to them, by `by` seconds together, refusing an overlap with a clip that stays. */
   moved(args: {
     cs: Clip[];
@@ -1139,14 +1177,6 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `preview` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   previewMany(items: PreviewArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Draws the frame at the ruler's place `x`, as a drag along it asks for. */
-  seek_at(args: {
-    x: number;
-    span: number;
-    scroll: number;
-  }): Promise<void>;
-  /** Runs `seek_at` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  seek_atMany(items: SeekAtArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Renders the cut small, so the window plays it. */
   preview_cut(): Promise<void>;
   /** Runs `preview_cut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -1170,7 +1200,7 @@ export interface Project extends tilo.Resource {
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["restore_clip", "split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "adopt_probe", "adopt_probeMany", "refresh_source", "refresh_sourceMany", "relink", "relinkMany", "mark_missing", "mark_missingMany", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "moved", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clips", "remove_clipsMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "trim_start", "trim_startMany", "trim_end", "trim_endMany", "copy_clips", "cut_clips", "paste_track", "paste_clips", "paste_clipsMany", "duplicate_clips", "duplicate_clipsMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "place_side_by_side", "place_side_by_sideMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "seek_at", "seek_atMany", "preview_cut", "preview_cutMany", "export_cut", "export_cutMany", "poll_render", "poll_renderMany", "cancel_render", "cancel_renderMany"] as const;
+export const PROJECT_ACTIONS = ["restore_clip", "split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "adopt_probe", "adopt_probeMany", "refresh_source", "refresh_sourceMany", "relink", "relinkMany", "mark_missing", "mark_missingMany", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "move_to", "move_toMany", "trim_to", "trim_toMany", "move_marker", "move_markerMany", "moved", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clips", "remove_clipsMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "trim_start", "trim_startMany", "trim_end", "trim_endMany", "copy_clips", "cut_clips", "paste_track", "paste_clips", "paste_clipsMany", "duplicate_clips", "duplicate_clipsMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "place_side_by_side", "place_side_by_sideMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "preview_cut", "preview_cutMany", "export_cut", "export_cutMany", "poll_render", "poll_renderMany", "cancel_render", "cancel_renderMany"] as const;
 
 /** The `tl.so.tilo.video-editor.Project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {
@@ -1778,21 +1808,6 @@ export const SAVEDMARKER_ACTIONS = [] as const;
 /** The `tl.so.tilo.video-editor.SavedMarker` kind at `path`. */
 export function savedMarker(ws: tilo.Workspace, path: string): SavedMarker {
   return resourceProxy(ws, path, SURFACE, SAVEDMARKER_ACTIONS) as unknown as SavedMarker;
-}
-
-/** Drawn — `tl.so.tilo.video-editor.Drawn`. */
-export interface Drawn extends tilo.Resource {
-  jaecw4vv: unknown[];  // shapes
-  msyhaonn: string[];  // owners
-}
-
-/** The actions `Drawn` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const DRAWN_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.video-editor.Drawn` kind at `path`. */
-export function drawn(ws: tilo.Workspace, path: string): Drawn {
-  return resourceProxy(ws, path, SURFACE, DRAWN_ACTIONS) as unknown as Drawn;
 }
 
 /** Video Editor — `tl.so.tilo.video-editor`. */

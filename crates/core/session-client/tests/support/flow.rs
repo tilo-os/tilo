@@ -426,7 +426,7 @@ pub async fn arrange_displays(
         serde_json::to_string(placement).expect("the placement is JSON"),
     )
     .unwrap();
-    doc.commit();
+    super::commit_native(&mut doc);
     try_written(
         peer,
         &settings_route(person),

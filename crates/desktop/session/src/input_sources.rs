@@ -11,13 +11,12 @@ use settings_store::keyboard_sources::{ALL, KeyboardProfile};
 
 use crate::config::Sources;
 
-/// Type with the next input source of the keyboard last typed on: the choice is saved for that
-/// keyboard, and the session types with it from now on.
+/// Type with the next input source of the keyboard last typed on, whose own list is `scope`: the
+/// choice is saved for that keyboard, and the session types with it from now on.
 /// `None` when that keyboard has a single source: there is nothing else to type in.
-pub(crate) fn next() -> Option<(Sources, String)> {
+pub(crate) fn next(scope: &str) -> Option<(Sources, String)> {
     let mut base = RichInputConfig::from_section(&settings_store::load_sections(INPUT_SECTIONS));
-    let scope = settings_store::keyboard_sources::active_scope();
-    let mut config = settings_store::keyboard_sources::effective(&base, &scope);
+    let mut config = settings_store::keyboard_sources::effective(&base, scope);
     config.select_next_source()?;
     let shared = scope == ALL;
     // The shared sources are the person's everywhere; one keyboard's own are that device's.
@@ -34,7 +33,7 @@ pub(crate) fn next() -> Option<(Sources, String)> {
             inherited.options.clone_from(&defaults.options);
         }
         let mut assignments = base.keyboard_assignments.clone();
-        let profile = assignments.entry(scope.clone()).or_insert(inherited);
+        let profile = assignments.entry(scope.to_owned()).or_insert(inherited);
         profile.active.clone_from(&config.keyboard_layout);
         values.insert(
             "keyboard_assignments".into(),
@@ -50,7 +49,7 @@ pub(crate) fn next() -> Option<(Sources, String)> {
     if let Err(error) = settings_store::update_section(section, values) {
         tracing::warn!(%error, "the input source choice was not kept");
     }
-    let config = settings_store::keyboard_sources::effective(&base, &scope);
+    let config = settings_store::keyboard_sources::effective(&base, scope);
     let name = source_name(&config.keyboard_layout);
     Some((Sources::from_settings(&config), name))
 }

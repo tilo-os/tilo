@@ -18,8 +18,8 @@ use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    HostSettings, enrol, hears, holds, ready, restart_host_relayed, route, say, start_host_serving,
-    start_peer, wait_for,
+    HostSettings, commit_native, enrol, hears, holds, ready, restart_host_relayed, route, say,
+    start_host_serving, start_peer, wait_for,
 };
 
 /// How many members' writes landed in `peer`'s replica since the last count.
@@ -119,6 +119,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
 
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "seed", vec![1_u8; 4096]).unwrap();
+    commit_native(&mut doc);
     author
         .write(route(), &DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -129,6 +130,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
             vec![u8::try_from(index % 250).unwrap(); 4096],
         )
         .unwrap();
+        commit_native(&mut doc);
         author
             .write(
                 route(),

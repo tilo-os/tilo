@@ -4,6 +4,7 @@
 //! beside the device they belong to.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use settings_store::hardware::{InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot};
@@ -22,18 +23,22 @@ pub(crate) struct InputDevicesRoot;
 
 pub(crate) use tilo_device_surfaces::inputs::{InputDevice, InputDevices, InputKind};
 
-/// The input devices as the session serves them, read from what the compositor writes: on a
-/// worker, so no pass of the loop stats or opens the file. Until the first read lands the
-/// devices are empty, and a view that names one hears of it when it does.
-pub(crate) struct Served {
-    /// What it last served.
-    published: InputDevices,
-    /// The file as a worker reads it. `None` when the runtime directory cannot be watched: then
-    /// the devices were read once at startup, before the loop, and no pass touches the disk.
-    devices: Option<Watched<InputDevices>>,
+/// The input devices the compositor writes, kept current by a worker: what serves them and what
+/// names the keyboard last typed on read the same value, and neither a pass nor a chord opens the
+/// file.
+#[derive(Clone)]
+pub(crate) struct Inputs(Arc<Held>);
+
+struct Held {
+    /// The file as a worker reads it, once a watch could be armed.
+    watched: Option<Watched<InputDevices>>,
+    /// What was read once at startup when it could not be watched.
+    kept: Arc<InputDevices>,
 }
 
-impl Served {
+impl Inputs {
+    /// Watch the runtime directory the compositor writes its input devices in, and read them on
+    /// a worker; without a watch, read them once here, before the loop.
     pub(crate) fn new() -> Self {
         let snapshot = settings_store::hardware::input_snapshot_path();
         let watched = snapshot
@@ -57,14 +62,51 @@ impl Served {
                     }
                 }
             });
-        let published = if watched.is_some() {
-            InputDevices::default()
+        let kept = if watched.is_some() {
+            Arc::new(InputDevices::default())
         } else {
-            read_now(snapshot.as_deref())
+            Arc::new(read_now(snapshot.as_deref()))
         };
+        Self(Arc::new(Held { watched, kept }))
+    }
+
+    /// The devices as last read: the worker's latest, or the startup read.
+    pub(crate) fn get(&self) -> Arc<InputDevices> {
+        self.0
+            .watched
+            .as_ref()
+            .map_or_else(|| Arc::clone(&self.0.kept), Watched::get)
+    }
+
+    /// The list the keyboard last typed on types in, when that keyboard is one of those present:
+    /// its own, else the shared one.
+    pub(crate) fn scope(&self) -> String {
+        let devices = self.get();
+        settings_store::keyboard_sources::scope_of(
+            devices.active_keyboard.as_deref(),
+            devices
+                .devices
+                .iter()
+                .filter(|device| device.kind == InputKind::Keyboard)
+                .map(|device| device.key.as_str()),
+        )
+    }
+}
+
+/// The input devices as the session serves them: empty until the worker's first read lands, and a
+/// view that names one hears of it when it does.
+pub(crate) struct Served {
+    /// What it last served.
+    published: InputDevices,
+    /// What the compositor published, as the worker read it.
+    inputs: Inputs,
+}
+
+impl Served {
+    pub(crate) fn new(inputs: Inputs) -> Self {
         Self {
-            published,
-            devices: watched,
+            published: InputDevices::default(),
+            inputs,
         }
     }
 }
@@ -148,10 +190,7 @@ impl Service for Served {
     }
 
     fn poll(&mut self) -> bool {
-        let Some(devices) = &self.devices else {
-            return false;
-        };
-        let now = devices.get();
+        let now = self.inputs.get();
         // The file's worker reads it again when the compositor replaces it; a value it kept that
         // is the same as the served one changes nothing for a view.
         if *now == self.published {

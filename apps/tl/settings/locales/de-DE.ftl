@@ -1279,9 +1279,10 @@ d-txow3cuw = Printers pane
 
 d-m2s6mtkz = Region pane
     .w-language = Sprache
-    .w-the-workspace-s-language = Die Sprache des Arbeitsbereichs
-    .w-a-language-tag-such-as-de = Ein Sprach-Tag wie de-DE; leer folgt dem Gerät
-    .w-follow-the-device = Dem Gerät folgen
+    .w-follow-the-device-s-language = Sprache des Geräts folgen
+    .w-the-language-this-computer-is-set = Die Sprache, in der dieser Computer eingerichtet ist
+    .w-in-use = In Gebrauch
+    .w-use-it = Verwenden
     .w-formats = Formate
     .w-money = Geld
     .w-the-currency-prices-are-read-in = Die Währung, in der Preise gelesen werden

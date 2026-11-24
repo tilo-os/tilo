@@ -18,6 +18,11 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
+#[cfg(target_os = "linux")]
+use tilo_compositor::InputEvent;
+#[cfg(target_os = "linux")]
+use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
+
 fn main() {
     // nextest lists every test target before it runs any (`--list --format terse`) and reads
     // libtest's format from the output; this target has no cases to list. Cargo runs a
@@ -39,9 +44,9 @@ fn drive() {
     use std::time::Duration;
 
     use tilo_compositor::OutputConfig;
-    use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
     use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
     use tilo_session::{Lists, Options, Session};
+    use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
 
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     // Who sits here, as the binary reads it before it builds anything.
@@ -124,6 +129,13 @@ fn drive() {
         }
     }
 
+    // The keyboard-source chord: which keyboard typed last, and the list its own sources are kept
+    // under, are read from the devices a worker keeps, so the pass it runs walks no path.
+    press(&mut session, ShortcutAction::NextInputSource);
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("a turn");
+    }
+
     // Who sits at this device, as the workspace sheet's people rows and the apps naming an author
     // ask it.
     let _ = ui::local_identity::load();
@@ -181,4 +193,62 @@ fn find(resources: &[tilo_actions::ResourceSpec], id: &str) -> Option<tilo_actio
             find(&resource.children, id)
         }
     })
+}
+
+/// What a key sends, evdev codes.
+#[cfg(target_os = "linux")]
+const KEY_SPACE: u32 = 57;
+#[cfg(target_os = "linux")]
+const KEY_LEFT_CTRL: u32 = 29;
+#[cfg(target_os = "linux")]
+const KEY_LEFT_SHIFT: u32 = 42;
+#[cfg(target_os = "linux")]
+const KEY_LEFT_ALT: u32 = 56;
+#[cfg(target_os = "linux")]
+const KEY_LEFT_META: u32 = 125;
+
+/// Press the chord the default table binds `action` to, as the person does: the modifiers held,
+/// the key tapped, the modifiers let go.
+#[cfg(target_os = "linux")]
+fn press(session: &mut tilo_session::Session, action: ShortcutAction) {
+    let chord = ShortcutConfig::default()
+        .bindings
+        .get(&action)
+        .unwrap_or_else(|| panic!("{action:?} is bound"))
+        .clone();
+    let held: Vec<u32> = chord
+        .modifiers
+        .iter()
+        .map(|name| match name.as_str() {
+            "Super" => KEY_LEFT_META,
+            "Ctrl" => KEY_LEFT_CTRL,
+            "Alt" => KEY_LEFT_ALT,
+            "Shift" => KEY_LEFT_SHIFT,
+            other => panic!("no keycode for {other}"),
+        })
+        .collect();
+    for keycode in &held {
+        key(session, *keycode, true);
+    }
+    let tapped = match chord.key.as_str() {
+        "space" => KEY_SPACE,
+        other => panic!("no keycode for {other}"),
+    };
+    key(session, tapped, true);
+    key(session, tapped, false);
+    for keycode in held.iter().rev() {
+        key(session, *keycode, false);
+    }
+}
+
+/// Send `keycode` pressed or let go, and run the turn that takes it.
+#[cfg(target_os = "linux")]
+fn key(session: &mut tilo_session::Session, keycode: u32, pressed: bool) {
+    session
+        .compositor()
+        .input(InputEvent::Key { keycode, pressed })
+        .expect("the key");
+    session
+        .step(std::time::Duration::from_millis(1))
+        .expect("a turn");
 }

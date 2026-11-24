@@ -36,7 +36,7 @@ use crate::apps::collab_app_broker::{
 use crate::apps::services::{
     BrowserServiceSessionRequestContext, BrowserServiceSessionServices, Caller,
     FileClipboardContext, FileClipboardServices, ItemAnswering, LaunchPlace, LauncherServices,
-    PublishedResources, Reading, ResourceWatch, WifiContinuityServices,
+    PublishedResources, Reading, ResourceWatch,
 };
 use crate::workspaces::providers::Providers;
 
@@ -68,7 +68,6 @@ pub mod calls {
     pub const KEYBOARD_SHORTCUTS: &str = "keyboard_shortcuts";
     pub const BROWSER_SERVICE_SESSIONS: &str = "browser_service_sessions";
     pub const FILE_CLIPBOARD: &str = "file_clipboard";
-    pub const WIFI_CONTINUITY: &str = "wifi_continuity";
     pub const AGENTS: &str = "agents";
 
     pub const COMMAND: &str = "command";
@@ -1474,23 +1473,6 @@ pub fn handed_files(
 
 /// What this computer's networks wake and which networks it saved, answered by the desktop
 /// session signed in here, which reads its `NetworkManager`; the passphrases are the daemon's.
-pub struct SeatWifiContinuity(pub Seat);
-
-impl WifiContinuityServices for SeatWifiContinuity {
-    fn command(
-        &self,
-        command: runtime_collab::WifiContinuityCommand,
-    ) -> runtime_collab::WifiContinuityReply {
-        self.0
-            .call_blocking(
-                calls::WIFI_CONTINUITY,
-                calls::COMMAND,
-                json!({"command": command}),
-            )
-            .and_then(read)
-            .unwrap_or_else(|reason| runtime_collab::WifiContinuityReply::Rejected { reason })
-    }
-}
 
 /// One agent a workspace's record names active, as the session that reads the record lists it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1679,8 +1661,6 @@ pub struct Forwarders {
     pub keyboard_shortcuts: Arc<dyn tilo_broker_core::services::KeyboardShortcutServices>,
     pub browser_service_sessions: Arc<dyn BrowserServiceSessionServices>,
     pub file_clipboard: Arc<dyn FileClipboardServices>,
-    /// What this computer's networks wake and saved: see [`SeatWifiContinuity`].
-    pub wifi_continuity: Arc<dyn WifiContinuityServices>,
     /// The workspaces' agents and the agent sessions: see [`SeatAgents`].
     pub agents: Arc<SeatAgents>,
 }
@@ -1698,7 +1678,6 @@ impl Seat {
             keyboard_shortcuts: Arc::new(SeatKeyboardShortcuts::follow(self.clone())),
             browser_service_sessions: Arc::new(SeatBrowserServiceSessions(self.clone())),
             file_clipboard: Arc::new(SeatFileClipboard(self.clone())),
-            wifi_continuity: Arc::new(SeatWifiContinuity(self.clone())),
             agents: SeatAgents::follow(self.clone()),
         }
     }

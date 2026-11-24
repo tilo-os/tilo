@@ -6,6 +6,7 @@
 //! and who can raise it, while the record itself is untouched and syncs
 //! between the members' devices as any does. Raising the limit lets the same
 //! content through.
+use std::io::Read as _;
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _, transaction::Transactable as _};
@@ -13,7 +14,9 @@ use neighbour_wire::NeighbourMsg;
 use tilo_action_policy::{ContentLimit, ContentPolicy, Raises};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::kept_content::KeptContent;
-use tilo_workspace_service::workspaces::fixtures::{TestGroupKeys, governor, test_host, test_host_holding};
+use tilo_workspace_service::workspaces::fixtures::{
+    TestGroupKeys, governor, test_host, test_host_holding,
+};
 
 /// The app a member's messages and their files are kept in.
 const CHAT: &str = "so.tilo.chat";
@@ -115,10 +118,8 @@ async fn settle(
         .await
         .expect("the workspace's owners settle its content policy");
     tilo_test_env::within("the host obeys the policy its owners settled", async {
-        let wanted = tilo_action_policy::KeptLimits::of(
-            &policy,
-            kept.limits_of(workspace).workspace_bytes,
-        );
+        let wanted =
+            tilo_action_policy::KeptLimits::of(&policy, kept.limits_of(workspace).workspace_bytes);
         while kept.limits_of(workspace) != wanted {
             tokio::task::yield_now().await;
         }
@@ -683,43 +684,264 @@ async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
     // Nobody set a limit: no policy on the workspace, no budget on the host's
     // entry among its person's servers.
     let ada = [3_u8; 32];
-    tilo_test_env::within("the host keeps a folder larger than every default whole", async {
-        for (file, hash) in folder.iter().enumerate() {
-            let bytes = vec![u8::try_from(file).unwrap_or(0); FILE_BYTES];
-            let mut sent = 0_usize;
-            loop {
-                if content.get(&workspace).is_ok_and(|store| store.has(hash)) {
-                    break;
+    tilo_test_env::within(
+        "the host keeps a folder larger than every default whole",
+        async {
+            for (file, hash) in folder.iter().enumerate() {
+                let bytes = vec![u8::try_from(file).unwrap_or(0); FILE_BYTES];
+                let mut sent = 0_usize;
+                loop {
+                    if content.get(&workspace).is_ok_and(|store| store.has(hash)) {
+                        break;
+                    }
+                    // A piece the host did not ask for yet is dropped and sent
+                    // again: the same bytes, the same address.
+                    let from = if sent >= bytes.len() { 0 } else { sent };
+                    let end = (from + neighbour_wire::content::PIECE_BYTES).min(bytes.len());
+                    let frame = postcard::to_allocvec(&NeighbourMsg::DocumentContentPiece {
+                        responder: neighbour_wire::peer_handle(&ada),
+                        requester: neighbour_wire::peer_handle(&host_device),
+                        app_id: CHAT.into(),
+                        cluster_id: workspace.clone(),
+                        hash: hash.clone(),
+                        total: u64::try_from(bytes.len()).unwrap(),
+                        offset: u64::try_from(from).unwrap(),
+                        bytes: bytes[from..end].to_vec(),
+                    })
+                    .unwrap();
+                    workspaces.content_for_host(&workspace, ada, &frame);
+                    sent = end;
+                    tokio::task::yield_now().await;
                 }
-                // A piece the host did not ask for yet is dropped and sent
-                // again: the same bytes, the same address.
-                let from = if sent >= bytes.len() { 0 } else { sent };
-                let end = (from + neighbour_wire::content::PIECE_BYTES).min(bytes.len());
-                let frame = postcard::to_allocvec(&NeighbourMsg::DocumentContentPiece {
-                    responder: neighbour_wire::peer_handle(&ada),
-                    requester: neighbour_wire::peer_handle(&host_device),
-                    app_id: CHAT.into(),
-                    cluster_id: workspace.clone(),
-                    hash: hash.clone(),
-                    total: u64::try_from(bytes.len()).unwrap(),
-                    offset: u64::try_from(from).unwrap(),
-                    bytes: bytes[from..end].to_vec(),
-                })
-                .unwrap();
-                workspaces.content_for_host(&workspace, ada, &frame);
-                sent = end;
-                tokio::task::yield_now().await;
+                assert!(
+                    kept.refusals(&workspace)
+                        .await
+                        .iter()
+                        .all(|refusal| refusal.hash != *hash),
+                    "a file of the member's own folder was refused"
+                );
             }
-            assert!(
-                kept.refusals(&workspace)
-                    .await
-                    .iter()
-                    .all(|refusal| refusal.hash != *hash),
-                "a file of the member's own folder was refused"
-            );
-        }
-    })
+        },
+    )
     .await;
+
+    keeping.abort();
+    host.shutdown().await;
+}
+
+/// The folder the 3 GiB check streams: this many files of this size, 3 GiB
+/// exactly, each the largest content whose address a host is asked for whole.
+const THREE_GIB_FILES: usize = 48;
+const THREE_GIB_FILE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Bytes `len` from `offset` of file `file`, generated where they are sent: a
+/// 4 KiB block is filled from where it sits in which file, so no file is ever
+/// held whole, in the test or anywhere but the store that keeps it, and no two
+/// files are the same content.
+fn folder_piece(file: usize, offset: usize, len: usize) -> Vec<u8> {
+    const BLOCK: usize = 4096;
+    let mut bytes = vec![0_u8; len];
+    for (index, block) in bytes.chunks_mut(BLOCK).enumerate() {
+        let at = u64::try_from(offset / BLOCK + index).unwrap_or(u64::MAX);
+        let seed = at.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            ^ u64::try_from(file)
+                .unwrap_or(u64::MAX)
+                .wrapping_mul(0xd6e8_feb8_6659_fd93);
+        block.fill(u8::try_from((seed >> 32) & 0xff).unwrap_or(0));
+    }
+    bytes
+}
+
+/// File `file`'s address, from the pieces [`folder_piece`] generates for it.
+fn folder_hash(file: usize) -> String {
+    let mut hasher = blake3::Hasher::new();
+    let mut offset = 0;
+    while offset < THREE_GIB_FILE_BYTES {
+        let end = (offset + neighbour_wire::content::PIECE_BYTES).min(THREE_GIB_FILE_BYTES);
+        hasher.update(&folder_piece(file, offset, end - offset));
+        offset = end;
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+/// One piece of file `file`'s content at `from`, as the member's device answers
+/// the host with it.
+fn folder_piece_frame(
+    host: &[u8; 32],
+    poster: &[u8; 32],
+    workspace: &str,
+    file: usize,
+    hash: &str,
+    from: usize,
+) -> Vec<u8> {
+    let end = (from + neighbour_wire::content::PIECE_BYTES).min(THREE_GIB_FILE_BYTES);
+    postcard::to_allocvec(&NeighbourMsg::DocumentContentPiece {
+        responder: neighbour_wire::peer_handle(poster),
+        requester: neighbour_wire::peer_handle(host),
+        app_id: CHAT.into(),
+        cluster_id: workspace.into(),
+        hash: hash.into(),
+        total: u64::try_from(THREE_GIB_FILE_BYTES).unwrap(),
+        offset: u64::try_from(from).unwrap(),
+        bytes: folder_piece(file, from, end - from),
+    })
+    .unwrap()
+}
+
+/// Three gigabytes of a member's own folder reach their own server whole when
+/// nobody set a limit, and every byte arrives as the bytes it was sent as. The
+/// folder is the size of a real one — 48 files of 64 MiB, the largest content
+/// whose address a host is asked for whole — and the test generates it,
+/// streaming each piece as it is answered, so it proves the store holding 3 GiB
+/// and not the test's memory. It writes and hashes gigabytes, so it is
+/// `#[ignore]`d, and its own dispatched check runs it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "writes 3 GiB to the store and reads it back: `t test kept-content-3gib` runs it"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story: a 3 GiB folder is posted piece by piece and read back whole"
+)]
+async fn a_three_gib_folder_reaches_its_own_server_whole() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (root, host_cert) = governor();
+    let host = test_host(scratch.path(), &root, &host_cert).await;
+    let workspaces = host.workspaces().clone();
+    let summary = workspaces.create("Lounge").await.unwrap();
+    let workspace = summary.workspace.clone();
+    let host_device = host_cert.device_public_key;
+
+    if let Some(Err(error)) = workspaces
+        .own_route_keys(
+            &DocumentRoute {
+                app_id: CHAT.into(),
+                cluster_id: workspace.clone(),
+                document: String::new(),
+            },
+            true,
+        )
+        .await
+    {
+        panic!("the record's channel is not founded here: {error}");
+    }
+
+    // The folder's addresses, from the pieces the test is about to stream.
+    let folder = tilo_test_env::within(
+        "the folder's addresses are computed",
+        tokio::task::spawn_blocking(|| (0..THREE_GIB_FILES).map(folder_hash).collect::<Vec<_>>()),
+    )
+    .await
+    .expect("the folder's addresses are computed");
+
+    workspaces
+        .author_workspace_document(
+            &workspace,
+            &host_cert,
+            (CHAT, ""),
+            |doc| -> Result<(), String> {
+                for hash in &folder {
+                    post_into(doc, hash);
+                }
+                Ok(())
+            },
+        )
+        .await
+        .expect("the folder's messages reach the workspace");
+
+    let content = tilo_server::content::stores(scratch.path());
+    workspaces.serve_content(Arc::new(tilo_server::content::StoresContent(Arc::clone(
+        &content,
+    ))));
+    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
+    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+
+    // Nobody set a limit: no policy on the workspace, no budget on the host's
+    // entry among its person's servers.
+    let ada = [3_u8; 32];
+    for (file, hash) in folder.iter().enumerate() {
+        tilo_test_env::within(
+            format!("the host keeps file {file} of the member's three gigabytes whole"),
+            async {
+                let mut sent = 0_usize;
+                loop {
+                    if content.get(&workspace).is_ok_and(|store| store.has(hash)) {
+                        break;
+                    }
+                    // A piece the host did not ask for yet is dropped and sent
+                    // again: the same bytes, the same address.
+                    let from = if sent >= THREE_GIB_FILE_BYTES {
+                        0
+                    } else {
+                        sent
+                    };
+                    let frame =
+                        folder_piece_frame(&host_device, &ada, &workspace, file, hash, from);
+                    workspaces.content_for_host(&workspace, ada, &frame);
+                    sent = (from + neighbour_wire::content::PIECE_BYTES).min(THREE_GIB_FILE_BYTES);
+                    tokio::task::yield_now().await;
+                }
+                assert!(
+                    kept.refusals(&workspace)
+                        .await
+                        .iter()
+                        .all(|refusal| refusal.hash != *hash),
+                    "a file of the member's own folder was refused"
+                );
+            },
+        )
+        .await;
+        eprintln!("kept file {file} of {THREE_GIB_FILES}");
+    }
+
+    // Every byte arrived, and as the bytes it was sent as: each file is read
+    // back from the store, counted and hashed, a piece at a time.
+    let store = content.get(&workspace).expect("the workspace's store");
+    let mut total = 0_u64;
+    for (file, hash) in folder.iter().enumerate() {
+        let reading = store.clone();
+        let wanted = hash.clone();
+        let (bytes, digest) = tilo_test_env::within(
+            format!("file {file} of the member's folder reads back whole"),
+            tokio::task::spawn_blocking(move || {
+                let mut opened = reading
+                    .open(&wanted)
+                    .expect("the host keeps a file of the member's folder");
+                let mut seen = 0_u64;
+                let mut hasher = blake3::Hasher::new();
+                let mut buf = vec![0_u8; neighbour_wire::content::PIECE_BYTES];
+                loop {
+                    let read = opened.read(&mut buf).expect("the kept content reads");
+                    if read == 0 {
+                        break;
+                    }
+                    seen = seen.saturating_add(u64::try_from(read).unwrap_or(0));
+                    hasher.update(&buf[..read]);
+                }
+                (seen, hasher.finalize().to_hex().to_string())
+            }),
+        )
+        .await
+        .expect("the folder's files read back");
+        assert_eq!(
+            bytes,
+            u64::try_from(THREE_GIB_FILE_BYTES).unwrap(),
+            "file {file} reached the store short"
+        );
+        assert_eq!(
+            digest, *hash,
+            "file {file} reached the store as other bytes"
+        );
+        total = total.saturating_add(bytes);
+        eprintln!("read back file {file} of {THREE_GIB_FILES} whole: {bytes} bytes");
+    }
+    assert_eq!(
+        total,
+        u64::try_from(THREE_GIB_FILES * THREE_GIB_FILE_BYTES).unwrap(),
+        "the store holds less than the folder's 3 GiB"
+    );
+    assert!(
+        kept.refusals(&workspace).await.is_empty(),
+        "content nobody limited was refused"
+    );
 
     keeping.abort();
     host.shutdown().await;

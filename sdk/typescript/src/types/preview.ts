@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.discord.preview@1c6d592b17b31194";
+export const SURFACE = "so.tilo.discord.preview@6190e08540b4b69b";
 
 /** What kind of place a Discord channel is. One of "text", "voice", "category", "thread". */
 export type ChannelKind = "text" | "voice" | "category" | "thread";
@@ -504,7 +504,7 @@ export interface Discord extends tilo.Resource {
   }): Promise<void>;
   /** Runs `finish_import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   finish_importMany(items: FinishImportArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Sends a message through a channel's webhook, as the bridge plans it. The call arrives as the JSON the bridge's program writes, and is read as the record the worker's shape declares. */
+  /** Sends a message through a channel's webhook, as the bridge plans it. The call arrives as the JSON the bridge's program writes, and is read as the record its shape declares. */
   send_there(args: {
     op: unknown;
   }): Promise<void>;
@@ -1150,21 +1150,6 @@ export const DELETEEMOJIOP_ACTIONS = [] as const;
 /** The `tl.so.tilo.discord.preview.DeleteEmojiOp` kind at `path`. */
 export function deleteEmojiOp(ws: tilo.Workspace, path: string): DeleteEmojiOp {
   return resourceProxy(ws, path, SURFACE, DELETEEMOJIOP_ACTIONS) as unknown as DeleteEmojiOp;
-}
-
-/** Perform — `tl.so.tilo.discord.preview.Perform`. */
-export interface Perform extends tilo.Resource {
-  x5ajf4ny: string;  // account
-  "4flmqbgo": string;  // op
-}
-
-/** The actions `Perform` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const PERFORM_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.discord.preview.Perform` kind at `path`. */
-export function perform(ws: tilo.Workspace, path: string): Perform {
-  return resourceProxy(ws, path, SURFACE, PERFORM_ACTIONS) as unknown as Perform;
 }
 
 /** Accounts — `tl.so.tilo.discord.preview.Accounts`. */

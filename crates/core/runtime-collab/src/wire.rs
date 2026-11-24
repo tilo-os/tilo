@@ -325,11 +325,6 @@ pub enum Service {
     AudioOutput,
     /// `native_media::Request` -> `native_media::Snapshot`, JSON.
     NativeMedia,
-    /// A realtime command and its reply, JSON.
-    Realtime,
-    /// `WifiContinuityCommand` -> `WifiContinuityReply`, JSON; the Settings
-    /// app's only.
-    WifiContinuity,
     /// `BrowserServiceSessionCommand` -> `BrowserServiceSessionReply`; the
     /// Browser's only.
     BrowserServiceSession,
@@ -411,8 +406,6 @@ pub enum Topic {
     /// The invocations of the app's published actions, replacing any
     /// stream it held; `stable_ids` asks for stable invocation ids.
     Invocations { stable_ids: bool },
-    /// The realtime continuity events this app sees.
-    Realtime,
     /// The reported progress of the approved check the encoded
     /// `approved_checks::Request` starts, ending with its receipt.
     ApprovedCheck(Vec<u8>),
@@ -499,8 +492,6 @@ pub enum Event {
     Context(ContextUpdate),
     /// An invocation handed to this app.
     Invocation(Invocation),
-    /// A realtime continuity event, as JSON.
-    Realtime(Vec<u8>),
     ApprovedCheck(CheckProgress),
     WorkspaceControl(WorkspaceControlEvent),
     /// A watched resource's reading changed: it as JSON, and the services'

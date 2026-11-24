@@ -20,7 +20,9 @@ use tilo_session_client::membership_check::PeerStore as _;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
-use super::support::{durable, enrol, enter_page, start_workspace_host_relaying, wait_keyed};
+use super::support::{
+    commit_native, durable, enrol, enter_page, start_workspace_host_relaying, wait_keyed,
+};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -116,7 +118,7 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
         let before = tree.get_heads();
         tree.put(automerge::ROOT, format!("file-{file}"), "x".repeat(4096))
             .unwrap();
-        tree.commit();
+        commit_native(&mut tree);
         let write = if before.is_empty() {
             DocumentMutation::Snapshot(tree.save())
         } else {
@@ -139,7 +141,7 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
     // record as the index and parts a later session reads it from.
     let mut note = AutoCommit::new();
     note.put(automerge::ROOT, "kind", "tree").unwrap();
-    note.commit();
+    commit_native(&mut note);
     page.write(files.clone(), &DocumentMutation::Incremental(note.save()))
         .unwrap();
     durable(&page).await;

@@ -79,6 +79,10 @@ pub fn surface() -> (Vec<ui::tilo_resource::Surface>, Vec<Root>) {
         service::shortcuts_table::RESOURCE.to_owned(),
         service::shortcuts_table::surface(),
     ));
+    places.push((
+        service::languages::RESOURCE.to_owned(),
+        service::languages::surface(),
+    ));
     places
         .into_iter()
         .map(|(published, place)| {

@@ -40,6 +40,8 @@ __all__ = [
     "SourceOptions",
     "StylusButtonAction",
     "TabletConfig",
+    "Snapshot",
+    "Word",
     "PowerActionPref",
     "Place",
     "ShowMode",
@@ -76,6 +78,7 @@ __all__ = [
     "AgentModelShown",
     "AgentProviderShown",
     "ActionShortcut",
+    "MovedCommand",
     "ShortcutChord",
     "Appearance",
     "AppearanceDevice",
@@ -84,6 +87,7 @@ __all__ = [
     "Input",
     "InputDevice",
     "TextAssistance",
+    "PersonalDictionary",
     "Power",
     "Widgets",
     "SearchHistory",
@@ -124,8 +128,11 @@ __all__ = [
     "SetKeyRepeatArgs",
     "ChooseLayoutArgs",
     "SetLayoutsArgs",
+    "SetCapsLockArgs",
+    "SetComposeKeyArgs",
     "SetPasteShortcutArgs",
     "SetKeyboardLayoutsArgs",
+    "SetKeyboardSourcesArgs",
     "UseSharedLayoutsArgs",
     "SetKeyboardModelArgs",
     "ShowKeyboardLayoutArgs",
@@ -138,6 +145,8 @@ __all__ = [
     "SetTabletEraserArgs",
     "SetPadButtonArgs",
     "SetPadDialArgs",
+    "AddArgs",
+    "ClearArgs",
     "SetSuspendPluggedInArgs",
     "SetSuspendOnBatteryArgs",
     "SetWidgetEnabledArgs",
@@ -161,6 +170,8 @@ __all__ = [
     "RebindArgs",
     "ResetArgs",
     "ResetAllArgs",
+    "RebindCommandArgs",
+    "ResetCommandArgs",
     "SetActionChordsArgs",
     "BindArgs",
     "ShellViewsResetArgs",
@@ -283,6 +294,14 @@ class TabletConfig(TypedDict):
     pad_map_button: int | None
     pad_rings: dict[str, list[PadDialAction]]
     pad_strips: dict[str, list[PadDialAction]]
+
+class Snapshot(TypedDict):
+    revision: int
+    words: list[Word]
+
+class Word(TypedDict):
+    spelling: str
+    language: str | None
 
 PowerActionPref = Literal["suspend", "lock", "ignore"]
 
@@ -458,6 +477,11 @@ class ActionShortcut(TypedDict):
     label: str
     chord: str
 
+class MovedCommand(TypedDict):
+    app: str
+    action: str
+    chord: str
+
 class ShortcutChord(TypedDict):
     id: str
     chord: str
@@ -538,6 +562,16 @@ SetLayoutsArgs = TypedDict("SetLayoutsArgs", {
 })
 """The arguments of `set-layouts`."""
 
+SetCapsLockArgs = TypedDict("SetCapsLockArgs", {
+    "behaviour": "str",
+})
+"""The arguments of `set-caps-lock`."""
+
+SetComposeKeyArgs = TypedDict("SetComposeKeyArgs", {
+    "key": "str",
+})
+"""The arguments of `set-compose-key`."""
+
 SetPasteShortcutArgs = TypedDict("SetPasteShortcutArgs", {
     "app": "str",
     "shortcut": "str",
@@ -549,6 +583,13 @@ SetKeyboardLayoutsArgs = TypedDict("SetKeyboardLayoutsArgs", {
     "profile": "KeyboardProfile",
 })
 """The arguments of `set-keyboard-layouts`."""
+
+SetKeyboardSourcesArgs = TypedDict("SetKeyboardSourcesArgs", {
+    "keyboard": "str",
+    "sources": "list[str]",
+    "active": "str",
+})
+"""The arguments of `set-keyboard-sources`."""
 
 UseSharedLayoutsArgs = TypedDict("UseSharedLayoutsArgs", {
     "keyboard": "str",
@@ -566,9 +607,9 @@ ShowKeyboardLayoutArgs = TypedDict("ShowKeyboardLayoutArgs", {
 """The arguments of `show-keyboard-layout`."""
 
 InspectKeyboardArgs = TypedDict("InspectKeyboardArgs", {
+    "shape": "int",
     "level": "int",
     "extra_levels": "bool",
-    "key": "str",
 })
 """The arguments of `inspect-keyboard`."""
 
@@ -624,6 +665,16 @@ SetPadDialArgs = TypedDict("SetPadDialArgs", {
     "action": "str",
 })
 """The arguments of `set-pad-dial`."""
+
+AddArgs = TypedDict("AddArgs", {
+    "spelling": "str",
+    "language": NotRequired["str | None"],
+})
+"""The arguments of `add`."""
+
+ClearArgs = TypedDict("ClearArgs", {
+})
+"""The arguments of `clear`."""
 
 SetSuspendPluggedInArgs = TypedDict("SetSuspendPluggedInArgs", {
     "minutes": "int",
@@ -755,6 +806,19 @@ ResetAllArgs = TypedDict("ResetAllArgs", {
 })
 """The arguments of `reset-all`."""
 
+RebindCommandArgs = TypedDict("RebindCommandArgs", {
+    "app": "str",
+    "action": "str",
+    "chord": "str",
+})
+"""The arguments of `rebind-command`."""
+
+ResetCommandArgs = TypedDict("ResetCommandArgs", {
+    "app": "str",
+    "action": "str",
+})
+"""The arguments of `reset-command`."""
+
 SetActionChordsArgs = TypedDict("SetActionChordsArgs", {
     "chords": "Any",
 })
@@ -854,7 +918,7 @@ ForgetDataUsedArgs = TypedDict("ForgetDataUsedArgs", {
 
 class Appearance(Resource):
     """Appearance — `settings.appearance`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     mode: str
     dark_theme: str
@@ -980,7 +1044,7 @@ class Appearance(Resource):
 
 class AppearanceDevice(Resource):
     """Appearance on this device — `settings.appearance-device`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def distribution_defaults(self) -> Any | None:
@@ -990,7 +1054,7 @@ class AppearanceDevice(Resource):
 
 class Accessibility(Resource):
     """Accessibility — `settings.accessibility`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     large_cursor: bool
     cursor_size: int
@@ -1047,14 +1111,14 @@ class Accessibility(Resource):
 
 class AccessibilityDevice(Resource):
     """Accessibility on this device — `settings.accessibility-device`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     apply_to_sign_in: bool
 
 
 class Input(Resource):
     """Input — `settings.input`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     touchpad_natural_scroll: bool
     mouse_natural_scroll: bool
@@ -1130,6 +1194,22 @@ class Input(Resource):
         """Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-layouts", items)
 
+    def set_caps_lock(self, *, behaviour: str) -> None:
+        """Runs the app's action."""
+        return self.action("set-caps-lock", behaviour=behaviour)
+
+    def set_caps_lock_many(self, items: list[SetCapsLockArgs]) -> list[dict[str, Any]]:
+        """Runs `set-caps-lock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-caps-lock", items)
+
+    def set_compose_key(self, *, key: str) -> None:
+        """Runs the app's action."""
+        return self.action("set-compose-key", key=key)
+
+    def set_compose_key_many(self, items: list[SetComposeKeyArgs]) -> list[dict[str, Any]]:
+        """Runs `set-compose-key` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-compose-key", items)
+
     def set_paste_shortcut(self,
         *,
         app: str,
@@ -1144,12 +1224,12 @@ class Input(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_key_repeat", "set_key_repeat_many", "choose_layout", "choose_layout_many", "set_layouts", "set_layouts_many", "set_paste_shortcut", "set_paste_shortcut_many"})
+    __actions__ = frozenset({"set_key_repeat", "set_key_repeat_many", "choose_layout", "choose_layout_many", "set_layouts", "set_layouts_many", "set_caps_lock", "set_caps_lock_many", "set_compose_key", "set_compose_key_many", "set_paste_shortcut", "set_paste_shortcut_many"})
 
 
 class InputDevice(Resource):
     """Input on this device — `settings.input-device`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     touchpad_enabled: bool
     touchpad_disabled_on_external_mouse: bool
@@ -1174,9 +1254,9 @@ class InputDevice(Resource):
         """Read only."""
         return self.fields["keyboard_preview_level"]
     @property
-    def keyboard_inspected_key(self) -> str:
+    def keyboard_inspected_shape(self) -> int:
         """Read only."""
-        return self.fields["keyboard_inspected_key"]
+        return self.fields["keyboard_inspected_shape"]
     @property
     def tablets(self) -> dict[str, TabletConfig]:
         """Read only."""
@@ -1193,6 +1273,19 @@ class InputDevice(Resource):
     def set_keyboard_layouts_many(self, items: list[SetKeyboardLayoutsArgs]) -> list[dict[str, Any]]:
         """Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-keyboard-layouts", items)
+
+    def set_keyboard_sources(self,
+        *,
+        keyboard: str,
+        sources: list[str],
+        active: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("set-keyboard-sources", keyboard=keyboard, sources=sources, active=active)
+
+    def set_keyboard_sources_many(self, items: list[SetKeyboardSourcesArgs]) -> list[dict[str, Any]]:
+        """Runs `set-keyboard-sources` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-keyboard-sources", items)
 
     def use_shared_layouts(self, *, keyboard: str) -> None:
         """Runs the app's action."""
@@ -1226,12 +1319,12 @@ class InputDevice(Resource):
 
     def inspect_keyboard(self,
         *,
+        shape: int,
         level: int,
         extra_levels: bool,
-        key: str,
     ) -> None:
         """Runs the app's action."""
-        return self.action("inspect-keyboard", level=level, extra_levels=extra_levels, key=key)
+        return self.action("inspect-keyboard", shape=shape, level=level, extra_levels=extra_levels)
 
     def inspect_keyboard_many(self, items: list[InspectKeyboardArgs]) -> list[dict[str, Any]]:
         """Runs `inspect-keyboard` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -1340,21 +1433,60 @@ class InputDevice(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_keyboard_layouts", "set_keyboard_layouts_many", "use_shared_layouts", "use_shared_layouts_many", "set_keyboard_model", "set_keyboard_model_many", "show_keyboard_layout", "show_keyboard_layout_many", "inspect_keyboard", "inspect_keyboard_many", "set_tablet_output", "set_tablet_output_many", "set_tablet_keep_aspect", "set_tablet_keep_aspect_many", "set_tablet_left_handed", "set_tablet_left_handed_many", "set_tablet_tip_feel", "set_tablet_tip_feel_many", "set_tablet_button", "set_tablet_button_many", "set_tablet_eraser", "set_tablet_eraser_many", "set_pad_button", "set_pad_button_many", "set_pad_dial", "set_pad_dial_many"})
+    __actions__ = frozenset({"set_keyboard_layouts", "set_keyboard_layouts_many", "set_keyboard_sources", "set_keyboard_sources_many", "use_shared_layouts", "use_shared_layouts_many", "set_keyboard_model", "set_keyboard_model_many", "show_keyboard_layout", "show_keyboard_layout_many", "inspect_keyboard", "inspect_keyboard_many", "set_tablet_output", "set_tablet_output_many", "set_tablet_keep_aspect", "set_tablet_keep_aspect_many", "set_tablet_left_handed", "set_tablet_left_handed_many", "set_tablet_tip_feel", "set_tablet_tip_feel_many", "set_tablet_button", "set_tablet_button_many", "set_tablet_eraser", "set_tablet_eraser_many", "set_pad_button", "set_pad_button_many", "set_pad_dial", "set_pad_dial_many"})
 
 
 class TextAssistance(Resource):
     """Spelling and text — `settings.text-assistance`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     check_spelling: bool
     auto_correct: bool
     spelling_language: str
 
 
+class PersonalDictionary(Resource):
+    """Personal dictionary — `settings.personal-dictionary`."""
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
+    __setters__ = True
+    @property
+    def words(self) -> Snapshot:
+        """Read only."""
+        return self.fields["words"]
+
+    def add(self,
+        *,
+        spelling: str,
+        language: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["spelling"] = spelling
+        if language is not None:
+            args["language"] = language
+        return self.action("add", **args)
+
+    def add_many(self, items: list[AddArgs]) -> list[dict[str, Any]]:
+        """Runs `add` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("add", items)
+
+    # the app's `remove` action is the SDK's own: run it with `action("remove")`.
+    def clear(self) -> None:
+        """Runs the app's action."""
+        return self.action("clear")
+
+    def clear_many(self, items: list[ClearArgs]) -> list[dict[str, Any]]:
+        """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("clear", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add", "add_many", "clear", "clear_many"})
+
+
 class Power(Resource):
     """Power — `settings.power`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     auto_suspend: bool
     suspend_minutes: int
@@ -1394,7 +1526,7 @@ class Power(Resource):
 
 class Widgets(Resource):
     """Widgets — `settings.widgets`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     music: WidgetPrefs
     team: WidgetPrefs
@@ -1458,7 +1590,7 @@ class Widgets(Resource):
 
 class SearchHistory(Resource):
     """Search history — `settings.search_history`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     chosen: str
     chosen_for_text: str
@@ -1467,7 +1599,7 @@ class SearchHistory(Resource):
 
 class Updates(Resource):
     """Updates — `settings.updates`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def auto(self) -> bool:
@@ -1501,7 +1633,7 @@ class Updates(Resource):
 
 class Notifications(Resource):
     """Notifications — `settings.notifications`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     do_not_disturb: bool
     show_banners: bool
@@ -1544,7 +1676,7 @@ class Notifications(Resource):
 
 class Audio(Resource):
     """Sound — `settings.audio`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     system_sounds: SystemSoundPrefs
     balance: float
@@ -1580,7 +1712,7 @@ class Audio(Resource):
 
 class AudioDevice(Resource):
     """Sound on this device — `settings.audio-device`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def output_device(self) -> str | None:
@@ -1614,7 +1746,7 @@ class AudioDevice(Resource):
 
 class Display(Resource):
     """Displays — `settings.display`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def auto_brightness(self) -> bool:
@@ -1649,7 +1781,7 @@ class Display(Resource):
 
 class DisplayPerson(Resource):
     """Night light — `settings.display-person`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     night_light: bool
     night_light_temperature: int
@@ -1691,7 +1823,7 @@ class DisplayPerson(Resource):
 
 class Locale(Resource):
     """Region and language — `settings.locale`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     currency: Currency
     date_format: DateStyle
@@ -1703,7 +1835,7 @@ class Locale(Resource):
 
 class Continuity(Resource):
     """Continuity — `settings.continuity`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def enabled(self) -> bool:
@@ -1789,7 +1921,7 @@ class Continuity(Resource):
 
 class Shortcuts(Resource):
     """Keyboard shortcuts — `settings.shortcuts`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def bindings(self) -> Any:
@@ -1799,6 +1931,10 @@ class Shortcuts(Resource):
     def actions(self) -> Any:
         """Read only."""
         return self.fields["actions"]
+    @property
+    def commands(self) -> Any:
+        """Read only."""
+        return self.fields["commands"]
 
     def rebind(self,
         *,
@@ -1828,6 +1964,31 @@ class Shortcuts(Resource):
         """Runs `reset-all` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reset-all", items)
 
+    def rebind_command(self,
+        *,
+        app: str,
+        action: str,
+        chord: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("rebind-command", app=app, action=action, chord=chord)
+
+    def rebind_command_many(self, items: list[RebindCommandArgs]) -> list[dict[str, Any]]:
+        """Runs `rebind-command` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rebind-command", items)
+
+    def reset_command(self,
+        *,
+        app: str,
+        action: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("reset-command", app=app, action=action)
+
+    def reset_command_many(self, items: list[ResetCommandArgs]) -> list[dict[str, Any]]:
+        """Runs `reset-command` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("reset-command", items)
+
     def set_action_chords(self, *, chords: Any) -> None:
         """Runs the app's action."""
         return self.action("set-action-chords", chords=chords)
@@ -1838,12 +1999,12 @@ class Shortcuts(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"rebind", "rebind_many", "reset", "reset_many", "reset_all", "reset_all_many", "set_action_chords", "set_action_chords_many"})
+    __actions__ = frozenset({"rebind", "rebind_many", "reset", "reset_many", "reset_all", "reset_all_many", "rebind_command", "rebind_command_many", "reset_command", "reset_command_many", "set_action_chords", "set_action_chords_many"})
 
 
 class ShellViews(Resource):
     """Shell views — `shell-views`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def bindings(self) -> dict[str, Binding]:
@@ -1897,21 +2058,21 @@ class ShellViews(Resource):
 
 class DesktopControls(Resource):
     """Desktop controls — `settings.desktop-controls`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     vim_mode: bool
 
 
 class DesktopControlsDevice(Resource):
     """Desktop controls on this device — `settings.desktop-controls-device`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     hide_top_bar: bool
 
 
 class AgentProviders(Resource):
     """Agent model providers — `settings.agent-providers`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def config(self) -> ProviderConfig:
@@ -1941,7 +2102,7 @@ class AgentProviders(Resource):
 
 class HostedAgentProviders(Resource):
     """Hosted agent model providers — `settings.hosted-agent-providers`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def hosted(self) -> HostedProfiles:
@@ -1963,7 +2124,7 @@ class HostedAgentProviders(Resource):
 
 class DefaultApps(Resource):
     """Default apps — `settings.default-apps`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def handlers(self) -> dict[str, str]:
@@ -1989,14 +2150,14 @@ class DefaultApps(Resource):
 
 class Clock(Resource):
     """Clock — `settings.clock`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     automatic_zone: bool
 
 
 class DisplayChange(Resource):
     """Display change — `settings.display-change`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def id(self) -> int:
@@ -2030,7 +2191,7 @@ class DisplayChange(Resource):
 
 class OskSources(Resource):
     """On-screen keyboard layouts — `settings.osk-sources`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     @property
     def layout(self) -> str:
@@ -2060,7 +2221,7 @@ class OskSources(Resource):
 
 class DeviceVpn(Resource):
     """Your devices as a VPN — `settings.device-vpn`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     exit: bool
     @property
@@ -2135,14 +2296,14 @@ class DeviceVpn(Resource):
 
 class Identity(Resource):
     """Your colour — `settings.identity`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     colour: str | None
 
 
 class NetworkUsage(Resource):
     """Data usage — `settings.network-usage`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     __setters__ = True
     reset_day: int
     limit_gb: int
@@ -2214,7 +2375,7 @@ class NetworkUsage(Resource):
 
 class AgentModels(Resource):
     """Agent model — `settings.agent-models`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     @property
     def providers(self) -> list[AgentProviderShown]:
         """Read only."""
@@ -2247,7 +2408,7 @@ class AgentModels(Resource):
 
 class ShortcutsTable(Resource):
     """Keyboard shortcuts — `settings.shortcuts-table`."""
-    __surface__ = "so.tilo.settings.sections@f00b3793a302d0f0"
+    __surface__ = "so.tilo.settings.sections@aa9522275a0a0cb6"
     @property
     def bindings(self) -> list[ShortcutChord]:
         """Read only."""
@@ -2256,5 +2417,9 @@ class ShortcutsTable(Resource):
     def actions(self) -> list[ActionShortcut]:
         """Read only."""
         return self.fields["actions"]
+    @property
+    def commands(self) -> list[MovedCommand]:
+        """Read only."""
+        return self.fields["commands"]
 
 

@@ -123,6 +123,8 @@ so-tilo-settings-agent-models-undo-model = Modellwahl zurücknehmen
 so-tilo-settings-agent-models-redo-model = Modell erneut wählen
 
 settings-shortcuts-table = Tastenkürzel
+settings-languages = Sprachen
+settings-appearance-choose-language = Die Sprache wählen
 so-tilo-settings-agent-providers-add-provider = Anbieter hinzufügen
 so-tilo-settings-agent-providers-remove-provider = Anbieter entfernen
 so-tilo-settings-agent-providers-set-provider-enabled = Anbieter für Agenten freigeben

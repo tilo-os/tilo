@@ -79,6 +79,10 @@ pub(crate) struct Shared {
     /// The drives the person plugs in, when this session watches them.
     #[cfg(target_os = "linux")]
     pub(crate) drives: Option<Rc<crate::drives::Drives>>,
+    /// The keyboards, pointers and drawing tablets attached to this machine, as a worker read
+    /// them: what serves `session:input-devices`, and which keyboard typed last.
+    #[cfg(target_os = "linux")]
+    pub(crate) inputs: crate::input_devices::Inputs,
     /// What the session and the chrome asked of the session.
     pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// What the shell's send keys asked for, waiting for the pass that asks

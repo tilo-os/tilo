@@ -4,8 +4,8 @@
 
 use crate::model::{
     Accessory, Band, Bluetooth, Client, Connectivity, Link, Metered, Mobile, MobileProfile, Modem,
-    ModemUnit, Nearby, Network, SavedIpv4, SavedNetwork, Tethering, Vpn, VpnPluginKind, VpnProfile,
-    Wifi, WifiNetwork, Wired, ordered,
+    ModemUnit, Nearby, Network, NetworkWake, SavedIpv4, SavedNetwork, Tethering, Vpn,
+    VpnPluginKind, VpnProfile, Wifi, WifiNetwork, Wired, ordered,
 };
 
 /// A change to make on the device.
@@ -53,6 +53,16 @@ pub enum Change {
     Proxy {
         profile: String,
         server: Option<String>,
+    },
+    /// Wake this device when a wake packet arrives over a saved network, or stop.
+    Wake {
+        profile: String,
+        on: bool,
+    },
+    /// Share a saved Wi-Fi network's password with the person's other devices: only a device that
+    /// can seal it to them does ([`OsDevice`] cannot).
+    ShareWifi {
+        profile: String,
     },
     /// Type the mobile data profile's access point name, or choose it from
     /// the SIM's operator again.
@@ -252,6 +262,8 @@ fn with_settings(mut saved: SavedNetwork) -> SavedNetwork {
     saved.proxy = settings.proxy.and_then(|proxy| proxy.manual);
     saved.hidden = settings.hidden.unwrap_or_default();
     saved.ipv4 = settings.ipv4.as_ref().map(SavedIpv4::from);
+    saved.wake = read_or_log("network wake", os_actions::network_wake::status(&saved.id))
+        .map(|status| NetworkWake::from(&status));
     saved
 }
 
@@ -384,10 +396,7 @@ impl Device for OsDevice {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one arm per change the device makes"
-    )]
+    #[allow(clippy::too_many_lines, reason = "one arm per change the device makes")]
     fn change(&self, change: &Change) -> Result<(), String> {
         use os_actions::RadioChange;
         match change {
@@ -484,6 +493,13 @@ impl Device for OsDevice {
             }
             Change::WifiPassword { profile, password } => {
                 os_actions::network_settings::set_wifi_profile_password(profile, password)
+            }
+            Change::Wake { profile, on } => {
+                // A problem applying it after the profile saved is the reading's, not a refusal.
+                os_actions::network_wake::configure(profile, *on).map(|_| ())
+            }
+            Change::ShareWifi { .. } => {
+                Err("this device has no way to reach the person's other devices".to_owned())
             }
             Change::CreatePluginVpn {
                 service,

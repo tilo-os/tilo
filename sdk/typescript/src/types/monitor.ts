@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.monitor@83a7a73f63ad6390";
+export const SURFACE = "so.tilo.monitor@d2bd2a6aeb3f81a7";
 
 /** Notice — `tl.tilo.host.Notice`. */
 export interface Notice extends tilo.Resource {
@@ -49,6 +49,9 @@ export interface Row extends tilo.Resource {
   uoc4p4dx: unknown;  // process
   qwzsalow: number;  // depth
   "6waph57m": boolean;  // has_children
+  "22v7oibb": number;  // cpu
+  u6hj324t: number;  // memory_bytes
+  cwilirks: number;  // threads
 }
 
 /** The actions `Row` reaches before it is read: `ws` calls them without a
@@ -62,11 +65,16 @@ export function row(ws: tilo.Workspace, path: string): Row {
 
 /** Monitor — `tl.so.tilo.monitor.Monitor`. */
 export interface Monitor extends tilo.Resource {
+  /** Keeps this device's reading at the cadence the person watches it by. */
+  apply_cadence(args: {
+    ms: number;
+    paused: boolean;
+  }): Promise<void>;
 }
 
 /** The actions `Monitor` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MONITOR_ACTIONS = [] as const;
+export const MONITOR_ACTIONS = ["apply_cadence"] as const;
 
 /** The `tl.so.tilo.monitor.Monitor` kind at `path`. */
 export function monitor(ws: tilo.Workspace, path: string): Monitor {

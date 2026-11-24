@@ -157,6 +157,38 @@ pub struct SavedNetwork {
     pub hidden: bool,
     /// How its addresses are set; `None` when the device could not read them.
     pub ipv4: Option<SavedIpv4>,
+    /// Whether a wake packet over it wakes this device; `None` when the device could not read it.
+    pub wake: Option<NetworkWake>,
+}
+
+/// Whether a saved network wakes this device from sleep, as the device reports it.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct NetworkWake {
+    /// The network is set to wake this device.
+    pub on: bool,
+    /// The interface it wakes through, when it is up.
+    pub interface: Option<String>,
+    /// Whether the interface's driver can wake the device; `None` when it does not say.
+    pub supported: Option<bool>,
+    /// Whether the interface wakes the device now; `None` when it does not say.
+    pub applied: Option<bool>,
+    /// Why waking does not work as set.
+    pub problem: Option<String>,
+}
+
+impl From<&os_actions::network_wake::NetworkWakeStatus> for NetworkWake {
+    fn from(status: &os_actions::network_wake::NetworkWakeStatus) -> Self {
+        Self {
+            on: status.configured,
+            interface: status.interface.clone(),
+            supported: status.supported,
+            applied: status.applied,
+            problem: status.problem.clone(),
+        }
+    }
 }
 
 /// How a saved network's addresses are set.

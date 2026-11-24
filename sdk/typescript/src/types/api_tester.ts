@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.api-tester@9fba4a5e2e926436";
+export const SURFACE = "so.tilo.api-tester@49fd293a1113805a";
 
 /** How a request signs in. One of "none", "bearer", "basic", "api_key". */
 export type AuthScheme = "none" | "bearer" | "basic" | "api_key";
@@ -141,8 +141,13 @@ export interface SetSchemeArgs {
 export interface ForgetCredentialArgs {
 }
 
-/** The arguments of `send`. */
-export interface SendArgs {
+/** The arguments of `start_send`. */
+export interface StartSendArgs {
+}
+
+/** The arguments of `send_failed`. */
+export interface SendFailedArgs {
+  why: string;
 }
 
 /** The arguments of `cancel_send`. */
@@ -526,10 +531,22 @@ export interface Workspace extends tilo.Resource {
   forget_credential(): Promise<void>;
   /** Runs `forget_credential` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forget_credentialMany(items: ForgetCredentialArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Sends what the builder holds to the address it names, in the environment in use. */
-  send(): Promise<void>;
-  /** Runs `send` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  sendMany(items: SendArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sends what the builder holds to the address it names, in the environment in use, and answers the response the engine wrote: its status, status text, headers, size and body. An agent or a script calling `send` reads the answer in this one call instead of following a job. A person at the window sends with `start_send` instead, which starts the same request as a job they can stop while it waits: this action holds its caller until the answer arrives, so there is nothing to cancel, which is why the window never calls it for its Send control. */
+  send(): Promise<string>;
+  /** Starts what `send` sends as a job the person at the window can stop, and leaves its answer to `trigger watch_send`. A person pressing Send must be able to stop waiting, which an action that waits for the answer cannot do; a caller that needs the answer in the call uses `send`. */
+  start_send(): Promise<void>;
+  /** Runs `start_send` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  start_sendMany(items: StartSendArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Ends a send that got no answer from the engine, saying why in the window. */
+  send_failed(args: {
+    why: string;
+  }): Promise<void>;
+  /** Runs `send_failed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  send_failedMany(items: SendFailedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Folds what a send's job said of itself into the window, and answers the response the job brought when it came back with one. */
+  settle_send(args: {
+    state: string;
+  }): Promise<string>;
   /** Stops waiting for the service to answer. */
   cancel_send(): Promise<void>;
   /** Runs `cancel_send` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -586,7 +603,7 @@ export interface Workspace extends tilo.Resource {
 
 /** The actions `Workspace` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACE_ACTIONS = ["new_request", "new_collection", "delete_collection", "delete_collectionMany", "save_request", "open_request", "open_requestMany", "rename_draft", "rename_draftMany", "delete_request", "delete_requestMany", "delete_opened_request", "delete_opened_requestMany", "new_environment", "delete_environment", "delete_environmentMany", "delete_active_environment", "delete_active_environmentMany", "use_environment", "use_environmentMany", "no_environment", "no_environmentMany", "keep_credential", "keep_credentialMany", "set_scheme", "set_schemeMany", "forget_credential", "forget_credentialMany", "send", "sendMany", "cancel_send", "cancel_sendMany", "poll_send", "poll_sendMany", "open_sent", "open_sentMany", "save_sent", "delete_sent", "delete_sentMany", "copy_body", "copy_headers", "copy_request", "dismiss_notice", "dismiss_noticeMany", "keep_answer", "keep_answerMany", "record_sent", "record_sentMany", "set_body_mode", "set_body_modeMany"] as const;
+export const WORKSPACE_ACTIONS = ["new_request", "new_collection", "delete_collection", "delete_collectionMany", "save_request", "open_request", "open_requestMany", "rename_draft", "rename_draftMany", "delete_request", "delete_requestMany", "delete_opened_request", "delete_opened_requestMany", "new_environment", "delete_environment", "delete_environmentMany", "delete_active_environment", "delete_active_environmentMany", "use_environment", "use_environmentMany", "no_environment", "no_environmentMany", "keep_credential", "keep_credentialMany", "set_scheme", "set_schemeMany", "forget_credential", "forget_credentialMany", "send", "start_send", "start_sendMany", "send_failed", "send_failedMany", "settle_send", "cancel_send", "cancel_sendMany", "poll_send", "poll_sendMany", "open_sent", "open_sentMany", "save_sent", "delete_sent", "delete_sentMany", "copy_body", "copy_headers", "copy_request", "dismiss_notice", "dismiss_noticeMany", "keep_answer", "keep_answerMany", "record_sent", "record_sentMany", "set_body_mode", "set_body_modeMany"] as const;
 
 /** The `tl.so.tilo.api-tester.Workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {

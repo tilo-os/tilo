@@ -50,8 +50,15 @@ use ui::vello::kurbo::Rect;
 /// over, and of the display when that window is not on the shell.
 const PICTURE_MARGIN: f64 = 16.0;
 
+/// A window the compositor lists, and the rect it draws in, in the layout's coordinates.
+type ListedWindow = (tilo_compositor::WindowInfo, (i32, i32, i32, i32));
+
 /// `at` moved no farther than it must to stand on the outputs the person has: a floating picture
 /// is clamped to what they can see.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "a place moved by whole logical pixels on a display"
+)]
 fn on_outputs(at: Rect, outputs: Vec<tilo_compositor::OutputInfo>) -> Rect {
     let mut area: Option<Rect> = None;
     for output in outputs {
@@ -727,7 +734,7 @@ impl AppTabs {
         &self,
         card: &crate::cards::Presented,
         shown: &BTreeMap<u64, Rect>,
-        windows: &[(tilo_compositor::WindowInfo, (i32, i32, i32, i32))],
+        windows: &[ListedWindow],
         compositor: &Compositor,
     ) -> Option<Rect> {
         if card.role != FloatingSurfaceProtocolRole::PictureInPicture {

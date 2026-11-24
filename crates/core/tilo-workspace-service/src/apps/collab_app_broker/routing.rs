@@ -184,7 +184,6 @@ impl AppBrokerState {
             | CollabEvent::ActionVerdicts { .. }
             | CollabEvent::RetiredNearbyTransferCommandResult { .. }
             | CollabEvent::RetiredNearbyTransferChanged
-            | CollabEvent::Realtime(_)
             | CollabEvent::DocumentContent { .. }
             | CollabEvent::DocumentContentState { .. }
             | CollabEvent::RemoteAction { .. } => {

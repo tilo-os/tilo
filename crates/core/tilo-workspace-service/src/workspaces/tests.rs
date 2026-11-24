@@ -21,6 +21,7 @@ pub(crate) mod large_document;
 mod link_windows;
 #[cfg(feature = "agents")]
 mod lookup;
+mod naming;
 mod one_copy_two_writers;
 mod restart_parts;
 

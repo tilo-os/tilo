@@ -36,6 +36,12 @@ __all__ = [
     "DeleteRowArgs",
     "DeleteColumnArgs",
     "DeleteTableArgs",
+    "WriteCellArgs",
+    "SetStyleLookArgs",
+    "SetStyleInkArgs",
+    "NewStyleArgs",
+    "DuplicateStyleArgs",
+    "DeleteStyleArgs",
     "SetPageMarginsArgs",
     "SetPaperArgs",
     "SetPageWordsArgs",
@@ -94,26 +100,77 @@ InsertTableArgs = TypedDict("InsertTableArgs", {
 """The arguments of `insert_table`."""
 
 AddRowArgs = TypedDict("AddRowArgs", {
+    "row": NotRequired["int | None"],
+    "table": NotRequired["int | None"],
 })
 """The arguments of `add_row`."""
 
 AddColumnArgs = TypedDict("AddColumnArgs", {
+    "column": NotRequired["int | None"],
+    "table": NotRequired["int | None"],
 })
 """The arguments of `add_column`."""
 
 DeleteRowArgs = TypedDict("DeleteRowArgs", {
     "row": "int",
+    "table": NotRequired["int | None"],
 })
 """The arguments of `delete_row`."""
 
 DeleteColumnArgs = TypedDict("DeleteColumnArgs", {
     "column": "int",
+    "table": NotRequired["int | None"],
 })
 """The arguments of `delete_column`."""
 
 DeleteTableArgs = TypedDict("DeleteTableArgs", {
+    "table": NotRequired["int | None"],
 })
 """The arguments of `delete_table`."""
+
+WriteCellArgs = TypedDict("WriteCellArgs", {
+    "row": "int",
+    "column": "int",
+    "text": "str",
+    "table": NotRequired["int | None"],
+})
+"""The arguments of `write_cell`."""
+
+SetStyleLookArgs = TypedDict("SetStyleLookArgs", {
+    "style": "str",
+    "font": NotRequired["str | None"],
+    "size": NotRequired["float | None"],
+    "bold": NotRequired["bool | None"],
+    "italic": NotRequired["bool | None"],
+    "color": NotRequired["str | None"],
+    "align": NotRequired["str | None"],
+    "before": NotRequired["float | None"],
+    "after": NotRequired["float | None"],
+    "indent": NotRequired["float | None"],
+})
+"""The arguments of `set_style_look`."""
+
+SetStyleInkArgs = TypedDict("SetStyleInkArgs", {
+    "style": "str",
+    "swatch": "int",
+})
+"""The arguments of `set_style_ink`."""
+
+NewStyleArgs = TypedDict("NewStyleArgs", {
+    "name": "str",
+    "from": NotRequired["str | None"],
+})
+"""The arguments of `new_style`."""
+
+DuplicateStyleArgs = TypedDict("DuplicateStyleArgs", {
+    "style": "str",
+})
+"""The arguments of `duplicate_style`."""
+
+DeleteStyleArgs = TypedDict("DeleteStyleArgs", {
+    "style": "str",
+})
+"""The arguments of `delete_style`."""
 
 SetPageMarginsArgs = TypedDict("SetPageMarginsArgs", {
     "top": "float",
@@ -176,7 +233,7 @@ ReactArgs = TypedDict("ReactArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.word-processor@78785339f6d9571e"
+    __surface__ = "so.tilo.word-processor@554a1c0b462fbcb3"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -237,7 +294,7 @@ class Notice(Resource):
 
 class Document(Resource):
     """Document — `tl.so.tilo.word-processor.Document`."""
-    __surface__ = "so.tilo.word-processor@78785339f6d9571e"
+    __surface__ = "so.tilo.word-processor@554a1c0b462fbcb3"
     @property
     def _76ypz5mr(self) -> str:
         """title (`76ypz5mr` on the wire)."""
@@ -371,7 +428,7 @@ class Document(Resource):
         replace: str,
         all: bool | None = None,
     ) -> None:
-        """Finds `find` in the document and replaces the first of it, or every one, with `replace`. A paragraph's marks stay around the words that stay."""
+        """Finds `find` in the document and replaces the first of it, or every one, with `replace`. The words are replaced where they stand, as the editor replaces them: a paragraph's marks, its formatting and the comments anchored in it stay around the words that stay."""
         args: dict[str, Any] = {}
         args["find"] = find
         args["replace"] = replace
@@ -400,45 +457,189 @@ class Document(Resource):
         """Runs `insert_table` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("insert_table", items)
 
-    def add_row(self) -> None:
-        """Adds a row like the last of the document's first table, under it."""
-        return self.action("add_row")
+    def add_row(self,
+        *,
+        row: int | None = None,
+        table: int | None = None,
+    ) -> None:
+        """Adds a blank row to a table of the document, under the row `row` counted from its head at 1, or under its last row. Only that table changes, as a row added in the editor's grid does."""
+        args: dict[str, Any] = {}
+        if row is not None:
+            args["row"] = row
+        if table is not None:
+            args["table"] = table
+        return self.action("add_row", **args)
 
     def add_row_many(self, items: list[AddRowArgs]) -> list[dict[str, Any]]:
         """Runs `add_row` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add_row", items)
 
-    def add_column(self) -> None:
-        """Adds a cell to every row of the document's first table."""
-        return self.action("add_column")
+    def add_column(self,
+        *,
+        column: int | None = None,
+        table: int | None = None,
+    ) -> None:
+        """Adds a blank column to a table of the document, right of the column `column` counted from its left at 1, or right of its last."""
+        args: dict[str, Any] = {}
+        if column is not None:
+            args["column"] = column
+        if table is not None:
+            args["table"] = table
+        return self.action("add_column", **args)
 
     def add_column_many(self, items: list[AddColumnArgs]) -> list[dict[str, Any]]:
         """Runs `add_column` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add_column", items)
 
-    def delete_row(self, *, row: int) -> None:
-        """Deletes a row of the document's first table, counted from its head at 1."""
-        return self.action("delete_row", row=row)
+    def delete_row(self,
+        *,
+        row: int,
+        table: int | None = None,
+    ) -> None:
+        """Deletes a row of a table of the document, counted from its head at 1."""
+        args: dict[str, Any] = {}
+        args["row"] = row
+        if table is not None:
+            args["table"] = table
+        return self.action("delete_row", **args)
 
     def delete_row_many(self, items: list[DeleteRowArgs]) -> list[dict[str, Any]]:
         """Runs `delete_row` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete_row", items)
 
-    def delete_column(self, *, column: int) -> None:
-        """Deletes a column of the document's first table, counted from its left at 1."""
-        return self.action("delete_column", column=column)
+    def delete_column(self,
+        *,
+        column: int,
+        table: int | None = None,
+    ) -> None:
+        """Deletes a column of a table of the document, counted from its left at 1."""
+        args: dict[str, Any] = {}
+        args["column"] = column
+        if table is not None:
+            args["table"] = table
+        return self.action("delete_column", **args)
 
     def delete_column_many(self, items: list[DeleteColumnArgs]) -> list[dict[str, Any]]:
         """Runs `delete_column` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete_column", items)
 
-    def delete_table(self) -> None:
-        """Deletes the document's first table and everything it holds."""
-        return self.action("delete_table")
+    def delete_table(self,
+        *,
+        table: int | None = None,
+    ) -> None:
+        """Deletes a table of the document and everything it holds; the words around it stay."""
+        args: dict[str, Any] = {}
+        if table is not None:
+            args["table"] = table
+        return self.action("delete_table", **args)
 
     def delete_table_many(self, items: list[DeleteTableArgs]) -> list[dict[str, Any]]:
         """Runs `delete_table` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete_table", items)
+
+    def write_cell(self,
+        *,
+        row: int,
+        column: int,
+        text: str,
+        table: int | None = None,
+    ) -> None:
+        """Writes `text` in one cell of a table of the document, at `row` counted from its head at 1 and `column` from its left at 1: that cell's words change and nothing else does, as typing in the editor's grid changes them."""
+        args: dict[str, Any] = {}
+        args["row"] = row
+        args["column"] = column
+        args["text"] = text
+        if table is not None:
+            args["table"] = table
+        return self.action("write_cell", **args)
+
+    def write_cell_many(self, items: list[WriteCellArgs]) -> list[dict[str, Any]]:
+        """Runs `write_cell` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("write_cell", items)
+
+    def set_style_look(self,
+        *,
+        style: str,
+        font: str | None = None,
+        size: float | None = None,
+        bold: bool | None = None,
+        italic: bool | None = None,
+        color: str | None = None,
+        align: str | None = None,
+        before: float | None = None,
+        after: float | None = None,
+        indent: float | None = None,
+    ) -> None:
+        """Changes how the named style `style` looks: its face (sans, serif or mono), its size in points, whether it is bold or italic, its colour (#rrggbb), how its lines align (left, center, right, justify), and the space before and after it and its indent, in points. What is left out stays as it was. The style is the document's own, so every paragraph set in it changes at once, on every device, and the change is one a person takes back."""
+        args: dict[str, Any] = {}
+        args["style"] = style
+        if font is not None:
+            args["font"] = font
+        if size is not None:
+            args["size"] = size
+        if bold is not None:
+            args["bold"] = bold
+        if italic is not None:
+            args["italic"] = italic
+        if color is not None:
+            args["color"] = color
+        if align is not None:
+            args["align"] = align
+        if before is not None:
+            args["before"] = before
+        if after is not None:
+            args["after"] = after
+        if indent is not None:
+            args["indent"] = indent
+        return self.action("set_style_look", **args)
+
+    def set_style_look_many(self, items: list[SetStyleLookArgs]) -> list[dict[str, Any]]:
+        """Runs `set_style_look` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_style_look", items)
+
+    def set_style_ink(self,
+        *,
+        style: str,
+        swatch: int,
+    ) -> None:
+        """Sets the ink of the named style `style` to one of the inks the page offers, counted from 0 in the order its colour swatches show them: the page's black and greys, then blue, green, ochre, red, violet and pink."""
+        return self.action("set_style_ink", style=style, swatch=swatch)
+
+    def set_style_ink_many(self, items: list[SetStyleInkArgs]) -> list[dict[str, Any]]:
+        """Runs `set_style_ink` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_style_ink", items)
+
+    def new_style(self,
+        *,
+        name: str,
+        from_: str | None = None,
+    ) -> None:
+        """Makes a new named style called `name`, looking as the style `from` does: a person sets paragraphs in it and changes its look without touching the styles every document has."""
+        args: dict[str, Any] = {}
+        args["name"] = name
+        if from_ is not None:
+            args["from"] = from_
+        return self.action("new_style", **args)
+
+    def new_style_many(self, items: list[NewStyleArgs]) -> list[dict[str, Any]]:
+        """Runs `new_style` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("new_style", items)
+
+    def duplicate_style(self, *, style: str) -> None:
+        """Makes a copy of the named style `style`, called '`style` copy', to change apart from it."""
+        return self.action("duplicate_style", style=style)
+
+    def duplicate_style_many(self, items: list[DuplicateStyleArgs]) -> list[dict[str, Any]]:
+        """Runs `duplicate_style` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("duplicate_style", items)
+
+    def delete_style(self, *, style: str) -> None:
+        """Deletes a style the document made: its paragraphs go back to the body's look. The styles every document has (Body, the headings, Quote and List item) stay."""
+        return self.action("delete_style", style=style)
+
+    def delete_style_many(self, items: list[DeleteStyleArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_style` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_style", items)
 
     def set_page_margins(self,
         *,
@@ -603,10 +804,10 @@ class Document(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "new_document", "dismiss_notice", "dismiss_notice_many", "append_paragraph", "append_paragraph_many", "replace_body", "replace_body_many", "read_content", "replace_text", "replace_text_many", "insert_table", "insert_table_many", "add_row", "add_row_many", "add_column", "add_column_many", "delete_row", "delete_row_many", "delete_column", "delete_column_many", "delete_table", "delete_table_many", "set_page_margins", "set_page_margins_many", "set_paper", "set_paper_many", "set_page_words", "set_page_words_many", "generate_toc", "generate_toc_many", "set_hyperlink", "set_hyperlink_many", "insert_page_break", "insert_page_break_many", "paste", "paste_many", "replace_selection", "replace_selection_many", "place_image", "place_image_many", "share_image", "delete_image", "delete_image_many", "react", "react_many", "comment_on", "open_document", "export_content", "export_text", "export_document", "export_html", "read_file"})
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "new_document", "dismiss_notice", "dismiss_notice_many", "append_paragraph", "append_paragraph_many", "replace_body", "replace_body_many", "read_content", "replace_text", "replace_text_many", "insert_table", "insert_table_many", "add_row", "add_row_many", "add_column", "add_column_many", "delete_row", "delete_row_many", "delete_column", "delete_column_many", "delete_table", "delete_table_many", "write_cell", "write_cell_many", "set_style_look", "set_style_look_many", "set_style_ink", "set_style_ink_many", "new_style", "new_style_many", "duplicate_style", "duplicate_style_many", "delete_style", "delete_style_many", "set_page_margins", "set_page_margins_many", "set_paper", "set_paper_many", "set_page_words", "set_page_words_many", "generate_toc", "generate_toc_many", "set_hyperlink", "set_hyperlink_many", "insert_page_break", "insert_page_break_many", "paste", "paste_many", "replace_selection", "replace_selection_many", "place_image", "place_image_many", "share_image", "delete_image", "delete_image_many", "react", "react_many", "comment_on", "open_document", "export_content", "export_text", "export_document", "export_html", "read_file"})
 
 
 class WordProcessor(Resource):
     """Writer — `tl.so.tilo.word-processor`."""
-    __surface__ = "so.tilo.word-processor@78785339f6d9571e"
+    __surface__ = "so.tilo.word-processor@554a1c0b462fbcb3"
 

@@ -511,15 +511,18 @@ fn host_workspace_params() -> Vec<ActionParam> {
             ParamType::Integer,
             "The workspace's transport shard.",
         ),
-        ActionParam::required(
+        ActionParam::optional(
             "holder_hint",
             ParamType::Text,
-            "The handing holder's signed address for the workspace, postcard in hex.",
+            "The handing holder's signed address for the workspace, postcard in hex: with \
+             `bootstrap`, the hand-over.",
         ),
-        ActionParam::required(
+        ActionParam::optional(
             "bootstrap",
             ParamType::Text,
-            "The workspace as a joining member gets it, this host's device admitted, postcard in hex.",
+            "The workspace as a joining member gets it, this host's device admitted, postcard in \
+             hex. Without it, the host answers the address it signs for the workspace and takes \
+             nothing in.",
         ),
     ]
 }
@@ -1624,25 +1627,43 @@ impl Workspaces {
             ServiceOperation::HostWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
+                let workspace_id = WorkspaceId::parse(args.required_text("workspace_id")?)
+                    .ok_or_else(|| {
+                        ActionCallError::invalid_request("`workspace_id` is a workspace id")
+                    })?;
+                let role = serde_json::from_value::<tilo_peer_state::CopyRole>(Value::String(
+                    args.required_text("role")?.to_owned(),
+                ))
+                .map_err(|_| {
+                    ActionCallError::invalid_request("`role` is `key_holder` or `store`")
+                })?;
+                // Asked with no hand-over, the call names no workspace to keep: it
+                // asks the address this host signs for it, which the owner's device
+                // names it by in the change it hands over with.
+                let Some(bootstrap) = args.text("bootstrap")? else {
+                    if args.text("holder_hint")?.is_some() {
+                        return Err(ActionCallError::invalid_request(
+                            "a hand-over names both `holder_hint` and `bootstrap`",
+                        ));
+                    }
+                    let hint = self
+                        .host_address(workspace_id, role)
+                        .map_err(|error| ActionCallError::refused(error.to_string()))?;
+                    return answer(&HostedWorkspace {
+                        host_hint: hex_postcard(&hint)?,
+                    });
+                };
                 let request = super::super::HostWorkspaceRequest {
                     workspace: args.required_text("workspace")?.to_owned(),
-                    workspace_id: WorkspaceId::parse(args.required_text("workspace_id")?)
-                        .ok_or_else(|| {
-                            ActionCallError::invalid_request("`workspace_id` is a workspace id")
-                        })?,
+                    workspace_id,
                     holder_hint: super::super::decode_hex(args.required_text("holder_hint")?)
                         .map_err(|error| {
                             ActionCallError::invalid_request(format!("`holder_hint`: {error}"))
                         })?,
-                    bootstrap: super::super::decode_hex(args.required_text("bootstrap")?).map_err(
-                        |error| ActionCallError::invalid_request(format!("`bootstrap`: {error}")),
-                    )?,
-                    role: serde_json::from_value(Value::String(
-                        args.required_text("role")?.to_owned(),
-                    ))
-                    .map_err(|_| {
-                        ActionCallError::invalid_request("`role` is `key_holder` or `store`")
+                    bootstrap: super::super::decode_hex(bootstrap).map_err(|error| {
+                        ActionCallError::invalid_request(format!("`bootstrap`: {error}"))
                     })?,
+                    role,
                 };
                 Box::pin(self.kept_for(device, &request, now))
                     .await

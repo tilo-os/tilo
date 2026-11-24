@@ -27,8 +27,7 @@ use tilo_workspace_keys::KeyProvider;
 use tilo_workspace_service::apps::services::{
     AudioOutputServices, BrowserServiceSessionServices, DisplayControlServices,
     FileClipboardServices, LauncherServices, ProcessServices, PublishedResources,
-    RealtimeServices, ShortcutLibraryServices, WifiContinuityServices, WorkspaceControlServices,
-    WorkspaceGrants, WorkspaceMemberships,
+    ShortcutLibraryServices, WorkspaceControlServices, WorkspaceGrants, WorkspaceMemberships,
 };
 
 /// What this session serves of one service.
@@ -130,11 +129,9 @@ broker_services! {
     document_index_changes: Arc<dyn DocumentIndexChanges>,
     content_store: Arc<dyn ContentStoreServices>,
     workspace_control: Arc<dyn WorkspaceControlServices>,
-    realtime: Arc<dyn RealtimeServices>,
     settings: Arc<dyn settings_store::SettingsSource>,
     display_control: Arc<dyn DisplayControlServices>,
     live_activities: Arc<runtime_collab::LiveActivities>,
-    wifi_continuity: Arc<dyn WifiContinuityServices>,
     browser_service_sessions: Arc<dyn BrowserServiceSessionServices>,
     file_clipboard: Arc<dyn FileClipboardServices>,
     app_action_access: tilo_broker_core::access::AppActionAccessResolver,
@@ -258,10 +255,6 @@ pub(crate) const EVERY_APP: &[&str] = &["published", "settings", "launcher"];
 /// is found by the guard.
 #[cfg(test)]
 pub(crate) const CALLED_SERVICES: &[(&str, &str)] = &[
-    (
-        "ui::collaboration::wifi_continuity_command",
-        "wifi_continuity",
-    ),
     ("ui::collaboration::display_control", "display_control"),
     (
         "ui::collaboration::browser_service_sessions",

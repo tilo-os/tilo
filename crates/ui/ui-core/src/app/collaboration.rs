@@ -767,7 +767,6 @@ impl App {
                 | CollabEvent::WorkspaceControl { .. }
                 | CollabEvent::ResourceCommandResult { .. }
                 | CollabEvent::RecordsMoved { .. }
-                | CollabEvent::Realtime(_)
         )
     }
     fn apply_collab_presence_event(&mut self, event: CollabEvent) {
@@ -858,8 +857,7 @@ impl App {
             // A window that holds the workspace's documents applies each as it arrives from
             // the broker; only a window that reads the store, as a tilolang app's window does,
             // re-reads the records named.
-            | CollabEvent::RecordsMoved { .. }
-            | CollabEvent::Realtime(_) => {}
+            | CollabEvent::RecordsMoved { .. } => {}
         }
     }
 

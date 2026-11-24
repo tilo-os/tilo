@@ -33,8 +33,6 @@ use std::collections::VecDeque;
 use std::fs::File;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
-#[cfg(windows)]
-use std::os::windows::io::OwnedHandle;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::OnceLock;
@@ -295,37 +293,9 @@ impl Filter {
 const MAX_FDS_PER_MESSAGE: usize = 64;
 
 /// A descriptor handed with a reply: an open file or folder, whatever the app's sandbox did not
-/// let it reach by path. A Unix host hands the file descriptor itself; a Windows host its handle,
-/// carried over the connection the launcher made for the app. Both become the same file.
-#[cfg(unix)]
-#[derive(Debug)]
-pub(crate) struct Descriptor(std::os::fd::OwnedFd);
-
-#[cfg(windows)]
-#[derive(Debug)]
-pub(crate) struct Descriptor(OwnedHandle);
-
-impl Descriptor {
-    /// The file this descriptor holds open.
-    #[must_use]
-    pub(crate) fn into_file(self) -> File {
-        File::from(self.0)
-    }
-}
-
-#[cfg(unix)]
-impl From<std::os::fd::OwnedFd> for Descriptor {
-    fn from(fd: std::os::fd::OwnedFd) -> Self {
-        Self(fd)
-    }
-}
-
-#[cfg(windows)]
-impl From<OwnedHandle> for Descriptor {
-    fn from(handle: OwnedHandle) -> Self {
-        Self(handle)
-    }
-}
+/// let it reach by path. It is the platform's one descriptor type ([`tilo_socket::Descriptor`]):
+/// a file descriptor on Unix and a handle on Windows, and either becomes the file it holds open.
+pub(crate) use tilo_socket::Descriptor;
 
 type Answer = Box<dyn FnOnce(Reply, Vec<Descriptor>) + Send>;
 
@@ -646,7 +616,7 @@ fn write_piece(stream: &Stream, bytes: &[u8], fds: &[Descriptor]) -> std::io::Re
             ) as usize;
             let data = libc::CMSG_DATA(header).cast::<RawFd>();
             for (at, fd) in fds.iter().enumerate() {
-                *data.add(at) = fd.0.as_raw_fd();
+                *data.add(at) = fd.as_raw_fd();
             }
         }
     }

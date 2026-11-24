@@ -1127,8 +1127,12 @@ pub const LIST_REVOCATIONS: &str = "identity.revocations";
 /// Hold a workspace another host holds, as that holder asks: arguments
 /// `workspace`, `workspace_id`, `holder_hint` (the handing holder's
 /// signed address) and `bootstrap` (the workspace as a joining member gets it,
-/// the host's device admitted), each signed value postcard in hex. Only a
-/// certified host serves workspaces this way. Answers a [`HostedWorkspace`].
+/// the host's device admitted), each signed value postcard in hex. The
+/// hand-over carries the owner's change naming the host among the workspace's
+/// holders, and a hand-over without it is refused. Asked with `workspace`,
+/// `workspace_id` and `role` alone, it takes nothing in and answers the
+/// address the host signs for the workspace. Only a certified host serves
+/// workspaces this way. Answers a [`HostedWorkspace`].
 pub const HOST_WORKSPACE: &str = "workspace.host";
 /// Let `workspace` go, as its owners ask. Answers `{"stopped": bool}`.
 pub const UNHOST_WORKSPACE: &str = "workspace.unhost";

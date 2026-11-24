@@ -415,6 +415,13 @@ impl Connectivity {
                 profile: profile.to_owned(),
                 server: proxy(server)?,
             },
+            SavedNetworkAction::SetWake { on } => Change::Wake {
+                profile: profile.to_owned(),
+                on,
+            },
+            SavedNetworkAction::ShareWithDevices => Change::ShareWifi {
+                profile: profile.to_owned(),
+            },
         };
         Ok(self.start(Part::Network, id, change))
     }
@@ -929,6 +936,8 @@ fn network_children(network: &Network) -> impl Iterator<Item = ResourceSpec> + '
             .bind(SavedNetworkAction::SET_AUTOCONNECT, NO_ARGUMENTS)
             .bind(SavedNetworkAction::FORGET, NO_ARGUMENTS)
             .bind(SavedNetworkAction::SET_PROXY, NO_ARGUMENTS)
+            .bind(SavedNetworkAction::SET_WAKE, NO_ARGUMENTS)
+            .bind(SavedNetworkAction::SHARE_WITH_DEVICES, NO_ARGUMENTS)
             .bind(
                 NetworkAction::SET_NETWORK_IPV4,
                 [("profile", profile_id.clone())],
