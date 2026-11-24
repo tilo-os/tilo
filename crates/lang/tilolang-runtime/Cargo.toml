@@ -122,6 +122,7 @@ diffmerge-engine = { path = "../../engines/diffmerge-engine" }
 tilo-chip-design-engine = { path = "../../engines/tilo-chip-design-engine" }
 # YouTube's Grayjay link, and the Grayjay side of a pairing a test runs in this process.
 tilolang-grayjay = { path = "../../integrations/tilolang-grayjay", features = ["testing"] }
+totp-engine = { path = "../../engines/totp-engine" }
 tilo-content = { path = "../../core/content" }
 tilo-wake = { path = "../../platform/tilo-wake" }
 

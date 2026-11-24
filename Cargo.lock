@@ -20319,6 +20319,7 @@ dependencies = [
  "tilolang-youtube",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
+ "totp-engine",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -22218,6 +22219,7 @@ dependencies = [
  "tilolang-tilo",
  "tilolang-youtube",
  "tokio",
+ "totp-engine",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -22276,6 +22278,7 @@ dependencies = [
  "tilolang",
  "tilolang-grayjay",
  "tilolang-tilo",
+ "totp-engine",
  "tracing",
  "wasmi",
  "wasmtime",
@@ -22840,33 +22843,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
-name = "totp"
+name = "totp-engine"
 version = "0.1.0"
 dependencies = [
  "data-encoding",
  "data-encoding-macro",
- "hmac 0.13.0",
  "image",
  "qrcode",
  "rqrr",
- "runtime-dylib",
  "serde",
  "serde_json",
- "sha1 0.11.0",
- "sha2 0.11.0",
- "tilo-actions",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-automerge-fork",
- "tilo-dialogs",
- "tilo-history",
- "tilo-taffy",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "uuid",
+ "tilo-image-codec",
+ "tilo-resource",
+ "tilo-test-env",
+ "tilolang-tilo",
  "workspace-hack",
- "zeroize",
 ]
 
 [[package]]
@@ -27656,7 +27647,6 @@ dependencies = [
  "toml_parser",
  "toml_write",
  "toml_writer",
- "totp",
  "tower",
  "tower-http",
  "tower-layer",

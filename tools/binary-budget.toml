@@ -53,5 +53,4 @@
 "terminal" = 22   # 19.1 MB
 "tilolang" = 30   # not yet measured on a release build
 "tinker" = 2   # 1.1 MB
-"totp" = 25   # 21.6 MB
 "weather" = 26   # 22.6 MB

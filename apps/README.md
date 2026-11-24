@@ -187,7 +187,6 @@ touch. Expanded neighbouring targets must not overlap.
 | `themes`       | Theme studio: browse presets, edit the OS token set live, duplicate/export themes.                                                                                                                      |
 | `store`        | Unified Tilo app store: verified registry packages plus Flatpak/Flathub search, details, remotes, install, update, launch, and removal.                                                                 |
 | `vpn`          | WireGuard / OpenVPN client: saved connection fleet, live detail pane with animated throughput chart.                                                                                                    |
-| `totp`         | 2FA authenticator ("Authenticator"): RFC 6238 TOTP on RustCrypto HMAC/SHA, QR import (rqrr), XChaCha20-Poly1305 encrypted-at-rest vault.                                                                |
 | `osk`          | On-screen keyboard: data-driven layouts, responsive sizing, SHARK²/FUTO swipe-typing (`swipe` crate, ExecuTorch FFI), text injection via `virtual-keyboard-v1`. Foundation for the Tilo phone keyboard. |
 
 ## Developer tools
@@ -210,7 +209,6 @@ All apps are workspace members; build from the repo root. See
 
 ```bash
 cargo build -p terminal -p file-explorer -p calculator
-cargo run -p totp -- --shots out.png             # headless offscreen frame
 ```
 
 Each app depends on the public SDK under the concise source name

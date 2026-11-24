@@ -78,8 +78,8 @@ t cargo build --locked -p example-counter
 t cargo test --locked -p example-counter
 ```
 
-For an app, `t cargo build --locked -p totp` builds it on the server, and
-`cargo desktop --apps "totp"` opens the desktop with it here (replace `totp`
+For an app, `t cargo build --locked -p poker` builds it on the server, and
+`cargo desktop --apps "poker"` opens the desktop with it here (replace `poker`
 with the package name of the app you changed). Append a test name to `t cargo
 test` to select only that test.
 

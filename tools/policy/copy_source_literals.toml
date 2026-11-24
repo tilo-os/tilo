@@ -61,11 +61,6 @@ file = "apps/terminal/src/main_body.rs"
 text = "Writing"
 reason = "A name the headless harness gives a new environment, never a person's own window."
 
-[[allow]]
-file = "apps/totp/src/list.rs"
-text = "Ag"
-reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
-
 # The session's capture fixtures: the words a screenshot poses, drawn for a
 # picture or a test, never in a window a person works in.
 

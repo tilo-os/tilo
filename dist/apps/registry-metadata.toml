@@ -83,8 +83,8 @@ description = "Discover and open the apps of your workspace from the signed Tilo
 description = "Track the workspace's issues on a list and a board, and hand them to agents."
 [apps.terminal]
 description = "A capable terminal that belongs naturally in your Tilo workspace."
-[apps.totp]
-description = "Generate time-based verification codes without losing your flow."
+[apps.themes]
+description = "Explore and shape the colors and appearance of your desktop."
 [apps.typst-editor]
 description = "Write polished Typst documents with a native editing workspace."
 [apps.weather]

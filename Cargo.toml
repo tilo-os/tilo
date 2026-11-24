@@ -80,6 +80,7 @@ members = [
     "crates/engines/disk-usage",
     "crates/engines/hex-engine",
     "crates/engines/diffmerge-engine",
+    "crates/engines/totp-engine",
     "crates/integrations/tilo-messaging",
     "crates/core/broker-core",
     "crates/core/workspace-keys",
@@ -108,7 +109,6 @@ members = [
     "apps/slides",
     "apps/staging-handoff-model",
     "apps/terminal",
-    "apps/totp",
 
     # Agent
     "crates/core/agent-session",
