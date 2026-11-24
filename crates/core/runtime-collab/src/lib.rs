@@ -342,7 +342,7 @@ pub(crate) fn valid_uuid(value: &str) -> bool {
     value.len() == 36 && uuid::Uuid::try_parse(value).is_ok()
 }
 
-/// Where one AirDrop attempt stands, as the seat reports it.
+/// Where one `AirDrop` attempt stands, as the seat reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NearbyTransferPhase {
