@@ -313,7 +313,7 @@ impl SealedFileProvider {
     }
 
     /// The context a share is sealed under: its locator, so one share never opens as another.
-    fn context<'a>(locator: &'a str) -> tilo_seal::Context<'a> {
+    fn context(locator: &str) -> tilo_seal::Context<'_> {
         tilo_seal::Context::new(tilo_seal::Label::FileSecretStore, locator.as_bytes())
     }
 }
