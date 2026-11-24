@@ -647,6 +647,21 @@ d-bbuecgsi = Unterhaltung
     .w-this-can-t-be-undone = Das lässt sich nicht rückgängig machen.
     .w-it-stays-here-until-you-delete = Sie bleibt hier, bis du sie endgültig löschst.
     .w-delete-permanently = Endgültig löschen
+    .w-reply-all = Allen antworten
+    .w-forward = Weiterleiten
+    .w-flag = Markieren
+    .w-unflag = Markierung entfernen
+    .w-archive = Archivieren
+    .w-move-to-inbox = In den Posteingang
+    .w-mark-as-read = Als gelesen markieren
+    .w-mark-as-unread = Als ungelesen markieren
+    .w-more = Mehr
+    .w-snooze-an-hour = Eine Stunde zurückstellen
+    .w-snooze-until-tomorrow = Bis morgen zurückstellen
+    .w-bring-back = Zurückholen
+    .w-mute = Stumm schalten
+    .w-unmute = Nicht mehr stumm
+    .w-delete = Löschen
 
 d-krn2y5tw = Nachrichten der Unterhaltung
 
@@ -671,6 +686,7 @@ d-n2xgxnbw = Nachricht
     .w-copy-link = Link kopieren
 
 d-llqqdcy5 = Anhang-Chip
+    .w-save = Speichern
     .w-not-downloaded = { $name }, nicht heruntergeladen
 
 d-nxayphhi = Nachrichtendatei
@@ -731,6 +747,19 @@ d-lehcqyhl = Entwurf einer Nachricht~present
 
 d-d6irjool = Thread-Eintrag
     .w-preview = Vorschau
+    .w-flag = Markieren
+    .w-unflag = Markierung entfernen
+    .w-archive = Archivieren
+    .w-delete = Löschen
+    .w-delete-permanently = Endgültig löschen
+    .w-reply = Antworten
+    .w-reply-all = Allen antworten
+    .w-forward = Weiterleiten
+    .w-mark-as-read = Als gelesen markieren
+    .w-mark-as-unread = Als ungelesen markieren
+    .w-move-to-inbox = In den Posteingang
+    .w-mute = Stumm schalten
+    .w-snooze-an-hour = Eine Stunde zurückstellen
 
 d-u5uuebo4 = Inspizieren
     .w-no-subject = Kein Betreff
@@ -888,3 +917,12 @@ d-cj2mz2rq = Link kopieren~present
 d-gwzlmpqh = Vertrauenswürdige Absender
     .w-no-sender-s-pictures-are-always = Von keinem Absender werden Bilder immer angezeigt
     .w-ask-again = Wieder fragen
+
+d-h7kwugun = Anhang öffnen
+    .doc = Öffnet eine Datei, die eine Nachricht mitbrachte, in der App, die ihre Art öffnet, wie Files eine öffnet: die Datei erreicht die App als derselbe Inhalt, den beide lesen, nie als Pfad, den keiner hat.
+
+d-h7kwugun-name = Name
+
+d-hrcqmsg3 = Wartende Nachricht
+    .w-take-back = Zurücknehmen
+    .w-try-again = Erneut versuchen

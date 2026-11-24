@@ -440,7 +440,7 @@ action set_hold(m: Mail, seconds: Int) (icon: .clock, label: "Undo send time") {
 /// Asks the account's server for its mail now: what a person presses when the window says the
 /// server could not be reached, or that what it fetched could not be saved. The account says
 /// how it stands once it answers.
-action check_now(a: Account) (icon: .refresh, label: "Check now") {
+action check_now(a: Account) (icon: .refresh, label: "Check now", key: "F5") {
     outside("imap.check", a.key)
 }
 
@@ -558,7 +558,7 @@ fn native_draft(e: host.Earlier, at: Text, account: Text, answers: Text) -> List
 
 /// Starts a message. A message is written before the workspace has an account to send it from:
 /// it waits in Drafts, and goes once the person adds one.
-primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
+primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message", key: "Ctrl+N") {
     let from = m.accounts.first()?.key ?? ""
     m.drafts.insert(Draft(from: from, body: signature_of(m, from)))
 }
@@ -1291,6 +1291,19 @@ action attachment(m: Message, name: Text) -> File (icon: .download, label: "Save
     require m.attachments.any(f -> f.name == name) "It came with no {name}"
     require m.attachments.any(f -> f.name == name and on_device(f)) "{name} is not downloaded yet"
     m.attachments.find(f -> f.name == name and on_device(f)) ?? File.of_text(name, "")
+}
+
+/// Opens a file a message came with in the app that opens its kind, as Files opens one: the file
+/// reaches that app as the same content both read, never as a path neither has.
+action open_attachment(m: Message, name: Text) uses files (
+    icon: .external_link,
+    label: "Open attachment",
+) {
+    let held = attachment(m, name)
+    match File.open(held) {
+        .ok => {}
+        .err(_) => {}
+    }
 }
 
 /// Takes a file along with the message: one the person picks, or one an agent hands over. A
@@ -2039,7 +2052,7 @@ view unified(m: Mail) {
 }
 
 view recovered_mail(m: Mail) {
-    thread_list(m.recovered_mail.matching(""), more: .none)
+    thread_list(newest_first(m.recovered_mail.matching("")), more: .none)
 }
 
 /// The senders whose pictures are always shown, each by address, with the press that asks again
@@ -2074,6 +2087,35 @@ view outbox(m: Mail) {
     waiting_list(waiting_to_go(m))
 }
 
+/// A message waiting to go, in the outbox: its row, and what the window's word does with it. A
+/// message that has not left is taken back here, and one the server refused is tried again.
+view draft_item(d: Draft) {
+    draft_row(d)
+    if can_undo(d) {
+        ui.HoverToolbar {
+            ui.Button("Take back", icon: .undo_2, icon_only: true) {
+                on press: undo_send(d)
+            }
+        }
+        ui.ContextMenu {
+            ui.MenuItem("Take back", icon: .undo_2) {
+                on choose: undo_send(d)
+            }
+        }
+    } else if delivery(d)?.state == "rejected" {
+        ui.HoverToolbar {
+            ui.Button("Try again", icon: .refresh, icon_only: true) {
+                on press: retry(d)
+            }
+        }
+        ui.ContextMenu {
+            ui.MenuItem("Try again", icon: .refresh) {
+                on choose: retry(d)
+            }
+        }
+    }
+}
+
 view waiting_list(waiting: List<Draft>) {
     if waiting.is_empty() {
         ui.EmptyState("Nothing is waiting to be sent", icon: .send)
@@ -2083,7 +2125,7 @@ view waiting_list(waiting: List<Draft>) {
             on activate(x: Draft): open(x)
             for d in waiting {
                 ui.ListItem(item: d) {
-                    draft_row(d)
+                    draft_item(d)
                 }
             }
         }
@@ -2127,14 +2169,19 @@ view all_inboxes(m: Mail) {
     }
 }
 
+/// `threads` newest first, and conversations of the same moment in one order on every load: the
+/// keys they never change settle the tie, as a store read of the same moment in another order
+/// would otherwise list them.
+fn newest_first(threads: List<Thread>) -> List<Thread> {
+    threads.sort_by(t -> t.key).sort_by(t -> t.latest, desc)
+}
+
 /// Every account's conversations of the place `query`, newest first: the union a window over all
 /// the accounts reads, so a conversation of any of them stands in it and counts with the rest.
 /// Each account's list is taken newest first, as its collection is read, and the union again
 /// after the join.
 fn everywhere(m: Mail, query: Text) -> List<Thread> {
-    m.accounts
-        .flat_map(a -> a.threads.matching(query).sort_by(x -> x.latest, desc))
-        .sort_by(t -> t.latest, desc)
+    newest_first(m.accounts.flat_map(a -> newest_first(a.threads.matching(query))))
 }
 
 /// Every account's conversations of the place `query` as one list, newest first: what a window
@@ -2217,7 +2264,7 @@ view mailboxes(a: Account) {
     state query: Text = "is:inbox"
     let m = root Mail
     let places = filters(Thread).filter(f -> f.toggle)
-    let shown = a.threads.matching(query)
+    let shown = newest_first(a.threads.matching(query))
     let title = place_title(m, query)
     ui.NavShell(
         content_kind: .document,
@@ -2286,9 +2333,9 @@ view inbox(b: Mailbox) {
 fn in_mailbox(a: Account, b: Mailbox) -> List<Thread> {
     let query = "is:{b.key}"
     if filters(Thread).any(f -> f.query == query) {
-        a.threads.matching(query)
+        newest_first(a.threads.matching(query))
     } else {
-        a.threads.filter(t -> t.boxes.any(x -> x == b.key))
+        newest_first(a.threads.filter(t -> t.boxes.any(x -> x == b.key)))
     }
 }
 
@@ -2346,15 +2393,103 @@ view thread_row(t: Thread) {
 /// shows what it says without opening the conversation, so reading it marks nothing read.
 view thread_item(t: Thread) {
     thread_row(t)
-    if let m = t.messages.last() {
-        ui.HoverToolbar {
+    // What a person does with the conversation without opening it: the everyday presses on hover,
+    // and the whole set in its menu, as a row of a mail list offers them.
+    ui.HoverToolbar {
+        ui.Button(
+            if t.flagged { "Unflag" } else { "Flag" },
+            icon: .flag,
+            icon_only: true,
+            toggled: t.flagged,
+        ) {
+            on press: flag(t, not t.flagged)
+        }
+        ui.Button("Archive", icon: .archive, icon_only: true) {
+            on press: archive(t)
+        }
+        ui.Button("Delete", icon: .trash, icon_only: true) {
+            on press: delete(t)
+        }
+        if let m = t.messages.last() {
             ui.Button("Preview", icon: .eye, icon_only: true) {
                 on press: open(m, view: inspect)
             }
         }
-        ui.ContextMenu {
+    }
+    ui.Swipe {
+        trailing: {
+            ui.SwipeAction("Archive", icon: .archive) {
+                on swipe: archive(t)
+            }
+        }
+    }
+    ui.ContextMenu {
+        if let m = t.messages.last() {
             ui.MenuItem("Preview", icon: .eye) {
                 on choose: open(m, view: inspect)
+            }
+            ui.MenuSeparator()
+        }
+        ui.MenuItem("Reply", icon: .reply) {
+            on choose: reply(t)
+        }
+        ui.MenuItem("Reply all", icon: .reply_all) {
+            on choose: reply_all(t)
+        }
+        ui.MenuItem("Forward", icon: .forward) {
+            on choose: forward(t)
+        }
+        ui.MenuSeparator()
+        ui.MenuItem(
+            if t.unread { "Mark as read" } else { "Mark as unread" },
+            icon: if t.unread { .mail_open } else { .mail },
+        ) {
+            on choose: mark_read(t, not t.unread)
+        }
+        ui.MenuItem(if t.flagged { "Unflag" } else { "Flag" }, icon: .flag) {
+            on choose: flag(t, not t.flagged)
+        }
+        if t.boxes.any(b -> b == "inbox") {
+            ui.MenuItem("Archive", icon: .archive) {
+                on choose: archive(t)
+            }
+        } else {
+            ui.MenuItem("Move to inbox", icon: .inbox) {
+                on choose: to_inbox(t)
+            }
+        }
+        let mail = root Mail
+        if let a = mail.accounts.find(x -> x.key == t.account) {
+            if not a.mailboxes.is_empty() {
+                for b in a.mailboxes {
+                    ui.MenuItem(b.name, icon: .folder) {
+                        on choose: move_to(t, b)
+                    }
+                }
+            }
+        }
+        ui.MenuSeparator()
+        ui.MenuItem("Snooze an hour", icon: .clock) {
+            on choose: snooze_an_hour(t)
+        }
+        ui.MenuItem("Mute", icon: .bell_off, checked: t.muted) {
+            on choose: mute(t, not t.muted)
+        }
+        if not mail.labels.is_empty() {
+            for l in mail.labels {
+                ui.MenuItem(l.name, icon: .tag, checked: t.labels.any(x -> x == l.name)) {
+                    on choose: label(t, l.name)
+                }
+            }
+        }
+        ui.MenuSeparator()
+        if t.boxes.any(b -> b == "trash") {
+            ui.MenuItem("Delete permanently", icon: .trash) {
+                on choose: purge(t)
+            }
+        } else {
+            ui.MenuItem("Delete", icon: .trash) {
+                on choose: delete(t)
             }
         }
     }
@@ -2427,6 +2562,83 @@ view conversation(t: Thread) {
     // keeps no reply bar rather than an empty one.
     let answered = can_answer(t)
     ui.NavShell(content_kind: .page, title: t.subject) {
+        // What a person does with the conversation while reading it: the same presses the list's
+        // menus offer for a chosen row, at the window's header where the reading is.
+        actions: {
+            if answered {
+                ui.Button("Reply", icon: .reply, role: .primary) {
+                    on press: reply(t)
+                }
+                ui.Button("Reply all", icon: .reply_all, icon_only: true) {
+                    on press: reply_all(t)
+                }
+                ui.Button("Forward", icon: .forward, icon_only: true) {
+                    on press: forward(t)
+                }
+            }
+            ui.Button(
+                if t.flagged { "Unflag" } else { "Flag" },
+                icon: .flag,
+                icon_only: true,
+                toggled: t.flagged,
+            ) {
+                on press: flag(t, not t.flagged)
+            }
+            if t.boxes.any(b -> b == "inbox") {
+                ui.Button("Archive", icon: .archive, icon_only: true) {
+                    on press: archive(t)
+                }
+            } else {
+                ui.Button("Move to inbox", icon: .inbox, icon_only: true) {
+                    on press: to_inbox(t)
+                }
+            }
+            ui.Button(
+                if t.unread { "Mark as read" } else { "Mark as unread" },
+                icon: if t.unread { .mail_open } else { .mail },
+                icon_only: true,
+            ) {
+                on press: mark_read(t, not t.unread)
+            }
+            ui.MenuButton("More", icon: .ellipsis, icon_only: true) {
+                let mail = root Mail
+                if let a = mail.accounts.find(x -> x.key == t.account) {
+                    if not a.mailboxes.is_empty() {
+                        ui.MenuSeparator()
+                        for b in a.mailboxes {
+                            ui.MenuItem(b.name, icon: .folder) {
+                                on choose: move_to(t, b)
+                            }
+                        }
+                    }
+                }
+                ui.MenuItem("Snooze an hour", icon: .clock) {
+                    on choose: snooze_an_hour(t)
+                }
+                ui.MenuItem("Snooze until tomorrow", icon: .clock) {
+                    on choose: snooze_until_tomorrow(t)
+                }
+                if t.snoozed_until > Time("1970-01-01T00:00:00Z") {
+                    ui.MenuItem("Bring back", icon: .inbox) {
+                        on choose: unsnooze(t)
+                    }
+                }
+                ui.MenuItem(if t.muted { "Unmute" } else { "Mute" }, icon: .bell_off) {
+                    on choose: mute(t, not t.muted)
+                }
+                if not mail.labels.is_empty() {
+                    ui.MenuSeparator()
+                    for l in mail.labels {
+                        ui.MenuItem(l.name, checked: t.labels.any(x -> x == l.name)) {
+                            on choose: label(t, l.name)
+                        }
+                    }
+                }
+                ui.MenuItem("Delete", icon: .trash) {
+                    on choose: delete(t)
+                }
+            }
+        }
         content: {
             if answered {
                 ui.Docked {
@@ -2512,20 +2724,24 @@ view message(m: Message) {
     let at = quote_begins(body)
     let said = if let i = at { body.slice(0, i) } else { body }
     let quoted_part = if let i = at { body.slice(i + 2, body.len()) } else { "" }
+    // Who wrote it, when the workspace's address book knows them: their picture stands in their
+    // avatar, and the person opens in Contacts, where their numbers and groups are.
+    let who = contacts.for_address(contacts.book, sender_address(m.from))
     // The card of what the message says stands a section's gap under the line naming who wrote
     // it: close enough to belong to it, far enough to be a card of its own.
     stack(gap: .section) {
         row(gap: .related, align: .center) {
-            ui.Avatar(name: if m.from_name == "" { m.from } else { m.from_name })
+            ui.Avatar(
+                name: if m.from_name == "" { m.from } else { m.from_name },
+                picture: who?.photo ?? "",
+            )
             ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
             ui.Time(m.received, role: .caption, past: true, secondary: true)
             spacer()
             ui.HoverToolbar {
-                // Who wrote it, when the workspace's address book knows them: the person the
-                // message is from opens in Contacts, where their numbers and groups are.
-                if let who = contacts.for_address(contacts.book, sender_address(m.from)) {
+                if let person = who {
                     ui.Button("Open contact", icon: .user, icon_only: true) {
-                        on press: open(who)
+                        on press: open(person)
                     }
                 }
                 ui.Button("Reply", icon: .reply, icon_only: true) {
@@ -2540,9 +2756,9 @@ view message(m: Message) {
             }
         }
         ui.ContextMenu {
-            if let who = contacts.for_address(contacts.book, sender_address(m.from)) {
+            if let person = who {
                 ui.MenuItem("Open contact", icon: .user) {
-                    on choose: open(who)
+                    on choose: open(person)
                 }
             }
             ui.MenuItem("Reply", icon: .reply) {
@@ -2667,7 +2883,11 @@ view message(m: Message) {
 /// downloaded yet.
 view attachment_chip(m: Message, f: File) {
     if on_device(f) {
+        // Pressing the file opens it in the app that opens its kind; the press beside it saves it.
         ui.Chip(f.name, icon: .paperclip) {
+            on press: open_attachment(m, f.name)
+        }
+        ui.Button("Save", icon: .download, icon_only: true) {
             on press: file.save(attachment(m, f.name), name: f.name)
         }
     } else {
