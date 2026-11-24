@@ -290,6 +290,10 @@ impl ServedWrites {
 pub(super) const MEMBER: &str = "member";
 
 /// How long after the link ends this device dials that device again.
+/// How long one workspace's member copy is waited for as the device takes it in
+/// ([`Workspaces::hold_as_members`]).
+const HOLD_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+
 const REDIAL: std::time::Duration = std::time::Duration::from_secs(5);
 /// How long a write waits for the member copy's link before it is refused:
 /// the write is undone, as one the owner could not take is.
@@ -739,6 +743,26 @@ impl Workspaces {
         )
         .await?;
         self.hold_member(&device, &bootstrap, hint).await
+    }
+
+    /// Hold each of `held`, a workspace and where the device hosting it serves it, as a member
+    /// copy synced with that device: the workspaces this device takes part in that its service
+    /// does not hold yet. One that is not taken in is said and left for the next call.
+    pub async fn hold_as_members(&self, held: impl IntoIterator<Item = (WorkspaceId, TransportHint)>) {
+        for (workspace, hint) in held {
+            if self.is_member(&workspace.to_string()).await.unwrap_or(false) {
+                continue;
+            }
+            match tokio::time::timeout(HOLD_WITHIN, self.hold_as_member(workspace, &hint)).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, %workspace, "a workspace this device takes part in is not held on its service");
+                }
+                Err(_) => {
+                    tracing::warn!(%workspace, "a workspace's member copy did not arrive on this device's service in time");
+                }
+            }
+        }
     }
 
     /// Hold `bootstrap` as a member copy of the workspace it answers, synced

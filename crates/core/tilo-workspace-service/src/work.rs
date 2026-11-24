@@ -752,6 +752,7 @@ pub trait AgentEngine: Send + Sync {
     /// whether this device took the turn, or why it
     /// did not start, once the turn ended. The reply the turn writes names `invocation`, and
     /// the invocation's cancel sets `stop`, which ends the turn at its next step.
+    #[cfg(feature = "agents")]
     fn answer(
         &self,
         workspace: String,
@@ -772,6 +773,7 @@ pub trait AgentEngine: Send + Sync {
 }
 
 /// What became of a turn a trigger started ([`AgentEngine::answer`]).
+#[cfg(feature = "agents")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Started {
     /// This device took the turn and ran it: what answered its model calls and what they used

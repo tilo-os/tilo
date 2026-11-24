@@ -150,5 +150,5 @@ pub(super) async fn hold_every_workspace(engine: &Engine, own_service: &OwnServi
         .workspaces()
         .into_iter()
         .filter_map(|workspace| Some((workspace, engine.member_of(workspace)?)));
-    tilo_workspace_service::own_device::hold_as_members(service.workspaces(), held).await;
+    service.workspaces().hold_as_members(held).await;
 }

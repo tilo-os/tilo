@@ -279,7 +279,7 @@ impl ServiceWorkspaces {
             .collect();
         let entered: Vec<String> = entering.iter().map(|(id, _)| id.to_string()).collect();
         let copies = self.copies().clone();
-        tokio::spawn(async move { own_device::hold_as_members(&copies, entering).await });
+        tokio::spawn(async move { copies.hold_as_members(entering).await });
         let answer = serde_json::json!({
             "groups": groups.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "entering": entered,
@@ -392,7 +392,7 @@ impl ServiceWorkspaces {
                 tracing::warn!(%error, "this device was not entered among its person's servers");
             }
         }
-        own_device::hold_as_members(self.service.workspaces(), device.hosts()).await;
+        self.service.workspaces().hold_as_members(device.hosts()).await;
     }
 
     /// Close the service and its endpoint, as the process ending would: what the service holds

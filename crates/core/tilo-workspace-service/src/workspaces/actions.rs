@@ -2429,7 +2429,7 @@ impl Workspaces {
             .iter()
             .find(|workspace| workspace.id().to_string() == call.workspace)
         {
-            for webhook in crate::apps::webhooks::saved(workspace, call.workspace)
+            for webhook in super::webhooks::saved(workspace, call.workspace)
                 .iter()
                 .filter(|webhook| webhook.owner == id)
             {
@@ -2460,7 +2460,7 @@ impl Workspaces {
         action: &str,
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionCallError> {
-        use crate::apps::webhooks;
+        use super::webhooks;
         // The key that registered a webhook, by its grant: revoking it takes its webhooks with
         // it, as it did when a server kept them.
         let owner =

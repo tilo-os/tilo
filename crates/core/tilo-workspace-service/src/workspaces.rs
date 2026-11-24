@@ -57,6 +57,7 @@ pub use machines::WorkspaceMachines;
 mod names;
 pub use names::PersonNames;
 mod web_ui;
+pub mod webhooks;
 pub use web_ui::WebUi;
 mod surfaces;
 #[cfg(test)]

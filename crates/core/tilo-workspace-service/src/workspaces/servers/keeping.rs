@@ -6,7 +6,7 @@
 //! turned keeping off for it ([`Server::keeps_not`]). It enters one it does
 //! not keep yet the way every device of the person enters a workspace of
 //! theirs: as a member copy, at the address the list keeps for it
-//! ([`crate::own_device::hold_as_members`]). One its entry no longer keeps it
+//! ([`crate::workspaces::Workspaces::hold_as_members`]). One its entry no longer keeps it
 //! lets go of ([`Workspaces::release`]); its files stay, and keeping it again
 //! takes it up from them.
 //!
@@ -90,7 +90,7 @@ pub async fn keep_listed(workspaces: &Workspaces) -> Result<Kept, String> {
             }
         }
     }
-    crate::own_device::hold_as_members(workspaces, entering.iter().cloned()).await;
+    workspaces.hold_as_members(entering.iter().cloned()).await;
     for (workspace, _) in entering {
         let id = workspace.to_string();
         if workspaces.state(&id).await.is_some() {

@@ -1116,7 +1116,7 @@ impl Daemon {
             Arc::clone(&invocations),
         ) {
             Ok(poster) => workspaces.copies().provide(
-                tilo_workspace_service::apps::webhooks::PROVIDER,
+                tilo_workspace_service::workspaces::webhooks::PROVIDER,
                 Arc::new(poster),
             ),
             Err(error) => tracing::warn!(%error, "this device posts no webhook"),

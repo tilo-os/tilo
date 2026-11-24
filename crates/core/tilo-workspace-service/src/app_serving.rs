@@ -460,6 +460,7 @@ impl Served {
                     // A host that places no Browser says so, rather than leaving an open of it
                     // read as a request nothing answers.
                     let reason = match &message {
+                        #[cfg(feature = "agents")]
                         RemoteActionMessage::Invoke(request)
                             if crate::agents::windows::opens_browser_at(&request.target) =>
                         {

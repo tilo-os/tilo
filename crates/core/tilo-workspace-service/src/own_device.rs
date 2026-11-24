@@ -135,42 +135,6 @@ pub async fn open_in(
     Ok(Opened { service, keys })
 }
 
-/// How long one workspace's member copy is waited for as the device takes it in.
-pub const HOLD_WITHIN: Duration = Duration::from_secs(30);
-
-/// Hold each of `held`, a workspace and where the device hosting it serves it, on `workspaces`, a
-/// device's own service, as a member copy synced with that device: the workspaces the device takes
-/// part in that its service does not hold yet. One that is not taken in is said and left for the
-/// next call.
-pub async fn hold_as_members(
-    workspaces: &crate::workspaces::Workspaces,
-    held: impl IntoIterator<
-        Item = (
-            tilo_server_protocol::WorkspaceId,
-            tilo_peer_state::join::TransportHint,
-        ),
-    >,
-) {
-    for (workspace, hint) in held {
-        if workspaces
-            .is_member(&workspace.to_string())
-            .await
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        match tokio::time::timeout(HOLD_WITHIN, workspaces.hold_as_member(workspace, &hint)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => {
-                tracing::warn!(%error, %workspace, "a workspace this device takes part in is not held on its service");
-            }
-            Err(_) => {
-                tracing::warn!(%workspace, "a workspace's member copy did not arrive on this device's service in time");
-            }
-        }
-    }
-}
-
 /// Keys a workspace's host handed this device for what every member reads, by workspace: a
 /// member copy opens with them before the device's key service takes part in the group.
 pub type HandedKeys = Box<dyn Fn(&str) -> Option<key_group::ContentKeys> + Send + Sync>;

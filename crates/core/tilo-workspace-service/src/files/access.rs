@@ -129,7 +129,7 @@ pub fn list<'a>(
             .with_id(format!("workspace-files:{id}"))
             .lasting(Lifetime::UntilRevoked),
         );
-        for (member, _) in workspace.roster() {
+        for (member, _) in workspace.policy.people() {
             let Some(access) = decide(&workspace.policy, &id, &member, &context) else {
                 continue;
             };
