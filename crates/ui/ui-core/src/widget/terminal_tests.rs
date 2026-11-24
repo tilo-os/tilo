@@ -4,11 +4,9 @@
 use std::sync::Mutex;
 
 use taffy::{NodeId, TaffyTree};
-use vello::kurbo::{Affine, Point};
 use vello::Scene;
-use winit::event::{
-    ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
-};
+use vello::kurbo::{Affine, Point};
+use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 
 use crate::component::{Described as _, Event, Intent, Value};
@@ -73,9 +71,7 @@ impl Fake {
 
 impl Keys for Fake {
     fn key(&self, key: Key, text: Option<&str>, held: Held) {
-        self.state()
-            .keys
-            .push((key, text.map(str::to_owned), held));
+        self.state().keys.push((key, text.map(str::to_owned), held));
     }
 
     fn text(&self, text: &str) {
@@ -86,14 +82,7 @@ impl Keys for Fake {
         self.state().pastes.push(text.to_owned());
     }
 
-    fn mouse(
-        &self,
-        button: Button,
-        pressed: bool,
-        _held: Held,
-        column: usize,
-        row: usize,
-    ) -> bool {
+    fn mouse(&self, button: Button, pressed: bool, _held: Held, column: usize, row: usize) -> bool {
         let mut state = self.state();
         if !state.modes.mouse_report {
             return false;
@@ -207,13 +196,11 @@ fn paint(widget: &mut Terminal) -> Scene {
     scene
 }
 
-fn send(
-    widget: &mut Terminal,
-    tree: &TaffyTree<()>,
-    node: NodeId,
-    event: &WindowEvent,
-) -> bool {
-    Dispatch::new().layout(tree, node).send(widget, event).handled
+fn send(widget: &mut Terminal, tree: &TaffyTree<()>, node: NodeId, event: &WindowEvent) -> bool {
+    Dispatch::new()
+        .layout(tree, node)
+        .send(widget, event)
+        .handled
 }
 
 fn send_with(

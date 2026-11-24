@@ -12,17 +12,17 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, Ime, MouseButton as WMouseButton, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
+use crate::color_compat::ColorCompat as _;
 use crate::key_input::{self, Button, Held, Keys};
 use crate::terminal::{
     CellColor, GridPos, GridSelection, Modes, Palette, Placement, Screen, Session, SessionEvent,
     SessionHandle, Style,
 };
-use crate::color_compat::ColorCompat as _;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::{OverlayScrollbar, TaffyTreeExt, Widget};
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics};
+use crate::widget::{OverlayScrollbar, TaffyTreeExt, Widget};
 
 #[path = "terminal/terminal_component.rs"]
 mod component;
@@ -167,7 +167,7 @@ impl Terminal {
 
     #[must_use]
     pub fn with_test_id(mut self, id: &str) -> Self {
-        self.test_id = id.to_owned();
+        id.clone_into(&mut self.test_id);
         self
     }
 
@@ -187,11 +187,11 @@ impl Terminal {
         if self.session_id == id {
             return;
         }
-        self.session_id = id.to_owned();
+        id.clone_into(&mut self.session_id);
         self.session = crate::terminal::window_session(id)
             .unwrap_or_else(|| Arc::new(Missing) as SessionHandle);
-        self.keys = key_input::window_input(id)
-            .unwrap_or_else(|| self.session.clone() as Arc<dyn Keys>);
+        self.keys =
+            key_input::window_input(id).unwrap_or_else(|| self.session.clone() as Arc<dyn Keys>);
         self.revision = 0;
         self.shown_revision = None;
         self.painted_revision = u64::MAX;
@@ -289,7 +289,14 @@ impl Terminal {
                 SessionEvent::Title(title) => self.fired(&self.title, title),
                 SessionEvent::Finished(json) => self.fired(&self.finished, json),
                 SessionEvent::Exit(code) => {
-                    self.fired(&self.exit, if code == 0 { "exited".to_owned() } else { format!("exit {code}") });
+                    self.fired(
+                        &self.exit,
+                        if code == 0 {
+                            "exited".to_owned()
+                        } else {
+                            format!("exit {code}")
+                        },
+                    );
                     self.dirty = true;
                 }
                 SessionEvent::Lost(why) => {
@@ -340,10 +347,7 @@ impl Terminal {
 
     /// The most rows the view can be scrolled up from the live bottom.
     fn max_scroll(&self) -> usize {
-        self.screen
-            .lines
-            .len()
-            .saturating_sub(self.rows_fit())
+        self.screen.lines.len().saturating_sub(self.rows_fit())
     }
 
     fn scroll_to(&mut self, rows: usize) {
@@ -377,7 +381,11 @@ impl Terminal {
         let to = (top + px).clamp(0.0, max);
         let rows = (to / self.char_h).floor();
         self.scroll_rows = (rows as usize).min(self.max_scroll());
-        self.sub = if self.scroll_rows == 0 { 0.0 } else { to - rows * self.char_h };
+        self.sub = if self.scroll_rows == 0 {
+            0.0
+        } else {
+            to - rows * self.char_h
+        };
         self.dirty = true;
         to - top
     }
@@ -421,7 +429,10 @@ impl Terminal {
         };
         (
             GridPos::new(at.row, cell(start)),
-            GridPos::new(at.row, cell(end).max(cell(start) + 1).min(self.columns_fit())),
+            GridPos::new(
+                at.row,
+                cell(end).max(cell(start) + 1).min(self.columns_fit()),
+            ),
         )
     }
 
@@ -435,10 +446,7 @@ impl Terminal {
     fn begin_selection(&mut self, at: GridPos, extend: bool) {
         if extend {
             let anchor = self.selection.map_or(at, |held| held.anchor);
-            self.selection = Some(GridSelection {
-                anchor,
-                cursor: at,
-            });
+            self.selection = Some(GridSelection { anchor, cursor: at });
         } else {
             self.selection = Some(GridSelection {
                 anchor: at,
@@ -499,10 +507,14 @@ impl Terminal {
                     return;
                 }
                 let now = crate::time::now();
-                let quickly = self
-                    .pressed_at
-                    .is_some_and(|then| now.saturating_duration_since(then) < crate::time::Duration::from_millis(400));
-                self.presses = if quickly { (self.presses + 1).min(3) } else { 1 };
+                let quickly = self.pressed_at.is_some_and(|then| {
+                    now.saturating_duration_since(then) < crate::time::Duration::from_millis(400)
+                });
+                self.presses = if quickly {
+                    (self.presses + 1).min(3)
+                } else {
+                    1
+                };
                 self.pressed_at = Some(now);
                 match self.presses {
                     2 => {
@@ -565,8 +577,14 @@ impl Terminal {
             return;
         }
         if button == WMouseButton::Left && self.selecting {
-            if self.selection.is_some_and(|selection| selection.is_collapsed()) {
-                if let Some(url) = self.link_at(self.selection.map_or(GridPos::default(), |s| s.cursor)).map(str::to_owned) {
+            if self
+                .selection
+                .is_some_and(|selection| selection.is_collapsed())
+            {
+                if let Some(url) = self
+                    .link_at(self.selection.map_or(GridPos::default(), |s| s.cursor))
+                    .map(str::to_owned)
+                {
                     crate::widget::open_external_url(&url);
                 }
             }
@@ -581,8 +599,8 @@ impl Terminal {
     fn scrollbar_metrics(&self) -> ScrollMetrics {
         let total = self.screen.lines.len().max(self.viewport_rows);
         let viewport = self.viewport_rows.max(1);
-        let from_bottom = self.scroll_rows.min(self.max_scroll()) as f64
-            + self.sub / self.char_h.max(1.0);
+        let from_bottom =
+            self.scroll_rows.min(self.max_scroll()) as f64 + self.sub / self.char_h.max(1.0);
         let offset = (total as f64 - viewport as f64 - from_bottom).max(0.0);
         ScrollMetrics::new(total as f64, viewport as f64, offset)
     }
@@ -645,23 +663,11 @@ impl Terminal {
         scene.pop_layer();
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one row of the grid, over the frame and theme it is drawn in"
-    )]
-    fn draw_row(
-        &self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        palette: &Palette,
-        theme: &Theme,
-        row: usize,
-        y: f64,
-    ) {
+    fn draw_row(&self, pen: &mut Pen<'_>, theme: &Theme, row: usize, y: f64) {
         let Some(line) = self.screen.lines.get(row) else {
             return;
         };
+        let (scene, transform) = (&mut *pen.scene, pen.transform);
         if let Some(selection) = self.selection
             && let Some((from, to)) = selection.span_on(row, self.columns_fit())
         {
@@ -700,7 +706,7 @@ impl Terminal {
             let style = style_of(cell);
             if run_style != Some(style) {
                 if let Some(drawn) = run_style {
-                    self.draw_run(scene, transform, text, palette, &run, drawn, run_start, y);
+                    self.draw_run(pen, &run, drawn, run_start, y);
                 }
                 run.clear();
                 run_start = cell;
@@ -709,25 +715,18 @@ impl Terminal {
             run.push(character);
         }
         if let Some(drawn) = run_style {
-            self.draw_run(scene, transform, text, palette, &run, drawn, run_start, y);
+            self.draw_run(pen, &run, drawn, run_start, y);
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one run's text, style and place, over the frame it is drawn in"
-    )]
-    fn draw_run(
-        &self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        palette: &Palette,
-        run: &str,
-        style: Style,
-        start_cell: usize,
-        y: f64,
-    ) {
+    fn draw_run(&self, pen: &mut Pen<'_>, run: &str, style: Style, start_cell: usize, y: f64) {
+        let Pen {
+            scene,
+            transform,
+            text,
+            palette,
+        } = pen;
+        let (transform, palette) = (*transform, &**palette);
         let cells = run.chars().count();
         let x = self.grid.x0 + start_cell as f64 * self.char_w;
         let width = cells as f64 * self.char_w;
@@ -795,14 +794,14 @@ impl Terminal {
         }
     }
 
-    fn draw_cursor(
-        &self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        palette: &Palette,
-        first: usize,
-    ) {
+    fn draw_cursor(&self, pen: &mut Pen<'_>, first: usize) {
+        let Pen {
+            scene,
+            transform,
+            text,
+            palette,
+        } = pen;
+        let transform = *transform;
         if !self.focused || !self.modes.cursor_visible {
             return;
         }
@@ -813,7 +812,12 @@ impl Terminal {
         let x = self.grid.x0 + column as f64 * self.char_w;
         let y = self.grid.y0 + (row - first) as f64 * self.char_h - self.sub;
         let block = Rect::new(x, y, x + self.char_w, y + self.char_h);
-        let ring = Rect::new(x + 0.5, y + 0.5, x + self.char_w - 0.5, y + self.char_h - 0.5);
+        let ring = Rect::new(
+            x + 0.5,
+            y + 0.5,
+            x + self.char_w - 0.5,
+            y + self.char_h - 0.5,
+        );
         let character = self
             .screen
             .lines
@@ -833,15 +837,18 @@ impl Terminal {
                 );
             }
         } else {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                palette.foreground,
-                None,
-                &ring,
-            );
+            scene.fill(Fill::NonZero, transform, palette.foreground, None, &ring);
         }
     }
+}
+
+/// What a row of the grid is drawn with: the scene and frame, the text renderer, and the colours
+/// the terminal's own palette gives its cells.
+struct Pen<'a> {
+    scene: &'a mut vello::Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    palette: &'a Palette,
 }
 
 impl Widget for Terminal {
@@ -933,29 +940,28 @@ impl Widget for Terminal {
                 .saturating_sub(self.scroll_rows.min(self.max_scroll()))
         };
         self.first_row = first;
+        let mut pen = Pen {
+            scene,
+            transform,
+            text: text_renderer,
+            palette: &palette,
+        };
         for index in 0..rows {
             let row = first + index;
             if row >= self.screen.lines.len() {
                 break;
             }
             let y = self.grid.y0 + index as f64 * self.char_h - self.sub;
-            self.draw_row(
-                scene,
-                transform,
-                text_renderer,
-                &palette,
-                theme,
-                row,
-                y,
-            );
+            self.draw_row(&mut pen, theme, row, y);
         }
-        self.draw_cursor(scene, transform, text_renderer, &palette, first);
+        self.draw_cursor(&mut pen, first);
         self.images();
         self.draw_placements(scene, transform, theme, first);
         self.scrollbar.set_theme(theme);
         let metrics = self.scrollbar_metrics();
         self.scrollbar.note_offset(metrics.offset);
-        self.scrollbar.paint(scene, transform, self.rect, metrics, theme);
+        self.scrollbar
+            .paint(scene, transform, self.rect, metrics, theme);
         if self.bell_flashing() {
             scene.fill(
                 Fill::NonZero,
@@ -987,7 +993,8 @@ impl Widget for Terminal {
                 }
                 let modifiers = ctx.modifiers.state();
                 // The terminal's own chords; they come before Ctrl+C, which is the shell's.
-                if modifiers.control_key() && modifiers.shift_key()
+                if modifiers.control_key()
+                    && modifiers.shift_key()
                     && let WKey::Character(c) = &key.logical_key
                 {
                     if c.eq_ignore_ascii_case("c") {
@@ -1025,12 +1032,12 @@ impl Widget for Terminal {
                     let page = self.viewport_rows.saturating_sub(1).max(1);
                     match named {
                         WNamedKey::PageUp => {
-                            self.scroll_by(page as isize);
+                            self.scroll_by(page.cast_signed());
                             *ctx.handled = true;
                             return;
                         }
                         WNamedKey::PageDown => {
-                            self.scroll_by(-(page as isize));
+                            self.scroll_by(-page.cast_signed());
                             *ctx.handled = true;
                             return;
                         }
@@ -1069,7 +1076,10 @@ impl Widget for Terminal {
                     }
                     self.dirty = true;
                     *ctx.handled = true;
-                } else if self.scrollbar.update_pointer(self.rect, self.scrollbar_metrics(), at) {
+                } else if self
+                    .scrollbar
+                    .update_pointer(self.rect, self.scrollbar_metrics(), at)
+                {
                     self.dirty = true;
                 }
             }
@@ -1088,8 +1098,7 @@ impl Widget for Terminal {
                                 PressOutcome::Miss => self.press(*button, held, ctx),
                                 PressOutcome::Page(offset) => {
                                     self.scroll_to(
-                                        self.max_scroll()
-                                            .saturating_sub(offset.round() as usize),
+                                        self.max_scroll().saturating_sub(offset.round() as usize),
                                     );
                                     *ctx.handled = true;
                                 }
@@ -1169,7 +1178,8 @@ impl Widget for Terminal {
         self.focused.then(|| {
             let (column, row) = self.screen.cursor;
             let x = self.grid.x0 + column as f64 * self.char_w;
-            let y = self.grid.y0 + (row.saturating_sub(self.first_row)) as f64 * self.char_h - self.sub;
+            let y =
+                self.grid.y0 + (row.saturating_sub(self.first_row)) as f64 * self.char_h - self.sub;
             Rect::new(x, y, x + self.char_w, y + self.char_h)
         })
     }
@@ -1178,10 +1188,7 @@ impl Widget for Terminal {
         (self.focused && !self.session.ended()).then_some(crate::ime::InputContent::TERMINAL)
     }
 
-    fn commit_deferred_text(
-        &mut self,
-        text: &str,
-    ) -> Option<tilo_webview::text_input::Receipt> {
+    fn commit_deferred_text(&mut self, text: &str) -> Option<tilo_webview::text_input::Receipt> {
         // A shell has no fields to receipt: its input is the pty, and the text is written there as
         // an input method's commit is.
         if self.focused && !self.session.ended() {
@@ -1196,10 +1203,12 @@ impl Widget for Terminal {
         Some(
             AccessNode::new(Role::Terminal)
                 .with_name(self.accessible_name.clone())
-                .with_description(self.screen.lines.last().map_or_else(
-                    String::new,
-                    |line| line.text.trim_end().to_owned(),
-                ))
+                .with_description(
+                    self.screen
+                        .lines
+                        .last()
+                        .map_or_else(String::new, |line| line.text.trim_end().to_owned()),
+                )
                 .with_hashed_key("terminal")
                 .with_state(AccessState::new().focusable(true).focused(self.focused)),
         )
@@ -1232,11 +1241,12 @@ impl crate::widget::Findable for Terminal {
                     let start = from + at;
                     let end = start + needle.len();
                     let whole = options.whole_word;
-                    let before = haystack.get(..start).and_then(|head| head.chars().next_back());
+                    let before = haystack
+                        .get(..start)
+                        .and_then(|head| head.chars().next_back());
                     let after = haystack.get(end..).and_then(|tail| tail.chars().next());
-                    let bounded = |c: Option<char>| {
-                        c.is_none_or(|c| !c.is_alphanumeric() && c != '_')
-                    };
+                    let bounded =
+                        |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '_');
                     if !whole || (bounded(before) && bounded(after)) {
                         // The bar counts matches; the grid paints each where its cells stand.
                         self.found.push(crate::widget::FindMatch::new(row, end));
