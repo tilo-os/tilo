@@ -2863,3 +2863,37 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// The image inspector's commands set the picture the caret is in: its size, mirroring, crop
+/// and placement, each written into the picture's Markdown as one recorded edit.
+#[test]
+fn a_picture_is_flipped_cropped_and_placed_from_the_inspector() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("![Scan|320](scan.png)")]);
+    editor.focus_block(0, CursorPlacement::End);
+
+    assert!(editor.format_asked(Some("picture:flip:h:1".into())));
+    assert_eq!(editor.blocks[0].text(), "![Scan|320|flip:h](scan.png)");
+    assert!(editor.format_asked(Some("picture:flip:v:2".into())));
+    assert!(editor.blocks[0].text().contains("flip:hv"), "{}", editor.blocks[0].text());
+    assert!(editor.format_asked(Some("picture:size:up:3".into())));
+    assert!(
+        editor.blocks[0].text().contains("|352|"),
+        "the size grows by a tenth: {}",
+        editor.blocks[0].text()
+    );
+    assert!(editor.format_asked(Some("picture:crop:in:4".into())));
+    assert!(editor.blocks[0].text().contains("crop:5,5,5,5"), "{}", editor.blocks[0].text());
+    assert!(editor.format_asked(Some("picture:place:free:5".into())));
+    assert!(editor.blocks[0].text().contains("place:free"), "{}", editor.blocks[0].text());
+    assert!(editor.format_asked(Some("picture:wrap:right:6".into())));
+    assert!(editor.blocks[0].text().contains("wrap:right"), "{}", editor.blocks[0].text());
+    assert!(editor.format_asked(Some("picture:crop:reset:7".into())));
+    assert!(!editor.blocks[0].text().contains("crop:"), "{}", editor.blocks[0].text());
+
+    // A block that is not a picture refuses the ask, changing nothing.
+    editor.set_blocks(vec![Block::paragraph("words")]);
+    editor.focus_block(0, CursorPlacement::End);
+    assert!(!editor.format_asked(Some("picture:flip:h:8".into())));
+    assert_eq!(editor.blocks[0].text(), "words");
+}

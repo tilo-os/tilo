@@ -6,7 +6,8 @@ use winit::event::WindowEvent;
 use ui::widget::EventCtx;
 
 use crate::block_editor::{
-    BlockContent, BlockEditor, BlockKind, DocumentPosition, DocumentSelection, ImagePasteTarget,
+    BlockContent, BlockEditor, BlockKind, DocumentPosition, DocumentSelection, IMAGE_WIDTH_RANGE,
+    ImagePasteTarget, PictureWrap, picture_of, with_picture,
 };
 
 impl BlockEditor {
@@ -285,4 +286,81 @@ pub(crate) fn pasted_picture_name(media: &str) -> String {
         _ => "png",
     };
     format!("Pasted image.{extension}")
+}
+
+impl BlockEditor {
+    /// A formatting ask that sets the picture the caret is in, as the image inspector's buttons
+    /// do: `size:down`, `size:up`, `flip:h`, `flip:v`, `crop:in`, `crop:reset`, `place:inline`,
+    /// `place:free`, `wrap:left`, `wrap:right` or `wrap:none`. The picture's Markdown carries the
+    /// setting, so it is one recorded edit of the document, and travels with it.
+    pub(crate) fn picture_asked(&mut self, op: &str) -> bool {
+        if self.read_only {
+            return false;
+        }
+        let Some(index) = self
+            .focused
+            .or_else(|| self.document_selection.map(|selection| selection.ordered().0.block))
+        else {
+            return false;
+        };
+        let Some(block) = self.blocks.get(index) else {
+            return false;
+        };
+        let Some((_, _, width, mut set)) = picture_of(block.text()) else {
+            return false;
+        };
+        let was = set;
+        let mut sized = width;
+        match op {
+            "size:down" | "size:up" => {
+                let current = width.map_or(320.0, f64::from);
+                let factor = if op == "size:down" { 0.9 } else { 1.1 };
+                let next = (current * factor).round();
+                let next = next.clamp(
+                    f64::from(*IMAGE_WIDTH_RANGE.start()),
+                    f64::from(*IMAGE_WIDTH_RANGE.end()),
+                );
+                sized = Some(ui::num::u32_of_i64(ui::num::i64_of_f64(next)));
+            }
+            "flip:h" => set.flip_h = !set.flip_h,
+            "flip:v" => set.flip_v = !set.flip_v,
+            "crop:in" => {
+                let (left, top, right, bottom) = set.crop;
+                let (left, top) = (left.saturating_add(5), top.saturating_add(5));
+                let (right, bottom) = (right.saturating_add(5), bottom.saturating_add(5));
+                if u16::from(left) + u16::from(right) > 95
+                    || u16::from(top) + u16::from(bottom) > 95
+                {
+                    return false;
+                }
+                set.crop = (left, top, right, bottom);
+            }
+            "crop:reset" => set.crop = (0, 0, 0, 0),
+            "place:inline" => set.free = false,
+            "place:free" => set.free = true,
+            "wrap:left" => set.wrap = Some(PictureWrap::Left),
+            "wrap:right" => set.wrap = Some(PictureWrap::Right),
+            "wrap:none" => set.wrap = None,
+            _ => return false,
+        }
+        if sized == width && set == was {
+            return false;
+        }
+        let Some(text) = with_picture(block.text(), sized, set) else {
+            return false;
+        };
+        if text == block.text() {
+            return false;
+        }
+        let block = &mut self.blocks[index];
+        block.line.set_text(&text);
+        if let Some(image) = self.image_attachments.get_mut(&block.id) {
+            image.source.clone_from(&text);
+        }
+        self.edit_pending = true;
+        self.commit_pending = true;
+        self.structure_dirty = true;
+        self.dirty = true;
+        true
+    }
 }

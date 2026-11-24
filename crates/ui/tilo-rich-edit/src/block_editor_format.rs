@@ -683,6 +683,8 @@ impl BlockEditor {
                 Err(_) => false,
             },
             "link" => self.insert_link(argument),
+            // The image inspector beside a picture: its size, mirroring, crop and placement.
+            "picture" => self.picture_asked(argument.trim()),
             _ => false,
         }
     }

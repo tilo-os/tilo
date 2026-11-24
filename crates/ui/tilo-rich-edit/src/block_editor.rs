@@ -7747,8 +7747,70 @@ fn fitted_image_rect(rect: Rect, (width, height): (u32, u32)) -> Rect {
     Rect::new(rect.x0, centred.y0, rect.x0 + size.0, centred.y1)
 }
 
+/// Paint a picture into `plate` as it is set: the share of each edge it crops off, and mirrored
+/// across the plate's centre. A picture with nothing cropped or flipped paints as it always did.
+fn paint_picture(
+    scene: &mut Scene,
+    transform: Affine,
+    plate: Rect,
+    image: &vello::peniko::ImageData,
+    set: PictureSet,
+    radius: f64,
+) {
+    if !set.flipped() && !set.cropped() {
+        ui::image_store::paint_image_cover(scene, transform, plate, image, radius);
+        return;
+    }
+    let (width, height) = (f64::from(image.width), f64::from(image.height));
+    if width <= 0.0 || height <= 0.0 || plate.width() <= 0.0 || plate.height() <= 0.0 {
+        return;
+    }
+    let (left, top, right, bottom) = set.crop;
+    let (left, top, right, bottom) = (
+        f64::from(left) / 100.0,
+        f64::from(top) / 100.0,
+        f64::from(right) / 100.0,
+        f64::from(bottom) / 100.0,
+    );
+    let visible_w = (1.0 - left - right).max(0.05) * width;
+    let visible_h = (1.0 - top - bottom).max(0.05) * height;
+    let (sx, sy) = (left * width, top * height);
+    // `Affine`'s `Mul` composes two transforms; it has no failure mode, but clippy can't see
+    // that for a non-primitive operator overload.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
+    )]
+    let crop = Affine::translate((plate.x0, plate.y0))
+        * Affine::scale_non_uniform(plate.width() / visible_w, plate.height() / visible_h)
+        * Affine::translate((-sx, -sy));
+    let affine = if set.flipped() {
+        let centre = plate.center();
+        Affine::translate((centre.x, centre.y))
+            * Affine::scale_non_uniform(
+                if set.flip_h { -1.0 } else { 1.0 },
+                if set.flip_v { -1.0 } else { 1.0 },
+            )
+            * Affine::translate((-centre.x, -centre.y))
+            * crop
+    } else {
+        crop
+    };
+    let clip = vello::kurbo::RoundedRect::from_rect(plate, radius);
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &clip,
+    );
+    let brush = vello::peniko::ImageBrush::new(image.clone());
+    scene.fill(Fill::NonZero, transform, &brush, Some(affine), &plate);
+    scene.pop_layer();
+}
+
 fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
-    let Some((alt, destination)) = standalone_markdown_image(source) else {
+    let Some((alt, destination, _, set)) = picture_of(source) else {
         return;
     };
     if rect.width() <= 1.0 || rect.height() <= 1.0 {
@@ -7758,9 +7820,17 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     let radius = 8.0 * scale;
     let image = ctx.image_store.and_then(|store| store.get(destination));
     // A preview capped to the viewport is narrower than the column: the
-    // plate hugs the picture rather than letterboxing it.
+    // plate hugs the picture rather than letterboxing it. A picture set free
+    // fills the column, and one the text wraps down stands against that edge.
     let plate = image.as_ref().map_or(rect, |image| {
-        fitted_image_rect(rect, (image.width, image.height))
+        let fitted = fitted_image_rect(rect, (image.width, image.height));
+        if set.free {
+            rect
+        } else if set.wrap == Some(PictureWrap::Right) {
+            Rect::new(rect.x1 - fitted.width(), fitted.y0, rect.x1, fitted.y1)
+        } else {
+            fitted
+        }
     });
     let shape = vello::kurbo::RoundedRect::from_rect(plate, radius);
     ctx.scene.fill(
@@ -7771,7 +7841,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         &shape,
     );
     if let Some(image) = image {
-        ui::image_store::paint_image_cover(ctx.scene, ctx.transform, plate, &image, 0.0);
+        paint_picture(ctx.scene, ctx.transform, plate, &image, set, radius);
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             ctx.transform,
@@ -12205,8 +12275,11 @@ mod stack_measure;
 
 #[path = "block_editor_picture_markdown.rs"]
 mod picture_markdown;
+pub(crate) use picture_markdown::{
+    IMAGE_WIDTH_RANGE, PictureSet, PictureWrap, picture_of, with_picture,
+};
 use picture_markdown::{
-    IMAGE_WIDTH_RANGE, markdown_image_parts, standalone_markdown_image, with_markdown_image_width,
+    markdown_image_parts, standalone_markdown_image, with_markdown_image_width,
 };
 
 #[path = "block_editor_callout.rs"]

@@ -103,8 +103,10 @@ pub struct BlockEditorProps {
     /// `spacing:<1|1.15|1.5|2>`, `style:<name>`, `changes:accept`, `changes:reject`, `bullets`, `numbers`,
     /// `heading:<level>` or `link:<address>`, then a count
     /// the view changes each time it asks (`bold:1`, `bold:2`), so the same command asked twice
-    /// is two commands. Formatting a message is a command of the shared editor's, never a
-    /// control of the app's own.
+    /// is two commands. A picture the caret is in is set with `picture:<op>`, where the op is
+    /// `size:up`, `size:down`, `flip:h`, `flip:v`, `crop:in`, `crop:reset`, `place:inline`,
+    /// `place:free`, `wrap:left`, `wrap:right` or `wrap:none`. Formatting a message is a command
+    /// of the shared editor's, never a control of the app's own.
     #[component(state)]
     pub format: Option<String>,
     /// The paper the document is set on: `A4`, `Letter` or `Legal`. A view that asks for pages
