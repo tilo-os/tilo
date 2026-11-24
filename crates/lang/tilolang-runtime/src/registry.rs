@@ -351,6 +351,17 @@ impl Registry {
         })
     }
 
+    /// The package of `app` this runtime runs, rather than one loaded only as another app's
+    /// description: the code whose actions and views are this runtime's own.
+    #[must_use]
+    pub fn running_package_of(&self, app: &str) -> Option<Rc<Package>> {
+        self.order
+            .iter()
+            .filter_map(|hash| self.packages.get(hash))
+            .find(|package| !package.foreign && package.meta.app == app)
+            .cloned()
+    }
+
     /// Whether a package of the app `app` is loaded here: its types are declared, and a type of
     /// it no loaded package declares is a fault rather than one waiting on the app's package.
     #[must_use]

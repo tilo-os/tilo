@@ -356,6 +356,8 @@ impl Runtime {
     /// and no code. A view takes a resource of it as a parameter, its fields read from the
     /// readings its app publishes ([`Runtime::set_reading`]); an action of it is a child
     /// invocation at the app's own action API ([`crate::delegate`], [`Runtime::set_invoker`]).
+    /// An app this runtime runs already keeps the package it runs, and loading its description
+    /// answers that package.
     ///
     /// The package is identified by the hash of the description, which stands for the app's
     /// code authorship until a newer description of it replaces it.
@@ -366,6 +368,12 @@ impl Runtime {
     /// declaration ids.
     pub fn load_foreign(&self, meta: Meta) -> Result<PackageId, RuntimeError> {
         let app = meta.app.clone();
+        // An app this runtime runs already keeps its package: its code is what its own actions
+        // and views run, and a description handed here (the actions a workspace offers, which
+        // code calls by address) must not stand in for it.
+        if let Some(running) = self.core.registry.borrow().running_package_of(&app) {
+            return Ok(running.hash.clone());
+        }
         let hash = ModuleHash::of_bytes(&meta.to_json_bytes());
         let pkg = crate::registry::Package::foreign(hash, meta).map_err(RuntimeError::Package)?;
         let hash = self
