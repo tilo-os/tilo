@@ -2340,9 +2340,10 @@ tilo_test_env::scenario! {
         let Some(runtime_portal::process_link::ToProcess::Content(content)) = packet else {
             panic!("the API carries the workspace's content as content");
         };
-        let reading = serde_json::from_str(&content.content).expect("the reading reads");
+        let reading: tilolang_tilo::content::WorkspaceContent =
+            serde_json::from_str(&content.content).expect("the reading reads");
         assert!(
-            host.set_content(&content.workspace, Some(reading)),
+            host.set_content(&content.workspace, Some(&reading)),
             "another reading is a change"
         );
         settle(&mut host, &mut window);
@@ -2357,7 +2358,7 @@ tilo_test_env::scenario! {
             file_bytes: 5_000,
             ..tilolang_tilo::content::WorkspaceContent::default()
         };
-        assert!(host.set_content(&route.cluster_id.to_string(), Some(raised)));
+        assert!(host.set_content(&route.cluster_id.to_string(), Some(&raised)));
         settle(&mut host, &mut window);
         let cleared = shown(&window);
         assert!(
