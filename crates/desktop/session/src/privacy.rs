@@ -17,12 +17,15 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_device_surfaces::privacy::{
-    Answer, Capability, InUse, Posture, Reading, Standing, SwitchState,
+    Answer, Capability, InUse, Posture, PrivacyAction, Reading, SavedSecrets, SecretApp, Security,
+    Standing, SwitchState,
 };
+#[cfg(target_os = "linux")]
+use tilo_device_surfaces::privacy::{FirewallInForce, Protection};
 use tilo_lock::MutexRecover as _;
-use tilo_service::{Service, Started};
+use tilo_service::{Service, Started, decode, offer};
 
 use crate::i18n::t;
 
@@ -43,6 +46,23 @@ const REFRESH: Duration = Duration::from_secs(2);
 /// privacy of a session whose Settings is closed, and the machine is not asked for it.
 const KEEP_WARM: Duration = Duration::from_secs(30);
 
+/// How often the secret store and the device's own protection are read: listing the store starts
+/// a process and reading the disk starts two, so they are asked at a pace of their own rather
+/// than on every pass, and again at once when the person changes one.
+const DEVICE_FACTS: Duration = Duration::from_secs(30);
+
+/// The phone book of the store's own console: the same command line Settings and scripts run.
+#[cfg(target_os = "linux")]
+const SECRET_SERVICE: &str = "/usr/libexec/tilo/tilo-secret-service";
+
+/// How long one read of the secret store or the machine may take.
+#[cfg(target_os = "linux")]
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The most one of those commands may answer.
+#[cfg(target_os = "linux")]
+const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
+
 /// Where the session reads the privacy of this machine's devices: the machine itself in a
 /// session, a stand-in in a test.
 pub(crate) trait Sources {
@@ -58,6 +78,19 @@ pub(crate) trait Sources {
 
     /// What people call `app`, from the device's own lists.
     fn app_name(&self, app: &str) -> String;
+
+    /// The applications that use this device's saved passwords and keys.
+    fn secret_apps(&self) -> SavedSecrets {
+        SavedSecrets::default()
+    }
+
+    /// What protects this device itself: its disk, its firmware and its firewall.
+    fn security(&self) -> Security {
+        Security::default()
+    }
+
+    /// What the person changed of the two above: they are read again at the next reading.
+    fn changed(&self) {}
 }
 
 /// One capture the session brokers now, as the reading says it.
@@ -73,6 +106,10 @@ pub(crate) struct Capture {
 struct ThisMachine {
     captures: Option<tilo_portal::captures::Captures>,
     consents: Option<tilo_portal::consent::Consents>,
+    /// What the secret store held when it was last asked, and when.
+    secrets: Mutex<Option<(Instant, SavedSecrets)>>,
+    /// What protected this device when it was last asked, and when.
+    security: Mutex<Option<(Instant, Security)>>,
 }
 
 impl Sources for ThisMachine {
@@ -110,6 +147,34 @@ impl Sources for ThisMachine {
     fn app_name(&self, app: &str) -> String {
         crate::app_names::app_name(app)
     }
+
+    fn secret_apps(&self) -> SavedSecrets {
+        let mut held = self.secrets.lock_recover();
+        if let Some((at, secrets)) = held.as_ref()
+            && at.elapsed() < DEVICE_FACTS
+        {
+            return secrets.clone();
+        }
+        let secrets = read_secret_apps();
+        *held = Some((Instant::now(), secrets.clone()));
+        secrets
+    }
+
+    fn security(&self) -> Security {
+        let mut held = self.security.lock_recover();
+        if let Some((at, security)) = held.as_ref()
+            && at.elapsed() < DEVICE_FACTS
+        {
+            return security.clone();
+        }
+        let security = read_security();
+        *held = Some((Instant::now(), security.clone()));
+        security
+    }
+
+    fn changed(&self) {
+        *self.secrets.lock_recover() = None;
+    }
 }
 
 /// The privacy of this machine's devices, published as `session:privacy`.
@@ -129,7 +194,12 @@ impl Privacy {
         captures: Option<tilo_portal::captures::Captures>,
         consents: Option<tilo_portal::consent::Consents>,
     ) -> Self {
-        Self::over(Box::new(ThisMachine { captures, consents }))
+        Self::over(Box::new(ThisMachine {
+            captures,
+            consents,
+            secrets: Mutex::default(),
+            security: Mutex::default(),
+        }))
     }
 
     /// The privacy as `sources` reads it.
@@ -179,10 +249,10 @@ impl Service for Privacy {
     }
 
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![
+        vec![offer::<PrivacyAction>(
             tilo_resource::LiveRow::typed::<PrivacyRoot>(RESOURCE, t("session-privacy"))
                 .into_resource(),
-        ]
+        )]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
@@ -197,9 +267,25 @@ impl Service for Privacy {
         &mut self,
         resource: &str,
         action: &str,
-        _arguments: &Map<String, Value>,
+        arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
-        Err(ApiError::Unknown(ActionAddress::new(resource, action)))
+        if resource != RESOURCE {
+            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
+        }
+        match decode::<PrivacyAction>(&self.resources(), resource, action, arguments)? {
+            PrivacyAction::SetSecretsAccess { app, allowed } => {
+                let verb = if allowed { "allow" } else { "revoke" };
+                secret_command(&["apps", verb, &app]).map_err(ApiError::Failed)?;
+            }
+            PrivacyAction::ForgetSecrets { app } => {
+                secret_command(&["apps", "forget", &app]).map_err(ApiError::Failed)?;
+            }
+        }
+        // What the person changed is read again at once, rather than after the pace of the
+        // reading or of the store: the next read lists what they left.
+        self.sources.changed();
+        *self.last.lock_recover() = None;
+        Ok(Started::Done(ActionOutput::default()))
     }
 }
 
@@ -320,7 +406,197 @@ fn reading_of(sources: &dyn Sources) -> Reading {
     Reading {
         capabilities,
         answers,
+        secrets: Some(sources.secret_apps()),
+        security: Some(sources.security()),
     }
+}
+
+/// The applications that use this device's saved passwords and keys, as the store lists them.
+#[cfg(target_os = "linux")]
+fn read_secret_apps() -> SavedSecrets {
+    #[derive(serde::Deserialize)]
+    struct Stored {
+        id: String,
+        #[serde(default)]
+        name: String,
+        access: String,
+        #[serde(default)]
+        uses: u64,
+        #[serde(default)]
+        items: u32,
+    }
+    let listed = bounded_command::run(
+        SECRET_SERVICE,
+        &["apps", "list", "--json"],
+        None,
+        COMMAND_OUTPUT_LIMIT,
+        COMMAND_TIMEOUT,
+    )
+    .map_err(|error| format!("{SECRET_SERVICE}: {error}"))
+    .and_then(|output| {
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        } else {
+            let said = output.stderr_diagnostic();
+            Err(if said.is_empty() {
+                format!("{SECRET_SERVICE}: exited with {}", output.status)
+            } else {
+                format!("{SECRET_SERVICE}: {said}")
+            })
+        }
+    })
+    .and_then(|json| serde_json::from_str::<Vec<Stored>>(&json).map_err(|error| error.to_string()));
+    match listed {
+        Ok(apps) => SavedSecrets {
+            apps: apps
+                .into_iter()
+                .map(|app| SecretApp {
+                    allowed: app.access == "allowed",
+                    name: if app.name.is_empty() {
+                        crate::app_names::app_name(&app.id)
+                    } else {
+                        app.name
+                    },
+                    id: app.id,
+                    uses: app.uses,
+                    items: app.items,
+                })
+                .collect(),
+            read_error: None,
+        },
+        Err(why) => SavedSecrets {
+            apps: Vec::new(),
+            read_error: Some(why),
+        },
+    }
+}
+
+/// A device that keeps no store of saved passwords and keys of its own.
+#[cfg(not(target_os = "linux"))]
+fn read_secret_apps() -> SavedSecrets {
+    SavedSecrets {
+        apps: Vec::new(),
+        read_error: Some("This device keeps no saved passwords and keys.".to_owned()),
+    }
+}
+
+/// What protects this device itself: its disk, its firmware and its firewall.
+fn read_security() -> Security {
+    #[cfg(target_os = "linux")]
+    {
+        let (firewall, firewall_error) = firewall_in_force();
+        Security {
+            disk_encryption: disk_encryption(),
+            secure_boot: secure_boot(),
+            firewall,
+            firewall_error,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Security::default()
+    }
+}
+
+/// Whether the disk this system runs from is encrypted: whether its device is a `crypt` one, or
+/// one built on a `crypt` device below it.
+#[cfg(target_os = "linux")]
+fn disk_encryption() -> Protection {
+    let Ok(source) = query("findmnt", &["-no", "SOURCE", "/"]) else {
+        return Protection::Unknown;
+    };
+    let Ok(chain) = query("lsblk", &["-s", "-n", "-o", "TYPE", &source]) else {
+        return Protection::Unknown;
+    };
+    if chain.lines().any(|line| line.trim() == "crypt") {
+        Protection::On
+    } else {
+        Protection::Off
+    }
+}
+
+/// Whether the firmware verifies what it boots: the `SecureBoot` variable the firmware keeps, and
+/// the byte inside it. A machine with no EFI variables has no Secure Boot; one whose variables
+/// cannot be read says it cannot tell.
+#[cfg(target_os = "linux")]
+fn secure_boot() -> Protection {
+    let Ok(entries) = std::fs::read_dir("/sys/firmware/efi/efivars") else {
+        return Protection::Unknown;
+    };
+    let Some(path) = entries.flatten().map(|entry| entry.path()).find(|path| {
+        path.file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("SecureBoot-"))
+    }) else {
+        return Protection::Off;
+    };
+    match std::fs::read(path)
+        .ok()
+        .and_then(|value| value.get(4).copied())
+    {
+        Some(0) => Protection::Off,
+        Some(_) => Protection::On,
+        None => Protection::Unknown,
+    }
+}
+
+/// The firewall in force: `firewalld` when it serves, else the kernel's own ruleset, which is off
+/// only when it was read and holds nothing.
+#[cfg(target_os = "linux")]
+fn firewall_in_force() -> (FirewallInForce, Option<String>) {
+    let firewalld = tilo_system_service::firewall::reading();
+    if firewalld.serving {
+        return (FirewallInForce::Firewalld, None);
+    }
+    match query("nft", &["list", "ruleset"]) {
+        Ok(ruleset) if !ruleset.trim().is_empty() => (FirewallInForce::Nftables, None),
+        Ok(_) => (FirewallInForce::Off, None),
+        Err(nft_error) => (
+            FirewallInForce::Unknown,
+            Some(match firewalld.read_error {
+                Some(firewalld_error) => format!("{firewalld_error}; {nft_error}"),
+                None => nft_error,
+            }),
+        ),
+    }
+}
+
+/// One read-only `program` query, its trimmed standard output.
+#[cfg(target_os = "linux")]
+fn query(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = bounded_command::run(program, args, None, COMMAND_OUTPUT_LIMIT, COMMAND_TIMEOUT)
+        .map_err(|error| format!("{program}: {error}"))?;
+    if !output.status.success() {
+        let said = output.stderr_diagnostic();
+        return Err(if said.is_empty() {
+            format!("{program}: exited with {}", output.status)
+        } else {
+            format!("{program}: {said}")
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// One change the secret store's own console makes: letting an application use it again,
+/// stopping it, or forgetting it.
+#[cfg(target_os = "linux")]
+fn secret_command(args: &[&str]) -> Result<(), String> {
+    let output = bounded_command::run(
+        SECRET_SERVICE,
+        args,
+        None,
+        COMMAND_OUTPUT_LIMIT,
+        COMMAND_TIMEOUT,
+    )
+    .map_err(|error| format!("{SECRET_SERVICE}: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let said = output.stderr_diagnostic();
+    Err(if said.is_empty() {
+        format!("{SECRET_SERVICE}: exited with {}", output.status)
+    } else {
+        format!("{SECRET_SERVICE}: {said}")
+    })
 }
 
 /// The machine's switch for one of its devices, as the reading says it.
@@ -401,6 +677,8 @@ mod tests {
         status: os_actions::PrivacyStatus,
         captures: Vec<Capture>,
         answers: Vec<tilo_peer_state::Kept>,
+        secrets: SavedSecrets,
+        security: Security,
     }
 
     impl Sources for Stand {
@@ -418,6 +696,14 @@ mod tests {
 
         fn app_name(&self, app: &str) -> String {
             app.rsplit('.').next().unwrap_or(app).to_owned()
+        }
+
+        fn secret_apps(&self) -> SavedSecrets {
+            self.secrets.clone()
+        }
+
+        fn security(&self) -> Security {
+            self.security.clone()
         }
     }
 
@@ -476,6 +762,22 @@ mod tests {
                     false,
                 ),
             ],
+            secrets: SavedSecrets {
+                apps: vec![SecretApp {
+                    id: "sandbox:so.tilo.mail".into(),
+                    name: "mail".into(),
+                    allowed: true,
+                    uses: 7,
+                    items: 2,
+                }],
+                read_error: None,
+            },
+            security: Security {
+                disk_encryption: tilo_device_surfaces::privacy::Protection::On,
+                secure_boot: tilo_device_surfaces::privacy::Protection::Off,
+                firewall: tilo_device_surfaces::privacy::FirewallInForce::Firewalld,
+                firewall_error: None,
+            },
         }
     }
 
@@ -551,6 +853,50 @@ mod tests {
         assert_eq!(recorder.device, "Laptop");
     }
 
+    /// Each answer is the consent resource the portal publishes for it: the address its own
+    /// `forget` is called on is the one the answer carries.
+    #[test]
+    fn each_answer_carries_the_consent_its_forget_is_called_on() {
+        let reading = reading_of(&machine());
+        let placed: Vec<&str> = reading
+            .answers
+            .iter()
+            .map(|answer| answer.address.address())
+            .collect();
+        assert_eq!(
+            placed,
+            vec![
+                "portal:consent:ab\u{1f}so.tilo.meet\u{1f}microphone",
+                "portal:consent:ab\u{1f}so.tilo.recorder\u{1f}camera",
+            ]
+        );
+    }
+
+    /// The applications that use the saved passwords and keys, and the device's own protection,
+    /// are published with the reading: a pane draws them from what the session read.
+    #[test]
+    fn the_reading_carries_the_saved_secrets_and_the_protection() {
+        let reading = reading_of(&machine());
+        let secrets = reading.secrets.expect("the store was read");
+        assert_eq!(secrets.apps.len(), 1);
+        assert_eq!(secrets.apps[0].id, "sandbox:so.tilo.mail");
+        assert!(secrets.apps[0].allowed);
+        assert_eq!((secrets.apps[0].uses, secrets.apps[0].items), (7, 2));
+        let security = reading.security.expect("the device was read");
+        assert_eq!(
+            security.disk_encryption,
+            tilo_device_surfaces::privacy::Protection::On
+        );
+        assert_eq!(
+            security.secure_boot,
+            tilo_device_surfaces::privacy::Protection::Off
+        );
+        assert_eq!(
+            security.firewall,
+            tilo_device_surfaces::privacy::FirewallInForce::Firewalld
+        );
+    }
+
     /// The session's service publishes the reading on its resource and on no other, and reads it
     /// before anything has: the first read is the machine's, not an empty one.
     #[test]
@@ -586,6 +932,12 @@ mod tests {
             fn app_name(&self, app: &str) -> String {
                 self.1.app_name(app)
             }
+            fn secret_apps(&self) -> SavedSecrets {
+                self.1.secret_apps()
+            }
+            fn security(&self) -> Security {
+                self.1.security()
+            }
         }
         let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut privacy =
@@ -600,4 +952,10 @@ mod tests {
             "a read within the refresh answers from the reading read before"
         );
     }
+}
+
+/// A device with no store of saved passwords and keys to change.
+#[cfg(not(target_os = "linux"))]
+fn secret_command(_arguments: &[&str]) -> Result<(), String> {
+    Err("This device keeps no saved passwords and keys.".to_owned())
 }

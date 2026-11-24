@@ -139,7 +139,14 @@ const PRIVACY: &str = r#"{
         {"$address": "portal:consent:Phone\u001fso.tilo.meet\u001fmicrophone",
          "app": "so.tilo.meet", "name": "Meet", "capability": "microphone", "allowed": false,
          "standing": "session", "until_unix_ms": 0, "device": "Phone", "this_device": false}
-    ]
+    ],
+    "secrets": {"apps": [
+        {"id": "binary:/usr/bin/chromium", "name": "Chromium", "allowed": true, "uses": 42,
+         "items": 3},
+        {"id": "sandbox:so.tilo.mail", "name": "Mail", "allowed": false, "uses": 7, "items": 1}
+    ], "read_error": null},
+    "security": {"disk_encryption": "on", "secure_boot": "off", "firewall": "firewalld",
+                 "firewall_error": null}
 }"#;
 
 /// Each device says what blocks it and what uses it, in its own words, and each answer names the
@@ -271,6 +278,16 @@ fn a_device_read_nothing_of_is_unknown_rather_than_unused() {
         !said.contains("No application is using it now"),
         "nothing read is not nothing used: {said}"
     );
+    for expected in [
+        "The applications that use saved passwords and keys can't be read here.",
+        "What protects this device itself can't be read here.",
+    ] {
+        assert!(said.contains(expected), "`{expected}` is shown: {said}");
+    }
+    assert!(
+        !said.contains("No application has used saved passwords or keys yet."),
+        "saved secrets nobody read are not none used: {said}"
+    );
 }
 
 /// Neither root was ever published: the pane still draws, and each half says what it cannot say
@@ -364,7 +381,7 @@ fn the_pane_takes_back_an_answer_on_its_own_resource() {
     let host = settings();
     serve(&host, "session:privacy", "so.tilo.device#Privacy", PRIVACY);
     serve_access(&host);
-    let mut view = pane(&host);
+    let view = pane(&host);
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
@@ -390,8 +407,11 @@ fn the_pane_takes_back_an_answer_on_its_own_resource() {
         "the consent's own verb, as the device surface publishes it"
     );
     assert!(
-        args.is_empty(),
-        "the resource is the address the call runs on, never an argument: {args:?}"
+        args.iter().all(|(_, value)| match value {
+            Value::Ref(held) => held.target.id_string() == RECORDER_CONSENT,
+            _ => false,
+        }),
+        "the consent itself is the only argument, the call's address: {args:?}"
     );
     assert_eq!(
         target
@@ -399,5 +419,130 @@ fn the_pane_takes_back_an_answer_on_its_own_resource() {
             .map(tilolang_tilo::runtime::ResourceRef::id_string),
         Some(RECORDER_CONSENT.to_owned()),
         "the first answer the pane lists"
+    );
+}
+
+/// One argument of a sent call.
+fn arg<'a>(args: &'a [(String, Value)], wanted: &str) -> Option<&'a Value> {
+    args.iter()
+        .find(|(named, _)| named == wanted)
+        .map(|(_, value)| value)
+}
+
+/// The applications that use the saved passwords and keys are listed with what they keep, and
+/// the pane stops one, lets it use the store again, or forgets it, each through the reading's
+/// own verb with the application's identity.
+#[test]
+fn the_pane_lists_and_changes_the_saved_secrets() {
+    let host = settings();
+    serve(&host, "session:privacy", "so.tilo.device#Privacy", PRIVACY);
+    serve_access(&host);
+    let view = pane(&host);
+    let said = texts(&view).join(" | ");
+    for expected in [
+        "Saved passwords and keys",
+        "Chromium",
+        "3 saved, used 42 times",
+        "Mail",
+        "1 saved, used 7 times",
+        "Allowed",
+        "Refused",
+    ] {
+        assert!(said.contains(expected), "`{expected}` is shown: {said}");
+    }
+
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    // The first application may use the store: the pane offers stopping it, and forgetting it.
+    view.press(&labelled(view.tree(), "ui.Button", "Stop"))
+        .expect("the application is stopped");
+    let sent = sent.borrow();
+    let [
+        Invocation::Action {
+            app, name, args, ..
+        },
+    ] = sent.as_slice()
+    else {
+        panic!("one verb of the reading: {sent:?}");
+    };
+    assert_eq!(
+        (app.as_str(), name.as_str()),
+        ("so.tilo.device", "set-secrets-access"),
+        "the reading's own verb, as its surface publishes it"
+    );
+    assert_eq!(
+        arg(args, "app"),
+        Some(&Value::text("binary:/usr/bin/chromium"))
+    );
+    assert_eq!(arg(args, "allowed"), Some(&Value::Bool(false)));
+    drop(sent);
+
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    view.press(&labelled(view.tree(), "ui.Button", "Forget"))
+        .expect("the application is forgotten");
+    let sent = sent.borrow();
+    let [
+        Invocation::Action {
+            app, name, args, ..
+        },
+    ] = sent.as_slice()
+    else {
+        panic!("one verb of the reading: {sent:?}");
+    };
+    assert_eq!(
+        (app.as_str(), name.as_str()),
+        ("so.tilo.device", "forget-secrets")
+    );
+    assert_eq!(
+        arg(args, "app"),
+        Some(&Value::text("binary:/usr/bin/chromium"))
+    );
+}
+
+/// The device's own protection is said in the row's words: whether its disk is encrypted, its
+/// firmware verifies what it boots and a firewall is in force, and when one cannot be read the
+/// pane says so rather than showing it off.
+#[test]
+fn the_pane_says_what_protects_this_device() {
+    let host = settings();
+    serve(&host, "session:privacy", "so.tilo.device#Privacy", PRIVACY);
+    serve_access(&host);
+    let said = line(&host).join(" | ");
+    for expected in [
+        "Device protection",
+        "Encrypted",
+        "Disabled",
+        "Active, firewalld",
+    ] {
+        assert!(said.contains(expected), "`{expected}` is shown: {said}");
+    }
+
+    // Read, and nothing protects it: each row says its own off, and a firewall that could not be
+    // read says so with why rather than as off.
+    let host = settings();
+    serve(
+        &host,
+        "session:privacy",
+        "so.tilo.device#Privacy",
+        r#"{"capabilities": [], "answers": [],
+            "secrets": {"apps": [], "read_error": "the store is locked"},
+            "security": {"disk_encryption": "off", "secure_boot": "on",
+                         "firewall": "unknown",
+                         "firewall_error": "firewalld is not running"}}"#,
+    );
+    serve_access(&host);
+    let said = line(&host).join(" | ");
+    for expected in [
+        "Not encrypted",
+        "Enabled",
+        "Can't read the firewall state: firewalld is not running",
+        "The saved-secrets service can't be reached, so its applications can't be listed.",
+    ] {
+        assert!(said.contains(expected), "`{expected}` is shown: {said}");
+    }
+    assert!(
+        !said.contains("Not active"),
+        "a firewall nobody could read is not said to be off: {said}"
     );
 }

@@ -10126,7 +10126,48 @@
       "kind": "privacy",
       "label": "Privacy",
       "version": 1,
-      "verbs": [],
+      "verbs": [
+        {
+          "id": "set-secrets-access",
+          "label": "Let an application use saved secrets, or stop it",
+          "description": "Let an application use the saved passwords and keys again, or stop it. What it saved stays until it is forgotten.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "app",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "allowed",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "forget-secrets",
+          "label": "Forget an application's saved secrets",
+          "description": "Remove an application's saved secrets and its record",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "app",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
       "fields": [
         {
           "path": "capabilities",
@@ -10144,6 +10185,26 @@
           "type": {
             "list": {
               "named": "Answer"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "secrets",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "SavedSecrets"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "security",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Security"
             }
           },
           "readonly": true
@@ -10229,6 +10290,28 @@
           ]
         },
         {
+          "name": "FirewallInForce",
+          "doc": "The firewall in force on this device.",
+          "cases": [
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            },
+            {
+              "name": "firewalld",
+              "label": "Firewalld"
+            },
+            {
+              "name": "nftables",
+              "label": "Nftables"
+            },
+            {
+              "name": "off",
+              "label": "Off"
+            }
+          ]
+        },
+        {
           "name": "InUse",
           "doc": "One application using a device of this machine now.",
           "fields": [
@@ -10280,6 +10363,100 @@
                 "list": {
                   "named": "InUse"
                 }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Protection",
+          "doc": "Whether a protection of this device is on, off, or cannot be read here.",
+          "cases": [
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            },
+            {
+              "name": "on",
+              "label": "On"
+            },
+            {
+              "name": "off",
+              "label": "Off"
+            }
+          ]
+        },
+        {
+          "name": "SavedSecrets",
+          "doc": "The applications that use this device's saved passwords and keys.",
+          "fields": [
+            {
+              "name": "apps",
+              "type": {
+                "list": {
+                  "named": "SecretApp"
+                }
+              }
+            },
+            {
+              "name": "read_error",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SecretApp",
+          "doc": "One application that stored or read the person's saved passwords and keys.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "allowed",
+              "type": "bool"
+            },
+            {
+              "name": "uses",
+              "type": "int"
+            },
+            {
+              "name": "items",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "Security",
+          "doc": "What protects this device itself, apart from any workspace: its disk, its firmware and its firewall.",
+          "fields": [
+            {
+              "name": "disk_encryption",
+              "type": {
+                "named": "Protection"
+              }
+            },
+            {
+              "name": "secure_boot",
+              "type": {
+                "named": "Protection"
+              }
+            },
+            {
+              "name": "firewall",
+              "type": {
+                "named": "FirewallInForce"
+              }
+            },
+            {
+              "name": "firewall_error",
+              "type": {
+                "option": "text"
               }
             }
           ]

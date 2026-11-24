@@ -1807,6 +1807,20 @@ d-laci57k4 = Permissions pane
     .w-no-workspace-here-gives-anything-beyond = Kein Arbeitsbereich hier gibt etwas über seine eigenen Dokumente hinaus.
     .w-this-workspace = Dieser Arbeitsbereich
     .w-take-back = Zurücknehmen
+    .w-saved-passwords-and-keys = Gespeicherte Passwörter und Schlüssel
+    .w-applications-that-stored-or-read-saved = Anwendungen, die auf diesem Gerät gespeicherte Passwörter und Schlüssel abgelegt oder gelesen haben. Wer eine davon stoppt, verwehrt ihr alle gespeicherten Geheimnisse; ihre eigenen Einträge bleiben, bis du sie vergisst.
+    .w-the-saved-secrets-service-can-t = Der Dienst für gespeicherte Geheimnisse ist nicht erreichbar; seine Anwendungen lassen sich nicht auflisten.
+    .w-no-application-has-used-saved-passwords = Noch keine Anwendung hat gespeicherte Passwörter oder Schlüssel verwendet.
+    .w-stop = Stoppen
+    .w-allow = Erlauben
+    .w-forget = Vergessen
+    .w-device-protection = Geräteschutz
+    .w-what-protects-this-device-itself-these = Was dieses Gerät selbst schützt. Das gehört zum Rechner und nicht zu einem Arbeitsbereich.
+    .w-disk-encryption = Datenträgerverschlüsselung
+    .w-secure-boot = Secure Boot
+    .w-firewall = Firewall
+    .w-the-applications-that-use-saved-passwords = Die Anwendungen, die gespeicherte Passwörter und Schlüssel nutzen, sind hier nicht lesbar.
+    .w-what-protects-this-device-itself-can = Was dieses Gerät selbst schützt, ist hier nicht lesbar.
 
 d-3mj4u2bp = Einfügekürzel-Wörter
     .w-pastes-with-ctrl-shift-v = Fügt mit Strg+Umschalt+V ein
@@ -1871,3 +1885,24 @@ d-qn2xanlz = Betreiberbereich
     .w-look-for-the-operators-in-reach = Die erreichbaren Betreiber suchen und dann den wählen, den diese SIM nutzt.
     .w-look-for-operators = Betreiber suchen
     .w-choose-automatically = Automatisch wählen
+
+d-7ncwu27w = Worte zur Firewall
+    .w-active-firewalld = Aktiv, firewalld
+    .w-active-nftables = Aktiv, nftables
+    .w-not-active = Nicht aktiv
+    .w-can-t-read-the-firewall-state = Der Firewall-Zustand ist nicht lesbar: { $why }
+    .w-can-t-read-the-firewall-state-2 = Der Firewall-Zustand ist nicht lesbar
+
+d-mnunge2j = Schutzworte
+    .w-encrypted = Verschlüsselt
+    .w-enabled = Aktiviert
+    .w-not-encrypted = Nicht verschlüsselt
+    .w-disabled = Deaktiviert
+    .w-this-device-can-t-say = Dieses Gerät kann es nicht sagen
+
+d-l6xrxon7 = Worte zu gespeicherten Geheimnissen
+    .w-saved-used-times = { $items } gespeichert, { $uses } Mal verwendet
+
+d-oebqu32z = Tastenkürzel
+    .w-no-keys = Keine Tasten
+    .w-usually = { $now } (sonst { $usual })
