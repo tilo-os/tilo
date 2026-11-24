@@ -310,7 +310,7 @@ impl Calls {
         static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         let handed = std::env::var(NATIVE_FD_ENV)
             .ok()
-            .and_then(|fd| fd.trim().parse::<std::os::fd::RawFd>().ok());
+            .and_then(|fd| fd.trim().parse::<usize>().ok());
         let (stream, workspace) = match (socket, handed) {
             (None, Some(fd)) => {
                 if TAKEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -319,15 +319,14 @@ impl Calls {
                          client that holds it"
                     );
                 }
-                // SAFETY: the launcher opened `fd` for this process alone, and `TAKEN` makes
-                // this the one owner of it.
-                #[expect(unsafe_code, reason = "the launcher hands the connection as a descriptor")]
-                let stream = unsafe {
-                    <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fd)
-                };
+                let stream = inherited(fd)?;
                 let workspace = workspace
                     .map(str::to_owned)
-                    .or_else(|| std::env::var(WORKSPACE_ENV).ok().filter(|ws| !ws.is_empty()))
+                    .or_else(|| {
+                        std::env::var(WORKSPACE_ENV)
+                            .ok()
+                            .filter(|ws| !ws.is_empty())
+                    })
                     .ok_or_else(|| {
                         anyhow!("an app's connection names its workspace in {WORKSPACE_ENV}")
                     })?;
@@ -561,9 +560,7 @@ impl Calls {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .entry(asked.to_owned())
-                                .or_insert_with(|| {
-                                    Arc::new(served(line.clone(), asked, person))
-                                }),
+                                .or_insert_with(|| Arc::new(served(line.clone(), asked, person))),
                         );
                         Box::pin(there.typed(tool, arguments, group)).await
                     }
@@ -1267,9 +1264,13 @@ async fn founded(provider: &Provider) -> Result<Value> {
         address: tilo_actions::ActionAddress::new(crate::account::WORKSPACES, "list"),
     };
     // The daemon decides the call as whoever connects; the caller here names nobody.
-    settled(provider, tilo_actions::remote::Caller::local_person(""), target)
-        .await
-        .map_err(|refused| anyhow!("this computer's daemon refused: {}", refused.body.message))
+    settled(
+        provider,
+        tilo_actions::remote::Caller::local_person(""),
+        target,
+    )
+    .await
+    .map_err(|refused| anyhow!("this computer's daemon refused: {}", refused.body.message))
 }
 
 /// `target` invoked with no argument as `caller` over `provider`, waited for until it settles:
@@ -1300,7 +1301,9 @@ async fn settled(
         match status {
             ReceiptStatus::Accepted => {}
             ReceiptStatus::Completed { output } => return Ok(output.value.unwrap_or_default()),
-            ReceiptStatus::Failed { error } => return Err(ApiError::new(&error.code, error.message)),
+            ReceiptStatus::Failed { error } => {
+                return Err(ApiError::new(&error.code, error.message));
+            }
             ReceiptStatus::Rejected { error } => return Err(refused(error)),
             ReceiptStatus::Cancelled { .. } => {
                 return Err(ApiError::new("action_failed", "the call was stopped"));
@@ -1312,6 +1315,31 @@ async fn settled(
             .ok_or_else(unanswered)?
             .receipt()
             .status;
+    }
+}
+
+/// The connection the launcher opened for this process and named by `value`: a descriptor on
+/// Unix, an inherited handle on Windows. Taken once ([`Calls::connect`]'s `TAKEN`), so this is
+/// its one owner.
+#[expect(
+    unsafe_code,
+    reason = "the launcher hands the connection as a descriptor"
+)]
+fn inherited(value: usize) -> Result<tilo_files::native::socket::Stream> {
+    #[cfg(unix)]
+    {
+        let fd = std::os::fd::RawFd::try_from(value)
+            .with_context(|| format!("{NATIVE_FD_ENV} names no descriptor"))?;
+        // SAFETY: the launcher opened `fd` for this process alone, taken once.
+        Ok(unsafe { <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fd) })
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{FromRawHandle as _, OwnedHandle, RawHandle};
+        // SAFETY: the launcher made this handle inheritable for this process alone, taken once.
+        let handle = unsafe { OwnedHandle::from_raw_handle(value as RawHandle) };
+        tilo_files::native::socket::Stream::from_handle(handle)
+            .with_context(|| format!("{NATIVE_FD_ENV} names no connection"))
     }
 }
 
