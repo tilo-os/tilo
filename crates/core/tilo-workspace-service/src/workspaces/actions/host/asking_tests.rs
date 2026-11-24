@@ -87,7 +87,7 @@ async fn resolve(
 ) -> Result<InvocationReceipt, ActionCallError> {
     let resolving = Resolve {
         resolution: answer,
-        choice: None,
+        ..Resolve::default()
     };
     let request = calling(
         RemoteActionTarget {

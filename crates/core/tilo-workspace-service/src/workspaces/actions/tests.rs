@@ -36,13 +36,14 @@ pub(crate) fn approved(request: &InvokeRequest, workspace: &str) -> InvokeReques
     use tilo_actions::remote::Confirmation;
     use tilo_actions::remote::asked::{Approval, RecordRef};
     let mut again = request.clone();
-    again.confirmation = Some(Confirmation::Asked(Approval {
-        record: RecordRef {
+    again.confirmation = Some(Confirmation::Asked(Approval::new(
+        RecordRef {
             workspace: workspace.to_owned(),
             record: request.invocation.0.to_string(),
+            device: None,
         },
-        choice: None,
-    }));
+        None,
+    )));
     again
 }
 
