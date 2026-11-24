@@ -67,6 +67,11 @@ struct Shared<P: Resource> {
     /// Its state as of the reading it was made from.
     state: RefCell<Option<(u64, Rc<P::State>)>>,
     follow: tokio::task::AbortHandle,
+    /// What tells the session the reading moved.
+    wake: tilo_service::Wake,
+    /// A read asked for now ([`FollowedResource::refresh`]) is on its way: another is not asked
+    /// until it answers.
+    refreshing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<P: Resource> Drop for Shared<P> {
@@ -124,7 +129,7 @@ impl<P: Resource> FollowedResource<P> {
     ) -> Self {
         let latest = Arc::new(Mutex::new(Latest::default()));
         let follow = {
-            let (daemon, latest) = (daemon.clone(), Arc::clone(&latest));
+            let (daemon, latest, wake) = (daemon.clone(), Arc::clone(&latest), Arc::clone(&wake));
             let (workspace, id) = (workspace.to_owned(), id.to_owned());
             daemon.runtime().clone().spawn(async move {
                 let mut after = None;
@@ -168,6 +173,8 @@ impl<P: Resource> FollowedResource<P> {
                 latest,
                 state: RefCell::default(),
                 follow: follow.abort_handle(),
+                wake,
+                refreshing: Arc::default(),
             }),
         }
     }
@@ -338,27 +345,45 @@ impl<P: Resource> FollowedResource<P> {
         }
     }
 
-    /// Read it again now, rather than when the follow next does: what a change just made shows
-    /// at once.
+    /// Ask for its reading again now, rather than when the follow next reads it: what a change
+    /// just made shows as soon as the daemon answers, and the session is woken then. The caller
+    /// never waits for the daemon, whose store may be slow; until the answer comes, the last
+    /// reading stands.
     pub(crate) fn refresh(&self) {
         let shared = &self.shared;
-        match shared
-            .daemon
-            .read_blocking(read_of(&shared.workspace, shared.app, &shared.id, None))
+        if shared
+            .refreshing
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
-            Ok(readings) => {
-                take(&shared.latest, &readings);
-            }
-            Err(error) => {
-                // A resource read on every pass may answer before this device holds it, or the
-                // daemon may be busy: the follow asks again a moment later, so this is not the
-                // person's to see.
-                tilo_failure::ignored!(
-                    "a resource read now reads when the follow does",
-                    tracing::debug!(%error, "a resource asked for now did not read")
-                );
-            }
+            return;
         }
+        let (daemon, latest, wake, refreshing) = (
+            shared.daemon.clone(),
+            Arc::clone(&shared.latest),
+            Arc::clone(&shared.wake),
+            Arc::clone(&shared.refreshing),
+        );
+        let read = read_of(&shared.workspace, shared.app, &shared.id, None);
+        shared.daemon.runtime().spawn(async move {
+            let read = daemon.read(read).await;
+            refreshing.store(false, std::sync::atomic::Ordering::Release);
+            match read {
+                Ok(readings) => {
+                    if take(&latest, &readings) {
+                        wake();
+                    }
+                }
+                Err(error) => {
+                    // A resource read on every pass may answer before this device holds it, or
+                    // the daemon may be busy: the follow asks again a moment later, so this is
+                    // not the person's to see.
+                    tilo_failure::ignored!(
+                        "a resource read now reads when the follow does",
+                        tracing::debug!(%error, "a resource asked for now did not read")
+                    );
+                }
+            }
+        });
     }
 }
 
