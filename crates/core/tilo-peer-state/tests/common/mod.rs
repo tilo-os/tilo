@@ -4,8 +4,12 @@
     reason = "each test binary uses a different subset of these fixtures"
 )]
 
+use automerge::AutoCommit;
+use collab_types::{ContentRetention, SignedOp, document_artifact_id};
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 
+use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -64,4 +68,113 @@ pub fn workspace(
     )
     .unwrap();
     peer
+}
+
+/// `sync`, keeping what it holds and is sent in a store in `directory`, as
+/// every device holding a workspace does.
+pub fn stored(sync: DirectSync, directory: &tempfile::TempDir) -> DirectSync {
+    let store = tilo_peer_state::store::Store::open(
+        directory.path(),
+        tilo_peer_state::store::Appetite::StoreAll,
+    )
+    .unwrap();
+    sync.with_store(std::sync::Arc::new(store))
+}
+
+/// The keys every member of `workspace` seals its records under.
+pub fn members_keys(workspace: &str) -> key_group::ContentKeys {
+    key_group::KeyGroup::create(
+        collab_types::WorkspaceId::parse(workspace).unwrap(),
+        key_group::MemberKey::generate("member").unwrap(),
+    )
+    .unwrap()
+    .content_keys()
+    .unwrap()
+}
+
+/// `record` of `app` as a holder of `keys` reads it: every sealed write
+/// merged over its base. `None` while `peer` holds none of it.
+pub fn opened(
+    peer: &StatePeer,
+    keys: &key_group::ContentKeys,
+    (app, record): (&str, &str),
+) -> Option<Vec<u8>> {
+    let mut open = |op: &SignedOp| {
+        let metadata = op.encryption.ok_or("not sealed")?;
+        let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+        keys.open_content(op.artifact, &metadata, &ciphertext)
+            .map(|plaintext| plaintext.to_vec())
+            .map_err(|error| error.to_string())
+    };
+    peer.publication()
+        .opened_document(app, record, &mut open)
+        .unwrap()
+        .map(|opened| opened.document)
+}
+
+/// The heads of `record` of `app` as a holder of `keys` reads it.
+pub fn opened_heads(
+    peer: &StatePeer,
+    keys: &key_group::ContentKeys,
+    route: (&str, &str),
+) -> Option<Vec<automerge::ChangeHash>> {
+    opened(peer, keys, route).map(|bytes| AutoCommit::load(&bytes).unwrap().get_heads())
+}
+
+/// Write `record` of `app` on `sync` as `key`'s device, sealed under `keys`
+/// ([`sealed_write`]), and publish it.
+pub fn write_sealed(
+    sync: &DirectSync,
+    keys: &key_group::ContentKeys,
+    key: &SigningKey,
+    route: (&str, &str),
+    edit: impl FnOnce(&mut AutoCommit),
+) -> NeighbourMsg {
+    sync.publish(|peer| sealed_write(peer, keys, key, route, edit))
+        .unwrap()
+}
+
+/// Write `record` of `app` on `peer` as `key`'s device, sealed under `keys`:
+/// the whole record `edit` makes of nothing when `peer` holds none of it, the
+/// change `edit` makes of it otherwise.
+pub fn sealed_write(
+    peer: &mut StatePeer,
+    keys: &key_group::ContentKeys,
+    key: &SigningKey,
+    (app, record): (&str, &str),
+    edit: impl FnOnce(&mut AutoCommit),
+) -> Result<NeighbourMsg, String> {
+    let artifact = document_artifact_id(app, peer.workspace_id(), record);
+    let mut seal = |plaintext: &[u8]| {
+        keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
+            .map_err(|error| error.to_string())
+    };
+    let now = tilo_clock::wall();
+    let held = opened(peer, keys, (app, record));
+    let starts = held.is_none();
+    let mut document = held
+        .map_or_else(AutoCommit::new, |base| AutoCommit::load(&base).unwrap())
+        .with_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+    let heads = document.get_heads();
+    edit(&mut document);
+    if starts {
+        return peer.publication_mut().publish_sealed_checkpoint(
+            app,
+            record,
+            document.save(),
+            &mut seal,
+            key,
+            now,
+        );
+    }
+    peer.publication_mut().publish_sealed_incremental(
+        app,
+        record,
+        document.save_after(&heads),
+        &mut seal,
+        key,
+        now,
+    )
 }

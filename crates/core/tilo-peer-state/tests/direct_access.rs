@@ -2,7 +2,10 @@
 //! the ended device is refused and sent nothing more, and the others keep
 //! receiving what the workspace writes.
 
-use crate::common::{addr, device, localhost_endpoint};
+use crate::common::{
+    addr, device, localhost_endpoint, members_keys, opened, opened_heads, write_sealed,
+};
+use key_group::ContentKeys;
 
 use automerge::transaction::CommitOptions;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
@@ -28,38 +31,9 @@ fn invoker(cert: &DeviceCert) -> ActionInvoker {
     ActionInvoker::person(hex::encode(cert.user_public_key))
 }
 
-/// A document holding `field` set to `value`, made by `writer`.
-fn document(field: &str, value: &str, writer: &DeviceCert) -> Vec<u8> {
-    let mut document = AutoCommit::new();
-    document.put(ROOT, field, value).unwrap();
-    let context = ActionContext {
-        what: Some(Did::Edit(FieldEdit {
-            ty: "fixture".into(),
-            field: field.into(),
-            path: vec![PathStep::Field(field.into())],
-            op: EditOp::Set,
-            old: None,
-            new: None,
-            args: std::collections::BTreeMap::new(),
-        })),
-        invoker: Some(invoker(writer)),
-        ..ActionContext::for_resource("fixture", "fixture", "Fixture")
-    };
-    let mut options = CommitOptions::default();
-    if let Some(message) = context.change_message() {
-        options.set_message(message);
-    }
-    document.commit_with(options);
-    document.save()
-}
-
-/// A change setting `field` to `value` on `record` as `sync` holds it, made for
-/// `invoker`.
-fn change(sync: &DirectSync, field: &str, value: &str, invoker: ActionInvoker) -> Vec<u8> {
-    let mut document =
-        AutoCommit::load(&sync.read(|peer| peer.document(APP, RECORD)).unwrap()).unwrap();
-    let heads = document.get_heads();
-    document.put(ROOT, field, value).unwrap();
+/// `field` of `record` set to `value`, made for `invoker`.
+fn set(record: &mut AutoCommit, field: &str, value: &str, invoker: ActionInvoker) {
+    record.put(ROOT, field, value).unwrap();
     let context = ActionContext {
         what: Some(Did::Edit(FieldEdit {
             ty: "fixture".into(),
@@ -77,13 +51,12 @@ fn change(sync: &DirectSync, field: &str, value: &str, invoker: ActionInvoker) -
     if let Some(message) = context.change_message() {
         options.set_message(message);
     }
-    document.commit_with(options);
-    document.save_after(&heads)
+    record.commit_with(options);
 }
 
-/// `record`'s heads in `sync`'s replica.
-fn heads(sync: &DirectSync, record: &str) -> Option<Vec<automerge::ChangeHash>> {
-    sync.read(|peer| peer.document_heads(APP, record))
+/// The record's heads in `sync`'s replica, read with `keys`.
+fn heads(sync: &DirectSync, keys: &ContentKeys) -> Option<Vec<automerge::ChangeHash>> {
+    sync.read(|peer| opened_heads(peer, keys, (APP, RECORD)))
 }
 
 /// Wait until `done` holds of `sync`'s replica; `what` names the wait that gave up.
@@ -138,6 +111,8 @@ struct LinkedPair {
     host: DirectSync,
     host_key: SigningKey,
     host_cert: DeviceCert,
+    /// The keys the workspace's members seal its records under.
+    keys: ContentKeys,
     target: iroh::EndpointAddr,
     first: Member,
     second: Member,
@@ -178,16 +153,10 @@ impl LinkedPair {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(directory.path(), Appetite::StoreAll).unwrap());
         let host = DirectSync::over(Replica::new(peer), host_key.clone()).with_store(store);
-        host.publish(|peer| {
-            peer.publication_mut().publish_document(
-                APP,
-                RECORD,
-                document("value", "seed", &host_cert),
-                &host_key,
-                now,
-            )
-        })
-        .unwrap();
+        let keys = members_keys(WORKSPACE);
+        write_sealed(&host, &keys, &host_key, (APP, RECORD), |record| {
+            set(record, "value", "seed", invoker(&host_cert));
+        });
 
         let serving = Serving::new();
         serving.serve(host.clone()).expect("the host serves");
@@ -218,7 +187,7 @@ impl LinkedPair {
         .await;
         for (member, who) in [(&first, "the first member"), (&second, "the second member")] {
             until(&member.sync, &format!("{who} holds the record"), |peer| {
-                peer.document_heads(APP, RECORD).is_some()
+                opened(peer, &keys, (APP, RECORD)).is_some()
             })
             .await;
         }
@@ -226,6 +195,7 @@ impl LinkedPair {
             host,
             host_key,
             host_cert,
+            keys,
             target,
             first,
             second,
@@ -265,28 +235,23 @@ async fn a_revoked_devices_link_ends_and_anothers_stays_up() {
     );
 
     // The other link stays up and is sent what the host writes after.
-    let before = heads(&pair.first.sync, RECORD);
-    let write = change(&pair.host, "after", "1", invoker(&pair.host_cert));
-    pair.host
-        .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                APP,
-                RECORD,
-                write,
-                &pair.host_key,
-                SystemTime::now(),
-            )
-        })
-        .unwrap();
-    let written = heads(&pair.host, RECORD);
+    let before = heads(&pair.first.sync, &pair.keys);
+    write_sealed(
+        &pair.host,
+        &pair.keys,
+        &pair.host_key,
+        (APP, RECORD),
+        |record| set(record, "after", "1", invoker(&pair.host_cert)),
+    );
+    let written = heads(&pair.host, &pair.keys);
     until(
         &pair.second.sync,
         "the second member holds the write",
-        |peer| peer.document_heads(APP, RECORD) == written,
+        |peer| opened_heads(peer, &pair.keys, (APP, RECORD)) == written,
     )
     .await;
     assert_eq!(
-        heads(&pair.first.sync, RECORD),
+        heads(&pair.first.sync, &pair.keys),
         before,
         "the ended device is sent nothing more"
     );

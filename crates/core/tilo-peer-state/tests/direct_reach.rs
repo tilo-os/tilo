@@ -2,7 +2,10 @@
 //! it stays pending while that device is away, also across the writer's restart, turns reached
 //! once the other device links and keeps it, and refused when the other device refuses it.
 
-use crate::common::{addr, device, localhost_endpoint};
+use crate::common::{
+    addr, device, localhost_endpoint, members_keys, opened_heads, sealed_write, write_sealed,
+};
+use key_group::ContentKeys;
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -20,7 +23,7 @@ use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Kept};
 use tilo_peer_state::join::WorkspaceId;
 use tilo_peer_state::reach::{Reach, RecordReach};
 use tilo_peer_state::store::{Appetite, Store};
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
+use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
 
@@ -35,6 +38,8 @@ struct Two {
     b: StatePeer,
     b_key: SigningKey,
     person: [u8; 32],
+    /// The keys the workspace's members seal its records under.
+    keys: ContentKeys,
 }
 
 fn two() -> Two {
@@ -52,18 +57,10 @@ fn two() -> Two {
     )
     .unwrap();
     a.select_exact_admissions().unwrap();
-    let mut document = AutoCommit::new();
-    document.put(ROOT, "value", "from a").unwrap();
-    document.commit_edit("fixture", "value", &a_cert.user_public_key);
     a.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
-            documents: vec![SeedDocument {
-                app_id: APP.into(),
-                document_id: RECORD.into(),
-                kind: "test".into(),
-                bytes: document.save(),
-            }],
+            documents: Vec::new(),
         },
         &a_key,
         now,
@@ -76,30 +73,33 @@ fn two() -> Two {
         b,
         b_key,
         person: root.verifying_key().to_bytes(),
+        keys: members_keys(WORKSPACE),
     }
 }
 
-/// `key`'s write of `field = value` on the record as `peer` holds it, signed, and the change it
-/// carries.
+/// A's record, made by A as `person` on `a`, which keeps it.
+fn found(a: &DirectSync, keys: &ContentKeys, key: &SigningKey, person: &[u8; 32]) {
+    write_sealed(a, keys, key, (APP, RECORD), |record| {
+        record.put(ROOT, "value", "from a").unwrap();
+        record.commit_edit("fixture", "value", person);
+    });
+}
+
+/// `key`'s write of `field = value` on the record as `peer` holds it, sealed under `keys` and
+/// signed, and the change it carries.
 fn write(
     peer: &mut StatePeer,
-    key: &SigningKey,
+    (keys, key): (&ContentKeys, &SigningKey),
     person: &[u8; 32],
     field: &str,
     value: &str,
 ) -> (NeighbourMsg, [u8; 32]) {
-    let mut edit = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
-    edit.set_actor(automerge::ActorId::from(
-        key.verifying_key().to_bytes().to_vec(),
-    ));
-    let heads = edit.get_heads();
-    edit.put(ROOT, field, value).unwrap();
-    edit.commit_edit("fixture", field, person);
-    let change = edit.get_heads()[0].0;
-    let message = peer
-        .publication_mut()
-        .publish_incremental(APP, RECORD, edit.save_after(&heads), key, SystemTime::now())
-        .unwrap();
+    let message = sealed_write(peer, keys, key, (APP, RECORD), |record| {
+        record.put(ROOT, field, value).unwrap();
+        record.commit_edit("fixture", field, person);
+    })
+    .unwrap();
+    let change = opened_heads(peer, keys, (APP, RECORD)).unwrap()[0].0;
     (message, change)
 }
 
@@ -167,16 +167,19 @@ async fn a_write_waits_for_another_keeping_device_across_a_restart_and_reaches_i
         b,
         b_key,
         person,
+        keys,
     } = two();
     let a_dir = tempfile::tempdir().unwrap();
     let b_dir = tempfile::tempdir().unwrap();
 
     // A writes while B is away: nobody else keeps the workspace's copy of it.
     let (a_sync, first_store) = keeping(a, &a_key, a_dir.path());
+    found(&a_sync, &keys, &a_key, &person);
     let mut written = None;
     let message = a_sync
         .publish(|peer| {
-            let (message, change) = write(peer, &a_key, &person, "value", "while b is away");
+            let (message, change) =
+                write(peer, (&keys, &a_key), &person, "value", "while b is away");
             written = Some(change);
             Ok(message)
         })
@@ -236,10 +239,12 @@ async fn a_write_the_other_device_refuses_reads_refused() {
         b,
         b_key,
         person,
+        keys,
     } = two();
     let a_dir = tempfile::tempdir().unwrap();
     let b_dir = tempfile::tempdir().unwrap();
     let (a_sync, a_store) = keeping(a, &a_key, a_dir.path());
+    found(&a_sync, &keys, &a_key, &person);
     let (b_sync, _b_store) = keeping(b, &b_key, b_dir.path());
     let mut caught_up = b_sync.caught_up();
     let (_router, _linked) = link(&a_sync, &a_key, &b_sync, &b_key).await;
@@ -250,7 +255,7 @@ async fn a_write_the_other_device_refuses_reads_refused() {
 
     // A's own write, its signature scrambled after it was signed: B refuses it for good.
     let mut author = a_sync.read(Clone::clone);
-    let (mut forged, change) = write(&mut author, &a_key, &person, "forged", "value");
+    let (mut forged, change) = write(&mut author, (&keys, &a_key), &person, "forged", "value");
     let NeighbourMsg::AppDocument { envelope, .. } = &mut forged else {
         panic!("a write is a document frame");
     };
@@ -285,15 +290,14 @@ fn log_entries(dir: &Path) -> usize {
     .count()
 }
 
-/// `count` record writes of `peer`'s record by `key`, each carrying one change, as a device
+/// `count` record writes of the record by `key`, each carrying one change, as a device
 /// sends them: what a solo workspace notes and nobody answers.
 fn one_change_writes(
-    peer: &StatePeer,
     key: &SigningKey,
     person: &[u8; 32],
     count: usize,
 ) -> Vec<(NeighbourMsg, [u8; 32])> {
-    let mut document = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    let mut document = AutoCommit::new();
     document.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
     ));
@@ -342,7 +346,7 @@ async fn a_solo_workspace_s_log_keeps_one_entry_per_record_over_ten_thousand_wri
     } = two();
     let dir = tempfile::tempdir().unwrap();
     let (a_sync, store) = keeping(a, &a_key, dir.path());
-    let writes = one_change_writes(&a_sync.read(Clone::clone), &a_key, &person, 10_000);
+    let writes = one_change_writes(&a_key, &person, 10_000);
     let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
     for (message, _) in &writes {
         store.note_own_write(workspace, message);
@@ -379,16 +383,21 @@ async fn a_solo_workspace_s_log_keeps_one_entry_per_record_over_ten_thousand_wri
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restart_reads_back_the_record_s_one_entry_for_its_pending_writes() {
     let Two {
-        a, a_key, person, ..
+        a,
+        a_key,
+        person,
+        keys,
+        ..
     } = two();
     let dir = tempfile::tempdir().unwrap();
     let (a_sync, store) = keeping(a, &a_key, dir.path());
+    found(&a_sync, &keys, &a_key, &person);
     let mut changes = Vec::new();
     for value in ["one", "two"] {
         let mut written = None;
         a_sync
             .publish(|peer| {
-                let (message, change) = write(peer, &a_key, &person, "value", value);
+                let (message, change) = write(peer, (&keys, &a_key), &person, "value", value);
                 written = Some(change);
                 Ok(message)
             })
@@ -426,7 +435,7 @@ async fn an_answer_to_the_record_s_newest_write_turns_all_it_carried_reached() {
     let dir = tempfile::tempdir().unwrap();
     let (a_sync, store) = keeping(a, &a_key, dir.path());
     let workspaces = WorkspaceId::parse(WORKSPACE).unwrap();
-    let writes = one_change_writes(&a_sync.read(Clone::clone), &a_key, &person, 2);
+    let writes = one_change_writes(&a_key, &person, 2);
     for (message, _) in &writes {
         store.note_own_write(workspaces, message);
     }

@@ -4,7 +4,11 @@
 //! let go is read again from the history its host keeps once the member asks
 //! for it on the link.
 
-use crate::common::{addr, device, localhost_endpoint};
+use crate::common::{
+    addr, device, localhost_endpoint, members_keys, opened, opened_heads, sealed_write,
+    write_sealed,
+};
+use key_group::ContentKeys;
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -28,25 +32,19 @@ const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 
 /// `author`'s write of `key = value` on the record as `author` holds it,
-/// taken into `author` so the next write builds on it.
-fn write(author: &mut StatePeer, signer: &SigningKey, key: &str, value: &str) -> NeighbourMsg {
-    let mut edit = AutoCommit::load(&author.document(APP, RECORD).unwrap()).unwrap();
-    edit.set_actor(automerge::ActorId::from(
-        signer.verifying_key().to_bytes().to_vec(),
-    ));
-    let heads = edit.get_heads();
-    edit.put(ROOT, key, value).unwrap();
-    edit.commit_edit("fixture", key, &person(author, signer));
-    author
-        .publication_mut()
-        .publish_incremental(
-            APP,
-            RECORD,
-            edit.save_after(&heads),
-            signer,
-            SystemTime::now(),
-        )
-        .unwrap()
+/// sealed under `keys` and taken into `author` so the next write builds on it.
+fn write(
+    author: &mut StatePeer,
+    keys: &ContentKeys,
+    signer: &SigningKey,
+    (key, value): (&str, &str),
+) -> NeighbourMsg {
+    let person = person(author, signer);
+    sealed_write(author, keys, signer, (APP, RECORD), |record| {
+        record.put(ROOT, key, value).unwrap();
+        record.commit_edit("fixture", key, &person);
+    })
+    .unwrap()
 }
 
 /// The person whose certified device `key` is in `peer`'s workspace.
@@ -59,8 +57,8 @@ fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
         .user_public_key
 }
 
-fn value(peer: &StatePeer, key: &str) -> Option<String> {
-    let record = AutoCommit::load(&peer.document(APP, RECORD)?).ok()?;
+fn value(peer: &StatePeer, keys: &ContentKeys, key: &str) -> Option<String> {
+    let record = AutoCommit::load(&opened(peer, keys, (APP, RECORD))?).ok()?;
     record
         .get(ROOT, key)
         .ok()
@@ -172,14 +170,11 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     )
     .with_store(Arc::clone(&store));
     // The record as the host wrote it, kept in its store.
-    let mut document = AutoCommit::new();
-    document.put(ROOT, "value", "from the host").unwrap();
-    document.commit_edit("fixture", "value", &server_cert.user_public_key);
-    host.publish(|host| {
-        host.publication_mut()
-            .publish_document(APP, RECORD, document.save(), &host_key, now)
-    })
-    .unwrap();
+    let keys = members_keys(WORKSPACE);
+    write_sealed(&host, &keys, &host_key, (APP, RECORD), |record| {
+        record.put(ROOT, "value", "from the host").unwrap();
+        record.commit_edit("fixture", "value", &server_cert.user_public_key);
+    });
     let serving = Serving::new();
     serving.serve(host.clone()).unwrap();
     let host_endpoint = localhost_endpoint(&host_key).await;
@@ -202,10 +197,10 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
         .await
         .expect("the member catches up")
         .unwrap();
-    let held = host.read(|host| host.document_heads(APP, RECORD));
+    let held = host.read(|host| opened_heads(host, &keys, (APP, RECORD)));
     let mut changes = b.changes();
     tokio::time::timeout(Duration::from_secs(30), async {
-        while b.read(|b| b.document_heads(APP, RECORD)) != held {
+        while b.read(|b| opened_heads(b, &keys, (APP, RECORD))) != held {
             changes.changed().await.unwrap();
         }
     })
@@ -218,20 +213,20 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     // replica, they would take the numbers the host's next catch-up takes too,
     // and the member answered for the deferred write asks for one.
     let mut author = host.read(Clone::clone);
-    let first = write(&mut author, &c_key, "first", "1");
-    let second = write(&mut author, &c_key, "second", "2");
+    let first = write(&mut author, &keys, &c_key, ("first", "1"));
+    let second = write(&mut author, &keys, &c_key, ("second", "2"));
     host.send(second.clone()).unwrap();
     let waited = hears(&mut heard, &second, "the second write").await;
     assert!(
         waited.report.as_ref().unwrap().deferred,
         "the second write waits for the first"
     );
-    assert_eq!(b.read(|b| value(b, "second")), None);
+    assert_eq!(b.read(|b| value(b, &keys, "second")), None);
     host.send(first.clone()).unwrap();
     let released = hears(&mut heard, &first, "the first write").await;
     // The first write takes the second in with it: nobody asked again.
     assert_eq!(
-        b.read(|b| value(b, "first")).as_deref(),
+        b.read(|b| value(b, &keys, "first")).as_deref(),
         Some("1"),
         "the first write lands as it is heard: landed {}, retained {}, fresh {}, report {:?}",
         released.landed,
@@ -240,7 +235,7 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
         released.report
     );
     assert_eq!(
-        b.read(|b| value(b, "second")).as_deref(),
+        b.read(|b| value(b, &keys, "second")).as_deref(),
         Some("2"),
         "the write that waited merges once what it built on came"
     );
@@ -342,7 +337,7 @@ async fn a_frame_not_signed_by_its_author_is_refused_at_admission() {
         "an unsigned frame is refused for good, saying why: {kept:?}"
     );
     assert_eq!(
-        value(&host.read(Clone::clone), "forged"),
+        value(&host.read(Clone::clone), &members_keys(WORKSPACE), "forged"),
         None,
         "nothing the frame carried is readable"
     );

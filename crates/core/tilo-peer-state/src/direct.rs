@@ -4955,12 +4955,8 @@ mod tests {
     }
 
     /// A link over a replica of `roster`'s workspace, its first certificate
-    /// the authority's, holding `revocations` and `documents`.
-    fn link(
-        roster: &[(SigningKey, DeviceCert)],
-        revocations: RevocationList,
-        documents: Vec<crate::SeedDocument>,
-    ) -> DirectSync {
+    /// the authority's, holding `revocations`.
+    fn link(roster: &[(SigningKey, DeviceCert)], revocations: RevocationList) -> DirectSync {
         let (key, authority) = roster.first().unwrap();
         let now = tilo_clock::wall();
         let mut peer = StatePeer::new(
@@ -4982,7 +4978,7 @@ mod tests {
         peer.install_seed(
             crate::SeedState {
                 workspace_changes: crate::seed_workspace(WORKSPACE, authority, &roster).unwrap(),
-                documents,
+                documents: Vec::new(),
             },
             key,
             now,
@@ -5015,7 +5011,7 @@ mod tests {
         let roster = [device(&root, 2), device(&root, 3)];
         let member = roster[1].1.device_public_key;
         let stranger = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
-        let sync = link(&roster, RevocationList::new(), Vec::new());
+        let sync = link(&roster, RevocationList::new());
         let mut reader = sync.reader();
         // A link from a device that keeps no copy of the workspace carries its
         // own frames alone.
@@ -5082,7 +5078,7 @@ mod tests {
         let other = roster[2].1.device_public_key;
         // The host's server asks under a key of its own, not its link's.
         let server = SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes();
-        let sync = link(&roster, RevocationList::new(), Vec::new());
+        let sync = link(&roster, RevocationList::new());
         let mut reader = sync.reader();
         let admit = LinkAdmit {
             carries: Carries::OwnFrames,
@@ -5124,7 +5120,7 @@ mod tests {
         theirs
             .insert(revocation(&stranger, member.device_public_key))
             .unwrap();
-        let sync = link(&roster, theirs, Vec::new());
+        let sync = link(&roster, theirs);
         assert_eq!(
             sync.admits(member.device_public_key, false),
             Ok(()),
@@ -5180,7 +5176,7 @@ mod tests {
             // The replica held the device before its root revoked it, and
             // carries the entry its governance was sent: a replica is never
             // made over a roster that holds a revoked device.
-            let sync = link(&roster, RevocationList::new(), Vec::new());
+            let sync = link(&roster, RevocationList::new());
             assert!(
                 sync.0
                     .replica
@@ -5222,16 +5218,38 @@ mod tests {
         let mut record = AutoCommit::new();
         record.put(ROOT, "start", "here").unwrap();
         record.commit_edit("fixture", "start", &root.verifying_key().to_bytes());
-        let host = link(
-            &roster,
-            RevocationList::new(),
-            vec![crate::SeedDocument {
-                app_id: APP.into(),
-                document_id: RECORD.into(),
-                kind: "test".into(),
-                bytes: record.save(),
-            }],
-        );
+        let directory = tempfile::tempdir().unwrap();
+        let host = link(&roster, RevocationList::new()).with_store(Arc::new(
+            Store::open(directory.path(), crate::store::Appetite::StoreAll).unwrap(),
+        ));
+        // The record and its writes, sealed under the keys its members hold.
+        let keys = key_group::KeyGroup::create(
+            collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
+            key_group::MemberKey::generate("member").unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap();
+        let artifact = collab_types::document_artifact_id(APP, WORKSPACE, RECORD);
+        let seal = |plaintext: &[u8]| {
+            keys.seal_content(
+                artifact,
+                collab_types::ContentRetention::of_frame(plaintext),
+                plaintext,
+            )
+            .map_err(|error| error.to_string())
+        };
+        host.publish(|host| {
+            host.publication_mut().publish_sealed_checkpoint(
+                APP,
+                RECORD,
+                record.save(),
+                &mut { seal },
+                &roster[0].0,
+                tilo_clock::wall(),
+            )
+        })
+        .unwrap();
         let member = DirectSync::new(
             StatePeer::from_join(
                 WORKSPACE,
@@ -5258,10 +5276,11 @@ mod tests {
         let (first, second) = (edit("first", 4), edit("second", 5));
         let publish = |bytes: Vec<u8>| {
             host.publish(|host| {
-                host.publication_mut().publish_incremental(
+                host.publication_mut().publish_sealed_incremental(
                     APP,
                     RECORD,
                     bytes,
+                    &mut { seal },
                     &roster[0].0,
                     tilo_clock::wall(),
                 )
@@ -5295,8 +5314,22 @@ mod tests {
             reading_history
         );
 
-        let held =
-            AutoCommit::load(&member.read(|member| member.document(APP, RECORD)).unwrap()).unwrap();
+        let mut open = |op: &collab_types::SignedOp| {
+            let metadata = op.encryption.ok_or("not sealed")?;
+            let ciphertext =
+                collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+            keys.open_content(op.artifact, &metadata, &ciphertext)
+                .map(|plaintext| plaintext.to_vec())
+                .map_err(|error| error.to_string())
+        };
+        let opened = member.read(|member| {
+            member
+                .publication()
+                .opened_document(APP, RECORD, &mut open)
+                .unwrap()
+                .unwrap()
+        });
+        let held = AutoCommit::load(&opened.document).unwrap();
         for field in ["start", "first", "second"] {
             assert!(
                 held.get(ROOT, field).unwrap().is_some(),

@@ -3,7 +3,10 @@
 //! the state it holds, over the same link. Each test has the sending device
 //! make a change it never sends, then send one built on it.
 
-use crate::common::{addr, device, localhost_endpoint};
+use crate::common::{
+    addr, device, localhost_endpoint, members_keys, opened, opened_heads, sealed_write,
+    write_sealed,
+};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -39,6 +42,8 @@ async fn until(sync: &DirectSync, done: impl Fn(&StatePeer) -> bool + Sync) {
 struct Linked {
     a: DirectSync,
     a_key: SigningKey,
+    /// The keys the workspace's members seal its records under.
+    keys: key_group::ContentKeys,
     b: DirectSync,
     link: tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>,
     router: iroh::protocol::Router,
@@ -78,14 +83,10 @@ impl Linked {
         let store = Arc::new(Store::open(store_dir.path(), Appetite::StoreAll).unwrap());
         let a = DirectSync::new(a, a_key.clone()).with_store(Arc::clone(&store));
         // The record's first write, kept in the writer's store.
-        let mut document = AutoCommit::new();
-        document.put(ROOT, "value", "first").unwrap();
-        document.commit_edit("fixture", "value", &a_cert.user_public_key);
-        a.publish(|a| {
-            a.publication_mut()
-                .publish_document(APP, RECORD, document.save(), &a_key, now)
-        })
-        .unwrap();
+        let keys = members_keys(WORKSPACE);
+        write_sealed(&a, &keys, &a_key, (APP, RECORD), |record| {
+            set(record, "first", &a_cert.user_public_key);
+        });
         let b = DirectSync::new(b, b_key.clone());
         let host_endpoint = localhost_endpoint(&a_key).await;
         let router = iroh::protocol::Router::builder(host_endpoint.clone())
@@ -98,11 +99,12 @@ impl Linked {
             let a_addr = addr(&host_endpoint);
             async move { b.connect(&b_endpoint, a_addr).await }
         });
-        let heads = a.read(|a| a.document_heads(APP, RECORD));
-        until(&b, |b| b.document_heads(APP, RECORD) == heads).await;
+        let heads = a.read(|a| opened_heads(a, &keys, (APP, RECORD)));
+        until(&b, |b| opened_heads(b, &keys, (APP, RECORD)) == heads).await;
         Self {
             a,
             a_key,
+            keys,
             b,
             link,
             router,
@@ -119,23 +121,22 @@ impl Linked {
     }
 }
 
-/// The record's change setting `value`, made on `a`'s copy as `key`'s device.
-fn document_change(a: &DirectSync, key: &SigningKey, value: &str) -> Vec<u8> {
-    let person = a.read(|peer| {
-        peer.certificates()
-            .into_iter()
-            .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
-            .expect("the workspace holds the device's certificate")
-            .user_public_key
-    });
-    let mut edit = AutoCommit::load(&a.read(|a| a.document(APP, RECORD)).unwrap()).unwrap();
-    edit.set_actor(automerge::ActorId::from(
-        key.verifying_key().to_bytes().to_vec(),
-    ));
-    let heads = edit.get_heads();
-    edit.put(ROOT, "value", value).unwrap();
-    edit.commit_edit("fixture", "value", &person);
-    edit.save_after(&heads)
+/// `record`'s `value` set to `value`, as `person` made it.
+fn set(record: &mut AutoCommit, value: &str, person: &[u8; 32]) {
+    record.put(ROOT, "value", value).unwrap();
+    record.commit_edit("fixture", "value", person);
+}
+
+/// The record's `value` as `peer` reads it with `keys`.
+fn value(peer: &StatePeer, keys: &key_group::ContentKeys) -> String {
+    AutoCommit::load(&opened(peer, keys, (APP, RECORD)).unwrap())
+        .unwrap()
+        .get(ROOT, "value")
+        .unwrap()
+        .unwrap()
+        .0
+        .into_string()
+        .unwrap()
 }
 
 /// A workspace change sent without the change it builds on: the device it
@@ -184,14 +185,15 @@ async fn a_workspace_change_sent_without_its_parent_is_applied() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_record_write_sent_without_the_one_it_builds_on_is_applied() {
     let linked = Box::pin(Linked::start()).await;
-    let (a, key) = (&linked.a, &linked.a_key);
+    let (a, key, keys) = (&linked.a, &linked.a_key, &linked.keys);
 
     // The earlier write: made on `a` and kept in its store, never sent.
-    let earlier = document_change(a, key, "kept back");
+    let person = a.read(StatePeer::owner);
     let earlier = a.replica().write(|a| {
-        a.publication_mut()
-            .publish_incremental(APP, RECORD, earlier, key, SystemTime::now())
-            .unwrap()
+        sealed_write(a, keys, key, (APP, RECORD), |record| {
+            set(record, "kept back", &person);
+        })
+        .unwrap()
     });
     linked
         .store
@@ -202,25 +204,13 @@ async fn a_record_write_sent_without_the_one_it_builds_on_is_applied() {
         )
         .unwrap();
     // The later one, built on it, is all `b` hears.
-    let later = document_change(a, key, "sent");
-    a.publish(|a| {
-        a.publication_mut()
-            .publish_incremental(APP, RECORD, later, key, SystemTime::now())
-    })
-    .unwrap();
+    write_sealed(a, keys, key, (APP, RECORD), |record| {
+        set(record, "sent", &person);
+    });
 
-    let heads = a.read(|a| a.document_heads(APP, RECORD));
-    until(&linked.b, |b| b.document_heads(APP, RECORD) == heads).await;
-    let on_b = AutoCommit::load(&linked.b.read(|b| b.document(APP, RECORD)).unwrap()).unwrap();
-    assert_eq!(
-        on_b.get(ROOT, "value")
-            .unwrap()
-            .unwrap()
-            .0
-            .into_string()
-            .unwrap(),
-        "sent"
-    );
+    let heads = a.read(|a| opened_heads(a, keys, (APP, RECORD)));
+    until(&linked.b, |b| opened_heads(b, keys, (APP, RECORD)) == heads).await;
+    assert_eq!(linked.b.read(|b| value(b, keys)), "sent");
     linked.stop().await;
 }
 
@@ -230,18 +220,16 @@ async fn a_record_write_sent_without_the_one_it_builds_on_is_applied() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_write_made_while_the_other_device_was_away_reaches_it_when_it_links_again() {
     let linked = Box::pin(Linked::start()).await;
-    let (a, key) = (&linked.a, &linked.a_key);
+    let (a, key, keys) = (&linked.a, &linked.a_key, &linked.keys);
+    let person = a.read(StatePeer::owner);
 
     // The other device goes away.
     linked.link.abort();
     // The writer changes the record with no link open: its store keeps it.
-    let change = document_change(a, key, "while away");
-    a.publish(|a| {
-        a.publication_mut()
-            .publish_incremental(APP, RECORD, change, key, SystemTime::now())
-    })
-    .unwrap();
-    let heads = a.read(|a| a.document_heads(APP, RECORD));
+    write_sealed(a, keys, key, (APP, RECORD), |record| {
+        set(record, "while away", &person);
+    });
+    let heads = a.read(|a| opened_heads(a, keys, (APP, RECORD)));
 
     // It comes back and catches up from the store the writer kept it in.
     let again = tokio::spawn({
@@ -250,17 +238,8 @@ async fn a_write_made_while_the_other_device_was_away_reaches_it_when_it_links_a
         let host_endpoint = linked.host_endpoint.clone();
         async move { b.connect(&b_endpoint, addr(&host_endpoint)).await }
     });
-    until(&linked.b, |b| b.document_heads(APP, RECORD) == heads).await;
-    let on_b = AutoCommit::load(&linked.b.read(|b| b.document(APP, RECORD)).unwrap()).unwrap();
-    assert_eq!(
-        on_b.get(ROOT, "value")
-            .unwrap()
-            .unwrap()
-            .0
-            .into_string()
-            .unwrap(),
-        "while away"
-    );
+    until(&linked.b, |b| opened_heads(b, keys, (APP, RECORD)) == heads).await;
+    assert_eq!(linked.b.read(|b| value(b, keys)), "while away");
     again.abort();
     linked.stop().await;
 }

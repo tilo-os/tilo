@@ -15,7 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::common::{device, localhost_endpoint};
+use crate::common::{device, localhost_endpoint, members_keys, opened, write_sealed};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
@@ -46,6 +46,10 @@ use web_time::SystemTime;
 const WORKSPACE: &str = "a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0";
 const APP: &str = "test.app";
 const DOCUMENT: &str = "tab:1";
+
+/// The keys the workspace's members seal its resources under.
+static KEYS: std::sync::LazyLock<key_group::ContentKeys> =
+    std::sync::LazyLock::new(|| members_keys(WORKSPACE));
 
 /// The job whose side effects only one device at a time may do.
 const JOB: &str = "bot:ticker";
@@ -264,7 +268,9 @@ impl Desktop {
 
     /// The resource `resource` as this device has it.
     fn loaded(&self, resource: &str) -> Option<AutoCommit> {
-        let doc = self.link().read(|peer| peer.document(APP, resource))?;
+        let doc = self
+            .link()
+            .read(|peer| opened(peer, &KEYS, (APP, resource)))?;
         Some(AutoCommit::load(&doc).unwrap())
     }
 
@@ -295,17 +301,7 @@ impl Desktop {
 
     /// Start the resource `resource`, as this device.
     fn starts(&self, resource: &str) {
-        self.link()
-            .publish(|peer| {
-                peer.publication_mut().publish_document(
-                    APP,
-                    resource,
-                    AutoCommit::new().save(),
-                    &self.key,
-                    SystemTime::now(),
-                )
-            })
-            .expect("this device starts the document");
+        write_sealed(&self.link(), &KEYS, &self.key, (APP, resource), |_| {});
     }
 
     /// Write `value` under `field` as this device, and publish it on its link.
@@ -316,25 +312,10 @@ impl Desktop {
     /// Write `value` under `field` of the resource `resource` as this device,
     /// and send it on its link.
     fn writes(&self, resource: &str, field: &str, value: &str) {
-        let mut edit = self.loaded(resource).unwrap_or_default();
-        edit.set_actor(automerge::ActorId::from(
-            self.key.verifying_key().to_bytes().to_vec(),
-        ));
-        let heads = edit.get_heads();
-        edit.put(ROOT, field, value).unwrap();
-        edit.commit_edit("fixture", field, &self.cert.user_public_key);
-        let change = edit.save_after(&heads);
-        self.link()
-            .publish(|peer| {
-                peer.publication_mut().publish_incremental(
-                    APP,
-                    resource,
-                    change,
-                    &self.key,
-                    SystemTime::now(),
-                )
-            })
-            .unwrap();
+        write_sealed(&self.link(), &KEYS, &self.key, (APP, resource), |edit| {
+            edit.put(ROOT, field, value).unwrap();
+            edit.commit_edit("fixture", field, &self.cert.user_public_key);
+        });
     }
 
     /// Take the job's lease here at `now`, answering whether this device holds
