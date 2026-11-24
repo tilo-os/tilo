@@ -34,7 +34,6 @@ pub(super) const DEFAULT: &[&str] = &[
     "so.tilo.osk",
     "so.tilo.passwords",
     "so.tilo.pdf-viewer",
-    "so.tilo.phone",
     "so.tilo.photos",
     "so.tilo.poker",
     "so.tilo.print-centre",
@@ -45,7 +44,6 @@ pub(super) const DEFAULT: &[&str] = &[
     "so.tilo.sheets",
     "so.tilo.shortcuts",
     "so.tilo.slides",
-    "so.tilo.snippets",
     "so.tilo.speed-test",
     "so.tilo.store",
     "so.tilo.terminal",
@@ -54,6 +52,5 @@ pub(super) const DEFAULT: &[&str] = &[
     "so.tilo.tube",
     "so.tilo.typst-editor",
     "so.tilo.video",
-    "so.tilo.weather",
     "so.tilo.windows",
 ];
