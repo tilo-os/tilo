@@ -1004,8 +1004,17 @@ impl Printer<'_> {
                 for f in &t.fields {
                     self.field(f);
                 }
-                if let Some(search) = &t.search {
+                if let Some(live) = &t.live {
                     if !t.fields.is_empty() {
+                        self.out.push('\n');
+                    }
+                    self.comments_before(live.span.start);
+                    let head = "live when ";
+                    let value = self.ex_at(&live.when, self.level * 4 + head.len());
+                    self.line(&format!("{head}{value}"));
+                }
+                if let Some(search) = &t.search {
+                    if !t.fields.is_empty() || t.live.is_some() {
                         self.out.push('\n');
                     }
                     self.search(search);

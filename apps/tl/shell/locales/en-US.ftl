@@ -1174,6 +1174,25 @@ d-e25dashr = Dock settings
     .w-launcher-entry = Launcher entry
     .w-magnify-the-item-under-the-pointer = Magnify the item under the pointer
 
+d-7j4334cw = Live pill
+    .w-live = { $live_name }, live
+    .w-more-live = { $value } more live
+
+d-7ex6327x = Live section
+    .w-live-now = Live now
+
+d-zvzdkdpt = Live row
+    .w-on = On { $device }
+
+d-y6wi32pw = Live card controls
+    .w-show-on-the-bar = Show on the bar
+    .w-keep-off-the-bar = Keep off the bar
+    .w-put-away = Put away
+
+d-pyekmhbz = Native row
+
+d-rdhhbeao = Live control
+
 d-clgbrhsn = Notices
     .w-notifications = Notifications
     .w-clear-all = Clear all

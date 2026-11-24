@@ -348,6 +348,19 @@ pub struct TypeMeta {
     /// `(readers: author)`: who reads a record of the type, when not every member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readers: Option<ReaderRule>,
+    /// `live when ...`: when an instance is a live activity, and the view the shell shows of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveMeta>,
+}
+
+/// When a resource of a type is live (playing, running, on a call) and what shows it then: the
+/// resource index lists the instances whose predicate holds, and the shell draws each with the view.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LiveMeta {
+    /// The predicate over the resource's own fields, by field id: `live when state == .playing`.
+    pub when: crate::pred::Pred<String>,
+    /// The id of the type's `view live(x: T)`.
+    pub view: String,
 }
 
 pub use tilo_action_policy::ReaderRule;

@@ -407,6 +407,7 @@ impl Env {
                 title: t.title.clone(),
                 untitled: t.untitled.clone(),
                 readers: t.readers.clone(),
+                live: t.live.clone(),
             });
         }
         let params = |ps: &[crate::meta::ParamMeta]| -> Vec<ParamInfo> {
@@ -588,6 +589,7 @@ pub fn resolve(
         }
     }
     r.package_decls(module);
+    r.live_views(module);
     // After the roots are named: an action that opens files acts on one of them.
     r.opening_actions(module);
     r.one_shortcut_each(module);
@@ -2719,6 +2721,67 @@ impl Resolver<'_> {
                 })
                 .unwrap_or_default();
             self.err("E018", span, format!("the root `{0}` has no default view, which is what opening it shows; add `default view <view> for {0}`", key.name));
+        }
+    }
+
+    /// A type that says when it is live names the view that shows it then: `view live(x: T)`, the
+    /// resource alone, which the shell draws in the bar, quick settings and on the lock screen.
+    fn live_views(&mut self, module: &ast::Module) {
+        for item in &module.items {
+            let Item::Type(t) = item else { continue };
+            let Some(live) = &t.live else { continue };
+            let Some(at) = self
+                .env
+                .types
+                .iter()
+                .position(|x| x.key.app == self.env.app && x.key.name == t.name.name)
+            else {
+                continue;
+            };
+            if self.env.types[at].live.is_none() {
+                // Its condition was refused already.
+                continue;
+            }
+            let key = self.env.types[at].key.clone();
+            let view = self
+                .env
+                .own_callable("live")
+                .filter(|c| c.kind == CKind::View)
+                .map(|c| {
+                    (
+                        c.id.clone(),
+                        matches!(c.params.as_slice(), [p] if p.ty == Ty::Record(key.clone())),
+                    )
+                });
+            match view {
+                Some((id, true)) => {
+                    if let Some(meta) = self.env.types[at].live.as_mut() {
+                        meta.view = id;
+                    }
+                }
+                Some((_, false)) => {
+                    self.env.types[at].live = None;
+                    self.err(
+                        "E107",
+                        live.span,
+                        format!(
+                            "`{0}` is live when its condition holds, and the shell shows it then with `view live(x: {0})`; the package's view `live` takes something else. It takes the resource and nothing else",
+                            key.name
+                        ),
+                    );
+                }
+                None => {
+                    self.env.types[at].live = None;
+                    self.err(
+                        "E107",
+                        live.span,
+                        format!(
+                            "`{0}` says when it is live but declares no view of it then; add `view live(x: {0}) {{ ... }}`, which the bar, quick settings and the lock screen show, its buttons calling `{0}`'s actions",
+                            key.name
+                        ),
+                    );
+                }
+            }
         }
     }
 

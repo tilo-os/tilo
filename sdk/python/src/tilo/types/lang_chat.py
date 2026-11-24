@@ -72,7 +72,7 @@ ChatDeleteArgs = TypedDict("ChatDeleteArgs", {
 
 class Conversations(Resource):
     """Conversations — `tl.so.tilo.lang.chat.Conversations`."""
-    __surface__ = "so.tilo.lang.chat@56a96c9bab42d4c0"
+    __surface__ = "so.tilo.lang.chat@73cc1693087f02f6"
     @property
     def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel]]:
         """channels (`5kzdptyg` on the wire)."""
@@ -113,7 +113,7 @@ class Conversations(Resource):
 
 class Category(Resource):
     """Category — `tl.so.tilo.lang.chat.Category`."""
-    __surface__ = "so.tilo.lang.chat@56a96c9bab42d4c0"
+    __surface__ = "so.tilo.lang.chat@73cc1693087f02f6"
     hbhrds5c: str  # name
     hvqgmwrk: list[Entry[TextChannel]]  # channels
 
@@ -134,7 +134,7 @@ class Category(Resource):
 
 class TextChannel(Resource):
     """TextChannel — `tl.so.tilo.lang.chat.TextChannel`."""
-    __surface__ = "so.tilo.lang.chat@56a96c9bab42d4c0"
+    __surface__ = "so.tilo.lang.chat@73cc1693087f02f6"
     x3haugpo: str  # name
     u6b35mgm: str  # topic
     ksuxpopi: list[Entry[Message]]  # messages
@@ -196,7 +196,7 @@ class TextChannel(Resource):
 
 class Message(Resource):
     """Message — `tl.so.tilo.lang.chat.Message`."""
-    __surface__ = "so.tilo.lang.chat@56a96c9bab42d4c0"
+    __surface__ = "so.tilo.lang.chat@73cc1693087f02f6"
     xfrqdy3y: str  # body
     @property
     def _4uwxpnw2(self) -> Message | None:
@@ -252,7 +252,7 @@ class Message(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.lang.chat.Thread`."""
-    __surface__ = "so.tilo.lang.chat@56a96c9bab42d4c0"
+    __surface__ = "so.tilo.lang.chat@73cc1693087f02f6"
     xuvfifa5: str  # name
     ijy454g6: list[Entry[Message]]  # messages
     @property
@@ -306,7 +306,7 @@ class Thread(Resource):
 
 class Direct(Resource):
     """Direct — `tl.so.tilo.lang.chat.Direct`."""
-    __surface__ = "so.tilo.lang.chat@56a96c9bab42d4c0"
+    __surface__ = "so.tilo.lang.chat@73cc1693087f02f6"
     @property
     def _5stv6ro7(self) -> str:
         """name (`5stv6ro7` on the wire)."""
@@ -382,7 +382,7 @@ class Direct(Resource):
 
 class Part(Resource):
     """Part — `tl.so.tilo.lang.chat.Part`."""
-    __surface__ = "so.tilo.lang.chat@56a96c9bab42d4c0"
+    __surface__ = "so.tilo.lang.chat@73cc1693087f02f6"
     zevnbs3i: str  # kind
     @property
     def _3hkzkqvr(self) -> str:
@@ -396,7 +396,7 @@ class Part(Resource):
 
 class Chat(Resource):
     """Chat — `tl.so.tilo.lang.chat`."""
-    __surface__ = "so.tilo.lang.chat@56a96c9bab42d4c0"
+    __surface__ = "so.tilo.lang.chat@73cc1693087f02f6"
     def send(self,
         *,
         to: Direct | TextChannel | Thread,

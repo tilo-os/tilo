@@ -64,6 +64,8 @@ pub mod environment;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod fetch_grants;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod live;
 /// A workspace's file tree, held in the device's own service.
 #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
 pub mod files;

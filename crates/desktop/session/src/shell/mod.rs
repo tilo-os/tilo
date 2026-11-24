@@ -120,6 +120,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::device_lists::search_surface(),
         crate::device_lists::launchpad_surface(),
         crate::device_lists::notice_surface(),
+        crate::live_list::surface(),
         crate::shell::state::overlays_surface(),
         crate::shell::state::power_menu_surface(),
         tilo_workspace_service::apps::nearby_send::surface(),
@@ -158,6 +159,9 @@ pub(crate) struct Shell {
     /// the shell's runtime names another app's (`<app>#<Type>`): what a place names, and what the
     /// views composed there read.
     reading: std::collections::BTreeMap<String, String>,
+    /// The live resources the places' packages and readings were last followed with: one that
+    /// goes live or ends is followed as a place that opens or closes is.
+    live: Vec<String>,
     /// How often each was read for the shell.
     reads: std::collections::BTreeMap<String, u64>,
     /// The listings the shell's views list records of with a query, by the type they list
@@ -286,6 +290,7 @@ impl Shell {
             link,
             followed: None,
             reading: std::collections::BTreeMap::new(),
+            live: Vec::new(),
             reads: std::collections::BTreeMap::new(),
             listings: std::collections::BTreeMap::new(),
             needed: std::collections::BTreeSet::new(),
@@ -613,8 +618,20 @@ impl Shell {
         if std::mem::take(&mut self.republish) {
             asked = true;
         }
+        // What is live is followed as what a place shows is: the bar, quick settings and the
+        // lock screen show each live resource's own `view live`.
+        let live: Vec<String> = self
+            .lists
+            .live
+            .read()
+            .rows
+            .into_iter()
+            .map(|row| row.resource)
+            .filter(|resource| !resource.is_empty())
+            .collect();
+        let live_moved = live != self.live;
         let key = (services.revision(), layout.clone());
-        let moved_on = asked || self.followed.as_ref() != Some(&key);
+        let moved_on = asked || live_moved || self.followed.as_ref() != Some(&key);
         if !moved_on && wanted.is_empty() {
             return;
         }
@@ -622,12 +639,16 @@ impl Shell {
         // The apps whose views this process links as Rust apps, which draw their resources
         // without a package of their own.
         let rust_views = tilolang_tilo::views::declared_apps();
-        if asked || self.followed.as_ref().map(|(_, was)| was) != Some(layout) {
+        if asked || live_moved || self.followed.as_ref().map(|(_, was)| was) != Some(layout) {
             // Every app a place shows is published with this pass, however this pass was asked for:
             // a package a view asked for arrives beside them, and none of them goes with it.
             let resources = services.resources();
             let placed = tilolang_tilo::resource_service::placed_documents(
-                layout.places.iter().map(|place| place.resource.as_str()),
+                layout
+                    .places
+                    .iter()
+                    .map(|place| place.resource.as_str())
+                    .chain(live.iter().map(String::as_str)),
                 &resources,
             );
             let mut packages = std::collections::BTreeMap::new();
@@ -706,6 +727,7 @@ impl Shell {
             }
         }
         self.followed = Some(key);
+        self.live = live;
     }
 
     /// How often the shell read each resource its places show, by id, since it started: what a test

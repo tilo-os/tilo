@@ -6,7 +6,7 @@
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
     DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FnDecl, Ident, Item, LetBind, MatchArm,
-    MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, ReadersDecl, RootDecl,
+    MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, LiveDecl, ReadersDecl, RootDecl,
     ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart,
     TitleDecl, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UntitledDecl,
     UseDecl, VariantDecl, ViewDecl, ViewsDecl,
@@ -1350,6 +1350,7 @@ impl<'a> Parser<'a> {
         self.expect(&Tok::LBrace)?;
         let mut fields = Vec::new();
         let mut search: Option<SearchBlock> = None;
+        let mut live: Option<LiveDecl> = None;
         loop {
             self.skip_nl();
             if self.eat(&Tok::RBrace) {
@@ -1373,6 +1374,37 @@ impl<'a> Parser<'a> {
                             );
                         } else {
                             search = Some(block);
+                        }
+                    }
+                    Err(Abort) => self.recover_stmt(),
+                }
+                continue;
+            }
+            // `live when <expr>`; a field called `live` is `live: T`, so the word after tells them
+            // apart.
+            if matches!(self.peek_at(at), Tok::Ident(w) if w == "live")
+                && matches!(self.peek_at(at + 1), Tok::Ident(w) if w == "when")
+            {
+                for _ in 0..at {
+                    self.bump();
+                }
+                let start = self.bump().span;
+                self.bump();
+                match self.expr() {
+                    Ok(when) => {
+                        let span = start.to(Span::new(self.prev_end(), self.prev_end()));
+                        if live.is_some() {
+                            let _: PResult<()> = self.fail(
+                                span,
+                                "a type says once when it is live; join the conditions with `and` or `or`",
+                            );
+                        } else {
+                            live = Some(LiveDecl { when, span });
+                        }
+                        if !matches!(self.peek(), Tok::Newline | Tok::RBrace) {
+                            let _: PResult<()> =
+                                self.unexpected("a new line or `}` after `live when ...`");
+                            self.recover_stmt();
                         }
                     }
                     Err(Abort) => self.recover_stmt(),
@@ -1410,6 +1442,7 @@ impl<'a> Parser<'a> {
             readers,
             fields,
             search,
+            live,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
     }

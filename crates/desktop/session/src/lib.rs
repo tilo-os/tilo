@@ -166,6 +166,7 @@ mod device_actions;
 mod device_lists;
 #[cfg(target_os = "linux")]
 mod device_shell;
+mod live_list;
 #[cfg(target_os = "linux")]
 mod device_state;
 #[cfg(target_os = "linux")]

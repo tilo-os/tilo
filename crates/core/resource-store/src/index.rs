@@ -1086,6 +1086,16 @@ impl Index {
             .find_map(|table| table.rows.get(id))
     }
 
+    /// The id of every resource of `kind` the index holds, whoever may read it.
+    pub(crate) fn ids(&self, kind: &str) -> Vec<String> {
+        self.kinds
+            .get(kind)
+            .into_iter()
+            .flat_map(HashMap::values)
+            .flat_map(|table| table.rows.keys().cloned())
+            .collect()
+    }
+
     /// The kind of the resource `id` held in `doc`.
     #[must_use]
     pub fn kind_of(&self, id: &str, doc: &str) -> Option<String> {

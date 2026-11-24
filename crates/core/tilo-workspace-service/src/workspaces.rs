@@ -1043,6 +1043,9 @@ pub(crate) struct HolderClaim {
 
 struct WorkspacesInner {
     host: WorkspaceServices,
+    /// Where the workspaces' live resources are shown, once the session asks for them
+    /// ([`Workspaces::show_live`]).
+    live: std::sync::OnceLock<crate::live::LiveRows>,
     /// The sealed history of every workspace governed here, which their
     /// member devices catch up from over the direct link.
     store: Arc<tilo_peer_state::store::Store>,
@@ -1469,6 +1472,7 @@ impl Workspaces {
         let memberships = host.access.memberships();
         let this = Self {
             inner: Arc::new(WorkspacesInner {
+                live: std::sync::OnceLock::new(),
                 #[cfg(test)]
                 link_heard_capacity: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(any(test, feature = "test-support"))]

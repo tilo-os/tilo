@@ -826,6 +826,36 @@ fn tilolang_held_surface() -> tilo_actions::surface::Surface {
     }))
 }
 
+/// A record whose collection holds a union of types nests each of them: a channel, a category
+/// and a conversation each stand in the one list a chat's root keeps them in.
+#[test]
+fn a_collection_of_a_union_nests_each_of_its_types() {
+    let surface: tilo_actions::surface::Surface = toml_like(serde_json::json!({
+        "kind": "tl.so.tilo.chat.Conversations",
+        "label": "Conversations",
+        "version": 1,
+        "verbs": [{"id": "$create", "kind": "undoable"}],
+        "fields": [
+            {"path": "c1", "owner": "conversations", "title": "channels", "stored": "collection",
+             "type": {"collection": {"union": [
+                 {"resource": "tl.so.tilo.chat.Category"},
+                 {"resource": "tl.so.tilo.chat.TextChannel"},
+             ]}}},
+        ],
+    }));
+    let schema = Schema::from_surface(&surface);
+    assert_eq!(
+        schema.get("tl.so.tilo.chat.Conversations").unwrap().nested,
+        [
+            ("channels".to_owned(), "tl.so.tilo.chat.Category".to_owned()),
+            (
+                "channels".to_owned(),
+                "tl.so.tilo.chat.TextChannel".to_owned()
+            ),
+        ]
+    );
+}
+
 /// A surface that names no type of its own kind still declares the record it describes: the store
 /// knows the kind its resources are, the fields they hold, and what each verb writes of them.
 #[test]
@@ -923,6 +953,7 @@ mod store {
                     field("labels", FieldKind::Set),
                 ],
                 nested: Vec::new(),
+                live: None,
             }],
             ..Schema::default()
         });
@@ -959,6 +990,7 @@ mod store {
                 field("labels", FieldKind::Set),
             ],
             nested: Vec::new(),
+            live: None,
         }
     }
 
@@ -1028,6 +1060,108 @@ mod store {
             large_bytes.abs_diff(small_bytes) <= 8,
             "the change is as large at 3000 issues ({large_bytes} bytes) as at 100 ({small_bytes})"
         );
+    }
+
+    /// A type that says when one of it is live keeps a row for each that is, derived from what
+    /// the store holds: it comes with the change that made it live, naming that change's device
+    /// and time, stays as it was while the resource stays live, goes when it stops, and is read
+    /// only by whom its document lets read it.
+    #[test]
+    fn a_resource_is_live_while_its_types_condition_holds_and_read_as_its_document_is() {
+        use tilo_resource_store::{Expected, Field, Type};
+        let mut store = Store::new();
+        store.declare(Schema {
+            types: vec![Type {
+                name: ISSUE.to_owned(),
+                fields: ["title", "state"]
+                    .map(|name| Field {
+                        name: name.to_owned(),
+                        kind: FieldKind::Scalar,
+                        value: Expected::Any,
+                        optional: true,
+                    })
+                    .to_vec(),
+                nested: Vec::new(),
+                live: Some(vec![Filter::Is("state".to_owned(), "playing".into())]),
+            }],
+            ..Schema::default()
+        });
+        let on = |device: &str, name: &str, at: &str| Stamp {
+            device: device.to_owned(),
+            device_name: name.to_owned(),
+            at: at.to_owned(),
+            ..Stamp::default()
+        };
+        let song = |title: &str, state: &str| read_by("ada", "board", "a0", title, state);
+        let ada = |readers: &str| readers == "ada";
+        let bob = |readers: &str| readers == "bob";
+
+        store
+            .put(
+                ISSUE,
+                "song",
+                song("Song", "stopped"),
+                &on("aa", "Laptop", "2026-11-23T10:00:00Z"),
+            )
+            .unwrap();
+        assert!(store.live(&ada).is_empty(), "a stopped track is not live");
+        let before = store.live_revision();
+
+        store
+            .put(
+                ISSUE,
+                "song",
+                song("Song", "playing"),
+                &on("bb", "Phone", "2026-11-23T10:01:00Z"),
+            )
+            .unwrap();
+        let live = store.live(&ada);
+        assert_eq!(
+            live.iter()
+                .map(|row| (
+                    row.kind.as_str(),
+                    row.id.as_str(),
+                    row.device.as_str(),
+                    row.device_name.as_str(),
+                    row.since.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            [(ISSUE, "song", "bb", "Phone", "2026-11-23T10:01:00Z")],
+            "the change that made it live names where and when"
+        );
+        assert_ne!(
+            store.live_revision(),
+            before,
+            "whoever shows the rows is told"
+        );
+        assert!(
+            store.live(&bob).is_empty(),
+            "who may not read the track sees no row of it"
+        );
+
+        store
+            .put(
+                ISSUE,
+                "song",
+                song("Song, live", "playing"),
+                &on("cc", "Tablet", "2026-11-23T10:02:00Z"),
+            )
+            .unwrap();
+        assert_eq!(
+            store.live(&ada)[0].device,
+            "bb",
+            "a change that leaves it live leaves its row as it was"
+        );
+
+        store
+            .put(
+                ISSUE,
+                "song",
+                song("Song, live", "stopped"),
+                &on("cc", "Tablet", "2026-11-23T10:03:00Z"),
+            )
+            .unwrap();
+        assert!(store.live(&ada).is_empty(), "stopped, it is live no more");
     }
 
     /// A write taken back leaves the store as it stood before it: a changed resource reads
@@ -2235,6 +2369,7 @@ mod store {
                     field("labels", FieldKind::Set, Expected::Text, true),
                 ],
                 nested: Vec::new(),
+                live: None,
             }],
             ..Schema::default()
         };

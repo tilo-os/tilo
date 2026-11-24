@@ -17,7 +17,7 @@ use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilolang_runtime::Words;
 use tilolang_runtime::meta::Ty;
 
-use crate::action::{BLOCK_EDITS, CREATE_ACTION, DIRECT_EDITS, ORIGIN_ACTION};
+use crate::action::{BLOCK_EDITS, CREATE_ACTION, DIRECT_EDITS, ORIGIN_ACTION, SCENARIO_ACTION};
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 
 use crate::meta::{MetaExt as _, action_kind};
@@ -557,6 +557,22 @@ fn origin_verb() -> VerbSurface {
     }
 }
 
+fn scenario_verb() -> VerbSurface {
+    VerbSurface {
+        id: SCENARIO_ACTION.to_owned(),
+        name: String::new(),
+        label: "Fill with its scenario".to_owned(),
+        description: Some("The data the app's shots and demos start from is written.".to_owned()),
+        kind: ActionKind::Undoable,
+        destructive: false,
+        incoming_message: false,
+        params: Vec::new(),
+        returns: None,
+        writes: vec![RESOURCE_UNIT.to_owned()],
+        field: None,
+    }
+}
+
 fn field_surfaces(
     meta: &Meta,
     ty: &TypeMeta,
@@ -605,6 +621,51 @@ fn field_surfaces(
     stack.pop();
 }
 
+/// When a resource of `ty` is live, as the resource index keeps it: its `live when` as filters
+/// over the fields the store holds, with the view that shows it. `None` for a type that says
+/// nothing of it.
+fn live_surface(meta: &Meta, ty: &TypeMeta) -> Option<tilo_actions::surface::LiveSurface> {
+    use tilolang_runtime::meta::{field_kind, parse_ty};
+    use tilolang_runtime::store::FieldRead;
+    let live = ty.live.as_ref()?;
+    let mut kinds = crate::resources::Kinds::default();
+    kinds.declare(meta, &[]);
+    let entry = kinds.of_kind(&meta.kind_of(&ty.name))?;
+    let field = |id: &String| -> Option<(String, tilolang::pred::Lit)> {
+        let held = entry.fields.get(id)?;
+        if !held.indexed(&kinds) {
+            return None;
+        }
+        let declared = ty.fields.iter().find(|field| field.id == *id)?;
+        let parsed = parse_ty(&declared.ty, &meta.app).ok()?;
+        let read = FieldRead::of(
+            id,
+            field_kind(declared, &parsed),
+            &parsed,
+            declared.default.as_ref(),
+        )?;
+        Some((held.name.clone(), read.absent))
+    };
+    let Some(filter) = crate::resources::store_filter(&live.when, &field, &|lit| {
+        crate::resources::store_value(lit, &kinds)
+    }) else {
+        tracing::error!(
+            ty = %ty.name,
+            "`live when` reads what the resource index does not hold, so it is never live"
+        );
+        return None;
+    };
+    let view = meta
+        .views
+        .iter()
+        .find(|view| view.id == live.view)
+        .map_or_else(|| "live".to_owned(), |view| view.name.clone());
+    Some(tilo_actions::surface::LiveSurface {
+        when: serde_json::to_value(crate::resources::conjunction(filter)).ok()?,
+        view,
+    })
+}
+
 /// The surface resources of one package, named in the language `words` reads.
 #[must_use]
 pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
@@ -612,11 +673,17 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     // A package with an outside origin writes what its service says into the resources holding
     // those of the origin's types, the package's root among them: each resource takes that change.
     let kept_in_step = meta.types.iter().any(|ty| ty.origin.is_some());
+    let seeded = !meta.scenarios.is_empty();
     for ty in &meta.types {
         let mut types = TypeSet::new();
         let mut verbs = edit_verbs(ty);
         if kept_in_step {
             verbs.push(origin_verb());
+        }
+        // A package's scenario fills its resources with the data its shots and demos start
+        // from, writing any of its types.
+        if seeded {
+            verbs.push(scenario_verb());
         }
         // An action on a union of the package's types is one on each of them: the change a call
         // makes is claimed on the kind of the resource it was called on.
@@ -631,6 +698,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         );
         let mut fields = Vec::new();
         field_surfaces(meta, ty, "", &mut Vec::new(), &mut types, &mut fields);
+        let live = live_surface(meta, ty);
         surfaces.push(Surface {
             kind: meta.kind_of(&ty.name),
             label: ty.name.clone(),
@@ -641,6 +709,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
             fields,
             types: types.into_types(),
             shows: Vec::new(),
+            live,
         });
     }
     let mut types = TypeSet::new();
@@ -659,6 +728,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         fields: Vec::new(),
         types: types.into_types(),
         shows: Vec::new(),
+        live: None,
     });
     surfaces
 }
@@ -677,6 +747,7 @@ pub fn host_surface() -> Surface {
         fields: Vec::new(),
         types: Vec::new(),
         shows: Vec::new(),
+        live: None,
     }
 }
 
@@ -715,6 +786,7 @@ pub fn personal_surface() -> Surface {
         fields: Vec::new(),
         types: Vec::new(),
         shows: Vec::new(),
+        live: None,
     }
 }
 

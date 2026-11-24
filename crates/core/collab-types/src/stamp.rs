@@ -59,6 +59,14 @@ pub struct Stamp {
     /// root ([`tilo_actions::remote::SignedCall`]); the host never makes one up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signed: Option<Box<tilo_actions::remote::SignedCall>>,
+    /// The device that wrote the change, its key in hex: where a resource the change made live
+    /// is live (`tilo_resource_store::Store::live`). Empty where the writer named none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub device: String,
+    /// What that device calls itself ("Framework", "Phone"), as its certificate names it: a row
+    /// live on it says where it plays. Empty where the writer named none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub device_name: String,
 }
 
 #[allow(

@@ -28,7 +28,7 @@ use tilolang_runtime::meta::{
 
 use crate::action::{
     CREATE_ACTION, DELETE_BLOCK_ACTION, EDIT_BLOCK_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION,
-    INSERT_BLOCK_ACTION, ORIGIN_ACTION,
+    INSERT_BLOCK_ACTION, ORIGIN_ACTION, SCENARIO_ACTION,
 };
 
 /// The surface file of an app directory, next to its manifest.
@@ -467,11 +467,12 @@ fn action_name(id: &str) -> String {
 }
 
 /// The verbs only the platform invokes: creation, bound edits, the edits of one paragraph of a
-/// rich text and what an outside origin writes.
+/// rich text, what an outside origin writes and what a scenario seeds.
 fn platform_verb(verb: &VerbSurface) -> bool {
     [
         CREATE_ACTION,
         ORIGIN_ACTION,
+        SCENARIO_ACTION,
         EDIT_TEXT_ACTION,
         EDIT_FLAG_ACTION,
         EDIT_BLOCK_ACTION,

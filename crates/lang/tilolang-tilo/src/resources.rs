@@ -3275,8 +3275,15 @@ impl ResourceStore {
                 id: id_of(from),
             })
         });
+        // A scenario's writes are the package's seed data, under the verb every store admits
+        // for it.
+        let verb = if self.inner.kinds.borrow().is_scenario(&note.action) {
+            crate::action::SCENARIO_ACTION.to_owned()
+        } else {
+            published_verb(note)
+        };
         Stamp {
-            verb: published_verb(note),
+            verb,
             invoker: note
                 .invoker
                 .as_ref()
@@ -3318,6 +3325,10 @@ impl ResourceStore {
             },
             moment: self.next_moment(note.at.as_deref()),
             signed: self.inner.serving_signed.borrow().clone(),
+            // The workspace service names the device a write was made on, as it names the
+            // invoker it certifies: the app's own word for it is never taken.
+            device: String::new(),
+            device_name: String::new(),
         }
     }
 
@@ -3757,108 +3768,15 @@ impl ResourceStore {
     }
 
     fn filter_of(&self, pred: &Pred, entry: &TypeEntry) -> Option<Filter> {
-        use tilolang::pred::{CmpOp, Operand};
-        let named = |read: &FieldRead| self.indexed_as(&read.spec.id, entry);
-        let always = || Filter::Not(Box::new(Filter::Any(Vec::new())));
-        Some(match pred {
-            Pred::Const(true) => always(),
-            Pred::Const(false) => Filter::Any(Vec::new()),
-            Pred::Not(inner) => Filter::Not(Box::new(self.filter_of(inner, entry)?)),
-            Pred::And(all) => {
-                let filters = all
-                    .iter()
-                    .map(|pred| self.filter_of(pred, entry))
-                    .collect::<Option<Vec<_>>>()?;
-                // Not any of the negations.
-                Filter::Not(Box::new(Filter::Any(
-                    filters
-                        .into_iter()
-                        .map(|filter| Filter::Not(Box::new(filter)))
-                        .collect(),
-                )))
-            }
-            Pred::Or(any) => Filter::Any(
-                any.iter()
-                    .map(|pred| self.filter_of(pred, entry))
-                    .collect::<Option<Vec<_>>>()?,
-            ),
-            Pred::Cmp(op, Operand::Field(read), Operand::Lit(lit)) => {
-                let name = named(read)?;
-                let value = self.value_of_lit(lit)?;
-                // Whether a resource nobody wrote the field of holds to it: it reads the field's
-                // default, which compares as the language compares it (an absent value equals
-                // only another, and orders with nothing).
-                let unwritten_holds = read.absent.compare(*op, lit) == Some(true);
-                if !matches!(op, CmpOp::Eq | CmpOp::Ne) && matches!(lit, Lit::Variant(_)) {
-                    return None;
-                }
-                let held = match op {
-                    CmpOp::Eq => Filter::Is(name.clone(), value.clone()),
-                    CmpOp::Ne => Filter::Not(Box::new(Filter::Is(name.clone(), value.clone()))),
-                    CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge => {
-                        use std::ops::Bound;
-                        let (from, to) = match op {
-                            CmpOp::Lt => (Bound::Unbounded, Bound::Excluded(value.clone())),
-                            CmpOp::Le => (Bound::Unbounded, Bound::Included(value.clone())),
-                            CmpOp::Gt => (Bound::Excluded(value.clone()), Bound::Unbounded),
-                            _ => (Bound::Included(value.clone()), Bound::Unbounded),
-                        };
-                        Filter::Not(Box::new(Filter::Any(vec![
-                            Filter::Not(Box::new(Filter::Present(name.clone()))),
-                            Filter::Not(Box::new(Filter::Within {
-                                field: name.clone(),
-                                from,
-                                to,
-                            })),
-                        ])))
-                    }
-                };
-                // A resource nobody wrote the field of reads its default.
-                let absent = Filter::Not(Box::new(Filter::Present(name.clone())));
-                match op {
-                    CmpOp::Ne if !unwritten_holds => {
-                        Filter::Not(Box::new(Filter::Any(vec![Filter::Is(name, value), absent])))
-                    }
-                    CmpOp::Ne => Filter::Not(Box::new(Filter::Is(name, value))),
-                    _ if unwritten_holds => Filter::Any(vec![held, absent]),
-                    _ => held,
-                }
-            }
-            Pred::Has(read, lit) => {
-                let name = named(read)?;
-                Filter::Has(name, self.value_of_lit(lit)?)
-            }
-            Pred::Text(read, text) => {
-                let name = named(read)?;
-                Filter::Contains(name, text.clone())
-            }
-            Pred::Like(read, pattern) => {
-                let name = named(read)?;
-                Filter::Like(name, pattern.clone())
-            }
-            Pred::Present(read) => {
-                let name = named(read)?;
-                Filter::Present(name)
-            }
-            Pred::Cmp(..) => return None,
-        })
+        store_filter(
+            pred,
+            &|read: &FieldRead| Some((self.indexed_as(&read.spec.id, entry)?, read.absent.clone())),
+            &|lit| self.value_of_lit(lit),
+        )
     }
 
     fn value_of_lit(&self, lit: &Lit) -> Option<Value> {
-        Some(match lit {
-            Lit::Bool(flag) => Value::Bool(*flag),
-            Lit::Int(number) => Value::Int(*number),
-            Lit::Float(number) => Value::Float(number.0),
-            Lit::Text(text)
-            | Lit::Date(text)
-            | Lit::Time(text)
-            | Lit::Ref(text)
-            | Lit::Ident(text) => Value::Text(text.clone()),
-            Lit::Variant(id) => Value::Text(self.inner.kinds.borrow().variant_name(id)?),
-            Lit::Absent => Value::Null,
-            Lit::Actor(actor) => Value::Text(tilolang_runtime::ids::actor_text(actor)),
-            Lit::Set(_) => return None,
-        })
+        store_value(lit, &self.inner.kinds.borrow())
     }
 
     /// `order` as the store sorts, over the fields of `entry`; `None` where it cannot.
@@ -5549,6 +5467,126 @@ impl ResourceStore {
         }
         Ok(versions)
     }
+}
+
+/// The value the store holds `lit` as, the cases of `kinds`' enums by name; `None` for a set,
+/// which no single value is.
+pub fn store_value(lit: &Lit, kinds: &Kinds) -> Option<Value> {
+    Some(match lit {
+        Lit::Bool(flag) => Value::Bool(*flag),
+        Lit::Int(number) => Value::Int(*number),
+        Lit::Float(number) => Value::Float(number.0),
+        Lit::Text(text) | Lit::Date(text) | Lit::Time(text) | Lit::Ref(text) | Lit::Ident(text) => {
+            Value::Text(text.clone())
+        }
+        Lit::Variant(id) => Value::Text(kinds.variant_name(id)?),
+        Lit::Absent => Value::Null,
+        Lit::Actor(actor) => Value::Text(tilolang_runtime::ids::actor_text(actor)),
+        Lit::Set(_) => return None,
+    })
+}
+
+/// `pred` as the store's filter: each field as `field` names it, the name the index holds it under
+/// and what a resource that never wrote it holds; each literal as `value_of` stores it. `None`
+/// where the store cannot say it: what a query then checks item by item, and a type's live
+/// condition the store cannot keep.
+pub fn store_filter<F>(
+    pred: &tilolang::pred::Pred<F>,
+    field: &dyn Fn(&F) -> Option<(String, Lit)>,
+    value_of: &dyn Fn(&Lit) -> Option<Value>,
+) -> Option<Filter> {
+    use tilolang::pred::{CmpOp, Operand, Pred};
+    let always = || Filter::Not(Box::new(Filter::Any(Vec::new())));
+    Some(match pred {
+        Pred::Const(true) => always(),
+        Pred::Const(false) => Filter::Any(Vec::new()),
+        Pred::Not(inner) => Filter::Not(Box::new(store_filter(inner, field, value_of)?)),
+        Pred::And(all) => {
+            let filters = all
+                .iter()
+                .map(|pred| store_filter(pred, field, value_of))
+                .collect::<Option<Vec<_>>>()?;
+            // Not any of the negations.
+            Filter::Not(Box::new(Filter::Any(
+                filters
+                    .into_iter()
+                    .map(|filter| Filter::Not(Box::new(filter)))
+                    .collect(),
+            )))
+        }
+        Pred::Or(any) => Filter::Any(
+            any.iter()
+                .map(|pred| store_filter(pred, field, value_of))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        Pred::Cmp(op, Operand::Field(read), Operand::Lit(lit)) => {
+            let (name, absent) = field(read)?;
+            let value = value_of(lit)?;
+            // Whether a resource nobody wrote the field of holds to it: it reads the field's
+            // default, which compares as the language compares it (an absent value equals
+            // only another, and orders with nothing).
+            let unwritten_holds = absent.compare(*op, lit) == Some(true);
+            if !matches!(op, CmpOp::Eq | CmpOp::Ne) && matches!(lit, Lit::Variant(_)) {
+                return None;
+            }
+            let held = match op {
+                CmpOp::Eq => Filter::Is(name.clone(), value.clone()),
+                CmpOp::Ne => Filter::Not(Box::new(Filter::Is(name.clone(), value.clone()))),
+                CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge => {
+                    use std::ops::Bound;
+                    let (from, to) = match op {
+                        CmpOp::Lt => (Bound::Unbounded, Bound::Excluded(value.clone())),
+                        CmpOp::Le => (Bound::Unbounded, Bound::Included(value.clone())),
+                        CmpOp::Gt => (Bound::Excluded(value.clone()), Bound::Unbounded),
+                        _ => (Bound::Included(value.clone()), Bound::Unbounded),
+                    };
+                    Filter::Not(Box::new(Filter::Any(vec![
+                        Filter::Not(Box::new(Filter::Present(name.clone()))),
+                        Filter::Not(Box::new(Filter::Within {
+                            field: name.clone(),
+                            from,
+                            to,
+                        })),
+                    ])))
+                }
+            };
+            // A resource nobody wrote the field of reads its default.
+            let absent = Filter::Not(Box::new(Filter::Present(name.clone())));
+            match op {
+                CmpOp::Ne if !unwritten_holds => {
+                    Filter::Not(Box::new(Filter::Any(vec![Filter::Is(name, value), absent])))
+                }
+                CmpOp::Ne => Filter::Not(Box::new(Filter::Is(name, value))),
+                _ if unwritten_holds => Filter::Any(vec![held, absent]),
+                _ => held,
+            }
+        }
+        Pred::Has(read, lit) => {
+            let (name, _) = field(read)?;
+            Filter::Has(name, value_of(lit)?)
+        }
+        Pred::Text(read, text) => {
+            let (name, _) = field(read)?;
+            Filter::Contains(name, text.clone())
+        }
+        Pred::Like(read, pattern) => {
+            let (name, _) = field(read)?;
+            Filter::Like(name, pattern.clone())
+        }
+        Pred::Present(read) => {
+            let (name, _) = field(read)?;
+            Filter::Present(name)
+        }
+        Pred::Cmp(..) => return None,
+    })
+}
+
+/// `filter` as the conjunction it is: the filters a query lists, every one of which holds.
+#[must_use]
+pub fn conjunction(filter: Filter) -> Vec<Filter> {
+    let mut all = Vec::new();
+    conjuncts(filter, &mut all);
+    all
 }
 
 /// Whether the open listing kept under `key` lists resources of `kind`.

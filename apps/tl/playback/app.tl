@@ -81,6 +81,10 @@ type Playback (untitled: "Nothing playing") {
     /// Where each item was left: what a later opening resumes from, one entry per item.
     progress: Collection<Progress>
 
+    // Live while it plays or stands paused: the bar, quick settings and the lock screen of
+    // every device show its `live` view until it stops.
+    live when state == .playing or state == .paused
+
     search {
         sort title a_z
     }
@@ -90,7 +94,6 @@ type Playback (untitled: "Nothing playing") {
 /// actions (play or pause, the item before and after, and the seek), so the media keys, the
 /// lock screen and the bar press exactly what a person reaches in the window. The card says
 /// which device plays it when a cast target or a speaker carries it.
-// live when p.state == .playing
 view live(p: Playback) {
     ui.MediaCard(
         p,
@@ -117,6 +120,9 @@ view live(p: Playback) {
         }
         ui.Button("Forward 15 seconds", icon: .rotate_cw) {
             on press: seek_by(p, seconds: 15)
+        }
+        ui.Button("Stop", icon: .square) {
+            on press: stop(p)
         }
     }
 }
@@ -254,6 +260,11 @@ action toggle(p: Playback) (icon: .play) {
 /// Pauses what plays and starts it again where it stood ([`toggle`]'s own job).
 action pause(p: Playback) (icon: .pause) {
     p.state = .paused
+}
+
+/// Stops what plays: it plays on no device, and the shell shows it no more.
+action stop(p: Playback) (icon: .square) {
+    p.state = .stopped
 }
 
 /// The item after this one: the queue's next, or the first when repeat is on.

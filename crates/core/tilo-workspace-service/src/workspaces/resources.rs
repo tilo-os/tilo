@@ -85,6 +85,13 @@ pub(super) struct Resources {
     /// The queries apps hold open, by the store's watch of their kind.
     #[cfg(feature = "apps")]
     opened: BTreeMap<u64, Opened>,
+    /// The workspace, by its id spelled out.
+    workspace: String,
+    /// Where its live resources are shown, as the person who reads them here (their key in hex)
+    /// may read them, once the service shows them anywhere ([`Self::show_live`]).
+    live: Option<(crate::live::LiveRows, String)>,
+    /// The store's [`Store::live_revision`] the rows were last shown at.
+    live_shown: Option<u64>,
 }
 
 /// A query an app holds open: whenever a change makes what its page shows different, the page
@@ -154,6 +161,9 @@ impl Resources {
             declared: 0,
             #[cfg(feature = "apps")]
             opened: BTreeMap::new(),
+            workspace: id.to_string(),
+            live: None,
+            live_shown: None,
         }
     }
 
@@ -161,6 +171,45 @@ impl Resources {
     pub(super) fn holds(&self, kind: &str, id: &str) -> bool {
         use tilo_lock::MutexRecover as _;
         self.store.lock_recover().get(kind, id, &|_| true).is_some()
+    }
+
+    /// Show this workspace's live resources in `rows`, as `reader` (a person's key in hex) may read
+    /// them, from now on.
+    pub(super) fn show_live(&mut self, rows: &crate::live::LiveRows, reader: String) {
+        if self.live.is_none() {
+            self.live = Some((rows.clone(), reader));
+            self.publish_live();
+        }
+    }
+
+    /// Show the live resources again when the store's moved since they were last shown.
+    fn publish_live(&mut self) {
+        let Some((rows, reader)) = self.live.clone() else {
+            return;
+        };
+        let store = self
+            .store
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let revision = store.live_revision();
+        if self.live_shown == Some(revision) {
+            return;
+        }
+        self.live_shown = Some(revision);
+        let may_read = |readers: &str| readers == "*" || readers.split(',').any(|p| p == reader);
+        let shown = store
+            .live(&may_read)
+            .into_iter()
+            .map(|live| crate::live::LiveRow {
+                workspace: self.workspace.clone(),
+                kind: live.kind,
+                id: live.id,
+                device: live.device,
+                device_name: live.device_name,
+                since: live.since,
+            })
+            .collect();
+        rows.show(&self.workspace, shown);
     }
 
     /// The store, for the tests of a device's own writes to it.
@@ -284,6 +333,7 @@ impl Resources {
         self.evict_idle();
         #[cfg(feature = "apps")]
         self.tell_opened();
+        self.publish_live();
         Ok(())
     }
 
@@ -570,6 +620,8 @@ impl GovernedWorkspace {
                         .declare(Schema::from_surface(surface));
                 }
             }
+            // A type that says when it is live lists what the store held before it said so.
+            self.resources.publish_live();
         }
         self.resources.store_mut()
     }
@@ -786,7 +838,7 @@ impl Workspaces {
             return false;
         }
         #[cfg(any(feature = "apps", feature = "agents"))]
-        governed.store_with_surfaces(&self.inner.host.surfaces);
+        self.store_of(&mut *governed);
         if let Err(error) = governed
             .take_resources(author, (app_id, document_id), envelope, readers.as_deref())
             .await
@@ -977,8 +1029,7 @@ impl Workspaces {
     ) -> Result<(), String> {
         let author = device.device();
         let document = &write.doc;
-        governed
-            .store_with_surfaces(&self.inner.host.surfaces)
+        self.store_of(&mut *governed)
             .check_write(write, author)
             .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
         let named = (collab_types::is_store_document(document)
@@ -1033,7 +1084,7 @@ impl Workspaces {
         use tilo_resource_store::wire::{Command, Reply, read};
         let may_read = may_read(reader.to_owned());
         let mut governed = state.lock().await;
-        let store = governed.store_with_surfaces(&self.inner.host.surfaces);
+        let store = self.store_of(&mut governed);
         let answer = match command {
             Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
                 Reply::Versions(
@@ -1095,9 +1146,14 @@ impl Workspaces {
             return Ok(false);
         }
         let admit = |_: &tilo_resource_store::Proposal<'_>| true;
-        let write = governed
-            .store_with_surfaces(&self.inner.host.surfaces)
-            .draft_field_update((kind, id), resource, stamp, device.device(), None, &admit)?;
+        let write = self.store_of(&mut *governed).draft_field_update(
+            (kind, id),
+            resource,
+            stamp,
+            device.device(),
+            None,
+            &admit,
+        )?;
         if let Some(write) = write {
             self.commit_resource_update(governed, device, app, &write, |_| true)
                 .await?;
@@ -1159,8 +1215,14 @@ impl Workspaces {
                 || tilo_actions::Actor::Member(tilo_actions::MemberId::person(person)),
                 |viewer| viewer.acting().by.clone(),
             );
+            // The device the write is made on is where a resource it makes live is live.
+            let written_on = (
+                hex::encode(device.device()),
+                device.cert.device_label.clone(),
+            );
             stamp_resource_invoker(
                 &mut command,
+                &written_on,
                 &|invocation| context.invoker_of(invocation).cloned(),
                 &otherwise,
                 &mut unserved,
@@ -1317,13 +1379,11 @@ impl Workspaces {
             return Ok(Reply::Written);
         }
 
-        let (writes, refusal) = match tilo_resource_store::wire::draft(
-            governed.store_with_surfaces(&self.inner.host.surfaces),
-            command,
-        ) {
-            Ok(writes) => (writes, None),
-            Err(refused) => (refused.written, Some(refused.error.to_string())),
-        };
+        let (writes, refusal) =
+            match tilo_resource_store::wire::draft(self.store_of(&mut governed), command) {
+                Ok(writes) => (writes, None),
+                Err(refused) => (refused.written, Some(refused.error.to_string())),
+            };
         let app = app.to_owned();
         let mut candidate = governed.peer().clone();
         let mut documents = BTreeSet::new();
@@ -1384,6 +1444,39 @@ impl Workspaces {
 }
 
 impl Workspaces {
+    /// `governed`'s store with every app surface this device knows declared
+    /// ([`GovernedWorkspace::store_with_surfaces`]), its live resources shown where this service
+    /// shows them ([`Self::show_live`]).
+    #[cfg(any(feature = "apps", feature = "agents"))]
+    fn store_of<'a>(&self, governed: &'a mut GovernedWorkspace) -> &'a mut Store {
+        if let (Some(rows), Ok(device)) = (self.inner.live.get(), self.member_identity()) {
+            rows.here_is(device.device());
+            governed
+                .resources
+                .show_live(rows, hex::encode(device.cert.user_public_key));
+        }
+        governed.store_with_surfaces(&self.inner.host.surfaces)
+    }
+
+    /// Show the live resources of every workspace held here in `rows` from now on, as this
+    /// device's person may read them: what the shell shows in the bar, quick settings and on the
+    /// lock screen. Each workspace's store says what of it is live as it opens.
+    #[cfg(any(feature = "apps", feature = "agents"))]
+    pub async fn show_live(&self, rows: crate::live::LiveRows) {
+        if self.inner.live.set(rows).is_err() {
+            return;
+        }
+        for workspace in self.held_workspaces() {
+            let Ok(state) = self.workspace(&workspace).await else {
+                continue;
+            };
+            let mut governed = state.lock().await;
+            self.store_of(&mut governed);
+        }
+    }
+}
+
+impl Workspaces {
     /// [`Self::resource_command`] as this device's own person, for an app the device starts
     /// itself rather than through the broker: the caller is the device the service signs as.
     ///
@@ -1428,7 +1521,7 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
-        governed.store_with_surfaces(&self.inner.host.surfaces);
+        self.store_of(&mut governed);
         Ok(governed.resources.open_query(query, reader))
     }
 }
@@ -1436,10 +1529,13 @@ impl Workspaces {
 /// The command names the verb and invocation, and the workspace service names who made it: whoever invoked
 /// the invocation a write serves, when the workspace service delivered that one to the app, and
 /// `otherwise` (the person the route certifies, or the caller its view was opened for) for any
-/// other write, whose resource type and verb are added to `unserved`.
+/// other write, whose resource type and verb are added to `unserved`; and the device it was
+/// written on, `device` (its key in hex and what it calls itself), which is where a resource the
+/// write makes live is live.
 #[cfg(feature = "apps")]
 fn stamp_resource_invoker(
     command: &mut tilo_resource_store::wire::Command,
+    device: &(String, String),
     served: &dyn Fn(&str) -> Option<tilo_actions::Actor>,
     otherwise: &tilo_actions::Actor,
     unserved: &mut Vec<(String, String)>,
@@ -1452,7 +1548,7 @@ fn stamp_resource_invoker(
         Command::Undo { stamp, .. } => ("", stamp),
         Command::Batch(commands) => {
             for command in commands {
-                stamp_resource_invoker(command, served, otherwise, unserved);
+                stamp_resource_invoker(command, device, served, otherwise, unserved);
             }
             return;
         }
@@ -1479,6 +1575,8 @@ fn stamp_resource_invoker(
         otherwise.clone()
     });
     stamp.invoker = tilo_resource_store::Stamp::by(&invoker);
+    device.0.clone_into(&mut stamp.device);
+    device.1.clone_into(&mut stamp.device_name);
 }
 
 /// Who a view's caller reads as: a member as the person they are or act for, and a visitor, who

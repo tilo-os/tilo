@@ -209,10 +209,17 @@ impl crate::Session {
             person,
             hue,
             status: self.lock_status(),
-            media: lock_service::media(
-                &self.shared.readings,
-                self.shared.handoff.borrow().as_ref(),
-            ),
+            // What is live in the workspaces, by its own type's actions, before the player here.
+            media: crate::live_list::lock_media(
+                &self.shared.live.rows,
+                &self.shared.services.borrow(),
+            )
+            .or_else(|| {
+                lock_service::media(
+                    &self.shared.readings,
+                    self.shared.handoff.borrow().as_ref(),
+                )
+            }),
             ..lock.shown()
         });
         // The session's own view stands on every display while it shows the lock, and leaves with
@@ -433,7 +440,12 @@ impl crate::Session {
                 );
             }
             LockEffect::PlayPause | LockEffect::NextTrack | LockEffect::PreviousTrack => {
-                lock_service::transport(asked, &self.shared.readings, &self.shared.services);
+                lock_service::transport(
+                    asked,
+                    &self.shared.readings,
+                    &self.shared.live.rows,
+                    &self.shared.services,
+                );
             }
             LockEffect::Suspend => self.session_action(SessionAction::Suspend),
             LockEffect::Restart => self.session_action(SessionAction::Restart),

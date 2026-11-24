@@ -25,7 +25,7 @@ use crate::windows::{reaching, windows};
 /// What the device's lists are made from ([`DeviceLists::lists_key`]), one entry per resource: the
 /// windows, the tray, the agents and the styles. An entry that moved is a reading that moved.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct ListsKey([(u64, u64, u64, bool); 7]);
+pub(crate) struct ListsKey([(u64, u64, u64, bool); 8]);
 
 /// The shell's windows, every workspace's: what the switcher, the dock and the launcher list.
 pub(crate) const WINDOWS_RESOURCE: &str = "session:windows";
@@ -908,6 +908,8 @@ pub(crate) struct DeviceLists {
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the person
     /// putting the floating one away hides it until Clocks shows something new.
     pub(crate) activities: Rc<crate::shell::activities::Activities>,
+    /// What is live now, as `device.live` reads it.
+    pub(crate) live: Rc<crate::live_list::Sources>,
     /// The running applications' tray items, when their watcher serves: the bar shows them,
     /// and the person's clicks go back through it.
     pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
@@ -943,6 +945,7 @@ pub(crate) struct Shared {
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
     pub(crate) activities: Rc<crate::shell::activities::Activities>,
+    pub(crate) live: Rc<crate::live_list::Sources>,
     pub(crate) surfaces: Surfaces,
     pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     pub(crate) view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
@@ -962,6 +965,7 @@ pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
         handle: shared.handle.clone(),
         person: shared.person.clone(),
         activities: Rc::clone(&shared.activities),
+        live: Rc::clone(&shared.live),
         surfaces: shared.surfaces.clone(),
         tray: shared.tray.clone(),
         view: shared.view.clone(),
@@ -996,6 +1000,10 @@ impl DeviceLists {
             (self.folders.revision(), 0, 0, false),
             (self.handle.search_revision(), 0, 0, false),
             (self.lists_source.snapshot().0, 0, 0, false),
+            {
+                let (rows, board, playing) = self.live.revision();
+                (rows, board, playing, false)
+            },
         ])
     }
 
@@ -1038,6 +1046,7 @@ impl DeviceLists {
                     .collect(),
             })),
             NOTICE_RESOURCE => Some(reading(&self.said())),
+            crate::live_list::RESOURCE => Some(reading(&self.live.read())),
             _ => None,
         }
     }
@@ -1532,6 +1541,10 @@ pub(crate) struct LaunchpadRoot;
 #[row(kind = "session", label = "Notice", effects = SaidEffect)]
 pub(crate) struct SaidRoot;
 
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Live", effects = crate::live_list::LiveEffect)]
+pub(crate) struct LiveRoot;
+
 impl Service for DeviceLists {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
@@ -1588,6 +1601,13 @@ impl Service for DeviceLists {
                 )
                 .into_resource(),
             ),
+            offer::<crate::live_list::LiveEffect>(
+                tilo_resource::LiveRow::typed::<LiveRoot>(
+                    crate::live_list::RESOURCE,
+                    crate::i18n::t("session-live"),
+                )
+                .into_resource(),
+            ),
         ]
     }
 
@@ -1626,6 +1646,15 @@ impl Service for DeviceLists {
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
         match resource {
+            crate::live_list::RESOURCE => {
+                let effect = decode::<crate::live_list::LiveEffect>(
+                    &self.resources(),
+                    resource,
+                    action,
+                    arguments,
+                )?;
+                self.live.act(effect)
+            }
             TRAY_RESOURCE => {
                 let TrayEffect::OpenTrayItem { key } =
                     decode::<TrayEffect>(&self.resources(), resource, action, arguments)?;

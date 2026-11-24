@@ -170,6 +170,7 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
     json!({"state": {
         "workspace_tree": tree,
         "held_workspaces": held_workspaces,
+        "apps_kept_in_workspace": session.apps_kept,
         "agents": agents,
         "chrome": {
             "session_locked": session.locked,

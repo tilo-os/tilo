@@ -422,6 +422,11 @@ pub const CREATE_ACTION: &str = "$create";
 /// resources of the types it keeps ([`crate::Runtime::write_origin`]).
 pub const ORIGIN_ACTION: &str = "$origin";
 
+/// The verb the writes of a package's scenario are stamped with: the data its shots, tests and
+/// demos start from, which no action of the package makes. Every device's store admits it as it
+/// does any declared verb, and no catalogue offers it.
+pub const SCENARIO_ACTION: &str = "$scenario";
+
 /// The action id of a change a bound control makes to the text field it shows.
 pub const EDIT_TEXT_ACTION: &str = "edit-text";
 

@@ -75,8 +75,19 @@ fn a_call_of_a_tilolang_app_with_nothing_shown_never_opens_a_view() {
     );
     // Nothing of the app is running, so no call of it is offered either: a view would have to
     // open for one, and none did.
+    let published: Vec<String> = laptop
+        .actions()
+        .into_iter()
+        .filter(|row| row.app_id == APP)
+        .map(|row| {
+            format!(
+                "{} {} {:?}",
+                row.resource.kind, row.resource.id, row.resource.label
+            )
+        })
+        .collect();
     assert!(
-        !laptop.actions().iter().any(|row| row.app_id == APP),
-        "no process of the app publishes anything here"
+        published.is_empty(),
+        "no process of the app publishes anything here: {published:?}"
     );
 }

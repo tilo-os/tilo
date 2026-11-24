@@ -145,6 +145,8 @@ mod layout_shortcuts;
 mod layout_verbs;
 #[path = "layout_view.rs"]
 mod layout_view;
+#[path = "live_activities.rs"]
+mod live_activities;
 #[path = "live_relay_bound.rs"]
 mod live_relay_bound;
 #[path = "lockdown_live.rs"]

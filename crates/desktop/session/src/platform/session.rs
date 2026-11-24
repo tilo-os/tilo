@@ -723,6 +723,18 @@ impl Session {
             Some(peer_documents),
             workspace_service.clone(),
         );
+        // What is live in the workspaces the service holds, on this device or on one the peer
+        // network reaches: what the shell shows in the bar, quick settings and on the lock screen,
+        // from the moment the service opens.
+        let live_rows = sync.as_ref().map_or_else(
+            tilo_workspace_service::live::LiveRows::default,
+            |sync| sync.live_rows(),
+        );
+        tilo_rt::app().handle().spawn({
+            let slot = workspace_service.clone();
+            let rows = live_rows.clone();
+            async move { slot.get().await.show_live(rows).await }
+        });
         // The stores of the workspaces the daemon keeps, as the apps the session runs itself read
         // and write their resources in them.
         let held_stores = crate::app_stores::held_stores(daemon.clone());
@@ -833,6 +845,19 @@ impl Session {
         let activities = Rc::new(crate::shell::activities::Activities::new(
             std::sync::Arc::clone(&live_activities),
         ));
+        // What is live now — the workspaces' live resources, which their stores keep, and what
+        // plays or runs here that no resource holds — as the bar, quick settings and the lock
+        // screen show it, and the keys act on.
+        let live = Rc::new(crate::live_list::Sources {
+            rows: live_rows.clone(),
+            activities: Rc::clone(&activities),
+            readings: Rc::clone(&readings),
+            pressed: RefCell::default(),
+            collapsed: RefCell::default(),
+            revision: std::cell::Cell::default(),
+            services: Rc::clone(&origin_services),
+        });
+        live_rows.wake_with(options.wake.handle());
         // An application's tray item registering, changing or going away is
         // read off the loop: it must reach the bar on the next frame.
         let tray = options
@@ -971,6 +996,7 @@ impl Session {
             handle: handle.clone(),
             person: options.person.clone(),
             activities: Rc::clone(&activities),
+            live: Rc::clone(&live),
             surfaces,
             tray: tray.clone(),
             view: view.clone(),
@@ -1768,6 +1794,7 @@ impl Session {
             ),
             branches: crate::workspace_branch::Branches::default(),
             activities,
+            live,
             tray,
             wallpapers,
             lock_layouts: options.config.keyboard_layouts.clone(),

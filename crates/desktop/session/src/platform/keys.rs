@@ -524,6 +524,20 @@ impl Shared {
         let invocations = std::mem::take(&mut *self.invocations.borrow_mut());
         let ran = !invocations.is_empty();
         for invocation in invocations {
+            // A media key acts on what is live: the newest live resource whose type declares the
+            // action it means, through that action, before the player here.
+            if invocation.address.resource.as_str() == MEDIA
+                && let Some(outcome) = crate::live_list::invoke_media(
+                    &self.live.rows,
+                    invocation.address.action.as_str(),
+                    &mut self.services.borrow_mut(),
+                )
+            {
+                if let Err(error) = outcome {
+                    tracing::warn!(?error, "the live resource did not take the media key");
+                }
+                continue;
+            }
             let outcome = self
                 .published
                 .invoke(&invocation.address, &invocation.arguments, look)

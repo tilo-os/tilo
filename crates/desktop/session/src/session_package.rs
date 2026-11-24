@@ -290,6 +290,7 @@ fn entry(
             fields: Vec::new(),
             types: types.into_types(),
             shows: Vec::new(),
+            live: None,
         },
     }
 }

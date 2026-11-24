@@ -25,7 +25,7 @@ place_view = "place" "view" ident "for" type ;   (* what a place of the type sho
 views      = "views" ident { "," ident } "for" type ;   (* what a window of the type switches between *)
 role       = "primary" | "destructive" | "migration" ;
 
-type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | search } "}" ;
+type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | search | live } "}" ;
 field      = { doc } ident ":" type [ "merge" merge_kind ] [ "=" expr ] ;
 
 merge_kind = "register" | "counter" | "text" ;
@@ -34,6 +34,7 @@ search_line = "filter" ident [ string ] [ opts ]
             | "filter" string "=" expr [ opts ]
             | "sort" ident ( "newest" | "oldest" | "a_z" | "z_a" )
             | "hide" ident ;
+live       = "live" "when" expr ;                 (* once per type; needs `view live(x: T)` *)
 
 enum_decl  = "enum" Ident "{" { { doc } ident [ opts ] [ "," ] } "}" ;
 

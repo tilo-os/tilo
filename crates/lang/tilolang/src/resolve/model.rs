@@ -30,6 +30,8 @@ pub struct TypeInfo {
     pub title: Option<String>,
     pub untitled: Option<String>,
     pub readers: Option<crate::meta::ReaderRule>,
+    /// `live when ...`, once its predicate is lowered and its `view live` found.
+    pub live: Option<crate::meta::LiveMeta>,
 }
 
 impl TypeInfo {

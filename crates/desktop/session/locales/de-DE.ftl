@@ -249,6 +249,7 @@ session-tray = Statusleiste
 session-invite = Einladen
 session-agents = Agenten
 session-styles = Stile
+session-live = Gerade aktiv
 session-folders = Ordner
 session-search = Suche
 session-launchpad = Willkommen
@@ -361,6 +362,9 @@ paste-undone-trouble = { $landed } von { $total } waren schon eingefügt. Die bl
 session-answer-ask = Antworten
 session-ask-later = Später fragen
 session-tray-open = Öffnen
+session-live-press = Drücken
+session-live-close = Beenden
+session-live-collapse = Nicht in der Leiste zeigen
 session-agents-stop = Stoppen
 session-people = Personen
 

@@ -193,6 +193,11 @@ pub fn owner_decision(
 #[derive(Clone)]
 pub(crate) struct Session<'a> {
     pub(crate) published: &'a Surfaces,
+    /// The shell's bar and the parts it shows, when its package started.
+    pub(crate) shell: Option<&'a crate::shell::Shell>,
+    /// Whether the resources of the apps the session runs itself are kept in the workspace the
+    /// person is in, rather than where the session started them.
+    pub(crate) apps_kept: bool,
     pub(crate) handle: &'a DesktopHandle,
     pub(crate) overlays: &'a Overlays,
     /// Whether the overview the person sees is up, as the shell's surfaces turn it.
@@ -322,6 +327,9 @@ enum Op {
     ProvisionTestIdentity,
     ProcessMemory,
     Scroll,
+    /// Whether the shell shows `text` now, as assistive technology reads it: a label, a
+    /// description or a value of any of its parts on screen.
+    Says,
     SearchRows,
     Snapshot,
     StateDump,
@@ -353,6 +361,7 @@ impl Op {
         Self::ProfileStop,
         Self::ProvisionTestIdentity,
         Self::Scroll,
+        Self::Says,
         Self::SearchRows,
         Self::Snapshot,
         Self::StateDump,
@@ -384,6 +393,7 @@ impl Op {
             "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
             "scroll" => Self::Scroll,
+            "says" => Self::Says,
             "search_rows" => Self::SearchRows,
             "snapshot" => Self::Snapshot,
             "state_dump" => Self::StateDump,
@@ -417,6 +427,7 @@ impl Op {
             Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
             Self::Scroll => "scroll",
+            Self::Says => "says",
             Self::SearchRows => "search_rows",
             Self::Snapshot => "snapshot",
             Self::StateDump => "state_dump",
@@ -1082,6 +1093,13 @@ fn asked_of_shell(
             json!({"ok": {"locked": false, "was_locked": was_locked}})
         }
         Op::ProvisionTestIdentity => provision_test_identity(),
+        Op::Says => {
+            let Some(text) = request.get("text").and_then(Json::as_str) else {
+                return Some(refusal("parse_error", "`says` takes `text`"));
+            };
+            let says = session.shell.is_some_and(|shell| shell.says(text));
+            json!({"answer": {"says": says}})
+        }
         Op::ListTargets => json!({"targets": listed_targets(session)}),
         Op::ClickNamed => return Some(clicked_named(request, session)),
         Op::Type if request.get("clipboard").and_then(Json::as_bool) == Some(true) => {

@@ -244,6 +244,7 @@ session-tray = Tray
 session-invite = Invite
 session-agents = Agents
 session-styles = Styles
+session-live = Live now
 session-folders = Folders
 session-search = Search
 session-launchpad = Welcome
@@ -355,6 +356,9 @@ paste-undone-trouble = { $landed } of { $total } were already pasted. Those are 
 session-answer-ask = Answer
 session-ask-later = Ask me later
 session-tray-open = Open
+session-live-press = Press
+session-live-close = End
+session-live-collapse = Keep off the bar
 session-agents-stop = Stop
 session-people = People
 

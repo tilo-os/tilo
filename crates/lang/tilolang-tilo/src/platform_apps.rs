@@ -95,6 +95,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("agents", "Agents", "session:agents"),
     ("styles", "Styles", "session:styles"),
     ("folders", "Folders", "session:folders"),
+    ("live", "Live", "session:live"),
     ("search", "Search", "session:search"),
     ("launchpad", "Launchpad", "session:launchpad"),
     ("said", "Said", "session:notice"),

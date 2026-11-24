@@ -1574,6 +1574,59 @@ scenario "the bar's work" {
     )
 }
 
+/// What is live now, as the session publishes it: music this computer plays, and a video Tube
+/// plays on the person's phone.
+fn playing_here_and_on_the_phone() -> device.Live {
+    device.Live(
+        rows: [
+            device.LiveItem(
+                key: "tl:so.tilo.tube:v-magnet",
+                resource: "tl:so.tilo.tube:v-magnet",
+                app: "so.tilo.tube",
+                source: "Tube",
+                here: false,
+                device: "Ada's phone",
+                since: "2026-11-23T16:20:00Z",
+            ),
+            device.LiveItem(
+                key: "player",
+                source: "Music",
+                here: true,
+                title: "Clair de lune",
+                subtitle: "Claude Debussy",
+                icon: "music",
+                playing: true,
+                controls: [
+                    device.LiveControl(id: "previous", label: "Previous", icon: "skip-back"),
+                    device.LiveControl(id: "play-pause", label: "Pause", icon: "pause"),
+                    device.LiveControl(id: "next", label: "Next", icon: "skip-forward"),
+                ],
+            ),
+        ],
+    )
+}
+
+/// Music playing on the bar: the pill shows what went live last, and that one more is live.
+scenario "something live on the bar" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(device.live, playing_here_and_on_the_phone())
+}
+
+/// The quick settings with what is live at their head: the video on the phone, named by where it
+/// plays, and the music here with its controls.
+scenario "the quick settings, something live" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "quick-settings"))
+    stage(device.live, playing_here_and_on_the_phone())
+}
+
 /// The centre with nothing in it: what a person sees after Clear all.
 scenario "an empty notification centre" {
     let d = root Layout

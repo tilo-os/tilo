@@ -264,6 +264,8 @@ Every widget in the tree exposes a name through either:
 
 `list_targets` returns every widget with a non-zero rect. The bare path is registered when there is exactly one sibling of that name; the indexed form always works. To make a widget addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")` — see `command_palette_input` in `crates/ui/ui-core/src/action_palette.rs`.
 
+`says` answers whether the shell shows a text now, as a screen reader reads it (`{"op":"says","text":"Live now"}` → `{"answer": {"says": true}}`): a label, description or value of any part on screen. A tilolang shell's controls are named by their paths, which never carry the words it shows.
+
 #### Naming a control by what it does
 
 A hosted window's composition moves a control — an app's "new note" stands in the bar of a window with nothing yet and in the columns' header once it has something — and the person's language renames it, so a name or a coordinate found once finds nothing after. What the control does does not move. A control that runs an app action, and a field that edits a record, publish it:

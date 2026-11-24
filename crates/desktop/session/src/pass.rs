@@ -223,7 +223,12 @@ impl Session {
         // What a tool handed the session's input is taken where a device's own input reaches the session:
         // here, and each time the wait for the frame below is woken, so the frame carries it as it
         // carries a key the person pressed.
-        let mut tool_input = serve_tool_input(&self.control, &self.shared, &mut self.compositor);
+        let mut tool_input = serve_tool_input(
+            &self.control,
+            &self.shared,
+            self.shell.as_ref(),
+            &mut self.compositor,
+        );
         // So is what the keyboard and pointer of another of the person's devices sent this one.
         serve_fabric_input(&self.shared, &mut self.compositor);
         // A frame that is owed is shown at the display's next blank: what arrives before that blank
@@ -236,6 +241,7 @@ impl Session {
             tool_input = tool_input.saturating_add(serve_tool_input(
                 &self.control,
                 &self.shared,
+                self.shell.as_ref(),
                 compositor,
             ));
             serve_fabric_input(&self.shared, compositor);
@@ -267,6 +273,8 @@ impl Session {
         self.follow_update();
         // What the services published this pass is what every surface of the machine shows.
         self.shared.follow_status();
+        // A control pressed on the player's live row goes to the player.
+        crate::live_list::press_player(&self.shared.live, &mut self.shared.services.borrow_mut());
         // A due event the apps published is announced once, on the pass it arrived in.
         self.shared.activities.announce(&*self.shared.telling());
         self.follow_readout();
@@ -294,8 +302,11 @@ impl Session {
         self.windows.step(&mut self.compositor, now);
         // The session this pass laid out is published before it is drawn: whoever reads the session's
         // state reads the session the frame about to be presented shows, not the one before it.
-        self.control
-            .publish(&session(&self.shared, &self.compositor));
+        self.control.publish(&session(
+            &self.shared,
+            &self.compositor,
+            self.shell.as_ref(),
+        ));
         self.compositor.mark_pump(pass.elapsed());
         // The session's windows are drawn as far as they have come; an animated switch owns its frames
         // until they rest.
@@ -408,7 +419,7 @@ impl Session {
             .follow_drawn(&self.shared.handle);
         let answering = Instant::now();
         // What `tilo-control` asks of the frame just drawn.
-        let session = session(&self.shared, &self.compositor);
+        let session = session(&self.shared, &self.compositor, self.shell.as_ref());
         self.control.serve(&mut self.compositor, &session);
         // A control the socket pressed in a window's bar or content is written to its app now:
         // the input the person makes after it is served into what the press opened, never ahead
@@ -831,10 +842,11 @@ impl Session {
 fn serve_tool_input(
     control: &crate::test_control::Control,
     shared: &crate::Shared,
+    shell: Option<&crate::shell::Shell>,
     compositor: &mut Compositor,
 ) -> std::time::Duration {
     let answering = Instant::now();
-    let session = session(shared, compositor);
+    let session = session(shared, compositor, shell);
     control.serve_input(compositor, &session);
     answering.elapsed()
 }
@@ -853,9 +865,12 @@ fn serve_fabric_input(shared: &crate::Shared, compositor: &mut Compositor) {
 fn session<'a>(
     shared: &'a crate::Shared,
     compositor: &Compositor,
+    shell: Option<&'a crate::shell::Shell>,
 ) -> crate::test_control::Session<'a> {
     crate::test_control::Session {
         published: &shared.published,
+        shell,
+        apps_kept: shared.app_stores.get() == crate::engine_records::AppStores::Kept,
         handle: &shared.handle,
         overlays: &shared.overlays,
         overview: &shared.overview,

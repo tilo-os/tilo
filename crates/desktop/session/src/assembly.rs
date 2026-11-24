@@ -271,6 +271,10 @@ pub(crate) struct Shared {
     /// controls pressed on it go back to the app through.
     #[cfg(target_os = "linux")]
     pub(crate) activities: Rc<crate::shell::activities::Activities>,
+    /// What is live now (`session:live`), which the media keys and the lock screen's transport
+    /// act on before the player here.
+    #[cfg(target_os = "linux")]
+    pub(crate) live: Rc<crate::live_list::Sources>,
     /// The running applications' tray items, which the bar shows and whose
     /// clicks the session hands back to the applications.
     #[cfg(target_os = "linux")]

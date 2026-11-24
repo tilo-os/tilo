@@ -248,6 +248,30 @@ impl Bundle {
             })
     }
 
+    /// The surface of each package this one uses, by its app id, as [`Self::surface`] writes this
+    /// one's: the records it keeps of them (a Tube session's Playback) are decided against their
+    /// own types, which say when one of them is live.
+    ///
+    /// # Errors
+    /// A surface could not be written out.
+    pub fn import_surfaces(&self) -> Result<Vec<(String, Vec<u8>)>, BundleError> {
+        self.imports
+            .iter()
+            .map(|import| {
+                crate::surface::surface_toml_reading(
+                    &[&import.meta],
+                    &[],
+                    &tilolang_runtime::SourceWords,
+                )
+                .map(|surface| (import.meta.app.clone(), surface))
+                .map_err(|error| BundleError::Surface {
+                    app: import.meta.app.clone(),
+                    reason: error.to_string(),
+                })
+            })
+            .collect()
+    }
+
     /// Write the bundle into `dir` (created when missing): module, ids lock, imports and
     /// surface. The icon is the caller's, since it is drawn by the platform.
     pub fn write(&self, dir: &Path) -> Result<(), BundleError> {

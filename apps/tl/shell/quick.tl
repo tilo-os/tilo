@@ -1,8 +1,8 @@
 use so.tilo.device as device
 use so.tilo.settings as settings
 
-/// The quick settings: the switches and sliders a person reaches for most, then the sound, the
-/// networks in reach, the Bluetooth devices and the ways to leave the session. Each reads the
+/// The quick settings: the switches and sliders a person reaches for most, what is live now, then
+/// the sound, the networks in reach, the Bluetooth devices and the ways to leave the session. Each reads the
 /// resource the session publishes (the sound, the network, Bluetooth, the VPN, the night light, the
 /// power, the person's appearance settings) and each press is that resource's own published action,
 /// so the settings app, the keys and the agent change the same thing this panel shows, and nothing
@@ -39,6 +39,7 @@ view quick_settings() {
                         levels()
                         // What runs now — the song playing, the call, the timer — stands here: its
                         // resource's own `live` view, which the shell composes from the index.
+                        live_section()
                         sound_section()
                         network_section()
                         bluetooth_section()

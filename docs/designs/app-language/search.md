@@ -81,6 +81,43 @@ type Direct {
 }
 ```
 
+### Live activities
+
+A type says when one of its resources is live (a track playing, a timer running, a call) with
+one line in its body, its fields named bare as in a `search` block, and declares the view that
+shows it then:
+
+```
+type Track {
+    title: Text
+    state: PlayState = .stopped
+
+    live when state == .playing or state == .paused
+}
+
+view live(t: Track) {
+    row(gap: .related) {
+        ui.Text(t.title)
+        button(pause(t))
+    }
+}
+```
+
+- `live when <test>` is a test over the resource's own fields, as a named filter is: no
+  reference followed, no call, and neither the clock nor the person asking, since an instance is
+  live for everyone who can read it until the resource changes. A type says it once.
+- `view live(x: T)` takes the resource alone and is built from ordinary components and the type's
+  own actions. A type that says `live when` without it is an error (E107) that says how to add
+  it.
+- There is no flag to clear and no call to start or end one. The resource index keeps the test
+  as it keeps a named filter, and lists the instances it holds for across the workspace's devices,
+  with the app, the device they are live on and when they went live: the workspace's `live`
+  view, which reads no history and writes nothing. A reader sees only rows for resources they
+  can read, and a device that goes offline takes its rows with it.
+- The shell shows each row's `live` view in the bar, quick settings and on the lock screen, on
+  every device. Its buttons, the lock screen's controls and the media keys call the type's own
+  actions.
+
 ## 3. Types, references and paths
 
 Search knows no domain. Mail addresses, phone numbers, contacts and payments are just types,

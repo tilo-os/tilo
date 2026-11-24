@@ -77,6 +77,22 @@ pub struct Surface {
     /// app asked for one is started with a window.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shows: Vec<String>,
+    /// When a resource of the kind is a live activity (a track playing, a timer running), and
+    /// the view that shows it then; `None` for a kind that never is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveSurface>,
+}
+
+/// When a resource of a kind is live, as the resource index keeps it: what its type says
+/// (`live when state == .playing`) as filters over the fields the index holds, every one of
+/// which holds of a live resource.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LiveSurface {
+    /// The store's filters (`tilo_resource_store::Filter`) as JSON: this crate does not know the
+    /// store's types, and the store reads them back when it declares the kind.
+    pub when: serde_json::Value,
+    /// The name of the view the shell shows a live resource with.
+    pub view: String,
 }
 
 pub use tilo_action_policy::ReaderRule;
@@ -266,6 +282,7 @@ pub fn of_resource(spec: &crate::ResourceSpec) -> Surface {
         fields: Vec::new(),
         types: Vec::new(),
         shows: Vec::new(),
+        live: None,
     }
 }
 

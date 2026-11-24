@@ -163,6 +163,7 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
         fields,
         types: types.into_types(),
         shows: Vec::new(),
+        live: None,
     }
 }
 
@@ -224,6 +225,7 @@ pub fn reading_surface<R: crate::JsonSchema, E: crate::Effect>(kind: &str, label
         fields,
         types: declared,
         shows: Vec::new(),
+        live: None,
     }
 }
 

@@ -543,7 +543,14 @@ fn platform_verb(verb: &VerbSurface) -> bool {
     // of its own (`create` is a Tasks verb).
     matches!(
         verb.offered(),
-        "$create" | "$edit-text" | "$edit-flag" | "$commit" | "$origin" | "edit-text" | "edit-flag"
+        "$create"
+            | "$edit-text"
+            | "$edit-flag"
+            | "$commit"
+            | "$origin"
+            | "$scenario"
+            | "edit-text"
+            | "edit-flag"
     )
 }
 

@@ -103,6 +103,8 @@ pub struct Kinds {
     by_kind: HashMap<String, TypeId>,
     by_key: HashMap<(String, String), TypeId>,
     enums: HashMap<(String, String), EnumEntry>,
+    /// The action ids of every loaded package's scenarios.
+    scenarios: std::collections::HashSet<String>,
 }
 
 /// The kind a type of an app is stored as.
@@ -164,7 +166,18 @@ impl Kinds {
             self.by_kind.insert(entry.kind.clone(), declared.id.clone());
             self.types.insert(declared.id.clone(), entry);
         }
+        self.scenarios.extend(
+            meta.scenarios
+                .iter()
+                .map(|scenario| scenario.action.clone()),
+        );
         self.take_former(&meta.app, former);
+    }
+
+    /// Whether `action` is a loaded package's scenario, whose writes are its seed data.
+    #[must_use]
+    pub fn is_scenario(&self, action: &str) -> bool {
+        self.scenarios.contains(action)
     }
 
     /// The type `declared` of `app`, as the store names it and its fields.

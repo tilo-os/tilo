@@ -598,6 +598,68 @@ type Lowered<T> = Result<T, (Span, String)>;
 
 type Outer<'a> = dyn Fn(&str) -> Option<Ty> + 'a;
 
+/// `live when <expr>` of the type `info`: the predicate over its own fields the resource index keeps
+/// to list its live instances, or `None` with the reason in `diags`. It reads as a named filter
+/// does, but neither the clock nor the person asking: an instance is live or not for everyone, and
+/// it changes only when the resource does.
+pub fn live_pred(
+    info: &TypeInfo,
+    when: &Expr,
+    env: &Env,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Pred<String>> {
+    let lower = Lower {
+        info,
+        env,
+        fields: Fields::Own,
+        outer: None,
+        captured: std::cell::RefCell::default(),
+    };
+    let why = match lower.pred(when) {
+        Ok(pred) if pred.reads_clock() => (
+            when.span,
+            "it reads the clock, and an instance stays live or not until the resource changes"
+                .to_owned(),
+        ),
+        Ok(pred) if pred.reads_viewer() => (
+            when.span,
+            "it names the person asking, and an instance is live for everyone who can read it"
+                .to_owned(),
+        ),
+        Ok(pred) => match unkept(&pred) {
+            None => return Some(pred),
+            Some(what) => (when.span, what.to_owned()),
+        },
+        Err(why) => why,
+    };
+    let msg = format!(
+        "`live when` of {} is not a condition the resource index can keep: {}. It reads only the type's own fields and literals (`live when state == .playing`, `live when running`)",
+        about(info),
+        why.1
+    );
+    diags.push(Diagnostic::new("E107", why.0, msg));
+    None
+}
+
+/// What of `pred` the index's filters cannot say, which a live condition then may not hold: a
+/// field compared with another field or with a count, or a case of an enum ordered.
+fn unkept(pred: &Pred<String>) -> Option<&'static str> {
+    match pred {
+        Pred::Const(_) | Pred::Has(..) | Pred::Like(..) | Pred::Text(..) | Pred::Present(_) => None,
+        Pred::Not(inner) => unkept(inner),
+        Pred::And(all) | Pred::Or(all) => all.iter().find_map(unkept),
+        Pred::Cmp(op, Operand::Field(_), Operand::Lit(lit)) => (matches!(lit, Lit::Variant(_))
+            && !matches!(op, CmpOp::Eq | CmpOp::Ne))
+            .then_some("it orders the cases of an enum; compare a case with `==` or `!=`"),
+        Pred::Cmp(_, Operand::Lit(_), Operand::Field(_)) => {
+            Some("it names the value first; write the field first, as in `state == .playing`")
+        }
+        Pred::Cmp(..) => Some(
+            "it compares a field with another field or a count; compare a field with a value",
+        ),
+    }
+}
+
 /// `param -> body` as a predicate over the fields of `info`, when it is one the store can answer: it
 /// reads only the item's fields and literals.
 #[must_use]

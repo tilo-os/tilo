@@ -243,6 +243,29 @@ pub struct Store {
     /// from it: a change of it too, which its [`UPDATED`] reflects without reading the
     /// history of what it holds.
     nested_at: HashMap<String, String>,
+    /// The resources live now, by kind and id: those whose type's condition holds of them as the
+    /// index holds them ([`Self::live`]).
+    live: BTreeMap<(String, String), Live>,
+    /// Grows whenever a resource goes live or stops being.
+    live_revision: u64,
+}
+
+/// A resource that is live now (a track playing, a timer running): its type's condition holds
+/// of it. Derived from what the store holds, like the index; nothing writes it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Live {
+    pub kind: String,
+    pub id: String,
+    /// Who may read it: its document's reader set, `*` for everyone.
+    pub readers: String,
+    /// The device whose change made it live, its key in hex ([`Stamp::device`]); empty where
+    /// that change named none.
+    pub device: String,
+    /// What that device calls itself ([`Stamp::device_name`]).
+    pub device_name: String,
+    /// When it went live: the time that change was invoked at, ISO-8601 UTC; empty where it
+    /// named none.
+    pub since: String,
 }
 
 impl Store {
@@ -331,6 +354,100 @@ impl Store {
     #[must_use]
     pub const fn index(&self) -> &Index {
         &self.index
+    }
+
+    /// Every resource live now whose readers `may_read` admits, the one live longest first: what
+    /// the shell shows in the bar, quick settings and on the lock screen. A reader is never told
+    /// of a live resource it may not read.
+    #[must_use]
+    pub fn live(&self, may_read: &dyn Fn(&str) -> bool) -> Vec<Live> {
+        let mut live: Vec<Live> = self
+            .live
+            .values()
+            .filter_map(|live| {
+                let readers = self
+                    .index
+                    .get(&live.kind, &live.id)
+                    .and_then(|held| self.index.readers(&held.doc))
+                    .filter(|readers| may_read(readers))?;
+                Some(Live {
+                    readers: readers.to_owned(),
+                    ..live.clone()
+                })
+            })
+            .collect();
+        live.sort_by(|a, b| (&a.since, &a.kind, &a.id).cmp(&(&b.since, &b.kind, &b.id)));
+        live
+    }
+
+    /// Grows whenever a resource goes live or stops being: whoever shows [`Self::live`] reads it
+    /// again when this moved.
+    #[must_use]
+    pub const fn live_revision(&self) -> u64 {
+        self.live_revision
+    }
+
+    /// Whether the resource `id` of `kind` is live as the index now holds it, kept in
+    /// [`Self::live`]: one that goes live is listed with the device and the time of the change
+    /// that made it so, read from its history, and keeps them while it stays live.
+    fn follow_live(&mut self, kind: &str, id: &str) {
+        let key = (kind.to_owned(), id.to_owned());
+        let when = self
+            .schema
+            .get(kind)
+            .and_then(|ty| ty.live.as_ref())
+            .cloned();
+        let holds = when.as_ref().is_some_and(|when| {
+            self.index
+                .get(kind, id)
+                .is_some_and(|held| when.iter().all(|filter| filter.holds(held)))
+        });
+        if when.is_some() {}
+        let Some(when) = when.filter(|_| holds) else {
+            if self.live.remove(&key).is_some() {
+                self.live_revision = self.live_revision.wrapping_add(1);
+            }
+            return;
+        };
+        if self.live.contains_key(&key) {
+            return;
+        }
+        let read: BTreeSet<&str> = when.iter().flat_map(Filter::fields).collect();
+        let versions = self.versions(kind, id);
+        let made_live = versions
+            .iter()
+            .filter(|version| {
+                version.kind == crate::history::VersionKind::Made
+                    || version
+                        .fields
+                        .iter()
+                        .any(|field| read.contains(field.as_str()))
+            })
+            .max_by_key(|version| version.order());
+        let (device, device_name, since) = made_live
+            .and_then(|version| version.stamp.as_ref())
+            .map(|stamp| {
+                (
+                    stamp.device.clone(),
+                    stamp.device_name.clone(),
+                    stamp.at.clone(),
+                )
+            })
+            .unwrap_or_default();
+        self.live.insert(
+            key,
+            Live {
+                kind: kind.to_owned(),
+                id: id.to_owned(),
+                // Read from the index when the rows are listed: a resource moved to another
+                // document keeps its row.
+                readers: String::new(),
+                device,
+                device_name,
+                since,
+            },
+        );
+        self.live_revision = self.live_revision.wrapping_add(1);
     }
 
     /// One page of `query`, of the resources whose readers `may_read` admits. `may_read` is the
@@ -584,6 +701,10 @@ impl Store {
             }
         }
         self.index.committed(commit);
+        for change in commit.changes {
+            let (Change::Put { kind, id, .. } | Change::Remove { kind, id }) = change;
+            self.follow_live(kind, id);
+        }
         // Each holder of what was made or removed, put again with the time that moved; one
         // this commit puts itself already reads it.
         for holder in holders {
@@ -1930,9 +2051,30 @@ impl Store {
     /// Takes the types `schema` declares into those a peer's change is checked against.
     pub fn declare(&mut self, schema: Schema) {
         self.rules.extend(schema.readers);
+        let mut live_kinds = Vec::new();
         for ty in schema.types {
+            let was = self.schema.get(&ty.name).and_then(|held| held.live.clone());
+            if was != ty.live {
+                live_kinds.push(ty.name.clone());
+            }
             self.schema.types.retain(|held| held.name != ty.name);
             self.schema.types.push(ty);
+        }
+        // What the store held before a kind said when it is live is live from now on, and what
+        // it held live under an earlier condition is read again.
+        for kind in live_kinds {
+            let held: BTreeSet<String> = self
+                .live
+                .keys()
+                .filter(|(live, _)| *live == kind)
+                .map(|(_, id)| id.clone())
+                .chain(self.index.ids(&kind))
+                .collect();
+            for id in held {
+                self.live.remove(&(kind.clone(), id.clone()));
+                self.follow_live(&kind, &id);
+            }
+            self.live_revision = self.live_revision.wrapping_add(1);
         }
         // A kind is one app's, so a verb's write-sets merge kind by kind: one app's verb of a
         // name writes that app's kinds, another's of the same name its own.

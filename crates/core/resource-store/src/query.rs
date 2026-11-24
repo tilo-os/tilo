@@ -55,7 +55,7 @@ impl Query {
 }
 
 /// What a resource must hold to be shown.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Filter {
     /// The scalar field holds the value (an absent field holds [`Value::Null`]).
     Is(String, Value),
@@ -80,6 +80,21 @@ pub enum Filter {
 }
 
 impl Filter {
+    /// The fields the filter reads.
+    #[must_use]
+    pub fn fields(&self) -> Vec<&str> {
+        match self {
+            Self::Is(field, _)
+            | Self::Has(field, _)
+            | Self::Within { field, .. }
+            | Self::Contains(field, _)
+            | Self::Like(field, _)
+            | Self::Present(field) => vec![field.as_str()],
+            Self::Not(filter) => filter.fields(),
+            Self::Any(filters) => filters.iter().flat_map(Self::fields).collect(),
+        }
+    }
+
     /// Whether the resource as the index holds it passes the filter: what a reader that already
     /// has a resource checks against a query without asking the store again.
     #[must_use]

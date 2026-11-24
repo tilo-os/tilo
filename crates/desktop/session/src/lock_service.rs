@@ -275,6 +275,7 @@ fn lock_artwork(playing: &tilo_session_core::desktop::now_playing::NowPlaying) -
 pub fn transport(
     asked: &LockEffect,
     readings: &crate::status::Shared,
+    live: &tilo_workspace_service::live::LiveRows,
     services: &Rc<RefCell<tilo_service::Services>>,
 ) -> bool {
     let action = match asked {
@@ -283,6 +284,14 @@ pub fn transport(
         LockEffect::PreviousTrack => "previous",
         _ => return false,
     };
+    if let Some(outcome) =
+        crate::live_list::invoke_media(live, action, &mut services.borrow_mut())
+    {
+        if let Err(error) = outcome {
+            tracing::warn!(%error, "the lock screen's transport on what is live");
+        }
+        return true;
+    }
     if readings.borrow().playing().is_none() {
         return true;
     }

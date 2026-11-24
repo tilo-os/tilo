@@ -273,6 +273,9 @@ view bar_part(part: BarPart) {
         // them at the tightest gap would share the press between them. What the device does not
         // publish is not drawn at all, so no gap stands for a control that is not there.
         row(gap: .related, align: .center) {
+            // What is live now — a video playing, a timer running — by its own view, on every
+            // bar, compact or not: it is what a glance at the bar is for while it lasts.
+            live_pill()
             if not space.compact and not device.tray.items.is_empty() {
                 row(gap: .related, align: .center) {
                     for item in device.tray.items {
@@ -299,7 +302,9 @@ view bar_part(part: BarPart) {
             // the sound, the network and the battery `quick.tl` reads and changes too, so the bar
             // and the panel show one fact, never a copy — and each press opens the quick settings,
             // the one place a person changes them.
-            if not space.compact {
+            // Below a wide bar, what is live takes the sound's place: the sound is in quick
+            // settings, a press away, as on a compact bar.
+            if not space.compact and not (live_on_bar() and space.width_class != .wide) {
                 volume_status()
             }
             if not space.compact or folders_need_person(device.folders.folders) {
@@ -334,9 +339,11 @@ view workspace_menu() {
             on cancel: set(renaming, "")
         }
     } else {
-        // On a phone the status cluster takes the name's room while a folder needs the person.
+        // On a phone the status cluster takes the name's room while a folder needs the person,
+        // and below a wide bar so does something live.
         let icon_only = bar_is_narrow(space.width)
             or space.compact and folders_need_person(device.folders.folders)
+            or live_on_bar() and space.width_class != .wide
         ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
             for w in layout.workspaces {
                 if w.home != "" {

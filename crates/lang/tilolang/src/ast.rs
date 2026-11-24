@@ -152,6 +152,17 @@ pub struct TypeDecl {
     pub readers: Option<ReadersDecl>,
     pub fields: Vec<FieldDecl>,
     pub search: Option<SearchBlock>,
+    /// `live when state == .playing`: when a resource of the type is live, a predicate over its own
+    /// fields as a named filter is. The type's `view live(x: T)` is what the shell shows of it.
+    pub live: Option<LiveDecl>,
+    pub span: Span,
+}
+
+/// `live when <expr>` in a type: when an instance is a live activity (playing, running, on a call),
+/// read from its own fields, which the resource index keeps.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveDecl {
+    pub when: Expr,
     pub span: Span,
 }
 

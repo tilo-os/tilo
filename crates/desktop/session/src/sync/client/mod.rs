@@ -366,6 +366,9 @@ pub(crate) struct Local {
     /// Where this device's actions are served, and how an app here reaches the person's other
     /// devices: `None` until the endpoint has bound.
     device_actions: Arc<std::sync::OnceLock<DeviceActions>>,
+    /// The workspaces' live resources, told which devices this session reaches in each: a row
+    /// live on a device that went away goes with it.
+    live_rows: tilo_workspace_service::live::LiveRows,
     /// This device's relays, held back until a workspace this session takes part in has someone
     /// else in it.
     reachability: RefCell<Reachability>,
@@ -558,13 +561,13 @@ impl Local {
         };
         // The devices of the workspace this session reaches are the ones an offer round asks: one
         // that is away is not asked, and not waited for.
-        if let Some(actions) = self.device_actions.get()
-            && let Some((workspace, devices)) = connected
-        {
-            actions.here(
-                &workspace,
-                devices.iter().map(|device| *device.as_bytes()).collect(),
-            );
+        if let Some((workspace, devices)) = connected {
+            let devices: std::collections::BTreeSet<[u8; 32]> =
+                devices.iter().map(|device| *device.as_bytes()).collect();
+            self.live_rows.reach(&workspace, devices.iter().copied());
+            if let Some(actions) = self.device_actions.get() {
+                actions.here(&workspace, devices);
+            }
         }
         content.sources_changed(ws, sources);
     }
@@ -1399,6 +1402,7 @@ impl Client {
         service: tilo_workspace_service::service::ServiceSlot,
     ) -> std::io::Result<Self> {
         let (identity, wake) = (entry.identity, entry.wake);
+        let live_rows = tilo_workspace_service::live::LiveRows::default();
         let (commands, host_commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
         let (desktop_events, desktop_arrived) = std::sync::mpsc::channel();
@@ -1478,6 +1482,7 @@ impl Client {
             versions,
             fabric,
             device_actions,
+            live_rows,
             reachability,
             live,
         });
@@ -1747,6 +1752,13 @@ impl Client {
             msg: Box::new(msg),
             target,
         });
+    }
+
+    /// The workspaces' live resources, as far as the devices this session reaches go: a row live
+    /// on a device that went away goes with it.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn live_rows(&self) -> tilo_workspace_service::live::LiveRows {
+        self.hosting.local.live_rows.clone()
     }
 
     /// This device came to hold another workspace: its live session opens that workspace's live session
@@ -2036,6 +2048,7 @@ struct Hosted {
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     fabric: Option<Arc<SessionFabric>>,
     device_actions: Arc<std::sync::OnceLock<DeviceActions>>,
+    live_rows: tilo_workspace_service::live::LiveRows,
     reachability: Reachability,
     live: Option<crate::live::Live>,
 }
@@ -2052,6 +2065,7 @@ impl Local {
             versions,
             fabric,
             device_actions,
+            live_rows,
             reachability,
             live,
         }: Hosted,
@@ -2076,6 +2090,7 @@ impl Local {
                 fabric,
                 nearby: RefCell::new(None),
                 device_actions,
+                live_rows,
                 reachability: RefCell::new(reachability),
                 live: RefCell::new(live),
                 #[cfg(test)]
@@ -2111,6 +2126,7 @@ impl Local {
             fabric: None,
             nearby: RefCell::new(None),
             device_actions: Arc::new(std::sync::OnceLock::new()),
+            live_rows: tilo_workspace_service::live::LiveRows::default(),
             reachability: RefCell::new(Reachability::default()),
             live: RefCell::new(None),
             #[cfg(test)]

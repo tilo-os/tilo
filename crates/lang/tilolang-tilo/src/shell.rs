@@ -76,6 +76,7 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
         "layout_picker.tl",
         include_str!("../../../../apps/tl/shell/layout_picker.tl"),
     ),
+    ("live.tl", include_str!("../../../../apps/tl/shell/live.tl")),
     (
         "notices.tl",
         include_str!("../../../../apps/tl/shell/notices.tl"),

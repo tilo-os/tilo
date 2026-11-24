@@ -149,6 +149,7 @@ impl Resolver<'_> {
                 title: t.title.as_ref().map(|title| title.field.name.clone()),
                 untitled: t.untitled.as_ref().map(|u| u.words.clone()),
                 readers: t.readers.as_ref().map(|r| r.rule.clone()),
+                live: None,
             });
         }
         self.check_title(&decls);
@@ -173,6 +174,18 @@ impl Resolver<'_> {
                 self.diags,
             );
             self.env.types[at].search = search;
+            if let Some(live) = &t.live {
+                self.env.types[at].live = crate::search::live_pred(
+                    &self.env.types[at],
+                    &live.when,
+                    &self.env,
+                    self.diags,
+                )
+                .map(|when| crate::meta::LiveMeta {
+                    when,
+                    view: String::new(),
+                });
+            }
         }
     }
 }

@@ -131,6 +131,50 @@
     "to": "so.tilo.notes tl.so.tilo.notes.Note#tag",
     "test": "crates/lang/tilolang-runtime/tests/e2e_notes.rs:343"
   },
+  "so.tilo.session activities.layer#activate-window": {
+    "to": "so.tilo.session tl.so.tilo.shell.Shell#open_item, the open on a live card in quick settings",
+    "test": "crates/desktop/session/tests/live_activities.rs:144"
+  },
+  "so.tilo.session activities.layer#apply": {
+    "to": "the live rows keep no fields of their own to edit: what the person decides of one (kept off the bar) is so.tilo.session session.live#keep-off-bar, and a live resource's own fields change by its type's actions",
+    "test": "crates/desktop/session/src/live_list.rs:526"
+  },
+  "so.tilo.session activities.layer#close": {
+    "to": "so.tilo.session session.live#end-live",
+    "test": "crates/desktop/session/src/live_list.rs:526"
+  },
+  "so.tilo.session activities.layer#collapse": {
+    "to": "so.tilo.session session.live#keep-off-bar",
+    "test": "crates/desktop/session/src/live_list.rs:526"
+  },
+  "so.tilo.session activities.layer#control": {
+    "to": "so.tilo.session session.live#press-live",
+    "test": "crates/desktop/session/src/live_list.rs:526"
+  },
+  "so.tilo.session activities.layer#field-edit": {
+    "to": "the live rows keep no fields of their own to edit: what the person decides of one (kept off the bar) is so.tilo.session session.live#keep-off-bar, and a live resource's own fields change by its type's actions",
+    "test": "crates/desktop/session/src/live_list.rs:526"
+  },
+  "so.tilo.session activities.layer#group": {
+    "to": "the live rows keep no fields of their own to edit: what the person decides of one (kept off the bar) is so.tilo.session session.live#keep-off-bar, and a live resource's own fields change by its type's actions",
+    "test": "crates/desktop/session/src/live_list.rs:526"
+  },
+  "so.tilo.session activities.layer#open-link": {
+    "to": "a live row is its resource (`tl:<app>:<id>`): its link is that resource's own",
+    "test": "crates/desktop/session/tests/live_activities.rs:144"
+  },
+  "so.tilo.session activities.layer#outline": {
+    "to": "each live row is drawn by its resource's own `view live` in the tilolang shell's bar, quick settings and lock screen, read and rendered as the shell is",
+    "test": "crates/desktop/session/tests/live_activities.rs:144"
+  },
+  "so.tilo.session activities.layer#render": {
+    "to": "each live row is drawn by its resource's own `view live` in the tilolang shell's bar, quick settings and lock screen, read and rendered as the shell is",
+    "test": "crates/desktop/session/tests/live_activities.rs:144"
+  },
+  "so.tilo.session activities.layer#share-link": {
+    "to": "a live row is its resource (`tl:<app>:<id>`): its link is that resource's own",
+    "test": "crates/desktop/session/tests/live_activities.rs:144"
+  },
   "so.tilo.session notifications.banners#open": {
     "to": "so.tilo.session notifications.banners#open-banner",
     "test": "crates/desktop/session/src/notifications/tests.rs:1666"

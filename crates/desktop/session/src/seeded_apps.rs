@@ -114,6 +114,21 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
     // record.
     let bundle =
         Bundle::read(&app.payload_root).map_err(|error| format!("{}: {error}", app.app_id))?;
+    // Every device's store decides each change of the app's records against the app's surface,
+    // as it does for the app's own process: a store that does not know it refuses every write
+    // the app makes, and its records never reach the workspace.
+    let surface = bundle
+        .surface()
+        .map_err(|error| format!("{}: {error}", app.app_id))?;
+    collab_types::app_surface::register_package(&bundle.meta.app, &surface);
+    // The packages it is made with keep their records in its record (Tube's Playback), and are
+    // decided against their own surfaces, which say when one of them is live.
+    for (used, surface) in bundle
+        .import_surfaces()
+        .map_err(|error| format!("{}: {error}", app.app_id))?
+    {
+        collab_types::app_surface::register_package(&used, &surface);
+    }
     let package = host
         .load_bundle(&bundle)
         .map_err(|error| format!("{}: {error}", app.app_id))?;

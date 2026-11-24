@@ -53,6 +53,10 @@ pub struct Type {
     pub fields: Vec<Field>,
     /// The types of the resources nested in one of this type, each under the field holding them.
     pub nested: Vec<(String, String)>,
+    /// When one is live (a track playing, a timer running): filters over its indexed fields,
+    /// every one of which holds of a live resource ([`crate::Store::live`]). `None` for a type
+    /// that never is.
+    pub live: Option<Vec<crate::query::Filter>>,
 }
 
 /// One indexed field of a resource type.
@@ -178,6 +182,12 @@ impl Schema {
             .iter()
             .find(|ty| ty.name == own_name)
             .or_else(|| declared.first());
+        // What the surface says of when its own record is live. A condition this store cannot
+        // read (one a later version wrote) leaves the type never live here rather than wrong.
+        let live: Option<Vec<crate::query::Filter>> = surface
+            .live
+            .as_ref()
+            .and_then(|live| serde_json::from_value(live.when.clone()).ok());
         let types = declared
             .iter()
             .filter(|ty| !ty.is_enum())
@@ -187,6 +197,7 @@ impl Schema {
                 // item of a collection is: its type names no `stored`, the surface's field does.
                 if ty.name == own_name {
                     ty_of.nested.extend(held_records(surface));
+                    ty_of.live.clone_from(&live);
                 }
                 ty_of
             })
@@ -458,6 +469,7 @@ impl Type {
             name: declared.name.clone(),
             fields,
             nested,
+            live: None,
         }
     }
 

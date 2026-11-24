@@ -63,6 +63,19 @@ use tilo_user_identity::DeviceCert;
 /// carries it.
 pub type Invitation = String;
 
+/// Whether the sessions of this process's devices run the development session's tilolang apps,
+/// seeded with each one's first scenario, as `tilolang run` starts them.
+static SEED_APPS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Run the development session's tilolang apps in every session this test starts from here on
+/// (`--seed-apps`): Notes, Tasks, Chat, Mail and Tube, installed in each device's store
+/// ([`crate::common::dev_apps::install`]) and seeded with their first scenarios, so their
+/// resources and actions are each device's as they are in a development session. What a test asks
+/// for before it makes its devices.
+pub fn seed_the_apps() {
+    let _ = SEED_APPS.set(());
+}
+
 /// The log filter the sessions of this process's devices start under, when a test asked for more
 /// than the fixture's own `info`. Each test runs in a process of its own, so the filter is that
 /// test's.
@@ -716,6 +729,22 @@ pub fn joined_carrying(
 /// it has when it starts, so each device has them before its session does.
 pub fn two_devices_of_one_person_with_files() -> (Site, Person, Device, Device) {
     two_devices_of_one_person_carrying(Device::install_files)
+}
+
+/// [`two_devices_of_one_person`] for two devices that carry the development session's tilolang
+/// apps, as `tilolang run` leaves them; [`seed_the_apps`] runs them.
+pub fn two_devices_of_one_person_with_apps() -> (Site, Person, Device, Device) {
+    let (site, ada, laptop, phone) = two_devices_of_one_person_carrying(|device| {
+        crate::common::dev_apps::install(&device.store(), &device.store().join("scratch"));
+    });
+    // Seeded apps start in each session's own store and move into the workspace once the device
+    // holds its keys: what a step does to them before then stays behind.
+    if SEED_APPS.get().is_some() {
+        for device in [&laptop, &phone] {
+            device.wait_apps_kept();
+        }
+    }
+    (site, ada, laptop, phone)
 }
 
 /// The person's laptop and phone, each carrying what `install` puts in its store: both are made
@@ -1456,6 +1485,11 @@ impl Device {
                 "--test-control",
                 control.to_str().expect("a socket path"),
             ])
+            .args(if SEED_APPS.get().is_some() {
+                vec!["--seed-apps"]
+            } else {
+                Vec::new()
+            })
             .env("HOME", root.join("home"))
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_DATA_HOME", root.join("data"))
@@ -1660,6 +1694,21 @@ impl Device {
             );
             std::thread::sleep(pause.min(deadline.saturating_duration_since(now)));
             pause = pause.saturating_mul(2).min(Duration::from_millis(500));
+        }
+    }
+
+    /// Wait until the resources of the apps this device's session runs itself are kept in the
+    /// workspace it is in, failing with what its session warned if they never are.
+    pub fn wait_apps_kept(&self) {
+        let until = tilo_test_env::hang_deadline();
+        while self.state()["state"]["apps_kept_in_workspace"].as_bool() != Some(true) {
+            assert!(
+                Instant::now() < until,
+                "{} never kept its apps' resources in the workspace:\n{}",
+                self.label,
+                self.warnings(),
+            );
+            std::thread::sleep(Duration::from_millis(200));
         }
     }
 
