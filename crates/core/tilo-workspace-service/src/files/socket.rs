@@ -329,6 +329,7 @@ impl Connection {
                 workspace: copy.name.clone(),
                 name,
                 server,
+                path: status.path.clone(),
                 status,
             });
         });

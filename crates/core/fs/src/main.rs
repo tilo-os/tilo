@@ -644,8 +644,15 @@ async fn serve(
     // as this device's write the first time the sync runs, signed as every other change of it is.
     let workspace =
         tilo_server_protocol::servers::person_workspace_id(&credentials.user_public_key());
-    let (tree, namespace, kept, service) =
-        open_tree(np.as_deref(), workspace, &credentials, author, &store).await?;
+    let (tree, namespace, kept, service) = open_tree(
+        np.as_deref(),
+        workspace,
+        &credentials,
+        author,
+        &store,
+        &mount_point,
+    )
+    .await?;
     let hydrator = Hydrator::new(store.clone());
     let hydrator = match &service {
         Some(service) => hydrator.with_source(service.source()),
@@ -781,6 +788,7 @@ async fn open_tree(
     credentials: &tilo_fs::identity::PeerCredentials,
     author: String,
     store: &Arc<ContentStore>,
+    mount_point: &Path,
 ) -> Result<(
     Option<tilo_fs::tree_sync::TreeSync>,
     Arc<Mutex<Namespace>>,
@@ -807,6 +815,7 @@ async fn open_tree(
         ),
         dir.to_path_buf(),
         Arc::clone(store),
+        mount_point.to_path_buf(),
     )
     .await
     .with_context(|| format!("open the kept workspace tree at {}", dir.display()))?;

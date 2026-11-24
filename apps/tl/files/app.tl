@@ -1043,6 +1043,20 @@ view places(f: Files, s: Session) {
                 }
             }
         }
+        let spaces = device.folders.folders.filter(w -> w.path != "")
+        if not spaces.is_empty() {
+            ui.NavSection("Workspace") {
+                for w in spaces {
+                    ui.NavItem(
+                        w.path,
+                        if w.name != "" { w.name } else { "Workspace" },
+                        icon: .cloud,
+                    ) {
+                        on select: go(f, w.path)
+                    }
+                }
+            }
+        }
         if not f.favorites.is_empty() {
             ui.NavSection("Favorites") {
                 for mark in f.favorites {

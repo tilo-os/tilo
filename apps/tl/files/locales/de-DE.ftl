@@ -495,6 +495,7 @@ d-n9jkqy4o = Dateien
 
 d-z6cheebf = Orte
     .w-places = Orte
+    .w-workspace = Arbeitsbereich
     .w-favorites = Favoriten
     .w-folders = Ordner
     .w-this-computer = Dieser Computer

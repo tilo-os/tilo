@@ -159,6 +159,7 @@ async fn mount(laptop: &Laptop, dir: &Path, workspace: &str) -> Mount {
         (laptop.device, laptop.person),
         dir.join("namespace"),
         Arc::clone(&content),
+        dir.join("mount"),
     )
     .await
     .expect("the mount's tree opens");

@@ -247,6 +247,9 @@ pub struct Status {
     pub durable: bool,
     /// Files the tree names.
     pub files: usize,
+    /// Where this folder stands on this computer: the mount a person opens, and a file manager
+    /// shows as the workspace's place. Empty while the tree is kept for its records alone.
+    pub path: String,
     /// Their bytes, all of them.
     pub bytes: u64,
     /// Of those bytes, the ones this computer holds, as last counted.

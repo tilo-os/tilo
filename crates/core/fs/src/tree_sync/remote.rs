@@ -146,6 +146,7 @@ pub async fn start(
     (device, person): ([u8; 32], [u8; 32]),
     kept_at: PathBuf,
     content: Arc<crate::ContentStore>,
+    path: PathBuf,
 ) -> std::io::Result<(TreeSync, Service)> {
     let link = Arc::new(Link {
         workspace: workspace.clone(),
@@ -171,14 +172,24 @@ pub async fn start(
         wakes: wake_events,
     })
     .await?;
-    tokio::spawn(tell_status(Arc::clone(&link), tree.status_changes()));
+    tokio::spawn(tell_status(Arc::clone(&link), tree.status_changes(), path));
     Ok((tree, Service(link)))
 }
 
-/// Tell the session where the folder stands each time that changes, until the sync is gone.
-async fn tell_status(link: Arc<Link>, mut changes: tokio::sync::watch::Receiver<Status>) {
+/// Tell the session where the folder stands each time that changes, until the sync is gone: with
+/// the mount it stands at, which is the place a file manager shows the workspace by.
+async fn tell_status(
+    link: Arc<Link>,
+    mut changes: tokio::sync::watch::Receiver<Status>,
+    path: PathBuf,
+) {
+    let path = path.display().to_string();
     loop {
         let now = changes.borrow_and_update().clone();
+        let now = Status {
+            path: path.clone(),
+            ..now
+        };
         *link.shown.lock_recover() = Some(now.clone());
         link.send(Ask::Status(now));
         if changes.changed().await.is_err() {

@@ -9175,6 +9175,10 @@
               "type": "text"
             },
             {
+              "name": "path",
+              "type": "text"
+            },
+            {
               "name": "state",
               "type": "text"
             },

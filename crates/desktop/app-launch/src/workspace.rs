@@ -121,6 +121,18 @@ impl Workspace {
             )
             .through(app),
         );
+        // The workspaces' files, which the filesystem mounts here: a file manager shows them as
+        // places of their own, and the grant names the mount as each device has it.
+        for root in crate::downloaded::workspace_roots() {
+            grants.sandbox.push(
+                CapOverride::grant(
+                    Grantee::person(self.person.clone()),
+                    Scope::FsPath(root.display().to_string()),
+                    Access::Write,
+                )
+                .through(app),
+            );
+        }
         grants
     }
 
@@ -233,22 +245,33 @@ mod tests {
             "nothing granted, no capability file and no flag"
         );
 
-        // Files is handed this device's home, and the workspace's own record
-        // never names it.
+        // Files is handed this device's home and the folders the workspaces mount
+        // here, and the workspace's own record never names either.
         workspace.person = "person-7".to_owned();
         let home = PathBuf::from("/home/you");
+        let mut expected = vec![
+            CapOverride::grant(
+                Grantee::person("person-7"),
+                Scope::FsPath(home.display().to_string()),
+                Access::Write,
+            )
+            .through("so.tilo.file-explorer"),
+        ];
+        for root in crate::downloaded::workspace_roots() {
+            expected.push(
+                CapOverride::grant(
+                    Grantee::person("person-7"),
+                    Scope::FsPath(root.display().to_string()),
+                    Access::Write,
+                )
+                .through("so.tilo.file-explorer"),
+            );
+        }
         assert_eq!(
             workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
             LaunchGrants {
                 author: false,
-                sandbox: vec![
-                    CapOverride::grant(
-                        Grantee::person("person-7"),
-                        Scope::FsPath(home.display().to_string()),
-                        Access::Write,
-                    )
-                    .through("so.tilo.file-explorer"),
-                ],
+                sandbox: expected,
             }
         );
         assert!(

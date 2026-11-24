@@ -220,6 +220,10 @@ pub struct Folder {
     pub name: String,
     /// The name of the device that keeps the workspace's files, empty while none is named.
     pub server: String,
+    /// Where the workspace's files stand on this computer, empty while they are not mounted
+    /// here: the place a person opens to browse them.
+    #[serde(default)]
+    pub path: String,
     /// What the folder is doing: `paused`, `waiting-for-workspace`, `opening`, `stuck`,
     /// `sending`, `content-going-out` (every change went out, and the server still lacks some
     /// files' contents) or `in-sync`.
@@ -261,6 +265,7 @@ impl From<tilo_workspace_service::files::Folder> for Folder {
             workspace: folder.workspace,
             name: folder.name,
             server: folder.server,
+            path: folder.path,
             state,
             stuck,
             refused,

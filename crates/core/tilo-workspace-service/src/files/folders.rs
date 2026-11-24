@@ -26,6 +26,10 @@ pub struct Folder {
     pub name: String,
     /// The name of the device that keeps the workspace's content, empty while none is named.
     pub server: String,
+    /// Where this workspace's files stand on this computer, empty while they are not mounted
+    /// here: the place a person opens to browse them.
+    #[serde(default)]
+    pub path: String,
     pub status: Status,
 }
 

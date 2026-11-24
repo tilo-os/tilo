@@ -491,6 +491,7 @@ d-n9jkqy4o = Files
 
 d-z6cheebf = Places
     .w-places = Places
+    .w-workspace = Workspace
     .w-favorites = Favorites
     .w-folders = Folders
     .w-this-computer = This computer
