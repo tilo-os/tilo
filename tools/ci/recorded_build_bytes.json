@@ -380,7 +380,6 @@
   "tilo-wayland-ext": {"libraries": 1246075, "tests": 20136216},
   "tilo-web-search": {"libraries": 6677980, "tests": 111840432},
   "tilo-wet-media": {"libraries": 8673457, "tests": 6440376},
-  "tilo-window-menu": {"libraries": 3104147, "tests": 187295800},
   "tilo-window-share": {"libraries": 2865604, "tests": 29138040},
   "tilo-winit-x11": {"libraries": 0, "tests": 2851912},
   "tilo-workspace-agent": {"libraries": 5035602, "tests": 31753648},

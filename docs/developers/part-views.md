@@ -173,6 +173,5 @@ display change being tried are drawn by the system whatever is bound
 elsewhere: a view someone else wrote must not be able to ask for a password
 and look like the machine asking. The settings resource refuses those parts.
 
-More: [Build an app](../app-development.md), the
-[window menu's own view](../../crates/session/window-menu), and the
+More: [Build an app](../app-development.md) and the
 [resource that binds a part](../../crates/system/settings-sections/src/shell_views.rs).

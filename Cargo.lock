@@ -22430,16 +22430,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-window-menu"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tilo-app",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-window-share"
 version = "0.1.0"
 dependencies = [
@@ -28452,7 +28442,6 @@ dependencies = [
  "tilo-web-search",
  "tilo-webview",
  "tilo-wet-media",
- "tilo-window-menu",
  "tilo-window-share",
  "tilo-winit",
  "tilo-winit-x11",

@@ -12,7 +12,7 @@ mod cases {
     };
 
     /// The window menu as the shell publishes it: the window it is for, where it stands, and the
-    /// rows that window offers now (`crates/session/window-menu`, `session/src/mount/shell.rs`).
+    /// rows that window offers now (`desktop:window-menu`).
     const READING: &str = r#"{
         "tab": "20",
         "anchor": { "x": 40, "y": 50 },

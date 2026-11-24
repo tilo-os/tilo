@@ -167,7 +167,6 @@ mod tests {
             "tilo-lock-screen",
             "tilo-osk",
             "tilo-quick-settings",
-            "tilo-window-menu",
         ];
         // A device gets its session from a swap, and its daemon through `swap
         // vmd --slot vm`; both land on whatever image the device already runs.

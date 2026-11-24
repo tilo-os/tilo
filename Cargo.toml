@@ -513,7 +513,6 @@ members = [
     "crates/session/speaker-service",
     "crates/desktop/tray",
     "crates/desktop/wayland-ext",
-    "crates/session/window-menu",
     "crates/desktop/window-share",
     "crates/core/workspace-directory",
 
