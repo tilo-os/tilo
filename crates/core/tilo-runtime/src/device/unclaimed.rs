@@ -240,6 +240,7 @@ impl DeviceOnly {
     }
 
     /// The records this device keeps as its own.
+    #[cfg(test)]
     pub(crate) fn records(&self) -> Arc<super::records::DeviceRecords> {
         Arc::clone(&self.0.records)
     }
