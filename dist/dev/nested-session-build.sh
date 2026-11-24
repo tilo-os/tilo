@@ -100,6 +100,10 @@ profile_args() {
 # Each line of a build's output carries its name, as the builds interleave.
 label() { sed -u "s/^/$1: /"; }
 host_profile=nested
+# The staged session runs under the machine's own device daemon where a check installs
+# the system unit (`tools/ci/app-walk.sh`), and starts none of its own; this build starts
+# no daemon either way.
+#
 # tilo-runtime is the agent's end of the session's MCP server
 # (`tilo-runtime --connect`), so a check that drives the session as an
 # admitted agent runs against the staged build without building its own.

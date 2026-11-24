@@ -755,11 +755,17 @@ fi
 # desktop below as their shell, handing it the link the desktop reaches its workspaces on. The
 # daemon and the shell it starts write to the session's log, as a device's journal holds both.
 : > "$logs/session.log"
-# shellcheck source=dist/dev/device-daemon.sh
-. "$repo_root/dist/dev/device-daemon.sh"
-say "starting the device daemon (log: $logs/session.log)"
-start_device_daemon "$bin" "$logs/session.log" || die "the device daemon did not start"
-children+=("$device_daemon_pid")
+if [[ ${TILO_SESSION_MACHINE_DAEMON:-} == 1 ]]; then
+    # The machine serves this computer's device daemon, as Tilo OS's system unit does, and the
+    # login starts this session with the link it hands on (`TILO_SHELL_FD`): this starts none.
+    say "the machine serves this session's device daemon"
+else
+    # shellcheck source=dist/dev/device-daemon.sh
+    . "$repo_root/dist/dev/device-daemon.sh"
+    say "starting the device daemon (log: $logs/session.log)"
+    start_device_daemon "$bin" "$logs/session.log" || die "the device daemon did not start"
+    children+=("$device_daemon_pid")
+fi
 
 # --- The session's own desktop ------------------------------------------------
 mkdir -p "$runtime/tilo/services"

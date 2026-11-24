@@ -78,6 +78,12 @@ if [[ $(id -u) == 0 ]]; then
     chown root:"$walk_group" /run/tilo /run/tilo/fs-storage
     chmod 3770 /run/tilo
     chmod 2750 /run/tilo/fs-storage
+    # The device daemon is the system's, as Tilo OS runs it: its unit file is the marker every
+    # process reads to find the system daemon (`tilo_paths::machine::system_daemon`), and the
+    # runtime directory the unit makes, with the socket in it, is open to every account.
+    install -D -m 0644 "$repo_root/os/usr/lib/systemd/system/tilo-runtime.service" \
+        /usr/lib/systemd/system/tilo-runtime.service
+    install -d -m 0755 -o root -g root /run/tilo-runtime
     # A device node is the kernel's, and a device's is open to every account; the image's fuse3
     # package installs fusermount3 setuid. A job sandbox that copies neither leaves a person's
     # FUSE mount with "failed to open /dev/fuse: Permission denied".

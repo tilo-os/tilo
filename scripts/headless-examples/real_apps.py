@@ -765,7 +765,8 @@ class Session:
               tag: str = "session", tapps: list[Path] | None = None,
               env: dict | None = None,
               session_args: list[str] | None = None,
-              abort: Callable[[], str | None] | None = None) -> "Session":
+              abort: Callable[[], str | None] | None = None,
+              prepare: Callable[[], tuple[dict, dict]] | None = None) -> "Session":
         """Start the session on its state. `fresh` forgets the saved desktop, so
         the session opens the way a first login does; without it the
         workspaces, windows and their layout come back as they were left.
@@ -774,7 +775,10 @@ class Session:
         backend's options. `abort` is asked while the session starts, and a
         reason it gives ends the wait at once with that reason, for a start
         whose failure the wait would outlast (a service the session was told
-        to rely on)."""
+        to rely on). `prepare` runs once the session's state is the account's
+        and before its process starts: what a login does at that point, such
+        as sign the account in to the machine's daemon, answered as the
+        environment it adds and the descriptors handed on (`name`: `fd`)."""
         if self.proc is not None:
             raise Failed("the session is running already")
         self._launch_out = Path(out).resolve() if out else self.state
@@ -791,7 +795,7 @@ class Session:
         # — so a person who signs in again meets the desktop they had.
         self._started_with = {"apps": apps, "tapps": tapps, "env": env,
                               "session_args": session_args, "out": self._launch_out,
-                              "abort": abort}
+                              "abort": abort, "prepare": prepare}
         # The launcher has errexit enabled and writes its progress before
         # starting the desktop. A stale handle on a VM's shared output mount
         # can make one of those writes exit the launcher. Keep its open log
@@ -816,6 +820,12 @@ class Session:
             # account, their home, and the tree their account reads.
             argv = [*as_account(self.account), *argv]
             launch_env.update(account_env(self.account, self.state))
+        # What a login does once the state is the account's and before the session runs: the
+        # environment it adds, and the descriptors it hands the session.
+        fds: dict[str, int] = {}
+        if prepare is not None:
+            added, fds = prepare()
+            launch_env.update(added)
         print(f"==> starting the headless session ({tag}, lavapipe only)", file=sys.stderr)
         # The session script picks its own private runtime directory (a login's
         # XDG_RUNTIME_DIR, or a short one of its own where a container's exec
@@ -825,7 +835,7 @@ class Session:
             with self.launcher_log.open("w") as log:
                 self.proc = subprocess.Popen(
                     argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-                    env=launch_env,
+                    env=launch_env, pass_fds=tuple(fds.values()),
                 )
             until("the session to start", lambda: self._starting(ready, abort), 300, 0.25)
             if self.proc.poll() is not None:

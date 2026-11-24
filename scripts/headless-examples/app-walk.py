@@ -490,6 +490,247 @@ class MachineFiles:
             self.log = None
 
 
+<<<<<<< ours
+=======
+def daemon_ask(socket_path: Path, path: str, args: dict,
+               within: float = 20.0, pid: int | None = None) -> tuple[dict, int | None]:
+    """Ask this computer's daemon one of its own actions over its native endpoint, as the
+    account this process runs as, and answer what the action answered and the descriptor the
+    answer carried.
+
+    The request names the typed answer (`so.tilo.mcp`), so the action's own answer comes back as
+    data rather than as the words it is said with; `tilo_do` wraps it with the call it made, and
+    that call's answer is what is answered here. A daemon that replaces its endpoint as its
+    person's part starts leaves a connection made meanwhile unanswered, and one that is still
+    starting has none to make: each try is a connection of its own, until `within`."""
+    deadline = time.monotonic() + within
+    while True:
+        try:
+            return asked_once(socket_path, path, args)
+        except (TimeoutError, ConnectionError, OSError) as error:
+            if time.monotonic() >= deadline:
+                raise Failed(f"the machine's daemon answered nothing to {path}: "
+                             f"{error}") from None
+            time.sleep(0.5)
+
+
+def asked_once(socket_path: Path, path: str, args: dict) -> tuple[dict, int | None]:
+    """[`daemon_ask`], once: one connection, one request, its answer."""
+    line = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": "tilo_do",
+                                  "arguments": {"path": path, "args": args},
+                                  # The typed answer, not the words it is said with.
+                                  "_meta": {"so.tilo.mcp": {"structured": True}}}})
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+        # An action the daemon answers answers at once: a request it does not answer is a
+        # failure said now, never one the walk waits out.
+        stream.settimeout(10)
+        stream.connect(str(socket_path))
+        stream.sendall((line + "\n").encode())
+        answered, handed = b"", []
+        while b"\n" not in answered:
+            data, ancillary, _flags, _address = stream.recvmsg(
+                1 << 16, socket.CMSG_SPACE(4 * 4))
+            for level, kind, payload in ancillary:
+                if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                    fds = array.array("i")
+                    fds.frombytes(payload[:len(payload) - (len(payload) % fds.itemsize)])
+                    handed.extend(fds)
+            if not data:
+                break
+            answered += data
+    said = answered.split(b"\n", 1)[0].decode(errors="replace")
+    if not said:
+        raise Failed(f"the machine's daemon answered nothing to {path}")
+    try:
+        answer = json.loads(said)
+    except ValueError:
+        raise Failed(f"the machine's daemon's answer is not JSON: {said}") from None
+    if "error" in answer:
+        raise Failed(f"the machine's daemon refused {path}: {said}")
+    result = answer.get("result") or {}
+    text = "".join(part.get("text") or "" for part in result.get("content") or [])
+    if result.get("isError") is True:
+        raise Failed(f"the machine's daemon refused {path}: {text or said}")
+    # The typed answer the tool carries, else the words it answered them as.
+    typed = result.get("structuredContent")
+    said_answer = typed if isinstance(typed, dict) and typed else None
+    if said_answer is None:
+        try:
+            said_answer = json.loads(text) if text else {}
+        except ValueError:
+            said_answer = {}
+    if not isinstance(said_answer, dict):
+        said_answer = {}
+    # `tilo_do` answers with the action it called, whether it ran, and the action's own answer
+    # under `result`; a call that failed says so instead of answering.
+    if said_answer.get("status") == "failed":
+        raise Failed(f"the machine's daemon refused {path}: {text or said}")
+    if isinstance(said_answer.get("result"), dict):
+        said_answer = said_answer["result"]
+    return said_answer, (handed[0] if handed else None)
+
+
+class MachineDaemon:
+    """This computer's device daemon, started the way Tilo OS's system unit starts it, and the
+    login that starts the session as the person.
+
+    On Tilo OS the daemon is the system's: root runs it, every account reaches its socket, and
+    the login starts a person's desktop with the link the daemon answers the sign-in with, never
+    a daemon of the person's own. The walk plays that login through the daemon's own actions, as
+    `pam_tilo` does: root says the session account signed in, the account founds its person with
+    its first `tilo` command, and root says it signed in again, taking the link the answer
+    carries and handing it to the session as `TILO_SHELL_FD`, the variable the PAM module names.
+
+    The daemon keeps the person's workspaces and records in root-owned system state, as a device
+    does; the session changes them only through the link."""
+
+    #: The system unit's runtime directory (`RuntimeDirectory=tilo-runtime`), which the image's
+    #: tmpfiles/systemd makes and the walk makes for it.
+    RUNTIME = Path("/run/tilo-runtime")
+    NATIVE = RUNTIME / "native.sock"
+    #: The unit's `Environment=HOME=` and `Environment=TILO_RUNTIME_PROFILE=`, which the walk
+    #: names by `--profile` instead: a profile named in the environment is a profile named apart,
+    #: whose sockets move with it, and the unit's daemon listens where every account finds it.
+    PROFILE = Path("/var/lib/tilo/state")
+    #: How long the daemon may take to answer, and the person's services to run before their
+    #: shell's link is handed out.
+    START_WITHIN = 120.0
+    LINK_WITHIN = 180.0
+    #: The lowest descriptor the link is handed on at, as `pam_tilo` hands it on.
+    LINK_FD = 10
+
+    def __init__(self, state: Path, out: Path):
+        self.state = state
+        self.out = out
+        self.account = real_apps.session_account()
+        self.proc: subprocess.Popen | None = None
+        self.log = None
+        #: Why the machine's daemon, or the login, did not come up, for the walk's report.
+        self.trouble: str | None = None
+
+    def env(self) -> dict:
+        """What the session is told so it starts no daemon of its own."""
+        return {"TILO_SESSION_MACHINE_DAEMON": "1"}
+
+    def failure(self) -> str | None:
+        return self.trouble
+
+    def start(self) -> dict:
+        """Start the machine's daemon and wait for its native endpoint."""
+        if self.account is None:
+            return {}
+        try:
+            self._launch()
+        except BaseException as error:
+            self.trouble = str(error)
+            print(f"==> the machine's device daemon did not start: {error}", file=sys.stderr)
+            raise
+        return self.env()
+
+    def _launch(self) -> None:
+        # The unit's `RuntimeDirectory` and its state: the one open to every account, the other
+        # private to the account the daemon runs as, which the daemon refuses to serve otherwise.
+        self.RUNTIME.mkdir(parents=True, exist_ok=True)
+        self.PROFILE.mkdir(parents=True, exist_ok=True)
+        self.PROFILE.chmod(0o700)
+        logs = self.out / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        env = {**os.environ,
+               # The unit's own environment, over the walk's identity root.
+               "HOME": str(self.PROFILE),
+               "TILO_IDENTITY_ROOT": str(self.state / "identity"),
+               "XDG_RUNTIME_DIR": str(self.RUNTIME),
+               "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_runtime=info")}
+        self.log = (logs / "machine-daemon.log").open("w")
+        self.proc = subprocess.Popen([str(BUILD / "bin/tilo-runtime"),
+                                      "--profile", str(self.PROFILE)],
+                                     stdout=self.log, stderr=subprocess.STDOUT,
+                                     env=env, start_new_session=True)
+        until("the machine's device daemon",
+              lambda: self.NATIVE.exists()
+              or (self.proc.poll() is not None and self._died()), self.START_WITHIN, 0.1)
+
+    def _died(self):
+        said = self.log_path().read_text(errors="replace") if self.log_path().is_file() else ""
+        raise Failed(f"the machine's device daemon ended ({self.proc.returncode}): {said[-1600:]}")
+
+    def log_path(self) -> Path:
+        return self.out / "logs" / "machine-daemon.log"
+
+    def _account_env(self) -> dict:
+        """The environment the session script gives a command of the person's: its own state
+        tree, its identity, and the seat's runtime directory."""
+        return {
+            "HOME": str(self.state / "home"),
+            "XDG_CONFIG_HOME": str(self.state / "config"),
+            "XDG_DATA_HOME": str(self.state / "data"),
+            "XDG_STATE_HOME": str(self.state / "state"),
+            "XDG_CACHE_HOME": str(self.state / "cache"),
+            "XDG_RUNTIME_DIR": (os.environ.get("TILO_SESSION_RUNTIME")
+                                or f"/run/user/{self.account.pw_uid}"),
+            "TMPDIR": str(self.state / "tmp"),
+            "TILO_IDENTITY_ROOT": str(self.state / "identity"),
+        }
+
+    def _signed_in(self, uid: int) -> tuple[dict, int | None]:
+        """Say the account `uid` signed in, as `pam_tilo` does, and answer what the daemon said
+        of the person and the descriptor the answer carried."""
+        person, fd = daemon_ask(self.NATIVE, "seats#signed-in", {"uid": uid},
+                                pid=self.proc.pid if self.proc is not None else None)
+        if not person:
+            raise Failed("the machine's daemon answered no person for the sign-in")
+        return person, fd
+
+    def login(self, session_env: dict) -> tuple[dict, dict]:
+        """The login: seat the session's account, found its person, and take the link the second
+        sign-in answers with. Answered as the environment the session gains and the descriptors
+        handed on."""
+        if self.account is None:
+            return {}, {}
+        uid = self.account.pw_uid
+        person, _ = self._signed_in(uid)
+        if person.get("founding"):
+            # The account's first command founds the person here, as a device's does: the
+            # daemon admits the call by the account it comes from, so the account makes it.
+            run([*as_account(self.account), sys.executable, "-I", "-B",
+                 str(Path(__file__).resolve()), "--found-device", str(self.NATIVE)],
+                env={**os.environ, **session_env, **self._account_env()})
+        deadline = time.monotonic() + self.LINK_WITHIN
+        while True:
+            said, handed = self._signed_in(uid)
+            if handed is not None and said.get("shell") is True:
+                os.dup2(handed, self.LINK_FD)
+                os.close(handed)
+                os.set_inheritable(self.LINK_FD, True)
+                return ({"TILO_SHELL_FD": str(self.LINK_FD)},
+                        {"TILO_SHELL_FD": self.LINK_FD})
+            if time.monotonic() >= deadline:
+                raise Failed(
+                    "the machine's daemon served no link for the person's shell: "
+                    f"{json.dumps(said)}")
+            time.sleep(0.5)
+
+    def stop(self) -> None:
+        if self.account is None:
+            return
+        proc = self.proc
+        if proc is not None and proc.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(30)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(10)
+        self.proc = None
+        if self.log is not None:
+            self.log.close()
+            self.log = None
+
+
+>>>>>>> theirs
 # --- what the app holds, read back ------------------------------------------------------------
 
 def app_action(session: Session, app: str, operation: str, resource: str | None = None):
