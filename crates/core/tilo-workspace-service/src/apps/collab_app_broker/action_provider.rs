@@ -1942,29 +1942,11 @@ impl AppBrokerState {
             };
             return self.invoke_directory(caller, root, origin, request);
         }
-        // An app's code calls by address, naming its own app or the one it uses: an address a
-        // provider registered on this device publishes is that provider's, and its call is the
-        // provider's like any other, admitted under the application its registration names.
-        if let Some(registered) = self
-            .services
-            .providers
-            .as_ref()
-            .filter(|_| {
-                tilo_actions::remote::application_provider(&request.target.provider).is_some()
-            })
-            .and_then(|providers| {
-                providers.published(
-                    &request.target,
-                    crate::workspaces::providers::Reach::ThisDevice,
-                )
-            })
-        {
-            let mut request = request.clone();
-            request.target.provider = registered.provider.to_string();
-            return self.invoke_registered(caller, origin, &registered, &request);
+        // A call to an app runs where the app runs: placed first, by where its connection is.
+        if application_provider(&request.target.provider).is_some() {
+            return self.invoke_application(caller, origin, request);
         }
         if is_launchable_provider(&request.target.provider)
-            || application_provider(&request.target.provider).is_some()
             || super::windowless_instances::started_app(request).is_some()
         {
             return self.invoke_launchable(caller, origin, request);
@@ -2023,6 +2005,30 @@ impl AppBrokerState {
         self.invoke_eager(caller, own_peer, launch, None, request)
     }
 
+    /// Run `request`, a call to an app, on this device: by the provider an app registered for
+    /// its address here, or by the app, launched unless it runs.
+    pub(super) fn invoke_application_here(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // An app's code calls by address, naming its own app or the one it uses: an address a
+        // provider registered on this device publishes is that provider's, and its call is the
+        // provider's like any other, admitted under the application its registration names.
+        if let Some(registered) = self.services.providers.as_ref().and_then(|providers| {
+            providers.published(
+                &request.target,
+                crate::workspaces::providers::Reach::ThisDevice,
+            )
+        }) {
+            let mut request = request.clone();
+            request.target.provider = registered.provider.to_string();
+            return self.invoke_registered(caller, origin, &registered, &request);
+        }
+        self.invoke_launchable(caller, origin, request)
+    }
+
     /// Invoke an action retained from a closed application: launch the app,
     /// wait for it to publish the action and its invocation stream, and
     /// admit the invocation against what it publishes then — its current
@@ -2078,25 +2084,6 @@ impl AppBrokerState {
                     }),
                 };
             }
-            // An app whose connection another device runs is called there, and never started
-            // here beside it.
-            let destination = match destination {
-                Ok(destination) => match state
-                    .connection_forward(&caller, origin.as_ref(), &destination, &request)
-                    .await
-                {
-                    Ok(None) => Ok(destination),
-                    Ok(Some(there)) => {
-                        if let Ok(mut log) = state.remote_invocations.lock() {
-                            log.abandon(&request.invocation);
-                        }
-                        connection::run_there(there, caller, request, completer).await;
-                        return;
-                    }
-                    Err(error) => Err(error),
-                },
-                Err(error) => Err(error),
-            };
             let started = match destination {
                 Ok(destination) => {
                     state

@@ -14,38 +14,81 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, Completer, InvocationReceipt, InvokeRequest,
+    ActionCallError, ActionProvider, Caller, Completer, InvocationReceipt, InvokeRequest, Pending,
+    application_provider, pending,
 };
 
 use super::super::AppBrokerState;
 use super::super::published_invocation::InvocationCaller;
-use super::LaunchDestination;
 use super::own_device::is_person_here;
 use crate::apps::services::ConnectionActions;
 
 impl AppBrokerState {
-    /// The device that runs `destination`'s app's connection, when another device than this one
-    /// does: `request` goes there instead of starting the app here. `None` to run it here.
+    /// Place `request`, a call to an app, and run it there: here when this device runs the app's
+    /// connection or the app keeps none, on the device that has the connection's lease
+    /// otherwise ([`crate::work::connection_call`]), and nowhere, with why, while no device has
+    /// it. This is the one place a call to an app is placed.
+    pub(super) fn invoke_application(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&InvocationCaller>,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if self.services.hosted_workspaces.is_none() {
+            return self.invoke_application_here(caller, origin, request);
+        }
+        let runtime = match super::super::launchable::delivery_runtime() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                return Pending::ready(Err(ActionCallError::Unavailable {
+                    reason: format!("the call could not be placed: {error}"),
+                }));
+            }
+        };
+        let (done, answer) = pending();
+        let (state, caller, origin, request) = (
+            Arc::clone(self),
+            caller.clone(),
+            origin.cloned(),
+            request.clone(),
+        );
+        runtime.spawn(async move {
+            match state.placed(&caller, origin.as_ref(), &request).await {
+                Ok(None) => {
+                    let here = state.invoke_application_here(&caller, origin.as_ref(), &request);
+                    done.complete(here.await.unwrap_or_else(|| {
+                        Err(ActionCallError::Unavailable {
+                            reason: "the app's answer was dropped before it arrived".into(),
+                        })
+                    }));
+                }
+                Ok(Some(there)) => run_there(there, caller, request, done).await,
+                Err(error) => done.complete(Err(error)),
+            }
+        });
+        answer
+    }
+
+    /// The device that runs the connection of `request`'s app, when another device than this
+    /// one does; `None` to run it here.
     ///
     /// # Errors
     ///
-    /// No device runs the connection, or the call carries no signature of a caller other than
-    /// the person at this device.
-    pub(super) async fn connection_forward(
+    /// No device runs the connection; this device lost it after another device sent the call
+    /// here; or the call carries no signature of a caller other than the person at this device.
+    async fn placed(
         &self,
         caller: &Caller,
         origin: Option<&InvocationCaller>,
-        destination: &LaunchDestination,
         request: &InvokeRequest,
     ) -> Result<Option<Arc<dyn ActionProvider + Send + Sync>>, ActionCallError> {
-        let Some(hosted) = self.services.hosted_workspaces.as_ref() else {
+        let (Some(hosted), Some((workspace, app))) = (
+            self.services.hosted_workspaces.as_ref(),
+            application_provider(&request.target.provider),
+        ) else {
             return Ok(None);
         };
-        let workspace = destination.workspace.id().to_string();
-        match hosted
-            .connection_actions(&workspace, &destination.app_id)
-            .await
-        {
+        match hosted.connection_actions(workspace, app).await {
             ConnectionActions::Here => Ok(None),
             ConnectionActions::Unplaced(why) => Err(ActionCallError::Unavailable { reason: why }),
             // A call another device brought here because this one had the lease goes no further
@@ -71,7 +114,7 @@ impl AppBrokerState {
 
 /// Send `request` to `actions`, the device that runs its app's connection, and complete `done`
 /// with that device's receipt once the call settled there.
-pub(super) async fn run_there(
+async fn run_there(
     actions: Arc<dyn ActionProvider + Send + Sync>,
     caller: Caller,
     request: InvokeRequest,
