@@ -1566,7 +1566,20 @@ impl Tickets {
             .map_err(|error| anyhow!("the tab the ticket waits with: {error}"))?;
         let cert: Option<tilo_user_identity::DeviceCert> = match &tab {
             Some(tab) if super::services::device_root_record().is_ok() => {
-                Some(super::signing::sign_tab(self.0.workspaces.as_ref(), tab).await?)
+                let cert = super::signing::sign_tab(self.0.workspaces.as_ref(), tab).await?;
+                // The person's own act, done here where their root is: the device it just
+                // signed is listed among theirs at the same moment. The new device never
+                // writes a workspace it does not hold to appear there.
+                let workspaces = self.0.workspaces.as_ref().ok_or_else(|| {
+                    anyhow!("This computer keeps no workspaces to list the device in.")
+                })?;
+                tilo_workspace_service::workspaces::person_workspace::devices::keep(
+                    workspaces.copies(),
+                    &cert,
+                )
+                .await
+                .map_err(|error| anyhow!("{error}"))?;
+                Some(cert)
             }
             Some(tab) if tab.key_for.is_some() => bail!(
                 "This computer does not hold your identity, so it cannot approve this key: run \
