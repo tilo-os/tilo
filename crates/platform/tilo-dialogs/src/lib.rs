@@ -13,9 +13,11 @@
 //! Apps build a [`portal::PickRequest`] or [`portal::LaunchRequest`] and `send`
 //! it, or call [`portal::open_uri`]; the outcome arrives over a channel the UI
 //! thread drains. [`FilePicker`] and [`UriOpener`] are the boundaries a host fills
-//! (`ui::process::ProcessServices` holds one of each per app), and [`system_picker`]
-//! and [`system_opener`] are this target's backends. [`availability`] says which
-//! [`Feature`]s the target has.
+//! (`ui::process::ProcessServices` holds one of each per app): an app process inside Tilo
+//! reaches the session's chooser and opener over the sockets it was handed ([`shell`]), and a
+//! runner hosting an app on a foreign desktop fills them from the desktop's portals
+//! (`portal-client`). [`system_picker`] and [`system_opener`] are this target's backends.
+//! [`availability`] says which [`Feature`]s the target has.
 
 use std::sync::{Arc, OnceLock};
 
@@ -44,7 +46,7 @@ mod web;
 pub use web::download;
 #[cfg(windows)]
 mod windows;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "portal-client"))]
 mod xdg;
 
 pub use caps::{Availability, Feature, Unsupported, availability, available};
@@ -132,7 +134,7 @@ pub fn inherited_shell_opener(elsewhere: Arc<dyn UriOpener>) -> Option<Arc<dyn U
 }
 
 pub fn system_picker() -> Arc<dyn FilePicker> {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "portal-client"))]
     return Arc::new(xdg::PortalFilePicker);
     #[cfg(target_os = "macos")]
     return match confined::from_env() {
@@ -143,7 +145,10 @@ pub fn system_picker() -> Arc<dyn FilePicker> {
     return Arc::new(windows::WindowsFilePicker);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     return Arc::new(web::PageFiles);
-    #[allow(unreachable_code, reason = "a target without choosers")]
+    #[allow(
+        unreachable_code,
+        reason = "a target without choosers, or an app process whose host holds one"
+    )]
     unavailable_picker()
 }
 
@@ -162,8 +167,12 @@ impl UriOpener for SystemOpener {
                 format!("bad URI: {error}"),
             ));
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "portal-client"))]
         return xdg::open_uri(uri);
+        // A host without the portal client (an app process) opens through the desktop's own
+        // handler, which needs no D-Bus.
+        #[cfg(all(target_os = "linux", not(feature = "portal-client")))]
+        return open::that_detached(uri);
         #[cfg(target_os = "macos")]
         return macos::open_uri(uri);
         #[cfg(windows)]
@@ -252,13 +261,21 @@ pub(crate) fn current_opener() -> Arc<dyn UriOpener> {
         .map_or_else(unavailable_opener, |resolver| (resolver.opener)())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(
+    all(target_os = "linux", feature = "portal-client"),
+    target_os = "macos",
+    windows
+))]
 pub(crate) enum PortalFailure {
     Cancelled,
     Failed(String),
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(
+    all(target_os = "linux", feature = "portal-client"),
+    target_os = "macos",
+    windows
+))]
 impl PortalFailure {
     fn into_single(self) -> PortalOutcome {
         match self {
@@ -299,5 +316,21 @@ mod tests {
             assert!(matches!(outcome, PortalOutcome::Failed(_)));
             assert!(portal::open_uri("https://example.invalid").is_err());
         }
+    }
+
+    /// The app process's build: the session's chooser is the only chooser, reached over the
+    /// connection its launcher handed it. It carries no portal client, so a pick answers no
+    /// choice rather than reaching the desktop over D-Bus.
+    #[cfg(all(target_os = "linux", not(feature = "portal-client")))]
+    #[test]
+    fn an_app_process_chooses_only_through_its_session() {
+        let outcome = system_picker()
+            .pick(PickRequest::open("Open", "Open"))
+            .recv()
+            .unwrap();
+        assert!(
+            matches!(outcome, PortalOutcome::Failed(_)),
+            "an app process holds no portal"
+        );
     }
 }

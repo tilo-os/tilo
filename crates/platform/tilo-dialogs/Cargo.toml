@@ -17,6 +17,10 @@ path = "src/lib.rs"
 # Test backends for scoped choosers and URI opening, and the backend
 # contract checks, for dependents' tests.
 test-support = ["dep:tilo-test-env"]
+# The desktop's own chooser, opener and wallpaper portals, for a runner hosting an app on a
+# foreign desktop. An app process inside Tilo reaches the session's chooser over its socket
+# (`shell`) and never enables this: no sandboxed app speaks D-Bus.
+portal-client = ["dep:ashpd"]
 
 [dependencies]
 # Outcomes are delivered from the app runtime or a host callback and wake the
@@ -45,11 +49,12 @@ serde_json.workspace = true
 wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../wire-frame" }
 tilo-socket = { version = "0.1.0", path = "../tilo-socket" }
 
-# The XDG Desktop Portal. Selected by target, not by a feature: every Linux
-# app chooses files through the portal, which is where the sandbox's
-# file-access grant is made.
+# The host's portal client, under `portal-client` (a runner hosting an app on a foreign
+# desktop). An app process inside Tilo chooses through the session's chooser over its socket
+# (`shell`), where the file-access grant is made.
 [target.'cfg(target_os = "linux")'.dependencies]
-ashpd = { workspace = true, features = ["file_chooser", "open_uri", "wallpaper"] }
+# The host's portal client (`portal-client`); an app process links neither.
+ashpd = { workspace = true, optional = true, features = ["file_chooser", "open_uri", "wallpaper"] }
 # Opens URIs on an unsandboxed desktop that runs no portal.
 open.workspace = true
 

@@ -115,6 +115,10 @@ mpris = ["native", "tilo-process-services/mpris"]
 # (`ui::portal`) and notifications (`ui::notify`) need no feature: their
 # platform crates select each target's backend.
 portal = ["native", "tilo-process-services/portal"]
+# The host's own portal clients (a foreign desktop's chooser, opener and wallpaper), for a
+# runner hosting an app outside Tilo. A Tilo app process reaches the session's chooser and
+# opener over their sockets and never enables this.
+host-portals = ["tilo-process-services/host-portals"]
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }

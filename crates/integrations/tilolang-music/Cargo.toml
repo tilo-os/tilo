@@ -16,7 +16,7 @@ tilo-innertube = { path = "../tilo-innertube", optional = true }
 rustypipe = { workspace = true, features = ["rustls-no-provider"], optional = true }
 # The app runtime the lyrics are fetched on and rustypipe's connections live on, and its TLS
 # provider: the origin asks what it holds without this site's client too.
-ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", default-features = false }
 # The device's network: the queries, the pictures and the songs an answer names, fetched here
 # because the app's window never has one.
 tilo-net = { path = "../../platform/tilo-net", default-features = false, features = ["blocking"], optional = true }

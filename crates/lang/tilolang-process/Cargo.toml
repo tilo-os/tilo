@@ -138,8 +138,10 @@ tilo-clipboard = { version = "0.1.0", path = "../../platform/tilo-clipboard" }
 # Presence as every window decodes it: who is where in a document, and who is writing there.
 ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 # An app's windows (`app-launch`): the toolkit's framework, the app window's half of each window,
-# what a window keeps of the person's own data, and later builds `tilolang dev` publishes.
-ui = { package = "tilo-app", path = "../../sdk/tilo-app", optional = true }
+# what a window keeps of the person's own data, and later builds `tilolang dev` publishes. The
+# app process is not the native runner: the session runs the window's host, and this process
+# reaches every host service through a connection, never a portal of its own.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", optional = true, default-features = false }
 tilo-app-window = { path = "../../sdk/tilo-app-window", optional = true }
 tilo-failure = { path = "../../platform/tilo-failure", optional = true }
 # The device's own folders, watched the way the platform watches them: inotify, FSEvents or
@@ -188,8 +190,9 @@ tilo-workspace-service = { path = "../../core/tilo-workspace-service", features 
 tempfile.workspace = true
 # The replies the test's broker awaits from the instance's action directory.
 tokio = { workspace = true, features = ["sync"] }
-# An app's windows as the framework runs them, in the headless frame harness.
-ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+# An app's windows as the framework runs them, in the headless frame harness. The tests host
+# them the way the session does, so they take the toolkit without the native runner.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", default-features = false, features = ["test-support"] }
 # The headless test host the tests open the app in, as a person's device hosts it.
 tilo-app-test-host = { path = "../../sdk/tilo-app-test-host" }
 # Mail's engine, and the stand-in IMAP and SMTP servers Mail's windows run against.

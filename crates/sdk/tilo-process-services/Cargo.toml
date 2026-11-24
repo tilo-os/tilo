@@ -29,6 +29,10 @@ native = ["tilo-process/native", "dep:tokio", "dep:jni", "dep:tilo-files", "tilo
 # File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,
 # `tilo-location`), selected per target without a feature.
 portal = ["native", "dep:ashpd"]
+# The desktop's own chooser, opener and wallpaper portals, for a runner hosting an app on a
+# foreign desktop. A Tilo app process reaches the session's chooser and opener over their
+# sockets and never enables this.
+host-portals = ["tilo-dialogs/portal-client"]
 # Desktop media integration: the system's now-playing controls on macOS,
 # MPRIS (`org.mpris.MediaPlayer2`) on the Unix session bus elsewhere. zbus
 # runs on the workspace's tokio backend; the server lives on its own thread
