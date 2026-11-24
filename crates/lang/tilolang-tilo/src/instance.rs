@@ -1701,14 +1701,14 @@ impl Instance {
     /// The view of `level` has `width` by `height` rem of the window now: its `space` follows,
     /// with a class changing only past its boundary by the hysteresis, and the view runs again
     /// only when something it read of it changed.
-    fn offer_space(&mut self, level: Level, width: f64, height: f64) {
+    fn offer_space(&mut self, level: Level, width: f64, height: f64, rem: f64) {
         let slot = match level {
             Level::Root => &mut self.root_space,
             Level::Detail => &mut self.detail_space,
         };
         let space = slot.map_or_else(
-            || crate::runtime::space::Space::from_rem(width, height),
-            |before| before.followed(width, height),
+            || crate::runtime::space::Space::from_rem(width, height).with_rem(rem),
+            |before| before.followed(width, height).with_rem(rem),
         );
         *slot = Some(space);
         if let Some(view) = self.view(level) {
@@ -1778,7 +1778,8 @@ impl Instance {
                 level,
                 width,
                 height,
-            } => self.offer_space(level, f64::from(width), f64::from(height)),
+                rem,
+            } => self.offer_space(level, f64::from(width), f64::from(height), f64::from(rem)),
             other => tracing::error!(?other, "the window told of something it does not"),
         }
     }

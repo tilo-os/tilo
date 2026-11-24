@@ -276,7 +276,7 @@ pub const BUILTINS: &[&str] = &[
 pub const WORKSPACE_APP: &str = "tilo.workspace";
 
 /// The fields of `space` (layout.md, "Responding to space").
-pub const SPACE_FIELDS: &str = "width_class, compact, wide, orientation, width, height";
+pub const SPACE_FIELDS: &str = "width_class, compact, wide, orientation, width, height, rem";
 
 pub fn prim(name: &str) -> Option<&'static Prim> {
     PRIMS.iter().find(|p| p.name == name)

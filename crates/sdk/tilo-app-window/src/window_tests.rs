@@ -125,6 +125,7 @@ fn spaces(app: &mut local::End) -> Vec<(Level, f32, f32)> {
                 level,
                 width,
                 height,
+                ..
             } => Some((level, width, height)),
             _ => None,
         })

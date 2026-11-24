@@ -833,10 +833,13 @@ pub enum ToApp {
     Composing(bool),
     /// The view of `level` has `width` by `height` of the window, in `rem` (the body text size
     /// after the person's setting): what its `space` reads (layout.md, "Responding to space").
+    /// `rem` is that body text size in logical pixels, which a view computes a place in pixels
+    /// from (a card it keeps where the person dropped it).
     Space {
         level: Level,
         width: f32,
         height: f32,
+        rem: f32,
     },
     /// The person asked to bring back what their last undo took back: the window's redo
     /// (Ctrl+Shift+Z, Edit › Redo). The mirror of [`ToApp::Undo`].

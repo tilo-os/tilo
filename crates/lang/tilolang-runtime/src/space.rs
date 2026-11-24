@@ -12,6 +12,10 @@ const EXPANDED_BELOW: f64 = 75.0;
 /// Width over height beyond which a space is ultrawide.
 const ULTRAWIDE_RATIO: f64 = 2.2;
 
+/// What one rem is in logical pixels until a window says what it drew its text at: the
+/// toolkit's body size, as every app of the shipped set draws it.
+pub const DEFAULT_REM: f64 = 16.0;
+
 /// How far past a class boundary a size has to go before its class changes, in rem: a window
 /// resized right at a boundary keeps one class instead of flickering between two.
 pub const HYSTERESIS_REM: f64 = 0.5;
@@ -24,6 +28,9 @@ pub struct Space {
     pub width: f64,
     /// Available height in rem.
     pub height: f64,
+    /// What one rem is in logical pixels: the person's body text size, which a view computes a
+    /// place in pixels from (a card kept where the person dropped it).
+    pub rem: f64,
     /// 0 compact, 1 medium, 2 expanded, 3 wide.
     class: i64,
     /// 0 portrait, 1 landscape, 2 ultrawide.
@@ -63,9 +70,19 @@ impl Space {
         Self {
             width,
             height,
+            rem: DEFAULT_REM,
             class: width_class_of(width),
             orientation: orientation_of(width, height),
         }
+    }
+
+    /// This space with its rem this many logical pixels: what the window drew its text at.
+    #[must_use]
+    pub fn with_rem(mut self, rem: f64) -> Self {
+        if rem.is_finite() && rem > 0.0 {
+            self.rem = rem;
+        }
+        self
     }
 
     /// The space a container of `width` by `height` rem offers after this one: a class changes
@@ -90,6 +107,7 @@ impl Space {
         Self {
             width,
             height,
+            rem: self.rem,
             class,
             orientation,
         }
@@ -115,13 +133,14 @@ impl Space {
             "orientation" => int_as_f64(self.orientation()),
             "width" => self.width,
             "height" => self.height,
+            "rem" => self.rem,
             _ => return None,
         })
     }
 
     /// Whether the field is a size (read with `space_f`) rather than a class or flag.
     pub fn is_size(name: &str) -> bool {
-        matches!(name, "width" | "height")
+        matches!(name, "width" | "height" | "rem")
     }
 }
 
@@ -152,6 +171,29 @@ mod tests {
             assert_eq!(Space::from_rem(40.0, 30.0).orientation(), 1);
             assert_eq!(Space::from_rem(20.0, 30.0).field("compact"), Some(1.0));
             assert_eq!(Space::from_rem(20.0, 30.0).field("nope"), None);
+        }
+
+        phase a_space_says_what_a_rem_is_in_pixels;
+        {
+            let space = Space::from_rem(40.0, 30.0);
+            assert_eq!(
+                space.field("rem"),
+                Some(DEFAULT_REM),
+                "until a window says, a rem is the body size every app draws"
+            );
+            assert!(Space::is_size("rem"), "a view computes a place in pixels from it");
+            let told = space.with_rem(20.0);
+            assert_eq!(told.field("rem"), Some(20.0));
+            assert_eq!(
+                told.followed(41.0, 30.0).rem,
+                20.0,
+                "a size that moves keeps the rem it was drawn at"
+            );
+            assert_eq!(
+                space.with_rem(0.0).field("rem"),
+                Some(DEFAULT_REM),
+                "no size is no rem, and the body size stands"
+            );
         }
 
         phase a_class_changes_only_past_its_boundary_by_the_hysteresis;

@@ -775,8 +775,19 @@ impl<'a> Validator<'a> {
                 }
                 Ok(())
             }
-            ToApp::Space { width, height, .. } => {
-                if !(width.is_finite() && height.is_finite() && *width >= 0.0 && *height >= 0.0) {
+            ToApp::Space {
+                width,
+                height,
+                rem,
+                ..
+            } => {
+                if !(width.is_finite()
+                    && height.is_finite()
+                    && *width >= 0.0
+                    && *height >= 0.0
+                    && rem.is_finite()
+                    && *rem > 0.0)
+                {
                     return Err(Refused::invalid("a space is no size"));
                 }
                 Ok(())

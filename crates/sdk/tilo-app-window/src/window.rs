@@ -2949,6 +2949,7 @@ impl AppWindow {
                     level,
                     width: space.0,
                     height: space.1,
+                    rem: self.rem,
                 });
             }
         }
