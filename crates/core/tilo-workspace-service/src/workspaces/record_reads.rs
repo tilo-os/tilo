@@ -49,6 +49,9 @@ pub struct RecordReads {
     /// What admits a caller to the invocations of a dispatch's workspace: its admitted run.
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
     admitted: Option<Admitted>,
+    /// The runtime the reader was made on, which a held read's wait for the next write runs on:
+    /// a read is answered on a thread of its own, outside any runtime.
+    runtime: Option<tokio::runtime::Handle>,
 }
 
 /// Whether a caller reads the invocations of a workspace through a dispatch: the dispatch's own
@@ -97,6 +100,7 @@ impl RecordReads {
             served,
             #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
             admitted: None,
+            runtime: tokio::runtime::Handle::try_current().ok(),
         }
     }
 
@@ -114,6 +118,7 @@ impl RecordReads {
             broker: Some(Arc::downgrade(broker)),
             served: None,
             admitted,
+            runtime: tokio::runtime::Handle::try_current().ok(),
         })
     }
 
@@ -717,8 +722,10 @@ impl ResourceReads for RecordReads {
             Route::Held(workspaces) => workspaces,
             Route::Served(served) => return served.watch(caller, address, wake),
         };
-        let runtime =
-            tokio::runtime::Handle::try_current().map_err(|_| ActionCallError::Unavailable {
+        let runtime = tokio::runtime::Handle::try_current()
+            .ok()
+            .or_else(|| self.runtime.clone())
+            .ok_or_else(|| ActionCallError::Unavailable {
                 reason: "this device is not running".into(),
             })?;
         let (workspace, app, record) = (
