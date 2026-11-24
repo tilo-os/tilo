@@ -404,3 +404,14 @@ d-doi7lzy6 = Einwilligung
 d-6kvgemtj = Bestätigen~present
 
 d-bhmovs5j = Ändern~present
+
+d-bfuqzfia = Kontakt finden oder hinzufügen
+    .doc = Sucht den Kontakt, den der Arbeitsbereich unter `name` führt, oder legt einen an: was jemanden aus einem anderen Dienst — eine Aufgabe, die ihm vor seinem Beitritt gegeben wurde — auf eine Karte bringt, egal wie viele Importe ihn nennen.
+    .did = hat einen Kontakt gefunden
+    .w-name-the-contact = Kontakt benennen
+
+d-so-tilo-contacts-keywords = kontakte, adressbuch, personen, telefon, e-mail, vcard
+
+d-bfuqzfia-name = Name
+
+d-zfqz2htt = Benannt oder neu~present

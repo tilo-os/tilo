@@ -18,6 +18,7 @@ d-4lo3ei5n = Adresse
 d-j6nqqrit = Name
 
 d-b5k7mvka = Störung
+    .doc = Was der Server des Kontos sagte, als es ihn nicht erreichte, in seinen Worten: leer, solange es ihm gut geht.
 
 d-33f3rqw2 = Online
 
@@ -273,7 +274,6 @@ d-eon6gbrn = Neue Nachricht
 
 d-ygbvdl5l = Neue Nachricht
     .doc = Beginnt eine Nachricht vom ersten Konto.
-    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
 
 d-hom44or2 = Per Mail einladen
     .doc = Beginnt eine Nachricht, die `to` zu einem Termin einlädt, mit ihrer Einladung (`calendar_ics`, iCalendar) neben dem, was sie sagt: was der Kalender Mail für jeden Gast übergibt, den er einlädt.
@@ -501,6 +501,7 @@ d-qcfc2rhb = Senden
     .w-this-message-went-already = Diese Nachricht ist schon rausgegangen
     .w-it-goes-to-nobody-yet = Sie geht noch an niemanden
     .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
+    .w-pick-the-account-it-goes-from = Wähle das Konto, von dem sie geht
 
 d-twebu5cb = Senden rückgängig
     .doc = Holt eine Nachricht zurück, die gesendet ist und noch nicht rausging: sie geht nie raus und die Nachricht ist wieder ein Entwurf, wie sie war.
@@ -590,11 +591,16 @@ d-dhradxj7 = Kontohinweis
     .w-can-t-reach = { $name } ist nicht erreichbar
     .w-last-fetched = { $reason }. Zuletzt geholt { $fetched }
     .w-try-again = Erneut versuchen
+    .w-can-t-sign-in-to = Anmeldung bei { $address } nicht möglich
+    .w-check-its-password-in-settings-under = Prüfe das Passwort in den Einstellungen unter Konten.
+    .w-open-account-settings = Kontoeinstellungen öffnen
+    .w-mail-has-no-password-for = Mail hat kein Passwort für { $address }
+    .w-nothing-was-sent-to-its-server = An seinen Server wurde nichts gesendet. Gib das Passwort in den Einstellungen unter Konten ein.
+    .w-mail-can-t-use-s-password = Mail kann das Passwort von { $address } nicht verwenden
+    .w-you-re-offline = Du bist offline
+    .w-new-mail-arrives-when-you-re = Neue Mail kommt, wenn du wieder online bist.
 
 d-7rcrynvm = Mail
-    .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
-    .w-recovered-mail = Übernommene Mail
-    .w-mail = Mail
 
 d-4fjgzcq6 = Zusammengeführt
     .w-all-accounts = Alle Konten
@@ -602,6 +608,8 @@ d-4fjgzcq6 = Zusammengeführt
     .w-all-mail = Alle Mails
     .w-labels = Labels
     .w-recovered-mail = Übernommene Mail
+    .w-drafts = Entwürfe
+    .w-outbox = Postausgang
 
 d-3k7hkyhl = Übernommene Mail
 
@@ -633,6 +641,11 @@ d-77noqogh = Entwurfszeile
 d-bbuecgsi = Unterhaltung
     .w-reply-to = Antwort auf { $subject }
     .w-reply = Antworten
+    .w-delete-this-conversation-permanently = Diese Unterhaltung endgültig löschen?
+    .w-it-is-in-the-trash = Sie ist im Papierkorb
+    .w-this-can-t-be-undone = Das lässt sich nicht rückgängig machen.
+    .w-it-stays-here-until-you-delete = Sie bleibt hier, bis du sie endgültig löschst.
+    .w-delete-permanently = Endgültig löschen
 
 d-krn2y5tw = Nachrichten der Unterhaltung
 
@@ -674,6 +687,9 @@ d-oqpazwvc = Schreiben
     .w-write-your-message = Schreib deine Nachricht
     .w-attach = Anhängen
     .w-send = Senden
+    .w-add-an-account-to-send = Konto zum Senden hinzufügen
+    .w-save-in-drafts = In Entwürfen speichern
+    .w-this-answers = Dies antwortet auf { $subject }
 
 d-ozukvva2 = Zur Seite gelegt
     .doc = Was die frühere Mail an diesem Entwurf hielt, wofür diese keinen Platz hat (Bcc, Anhänge, private Notizen), in Worten gesagt: nie mit ihm versendet.
@@ -682,8 +698,6 @@ d-v7wxxiaj = Frühere Mail übernehmen
     .doc = Das Postfach, das die frühere Mail vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: jeder Entwurf, den sie schrieb, und jede noch in ihrem Postausgang wartende Nachricht ist hier ein Entwurf, vom selben Konto, an dieselben Personen, mit demselben Betreff, Text und derselben Einladung.
 
 d-xnczt27x-filter-latest = Empfangen
-
-d-lidkonvr-filter-sent = Gesendet
 
 d-lnhvmglv = Nachricht entwerfen
     .doc = Schreibt eine Nachricht, die die Person liest und sendet: an wen, ihr Betreff und was sie sagt, als Antwort auf `in_reply_to` (eine Message-ID), wenn sie eine nennt.
@@ -701,8 +715,6 @@ d-lnhvmglv-in_reply_to = Antwort auf
 
 d-lnhvmglv-from = Von
 
-d-gcixhwyt = Neuer Entwurf~present
-
 d-lehcqyhl = Entwurf einer Nachricht~present
 
 d-d6irjool = Thread-Eintrag
@@ -713,3 +725,73 @@ d-u5uuebo4 = Inspizieren
     .w-unread = Ungelesen
     .w-it-stays-unread-until-its-conversation = Sie bleibt ungelesen, bis ihre Unterhaltung geöffnet wird.
     .w-to = an { $to }
+
+d-z3itgb5e = Art der Störung
+    .doc = Von welcher Art die Störung ist, damit das Fenster sagt, was hilft: `signed-out` (der Server hat das Passwort abgelehnt), `no-password` (das Konto hat auf diesem Gerät keines), `withheld` (die Regeln des Arbeitsbereichs haben es zurückgehalten), `offline` (das Gerät hat kein Netz) oder `unreachable` für alles andere.
+
+d-ypxqazxd = Angekommen
+    .doc = Wann zuletzt Mail im Posteingang dieser Unterhaltung ankam, während die Menschen, die sie lesen, noch nicht davon erfahren haben: der Zeitpunkt, für den die Ankündigung läuft, und nichts, wenn es keine gibt.
+
+d-ualhak62 = Unterhaltung
+    .doc = Die Unterhaltung, auf die sie antwortet, nach ihrem Schlüssel: leer für eine Nachricht, die auf keine antwortet.
+
+d-cngng3tb = Server durchsuchen
+    .doc = Bittet den Server des Kontos, seine Mail nach `text` zu durchsuchen: was Mail findet, die der Arbeitsbereich nicht hält, und Mail in Ordnern, die er nicht abgleicht.
+    .w-say-what-to-look-for = Sag, wonach du suchst
+
+d-hxawl5lh = Papierkorb leeren
+    .doc = Löscht jede Unterhaltung im Papierkorb des Kontos endgültig aus dem Postfach und von seinem Server, jede wie `purge` es tut.
+    .w-the-trash-is-empty = Der Papierkorb ist leer
+
+d-3opocmel = In Entwürfen speichern
+    .doc = Hält die Nachricht im Entwürfe-Ordner des Servers des Kontos, so wie sie gerade geschrieben ist, damit ein anderes Mailprogramm des Kontos sie dort auch sieht.
+    .w-this-message-is-on-its-way = Diese Nachricht ist unterwegs
+    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
+
+d-hlefh2br = Erneut versuchen
+    .doc = Sendet eine Nachricht, die der Server des Kontos abgelehnt hat, erneut, von wo sie steht: die Fassung, die scheiterte, ist nicht fortgegangen, also geht sie einmal.
+    .w-it-is-not-waiting-to-go = Sie wartet nicht darauf, rauszugehen
+    .w-it-did-not-fail-or-nobody = Sie ist nicht gescheitert, oder niemand weiß, ob sie ging
+
+d-ehxfqozw = Die angekommene Mail ankündigen
+    .doc = Sagt allen, die die Unterhaltung lesen, dass Mail ankam: wer schrieb, wie sie heißt und an welches Konto sie kam, während der Arbeitsbereich mehrere liest, und öffnet die Unterhaltung.
+    .w-no-mail-came-to-this-conversation = Seit der letzten Ankündigung kam keine Mail in diese Unterhaltung
+
+d-jasftdqa = Ohne Konten
+    .w-recovered-mail = Übernommene Mail
+    .w-drafts = Entwürfe
+    .w-mail = Mail
+    .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
+    .w-add-an-account-in-settings = Mailkonto in den Einstellungen hinzufügen
+
+d-dbquqaba = Postausgangsliste
+    .w-nothing-is-waiting-to-be-sent = Nichts wartet darauf, gesendet zu werden
+
+d-jecmuxlv = Papierkorb-Leiste
+    .w-delete-conversations-permanently = { $len } Unterhaltungen endgültig löschen?
+    .w-empty-the-trash = Papierkorb leeren
+    .w-this-can-t-be-undone = Das lässt sich nicht rückgängig machen.
+    .w-every-conversation-in-it-is-deleted = Jede Unterhaltung darin wird aus diesem Postfach und vom Server gelöscht.
+    .w-delete-permanently = Endgültig löschen
+    .w-empty-trash = Papierkorb leeren
+
+d-buu2swtx = Entwurfsliste
+    .w-no-drafts = Keine Entwürfe
+
+d-lidkonvr-filter-outbox = Postausgang
+
+d-cngng3tb-text = Text
+
+d-3opocmel-d = E
+
+d-2kw66kbv = Server durchsuchen~present
+
+d-365pn6ut = Papierkorb leeren~present
+
+d-gipue46k = In Entwürfen speichern~present
+
+d-rfonvbk2 = Erneut versuchen~present
+
+d-uh5rorqx = Ankündigen~present
+
+d-uyjucyg5 = Postausgang

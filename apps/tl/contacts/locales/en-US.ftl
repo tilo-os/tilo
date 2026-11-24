@@ -3,6 +3,8 @@
 
 d-so-tilo-contacts = Contacts
 
+d-so-tilo-contacts-keywords = contacts, address book, people, phone, email, vcard
+
 d-g4vf2are = Labeled
     .doc = One way to reach someone, and what kind it is: a phone number that is theirs at home, a mailbox that is their work's.
     .noun = { $count ->
@@ -117,6 +119,13 @@ d-smciqs6j = New contact
     .did = added a contact
 
 d-smciqs6j-name = Name
+
+d-bfuqzfia = Find or add a contact
+    .doc = Finds the contact the workspace keeps under `name`, or adds one: what brings someone in from another service — a task given to them before they joined — to one card, however many imports name them.
+    .did = found a contact
+    .w-name-the-contact = Name the contact
+
+d-bfuqzfia-name = Name
 
 d-zwp7xkyi = Rename
     .doc = Renames a contact.
@@ -292,6 +301,8 @@ d-kqf6yzpo = Stop sharing this card
 d-kqf6yzpo-d = D
 
 d-kqf6yzpo-person = Person
+
+d-zfqz2htt = Named or new~present
 
 d-ts4v4mxm = Favorite~present
 

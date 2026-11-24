@@ -19,6 +19,10 @@ d-4lo3ei5n = Address
 d-j6nqqrit = Name
 
 d-b5k7mvka = Trouble
+    .doc = What the account's server said when it could not be reached, in its words: empty while it stands well.
+
+d-z3itgb5e = Trouble kind
+    .doc = Of what kind that trouble is, so the window says what helps: `signed-out` (the server refused the password), `no-password` (the account has none on this device), `withheld` (the workspace's rules kept it back), `offline` (the device has no network), or `unreachable` for anything else.
 
 d-33f3rqw2 = Online
 
@@ -102,6 +106,9 @@ d-bdoh33hs = Snoozed until
 
 d-z7qxz544 = Muted
     .doc = Muted: the conversation stays out of the inbox while new messages keep coming, as a busy conversation is silenced, and it is still found under Muted and All mail.
+
+d-ypxqazxd = Arrived
+    .doc = When mail last came to this conversation's inbox, while the people who read it have not been told of it: the moment the announcement runs for, and nothing when there is none.
 
 d-xnczt27x-filter-inbox = Inbox
 
@@ -217,6 +224,9 @@ d-w6twdkob = In reply to
 
 d-w26tzvt4 = References
 
+d-ualhak62 = Conversation
+    .doc = The conversation it answers, by its key: empty for a message that answers none.
+
 d-yfyt2cfh = Sent
 
 d-lgrwf5yf = Send at
@@ -236,7 +246,7 @@ d-ozukvva2 = Set aside
 
 d-lidkonvr-filter-drafts = Drafts
 
-d-lidkonvr-filter-sent = Sent
+d-lidkonvr-filter-outbox = Outbox
 
 d-su4h67i5 = Mail
     .doc = The workspace mailbox holds its accounts, drafts, and conversation labels.
@@ -276,6 +286,12 @@ d-arnkrvgw = Check now
 d-wgbxl4or = Show older messages
     .doc = Asks the account's server for the messages older than the oldest this workspace holds in the mailbox, so a folder longer than one page can be read back to its first message.
 
+d-cngng3tb = Search the server
+    .doc = Asks the account's server to search its mail for `text`: what finds mail the workspace does not hold, and mail in folders it does not sync.
+    .w-say-what-to-look-for = Say what to look for
+
+d-cngng3tb-text = Text
+
 d-eon6gbrn = New message
     .doc = Starts a message from the account.
 
@@ -283,8 +299,7 @@ d-v7wxxiaj = Carry native mail
     .doc = The mailbox the native Mail kept before this app took its id over, carried into this one once: every draft it was writing and every message still waiting in its outbox is a draft here, from the same account, as the same identity, to the same people (the blind ones too), with the same subject, body and invitation.
 
 d-ygbvdl5l = New message
-    .doc = Starts a message from the first account.
-    .w-add-a-mail-account-in-settings = Add a mail account in Settings first
+    .doc = Starts a message.
 
 d-lnhvmglv = Draft a message
     .doc = Writes a message for the person to read and send: to whom, its subject and what it says, answering `in_reply_to` (a Message-ID) when it names one.
@@ -424,6 +439,10 @@ d-pz2ntes2 = Delete permanently
     .w-it-is-not-in-the-trash = It is not in the trash
     .w-nothing-of-it-is-in-the = Nothing of it is in the trash
 
+d-hxawl5lh = Empty trash
+    .doc = Deletes every conversation in the account's trash from the mailbox and its server for good, each as `purge` does.
+    .w-the-trash-is-empty = The trash is empty
+
 d-le4lvs2c = Flag
     .doc = Flags or unflags the conversation.
     .w-unflag = Unflag
@@ -523,10 +542,27 @@ d-qrcwx7a6 = Delete draft
 
 d-qrcwx7a6-d = D
 
+d-3opocmel = Save in Drafts
+    .doc = Keeps the message in the account's server Drafts folder as it is written now, so another mail client of the account sees it there too.
+    .w-this-message-is-on-its-way = This message is on its way
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings first
+
+d-3opocmel-d = D
+
+d-hlefh2br = Try again
+    .doc = Sends a message the account's server refused again, from where it stands: the version that failed did not leave, so it goes once.
+    .w-it-is-not-waiting-to-go = It is not waiting to go
+    .w-it-did-not-fail-or-nobody = It did not fail, or nobody knows whether it went
+
+d-ehxfqozw = Announce the mail that came
+    .doc = Tells everyone who reads the conversation that mail came to it: who wrote, what it is called, and which account it came to while the workspace reads several of them, opening the conversation.
+    .w-no-mail-came-to-this-conversation = No mail came to this conversation since it was last announced
+
 d-qcfc2rhb = Send
     .doc = Sends the message from its account.
     .w-this-message-went-already = This message went already
     .w-it-goes-to-nobody-yet = It goes to nobody yet
+    .w-pick-the-account-it-goes-from = Pick the account it goes from
     .w-add-a-mail-account-in-settings = Add a mail account in Settings first
 
 d-twebu5cb = Undo send
@@ -563,7 +599,7 @@ d-k2js7gyd = Delivery says
 
 d-2zkppx6r = Set hold~present
 
-d-gcixhwyt = New draft~present
+d-2kw66kbv = Search server~present
 
 d-lehcqyhl = Draft message~present
 
@@ -589,6 +625,8 @@ d-efageosr = Delete~present
 
 d-djmtvfs7 = Purge~present
 
+d-365pn6ut = Empty trash~present
+
 d-cvmtfflh = Flag~present
 
 d-3ihnegs3 = Snooze~present
@@ -609,6 +647,12 @@ d-iv7e7g52 = Send from~present
 
 d-5kuylc3o = Send as~present
 
+d-gipue46k = Save to drafts~present
+
+d-rfonvbk2 = Retry~present
+
+d-uh5rorqx = Announce~present
+
 d-czouixzd = Send~present
 
 d-i3cueozg = Undo send~present
@@ -620,24 +664,51 @@ d-5wix2354 = Compose
     .w-bcc = Bcc { $bcc }
 
 d-dhradxj7 = Account notice
+    .w-can-t-sign-in-to = Can't sign in to { $address }
+    .w-check-its-password-in-settings-under = Check its password in Settings, under Accounts.
+    .w-try-again = Try again
+    .w-open-account-settings = Open account settings
+    .w-mail-has-no-password-for = Mail has no password for { $address }
+    .w-nothing-was-sent-to-its-server = Nothing was sent to its server. Enter its password in Settings, under Accounts.
+    .w-mail-can-t-use-s-password = Mail can't use { $address }'s password
+    .w-you-re-offline = You're offline
+    .w-new-mail-arrives-when-you-re = New mail arrives when you're back online.
     .w-can-t-save-what-fetched = Can't save what { $name } fetched
     .w-can-t-reach = Can't reach { $name }
     .w-last-fetched = { $reason }. Last fetched { $fetched }
-    .w-try-again = Try again
 
 d-7rcrynvm = Mail
-    .w-add-a-mail-account-in-settings = Add a mail account in Settings
+
+d-jasftdqa = Without accounts
     .w-recovered-mail = Recovered mail
+    .w-drafts = Drafts
     .w-mail = Mail
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings
+    .w-add-an-account-in-settings = Add an account in Settings
 
 d-4fjgzcq6 = Unified
+    .w-drafts = Drafts
     .w-recovered-mail = Recovered mail
+    .w-outbox = Outbox
     .w-all-accounts = All accounts
     .w-all-inboxes = All inboxes
     .w-all-mail = All mail
     .w-labels = Labels
 
 d-3k7hkyhl = Recovered mail
+
+d-uyjucyg5 = Outbox
+
+d-dbquqaba = Outbox list
+    .w-nothing-is-waiting-to-be-sent = Nothing is waiting to be sent
+
+d-jecmuxlv = Trash bar
+    .w-delete-conversations-permanently = Delete { $len } conversations permanently?
+    .w-empty-the-trash = Empty the trash
+    .w-this-can-t-be-undone = This can't be undone.
+    .w-every-conversation-in-it-is-deleted = Every conversation in it is deleted from this mailbox and the server.
+    .w-delete-permanently = Delete permanently
+    .w-empty-trash = Empty trash
 
 d-m5y6nl2m = All inboxes
     .w-add-a-mail-account-in-settings = Add a mail account in Settings
@@ -665,9 +736,17 @@ d-u43u7z6w = Thread row
 d-d6irjool = Thread item
     .w-preview = Preview
 
+d-buu2swtx = Draft list
+    .w-no-drafts = No drafts
+
 d-77noqogh = Draft row
 
 d-bbuecgsi = Conversation
+    .w-delete-this-conversation-permanently = Delete this conversation permanently?
+    .w-it-is-in-the-trash = It is in the trash
+    .w-this-can-t-be-undone = This can't be undone.
+    .w-it-stays-here-until-you-delete = It stays here until you delete it permanently.
+    .w-delete-permanently = Delete permanently
     .w-reply-to = Reply to { $subject }
     .w-reply = Reply
 
@@ -713,4 +792,7 @@ d-oqpazwvc = Editor
     .w-add-link = Add link
     .w-write-your-message = Write your message
     .w-attach = Attach
+    .w-add-an-account-to-send = Add an account to send
+    .w-save-in-drafts = Save in Drafts
     .w-send = Send
+    .w-this-answers = This answers { $subject }
