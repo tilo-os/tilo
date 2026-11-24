@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-editor@921e078edcf56578";
+export const SURFACE = "so.tilo.video-editor@07b59ba1b19c756a";
 
 /** How a title's lines sit in its box. One of "left", "centre", "right". */
 export type Align = "left" | "centre" | "right";
@@ -211,6 +211,29 @@ export interface SplitAtArgs {
 
 /** The arguments of `trouble`. */
 export interface TroubleArgs {
+  why: string;
+}
+
+/** The arguments of `adopt_probe`. */
+export interface AdoptProbeArgs {
+  m: Media;
+  probed: Probed;
+}
+
+/** The arguments of `refresh_source`. */
+export interface RefreshSourceArgs {
+  m: Media;
+}
+
+/** The arguments of `relink`. */
+export interface RelinkArgs {
+  m: Media;
+  file: unknown;
+}
+
+/** The arguments of `mark_missing`. */
+export interface MarkMissingArgs {
+  m: Media;
   why: string;
 }
 
@@ -414,6 +437,7 @@ export interface Media extends tilo.Resource {
   ap457hnd: boolean;  // has_audio
   "3vgrlwgv": string;  // still
   vddvspwk: number[];  // peaks
+  v4yfudyw: boolean;  // missing
   e7atusb5: string;  // words
   qrihyxs3: number;  // size
   x2yorlvh: number;  // red
@@ -794,10 +818,37 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `trouble` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   troubleMany(items: TroubleArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks the device what a file is, adds it as a source and draws its swatch and waveform. */
+  /** Asks the device what a file is, adds it as a source and draws its swatch and waveform. What the device said when it could not be added, or empty when it was: a batch names each file that did not arrive and why, so a person knows what to do about it. */
   absorb(args: {
     file: unknown;
-  }): Promise<boolean>;
+  }): Promise<string>;
+  /** Writes what the device read of a source onto it: what it is, how long it runs, its size and rate, and whether it carries sound. */
+  adopt_probe(args: {
+    m: Media;
+    probed: Probed;
+  }): Promise<void>;
+  /** Runs `adopt_probe` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  adopt_probeMany(items: AdoptProbeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Checks that a source's bytes are here: reads what they are again, draws its swatch and waveform, and marks it not on this device when the engine cannot reach them. */
+  refresh_source(args: {
+    m: Media;
+  }): Promise<void>;
+  /** Runs `refresh_source` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  refresh_sourceMany(items: RefreshSourceArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Points a source at a file the person chose: the clips are cuts of the source, so they keep it, and the source reads what its new file says. */
+  relink(args: {
+    m: Media;
+    file: unknown;
+  }): Promise<void>;
+  /** Runs `relink` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  relinkMany(items: RelinkArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Says the source's bytes are not on this device, and why the engine could not read them. */
+  mark_missing(args: {
+    m: Media;
+    why: string;
+  }): Promise<void>;
+  /** Runs `mark_missing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  mark_missingMany(items: MarkMissingArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The frame the preview shows at `at`, drawn by the engine. */
   draw_still(args: {
     at: number;
@@ -818,7 +869,7 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `rename_project` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rename_projectMany(items: RenameProjectArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Adds every file a person chose or dropped as a source. */
+  /** Adds every file a person chose or dropped as a source, and says which files did not arrive and what the device said of each. */
   import_files(args: {
     files: unknown[];
   }): Promise<void>;
@@ -1023,7 +1074,7 @@ export interface Project extends tilo.Resource {
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clip", "remove_clipMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "place_side_by_side", "place_side_by_sideMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "seek_at", "seek_atMany", "preview_cut", "preview_cutMany", "export_cut", "export_cutMany", "poll_render", "poll_renderMany", "cancel_render", "cancel_renderMany"] as const;
+export const PROJECT_ACTIONS = ["split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "adopt_probe", "adopt_probeMany", "refresh_source", "refresh_sourceMany", "relink", "relinkMany", "mark_missing", "mark_missingMany", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clip", "remove_clipMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "place_side_by_side", "place_side_by_sideMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "seek_at", "seek_atMany", "preview_cut", "preview_cutMany", "export_cut", "export_cutMany", "poll_render", "poll_renderMany", "cancel_render", "cancel_renderMany"] as const;
 
 /** The `tl.so.tilo.video-editor.Project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {

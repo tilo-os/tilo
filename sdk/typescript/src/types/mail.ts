@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@94457674f47e5d54";
+export const SURFACE = "so.tilo.mail@88ced6314e0a490a";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -96,6 +96,10 @@ export interface MarkReadArgs {
 export interface AnnounceArgs {
 }
 
+/** The arguments of `show_pictures`. */
+export interface ShowPicturesArgs {
+}
+
 /** The arguments of `attach`. */
 export interface AttachArgs {
   file: unknown;
@@ -114,6 +118,16 @@ export interface SendFromArgs {
 /** The arguments of `send_as`. */
 export interface SendAsArgs {
   identity: string;
+}
+
+/** The arguments of `trust_sender`. */
+export interface TrustSenderArgs {
+  address: string;
+}
+
+/** The arguments of `distrust_sender`. */
+export interface DistrustSenderArgs {
+  address: string;
 }
 
 /** The arguments of `set_hold`. */
@@ -346,6 +360,11 @@ export interface Message extends tilo.Resource {
   xlejsz5j: string;  // mailbox
   hgysjvfy: string;  // original
   wuefabwr: string;  // parts
+  c263r6w3: Array<tilo.Entry<Picture>>;  // pictures
+  /** Brings in the pictures the sender's page names: each read from where it stands and kept in the workspace's content, so the message shows them as it was written. What a workspace's rules or its network refuse is left out, and the message reads without it. */
+  show_pictures(): Promise<void>;
+  /** Runs `show_pictures` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  show_picturesMany(items: ShowPicturesArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The message as a Markdown file: what a person exports to read it, or keep it, elsewhere. */
   export_markdown(): Promise<unknown>;
   /** The message as a JSON file: what a script or an agent reads its record from. */
@@ -366,11 +385,40 @@ export interface Message extends tilo.Resource {
 
 /** The actions `Message` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGE_ACTIONS = ["export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment"] as const;
+export const MESSAGE_ACTIONS = ["show_pictures", "show_picturesMany", "export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment"] as const;
 
 /** The `tl.so.tilo.mail.Message` kind at `path`. */
 export function message(ws: tilo.Workspace, path: string): Message {
   return resourceProxy(ws, path, SURFACE, MESSAGE_ACTIONS) as unknown as Message;
+}
+
+/** Picture — `tl.so.tilo.mail.Picture`. */
+export interface Picture extends tilo.Resource {
+  gb5hqtag: string;  // source
+  "7hhcy4ay": unknown;  // picture
+}
+
+/** The actions `Picture` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PICTURE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.mail.Picture` kind at `path`. */
+export function picture(ws: tilo.Workspace, path: string): Picture {
+  return resourceProxy(ws, path, SURFACE, PICTURE_ACTIONS) as unknown as Picture;
+}
+
+/** TrustedSender — `tl.so.tilo.mail.TrustedSender`. */
+export interface TrustedSender extends tilo.Resource {
+  "5eoon66w": string;  // address
+}
+
+/** The actions `TrustedSender` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TRUSTEDSENDER_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.mail.TrustedSender` kind at `path`. */
+export function trustedSender(ws: tilo.Workspace, path: string): TrustedSender {
+  return resourceProxy(ws, path, SURFACE, TRUSTEDSENDER_ACTIONS) as unknown as TrustedSender;
 }
 
 /** Draft — `tl.so.tilo.mail.Draft`. */
@@ -447,6 +495,19 @@ export interface Mail extends tilo.Resource {
   z3zcztpz: Array<tilo.Entry<Label>>;  // labels
   bag7bf25: Array<tilo.Entry<Thread>>;  // recovered_mail
   "4ow5ydy5": number;  // hold
+  zzpnzlp2: Array<tilo.Entry<TrustedSender>>;  // trusted
+  /** Shows the pictures of every message `address` sends, from now on and in what is already here. */
+  trust_sender(args: {
+    address: string;
+  }): Promise<void>;
+  /** Runs `trust_sender` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  trust_senderMany(items: TrustSenderArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Asks again before showing what `address` sends. */
+  distrust_sender(args: {
+    address: string;
+  }): Promise<void>;
+  /** Runs `distrust_sender` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  distrust_senderMany(items: DistrustSenderArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait at all at zero. */
   set_hold(args: {
     seconds: number;
@@ -518,7 +579,7 @@ export interface Mail extends tilo.Resource {
 
 /** The actions `Mail` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MAIL_ACTIONS = ["set_hold", "set_holdMany", "new_draft", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany", "save_to_drafts"] as const;
+export const MAIL_ACTIONS = ["trust_sender", "trust_senderMany", "distrust_sender", "distrust_senderMany", "set_hold", "set_holdMany", "new_draft", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany", "save_to_drafts"] as const;
 
 /** The `tl.so.tilo.mail.Mail` kind at `path`. */
 export function mail(ws: tilo.Workspace, path: string): Mail {

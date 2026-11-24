@@ -23,6 +23,7 @@ __all__ = [
     "Photo",
     "Album",
     "Person",
+    "Suggestion",
     "Library",
     "Photos",
     "ToggleFavoriteArgs",
@@ -46,6 +47,9 @@ __all__ = [
     "AddPersonArgs",
     "RemovePersonArgs",
     "RenamePersonArgs",
+    "ApproveSuggestionArgs",
+    "MergeSuggestionArgs",
+    "DismissSuggestionArgs",
     "MergePeopleArgs",
     "SplitPhotoArgs",
     "RemovePersonResourceArgs",
@@ -156,6 +160,23 @@ RenamePersonArgs = TypedDict("RenamePersonArgs", {
 })
 """The arguments of `rename_person`."""
 
+ApproveSuggestionArgs = TypedDict("ApproveSuggestionArgs", {
+    "s": "Suggestion",
+    "name": NotRequired["str | None"],
+})
+"""The arguments of `approve_suggestion`."""
+
+MergeSuggestionArgs = TypedDict("MergeSuggestionArgs", {
+    "s": "Suggestion",
+    "person": "Person",
+})
+"""The arguments of `merge_suggestion`."""
+
+DismissSuggestionArgs = TypedDict("DismissSuggestionArgs", {
+    "s": "Suggestion",
+})
+"""The arguments of `dismiss_suggestion`."""
+
 MergePeopleArgs = TypedDict("MergePeopleArgs", {
     "from": "Person",
     "into": "Person",
@@ -175,7 +196,7 @@ RemovePersonResourceArgs = TypedDict("RemovePersonResourceArgs", {
 
 class Photo(Resource):
     """Photo — `tl.so.tilo.photos.Photo`."""
-    __surface__ = "so.tilo.photos@c38aec041dfd1a75"
+    __surface__ = "so.tilo.photos@a69ddce203fc6629"
     rv4vs7su: str  # name
     r55t3rg3: str  # picture
     vwrtdas3: str  # thumb
@@ -348,7 +369,7 @@ class Photo(Resource):
 
 class Album(Resource):
     """Album — `tl.so.tilo.photos.Album`."""
-    __surface__ = "so.tilo.photos@c38aec041dfd1a75"
+    __surface__ = "so.tilo.photos@a69ddce203fc6629"
     unujaudz: str  # name
     k7fl2y27: list[str]  # photos
 
@@ -383,17 +404,33 @@ class Album(Resource):
 
 class Person(Resource):
     """Person — `tl.so.tilo.photos.Person`."""
-    __surface__ = "so.tilo.photos@c38aec041dfd1a75"
+    __surface__ = "so.tilo.photos@a69ddce203fc6629"
     segahwtp: str  # name
     vbzsnqg5: list[str]  # photos
 
 
+class Suggestion(Resource):
+    """Suggestion — `tl.so.tilo.photos.Suggestion`."""
+    __surface__ = "so.tilo.photos@a69ddce203fc6629"
+    qracadw6: str  # name
+    ehc6rrhm: list[str]  # photos
+    @property
+    def _2adnxzro(self) -> bool:
+        """sent (`2adnxzro` on the wire)."""
+        return self.fields["2adnxzro"]
+
+    @_2adnxzro.setter
+    def _2adnxzro(self, value: bool) -> None:
+        self.edit("2adnxzro", value=value)
+
+
 class Library(Resource):
     """Library — `tl.so.tilo.photos.Library`."""
-    __surface__ = "so.tilo.photos@c38aec041dfd1a75"
+    __surface__ = "so.tilo.photos@a69ddce203fc6629"
     moeuycny: list[Entry[Photo]]  # photos
     tqa4lyow: list[Entry[Album]]  # albums
     xr5mtp2m: list[Entry[Person]]  # people
+    r7k2giak: list[Entry[Suggestion]]  # suggestions
     tp7e7pzd: int  # import_found
     @property
     def _6jdgyzo3(self) -> int:
@@ -515,6 +552,54 @@ class Library(Resource):
         """Runs `rename_person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename_person", items)
 
+    def find_faces(self, *, photos: list[Photo]) -> None:
+        """The faces the device finds in `photos`, kept as suggestions of the person's own: a face has no name, so nothing of it reaches another member until a name is approved."""
+        return self.action("find_faces", photos=photos)
+
+    def scan_faces(self) -> None:
+        """Scans the next photos on this device nobody is named on yet: the model takes twelve at a time, so a scan is one batch, and each face it finds is a suggestion of the scanner's own."""
+        return self.action("scan_faces")
+
+    def approve_suggestion(self,
+        *,
+        s: Suggestion,
+        name: str | None = None,
+    ) -> None:
+        """Names a face: its photos join the person with that name, and the suggestion is sent, so the workspace keeps it."""
+        args: dict[str, Any] = {}
+        args["s"] = s
+        if name is not None:
+            args["name"] = name
+        return self.action("approve_suggestion", **args)
+
+    def approve_suggestion_many(self, items: list[ApproveSuggestionArgs]) -> list[dict[str, Any]]:
+        """Runs `approve_suggestion` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("approve_suggestion", items)
+
+    def merge_suggestion(self,
+        *,
+        s: Suggestion,
+        person: Person,
+    ) -> None:
+        """Puts a face's photos on a person the library already knows, and sends the suggestion."""
+        return self.action("merge_suggestion", s=s, person=person)
+
+    def merge_suggestion_many(self, items: list[MergeSuggestionArgs]) -> list[dict[str, Any]]:
+        """Runs `merge_suggestion` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("merge_suggestion", items)
+
+    def dismiss_suggestion(self, *, s: Suggestion) -> None:
+        """Takes a suggestion away: the face is not offered again, since the photos are not rescanned into one while they are unnamed only by choice."""
+        return self.action("dismiss_suggestion", s=s)
+
+    def dismiss_suggestion_many(self, items: list[DismissSuggestionArgs]) -> list[dict[str, Any]]:
+        """Runs `dismiss_suggestion` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("dismiss_suggestion", items)
+
+    def person_named(self, *, name: str) -> Person:
+        """The person the library knows by `name`, started where it knows none."""
+        return self.action("person_named", name=name)
+
     def new_person(self,
         *,
         name: str,
@@ -560,10 +645,10 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"import_photo", "absorb_picture", "import_photo_meta", "import_dropped", "import_dropped_many", "dismiss_import", "dismiss_import_many", "favorite_selected", "favorite_selected_many", "remove_selected", "remove_selected_many", "new_album", "remove_album", "remove_album_many", "add_person", "add_person_many", "remove_person", "remove_person_many", "rename_person", "rename_person_many", "new_person", "merge_people", "merge_people_many", "split_photo", "split_photo_many", "remove_person_resource", "remove_person_resource_many"})
+    __actions__ = frozenset({"import_photo", "absorb_picture", "import_photo_meta", "import_dropped", "import_dropped_many", "dismiss_import", "dismiss_import_many", "favorite_selected", "favorite_selected_many", "remove_selected", "remove_selected_many", "new_album", "remove_album", "remove_album_many", "add_person", "add_person_many", "remove_person", "remove_person_many", "rename_person", "rename_person_many", "find_faces", "scan_faces", "approve_suggestion", "approve_suggestion_many", "merge_suggestion", "merge_suggestion_many", "dismiss_suggestion", "dismiss_suggestion_many", "person_named", "new_person", "merge_people", "merge_people_many", "split_photo", "split_photo_many", "remove_person_resource", "remove_person_resource_many"})
 
 
 class Photos(Resource):
     """Photos — `tl.so.tilo.photos`."""
-    __surface__ = "so.tilo.photos@c38aec041dfd1a75"
+    __surface__ = "so.tilo.photos@a69ddce203fc6629"
 

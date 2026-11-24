@@ -249,7 +249,7 @@ ClearOfflineAreasArgs = TypedDict("ClearOfflineAreasArgs", {
 
 class Place(Resource):
     """Place — `tl.so.tilo.maps.Place`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
     rcalop4o: str  # name
     m5b55osu: str  # key
     lozw4dq7: Category  # category
@@ -280,7 +280,7 @@ class Place(Resource):
 
 class Step(Resource):
     """Step — `tl.so.tilo.maps.Step`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
     nfgqw3um: str  # instruction
     bvjnbo5z: float  # distance_m
     a4qv6woo: Maneuver  # maneuver
@@ -288,7 +288,7 @@ class Step(Resource):
 
 class Route(Resource):
     """Route — `tl.so.tilo.maps.Route`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
     ymsz4m34: TravelMode  # mode
     ty6bfuoo: float  # distance_m
     wc6ysmvx: float  # duration_s
@@ -311,7 +311,7 @@ class Route(Resource):
 
 class Leg(Resource):
     """Leg — `tl.so.tilo.maps.Leg`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
     @property
     def _3hgwl46g(self) -> TransitMode:
         """mode (`3hgwl46g` on the wire)."""
@@ -350,7 +350,7 @@ class Leg(Resource):
 
 class Journey(Resource):
     """Journey — `tl.so.tilo.maps.Journey`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
     xjeu7nif: str  # dep
     bhvk42wt: str  # arr
     sgpde2bq: int  # duration_min
@@ -360,7 +360,7 @@ class Journey(Resource):
 
 class TransitTime(Resource):
     """TransitTime — `tl.so.tilo.maps.TransitTime`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
     bv3pklkc: bool  # arrive_by
     @property
     def _5hirpmkr(self) -> int:
@@ -374,7 +374,7 @@ class TransitTime(Resource):
 
 class Poi(Resource):
     """Poi — `tl.so.tilo.maps.Poi`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
     kghw4vpb: str  # name
     osqgf2vf: str  # key
     ndtgscii: Category  # category
@@ -389,14 +389,14 @@ class Poi(Resource):
 
 class Recent(Resource):
     """Recent — `tl.so.tilo.maps.Recent`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
     dozhur5v: str  # query
     eyiulpwh: str  # at
 
 
 class OfflineArea(Resource):
     """OfflineArea — `tl.so.tilo.maps.OfflineArea`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
     q2xakaa7: str  # name
     @property
     def _4ntlybip(self) -> float:
@@ -431,7 +431,7 @@ class OfflineArea(Resource):
 
 class Atlas(Resource):
     """Atlas — `tl.so.tilo.maps.Atlas`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
     q3ezxhmv: list[Entry[Place]]  # places
     vaus6gd3: list[Entry[Recent]]  # recents
     bdrkt5dv: list[Entry[Poi]]  # pois
@@ -801,14 +801,14 @@ class Atlas(Resource):
 
 class Places(Resource):
     """Places — `tl.so.tilo.maps.Places`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
     @property
-    def _734zo2xo(self) -> list[Any]:
+    def _734zo2xo(self) -> list[Place]:
         """found (`734zo2xo` on the wire)."""
         return self.fields["734zo2xo"]
 
     @_734zo2xo.setter
-    def _734zo2xo(self, value: list[Any]) -> None:
+    def _734zo2xo(self, value: list[Place]) -> None:
         self.edit("734zo2xo", value=value)
     @property
     def _73qevr6q(self) -> str:
@@ -822,22 +822,22 @@ class Places(Resource):
 
 class Routes(Resource):
     """Routes — `tl.so.tilo.maps.Routes`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
-    q2tnydqa: list[Any]  # found
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    q2tnydqa: list[Route]  # found
     kmhzghib: str  # why
 
 
 class Journeys(Resource):
     """Journeys — `tl.so.tilo.maps.Journeys`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
-    ix3p2v56: list[Any]  # found
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    ix3p2v56: list[Journey]  # found
     cddmwu37: str  # why
 
 
 class Pois(Resource):
     """Pois — `tl.so.tilo.maps.Pois`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
-    fsnuwhad: list[Any]  # found
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    fsnuwhad: list[Poi]  # found
     @property
     def _3yeey62c(self) -> str:
         """why (`3yeey62c` on the wire)."""
@@ -850,5 +850,5 @@ class Pois(Resource):
 
 class Maps(Resource):
     """Maps — `tl.so.tilo.maps`."""
-    __surface__ = "so.tilo.maps@b6685eb700dd4f73"
+    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
 

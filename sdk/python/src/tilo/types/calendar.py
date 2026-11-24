@@ -466,7 +466,7 @@ ThisWeekArgs = TypedDict("ThisWeekArgs", {
 
 class Attendee(Resource):
     """Attendee — `tl.so.tilo.calendar.Attendee`."""
-    __surface__ = "so.tilo.calendar@1069f92a5ce23cbd"
+    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
     oiolhfhy: str  # name
     zr5l6sfu: str  # email
     wyfwksgq: str  # status
@@ -475,7 +475,7 @@ class Attendee(Resource):
 
 class Project(Resource):
     """Project — `tl.so.tilo.calendar.Project`."""
-    __surface__ = "so.tilo.calendar@1069f92a5ce23cbd"
+    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
     iivr4dfm: str  # name
     @property
     def _5kprlx3s(self) -> Color:
@@ -510,7 +510,7 @@ class Project(Resource):
 
 class Task(Resource):
     """Task — `tl.so.tilo.calendar.Task`."""
-    __surface__ = "so.tilo.calendar@1069f92a5ce23cbd"
+    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
     r2vx64eh: str  # title
     s6raiajy: bool  # done
     kibl2yut: str | None  # due
@@ -648,7 +648,7 @@ class Task(Resource):
 
 class Event(Resource):
     """Event — `tl.so.tilo.calendar.Event`."""
-    __surface__ = "so.tilo.calendar@1069f92a5ce23cbd"
+    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
     qqkexjof: str  # key
     yclpjnie: str  # href
     lpmkddba: str  # etag
@@ -1144,7 +1144,7 @@ class Event(Resource):
 
 class Calendar(Resource):
     """Calendar — `tl.so.tilo.calendar.Calendar`."""
-    __surface__ = "so.tilo.calendar@1069f92a5ce23cbd"
+    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
     gzrwihvd: str  # key
     pwrd7qqx: str  # account
     dn3prfqt: str  # sync_token
@@ -1175,7 +1175,7 @@ class Calendar(Resource):
 
 class Calendars(Resource):
     """Calendars — `tl.so.tilo.calendar.Calendars`."""
-    __surface__ = "so.tilo.calendar@1069f92a5ce23cbd"
+    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
     g3gq3jmz: list[Entry[Event]]  # events
     ozulkrgt: list[Entry[Calendar]]  # calendars
     jum24lyb: list[Entry[Task]]  # tasks
@@ -1367,7 +1367,7 @@ class Calendars(Resource):
 
 class Moment(Resource):
     """Moment — `tl.so.tilo.calendar.Moment`."""
-    __surface__ = "so.tilo.calendar@1069f92a5ce23cbd"
+    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
     kd3noj7y: Event  # event
     ejfozpye: str  # at
     @property
@@ -1382,5 +1382,5 @@ class Moment(Resource):
 
 class TiloCalendar(Resource):
     """Calendar — `tl.so.tilo.calendar`."""
-    __surface__ = "so.tilo.calendar@1069f92a5ce23cbd"
+    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
 

@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Window` is the app's `console.window` at `console/<resource>`, read with
+`Window` is the app's `tl.so.tilo.console.Window` at `console/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -21,9 +21,16 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Window",
+    "Console",
 ]
 
 class Window(Resource):
-    """Console — `console.window`."""
-    __surface__ = "so.tilo.console@9426103bef0dc48d"
+    """Window — `tl.so.tilo.console.Window`."""
+    __surface__ = "so.tilo.console@5e0e5f40d75f4d45"
+    e6xn3nds: str  # place
+
+
+class Console(Resource):
+    """Console — `tl.so.tilo.console`."""
+    __surface__ = "so.tilo.console@5e0e5f40d75f4d45"
 

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@fad4433c99a76a17";
+export const SURFACE = "so.tilo.chat@0b960ba822d6cc17";
 
 /** One emoji of the workspace. */
 export interface Emoji {
@@ -259,6 +259,16 @@ export interface DraftInsertBlockArgs {
 /** The arguments of `delete-block`. */
 export interface DraftDeleteBlockArgs {
   block: string;
+}
+
+/** The arguments of `attach`. */
+export interface AttachArgs {
+  files: unknown[];
+}
+
+/** The arguments of `detach`. */
+export interface DetachArgs {
+  file: unknown;
 }
 
 /** The arguments of `correct_skill`. */
@@ -503,7 +513,7 @@ export interface TextChannel extends tilo.Resource {
   unbridge(): Promise<void>;
   /** Runs `unbridge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   unbridgeMany(items: TextChannelUnbridgeArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. */
+  /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. A reply an agent's `turn` writes begins empty and takes the model's words as it writes them. */
   send(args?: {
     body?: string;
     reply_to?: Message;
@@ -712,7 +722,7 @@ export interface Thread extends tilo.Resource {
   ijy454g6: Array<tilo.Entry<Message>>;  // messages
   "2ki7h2z5": boolean;  // archived
   ep7fvntj: Array<tilo.Entry<ChatReport>>;  // reports
-  /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. */
+  /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. A reply an agent's `turn` writes begins empty and takes the model's words as it writes them. */
   send(args?: {
     body?: string;
     reply_to?: Message;
@@ -789,7 +799,7 @@ export interface Direct extends tilo.Resource {
   unbridgeMany(items: DirectUnbridgeArgs[]): Promise<tilo.ActionAnswer[]>;
   /** How many messages of a direct conversation the person asking has not read: the number its row shows beside the other person, and what an agent or a script reads of it. */
   unread_count(): Promise<number>;
-  /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. */
+  /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. A reply an agent's `turn` writes begins empty and takes the model's words as it writes them. */
   send(args?: {
     body?: string;
     reply_to?: Message;
@@ -851,6 +861,7 @@ export function direct(ws: tilo.Workspace, path: string): Direct {
 export interface Draft extends tilo.Resource {
   "5shwuvrs": Direct | TextChannel | Thread;  // conversation
   rxmavdj2: string;  // body
+  o5vmbr2v: unknown[];  // files
   /** Set one paragraph of a rich-text field to what a Markdown text says. */
   editBlock(args: {
     block: string;
@@ -871,11 +882,23 @@ export interface Draft extends tilo.Resource {
   }): Promise<void>;
   /** Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteBlockMany(items: DraftDeleteBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Adds the files a person chose to the message they are writing: the system's chooser runs this with what was chosen, and the draft holds them until it is sent. The chooser offers every kind of file, since a message carries any. */
+  attach(args: {
+    files: unknown[];
+  }): Promise<void>;
+  /** Runs `attach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  attachMany(items: AttachArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes a file off the message a person is writing, before it is sent. */
+  detach(args: {
+    file: unknown;
+  }): Promise<void>;
+  /** Runs `detach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  detachMany(items: DetachArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Draft` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DRAFT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany"] as const;
+export const DRAFT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "attach", "attachMany", "detach", "detachMany"] as const;
 
 /** The `tl.so.tilo.chat.Draft` kind at `path`. */
 export function draft(ws: tilo.Workspace, path: string): Draft {
@@ -888,11 +911,13 @@ export interface Attached extends tilo.Resource {
   h5lqkkjt: string;  // media
   g7nx7a7g: number;  // size
   wu2n7dpm: string;  // blob
+  /** Opens the file a message carries in the app that opens its kind: the file reaches that app as the same content both read, never as a path neither has. */
+  open_attachment(): Promise<void>;
 }
 
 /** The actions `Attached` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ATTACHED_ACTIONS = [] as const;
+export const ATTACHED_ACTIONS = ["open_attachment"] as const;
 
 /** The `tl.so.tilo.chat.Attached` kind at `path`. */
 export function attached(ws: tilo.Workspace, path: string): Attached {

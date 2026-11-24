@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@fa16aa89e2c41823";
+export const SURFACE = "so.tilo.browser@172587f7789744b0";
 
 /** The arguments of `remove_bookmark`. */
 export interface RemoveBookmarkArgs {
@@ -78,6 +78,20 @@ export interface OpenFromPageArgs {
 export interface RememberHistoryArgs {
   direction: string;
   entries: string;
+}
+
+/** The arguments of `remember_extensions`. */
+export interface RememberExtensionsArgs {
+  installed: string;
+  message: string;
+}
+
+/** The arguments of `note_extension`. */
+export interface NoteExtensionArgs {
+  ok: boolean;
+  kind: string;
+  message: string;
+  id: string;
 }
 
 /** The arguments of `remember_credential`. */
@@ -172,6 +186,11 @@ export interface ImportHistoryArgs {
 /** The arguments of `import_bookmarks`. */
 export interface ImportBookmarksArgs {
   bundle: string;
+}
+
+/** The arguments of `reveal_download`. */
+export interface RevealDownloadArgs {
+  path: string;
 }
 
 /** Bookmark — `tl.so.tilo.browser.Bookmark`. */
@@ -323,6 +342,7 @@ export interface Page extends tilo.Resource {
   hf6q2oo4: string;  // url
   tyhunk32: string;  // title
   "4nlkcuks": boolean;  // paused
+  s6ryunn5: boolean;  // private
   dedg3fev: Array<tilo.Entry<PageStep>>;  // steps
   mk755sf3: DialogAsk | null;  // dialog
   tveuvbse: MenuAsk | null;  // menu
@@ -637,6 +657,37 @@ export interface Page extends tilo.Resource {
     f: LoginForm;
     a: Address;
   }): Promise<Answer>;
+  /** Reads the extensions installed on this device into the Browser's record. */
+  list_extensions(): Promise<Answer>;
+  /** Installs the extension package at `path`, a .crx signed by its publisher or a plain .zip: the engine verifies a signed package, unpacks it under its own identifier, and lists it. */
+  install_extension(args: {
+    path: string;
+  }): Promise<Answer>;
+  /** Turns an installed extension on, or off: Chromium loads the ones that are on when a page's window starts. */
+  enable_extension(args: {
+    e: Extension;
+    on?: boolean;
+  }): Promise<Answer>;
+  /** Forgets an extension installed on this device: its folder and everything it may do. */
+  remove_extension(args: {
+    e: Extension;
+  }): Promise<Answer>;
+  /** Writes the extensions a page's window listed into the Browser's record. The window raises it; a person, agent or script never does. */
+  remember_extensions(args: {
+    installed: string;
+    message: string;
+  }): Promise<void>;
+  /** Runs `remember_extensions` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remember_extensionsMany(items: RememberExtensionsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Writes what installing, turning on or removing an extension came to, in the person's words. The window raises it; a person, agent or script never does. */
+  note_extension(args: {
+    ok: boolean;
+    kind: string;
+    message: string;
+    id: string;
+  }): Promise<void>;
+  /** Runs `note_extension` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  note_extensionMany(items: NoteExtensionArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Writes what the engine's credential store answered into the page's record: the forms and accounts it listed, the capture it took, and its own words. The window raises it; a person, agent or script never does. */
   remember_credential(args: {
     did: string;
@@ -707,7 +758,7 @@ export interface Page extends tilo.Resource {
 
 /** The actions `Page` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "update_download", "update_downloadMany", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "back", "forward", "reload", "stop_loading", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "cancel_download", "retry_download", "cancel_all_downloads", "developer_tools", "mute", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "remember_credential", "remember_credentialMany", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page"] as const;
+export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "update_download", "update_downloadMany", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "back", "forward", "reload", "stop_loading", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "cancel_download", "retry_download", "cancel_all_downloads", "developer_tools", "mute", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "list_extensions", "install_extension", "enable_extension", "remove_extension", "remember_extensions", "remember_extensionsMany", "note_extension", "note_extensionMany", "remember_credential", "remember_credentialMany", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page"] as const;
 
 /** The `tl.so.tilo.browser.Page` kind at `path`. */
 export function page(ws: tilo.Workspace, path: string): Page {
@@ -854,6 +905,26 @@ export function historyEntry(ws: tilo.Workspace, path: string): HistoryEntry {
   return resourceProxy(ws, path, SURFACE, HISTORYENTRY_ACTIONS) as unknown as HistoryEntry;
 }
 
+/** Extension — `tl.so.tilo.browser.Extension`. */
+export interface Extension extends tilo.Resource {
+  iymjskx5: string;  // key
+  vhst373v: string;  // name
+  "7b7zbela": string;  // version
+  v7jkztuy: number;  // manifest_version
+  iaycfmmk: string;  // description
+  kkeg7wgf: string;  // permissions
+  "372chbvw": boolean;  // enabled
+}
+
+/** The actions `Extension` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const EXTENSION_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.Extension` kind at `path`. */
+export function extension(ws: tilo.Workspace, path: string): Extension {
+  return resourceProxy(ws, path, SURFACE, EXTENSION_ACTIONS) as unknown as Extension;
+}
+
 /** LoginForm — `tl.so.tilo.browser.LoginForm`. */
 export interface LoginForm extends tilo.Resource {
   hdxbxfcl: string;  // form
@@ -907,6 +978,8 @@ export interface Ask extends tilo.Resource {
   dmxbh4fm: number | null;  // nth
   ao4elp2a: string | null;  // key
   jmhhkxjz: string | null;  // url
+  "2l2hjzlp": string | null;  // path
+  "5px2ripq": string | null;  // extension
   lqvkggvx: number | null;  // level
   zroiv7hs: string[] | null;  // values
   ntpmcicu: Record<string, string> | null;  // answers
@@ -1000,8 +1073,12 @@ export interface Browser extends tilo.Resource {
   "2zm7y6e5": Array<tilo.Entry<Address>>;  // addresses
   zx4a3bhv: Array<tilo.Entry<Page>>;  // pages
   z3z5vks2: boolean;  // addresses_enabled
+  nskkfe4o: Array<tilo.Entry<Extension>>;  // extensions
+  uq4ctcke: string;  // extension_notice
   /** Opens a page in a window of its own. Every window of the app is one page; what it shows, its address and its own back and forward are the system's. */
   new_page(): Promise<Page>;
+  /** Opens a window that browses privately: nothing it reads, signs in to or downloads joins what this device keeps of the person. */
+  new_private_page(): Promise<Page>;
   /** Opens an address in a page of its own, or asks the search engine for what was typed when it is not one. */
   go(args: {
     typed: string;
@@ -1095,7 +1172,7 @@ export interface Browser extends tilo.Resource {
 
 /** The actions `Browser` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const BROWSER_ACTIONS = ["new_page", "go", "bookmark", "bookmarkMany", "set_site_protection", "set_site_protectionMany", "toggle_site_protection", "toggle_site_protectionMany", "forget_site_forms", "forget_site_formsMany", "forget_all_forms", "forget_all_formsMany", "remember_form", "remember_formMany", "add_address", "clear_history", "clear_historyMany", "visit", "visitMany", "trim_history", "trim_historyMany", "arrived_at", "arrived_atMany", "import_browsing", "import_browsingMany", "import_history", "import_historyMany", "import_bookmarks", "import_bookmarksMany"] as const;
+export const BROWSER_ACTIONS = ["new_page", "new_private_page", "go", "bookmark", "bookmarkMany", "set_site_protection", "set_site_protectionMany", "toggle_site_protection", "toggle_site_protectionMany", "forget_site_forms", "forget_site_formsMany", "forget_all_forms", "forget_all_formsMany", "remember_form", "remember_formMany", "add_address", "clear_history", "clear_historyMany", "visit", "visitMany", "trim_history", "trim_historyMany", "arrived_at", "arrived_atMany", "import_browsing", "import_browsingMany", "import_history", "import_historyMany", "import_bookmarks", "import_bookmarksMany"] as const;
 
 /** The `tl.so.tilo.browser.Browser` kind at `path`. */
 export function browser(ws: tilo.Workspace, path: string): Browser {
@@ -1109,11 +1186,17 @@ export interface TiloBrowser extends tilo.Resource {
     name: string;
     path: string;
   }): Promise<void>;
+  /** Shows where a saved download stands in Files, with the file marked: the system's one place for what a window saved. */
+  reveal_download(args: {
+    path: string;
+  }): Promise<void>;
+  /** Runs `reveal_download` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reveal_downloadMany(items: RevealDownloadArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `TiloBrowser` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TILOBROWSER_ACTIONS = ["open_download"] as const;
+export const TILOBROWSER_ACTIONS = ["open_download", "reveal_download", "reveal_downloadMany"] as const;
 
 /** The `tl.so.tilo.browser` kind at `path`. */
 export function tiloBrowser(ws: tilo.Workspace, path: string): TiloBrowser {

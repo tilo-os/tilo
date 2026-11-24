@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.photos@c38aec041dfd1a75";
+export const SURFACE = "so.tilo.photos@a69ddce203fc6629";
 
 /** The arguments of `toggle_favorite`. */
 export interface ToggleFavoriteArgs {
@@ -127,6 +127,23 @@ export interface RemovePersonArgs {
 export interface RenamePersonArgs {
   person: Person;
   to: string;
+}
+
+/** The arguments of `approve_suggestion`. */
+export interface ApproveSuggestionArgs {
+  s: Suggestion;
+  name?: string;
+}
+
+/** The arguments of `merge_suggestion`. */
+export interface MergeSuggestionArgs {
+  s: Suggestion;
+  person: Person;
+}
+
+/** The arguments of `dismiss_suggestion`. */
+export interface DismissSuggestionArgs {
+  s: Suggestion;
 }
 
 /** The arguments of `merge_people`. */
@@ -287,11 +304,28 @@ export function person(ws: tilo.Workspace, path: string): Person {
   return resourceProxy(ws, path, SURFACE, PERSON_ACTIONS) as unknown as Person;
 }
 
+/** Suggestion — `tl.so.tilo.photos.Suggestion`. */
+export interface Suggestion extends tilo.Resource {
+  qracadw6: string;  // name
+  ehc6rrhm: string[];  // photos
+  "2adnxzro": boolean;  // sent
+}
+
+/** The actions `Suggestion` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SUGGESTION_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.photos.Suggestion` kind at `path`. */
+export function suggestion(ws: tilo.Workspace, path: string): Suggestion {
+  return resourceProxy(ws, path, SURFACE, SUGGESTION_ACTIONS) as unknown as Suggestion;
+}
+
 /** Library — `tl.so.tilo.photos.Library`. */
 export interface Library extends tilo.Resource {
   moeuycny: Array<tilo.Entry<Photo>>;  // photos
   tqa4lyow: Array<tilo.Entry<Album>>;  // albums
   xr5mtp2m: Array<tilo.Entry<Person>>;  // people
+  r7k2giak: Array<tilo.Entry<Suggestion>>;  // suggestions
   tp7e7pzd: number;  // import_found
   "6jdgyzo3": number;  // import_done
   ybraeglq: string[];  // import_issues
@@ -363,6 +397,36 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
   /** Runs `rename_person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rename_personMany(items: RenamePersonArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The faces the device finds in `photos`, kept as suggestions of the person's own: a face has no name, so nothing of it reaches another member until a name is approved. */
+  find_faces(args: {
+    photos: Photo[];
+  }): Promise<void>;
+  /** Scans the next photos on this device nobody is named on yet: the model takes twelve at a time, so a scan is one batch, and each face it finds is a suggestion of the scanner's own. */
+  scan_faces(): Promise<void>;
+  /** Names a face: its photos join the person with that name, and the suggestion is sent, so the workspace keeps it. */
+  approve_suggestion(args: {
+    s: Suggestion;
+    name?: string;
+  }): Promise<void>;
+  /** Runs `approve_suggestion` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  approve_suggestionMany(items: ApproveSuggestionArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts a face's photos on a person the library already knows, and sends the suggestion. */
+  merge_suggestion(args: {
+    s: Suggestion;
+    person: Person;
+  }): Promise<void>;
+  /** Runs `merge_suggestion` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  merge_suggestionMany(items: MergeSuggestionArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes a suggestion away: the face is not offered again, since the photos are not rescanned into one while they are unnamed only by choice. */
+  dismiss_suggestion(args: {
+    s: Suggestion;
+  }): Promise<void>;
+  /** Runs `dismiss_suggestion` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  dismiss_suggestionMany(items: DismissSuggestionArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The person the library knows by `name`, started where it knows none. */
+  person_named(args: {
+    name: string;
+  }): Promise<Person>;
   /** Starts a person the library knows, with the photos it already has of them. */
   new_person(args: {
     name: string;
@@ -392,7 +456,7 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["import_photo", "absorb_picture", "import_photo_meta", "import_dropped", "import_droppedMany", "dismiss_import", "dismiss_importMany", "favorite_selected", "favorite_selectedMany", "remove_selected", "remove_selectedMany", "new_album", "remove_album", "remove_albumMany", "add_person", "add_personMany", "remove_person", "remove_personMany", "rename_person", "rename_personMany", "new_person", "merge_people", "merge_peopleMany", "split_photo", "split_photoMany", "remove_person_resource", "remove_person_resourceMany"] as const;
+export const LIBRARY_ACTIONS = ["import_photo", "absorb_picture", "import_photo_meta", "import_dropped", "import_droppedMany", "dismiss_import", "dismiss_importMany", "favorite_selected", "favorite_selectedMany", "remove_selected", "remove_selectedMany", "new_album", "remove_album", "remove_albumMany", "add_person", "add_personMany", "remove_person", "remove_personMany", "rename_person", "rename_personMany", "find_faces", "scan_faces", "approve_suggestion", "approve_suggestionMany", "merge_suggestion", "merge_suggestionMany", "dismiss_suggestion", "dismiss_suggestionMany", "person_named", "new_person", "merge_people", "merge_peopleMany", "split_photo", "split_photoMany", "remove_person_resource", "remove_person_resourceMany"] as const;
 
 /** The `tl.so.tilo.photos.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {

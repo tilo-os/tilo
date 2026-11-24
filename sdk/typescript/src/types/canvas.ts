@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.canvas@34cab672aa7431c3";
+export const SURFACE = "so.tilo.canvas@4010c42c914c02be";
 
 /** The arguments of `rename_layer`. */
 export interface RenameLayerArgs {
@@ -34,6 +34,31 @@ export interface RenameLayerArgs {
 export interface LockLayerArgs {
   layer: Layer;
   locked?: boolean;
+}
+
+/** The arguments of `clip_layer`. */
+export interface ClipLayerArgs {
+  layer: Layer;
+  clip?: boolean;
+}
+
+/** The arguments of `set_mask`. */
+export interface SetMaskArgs {
+  layer: Layer;
+  base?: number;
+  invert?: boolean;
+  unlinked?: boolean;
+}
+
+/** The arguments of `set_medium`. */
+export interface SetMediumArgs {
+  layer: Layer;
+  medium: string;
+}
+
+/** The arguments of `remove_medium`. */
+export interface RemoveMediumArgs {
+  m: Medium;
 }
 
 /** The arguments of `move_layer_up`. */
@@ -92,6 +117,16 @@ export interface ResizeMarkArgs {
   size: number;
 }
 
+/** The arguments of `set_reference`. */
+export interface SetReferenceArgs {
+  file: unknown;
+  opacity?: number;
+}
+
+/** The arguments of `clear_reference`. */
+export interface ClearReferenceArgs {
+}
+
 /** The arguments of `select_area`. */
 export interface SelectAreaArgs {
   d: string;
@@ -121,6 +156,94 @@ export interface StartPaintArgs {
   layer?: Layer;
 }
 
+/** The arguments of `set_layer_group`. */
+export interface SetLayerGroupArgs {
+  group: string;
+}
+
+/** The arguments of `group_mark`. */
+export interface GroupMarkArgs {
+  group: string;
+}
+
+/** The arguments of `fill_gradient`. */
+export interface FillGradientArgs {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  offsets: number[];
+  colours: string[];
+  kind?: string;
+}
+
+/** The arguments of `wet_mark`. */
+export interface WetMarkArgs {
+  wet?: boolean;
+}
+
+/** The arguments of `clear_gradient`. */
+export interface ClearGradientArgs {
+}
+
+/** The arguments of `set_text`. */
+export interface SetTextArgs {
+  text?: string;
+  size?: number;
+  colour?: string;
+  font?: string;
+  weight?: number;
+  italic?: boolean;
+  align?: string;
+  line_height?: number;
+  tracking?: number;
+  path?: string;
+}
+
+/** The arguments of `crop_picture`. */
+export interface CropPictureArgs {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
+/** The arguments of `straighten_picture`. */
+export interface StraightenPictureArgs {
+  degrees: number;
+}
+
+/** The arguments of `flip_picture`. */
+export interface FlipPictureArgs {
+  horizontal?: boolean;
+  vertical?: boolean;
+  flip_h?: boolean;
+  flip_v?: boolean;
+}
+
+/** The arguments of `blend_mark`. */
+export interface BlendMarkArgs {
+  blend: string;
+}
+
+/** The arguments of `adjust_mark`. */
+export interface AdjustMarkArgs {
+  exposure?: number;
+  contrast?: number;
+  highlights?: number;
+  shadows?: number;
+  saturation?: number;
+  vibrance?: number;
+  hue?: number;
+  temperature?: number;
+  tint?: number;
+  grayscale?: boolean;
+  invert?: boolean;
+  blur?: number;
+  sharpen?: number;
+  vignette?: number;
+}
+
 /** Artwork — `tl.so.tilo.canvas.Artwork`. */
 export interface Artwork extends tilo.Resource {
   zp2ztcwq: string;  // title
@@ -130,9 +253,12 @@ export interface Artwork extends tilo.Resource {
   zdv3lz52: string;  // ground_colour
   xu4h6ew2: Array<tilo.Entry<Layer>>;  // layers
   btwv4xq5: Array<tilo.Entry<Mark>>;  // marks
+  "4bht3tzh": Array<tilo.Entry<Medium>>;  // media
   "4wmc4l7b": Array<tilo.Entry<Picture>>;  // pictures
   ob6rlf7s: Area | null;  // selection
+  exp6h3eo: Reference | null;  // reference
   k2slfiuy: string;  // look
+  mksntvfu: string;  // comparison
   meooqdog: string;  // notice
   /** Adds a layer on top of the artwork. */
   add_layer(args?: {
@@ -152,6 +278,64 @@ export interface Artwork extends tilo.Resource {
   }): Promise<void>;
   /** Runs `lock_layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   lock_layerMany(items: LockLayerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Holds a layer to the paint of the one under it, or lets it stand free. */
+  clip_layer(args: {
+    layer: Layer;
+    clip?: boolean;
+  }): Promise<void>;
+  /** Runs `clip_layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clip_layerMany(items: ClipLayerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Adds a mask to a layer: a layer of greys the layer is seen through. Its marks are made with the brushes as any layer's are, light showing the layer and dark hiding it. */
+  add_mask(args: {
+    layer: Layer;
+  }): Promise<Layer>;
+  /** Sets a mask's grey before any mark, whether it hides where it is light, and whether it stays put when its layer's marks move. */
+  set_mask(args: {
+    layer: Layer;
+    base?: number;
+    invert?: boolean;
+    unlinked?: boolean;
+  }): Promise<void>;
+  /** Runs `set_mask` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_maskMany(items: SetMaskArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Adds a text mark: words set in the artwork's own fonts, at `x`, `y` (its first baseline) in artwork units. */
+  add_text(args: {
+    text: string;
+    layer?: Layer;
+    x?: number;
+    y?: number;
+    size?: number;
+    colour?: string;
+    font?: string;
+    weight?: number;
+    italic?: boolean;
+    align?: string;
+    line_height?: number;
+    tracking?: number;
+    path?: string;
+  }): Promise<Mark>;
+  /** Paints a layer with a medium: `oil`, `watercolour`, a preset saved in the artwork by its id, or empty for plain vector paint. */
+  set_medium(args: {
+    layer: Layer;
+    medium: string;
+  }): Promise<void>;
+  /** Runs `set_medium` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_mediumMany(items: SetMediumArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Saves a medium in the artwork, so its layers name it and every device paints it the same. A medium of the same id is replaced. */
+  save_medium(args: {
+    id: string;
+    label: string;
+    engine?: string;
+    description?: string;
+    ground?: string;
+    params?: Record<string, number>;
+    palette?: Pigment[];
+  }): Promise<Medium>;
+  remove_medium(args: {
+    m: Medium;
+  }): Promise<void>;
+  /** Runs `remove_medium` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remove_mediumMany(items: RemoveMediumArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Moves a layer one place up in the stack. */
   move_layer_up(args: {
     layer: Layer;
@@ -240,6 +424,46 @@ export interface Artwork extends tilo.Resource {
   place_picture(args: {
     file: unknown;
   }): Promise<Mark>;
+  /** Selects what the colour at `at` touches in the artwork's picture, or that colour everywhere: the magic wand. The area comes back as a selection the fill, mask and outline use. */
+  select_like(args?: {
+    at?: number[];
+    colour?: string;
+    tolerance?: number;
+    everywhere?: boolean;
+  }): Promise<string | null>;
+  /** Selects the picture's subject, found by the on-device model the person set up, with its edge fitted to the picture's own edges over `refine` units where that is asked. */
+  select_subject(args?: {
+    refine?: number;
+  }): Promise<string | null>;
+  /** Refines the selection's edge to the picture's own edges over `refine` units, keeping fur and hair soft. */
+  refine_selection(args?: {
+    refine?: number;
+  }): Promise<string | null>;
+  /** Combines the marks into one path, in the bottom one's place and colour: shapes united, subtracted, intersected or excluded. The engine works out the outline; the artwork keeps one mark where there were several. */
+  combine_marks(args: {
+    marks: Mark[];
+    op?: string;
+  }): Promise<Mark | null>;
+  /** Weighs the marks' ink as the eye sees it: each one's ink box, ink area, centre of mass and its offset from the box's middle, so two icons balance when their areas and offsets match. The answer is the engine's JSON; the window says it in words. */
+  measure_marks(args: {
+    marks: Mark[];
+  }): Promise<string | null>;
+  /** Sets the picture to work from, fitted inside the artwork and centred. It is not part of the work: comparing shows the artwork beside, over or against it, and export never includes it. */
+  set_reference(args: {
+    file: unknown;
+    opacity?: number;
+  }): Promise<void>;
+  /** Runs `set_reference` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_referenceMany(items: SetReferenceArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes the reference picture away. */
+  clear_reference(): Promise<void>;
+  /** Runs `clear_reference` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clear_referenceMany(items: ClearReferenceArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Shows the artwork beside (`side-by-side`), over (`overlay`) or against (`difference`) the reference picture, as a new file, with how far apart they are. */
+  compare_reference(args?: {
+    mode?: string;
+    size?: number;
+  }): Promise<unknown | null>;
   /** Selects an area, its outline as SVG path data. */
   select_area(args: {
     d: string;
@@ -312,7 +536,7 @@ export interface Artwork extends tilo.Resource {
 
 /** The actions `Artwork` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ARTWORK_ACTIONS = ["add_layer", "rename_layer", "rename_layerMany", "lock_layer", "lock_layerMany", "move_layer_up", "move_layer_upMany", "move_layer_down", "move_layer_downMany", "duplicate_layer", "merge_layer_down", "merge_layer_downMany", "show_layer", "show_layerMany", "remove_layer", "remove_layerMany", "set_artwork", "set_artworkMany", "add_stroke", "extend_stroke", "extend_strokeMany", "top_layer", "add_shape", "remove_mark", "remove_markMany", "recolour", "recolourMany", "resize_mark", "resize_markMany", "place_picture", "select_area", "select_areaMany", "clear_selection", "clear_selectionMany", "fill_selection", "draw_look", "draw_lookMany", "export_picture", "export_svg", "save_artwork", "import_svg", "clear_notice", "clear_noticeMany", "start_paint", "start_paintMany", "continue_paint", "finish_paint"] as const;
+export const ARTWORK_ACTIONS = ["add_layer", "rename_layer", "rename_layerMany", "lock_layer", "lock_layerMany", "clip_layer", "clip_layerMany", "add_mask", "set_mask", "set_maskMany", "add_text", "set_medium", "set_mediumMany", "save_medium", "remove_medium", "remove_mediumMany", "move_layer_up", "move_layer_upMany", "move_layer_down", "move_layer_downMany", "duplicate_layer", "merge_layer_down", "merge_layer_downMany", "show_layer", "show_layerMany", "remove_layer", "remove_layerMany", "set_artwork", "set_artworkMany", "add_stroke", "extend_stroke", "extend_strokeMany", "top_layer", "add_shape", "remove_mark", "remove_markMany", "recolour", "recolourMany", "resize_mark", "resize_markMany", "place_picture", "select_like", "select_subject", "refine_selection", "combine_marks", "measure_marks", "set_reference", "set_referenceMany", "clear_reference", "clear_referenceMany", "compare_reference", "select_area", "select_areaMany", "clear_selection", "clear_selectionMany", "fill_selection", "draw_look", "draw_lookMany", "export_picture", "export_svg", "save_artwork", "import_svg", "clear_notice", "clear_noticeMany", "start_paint", "start_paintMany", "continue_paint", "finish_paint"] as const;
 
 /** The `tl.so.tilo.canvas.Artwork` kind at `path`. */
 export function artwork(ws: tilo.Workspace, path: string): Artwork {
@@ -327,11 +551,23 @@ export interface Layer extends tilo.Resource {
   evne54yw: boolean;  // visible
   nagaw3zw: boolean;  // locked
   yzvcnjuy: number;  // texture
+  cwenklqw: string;  // group
+  rxz73i7f: string;  // mask_of
+  umkqodij: number;  // base
+  owktdb7d: boolean;  // invert
+  n43pvuyc: boolean;  // clip
+  "2rtbmdqf": boolean;  // unlinked
+  /** Puts a layer in the folder `group`, or takes it out when that is empty. */
+  set_layer_group(args: {
+    group: string;
+  }): Promise<void>;
+  /** Runs `set_layer_group` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_layer_groupMany(items: SetLayerGroupArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Layer` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LAYER_ACTIONS = [] as const;
+export const LAYER_ACTIONS = ["set_layer_group", "set_layer_groupMany"] as const;
 
 /** The `tl.so.tilo.canvas.Layer` kind at `path`. */
 export function layer(ws: tilo.Workspace, path: string): Layer {
@@ -350,16 +586,148 @@ export interface Mark extends tilo.Resource {
   omem6tkf: string;  // brush
   kytiqfia: number;  // opacity
   y5teghkv: boolean;  // open
+  hyumfmpg: string;  // group
+  lu2gjrfu: boolean;  // wet
+  s2tjjp2p: Record<string, number>;  // params
   cdvrgjan: string;  // src
   vniyw6t3: number;  // x
   v3wlgndz: number;  // y
   "4nv5sha3": number;  // width
   hlvljkif: number;  // height
+  o4zghm7q: string;  // blend
+  wpv66rxy: number;  // crop_x
+  sz6fzruq: number;  // crop_y
+  ax7jjgo5: number;  // crop_width
+  "7jtq2b7o": number;  // crop_height
+  mzyxo2mo: number;  // straighten
+  xndatwwg: boolean;  // flip_h
+  vyaxfcb2: boolean;  // flip_v
+  "37ailkzg": number;  // exposure
+  g3ifa5op: number;  // contrast
+  "3taebyjo": number;  // highlights
+  "5d6dfhop": number;  // shadows
+  nebzyt3a: number;  // saturation
+  "6ib7oqy4": number;  // vibrance
+  vzagvyr3: number;  // hue
+  bdxzjdby: number;  // temperature
+  skvl4xui: number;  // tint
+  "3tuoc3tu": boolean;  // grayscale
+  tr7kuqc5: boolean;  // invert
+  qe7z2w5c: number;  // blur
+  h6rqzqu5: number;  // sharpen
+  glowmwgx: number;  // vignette
+  jzqxuy4d: string;  // gradient
+  "2afylrq3": number;  // gradient_x0
+  skgor2yj: number;  // gradient_y0
+  ctpi3sbl: number;  // gradient_x1
+  nosksv3s: number;  // gradient_y1
+  n4zfbtzn: number[] | null;  // gradient_offsets
+  "7vai53br": string[] | null;  // gradient_colours
+  "63yhsfnf": string;  // text
+  xbmipp4j: string;  // font
+  ymnuknae: number;  // weight
+  u62kvwpy: boolean;  // italic
+  mj3rz5s2: string;  // align
+  i7zjtca3: number;  // line_height
+  sc445r7q: number;  // tracking
+  e7l24fze: string;  // text_path
+  /** Puts a mark in the folder `group`, or takes it out when that is empty. Marks of a group are addressed, exported and shown together. */
+  group_mark(args: {
+    group: string;
+  }): Promise<void>;
+  /** Runs `group_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  group_markMany(items: GroupMarkArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Fills a mark with a gradient from `from` to `to`, its stops given as offsets 0 to 1 beside their colours. */
+  fill_gradient(args: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+    offsets: number[];
+    colours: string[];
+    kind?: string;
+  }): Promise<void>;
+  /** Runs `fill_gradient` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  fill_gradientMany(items: FillGradientArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Paints a mark into what is still wet, or over dry paint. */
+  wet_mark(args?: {
+    wet?: boolean;
+  }): Promise<void>;
+  /** Runs `wet_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  wet_markMany(items: WetMarkArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Clears a mark's gradient, leaving the plain colour. */
+  clear_gradient(): Promise<void>;
+  /** Runs `clear_gradient` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clear_gradientMany(items: ClearGradientArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets a text mark's words, its type and its setting. A parameter left out stays as it is. */
+  set_text(args?: {
+    text?: string;
+    size?: number;
+    colour?: string;
+    font?: string;
+    weight?: number;
+    italic?: boolean;
+    align?: string;
+    line_height?: number;
+    tracking?: number;
+    path?: string;
+  }): Promise<void>;
+  /** Runs `set_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_textMany(items: SetTextArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Shows part of the picture: the frame `x`, `y`, `width`, `height` of its own pixels, each a fraction of them. The picture stays put and the frame follows, so a crop is an edit of the mark and never of the pixels. */
+  crop_picture(args?: {
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+  }): Promise<void>;
+  /** Runs `crop_picture` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  crop_pictureMany(items: CropPictureArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Turns the picture inside its frame, in degrees, enlarging it so no corner shows. */
+  straighten_picture(args: {
+    degrees: number;
+  }): Promise<void>;
+  /** Runs `straighten_picture` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  straighten_pictureMany(items: StraightenPictureArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Mirrors the picture across its middle. */
+  flip_picture(args?: {
+    horizontal?: boolean;
+    vertical?: boolean;
+    flip_h?: boolean;
+    flip_v?: boolean;
+  }): Promise<void>;
+  /** Runs `flip_picture` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  flip_pictureMany(items: FlipPictureArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets how a mark mixes with what is under it. */
+  blend_mark(args: {
+    blend: string;
+  }): Promise<void>;
+  /** Runs `blend_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  blend_markMany(items: BlendMarkArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Grades a mark without touching its pixels: exposure, contrast and the rest are kept on the mark and applied wherever the artwork is shown or exported. A parameter left out stays as it is, so an agent changes one step at a time. */
+  adjust_mark(args?: {
+    exposure?: number;
+    contrast?: number;
+    highlights?: number;
+    shadows?: number;
+    saturation?: number;
+    vibrance?: number;
+    hue?: number;
+    temperature?: number;
+    tint?: number;
+    grayscale?: boolean;
+    invert?: boolean;
+    blur?: number;
+    sharpen?: number;
+    vignette?: number;
+  }): Promise<void>;
+  /** Runs `adjust_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  adjust_markMany(items: AdjustMarkArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Mark` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MARK_ACTIONS = [] as const;
+export const MARK_ACTIONS = ["group_mark", "group_markMany", "fill_gradient", "fill_gradientMany", "wet_mark", "wet_markMany", "clear_gradient", "clear_gradientMany", "set_text", "set_textMany", "crop_picture", "crop_pictureMany", "straighten_picture", "straighten_pictureMany", "flip_picture", "flip_pictureMany", "blend_mark", "blend_markMany", "adjust_mark", "adjust_markMany"] as const;
 
 /** The `tl.so.tilo.canvas.Mark` kind at `path`. */
 export function mark(ws: tilo.Workspace, path: string): Mark {
@@ -396,6 +764,63 @@ export const PICTURE_ACTIONS = [] as const;
 /** The `tl.so.tilo.canvas.Picture` kind at `path`. */
 export function picture(ws: tilo.Workspace, path: string): Picture {
   return resourceProxy(ws, path, SURFACE, PICTURE_ACTIONS) as unknown as Picture;
+}
+
+/** Medium — `tl.so.tilo.canvas.Medium`. */
+export interface Medium extends tilo.Resource {
+  bevph2qk: string;  // key
+  cgytyo4j: string;  // label
+  "2opuzdzr": string;  // engine
+  mgi6schv: string;  // description
+  "6r6opsjz": string;  // ground
+  hids323q: Record<string, number>;  // params
+  rdqoi6b4: Pigment[];  // palette
+}
+
+/** The actions `Medium` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MEDIUM_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.Medium` kind at `path`. */
+export function medium(ws: tilo.Workspace, path: string): Medium {
+  return resourceProxy(ws, path, SURFACE, MEDIUM_ACTIONS) as unknown as Medium;
+}
+
+/** Pigment — `tl.so.tilo.canvas.Pigment`. */
+export interface Pigment extends tilo.Resource {
+  ph4qfvlv: string;  // name
+  "6heumgwe": string;  // colour
+  tm7hljog: number;  // granulation
+  t2xyhkxn: number;  // strength
+}
+
+/** The actions `Pigment` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PIGMENT_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.Pigment` kind at `path`. */
+export function pigment(ws: tilo.Workspace, path: string): Pigment {
+  return resourceProxy(ws, path, SURFACE, PIGMENT_ACTIONS) as unknown as Pigment;
+}
+
+/** Reference — `tl.so.tilo.canvas.Reference`. */
+export interface Reference extends tilo.Resource {
+  "3ze3qk7e": string;  // image
+  ky6t7zk4: number;  // x
+  k5uohe26: number;  // y
+  vyzji3vv: number;  // width
+  peuuxvxb: number;  // height
+  decytxpt: number;  // opacity
+  j3jxn7s3: boolean;  // visible
+}
+
+/** The actions `Reference` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const REFERENCE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.Reference` kind at `path`. */
+export function reference(ws: tilo.Workspace, path: string): Reference {
+  return resourceProxy(ws, path, SURFACE, REFERENCE_ACTIONS) as unknown as Reference;
 }
 
 /** Library — `tl.so.tilo.canvas.Library`. */
@@ -496,7 +921,9 @@ export interface ArtworkJson extends tilo.Resource {
   mpyvrw7z: string;  // ground_colour
   xubd3xon: LayerJson[];  // layers
   lowvdtkg: MarkJson[];  // marks
+  hoix2o4s: MediumJson[];  // media
   "5h6vjvk2": AreaJson | null;  // selection
+  n77pojfm: ReferenceJson | null;  // reference
 }
 
 /** The actions `ArtworkJson` reaches before it is read: `ws` calls them without a
@@ -516,6 +943,12 @@ export interface LayerJson extends tilo.Resource {
   "4h7cxhog": boolean;  // visible
   "2r4nberb": boolean;  // locked
   xlvw3rkz: number;  // texture
+  km2u7cyx: string;  // group
+  qhmnxju4: string;  // mask_of
+  "6oqanygz": number;  // base
+  y6iyulut: boolean;  // invert
+  k2r2z54p: boolean;  // clip
+  ppv32nn6: boolean;  // unlinked
 }
 
 /** The actions `LayerJson` reaches before it is read: `ws` calls them without a
@@ -527,11 +960,66 @@ export function layerJson(ws: tilo.Workspace, path: string): LayerJson {
   return resourceProxy(ws, path, SURFACE, LAYERJSON_ACTIONS) as unknown as LayerJson;
 }
 
+/** MediumJson — `tl.so.tilo.canvas.MediumJson`. */
+export interface MediumJson extends tilo.Resource {
+  iztu5hbq: string;  // id
+  shen6puc: string;  // label
+  pcwg6twm: string;  // engine
+  tucyloxp: string;  // description
+  "3g5vtp7l": string;  // ground
+  athamtu3: Record<string, number>;  // params
+  pq2ipocw: PigmentJson[];  // palette
+}
+
+/** The actions `MediumJson` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MEDIUMJSON_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.MediumJson` kind at `path`. */
+export function mediumJson(ws: tilo.Workspace, path: string): MediumJson {
+  return resourceProxy(ws, path, SURFACE, MEDIUMJSON_ACTIONS) as unknown as MediumJson;
+}
+
+/** PigmentJson — `tl.so.tilo.canvas.PigmentJson`. */
+export interface PigmentJson extends tilo.Resource {
+  dgwlsywk: string;  // name
+  b74p3dso: string;  // colour
+  rfus746j: number;  // granulation
+  veeu7fpc: number;  // strength
+}
+
+/** The actions `PigmentJson` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PIGMENTJSON_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.PigmentJson` kind at `path`. */
+export function pigmentJson(ws: tilo.Workspace, path: string): PigmentJson {
+  return resourceProxy(ws, path, SURFACE, PIGMENTJSON_ACTIONS) as unknown as PigmentJson;
+}
+
+/** ReferenceJson — `tl.so.tilo.canvas.ReferenceJson`. */
+export interface ReferenceJson extends tilo.Resource {
+  go76fdwt: string;  // image
+  ax3jntcc: number[] | null;  // frame
+  urv4gnep: number;  // opacity
+  zbqd3iad: boolean;  // visible
+}
+
+/** The actions `ReferenceJson` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const REFERENCEJSON_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.ReferenceJson` kind at `path`. */
+export function referenceJson(ws: tilo.Workspace, path: string): ReferenceJson {
+  return resourceProxy(ws, path, SURFACE, REFERENCEJSON_ACTIONS) as unknown as ReferenceJson;
+}
+
 /** MarkJson — `tl.so.tilo.canvas.MarkJson`. */
 export interface MarkJson extends tilo.Resource {
   "67wvmkkq": string;  // name
   jk7lnwfw: LayerJson;  // layer
   xy2goji2: string;  // kind
+  lrfhvryb: string;  // group
   ysn6onwt: number[];  // points
   vmvvarxw: string;  // d
   hajhmux3: number;  // size
@@ -543,6 +1031,45 @@ export interface MarkJson extends tilo.Resource {
   el3izuuy: number;  // y
   jzpg25ot: number;  // width
   k7jjvary: number;  // height
+  f2yfdpsw: string;  // blend
+  gbswtfkm: number;  // crop_x
+  cnv33zk4: number;  // crop_y
+  yzjgjp5q: number;  // crop_width
+  d2tduo5n: number;  // crop_height
+  j7tormbq: number;  // straighten
+  vmes3q7g: boolean;  // flip_h
+  "4tv2wnsi": boolean;  // flip_v
+  tnsniv2d: number;  // exposure
+  xsuhepir: number;  // contrast
+  rhmkylpp: number;  // highlights
+  qqdl7hij: number;  // shadows
+  asuq3lgp: number;  // saturation
+  fxjyqy3l: number;  // vibrance
+  rf2rek22: number;  // hue
+  oqo6d26l: number;  // temperature
+  suw3mw5t: number;  // tint
+  prqekzin: boolean;  // grayscale
+  ulnewmko: boolean;  // invert
+  hhwbutye: number;  // blur
+  aooc5sn5: number;  // sharpen
+  y32qfhyc: number;  // vignette
+  r77f22g6: string;  // gradient_kind
+  nuba72na: number;  // gradient_x0
+  yvaatile: number;  // gradient_y0
+  jdbhzols: number;  // gradient_x1
+  tv6gyxgx: number;  // gradient_y1
+  ih74f5za: number[];  // gradient_offsets
+  zvcp7y2l: string[];  // gradient_colours
+  xub3tsun: string;  // text
+  fkp53ei3: string;  // font
+  "7nusoc27": number;  // weight
+  n3izluzh: boolean;  // italic
+  "5dk4ceey": string;  // align
+  gnfltu6g: number;  // line_height
+  u2tmalez: number;  // tracking
+  hyqcnmz5: string;  // text_path
+  q73msd2q: boolean;  // wet
+  gfq7akbn: Record<string, number>;  // params
 }
 
 /** The actions `MarkJson` reaches before it is read: `ws` calls them without a
@@ -569,13 +1096,141 @@ export function areaJson(ws: tilo.Workspace, path: string): AreaJson {
   return resourceProxy(ws, path, SURFACE, AREAJSON_ACTIONS) as unknown as AreaJson;
 }
 
+/** GradeAsk — `tl.so.tilo.canvas.GradeAsk`. */
+export interface GradeAsk extends tilo.Resource {
+  fy7u7ntb: number;  // exposure
+  h7ykiuc5: number;  // contrast
+  akjbo2e5: number;  // highlights
+  gx2o2imz: number;  // shadows
+  gwfjuivz: number;  // saturation
+  y7wzyyqq: number;  // vibrance
+  pkwjhrnw: number;  // hue
+  gvwo4klz: number;  // temperature
+  "6bogm2iw": number;  // tint
+  mz4xapep: boolean;  // grayscale
+  "7pnhizf2": boolean;  // invert
+  vzbhth5d: number;  // blur
+  ayg5wxga: number;  // sharpen
+  bporvvfd: number;  // vignette
+}
+
+/** The actions `GradeAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const GRADEASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.GradeAsk` kind at `path`. */
+export function gradeAsk(ws: tilo.Workspace, path: string): GradeAsk {
+  return resourceProxy(ws, path, SURFACE, GRADEASK_ACTIONS) as unknown as GradeAsk;
+}
+
+/** WandAsk — `tl.so.tilo.canvas.WandAsk`. */
+export interface WandAsk extends tilo.Resource {
+  yyqmyjfc: number[] | null;  // at
+  etjvwbve: string | null;  // colour
+  giesycja: number | null;  // tolerance
+  vry7txyu: boolean | null;  // everywhere
+  e3v56jsz: number[] | null;  // frame
+}
+
+/** The actions `WandAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WANDASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.WandAsk` kind at `path`. */
+export function wandAsk(ws: tilo.Workspace, path: string): WandAsk {
+  return resourceProxy(ws, path, SURFACE, WANDASK_ACTIONS) as unknown as WandAsk;
+}
+
+/** FindAsk — `tl.so.tilo.canvas.FindAsk`. */
+export interface FindAsk extends tilo.Resource {
+  "3ug7cc6p": boolean | null;  // subject
+  mgf542kb: number | null;  // refine
+  oehqnmnq: number[] | null;  // at
+  t76lt6eq: string | null;  // colour
+  rk2wxm5k: number | null;  // tolerance
+  ipz3kxni: string | null;  // layer
+  "5ijkh76y": number | null;  // feather
+}
+
+/** The actions `FindAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FINDASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.FindAsk` kind at `path`. */
+export function findAsk(ws: tilo.Workspace, path: string): FindAsk {
+  return resourceProxy(ws, path, SURFACE, FINDASK_ACTIONS) as unknown as FindAsk;
+}
+
+/** CombineAsk — `tl.so.tilo.canvas.CombineAsk`. */
+export interface CombineAsk extends tilo.Resource {
+  bp3zj5os: string[];  // ids
+  "4kf2vu7l": string;  // op
+}
+
+/** The actions `CombineAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const COMBINEASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.CombineAsk` kind at `path`. */
+export function combineAsk(ws: tilo.Workspace, path: string): CombineAsk {
+  return resourceProxy(ws, path, SURFACE, COMBINEASK_ACTIONS) as unknown as CombineAsk;
+}
+
+/** MeasureAsk — `tl.so.tilo.canvas.MeasureAsk`. */
+export interface MeasureAsk extends tilo.Resource {
+  "2tk6phpq": string[];  // ids
+}
+
+/** The actions `MeasureAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MEASUREASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.MeasureAsk` kind at `path`. */
+export function measureAsk(ws: tilo.Workspace, path: string): MeasureAsk {
+  return resourceProxy(ws, path, SURFACE, MEASUREASK_ACTIONS) as unknown as MeasureAsk;
+}
+
+/** CompareAsk — `tl.so.tilo.canvas.CompareAsk`. */
+export interface CompareAsk extends tilo.Resource {
+  mztro4wb: number[] | null;  // region
+  "67462gfa": string | null;  // mode
+  hbu4rn3a: number | null;  // size
+}
+
+/** The actions `CompareAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const COMPAREASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.CompareAsk` kind at `path`. */
+export function compareAsk(ws: tilo.Workspace, path: string): CompareAsk {
+  return resourceProxy(ws, path, SURFACE, COMPAREASK_ACTIONS) as unknown as CompareAsk;
+}
+
 /** Canvas — `tl.so.tilo.canvas`. */
 export interface Canvas extends tilo.Resource {
+  /** A picture with those steps applied to its pixels, as a new file: what a person or an agent asks for when the graded picture itself is wanted, rather than the artwork that shows it. */
+  grade_picture(args: {
+    file: unknown;
+    exposure?: number;
+    contrast?: number;
+    highlights?: number;
+    shadows?: number;
+    saturation?: number;
+    vibrance?: number;
+    hue?: number;
+    temperature?: number;
+    tint?: number;
+    grayscale?: boolean;
+    invert?: boolean;
+    blur?: number;
+    sharpen?: number;
+    vignette?: number;
+  }): Promise<unknown | null>;
 }
 
 /** The actions `Canvas` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CANVAS_ACTIONS = [] as const;
+export const CANVAS_ACTIONS = ["grade_picture"] as const;
 
 /** The `tl.so.tilo.canvas` kind at `path`. */
 export function canvas(ws: tilo.Workspace, path: string): Canvas {

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.sheets@772f8bff971fef35";
+export const SURFACE = "so.tilo.sheets@a5e1fae72657a2d6";
 
 /** What a chart draws: columns side by side, or a line over its points. One of "column", "line". */
 export type ChartKind = "column" | "line";
@@ -158,6 +158,18 @@ export interface FillArgs {
   pair: string[];
 }
 
+/** The arguments of `fill_down`. */
+export interface FillDownArgs {
+  s: Sheet;
+  range: string;
+}
+
+/** The arguments of `fill_right`. */
+export interface FillRightArgs {
+  s: Sheet;
+  range: string;
+}
+
 /** The arguments of `apply_edit`. */
 export interface ApplyEditArgs {
   change: string;
@@ -247,6 +259,11 @@ export interface ResolveArgs {
 /** The arguments of `edit_comment`. */
 export interface EditCommentArgs {
   text?: string;
+}
+
+/** The arguments of `delete_reply`. */
+export interface DeleteReplyArgs {
+  r: Reply;
 }
 
 /** The arguments of `edit-block`. */
@@ -460,6 +477,20 @@ export interface Workbook extends tilo.Resource {
   }): Promise<void>;
   /** Runs `fill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   fillMany(items: FillArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Fills the rows under the first row of `range` from it: the first row copied down, counting on as a dragged fill handle does. */
+  fill_down(args: {
+    s: Sheet;
+    range: string;
+  }): Promise<void>;
+  /** Runs `fill_down` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  fill_downMany(items: FillDownArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Fills the columns right of the first column of `range` from it: the first column copied across, counting on as a dragged fill handle does. */
+  fill_right(args: {
+    s: Sheet;
+    range: string;
+  }): Promise<void>;
+  /** Runs `fill_right` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  fill_rightMany(items: FillRightArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Applies one structural change to the workbook and keeps every sheet as the engine leaves it: its cells, their formats and the cells shown bold, its name when the change renamed it, and the cells its charts and comments are about. */
   apply_edit(args: {
     change: string;
@@ -513,7 +544,7 @@ export interface Workbook extends tilo.Resource {
 
 /** The actions `Workbook` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKBOOK_ACTIONS = ["read_cells", "new_sheet", "new_sheet_after", "set_title", "set_titleMany", "rename_sheet", "rename_sheetMany", "duplicate_sheet", "delete_sheet", "delete_sheetMany", "place_sheet", "place_sheetMany", "move_sheet", "move_sheetMany", "write_cells", "write_cellsMany", "set_cells", "set_cellsMany", "set_records", "upsert_item", "cut_cells", "paste_cells", "paste_cellsMany", "clear_cells", "clear_cellsMany", "format_cells", "format_cellsMany", "toggle_bold", "toggle_boldMany", "autosum", "autosumMany", "sum_selection", "sum_selectionMany", "insert_rows", "insert_rowsMany", "delete_rows", "delete_rowsMany", "insert_columns", "insert_columnsMany", "delete_columns", "delete_columnsMany", "sort_rows", "sort_rowsMany", "fill", "fillMany", "apply_edit", "apply_editMany", "comment", "delete_comment", "delete_commentMany", "set_settings", "set_settingsMany", "import_table", "import_tableMany", "read_content", "export_workbook", "export_ods", "export_table", "edit_cells", "edit_cellsMany"] as const;
+export const WORKBOOK_ACTIONS = ["read_cells", "new_sheet", "new_sheet_after", "set_title", "set_titleMany", "rename_sheet", "rename_sheetMany", "duplicate_sheet", "delete_sheet", "delete_sheetMany", "place_sheet", "place_sheetMany", "move_sheet", "move_sheetMany", "write_cells", "write_cellsMany", "set_cells", "set_cellsMany", "set_records", "upsert_item", "cut_cells", "paste_cells", "paste_cellsMany", "clear_cells", "clear_cellsMany", "format_cells", "format_cellsMany", "toggle_bold", "toggle_boldMany", "autosum", "autosumMany", "sum_selection", "sum_selectionMany", "insert_rows", "insert_rowsMany", "delete_rows", "delete_rowsMany", "insert_columns", "insert_columnsMany", "delete_columns", "delete_columnsMany", "sort_rows", "sort_rowsMany", "fill", "fillMany", "fill_down", "fill_downMany", "fill_right", "fill_rightMany", "apply_edit", "apply_editMany", "comment", "delete_comment", "delete_commentMany", "set_settings", "set_settingsMany", "import_table", "import_tableMany", "read_content", "export_workbook", "export_ods", "export_table", "edit_cells", "edit_cellsMany"] as const;
 
 /** The `tl.so.tilo.sheets.Workbook` kind at `path`. */
 export function workbook(ws: tilo.Workspace, path: string): Workbook {
@@ -650,11 +681,17 @@ export interface Comment extends tilo.Resource {
   }): Promise<void>;
   /** Runs `edit_comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   edit_commentMany(items: EditCommentArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes a reply. Only its author may. */
+  delete_reply(args: {
+    r: Reply;
+  }): Promise<void>;
+  /** Runs `delete_reply` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_replyMany(items: DeleteReplyArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Comment` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const COMMENT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "reply", "resolve", "resolveMany", "edit_comment", "edit_commentMany"] as const;
+export const COMMENT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "reply", "resolve", "resolveMany", "edit_comment", "edit_commentMany", "delete_reply", "delete_replyMany"] as const;
 
 /** The `tl.so.tilo.sheets.Comment` kind at `path`. */
 export function comment(ws: tilo.Workspace, path: string): Comment {

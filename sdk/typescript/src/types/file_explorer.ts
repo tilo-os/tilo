@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.file-explorer@c3e4ccb8f5004eb1";
+export const SURFACE = "so.tilo.file-explorer@0d0cc870fef076b5";
 
 /** How a folder's entries read. One of "name", "size", "modified", "format". */
 export type SortBy = "name" | "size" | "modified" | "format";
@@ -39,6 +39,11 @@ export interface ChangedArgs {
 /** The arguments of `go`. */
 export interface GoArgs {
   place: string;
+}
+
+/** The arguments of `show`. */
+export interface ShowArgs {
+  path: string;
 }
 
 /** The arguments of `back`. */
@@ -387,6 +392,12 @@ export interface Files extends tilo.Resource {
   }): Promise<void>;
   /** Runs `go` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   goMany(items: GoArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Shows the place `path` names: the folder itself, or the folder holding the file, with that file marked. Another app asks this when it shows where something it made or saved stands; a person opens a file with `open_entry` instead, which opens what the file holds. */
+  show(args: {
+    path: string;
+  }): Promise<void>;
+  /** Runs `show` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  showMany(items: ShowArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Goes back to the place the person came from. */
   back(): Promise<void>;
   /** Runs `back` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -649,7 +660,7 @@ export interface Files extends tilo.Resource {
 
 /** The actions `Files` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const FILES_ACTIONS = ["read_listing", "read_listingMany", "changed", "changedMany", "go", "goMany", "back", "backMany", "forward", "forwardMany", "up", "upMany", "send_nearby", "dismiss_notice", "dismiss_noticeMany", "sort_by", "sort_byMany", "ascending", "ascendingMany", "show_grid", "show_gridMany", "choose_view", "choose_viewMany", "toggle_hidden", "toggle_hiddenMany", "open_entry", "open_entryMany", "find_openers", "find_openersMany", "open_with", "open_withMany", "close_openers", "close_openersMany", "open_terminal", "open_terminalMany", "compress_entry", "compress_entryMany", "extract_entry", "extract_entryMany", "open_recent", "open_recentMany", "touch_entry", "touch_entryMany", "choose", "chooseMany", "select_all", "select_allMany", "clear_selection", "clear_selectionMany", "note_recent", "note_recentMany", "new_folder", "new_folderMany", "start_new_file", "start_new_fileMany", "new_from_template", "new_from_templateMany", "new_file", "new_fileMany", "open_drive", "rename_entry", "rename_entryMany", "trash_entries", "trash_entriesMany", "restore_entry", "restore_entryMany", "delete_permanently", "delete_permanentlyMany", "empty_trash", "empty_trashMany", "carry", "carryMany", "carry_selection", "carry_selectionMany", "compress_selection", "compress_selectionMany", "paste", "pasteMany", "free_name", "key_on", "key_onMany", "carry_row", "carry_rowMany", "trash_row", "trash_rowMany", "add_favorite", "add_favoriteMany", "remove_favorite", "remove_favoriteMany", "inspect", "inspectMany", "name_it", "name_itMany", "open_app"] as const;
+export const FILES_ACTIONS = ["read_listing", "read_listingMany", "changed", "changedMany", "go", "goMany", "show", "showMany", "back", "backMany", "forward", "forwardMany", "up", "upMany", "send_nearby", "dismiss_notice", "dismiss_noticeMany", "sort_by", "sort_byMany", "ascending", "ascendingMany", "show_grid", "show_gridMany", "choose_view", "choose_viewMany", "toggle_hidden", "toggle_hiddenMany", "open_entry", "open_entryMany", "find_openers", "find_openersMany", "open_with", "open_withMany", "close_openers", "close_openersMany", "open_terminal", "open_terminalMany", "compress_entry", "compress_entryMany", "extract_entry", "extract_entryMany", "open_recent", "open_recentMany", "touch_entry", "touch_entryMany", "choose", "chooseMany", "select_all", "select_allMany", "clear_selection", "clear_selectionMany", "note_recent", "note_recentMany", "new_folder", "new_folderMany", "start_new_file", "start_new_fileMany", "new_from_template", "new_from_templateMany", "new_file", "new_fileMany", "open_drive", "rename_entry", "rename_entryMany", "trash_entries", "trash_entriesMany", "restore_entry", "restore_entryMany", "delete_permanently", "delete_permanentlyMany", "empty_trash", "empty_trashMany", "carry", "carryMany", "carry_selection", "carry_selectionMany", "compress_selection", "compress_selectionMany", "paste", "pasteMany", "free_name", "key_on", "key_onMany", "carry_row", "carry_rowMany", "trash_row", "trash_rowMany", "add_favorite", "add_favoriteMany", "remove_favorite", "remove_favoriteMany", "inspect", "inspectMany", "name_it", "name_itMany", "open_app"] as const;
 
 /** The `tl.so.tilo.file-explorer.Files` kind at `path`. */
 export function files(ws: tilo.Workspace, path: string): Files {

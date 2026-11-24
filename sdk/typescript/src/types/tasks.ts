@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tasks@76ea8e78819959a6";
+export const SURFACE = "so.tilo.tasks@42d4a57cce6e5fc3";
 
 /** Which kind of project this is. One of "project", "area". */
 export type Kind = "project" | "area";
@@ -733,7 +733,7 @@ export interface Task extends tilo.Resource {
   }): Promise<void>;
   /** Runs `wait` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   waitMany(items: WaitArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Ends every wait a task is on: what it waited for came, which `cause` says in a few words, and whoever is doing it goes on with it. */
+  /** Ends every wait a task is on: what it waited for came, which `cause` says in a few words, and whoever is doing it goes on with it. It is also how a person starts its work over after its sessions were lost too often: the losses no longer stand in a row, and a session may begin. */
   resume(args?: {
     cause?: string;
   }): Promise<void>;

@@ -171,6 +171,7 @@ test-party = Party
 test-shelf-view-type-here = Type at the invoker's caret
 test-shelf-view-top = Scroll to the top
 test-shelf-cards-show = Show a card
+test-shelf-records-plan = Plan a record, given where the workspace's links point
 test-shelf-press-print = Print the shelf
 test-shelf-press-count = Count the cards
 test-shelf-press-export = Export the shelf

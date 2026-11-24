@@ -25,22 +25,32 @@ __all__ = [
     "Mark",
     "Progress",
     "Scheme",
+    "Font",
     "Found",
     "Watched",
     "Library",
+    "Highlight",
     "Ebook",
     "RemoveBookArgs",
+    "SetTitleArgs",
+    "SetAuthorArgs",
+    "SetSubjectArgs",
+    "SetLanguageArgs",
+    "SetCoverArgs",
+    "ClearCoverArgs",
     "RecordAtArgs",
     "ReadChapterArgs",
     "ShowPageArgs",
     "ShowPassageArgs",
     "ShowPlaceArgs",
     "SawBlocksArgs",
+    "SetFinishedArgs",
     "HighlightArgs",
     "AddNoteArgs",
     "ToggleBookmarkArgs",
     "CommentArgs",
     "ChangeColorArgs",
+    "EditMarkTextArgs",
     "DeleteMarkArgs",
     "EditBlockArgs",
     "InsertBlockArgs",
@@ -55,7 +65,14 @@ __all__ = [
     "SetTextSizeArgs",
     "SetLineSpacingArgs",
     "SetFaceArgs",
+    "AddFontArgs",
+    "RenameFontArgs",
+    "SetFontSizeArgs",
+    "SetFontShownArgs",
+    "RemoveFontArgs",
     "SetJustifiedArgs",
+    "SetShelfSortArgs",
+    "SetHideFinishedArgs",
     "CycleSchemeArgs",
     "SetSchemeArgs",
     "AddSchemeArgs",
@@ -67,6 +84,35 @@ __all__ = [
 RemoveBookArgs = TypedDict("RemoveBookArgs", {
 })
 """The arguments of `remove_book`."""
+
+SetTitleArgs = TypedDict("SetTitleArgs", {
+    "title": "str",
+})
+"""The arguments of `set_title`."""
+
+SetAuthorArgs = TypedDict("SetAuthorArgs", {
+    "author": "str",
+})
+"""The arguments of `set_author`."""
+
+SetSubjectArgs = TypedDict("SetSubjectArgs", {
+    "subject": "str",
+})
+"""The arguments of `set_subject`."""
+
+SetLanguageArgs = TypedDict("SetLanguageArgs", {
+    "language": "str",
+})
+"""The arguments of `set_language`."""
+
+SetCoverArgs = TypedDict("SetCoverArgs", {
+    "picture": "Any",
+})
+"""The arguments of `set_cover`."""
+
+ClearCoverArgs = TypedDict("ClearCoverArgs", {
+})
+"""The arguments of `clear_cover`."""
 
 RecordAtArgs = TypedDict("RecordAtArgs", {
     "who": "str",
@@ -113,6 +159,12 @@ SawBlocksArgs = TypedDict("SawBlocksArgs", {
 })
 """The arguments of `saw_blocks`."""
 
+SetFinishedArgs = TypedDict("SetFinishedArgs", {
+    "who": "str",
+    "finished": NotRequired["bool | None"],
+})
+"""The arguments of `set_finished`."""
+
 HighlightArgs = TypedDict("HighlightArgs", {
     "chapter": "int",
     "ranges": "list[int]",
@@ -145,6 +197,12 @@ ChangeColorArgs = TypedDict("ChangeColorArgs", {
     "color": "str",
 })
 """The arguments of `change_color`."""
+
+EditMarkTextArgs = TypedDict("EditMarkTextArgs", {
+    "m": "Mark",
+    "text": "str",
+})
+"""The arguments of `edit_mark_text`."""
 
 DeleteMarkArgs = TypedDict("DeleteMarkArgs", {
     "m": "Mark",
@@ -219,10 +277,48 @@ SetFaceArgs = TypedDict("SetFaceArgs", {
 })
 """The arguments of `set_face`."""
 
+AddFontArgs = TypedDict("AddFontArgs", {
+    "family": "str",
+})
+"""The arguments of `add_font`."""
+
+RenameFontArgs = TypedDict("RenameFontArgs", {
+    "f": "Font",
+    "name": "str",
+})
+"""The arguments of `rename_font`."""
+
+SetFontSizeArgs = TypedDict("SetFontSizeArgs", {
+    "f": "Font",
+    "size": "float",
+})
+"""The arguments of `set_font_size`."""
+
+SetFontShownArgs = TypedDict("SetFontShownArgs", {
+    "f": "Font",
+    "shown": "bool",
+})
+"""The arguments of `set_font_shown`."""
+
+RemoveFontArgs = TypedDict("RemoveFontArgs", {
+    "f": "Font",
+})
+"""The arguments of `remove_font`."""
+
 SetJustifiedArgs = TypedDict("SetJustifiedArgs", {
     "on": "bool",
 })
 """The arguments of `set_justified`."""
+
+SetShelfSortArgs = TypedDict("SetShelfSortArgs", {
+    "order": "str",
+})
+"""The arguments of `set_shelf_sort`."""
+
+SetHideFinishedArgs = TypedDict("SetHideFinishedArgs", {
+    "hidden": "bool",
+})
+"""The arguments of `set_hide_finished`."""
 
 CycleSchemeArgs = TypedDict("CycleSchemeArgs", {
 })
@@ -256,7 +352,7 @@ ClearFoundArgs = TypedDict("ClearFoundArgs", {
 
 class Book(Resource):
     """Book — `tl.so.tilo.ebook.Book`."""
-    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
+    __surface__ = "so.tilo.ebook@9394eac0c7724627"
     zzi6jbdk: str  # title
     hzsemqyf: str  # author
     ywdncocc: str  # subject
@@ -275,6 +371,54 @@ class Book(Resource):
     def remove_book_many(self, items: list[RemoveBookArgs]) -> list[dict[str, Any]]:
         """Runs `remove_book` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove_book", items)
+
+    def set_title(self, *, title: str) -> None:
+        """Gives `b` the title a person reads it by."""
+        return self.action("set_title", title=title)
+
+    def set_title_many(self, items: list[SetTitleArgs]) -> list[dict[str, Any]]:
+        """Runs `set_title` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_title", items)
+
+    def set_author(self, *, author: str) -> None:
+        """Gives `b` its author, or leaves it without one."""
+        return self.action("set_author", author=author)
+
+    def set_author_many(self, items: list[SetAuthorArgs]) -> list[dict[str, Any]]:
+        """Runs `set_author` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_author", items)
+
+    def set_subject(self, *, subject: str) -> None:
+        """Gives `b` the subject line its card and its shelf filters say."""
+        return self.action("set_subject", subject=subject)
+
+    def set_subject_many(self, items: list[SetSubjectArgs]) -> list[dict[str, Any]]:
+        """Runs `set_subject` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_subject", items)
+
+    def set_language(self, *, language: str) -> None:
+        """Sets the language `b` is set in, for its hyphenation."""
+        return self.action("set_language", language=language)
+
+    def set_language_many(self, items: list[SetLanguageArgs]) -> list[dict[str, Any]]:
+        """Runs `set_language` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_language", items)
+
+    def set_cover(self, *, picture: Any) -> None:
+        """Puts `picture` on `b` as its cover."""
+        return self.action("set_cover", picture=picture)
+
+    def set_cover_many(self, items: list[SetCoverArgs]) -> list[dict[str, Any]]:
+        """Runs `set_cover` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_cover", items)
+
+    def clear_cover(self) -> None:
+        """Takes a cover off `b`, so its card draws the book's own art."""
+        return self.action("clear_cover")
+
+    def clear_cover_many(self, items: list[ClearCoverArgs]) -> list[dict[str, Any]]:
+        """Runs `clear_cover` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("clear_cover", items)
 
     def record_at(self,
         *,
@@ -357,6 +501,22 @@ class Book(Resource):
         """Runs `saw_blocks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("saw_blocks", items)
 
+    def set_finished(self,
+        *,
+        who: str,
+        finished: bool | None = None,
+    ) -> None:
+        """Marks `b` finished for the person reading it, or starts it again."""
+        args: dict[str, Any] = {}
+        args["who"] = who
+        if finished is not None:
+            args["finished"] = finished
+        return self.action("set_finished", **args)
+
+    def set_finished_many(self, items: list[SetFinishedArgs]) -> list[dict[str, Any]]:
+        """Runs `set_finished` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_finished", items)
+
     def highlight(self,
         *,
         chapter: int,
@@ -420,6 +580,18 @@ class Book(Resource):
         """Runs `change_color` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("change_color", items)
 
+    def edit_mark_text(self,
+        *,
+        m: Mark,
+        text: str,
+    ) -> None:
+        """Rewrites what a note or a comment says. Only its author may."""
+        return self.action("edit_mark_text", m=m, text=text)
+
+    def edit_mark_text_many(self, items: list[EditMarkTextArgs]) -> list[dict[str, Any]]:
+        """Runs `edit_mark_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit_mark_text", items)
+
     def delete_mark(self, *, m: Mark) -> None:
         """Deletes a mark, and the comments on it."""
         return self.action("delete_mark", m=m)
@@ -430,12 +602,12 @@ class Book(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"remove_book", "remove_book_many", "record_at", "record_at_many", "read_chapter", "read_chapter_many", "show_page", "show_page_many", "show_passage", "show_passage_many", "show_place", "show_place_many", "saw_blocks", "saw_blocks_many", "highlight", "highlight_many", "add_note", "add_note_many", "toggle_bookmark", "toggle_bookmark_many", "comment", "comment_many", "change_color", "change_color_many", "delete_mark", "delete_mark_many"})
+    __actions__ = frozenset({"remove_book", "remove_book_many", "set_title", "set_title_many", "set_author", "set_author_many", "set_subject", "set_subject_many", "set_language", "set_language_many", "set_cover", "set_cover_many", "clear_cover", "clear_cover_many", "record_at", "record_at_many", "read_chapter", "read_chapter_many", "show_page", "show_page_many", "show_passage", "show_passage_many", "show_place", "show_place_many", "saw_blocks", "saw_blocks_many", "set_finished", "set_finished_many", "highlight", "highlight_many", "add_note", "add_note_many", "toggle_bookmark", "toggle_bookmark_many", "comment", "comment_many", "change_color", "change_color_many", "edit_mark_text", "edit_mark_text_many", "delete_mark", "delete_mark_many"})
 
 
 class Chapter(Resource):
     """Chapter — `tl.so.tilo.ebook.Chapter`."""
-    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
+    __surface__ = "so.tilo.ebook@9394eac0c7724627"
     njsapppc: str  # title
     hc6oa77y: str  # body
     awonaulm: Book | None  # book
@@ -479,7 +651,7 @@ class Chapter(Resource):
 
 class Mark(Resource):
     """Mark — `tl.so.tilo.ebook.Mark`."""
-    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
+    __surface__ = "so.tilo.ebook@9394eac0c7724627"
     nsx4szpu: str  # kind
     eu36rgok: int  # chapter
     kkwkq4sx: int  # block
@@ -532,18 +704,19 @@ class Mark(Resource):
 
 class Progress(Resource):
     """Progress — `tl.so.tilo.ebook.Progress`."""
-    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
+    __surface__ = "so.tilo.ebook@9394eac0c7724627"
     fw6cx373: str  # who
     hrlsiabz: int  # chapter
     dozgglst: int  # block
     j7r2dpph: int  # page
     t4pdkbb6: float  # place
+    m5vjvjxn: bool  # finished
     vpcehkho: str  # at
 
 
 class Scheme(Resource):
     """Scheme — `tl.so.tilo.ebook.Scheme`."""
-    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
+    __surface__ = "so.tilo.ebook@9394eac0c7724627"
     yjaxgs5w: str  # name
     zfe44ecr: str  # page
     giw4wwwc: str  # ink
@@ -558,9 +731,33 @@ class Scheme(Resource):
         self.edit("2xhwxzlq", value=value)
 
 
+class Font(Resource):
+    """Font — `tl.so.tilo.ebook.Font`."""
+    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    jlawoyck: str  # family
+    w2n5kzdl: str  # name
+    @property
+    def _6pky4ug3(self) -> float:
+        """size (`6pky4ug3` on the wire)."""
+        return self.fields["6pky4ug3"]
+
+    @_6pky4ug3.setter
+    def _6pky4ug3(self, value: float) -> None:
+        self.edit("6pky4ug3", value=value)
+    qxdff5v3: bool  # shown
+    @property
+    def _7bsrqnib(self) -> bool:
+        """builtin (`7bsrqnib` on the wire)."""
+        return self.fields["7bsrqnib"]
+
+    @_7bsrqnib.setter
+    def _7bsrqnib(self, value: bool) -> None:
+        self.edit("7bsrqnib", value=value)
+
+
 class Found(Resource):
     """Found — `tl.so.tilo.ebook.Found`."""
-    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
+    __surface__ = "so.tilo.ebook@9394eac0c7724627"
     cuehsj4a: str  # title
     @property
     def _5z23zsgs(self) -> str:
@@ -584,7 +781,7 @@ class Found(Resource):
 
 class Watched(Resource):
     """Watched — `tl.so.tilo.ebook.Watched`."""
-    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
+    __surface__ = "so.tilo.ebook@9394eac0c7724627"
     zfzcnyj7: str  # path
     l4rfzd5q: str  # token
     vs5vpxpc: list[str]  # given
@@ -593,7 +790,7 @@ class Watched(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.ebook.Library`."""
-    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
+    __surface__ = "so.tilo.ebook@9394eac0c7724627"
     rjqqjeka: list[Entry[Book]]  # books
     gark455v: list[Entry[Found]]  # found
     b2rhddat: list[Entry[Scheme]]  # schemes
@@ -623,6 +820,7 @@ class Library(Resource):
     def _4nrbbruw(self, value: bool) -> None:
         self.edit("4nrbbruw", value=value)
     q2xeecyu: str  # scheme
+    obt3nk5o: list[Entry[Font]]  # fonts
     @property
     def _7iepiv5z(self) -> str:
         """draft_scheme (`7iepiv5z` on the wire)."""
@@ -635,6 +833,8 @@ class Library(Resource):
     yiozk22e: str  # custom_ink
     dww4lfs6: str  # draft_folder
     trpwrvrr: list[Entry[Watched]]  # folders
+    rmk5y2dl: str  # sort_by
+    iw7jv3y3: bool  # hide_finished
 
     def open_book(self, *, file: Any) -> Book:
         """Adds the EPUB `file` to the shelf and opens it. Its title, author and language are the book's own; each chapter becomes a resource holding its words, so the book is searchable and a reader opens the chapter they are at."""
@@ -696,6 +896,58 @@ class Library(Resource):
         """Runs `set_face` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_face", items)
 
+    def add_font(self, *, family: str) -> None:
+        """Adds the family `family`, which this device has, to the reader's faces."""
+        return self.action("add_font", family=family)
+
+    def add_font_many(self, items: list[AddFontArgs]) -> list[dict[str, Any]]:
+        """Runs `add_font` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("add_font", items)
+
+    def rename_font(self,
+        *,
+        f: Font,
+        name: str,
+    ) -> None:
+        """Gives the face `f` the name a person reads it by; empty calls it what its family is."""
+        return self.action("rename_font", f=f, name=name)
+
+    def rename_font_many(self, items: list[RenameFontArgs]) -> list[dict[str, Any]]:
+        """Runs `rename_font` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename_font", items)
+
+    def set_font_size(self,
+        *,
+        f: Font,
+        size: float,
+    ) -> None:
+        """Sets how large the face `f` reads beside the others."""
+        return self.action("set_font_size", f=f, size=size)
+
+    def set_font_size_many(self, items: list[SetFontSizeArgs]) -> list[dict[str, Any]]:
+        """Runs `set_font_size` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_font_size", items)
+
+    def set_font_shown(self,
+        *,
+        f: Font,
+        shown: bool,
+    ) -> None:
+        """Says whether the face `f` appears in the reader's picker."""
+        return self.action("set_font_shown", f=f, shown=shown)
+
+    def set_font_shown_many(self, items: list[SetFontShownArgs]) -> list[dict[str, Any]]:
+        """Runs `set_font_shown` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_font_shown", items)
+
+    def remove_font(self, *, f: Font) -> None:
+        """Takes a face of the person's own out of the reader's picker."""
+        return self.action("remove_font", f=f)
+
+    def remove_font_many(self, items: list[RemoveFontArgs]) -> list[dict[str, Any]]:
+        """Runs `remove_font` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove_font", items)
+
     def set_justified(self, *, on: bool) -> None:
         """Whether the page's paragraphs are justified."""
         return self.action("set_justified", on=on)
@@ -703,6 +955,22 @@ class Library(Resource):
     def set_justified_many(self, items: list[SetJustifiedArgs]) -> list[dict[str, Any]]:
         """Runs `set_justified` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_justified", items)
+
+    def set_shelf_sort(self, *, order: str) -> None:
+        """Orders the shelf by title, by author, or by the books added last."""
+        return self.action("set_shelf_sort", order=order)
+
+    def set_shelf_sort_many(self, items: list[SetShelfSortArgs]) -> list[dict[str, Any]]:
+        """Runs `set_shelf_sort` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_shelf_sort", items)
+
+    def set_hide_finished(self, *, hidden: bool) -> None:
+        """Leaves the books a person finished off the shelf, or shows them again."""
+        return self.action("set_hide_finished", hidden=hidden)
+
+    def set_hide_finished_many(self, items: list[SetHideFinishedArgs]) -> list[dict[str, Any]]:
+        """Runs `set_hide_finished` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_hide_finished", items)
 
     def cycle_scheme(self) -> None:
         """Steps to the next palette the reader ships with: its bar's quick switch."""
@@ -763,10 +1031,32 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"open_book", "drop_books", "drop_books_many", "watch_folder", "watch_folder_many", "scan_folder", "scan_folder_many", "foldered", "foldered_many", "set_text_size", "set_text_size_many", "set_line_spacing", "set_line_spacing_many", "set_face", "set_face_many", "set_justified", "set_justified_many", "cycle_scheme", "cycle_scheme_many", "set_scheme", "set_scheme_many", "add_scheme", "add_scheme_many", "delete_scheme", "delete_scheme_many", "find_books", "find_books_many", "download_found", "clear_found", "clear_found_many"})
+    __actions__ = frozenset({"open_book", "drop_books", "drop_books_many", "watch_folder", "watch_folder_many", "scan_folder", "scan_folder_many", "foldered", "foldered_many", "set_text_size", "set_text_size_many", "set_line_spacing", "set_line_spacing_many", "set_face", "set_face_many", "add_font", "add_font_many", "rename_font", "rename_font_many", "set_font_size", "set_font_size_many", "set_font_shown", "set_font_shown_many", "remove_font", "remove_font_many", "set_justified", "set_justified_many", "set_shelf_sort", "set_shelf_sort_many", "set_hide_finished", "set_hide_finished_many", "cycle_scheme", "cycle_scheme_many", "set_scheme", "set_scheme_many", "add_scheme", "add_scheme_many", "delete_scheme", "delete_scheme_many", "find_books", "find_books_many", "download_found", "clear_found", "clear_found_many"})
+
+
+class Highlight(Resource):
+    """Highlight — `tl.so.tilo.ebook.Highlight`."""
+    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    @property
+    def _2mud3bws(self) -> str:
+        """name (`2mud3bws` on the wire)."""
+        return self.fields["2mud3bws"]
+
+    @_2mud3bws.setter
+    def _2mud3bws(self, value: str) -> None:
+        self.edit("2mud3bws", value=value)
+    ztqdbzwg: str  # value
 
 
 class Ebook(Resource):
     """Books — `tl.so.tilo.ebook`."""
-    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
+    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    def copy_passage(self, *, text: str) -> None:
+        """Copies a passage, so it can be pasted anywhere: what a selection's Copy does."""
+        return self.action("copy_passage", text=text)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"copy_passage"})
+
 

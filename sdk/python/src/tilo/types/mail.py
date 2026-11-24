@@ -25,6 +25,8 @@ __all__ = [
     "Thread",
     "Label",
     "Message",
+    "Picture",
+    "TrustedSender",
     "Draft",
     "Mail",
     "TiloMail",
@@ -44,10 +46,13 @@ __all__ = [
     "MuteArgs",
     "MarkReadArgs",
     "AnnounceArgs",
+    "ShowPicturesArgs",
     "AttachArgs",
     "DetachArgs",
     "SendFromArgs",
     "SendAsArgs",
+    "TrustSenderArgs",
+    "DistrustSenderArgs",
     "SetHoldArgs",
     "RenameLabelArgs",
     "DeleteLabelArgs",
@@ -126,6 +131,10 @@ AnnounceArgs = TypedDict("AnnounceArgs", {
 })
 """The arguments of `announce`."""
 
+ShowPicturesArgs = TypedDict("ShowPicturesArgs", {
+})
+"""The arguments of `show_pictures`."""
+
 AttachArgs = TypedDict("AttachArgs", {
     "file": "Any",
 })
@@ -145,6 +154,16 @@ SendAsArgs = TypedDict("SendAsArgs", {
     "identity": "str",
 })
 """The arguments of `send_as`."""
+
+TrustSenderArgs = TypedDict("TrustSenderArgs", {
+    "address": "str",
+})
+"""The arguments of `trust_sender`."""
+
+DistrustSenderArgs = TypedDict("DistrustSenderArgs", {
+    "address": "str",
+})
+"""The arguments of `distrust_sender`."""
 
 SetHoldArgs = TypedDict("SetHoldArgs", {
     "seconds": "int",
@@ -169,7 +188,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@94457674f47e5d54"
+    __surface__ = "so.tilo.mail@88ced6314e0a490a"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -235,7 +254,7 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@94457674f47e5d54"
+    __surface__ = "so.tilo.mail@88ced6314e0a490a"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -254,7 +273,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@94457674f47e5d54"
+    __surface__ = "so.tilo.mail@88ced6314e0a490a"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -450,13 +469,13 @@ class Thread(Resource):
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@94457674f47e5d54"
+    __surface__ = "so.tilo.mail@88ced6314e0a490a"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@94457674f47e5d54"
+    __surface__ = "so.tilo.mail@88ced6314e0a490a"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -490,6 +509,15 @@ class Message(Resource):
     xlejsz5j: str  # mailbox
     hgysjvfy: str  # original
     wuefabwr: str  # parts
+    c263r6w3: list[Entry[Picture]]  # pictures
+
+    def show_pictures(self) -> None:
+        """Brings in the pictures the sender's page names: each read from where it stands and kept in the workspace's content, so the message shows them as it was written. What a workspace's rules or its network refuse is left out, and the message reads without it."""
+        return self.action("show_pictures")
+
+    def show_pictures_many(self, items: list[ShowPicturesArgs]) -> list[dict[str, Any]]:
+        """Runs `show_pictures` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("show_pictures", items)
 
     def export_markdown(self) -> Any:
         """The message as a Markdown file: what a person exports to read it, or keep it, elsewhere."""
@@ -521,12 +549,39 @@ class Message(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment"})
+    __actions__ = frozenset({"show_pictures", "show_pictures_many", "export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message", "attachment"})
+
+
+class Picture(Resource):
+    """Picture — `tl.so.tilo.mail.Picture`."""
+    __surface__ = "so.tilo.mail@88ced6314e0a490a"
+    gb5hqtag: str  # source
+    @property
+    def _7hhcy4ay(self) -> Any:
+        """picture (`7hhcy4ay` on the wire)."""
+        return self.fields["7hhcy4ay"]
+
+    @_7hhcy4ay.setter
+    def _7hhcy4ay(self, value: Any) -> None:
+        self.edit("7hhcy4ay", value=value)
+
+
+class TrustedSender(Resource):
+    """TrustedSender — `tl.so.tilo.mail.TrustedSender`."""
+    __surface__ = "so.tilo.mail@88ced6314e0a490a"
+    @property
+    def _5eoon66w(self) -> str:
+        """address (`5eoon66w` on the wire)."""
+        return self.fields["5eoon66w"]
+
+    @_5eoon66w.setter
+    def _5eoon66w(self, value: str) -> None:
+        self.edit("5eoon66w", value=value)
 
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@94457674f47e5d54"
+    __surface__ = "so.tilo.mail@88ced6314e0a490a"
     m2g6zrle: str  # from
     zx2b4ax2: str  # from_address
     hd3o4gkq: str  # to
@@ -614,7 +669,7 @@ class Draft(Resource):
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@94457674f47e5d54"
+    __surface__ = "so.tilo.mail@88ced6314e0a490a"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -627,6 +682,23 @@ class Mail(Resource):
     @_4ow5ydy5.setter
     def _4ow5ydy5(self, value: int) -> None:
         self.edit("4ow5ydy5", value=value)
+    zzpnzlp2: list[Entry[TrustedSender]]  # trusted
+
+    def trust_sender(self, *, address: str) -> None:
+        """Shows the pictures of every message `address` sends, from now on and in what is already here."""
+        return self.action("trust_sender", address=address)
+
+    def trust_sender_many(self, items: list[TrustSenderArgs]) -> list[dict[str, Any]]:
+        """Runs `trust_sender` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("trust_sender", items)
+
+    def distrust_sender(self, *, address: str) -> None:
+        """Asks again before showing what `address` sends."""
+        return self.action("distrust_sender", address=address)
+
+    def distrust_sender_many(self, items: list[DistrustSenderArgs]) -> list[dict[str, Any]]:
+        """Runs `distrust_sender` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("distrust_sender", items)
 
     def set_hold(self, *, seconds: int) -> None:
         """Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait at all at zero."""
@@ -757,10 +829,10 @@ class Mail(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_hold", "set_hold_many", "new_draft", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many", "save_to_drafts"})
+    __actions__ = frozenset({"trust_sender", "trust_sender_many", "distrust_sender", "distrust_sender_many", "set_hold", "set_hold_many", "new_draft", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many", "save_to_drafts"})
 
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@94457674f47e5d54"
+    __surface__ = "so.tilo.mail@88ced6314e0a490a"
 

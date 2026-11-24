@@ -421,7 +421,7 @@ kind = "read"
 params = [
   { name = "event", required = true, schema = {} },
   { name = "chat", required = true, schema = {} },
-  { name = "context", required = false },
+  { name = "context", type = { option = { named = "Context" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { avatars = { type = "string" }, link = { type = "string" }, links = { type = ["object", "null"], additionalProperties = false, properties = { host_device = { type = "string" }, origin = { type = "string" }, web_entry = { type = "string" }, workspace = { type = "string" } }, required = ["web_entry", "origin", "workspace", "host_device"] } } } },
   { name = "workspace", type = { option = "any" }, required = false, schema = {} },
   { name = "emoji", type = { option = "any" }, required = false, schema = {} },
 ]
@@ -777,5 +777,22 @@ fields = [
   { name = "message", type = "text" },
   { name = "name", type = "text" },
   { name = "tilo", type = "text" },
+]
+
+[[resources.types]]
+name = "Context"
+fields = [
+  { name = "avatars", type = "text" },
+  { name = "link", type = "text" },
+  { name = "links", type = { option = { named = "Links" } } },
+]
+
+[[resources.types]]
+name = "Links"
+fields = [
+  { name = "web_entry", type = "text" },
+  { name = "origin", type = "text" },
+  { name = "workspace", type = "text" },
+  { name = "host_device", type = "text" },
 ]
 

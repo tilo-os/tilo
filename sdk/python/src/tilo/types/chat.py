@@ -79,6 +79,8 @@ __all__ = [
     "DraftEditBlockArgs",
     "DraftInsertBlockArgs",
     "DraftDeleteBlockArgs",
+    "AttachArgs",
+    "DetachArgs",
     "CorrectSkillArgs",
     "ForgetSkillArgs",
     "KeepExampleArgs",
@@ -324,6 +326,16 @@ DraftDeleteBlockArgs = TypedDict("DraftDeleteBlockArgs", {
 })
 """The arguments of `delete-block`."""
 
+AttachArgs = TypedDict("AttachArgs", {
+    "files": "list[Any]",
+})
+"""The arguments of `attach`."""
+
+DetachArgs = TypedDict("DetachArgs", {
+    "file": "Any",
+})
+"""The arguments of `detach`."""
+
 CorrectSkillArgs = TypedDict("CorrectSkillArgs", {
     "name": NotRequired["str | None"],
     "work": NotRequired["str | None"],
@@ -394,7 +406,7 @@ OverturnDecisionArgs = TypedDict("OverturnDecisionArgs", {
 
 class Conversations(Resource):
     """Conversations — `tl.so.tilo.chat.Conversations`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     @property
     def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel | VoiceChannel]]:
         """channels (`5kzdptyg` on the wire)."""
@@ -540,7 +552,7 @@ class Conversations(Resource):
 
 class Category(Resource):
     """Category — `tl.so.tilo.chat.Category`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     hbhrds5c: str  # name
     hvqgmwrk: list[Entry[TextChannel | VoiceChannel]]  # channels
     @property
@@ -600,7 +612,7 @@ class Category(Resource):
 
 class VoiceChannel(Resource):
     """VoiceChannel — `tl.so.tilo.chat.VoiceChannel`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     olqjezxu: str  # name
     enzjdbyp: str  # service
     nvzanb5n: str  # outside_id
@@ -644,7 +656,7 @@ class VoiceChannel(Resource):
 
 class TextChannel(Resource):
     """TextChannel — `tl.so.tilo.chat.TextChannel`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     x3haugpo: str  # name
     u6b35mgm: str  # topic
     fld77g72: str  # summary
@@ -687,7 +699,7 @@ class TextChannel(Resource):
         turn: str | None = None,
         draft: Draft | None = None,
     ) -> Message:
-        """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it."""
+        """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. A reply an agent's `turn` writes begins empty and takes the model's words as it writes them."""
         args: dict[str, Any] = {}
         if body is not None:
             args["body"] = body
@@ -817,7 +829,7 @@ class TextChannel(Resource):
 
 class OutsideAuthor(Resource):
     """OutsideAuthor — `tl.so.tilo.chat.OutsideAuthor`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     @property
     def _5fxndhc2(self) -> str:
         """name (`5fxndhc2` on the wire)."""
@@ -832,14 +844,14 @@ class OutsideAuthor(Resource):
 
 class OutsideEmoji(Resource):
     """OutsideEmoji — `tl.so.tilo.chat.OutsideEmoji`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     ldtylgfu: str  # name
     jjutyqgx: str  # picture
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.chat.Message`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     xfrqdy3y: str  # body
     @property
     def _4uwxpnw2(self) -> Message | None:
@@ -967,7 +979,7 @@ class Message(Resource):
 
 class ChatReport(Resource):
     """Report — `tl.so.tilo.chat.Report`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     jqcabz2h: Message | None  # message
     e3zqz33a: str | None  # person
     adip7bw4: str  # said
@@ -996,7 +1008,7 @@ class ChatReport(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.chat.Thread`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     xuvfifa5: str  # name
     cv664irm: str  # summary
     ijy454g6: list[Entry[Message]]  # messages
@@ -1018,7 +1030,7 @@ class Thread(Resource):
         turn: str | None = None,
         draft: Draft | None = None,
     ) -> Message:
-        """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it."""
+        """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. A reply an agent's `turn` writes begins empty and takes the model's words as it writes them."""
         args: dict[str, Any] = {}
         if body is not None:
             args["body"] = body
@@ -1106,7 +1118,7 @@ class Thread(Resource):
 
 class Direct(Resource):
     """Direct — `tl.so.tilo.chat.Direct`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     @property
     def _5stv6ro7(self) -> str:
         """name (`5stv6ro7` on the wire)."""
@@ -1167,7 +1179,7 @@ class Direct(Resource):
         turn: str | None = None,
         draft: Draft | None = None,
     ) -> Message:
-        """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it."""
+        """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. A reply an agent's `turn` writes begins empty and takes the model's words as it writes them."""
         args: dict[str, Any] = {}
         if body is not None:
             args["body"] = body
@@ -1267,7 +1279,7 @@ class Direct(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.chat.Draft`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     @property
     def _5shwuvrs(self) -> Direct | TextChannel | Thread:
         """conversation (`5shwuvrs` on the wire)."""
@@ -1277,6 +1289,7 @@ class Draft(Resource):
     def _5shwuvrs(self, value: Direct | TextChannel | Thread) -> None:
         self.edit("5shwuvrs", value=value)
     rxmavdj2: str  # body
+    o5vmbr2v: list[Any]  # files
 
     def edit_block(self,
         *,
@@ -1310,23 +1323,47 @@ class Draft(Resource):
         """Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete-block", items)
 
+    def attach(self, *, files: list[Any]) -> None:
+        """Adds the files a person chose to the message they are writing: the system's chooser runs this with what was chosen, and the draft holds them until it is sent. The chooser offers every kind of file, since a message carries any."""
+        return self.action("attach", files=files)
+
+    def attach_many(self, items: list[AttachArgs]) -> list[dict[str, Any]]:
+        """Runs `attach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("attach", items)
+
+    def detach(self, *, file: Any) -> None:
+        """Takes a file off the message a person is writing, before it is sent."""
+        return self.action("detach", file=file)
+
+    def detach_many(self, items: list[DetachArgs]) -> list[dict[str, Any]]:
+        """Runs `detach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("detach", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many"})
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "attach", "attach_many", "detach", "detach_many"})
 
 
 class Attached(Resource):
     """Attached — `tl.so.tilo.chat.Attached`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     qsdc77jc: str  # name
     h5lqkkjt: str  # media
     g7nx7a7g: int  # size
     wu2n7dpm: str  # blob
 
+    def open_attachment(self) -> None:
+        """Opens the file a message carries in the app that opens its kind: the file reaches that app as the same content both read, never as a path neither has."""
+        return self.action("open_attachment")
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"open_attachment"})
+
 
 class RelayedReaction(Resource):
     """RelayedReaction — `tl.so.tilo.chat.RelayedReaction`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     r2zcptjt: str  # emoji
     awgtnj33: str  # persona
     hammizbi: str  # by
@@ -1334,7 +1371,7 @@ class RelayedReaction(Resource):
 
 class Part(Resource):
     """Part — `tl.so.tilo.chat.Part`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     zevnbs3i: str  # kind
     @property
     def _3hkzkqvr(self) -> str:
@@ -1348,7 +1385,7 @@ class Part(Resource):
 
 class Skill(Resource):
     """Skill — `tl.so.tilo.chat.Skill`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     gfk6pm4a: str  # name
     gnfldsvz: str  # work
     bn3w5doj: str  # how
@@ -1430,7 +1467,7 @@ class Skill(Resource):
 
 class Example(Resource):
     """Example — `tl.so.tilo.chat.Example`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     fspydtu6: str  # text
     @property
     def _2u2ngevv(self) -> bool:
@@ -1453,11 +1490,11 @@ class Example(Resource):
 
 class Chat(Resource):
     """Chat — `tl.so.tilo.chat`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     emoji: dict[str, Emoji]  # Emoji
 
     def add_emoji(self,
@@ -1495,7 +1532,7 @@ class WorkspaceEmoji(Resource):
 
 class Moderation(Resource):
     """Moderation — `tilo.moderation`."""
-    __surface__ = "so.tilo.chat@fad4433c99a76a17"
+    __surface__ = "so.tilo.chat@0b960ba822d6cc17"
     @property
     def reports(self) -> list[Entry[Report]]:
         """Reports"""

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.code-editor@05cd6bc59006c2b5";
+export const SURFACE = "so.tilo.code-editor@5acf667865adaa72";
 
 /** What an entry of the project is: code that is written, or a place that holds entries. One of "file", "folder". */
 export type EntryKind = "file" | "folder";
@@ -81,6 +81,12 @@ export interface OutdentLineArgs {
   line?: number;
 }
 
+/** The arguments of `reveal_line`. */
+export interface RevealLineArgs {
+  line?: number;
+  column?: number;
+}
+
 /** The arguments of `add_child`. */
 export interface AddChildArgs {
 }
@@ -129,7 +135,7 @@ export interface OpenFolderArgs {
 
 /** The arguments of `read_into`. */
 export interface ReadIntoArgs {
-  listing: Listing;
+  answer: string;
   parent?: Entry;
 }
 
@@ -226,12 +232,14 @@ export interface PollArgs {
 
 /** The arguments of `reveal_item`. */
 export interface RevealItemArgs {
-  item: Item;
+  path: string;
+  line?: number;
 }
 
-/** The arguments of `seen_line`. */
-export interface SeenLineArgs {
-  line: number;
+/** The arguments of `go_to_line`. */
+export interface GoToLineArgs {
+  path: string;
+  line?: number;
 }
 
 /** The arguments of `search_project`. */
@@ -247,7 +255,8 @@ export interface StopSearchArgs {
 
 /** The arguments of `open_hit`. */
 export interface OpenHitArgs {
-  hit: Hit;
+  path: string;
+  line?: number;
 }
 
 /** The arguments of `ensure_server`. */
@@ -288,7 +297,8 @@ export interface DefinitionArgs {
 /** The arguments of `accept_completion`. */
 export interface AcceptCompletionArgs {
   entry: Entry;
-  item: Completion;
+  label: string;
+  insert: string;
 }
 
 /** The arguments of `format_file`. */
@@ -325,6 +335,9 @@ export interface Entry extends tilo.Resource {
   o3gbo56k: Problem[];  // problems
   jwc6eef6: string;  // checked
   jwkhracm: string;  // source
+  zu6g3bmd: number;  // reveal_line
+  k4etx7ch: number;  // reveal_column
+  wtzldj2n: number;  // reveal_ask
   /** Sets the language `entry` is coloured and checked as, by the name of a language the editor knows. */
   set_language(args: {
     language: string;
@@ -395,6 +408,15 @@ export interface Entry extends tilo.Resource {
     case?: boolean;
     word?: boolean;
   }): Promise<number>;
+  /** The declarations a file's text writes — `fn`, `struct`, `enum`, `trait`, `class`, `def`, `interface`, `type`, `const` — each with the line and column it stands at: what the project's symbols are and what go-to-symbol offers. */
+  symbols(): Promise<Found[]>;
+  /** Shows `line` of `entry`, counted from 0: the editor scrolls it into view with the caret on it. */
+  reveal_line(args?: {
+    line?: number;
+    column?: number;
+  }): Promise<void>;
+  /** Runs `reveal_line` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reveal_lineMany(items: RevealLineArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Starts a file inside the folder `e`: a row's '+', pressed. */
   add_child(): Promise<void>;
   /** Runs `add_child` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -403,7 +425,7 @@ export interface Entry extends tilo.Resource {
 
 /** The actions `Entry` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ENTRY_ACTIONS = ["set_language", "set_languageMany", "replace_text", "replace_textMany", "replace_range", "replace_rangeMany", "duplicate_line", "duplicate_lineMany", "move_line", "move_lineMany", "delete_line", "delete_lineMany", "toggle_comment", "toggle_commentMany", "indent_line", "indent_lineMany", "outdent_line", "outdent_lineMany", "find_text", "replace_in_file", "add_child", "add_childMany"] as const;
+export const ENTRY_ACTIONS = ["set_language", "set_languageMany", "replace_text", "replace_textMany", "replace_range", "replace_rangeMany", "duplicate_line", "duplicate_lineMany", "move_line", "move_lineMany", "delete_line", "delete_lineMany", "toggle_comment", "toggle_commentMany", "indent_line", "indent_lineMany", "outdent_line", "outdent_lineMany", "find_text", "replace_in_file", "symbols", "reveal_line", "reveal_lineMany", "add_child", "add_childMany"] as const;
 
 /** The `tl.so.tilo.code-editor.Entry` kind at `path`. */
 export function entry(ws: tilo.Workspace, path: string): Entry {
@@ -810,20 +832,6 @@ export function diag(ws: tilo.Workspace, path: string): Diag {
   return resourceProxy(ws, path, SURFACE, DIAG_ACTIONS) as unknown as Diag;
 }
 
-/** Diagnostics — `tl.so.tilo.code-editor.Diagnostics`. */
-export interface Diagnostics extends tilo.Resource {
-  pfdqfft6: Record<string, Diag[]>;  // diagnostics
-}
-
-/** The actions `Diagnostics` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const DIAGNOSTICS_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.code-editor.Diagnostics` kind at `path`. */
-export function diagnostics(ws: tilo.Workspace, path: string): Diagnostics {
-  return resourceProxy(ws, path, SURFACE, DIAGNOSTICS_ACTIONS) as unknown as Diagnostics;
-}
-
 /** CompletionAnswer — `tl.so.tilo.code-editor.CompletionAnswer`. */
 export interface CompletionAnswer extends tilo.Resource {
   z5gkzdtb: string;  // what
@@ -903,13 +911,29 @@ export function formatAnswer(ws: tilo.Workspace, path: string): FormatAnswer {
   return resourceProxy(ws, path, SURFACE, FORMATANSWER_ACTIONS) as unknown as FormatAnswer;
 }
 
+/** ServerProgress — `tl.so.tilo.code-editor.ServerProgress`. */
+export interface ServerProgress extends tilo.Resource {
+  b22hm43k: string;  // title
+  "33vetzuz": string;  // detail
+  xvz6ifep: number | null;  // percent
+}
+
+/** The actions `ServerProgress` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SERVERPROGRESS_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.code-editor.ServerProgress` kind at `path`. */
+export function serverProgress(ws: tilo.Workspace, path: string): ServerProgress {
+  return resourceProxy(ws, path, SURFACE, SERVERPROGRESS_ACTIONS) as unknown as ServerProgress;
+}
+
 /** ServerState — `tl.so.tilo.code-editor.ServerState`. */
 export interface ServerState extends tilo.Resource {
   mxvtycpj: string;  // state
   kqcbbx2v: string;  // server
   "66ixtrna": string;  // failure
-  sqfl7jdi: Progress | null;  // progress
-  s4bc4e6s: Diagnostics | null;  // diagnostics
+  sqfl7jdi: ServerProgress | null;  // progress
+  s4bc4e6s: Record<string, Diag[]> | null;  // diagnostics
   h4pgltlo: string;  // answer
 }
 
@@ -939,8 +963,6 @@ export interface Project extends tilo.Resource {
   luh6yto7: string;  // answer_text
   "5vjxpshd": number;  // answer_line
   w3z62her: number;  // answer_column
-  uix4xjnx: number;  // reveal_line
-  bi7d7kdu: number;  // reveal_column
   p4n4bpno: Completion[];  // answer_items
   thlj3m5d: Location[];  // answer_locations
   t4nipezs: string;  // search_job
@@ -1014,9 +1036,9 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `open_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   open_folderMany(items: OpenFolderArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Records the entries of `listing`, standing in `folder`, and reads a file's own bytes: the tree is the project's, so every file the project shows is one a save can check. */
+  /** Records the entries `answer` lists, standing in `folder`, and reads a file's own bytes: the tree is the project's, so every file the project shows is one a save can check. The listing crosses an action call as the text the device answered, which it already is. */
   read_into(args: {
-    listing: Listing;
+    answer: string;
     parent?: Entry;
   }): Promise<void>;
   /** Runs `read_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -1027,7 +1049,6 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `read_folder_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   read_folder_intoMany(items: ReadFolderIntoArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Reads a file's bytes as its text, keeping the stamp a save checks against; a file that is not text, or is too large, is an entry with nothing in it that says why when it is opened. */
   read_text(args: {
     entry: Entry;
   }): Promise<void>;
@@ -1129,15 +1150,18 @@ export interface Project extends tilo.Resource {
   pollMany(items: PollArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Brings the caret to the place an item of a command's output names: the file is read if the project does not hold it yet, and the page shows it. */
   reveal_item(args: {
-    item: Item;
+    path: string;
+    line?: number;
   }): Promise<void>;
   /** Runs `reveal_item` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   reveal_itemMany(items: RevealItemArgs[]): Promise<tilo.ActionAnswer[]>;
-  seen_line(args: {
-    line: number;
+  /** Shows `line` of the file at `path`, counted from 0. */
+  go_to_line(args: {
+    path: string;
+    line?: number;
   }): Promise<void>;
-  /** Runs `seen_line` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  seen_lineMany(items: SeenLineArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `go_to_line` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  go_to_lineMany(items: GoToLineArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Searches every file of the project for `needle`, the case of its letters aside unless `case` says otherwise. */
   search_project(args: {
     needle: string;
@@ -1152,7 +1176,8 @@ export interface Project extends tilo.Resource {
   stop_searchMany(items: StopSearchArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Shows the place a search found: the file is read from the device when the project does not hold it yet, and the page opens it. */
   open_hit(args: {
-    hit: Hit;
+    path: string;
+    line?: number;
   }): Promise<void>;
   /** Runs `open_hit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   open_hitMany(items: OpenHitArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -1203,7 +1228,8 @@ export interface Project extends tilo.Resource {
   /** Writes the completion a person chose where the caret stands. */
   accept_completion(args: {
     entry: Entry;
-    item: Completion;
+    label: string;
+    insert: string;
   }): Promise<void>;
   /** Runs `accept_completion` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   accept_completionMany(items: AcceptCompletionArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -1233,7 +1259,7 @@ export interface Project extends tilo.Resource {
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["new_file", "new_folder", "rename", "renameMany", "move_entry", "move_entryMany", "move_after", "move_afterMany", "delete", "deleteMany", "find_in_file", "find_in_fileMany", "check", "checkMany", "open_folder", "open_folderMany", "read_into", "read_intoMany", "read_folder_into", "read_folder_intoMany", "read_text", "read_textMany", "open_file", "open_fileMany", "save", "saveMany", "write", "overwrite", "overwriteMany", "reload", "reloadMany", "save_all", "save_allMany", "save_into", "save_intoMany", "move_on_disk", "move_on_diskMany", "import_dropped", "import_droppedMany", "run", "runMany", "stop", "stopMany", "rerun", "rerunMany", "rerun_test", "rerun_testMany", "run_", "run_Many", "clear_commands", "clear_commandsMany", "open_terminal", "open_terminalMany", "poll", "pollMany", "reveal_item", "reveal_itemMany", "seen_line", "seen_lineMany", "search_project", "search_projectMany", "stop_search", "stop_searchMany", "open_hit", "open_hitMany", "ensure_server", "ensure_serverMany", "announce", "poll_server", "poll_serverMany", "read_answer", "read_answerMany", "complete", "completeMany", "hover", "hoverMany", "definition", "definitionMany", "accept_completion", "accept_completionMany", "format_file", "format_fileMany", "toggle_language_servers", "toggle_language_serversMany", "toggle_format_on_save", "toggle_format_on_saveMany", "restart_server", "restart_serverMany"] as const;
+export const PROJECT_ACTIONS = ["new_file", "new_folder", "rename", "renameMany", "move_entry", "move_entryMany", "move_after", "move_afterMany", "delete", "deleteMany", "find_in_file", "find_in_fileMany", "check", "checkMany", "open_folder", "open_folderMany", "read_into", "read_intoMany", "read_folder_into", "read_folder_intoMany", "read_text", "read_textMany", "open_file", "open_fileMany", "save", "saveMany", "write", "overwrite", "overwriteMany", "reload", "reloadMany", "save_all", "save_allMany", "save_into", "save_intoMany", "move_on_disk", "move_on_diskMany", "import_dropped", "import_droppedMany", "run", "runMany", "stop", "stopMany", "rerun", "rerunMany", "rerun_test", "rerun_testMany", "run_", "run_Many", "clear_commands", "clear_commandsMany", "open_terminal", "open_terminalMany", "poll", "pollMany", "reveal_item", "reveal_itemMany", "go_to_line", "go_to_lineMany", "search_project", "search_projectMany", "stop_search", "stop_searchMany", "open_hit", "open_hitMany", "ensure_server", "ensure_serverMany", "announce", "poll_server", "poll_serverMany", "read_answer", "read_answerMany", "complete", "completeMany", "hover", "hoverMany", "definition", "definitionMany", "accept_completion", "accept_completionMany", "format_file", "format_fileMany", "toggle_language_servers", "toggle_language_serversMany", "toggle_format_on_save", "toggle_format_on_saveMany", "restart_server", "restart_serverMany"] as const;
 
 /** The `tl.so.tilo.code-editor.Project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {

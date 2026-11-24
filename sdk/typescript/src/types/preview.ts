@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.discord.preview@fe34c8ddb5ae477d";
+export const SURFACE = "so.tilo.discord.preview@d1a0118dc884c252";
 
 /** What kind of place a Discord channel is. One of "text", "voice", "category", "thread". */
 export type ChannelKind = "text" | "voice" | "category" | "thread";
@@ -51,15 +51,54 @@ export interface CloseSetupArgs {
 export interface ClearProblemArgs {
 }
 
-/** The arguments of `bridge_server`. */
-export interface BridgeServerArgs {
-  s: ServerChoice;
-  token: string;
+/** The arguments of `ask_token`. */
+export interface AskTokenArgs {
+}
+
+/** The arguments of `keep_token`. */
+export interface KeepTokenArgs {
+  ask: string;
+  item: string;
 }
 
 /** The arguments of `find_servers`. */
 export interface FindServersArgs {
-  token: string;
+}
+
+/** The arguments of `found_servers`. */
+export interface FoundServersArgs {
+  ask: string;
+  servers: ServerChoice[];
+}
+
+/** The arguments of `choose_server`. */
+export interface ChooseServerArgs {
+  s: ServerChoice;
+}
+
+/** The arguments of `found_channels`. */
+export interface FoundChannelsArgs {
+  ask: string;
+  channels: DChannel[];
+}
+
+/** The arguments of `choose_channel`. */
+export interface ChooseChannelArgs {
+  channel: string;
+}
+
+/** The arguments of `back_to_servers`. */
+export interface BackToServersArgs {
+}
+
+/** The arguments of `setup_failed`. */
+export interface SetupFailedArgs {
+  ask: string;
+  problem: string;
+}
+
+/** The arguments of `bridge_server`. */
+export interface BridgeServerArgs {
 }
 
 /** The arguments of `connect`. */
@@ -96,13 +135,15 @@ export interface UnmapArgs {
   keep_apart?: boolean;
 }
 
-/** The arguments of `begin_connect`. */
-export interface BeginConnectArgs {
-  state_sha256: string;
-}
-
 /** The arguments of `connect_account`. */
 export interface ConnectAccountArgs {
+}
+
+/** The arguments of `start_sign_in`. */
+export interface StartSignInArgs {
+  ask: string;
+  url: string;
+  sha256: string;
 }
 
 /** The arguments of `offer_link`. */
@@ -228,7 +269,16 @@ export interface Discord extends tilo.Resource {
   nn6mtwfm: string;  // voice_problem
   flkdculv: string;  // emoji_problem
   "2vnxydnl": boolean;  // setup_open
+  xezmxd63: string;  // setup_wants
+  idxrloj3: string;  // setup_ask
+  alwcte5y: string;  // setup_person
   "6fcfq4y6": Array<tilo.Entry<ServerChoice>>;  // setup_servers
+  gsce46aw: string;  // setup_server
+  ewopezjx: string;  // setup_server_name
+  vwt52f57: Array<tilo.Entry<DChannel>>;  // setup_channels
+  wuvfepf6: string;  // setup_channel
+  xeugfqli: boolean;  // setup_mirror
+  w2b5pndu: boolean;  // setup_roles
   pasjy4ku: string;  // setup_problem
   open_setup(): Promise<void>;
   /** Runs `open_setup` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -237,23 +287,66 @@ export interface Discord extends tilo.Resource {
   close_setup(): Promise<void>;
   /** Runs `close_setup` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   close_setupMany(items: CloseSetupArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Forgets what the setup last said went wrong, as choosing a channel does. */
+  /** Forgets what the setup last said went wrong. */
   clear_problem(): Promise<void>;
   /** Runs `clear_problem` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clear_problemMany(items: ClearProblemArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Binds this account to one server, with the token its bot uses. The server's layout stays Discord's until the import ran. */
-  bridge_server(args: {
-    s: ServerChoice;
-    token: string;
+  /** Asks the bridge's program to have the bot's token put in the person's vault: the person types it once on the system's own card, and the vault keeps it. This account keeps the item's address, never the token. */
+  ask_token(): Promise<void>;
+  /** Runs `ask_token` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  ask_tokenMany(items: AskTokenArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps the vault item the person's token was put in: the program's answer to `ask_token`. The item's address is all this record keeps. */
+  keep_token(args: {
+    ask: string;
+    item: string;
   }): Promise<void>;
-  /** Runs `bridge_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  bridge_serverMany(items: BridgeServerArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Finds the servers the bot is in, so one can be chosen. */
-  find_servers(args: {
-    token: string;
-  }): Promise<void>;
+  /** Runs `keep_token` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keep_tokenMany(items: KeepTokenArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Finds the servers the bot is in, so one can be chosen: the bridge's program asks Discord with the token the vault keeps. */
+  find_servers(): Promise<void>;
   /** Runs `find_servers` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   find_serversMany(items: FindServersArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The servers finding the bot's servers answered: the program's answer to `find_servers`. */
+  found_servers(args: {
+    ask: string;
+    servers: ServerChoice[];
+  }): Promise<void>;
+  /** Runs `found_servers` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  found_serversMany(items: FoundServersArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The server the person chose to bring in: the program reads its channels so one of them can be brought in alone. */
+  choose_server(args: {
+    s: ServerChoice;
+  }): Promise<void>;
+  /** Runs `choose_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  choose_serverMany(items: ChooseServerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The server's channels as the program read them: the program's answer to `choose_server`. */
+  found_channels(args: {
+    ask: string;
+    channels: DChannel[];
+  }): Promise<void>;
+  /** Runs `found_channels` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  found_channelsMany(items: FoundChannelsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Chooses the one channel of the server to bring in, or none for the whole server. */
+  choose_channel(args: {
+    channel: string;
+  }): Promise<void>;
+  /** Runs `choose_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  choose_channelMany(items: ChooseChannelArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Goes back from the channels to the servers, choosing again. */
+  back_to_servers(): Promise<void>;
+  /** Runs `back_to_servers` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  back_to_serversMany(items: BackToServersArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Why the setup step `ask` did not work: the program's answer, in words the person reads. */
+  setup_failed(args: {
+    ask: string;
+    problem: string;
+  }): Promise<void>;
+  /** Runs `setup_failed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setup_failedMany(items: SetupFailedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Binds this account to the server and channels the setup chose. The server's layout stays Discord's until the import ran. */
+  bridge_server(): Promise<void>;
+  /** Runs `bridge_server` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  bridge_serverMany(items: BridgeServerArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Binds this account to one server. The server's layout stays Discord's until the import ran. */
   connect(args: {
     guild_id: string;
@@ -292,15 +385,18 @@ export interface Discord extends tilo.Resource {
   }): Promise<void>;
   /** Runs `unmap` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   unmapMany(items: UnmapArgs[]): Promise<tilo.ActionAnswer[]>;
-  begin_connect(args: {
-    state_sha256: string;
-  }): Promise<void>;
-  /** Runs `begin_connect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  begin_connectMany(items: BeginConnectArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Starts signing in with Discord, as the person looking: answers where to go. */
+  /** Starts signing in with Discord, as the person looking: the bridge's program builds the consent page and the state that binds what comes back to them. */
   connect_account(): Promise<void>;
   /** Runs `connect_account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   connect_accountMany(items: ConnectAccountArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Where the person goes to sign in with Discord, and the digest of the state that binds what comes back to them: the program's answer to `connect_account`. */
+  start_sign_in(args: {
+    ask: string;
+    url: string;
+    sha256: string;
+  }): Promise<void>;
+  /** Runs `start_sign_in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  start_sign_inMany(items: StartSignInArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Offers a Discord account for linking, from the server: `/link` answered with a one-time token, whose check this is. */
   offer_link(args: {
     check: string;
@@ -506,7 +602,7 @@ export interface Discord extends tilo.Resource {
 
 /** The actions `Discord` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DISCORD_ACTIONS = ["open_setup", "open_setupMany", "close_setup", "close_setupMany", "clear_problem", "clear_problemMany", "bridge_server", "bridge_serverMany", "find_servers", "find_serversMany", "connect", "connectMany", "observe_layout", "observe_layoutMany", "map", "mapMany", "unmap", "unmapMany", "begin_connect", "begin_connectMany", "connect_account", "connect_accountMany", "offer_link", "offer_linkMany", "offer_sign_in", "offer_sign_inMany", "keep_offer", "keep_offerMany", "complete_link", "complete_linkMany", "set_sign_in", "set_sign_inMany", "answer_interaction", "rename_link", "rename_linkMany", "set_link_photo", "set_link_photoMany", "unlink", "unlinkMany", "unlink_mine", "unlink_mineMany", "block_persona", "block_personaMany", "unblock_persona", "unblock_personaMany", "remember_avatar", "remember_avatarMany", "finish_import", "finish_importMany", "send_there", "edit_there", "delete_there", "react_there", "unreact_there", "start_thread_there", "create_webhook", "apply_channel", "delete_channel_there", "arrange_channels", "may_mirror", "may_change", "apply_role", "delete_role", "set_member_roles", "kick", "ban", "unban", "set_overwrite", "fetch_asset", "apply_emoji", "delete_emoji", "settle_emoji", "settle_emojiMany", "report_voice", "report_voiceMany", "pump"] as const;
+export const DISCORD_ACTIONS = ["open_setup", "open_setupMany", "close_setup", "close_setupMany", "clear_problem", "clear_problemMany", "ask_token", "ask_tokenMany", "keep_token", "keep_tokenMany", "find_servers", "find_serversMany", "found_servers", "found_serversMany", "choose_server", "choose_serverMany", "found_channels", "found_channelsMany", "choose_channel", "choose_channelMany", "back_to_servers", "back_to_serversMany", "setup_failed", "setup_failedMany", "bridge_server", "bridge_serverMany", "connect", "connectMany", "observe_layout", "observe_layoutMany", "map", "mapMany", "unmap", "unmapMany", "connect_account", "connect_accountMany", "start_sign_in", "start_sign_inMany", "offer_link", "offer_linkMany", "offer_sign_in", "offer_sign_inMany", "keep_offer", "keep_offerMany", "complete_link", "complete_linkMany", "set_sign_in", "set_sign_inMany", "answer_interaction", "rename_link", "rename_linkMany", "set_link_photo", "set_link_photoMany", "unlink", "unlinkMany", "unlink_mine", "unlink_mineMany", "block_persona", "block_personaMany", "unblock_persona", "unblock_personaMany", "remember_avatar", "remember_avatarMany", "finish_import", "finish_importMany", "send_there", "edit_there", "delete_there", "react_there", "unreact_there", "start_thread_there", "create_webhook", "apply_channel", "delete_channel_there", "arrange_channels", "may_mirror", "may_change", "apply_role", "delete_role", "set_member_roles", "kick", "ban", "unban", "set_overwrite", "fetch_asset", "apply_emoji", "delete_emoji", "settle_emoji", "settle_emojiMany", "report_voice", "report_voiceMany", "pump"] as const;
 
 /** The `tl.so.tilo.discord.preview.Discord` kind at `path`. */
 export function discord(ws: tilo.Workspace, path: string): Discord {
@@ -679,20 +775,6 @@ export const SERVERCHOICE_ACTIONS = [] as const;
 /** The `tl.so.tilo.discord.preview.ServerChoice` kind at `path`. */
 export function serverChoice(ws: tilo.Workspace, path: string): ServerChoice {
   return resourceProxy(ws, path, SURFACE, SERVERCHOICE_ACTIONS) as unknown as ServerChoice;
-}
-
-/** ServerList — `tl.so.tilo.discord.preview.ServerList`. */
-export interface ServerList extends tilo.Resource {
-  hj7lfaq7: ServerChoice[];  // servers
-}
-
-/** The actions `ServerList` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const SERVERLIST_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.discord.preview.ServerList` kind at `path`. */
-export function serverList(ws: tilo.Workspace, path: string): ServerList {
-  return resourceProxy(ws, path, SURFACE, SERVERLIST_ACTIONS) as unknown as ServerList;
 }
 
 /** SendOp — `tl.so.tilo.discord.preview.SendOp`. */
@@ -1088,35 +1170,6 @@ export const ACCOUNTS_ACTIONS = ["begin_setup"] as const;
 /** The `tl.so.tilo.discord.preview.Accounts` kind at `path`. */
 export function accounts(ws: tilo.Workspace, path: string): Accounts {
   return resourceProxy(ws, path, SURFACE, ACCOUNTS_ACTIONS) as unknown as Accounts;
-}
-
-/** Start — `tl.so.tilo.discord.preview.Start`. */
-export interface Start extends tilo.Resource {
-  "7mzd42ga": string;  // url
-  fpyoqcfm: string;  // sha256
-}
-
-/** The actions `Start` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const START_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.discord.preview.Start` kind at `path`. */
-export function start(ws: tilo.Workspace, path: string): Start {
-  return resourceProxy(ws, path, SURFACE, START_ACTIONS) as unknown as Start;
-}
-
-/** SignInAsk — `tl.so.tilo.discord.preview.SignInAsk`. */
-export interface SignInAsk extends tilo.Resource {
-  tqkp4iq7: string;  // page
-}
-
-/** The actions `SignInAsk` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const SIGNINASK_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.discord.preview.SignInAsk` kind at `path`. */
-export function signInAsk(ws: tilo.Workspace, path: string): SignInAsk {
-  return resourceProxy(ws, path, SURFACE, SIGNINASK_ACTIONS) as unknown as SignInAsk;
 }
 
 /** VoicePair — `tl.so.tilo.discord.preview.VoicePair`. */

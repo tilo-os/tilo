@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.word-processor@9dfee430825ad200";
+export const SURFACE = "so.tilo.word-processor@388cb5465b5db3ae";
 
 /** The arguments of `edit-block`. */
 export interface EditBlockArgs {
@@ -103,6 +103,12 @@ export interface SetPaperArgs {
   paper: string;
 }
 
+/** The arguments of `set_page_words`. */
+export interface SetPageWordsArgs {
+  where: string;
+  words: string;
+}
+
 /** The arguments of `generate_toc`. */
 export interface GenerateTocArgs {
 }
@@ -152,6 +158,8 @@ export interface Document extends tilo.Resource {
   u7wfrpxp: number;  // margin_bottom
   tim24jvi: number;  // margin_left
   "5lzglfac": string;  // paper
+  yojargfl: string;  // header
+  "5ih7vhqz": string;  // footer
   wdffnjds: string;  // started
   "4hldj6md": Record<string, string[]>;  // reactions
   mgawklxl: string;  // notice
@@ -253,6 +261,13 @@ export interface Document extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_paper` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_paperMany(items: SetPaperArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets the words every page's top or bottom margin carries: `where` is `header` or `footer`. Empty words for the header leave the document's title there. */
+  set_page_words(args: {
+    where: string;
+    words: string;
+  }): Promise<void>;
+  /** Runs `set_page_words` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_page_wordsMany(items: SetPageWordsArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Writes a table of contents at the head of the document. It is a field, not a copy: the page draws the document's headings into it as they stand, so an entry a person writes or takes away shows there at once. A document without headings is refused: there is nothing to list. */
   generate_toc(): Promise<void>;
   /** Runs `generate_toc` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -330,7 +345,7 @@ export interface Document extends tilo.Resource {
 
 /** The actions `Document` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DOCUMENT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "new_document", "dismiss_notice", "dismiss_noticeMany", "append_paragraph", "append_paragraphMany", "replace_body", "replace_bodyMany", "read_content", "replace_text", "replace_textMany", "insert_table", "insert_tableMany", "add_row", "add_rowMany", "add_column", "add_columnMany", "delete_row", "delete_rowMany", "delete_column", "delete_columnMany", "delete_table", "delete_tableMany", "set_page_margins", "set_page_marginsMany", "set_paper", "set_paperMany", "generate_toc", "generate_tocMany", "set_hyperlink", "set_hyperlinkMany", "insert_page_break", "insert_page_breakMany", "paste", "pasteMany", "replace_selection", "replace_selectionMany", "place_image", "place_imageMany", "share_image", "delete_image", "delete_imageMany", "react", "reactMany", "comment_on", "open_document", "export_content", "export_text", "export_document", "export_html", "read_file"] as const;
+export const DOCUMENT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "new_document", "dismiss_notice", "dismiss_noticeMany", "append_paragraph", "append_paragraphMany", "replace_body", "replace_bodyMany", "read_content", "replace_text", "replace_textMany", "insert_table", "insert_tableMany", "add_row", "add_rowMany", "add_column", "add_columnMany", "delete_row", "delete_rowMany", "delete_column", "delete_columnMany", "delete_table", "delete_tableMany", "set_page_margins", "set_page_marginsMany", "set_paper", "set_paperMany", "set_page_words", "set_page_wordsMany", "generate_toc", "generate_tocMany", "set_hyperlink", "set_hyperlinkMany", "insert_page_break", "insert_page_breakMany", "paste", "pasteMany", "replace_selection", "replace_selectionMany", "place_image", "place_imageMany", "share_image", "delete_image", "delete_imageMany", "react", "reactMany", "comment_on", "open_document", "export_content", "export_text", "export_document", "export_html", "read_file"] as const;
 
 /** The `tl.so.tilo.word-processor.Document` kind at `path`. */
 export function wordProcessorDocument(ws: tilo.Workspace, path: string): Document {

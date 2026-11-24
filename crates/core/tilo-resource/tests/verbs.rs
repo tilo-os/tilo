@@ -850,6 +850,28 @@ pub enum CardEffect {
     },
 }
 
+/// The host's web links, as a record a parameter carries.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Links {
+    pub web_entry: String,
+    pub origin: String,
+}
+
+/// Where a plan's notice points readers: a link, and the host's web links when it has them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Context {
+    pub link: String,
+    pub links: Option<Links>,
+}
+
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "test.shelf.records", catalogue = "tests/locales")]
+pub enum RecordsEffect {
+    /// Plan a record.
+    #[effect(kind = "read")]
+    Plan { context: Option<Context> },
+}
+
 tilo_test_env::scenario! {
     fn an_effect_publishes_its_parameters_tags_and_asking;
 
@@ -873,6 +895,74 @@ tilo_test_env::scenario! {
                 ("opaque".to_owned(), tilo_actions::ParamType::Object),
             ]
         );
+    }
+
+    phase an_optional_record_parameter_keeps_its_type_schema_and_named_types;
+    {
+        use tilo_resource::Effect as _;
+        use tilo_resource::surface::{TypeSet, effect_verbs};
+
+        let mut types = TypeSet::new();
+        let verbs = effect_verbs(&RecordsEffect::rows(), &mut types);
+        assert_eq!(verbs.len(), 1, "a read effect is a verb of the surface");
+        let surface = tilo_resource::Surface {
+            kind: "test.shelf".to_owned(),
+            label: "Shelf".to_owned(),
+            version: 1,
+            person: false,
+            readers: None,
+            verbs,
+            fields: Vec::new(),
+            types: types.into_types(),
+            shows: Vec::new(),
+            live: None,
+            setters: false,
+        };
+        let written = tilo_resource::surface::file::render(
+            "# Written by a test\n\n",
+            &[serde_json::to_value(&surface).unwrap()],
+        )
+        .unwrap();
+        let filed = tilo_resource::surface::file::filed(
+            &serde_json::to_value(&surface).unwrap(),
+        );
+        let param = &filed["verbs"][0]["params"][0];
+        assert_eq!(param["name"], "context");
+        assert_eq!(param["required"], false, "an `Option` parameter is optional");
+        assert_eq!(
+            param["type"],
+            serde_json::json!({"option": {"named": "Context"}}),
+            "the optional record parameter keeps its type: {written}"
+        );
+        assert_eq!(
+            param["schema"]["type"],
+            serde_json::json!(["object", "null"]),
+            "{written}"
+        );
+        let links = &param["schema"]["properties"]["links"];
+        assert_eq!(
+            links["type"],
+            serde_json::json!(["object", "null"]),
+            "{written}"
+        );
+        assert_eq!(
+            links["properties"]["web_entry"]["type"], "string",
+            "the schema of the record the parameter holds is kept: {written}"
+        );
+        let mut named: Vec<&str> = filed["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|named| named["name"].as_str().unwrap())
+            .collect();
+        named.sort_unstable();
+        assert_eq!(
+            named,
+            ["Context", "Links"],
+            "the record and the record it holds are both declared: {written}"
+        );
+        assert!(written.contains(r#"named = "Context""#), "{written}");
+        assert!(written.contains(r#"named = "Links""#), "{written}");
     }
 
     phase an_export_reaches_outside_only_when_told_where_to_write;

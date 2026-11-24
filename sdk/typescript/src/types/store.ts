@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.store@aba934dd0fa05d15";
+export const SURFACE = "so.tilo.store@7ceac51030e390f2";
 
 /** The arguments of `get`. */
 export interface GetArgs {
@@ -91,6 +91,15 @@ export interface ShowDetailsArgs {
 /** The arguments of `take_catalogue`. */
 export interface TakeCatalogueArgs {
   status: string;
+}
+
+/** The arguments of `read_flathub`. */
+export interface ReadFlathubArgs {
+}
+
+/** The arguments of `read_flathub_details`. */
+export interface ReadFlathubDetailsArgs {
+  a: App;
 }
 
 /** The arguments of `absorb_remote_text`. */
@@ -440,6 +449,16 @@ export interface Store extends tilo.Resource {
   }): Promise<void>;
   /** Runs `take_catalogue` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   take_catalogueMany(items: TakeCatalogueArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Reads Flathub's catalogue over its own search API, a page at a time, and keeps every app beside the registry's. A person's language names the rows, as every other source's does. */
+  read_flathub(): Promise<void>;
+  /** Runs `read_flathub` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  read_flathubMany(items: ReadFlathubArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** What one Flathub app's page reads: its own AppStream document and what its build asks for. */
+  read_flathub_details(args: {
+    a: App;
+  }): Promise<void>;
+  /** Runs `read_flathub_details` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  read_flathub_detailsMany(items: ReadFlathubDetailsArgs[]): Promise<tilo.ActionAnswer[]>;
   /** One app as a source wrote it, read and kept where it stands: an app this workspace already knew keeps what the person looked at of it. */
   absorb_text(args: {
     text: string;
@@ -523,7 +542,7 @@ export interface Store extends tilo.Resource {
   install_reviewed(): Promise<void>;
   /** Runs `install_reviewed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   install_reviewedMany(items: InstallReviewedArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Opens a `.flatpakref`: it joins the catalogue as a card, and installing it stays a separate step the person takes. */
+  /** Opens a `.flatpakref`: it joins the catalogue as a card, and installing it stays a separate step the person takes. Opens a `.flatpakref`: a repository's app, which the source installs itself. The package review reaches it through `import_package`, which opens both kinds of file. */
   open_reference(args: {
     file: unknown;
   }): Promise<void>;
@@ -560,7 +579,7 @@ export interface Store extends tilo.Resource {
 
 /** The actions `Store` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const STORE_ACTIONS = ["poll", "pollMany", "follow", "followMany", "begin_reading", "begin_readingMany", "begin", "beginMany", "read_app", "read_appMany", "show_details", "show_detailsMany", "take_catalogue", "take_catalogueMany", "absorb_text", "absorb_remote_text", "absorb_remote_textMany", "refresh_remotes", "refresh_remotesMany", "add_remote", "add_remoteMany", "enable_remote", "enable_remoteMany", "disable_remote", "disable_remoteMany", "remote_change", "remote_changeMany", "remove_remote", "remove_remoteMany", "browse", "browseMany", "update_all", "update_allMany", "add_bot", "add_botMany", "block_app", "block_appMany", "unblock_app", "unblock_appMany", "import_package", "import_packageMany", "install_reviewed", "install_reviewedMany", "open_reference", "open_referenceMany", "review_runtime", "draft_report", "record_moderation_case", "record_moderation_caseMany", "prepare_report", "refresh_status", "refresh_statusMany"] as const;
+export const STORE_ACTIONS = ["poll", "pollMany", "follow", "followMany", "begin_reading", "begin_readingMany", "begin", "beginMany", "read_app", "read_appMany", "show_details", "show_detailsMany", "take_catalogue", "take_catalogueMany", "read_flathub", "read_flathubMany", "read_flathub_details", "read_flathub_detailsMany", "absorb_text", "absorb_remote_text", "absorb_remote_textMany", "refresh_remotes", "refresh_remotesMany", "add_remote", "add_remoteMany", "enable_remote", "enable_remoteMany", "disable_remote", "disable_remoteMany", "remote_change", "remote_changeMany", "remove_remote", "remove_remoteMany", "browse", "browseMany", "update_all", "update_allMany", "add_bot", "add_botMany", "block_app", "block_appMany", "unblock_app", "unblock_appMany", "import_package", "import_packageMany", "install_reviewed", "install_reviewedMany", "open_reference", "open_referenceMany", "review_runtime", "draft_report", "record_moderation_case", "record_moderation_caseMany", "prepare_report", "refresh_status", "refresh_statusMany"] as const;
 
 /** The `tl.so.tilo.store.Store` kind at `path`. */
 export function store(ws: tilo.Workspace, path: string): Store {
@@ -799,6 +818,22 @@ export const ASK_ACTIONS = [] as const;
 /** The `tl.so.tilo.store.Ask` kind at `path`. */
 export function ask(ws: tilo.Workspace, path: string): Ask {
   return resourceProxy(ws, path, SURFACE, ASK_ACTIONS) as unknown as Ask;
+}
+
+/** FlathubAsk — `tl.so.tilo.store.FlathubAsk`. */
+export interface FlathubAsk extends tilo.Resource {
+  yk5x3lyl: string;  // query
+  jyhorffp: number;  // hits_per_page
+  n6ivjlst: number;  // page
+}
+
+/** The actions `FlathubAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FLATHUBASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.store.FlathubAsk` kind at `path`. */
+export function flathubAsk(ws: tilo.Workspace, path: string): FlathubAsk {
+  return resourceProxy(ws, path, SURFACE, FLATHUBASK_ACTIONS) as unknown as FlathubAsk;
 }
 
 /** Started — `tl.so.tilo.store.Started`. */

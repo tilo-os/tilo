@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.maps@b6685eb700dd4f73";
+export const SURFACE = "so.tilo.maps@1b85207cb91c0fd4";
 
 /** What a place is: the marker's ink, the card's glyph, and the OpenStreetMap class it maps from. One of "landmark", "cafe", "restaurant", "bar", "museum", "park", "transit", "hotel", "shop", "hospital", "other". */
 export type Category = "landmark" | "cafe" | "restaurant" | "bar" | "museum" | "park" | "transit" | "hotel" | "shop" | "hospital" | "other";
@@ -598,7 +598,7 @@ export function atlas(ws: tilo.Workspace, path: string): Atlas {
 
 /** Places — `tl.so.tilo.maps.Places`. */
 export interface Places extends tilo.Resource {
-  "734zo2xo": unknown[];  // found
+  "734zo2xo": Place[];  // found
   "73qevr6q": string;  // why
 }
 
@@ -613,7 +613,7 @@ export function places(ws: tilo.Workspace, path: string): Places {
 
 /** Routes — `tl.so.tilo.maps.Routes`. */
 export interface Routes extends tilo.Resource {
-  q2tnydqa: unknown[];  // found
+  q2tnydqa: Route[];  // found
   kmhzghib: string;  // why
 }
 
@@ -628,7 +628,7 @@ export function routes(ws: tilo.Workspace, path: string): Routes {
 
 /** Journeys — `tl.so.tilo.maps.Journeys`. */
 export interface Journeys extends tilo.Resource {
-  ix3p2v56: unknown[];  // found
+  ix3p2v56: Journey[];  // found
   cddmwu37: string;  // why
 }
 
@@ -643,7 +643,7 @@ export function journeys(ws: tilo.Workspace, path: string): Journeys {
 
 /** Pois — `tl.so.tilo.maps.Pois`. */
 export interface Pois extends tilo.Resource {
-  fsnuwhad: unknown[];  // found
+  fsnuwhad: Poi[];  // found
   "3yeey62c": string;  // why
 }
 

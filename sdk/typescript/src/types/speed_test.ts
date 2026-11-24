@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.speed-test@b0a00bf56855af32";
+export const SURFACE = "so.tilo.speed-test@596ac912f06684e0";
 
 /** The arguments of `start`. */
 export interface StartArgs {
@@ -34,6 +34,11 @@ export interface StopArgs {
 
 /** The arguments of `poll`. */
 export interface PollArgs {
+}
+
+/** The arguments of `upload_stage`. */
+export interface UploadStageArgs {
+  run: Run;
 }
 
 /** The arguments of `record`. */
@@ -55,18 +60,24 @@ export interface SpeedTest extends tilo.Resource {
   hpwi5yye: Array<tilo.Entry<Measurement>>;  // results
   phw7nc7e: Array<tilo.Entry<Run>>;  // runs
   ckq5elpb: string | null;  // next_poll
-  /** Starts a run: the device measures latency, download and upload against the nearest Cloudflare test server, and the window follows it as it goes. */
+  /** Starts a run: the window measures latency against the nearest Cloudflare test server, then the download and the upload on the seconds after, and shows the dial moving as it goes. */
   start(): Promise<void>;
   /** Runs `start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   startMany(items: StartArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Stops the run in flight: the device stops measuring and the dial goes back to ready. Nothing of a stopped run is kept. */
+  /** Stops the run in flight: the measurement stops and the dial goes back to ready. Nothing of a stopped run is kept. */
   stop(): Promise<void>;
   /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Asks the device how far the run has got: the dial follows the reading of the stage, and what the run measured is kept when it ends. A device that no longer answers the run ends it without a measurement, as closing the app used to. */
+  /** Measures the next stage of the run on the page: the download, then the upload, which records what the run measured. A stage that fails ends the run with its words. */
   poll(): Promise<void>;
   /** Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   pollMany(items: PollArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Uploads a run's bytes and records what the whole run measured. A refusal fails the stage. */
+  upload_stage(args: {
+    run: Run;
+  }): Promise<void>;
+  /** Runs `upload_stage` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  upload_stageMany(items: UploadStageArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Records a finished measurement, newest first, and lets the oldest go beyond what the workspace keeps: an agent or a script may record one too. */
   record(args: {
     ping: number;
@@ -86,7 +97,7 @@ export interface SpeedTest extends tilo.Resource {
 
 /** The actions `SpeedTest` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SPEEDTEST_ACTIONS = ["start", "startMany", "stop", "stopMany", "poll", "pollMany", "record", "recordMany", "clear", "clearMany"] as const;
+export const SPEEDTEST_ACTIONS = ["start", "startMany", "stop", "stopMany", "poll", "pollMany", "upload_stage", "upload_stageMany", "record", "recordMany", "clear", "clearMany"] as const;
 
 /** The `tl.so.tilo.speed-test.SpeedTest` kind at `path`. */
 export function speedTest(ws: tilo.Workspace, path: string): SpeedTest {
@@ -115,58 +126,26 @@ export function measurement(ws: tilo.Workspace, path: string): Measurement {
 /** Run — `tl.so.tilo.speed-test.Run`. */
 export interface Run extends tilo.Resource {
   fbbyyume: string;  // phase
-  "376ly3mp": string;  // job
   vufvfoij: number;  // live
   stw2oyj6: number;  // bytes
   nwtvekek: string;  // server
+  t3padrs4: number;  // ping
+  vejad7bv: number;  // jitter
+  "2kviwxr6": number;  // download
   wkhwlknc: string;  // error
+  /** Times a few round trips and keeps the server the first one found. The dial shows the last reading while the run measures. */
+  ping_stage(): Promise<boolean>;
+  /** Downloads a run's bytes in chunks of a reply the language holds whole, timing them together, and keeps the rate they came at. */
+  download_stage(): Promise<boolean>;
 }
 
 /** The actions `Run` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const RUN_ACTIONS = [] as const;
+export const RUN_ACTIONS = ["ping_stage", "download_stage"] as const;
 
 /** The `tl.so.tilo.speed-test.Run` kind at `path`. */
 export function run(ws: tilo.Workspace, path: string): Run {
   return resourceProxy(ws, path, SURFACE, RUN_ACTIONS) as unknown as Run;
-}
-
-/** RunState — `tl.so.tilo.speed-test.RunState`. */
-export interface RunState extends tilo.Resource {
-  "4xzztkvp": string;  // state
-  os4ndogp: string;  // phase
-  "7eyrzvhi": number;  // live
-  phil2ezm: number;  // bytes
-  "5szkqkfk": string;  // server
-  hcm22tea: number;  // ping
-  esi4hzhw: number;  // jitter
-  gmjsrtmo: number;  // download
-  q4qvdsia: number;  // upload
-  eyu5ljwd: string;  // device
-  c6eopm2r: string;  // failure
-}
-
-/** The actions `RunState` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const RUNSTATE_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.speed-test.RunState` kind at `path`. */
-export function runState(ws: tilo.Workspace, path: string): RunState {
-  return resourceProxy(ws, path, SURFACE, RUNSTATE_ACTIONS) as unknown as RunState;
-}
-
-/** Started — `tl.so.tilo.speed-test.Started`. */
-export interface Started extends tilo.Resource {
-  fltipwm6: string;  // job
-}
-
-/** The actions `Started` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const STARTED_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.speed-test.Started` kind at `path`. */
-export function started(ws: tilo.Workspace, path: string): Started {
-  return resourceProxy(ws, path, SURFACE, STARTED_ACTIONS) as unknown as Started;
 }
 
 /** Speed Test — `tl.so.tilo.speed-test`. */

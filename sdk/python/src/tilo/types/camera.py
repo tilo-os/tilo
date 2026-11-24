@@ -76,6 +76,7 @@ __all__ = [
     "StartRecordingArgs",
     "StopRecordingArgs",
     "PollArgs",
+    "ShutterDueArgs",
     "ImportImageArgs",
     "KeepScanArgs",
     "SetScannerArgs",
@@ -217,6 +218,10 @@ PollArgs = TypedDict("PollArgs", {
 })
 """The arguments of `poll`."""
 
+ShutterDueArgs = TypedDict("ShutterDueArgs", {
+})
+"""The arguments of `shutter_due`."""
+
 ImportImageArgs = TypedDict("ImportImageArgs", {
     "file": "Any",
 })
@@ -287,14 +292,14 @@ CropPageArgs = TypedDict("CropPageArgs", {
 
 class ScanEntry(Resource):
     """ScanEntry — `tl.so.tilo.camera.ScanEntry`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     hsfv5zso: str  # raw
     ep2nakxy: str  # ts
 
 
 class SharedCapture(Resource):
     """SharedCapture — `tl.so.tilo.camera.SharedCapture`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     @property
     def _3w536lga(self) -> Any:
         """file (`3w536lga` on the wire)."""
@@ -335,7 +340,7 @@ class SharedCapture(Resource):
 
 class Wifi(Resource):
     """Wifi — `tl.so.tilo.camera.Wifi`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     lzomebum: str  # ssid
     r4cfx2eg: str  # auth
     vjej4gya: str  # password
@@ -344,7 +349,7 @@ class Wifi(Resource):
 
 class Contact(Resource):
     """Contact — `tl.so.tilo.camera.Contact`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     vqb7vg46: str  # name
     m3wjb2ux: str  # phone
     ozre57rz: str  # email
@@ -360,7 +365,7 @@ class Contact(Resource):
 
 class CapturePreferences(Resource):
     """CapturePreferences — `tl.so.tilo.camera.CapturePreferences`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     kbzf222p: str  # resolution
     zqovr7j4: str  # photo_format
     qv6u7j3k: int  # timer
@@ -401,7 +406,7 @@ class CapturePreferences(Resource):
 
 class ScannedPage(Resource):
     """ScannedPage — `tl.so.tilo.camera.ScannedPage`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     @property
     def _5tzdwbr2(self) -> Any:
         """file (`5tzdwbr2` on the wire)."""
@@ -416,7 +421,7 @@ class ScannedPage(Resource):
 
 class ScanSession(Resource):
     """ScanSession — `tl.so.tilo.camera.ScanSession`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     r3wtymsq: str  # scanner
     @property
     def _7wujh6qk(self) -> int:
@@ -451,7 +456,7 @@ class ScanSession(Resource):
 
 class Camera(Resource):
     """Camera — `tl.so.tilo.camera.Camera`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     mbpsgka6: list[Entry[ScanEntry]]  # scans
     rx3qy2lc: SharedCapture | None  # recent
     vdbaklqk: list[Entry[CapturePreferences]]  # preferences
@@ -680,6 +685,14 @@ class Camera(Resource):
         """Runs `poll` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("poll", items)
 
+    def shutter_due(self) -> None:
+        """The self-timer's moment came: take the photo it counted down to, unless it was cancelled."""
+        return self.action("shutter_due")
+
+    def shutter_due_many(self, items: list[ShutterDueArgs]) -> list[dict[str, Any]]:
+        """Runs `shutter_due` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("shutter_due", items)
+
     def import_image(self, *, file: Any) -> None:
         """Takes a chosen image as the code to read, without importing it."""
         return self.action("import_image", file=file)
@@ -820,12 +833,12 @@ class Camera(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"register_capture", "register_capture_many", "record_scan", "record_scan_many", "set_grid", "set_grid_many", "set_level", "set_level_many", "prefs_of", "session_of", "use_mode", "use_mode_many", "use_lens", "use_lens_many", "cycle_lens", "cycle_lens_many", "use_camera", "use_camera_many", "retry_camera", "retry_camera_many", "set_resolution", "set_resolution_many", "set_photo_format", "set_photo_format_many", "set_timer", "set_timer_many", "set_mirror_front", "set_mirror_front_many", "set_geotag", "set_geotag_many", "set_hdr", "set_hdr_many", "set_default_lens", "set_default_lens_many", "start_look", "start_look_many", "stop_look", "stop_look_many", "look", "look_many", "read_codes", "read_codes_many", "shutter", "shutter_many", "arm_timer", "arm_timer_many", "capture", "capture_many", "start_recording", "start_recording_many", "stop_recording", "stop_recording_many", "poll", "poll_many", "import_image", "import_image_many", "copy_code", "keep_scan", "keep_scan_many", "set_scanner", "set_scanner_many", "set_scan_resolution", "set_scan_resolution_many", "set_scan_colour", "set_scan_colour_many", "set_scan_source", "set_scan_source_many", "set_ocr_language", "set_ocr_language_many", "capture_page", "capture_page_many", "select_page", "select_page_many", "rotate_page", "rotate_page_many", "recognize_text", "recognize_text_many", "copy_text", "move_page", "move_page_many", "remove_page", "remove_page_many", "crop_source", "crop_page", "crop_page_many", "document_pdf", "open_recent"})
+    __actions__ = frozenset({"register_capture", "register_capture_many", "record_scan", "record_scan_many", "set_grid", "set_grid_many", "set_level", "set_level_many", "prefs_of", "session_of", "use_mode", "use_mode_many", "use_lens", "use_lens_many", "cycle_lens", "cycle_lens_many", "use_camera", "use_camera_many", "retry_camera", "retry_camera_many", "set_resolution", "set_resolution_many", "set_photo_format", "set_photo_format_many", "set_timer", "set_timer_many", "set_mirror_front", "set_mirror_front_many", "set_geotag", "set_geotag_many", "set_hdr", "set_hdr_many", "set_default_lens", "set_default_lens_many", "start_look", "start_look_many", "stop_look", "stop_look_many", "look", "look_many", "read_codes", "read_codes_many", "shutter", "shutter_many", "arm_timer", "arm_timer_many", "capture", "capture_many", "start_recording", "start_recording_many", "stop_recording", "stop_recording_many", "poll", "poll_many", "shutter_due", "shutter_due_many", "import_image", "import_image_many", "copy_code", "keep_scan", "keep_scan_many", "set_scanner", "set_scanner_many", "set_scan_resolution", "set_scan_resolution_many", "set_scan_colour", "set_scan_colour_many", "set_scan_source", "set_scan_source_many", "set_ocr_language", "set_ocr_language_many", "capture_page", "capture_page_many", "select_page", "select_page_many", "rotate_page", "rotate_page_many", "recognize_text", "recognize_text_many", "copy_text", "move_page", "move_page_many", "remove_page", "remove_page_many", "crop_source", "crop_page", "crop_page_many", "document_pdf", "open_recent"})
 
 
 class StillAsk(Resource):
     """StillAsk — `tl.so.tilo.camera.StillAsk`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     tbd3ic3b: str  # device
     ijab2zhm: int  # width
     zyjznh7y: int  # height
@@ -834,7 +847,7 @@ class StillAsk(Resource):
 
 class FrameAsk(Resource):
     """FrameAsk — `tl.so.tilo.camera.FrameAsk`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     ycmsih2o: str  # device
     yvbln5ns: int  # width
     kzl4t5dn: int  # height
@@ -842,14 +855,14 @@ class FrameAsk(Resource):
 
 class CodesAsk(Resource):
     """CodesAsk — `tl.so.tilo.camera.CodesAsk`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     vzfp47qk: str  # url
     v7y3lgcv: int  # width
 
 
 class DecodedCode(Resource):
     """DecodedCode — `tl.so.tilo.camera.DecodedCode`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     fzwv4d4j: str  # text
     lsk2z7xu: float  # x
     ukafx4ho: float  # y
@@ -859,20 +872,20 @@ class DecodedCode(Resource):
 
 class CodesAnswer(Resource):
     """CodesAnswer — `tl.so.tilo.camera.CodesAnswer`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     etfbstke: list[DecodedCode]  # codes
 
 
 class CameraDevice(Resource):
     """CameraDevice — `tl.so.tilo.camera.CameraDevice`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     cowbxfqn: str  # id
     umm5rpj4: str  # label
 
 
 class CamerasAnswer(Resource):
     """CamerasAnswer — `tl.so.tilo.camera.CamerasAnswer`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     @property
     def _3sxueu6f(self) -> list[CameraDevice]:
         """devices (`3sxueu6f` on the wire)."""
@@ -886,7 +899,7 @@ class CamerasAnswer(Resource):
 
 class JobAnswer(Resource):
     """JobAnswer — `tl.so.tilo.camera.JobAnswer`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     @property
     def _3uzmfe3a(self) -> str:
         """job (`3uzmfe3a` on the wire)."""
@@ -899,7 +912,7 @@ class JobAnswer(Resource):
 
 class JobState(Resource):
     """JobState — `tl.so.tilo.camera.JobState`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     @property
     def _5c2s6yqj(self) -> str:
         """state (`5c2s6yqj` on the wire)."""
@@ -914,7 +927,7 @@ class JobState(Resource):
 
 class RecordAsk(Resource):
     """RecordAsk — `tl.so.tilo.camera.RecordAsk`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     zm52cba6: str  # device
     @property
     def _2vmgzw6b(self) -> int:
@@ -936,19 +949,19 @@ class RecordAsk(Resource):
 
 class RecordAskJob(Resource):
     """RecordAskJob — `tl.so.tilo.camera.RecordAskJob`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     vkx7nslm: str  # job
 
 
 class RecordStopped(Resource):
     """RecordStopped — `tl.so.tilo.camera.RecordStopped`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     tm6dvkh2: RecordedClip  # video
 
 
 class RecordedClip(Resource):
     """RecordedClip — `tl.so.tilo.camera.RecordedClip`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     tzmimu3l: str  # name
     @property
     def _7znademx(self) -> int:
@@ -965,7 +978,7 @@ class RecordedClip(Resource):
 
 class ScanAsk(Resource):
     """ScanAsk — `tl.so.tilo.camera.ScanAsk`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     @property
     def _3m6nff75(self) -> str:
         """scanner (`3m6nff75` on the wire)."""
@@ -989,7 +1002,7 @@ class ScanAsk(Resource):
 
 class OcrAsk(Resource):
     """OcrAsk — `tl.so.tilo.camera.OcrAsk`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     @property
     def _35d3ajgx(self) -> str:
         """url (`35d3ajgx` on the wire)."""
@@ -1003,7 +1016,7 @@ class OcrAsk(Resource):
 
 class OcrAnswer(Resource):
     """OcrAnswer — `tl.so.tilo.camera.OcrAnswer`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     @property
     def _3hu3iumn(self) -> str:
         """text (`3hu3iumn` on the wire)."""
@@ -1018,27 +1031,27 @@ class OcrAnswer(Resource):
 
 class PdfPage(Resource):
     """PdfPage — `tl.so.tilo.camera.PdfPage`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     siogqny4: str  # url
     anpoq2j7: str  # text
 
 
 class PagesAsk(Resource):
     """PagesAsk — `tl.so.tilo.camera.PagesAsk`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     mmydep5v: list[PdfPage]  # pages
     rclpsfrb: str  # name
 
 
 class UrlAnswer(Resource):
     """UrlAnswer — `tl.so.tilo.camera.UrlAnswer`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     llffazxv: str  # url
 
 
 class TiloCamera(Resource):
     """Camera — `tl.so.tilo.camera`."""
-    __surface__ = "so.tilo.camera@392139eb6fd03cd4"
+    __surface__ = "so.tilo.camera@51618a1446d5beba"
     def open_photos(self) -> None:
         """Opens the library the captures go to."""
         return self.action("open_photos")

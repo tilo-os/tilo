@@ -55,6 +55,8 @@ __all__ = [
     "DeleteColumnsArgs",
     "SortRowsArgs",
     "FillArgs",
+    "FillDownArgs",
+    "FillRightArgs",
     "ApplyEditArgs",
     "DeleteCommentArgs",
     "SetSettingsArgs",
@@ -72,6 +74,7 @@ __all__ = [
     "DeleteBlockArgs",
     "ResolveArgs",
     "EditCommentArgs",
+    "DeleteReplyArgs",
     "ReplyEditBlockArgs",
     "ReplyInsertBlockArgs",
     "ReplyDeleteBlockArgs",
@@ -212,6 +215,18 @@ FillArgs = TypedDict("FillArgs", {
 })
 """The arguments of `fill`."""
 
+FillDownArgs = TypedDict("FillDownArgs", {
+    "s": "Sheet",
+    "range": "str",
+})
+"""The arguments of `fill_down`."""
+
+FillRightArgs = TypedDict("FillRightArgs", {
+    "s": "Sheet",
+    "range": "str",
+})
+"""The arguments of `fill_right`."""
+
 ApplyEditArgs = TypedDict("ApplyEditArgs", {
     "change": "str",
 })
@@ -303,6 +318,11 @@ EditCommentArgs = TypedDict("EditCommentArgs", {
 })
 """The arguments of `edit_comment`."""
 
+DeleteReplyArgs = TypedDict("DeleteReplyArgs", {
+    "r": "Reply",
+})
+"""The arguments of `delete_reply`."""
+
 ReplyEditBlockArgs = TypedDict("ReplyEditBlockArgs", {
     "block": "str",
     "text": "str",
@@ -327,7 +347,7 @@ EditReplyArgs = TypedDict("EditReplyArgs", {
 
 class Workbook(Resource):
     """Workbook — `tl.so.tilo.sheets.Workbook`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     meovofcz: str  # title
     pkbcb37f: list[Entry[Sheet]]  # sheets
     xwh3fsa2: list[Entry[Comment]]  # comments
@@ -687,6 +707,30 @@ class Workbook(Resource):
         """Runs `fill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("fill", items)
 
+    def fill_down(self,
+        *,
+        s: Sheet,
+        range: str,
+    ) -> None:
+        """Fills the rows under the first row of `range` from it: the first row copied down, counting on as a dragged fill handle does."""
+        return self.action("fill_down", s=s, range=range)
+
+    def fill_down_many(self, items: list[FillDownArgs]) -> list[dict[str, Any]]:
+        """Runs `fill_down` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("fill_down", items)
+
+    def fill_right(self,
+        *,
+        s: Sheet,
+        range: str,
+    ) -> None:
+        """Fills the columns right of the first column of `range` from it: the first column copied across, counting on as a dragged fill handle does."""
+        return self.action("fill_right", s=s, range=range)
+
+    def fill_right_many(self, items: list[FillRightArgs]) -> list[dict[str, Any]]:
+        """Runs `fill_right` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("fill_right", items)
+
     def apply_edit(self, *, change: str) -> None:
         """Applies one structural change to the workbook and keeps every sheet as the engine leaves it: its cells, their formats and the cells shown bold, its name when the change renamed it, and the cells its charts and comments are about."""
         return self.action("apply_edit", change=change)
@@ -770,12 +814,12 @@ class Workbook(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"read_cells", "new_sheet", "new_sheet_after", "set_title", "set_title_many", "rename_sheet", "rename_sheet_many", "duplicate_sheet", "delete_sheet", "delete_sheet_many", "place_sheet", "place_sheet_many", "move_sheet", "move_sheet_many", "write_cells", "write_cells_many", "set_cells", "set_cells_many", "set_records", "upsert_item", "cut_cells", "paste_cells", "paste_cells_many", "clear_cells", "clear_cells_many", "format_cells", "format_cells_many", "toggle_bold", "toggle_bold_many", "autosum", "autosum_many", "sum_selection", "sum_selection_many", "insert_rows", "insert_rows_many", "delete_rows", "delete_rows_many", "insert_columns", "insert_columns_many", "delete_columns", "delete_columns_many", "sort_rows", "sort_rows_many", "fill", "fill_many", "apply_edit", "apply_edit_many", "comment", "delete_comment", "delete_comment_many", "set_settings", "set_settings_many", "import_table", "import_table_many", "read_content", "export_workbook", "export_ods", "export_table", "edit_cells", "edit_cells_many"})
+    __actions__ = frozenset({"read_cells", "new_sheet", "new_sheet_after", "set_title", "set_title_many", "rename_sheet", "rename_sheet_many", "duplicate_sheet", "delete_sheet", "delete_sheet_many", "place_sheet", "place_sheet_many", "move_sheet", "move_sheet_many", "write_cells", "write_cells_many", "set_cells", "set_cells_many", "set_records", "upsert_item", "cut_cells", "paste_cells", "paste_cells_many", "clear_cells", "clear_cells_many", "format_cells", "format_cells_many", "toggle_bold", "toggle_bold_many", "autosum", "autosum_many", "sum_selection", "sum_selection_many", "insert_rows", "insert_rows_many", "delete_rows", "delete_rows_many", "insert_columns", "insert_columns_many", "delete_columns", "delete_columns_many", "sort_rows", "sort_rows_many", "fill", "fill_many", "fill_down", "fill_down_many", "fill_right", "fill_right_many", "apply_edit", "apply_edit_many", "comment", "delete_comment", "delete_comment_many", "set_settings", "set_settings_many", "import_table", "import_table_many", "read_content", "export_workbook", "export_ods", "export_table", "edit_cells", "edit_cells_many"})
 
 
 class Sheet(Resource):
     """Sheet — `tl.so.tilo.sheets.Sheet`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     l36xpi4o: str  # name
     hotvvuda: str  # source
     @property
@@ -872,7 +916,7 @@ class Sheet(Resource):
 
 class Chart(Resource):
     """Chart — `tl.so.tilo.sheets.Chart`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     iipmzvk6: str  # title
     todwcigp: ChartKind  # kind
     urs2nvtf: str  # range
@@ -904,7 +948,7 @@ class Chart(Resource):
 
 class Comment(Resource):
     """Comment — `tl.so.tilo.sheets.Comment`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     fhfswroi: str  # sheet
     lfxsmldw: str  # range
     @property
@@ -989,14 +1033,22 @@ class Comment(Resource):
         """Runs `edit_comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("edit_comment", items)
 
+    def delete_reply(self, *, r: Reply) -> None:
+        """Deletes a reply. Only its author may."""
+        return self.action("delete_reply", r=r)
+
+    def delete_reply_many(self, items: list[DeleteReplyArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_reply` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_reply", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "reply", "resolve", "resolve_many", "edit_comment", "edit_comment_many"})
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "reply", "resolve", "resolve_many", "edit_comment", "edit_comment_many", "delete_reply", "delete_reply_many"})
 
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.sheets.Reply`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     rehztzuy: str  # text
 
     def edit_block(self,
@@ -1052,7 +1104,7 @@ class Reply(Resource):
 
 class SheetInput(Resource):
     """SheetInput — `tl.so.tilo.sheets.SheetInput`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     d4n4c4j6: str  # name
     iitrsrcd: bool  # hidden
     owwnyfq7: dict[str, str]  # cells
@@ -1062,14 +1114,14 @@ class SheetInput(Resource):
 
 class BookInput(Resource):
     """BookInput — `tl.so.tilo.sheets.BookInput`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     z2cfbg2g: list[SheetInput]  # sheets
     ktfpf6rx: str  # currency
 
 
 class RecordsRequest(Resource):
     """RecordsRequest — `tl.so.tilo.sheets.RecordsRequest`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     quawedop: list[dict[str, str]]  # records
     uslgkxn3: int | None  # row
     vstmdg7x: list[str] | None  # columns
@@ -1078,7 +1130,7 @@ class RecordsRequest(Resource):
 
 class UpsertRequest(Resource):
     """UpsertRequest — `tl.so.tilo.sheets.UpsertRequest`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     styf7w4a: list[dict[str, str]]  # records
     s3tgj4q3: dict[str, str]  # matching
     wlypu6mi: dict[str, str]  # value
@@ -1086,14 +1138,14 @@ class UpsertRequest(Resource):
 
 class RecordWrites(Resource):
     """RecordWrites — `tl.so.tilo.sheets.RecordWrites`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     tloxk2t5: dict[str, str]  # cells
     chuotih4: dict[str, str]  # formats
 
 
 class Extent(Resource):
     """Extent — `tl.so.tilo.sheets.Extent`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     @property
     def _5pdxnqaj(self) -> int:
         """columns (`5pdxnqaj` on the wire)."""
@@ -1107,7 +1159,7 @@ class Extent(Resource):
 
 class Sheets(Resource):
     """Sheets — `tl.so.tilo.sheets`."""
-    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    __surface__ = "so.tilo.sheets@a5e1fae72657a2d6"
     def copy_cells(self, *, text: str) -> None:
         """Copies the cells a person chose to their clipboard as a table: a line per row and a tab between columns, which a sheet, a word processor or a mail app reads."""
         return self.action("copy_cells", text=text)

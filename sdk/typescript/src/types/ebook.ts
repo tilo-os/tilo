@@ -22,10 +22,39 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.ebook@3c775f5a9ed1c847";
+export const SURFACE = "so.tilo.ebook@9394eac0c7724627";
 
 /** The arguments of `remove_book`. */
 export interface RemoveBookArgs {
+}
+
+/** The arguments of `set_title`. */
+export interface SetTitleArgs {
+  title: string;
+}
+
+/** The arguments of `set_author`. */
+export interface SetAuthorArgs {
+  author: string;
+}
+
+/** The arguments of `set_subject`. */
+export interface SetSubjectArgs {
+  subject: string;
+}
+
+/** The arguments of `set_language`. */
+export interface SetLanguageArgs {
+  language: string;
+}
+
+/** The arguments of `set_cover`. */
+export interface SetCoverArgs {
+  picture: unknown;
+}
+
+/** The arguments of `clear_cover`. */
+export interface ClearCoverArgs {
 }
 
 /** The arguments of `record_at`. */
@@ -73,6 +102,12 @@ export interface SawBlocksArgs {
   blocks: number[];
 }
 
+/** The arguments of `set_finished`. */
+export interface SetFinishedArgs {
+  who: string;
+  finished?: boolean;
+}
+
 /** The arguments of `highlight`. */
 export interface HighlightArgs {
   chapter: number;
@@ -104,6 +139,12 @@ export interface CommentArgs {
 export interface ChangeColorArgs {
   m: Mark;
   color: string;
+}
+
+/** The arguments of `edit_mark_text`. */
+export interface EditMarkTextArgs {
+  m: Mark;
+  text: string;
 }
 
 /** The arguments of `delete_mark`. */
@@ -179,9 +220,47 @@ export interface SetFaceArgs {
   face: string;
 }
 
+/** The arguments of `add_font`. */
+export interface AddFontArgs {
+  family: string;
+}
+
+/** The arguments of `rename_font`. */
+export interface RenameFontArgs {
+  f: Font;
+  name: string;
+}
+
+/** The arguments of `set_font_size`. */
+export interface SetFontSizeArgs {
+  f: Font;
+  size: number;
+}
+
+/** The arguments of `set_font_shown`. */
+export interface SetFontShownArgs {
+  f: Font;
+  shown: boolean;
+}
+
+/** The arguments of `remove_font`. */
+export interface RemoveFontArgs {
+  f: Font;
+}
+
 /** The arguments of `set_justified`. */
 export interface SetJustifiedArgs {
   on: boolean;
+}
+
+/** The arguments of `set_shelf_sort`. */
+export interface SetShelfSortArgs {
+  order: string;
+}
+
+/** The arguments of `set_hide_finished`. */
+export interface SetHideFinishedArgs {
+  hidden: boolean;
 }
 
 /** The arguments of `cycle_scheme`. */
@@ -230,6 +309,40 @@ export interface Book extends tilo.Resource {
   remove_book(): Promise<void>;
   /** Runs `remove_book` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   remove_bookMany(items: RemoveBookArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Gives `b` the title a person reads it by. */
+  set_title(args: {
+    title: string;
+  }): Promise<void>;
+  /** Runs `set_title` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_titleMany(items: SetTitleArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Gives `b` its author, or leaves it without one. */
+  set_author(args: {
+    author: string;
+  }): Promise<void>;
+  /** Runs `set_author` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_authorMany(items: SetAuthorArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Gives `b` the subject line its card and its shelf filters say. */
+  set_subject(args: {
+    subject: string;
+  }): Promise<void>;
+  /** Runs `set_subject` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_subjectMany(items: SetSubjectArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets the language `b` is set in, for its hyphenation. */
+  set_language(args: {
+    language: string;
+  }): Promise<void>;
+  /** Runs `set_language` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_languageMany(items: SetLanguageArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts `picture` on `b` as its cover. */
+  set_cover(args: {
+    picture: unknown;
+  }): Promise<void>;
+  /** Runs `set_cover` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_coverMany(items: SetCoverArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes a cover off `b`, so its card draws the book's own art. */
+  clear_cover(): Promise<void>;
+  /** Runs `clear_cover` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clear_coverMany(items: ClearCoverArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Where the person reading is in `b`: their own record, changed in place so its history says where they read and when. */
   record_at(args: {
     who: string;
@@ -281,6 +394,13 @@ export interface Book extends tilo.Resource {
   }): Promise<void>;
   /** Runs `saw_blocks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   saw_blocksMany(items: SawBlocksArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Marks `b` finished for the person reading it, or starts it again. */
+  set_finished(args: {
+    who: string;
+    finished?: boolean;
+  }): Promise<void>;
+  /** Runs `set_finished` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_finishedMany(items: SetFinishedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Highlights the passage of `b`'s open chapter: its ranges, each `block, start, end`. */
   highlight(args: {
     chapter: number;
@@ -319,6 +439,13 @@ export interface Book extends tilo.Resource {
   }): Promise<void>;
   /** Runs `change_color` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   change_colorMany(items: ChangeColorArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Rewrites what a note or a comment says. Only its author may. */
+  edit_mark_text(args: {
+    m: Mark;
+    text: string;
+  }): Promise<void>;
+  /** Runs `edit_mark_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  edit_mark_textMany(items: EditMarkTextArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Deletes a mark, and the comments on it. */
   delete_mark(args: {
     m: Mark;
@@ -329,7 +456,7 @@ export interface Book extends tilo.Resource {
 
 /** The actions `Book` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const BOOK_ACTIONS = ["remove_book", "remove_bookMany", "record_at", "record_atMany", "read_chapter", "read_chapterMany", "show_page", "show_pageMany", "show_passage", "show_passageMany", "show_place", "show_placeMany", "saw_blocks", "saw_blocksMany", "highlight", "highlightMany", "add_note", "add_noteMany", "toggle_bookmark", "toggle_bookmarkMany", "comment", "commentMany", "change_color", "change_colorMany", "delete_mark", "delete_markMany"] as const;
+export const BOOK_ACTIONS = ["remove_book", "remove_bookMany", "set_title", "set_titleMany", "set_author", "set_authorMany", "set_subject", "set_subjectMany", "set_language", "set_languageMany", "set_cover", "set_coverMany", "clear_cover", "clear_coverMany", "record_at", "record_atMany", "read_chapter", "read_chapterMany", "show_page", "show_pageMany", "show_passage", "show_passageMany", "show_place", "show_placeMany", "saw_blocks", "saw_blocksMany", "set_finished", "set_finishedMany", "highlight", "highlightMany", "add_note", "add_noteMany", "toggle_bookmark", "toggle_bookmarkMany", "comment", "commentMany", "change_color", "change_colorMany", "edit_mark_text", "edit_mark_textMany", "delete_mark", "delete_markMany"] as const;
 
 /** The `tl.so.tilo.ebook.Book` kind at `path`. */
 export function book(ws: tilo.Workspace, path: string): Book {
@@ -424,6 +551,7 @@ export interface Progress extends tilo.Resource {
   dozgglst: number;  // block
   j7r2dpph: number;  // page
   t4pdkbb6: number;  // place
+  m5vjvjxn: boolean;  // finished
   vpcehkho: string;  // at
 }
 
@@ -452,6 +580,24 @@ export const SCHEME_ACTIONS = [] as const;
 /** The `tl.so.tilo.ebook.Scheme` kind at `path`. */
 export function scheme(ws: tilo.Workspace, path: string): Scheme {
   return resourceProxy(ws, path, SURFACE, SCHEME_ACTIONS) as unknown as Scheme;
+}
+
+/** Font — `tl.so.tilo.ebook.Font`. */
+export interface Font extends tilo.Resource {
+  jlawoyck: string;  // family
+  w2n5kzdl: string;  // name
+  "6pky4ug3": number;  // size
+  qxdff5v3: boolean;  // shown
+  "7bsrqnib": boolean;  // builtin
+}
+
+/** The actions `Font` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FONT_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.ebook.Font` kind at `path`. */
+export function font(ws: tilo.Workspace, path: string): Font {
+  return resourceProxy(ws, path, SURFACE, FONT_ACTIONS) as unknown as Font;
 }
 
 /** Found — `tl.so.tilo.ebook.Found`. */
@@ -499,11 +645,14 @@ export interface Library extends tilo.Resource {
   "5umaklng": string;  // face
   "4nrbbruw": boolean;  // justified
   q2xeecyu: string;  // scheme
+  obt3nk5o: Array<tilo.Entry<Font>>;  // fonts
   "7iepiv5z": string;  // draft_scheme
   wc5z47pj: string;  // custom_page
   yiozk22e: string;  // custom_ink
   dww4lfs6: string;  // draft_folder
   trpwrvrr: Array<tilo.Entry<Watched>>;  // folders
+  rmk5y2dl: string;  // sort_by
+  iw7jv3y3: boolean;  // hide_finished
   /** Adds the EPUB `file` to the shelf and opens it. Its title, author and language are the book's own; each chapter becomes a resource holding its words, so the book is searchable and a reader opens the chapter they are at. */
   open_book(args: {
     file: unknown;
@@ -548,12 +697,57 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_face` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_faceMany(items: SetFaceArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Adds the family `family`, which this device has, to the reader's faces. */
+  add_font(args: {
+    family: string;
+  }): Promise<void>;
+  /** Runs `add_font` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  add_fontMany(items: AddFontArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Gives the face `f` the name a person reads it by; empty calls it what its family is. */
+  rename_font(args: {
+    f: Font;
+    name: string;
+  }): Promise<void>;
+  /** Runs `rename_font` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rename_fontMany(items: RenameFontArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets how large the face `f` reads beside the others. */
+  set_font_size(args: {
+    f: Font;
+    size: number;
+  }): Promise<void>;
+  /** Runs `set_font_size` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_font_sizeMany(items: SetFontSizeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Says whether the face `f` appears in the reader's picker. */
+  set_font_shown(args: {
+    f: Font;
+    shown: boolean;
+  }): Promise<void>;
+  /** Runs `set_font_shown` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_font_shownMany(items: SetFontShownArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes a face of the person's own out of the reader's picker. */
+  remove_font(args: {
+    f: Font;
+  }): Promise<void>;
+  /** Runs `remove_font` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remove_fontMany(items: RemoveFontArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Whether the page's paragraphs are justified. */
   set_justified(args: {
     on: boolean;
   }): Promise<void>;
   /** Runs `set_justified` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_justifiedMany(items: SetJustifiedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Orders the shelf by title, by author, or by the books added last. */
+  set_shelf_sort(args: {
+    order: string;
+  }): Promise<void>;
+  /** Runs `set_shelf_sort` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_shelf_sortMany(items: SetShelfSortArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Leaves the books a person finished off the shelf, or shows them again. */
+  set_hide_finished(args: {
+    hidden: boolean;
+  }): Promise<void>;
+  /** Runs `set_hide_finished` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_hide_finishedMany(items: SetHideFinishedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Steps to the next palette the reader ships with: its bar's quick switch. */
   cycle_scheme(): Promise<void>;
   /** Runs `cycle_scheme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -596,20 +790,39 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["open_book", "drop_books", "drop_booksMany", "watch_folder", "watch_folderMany", "scan_folder", "scan_folderMany", "foldered", "folderedMany", "set_text_size", "set_text_sizeMany", "set_line_spacing", "set_line_spacingMany", "set_face", "set_faceMany", "set_justified", "set_justifiedMany", "cycle_scheme", "cycle_schemeMany", "set_scheme", "set_schemeMany", "add_scheme", "add_schemeMany", "delete_scheme", "delete_schemeMany", "find_books", "find_booksMany", "download_found", "clear_found", "clear_foundMany"] as const;
+export const LIBRARY_ACTIONS = ["open_book", "drop_books", "drop_booksMany", "watch_folder", "watch_folderMany", "scan_folder", "scan_folderMany", "foldered", "folderedMany", "set_text_size", "set_text_sizeMany", "set_line_spacing", "set_line_spacingMany", "set_face", "set_faceMany", "add_font", "add_fontMany", "rename_font", "rename_fontMany", "set_font_size", "set_font_sizeMany", "set_font_shown", "set_font_shownMany", "remove_font", "remove_fontMany", "set_justified", "set_justifiedMany", "set_shelf_sort", "set_shelf_sortMany", "set_hide_finished", "set_hide_finishedMany", "cycle_scheme", "cycle_schemeMany", "set_scheme", "set_schemeMany", "add_scheme", "add_schemeMany", "delete_scheme", "delete_schemeMany", "find_books", "find_booksMany", "download_found", "clear_found", "clear_foundMany"] as const;
 
 /** The `tl.so.tilo.ebook.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
   return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
 }
 
+/** Highlight — `tl.so.tilo.ebook.Highlight`. */
+export interface Highlight extends tilo.Resource {
+  "2mud3bws": string;  // name
+  ztqdbzwg: string;  // value
+}
+
+/** The actions `Highlight` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const HIGHLIGHT_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.ebook.Highlight` kind at `path`. */
+export function highlight(ws: tilo.Workspace, path: string): Highlight {
+  return resourceProxy(ws, path, SURFACE, HIGHLIGHT_ACTIONS) as unknown as Highlight;
+}
+
 /** Books — `tl.so.tilo.ebook`. */
 export interface Ebook extends tilo.Resource {
+  /** Copies a passage, so it can be pasted anywhere: what a selection's Copy does. */
+  copy_passage(args: {
+    text: string;
+  }): Promise<void>;
 }
 
 /** The actions `Ebook` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const EBOOK_ACTIONS = [] as const;
+export const EBOOK_ACTIONS = ["copy_passage"] as const;
 
 /** The `tl.so.tilo.ebook` kind at `path`. */
 export function ebook(ws: tilo.Workspace, path: string): Ebook {

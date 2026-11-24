@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.weather@e5dcf21ad5da326c";
+export const SURFACE = "so.tilo.weather@7872d52c5968bf1a";
 
 /** The arguments of `use_as_default`. */
 export interface UseAsDefaultArgs {
@@ -46,6 +46,10 @@ export interface StopRefreshArgs {
 /** The arguments of `retry_place`. */
 export interface RetryPlaceArgs {
   place: Place;
+}
+
+/** The arguments of `read_next`. */
+export interface ReadNextArgs {
 }
 
 /** The arguments of `poll_weather`. */
@@ -169,11 +173,17 @@ export interface Place extends tilo.Resource {
   "42oai4b2": string | null;  // fetched
   lkrdcuut: boolean;  // stale
   ckqlainl: string;  // trouble
+  /** Reads one place's forecast and air quality. One failing leaves the other's answer standing, and a place the service did not answer keeps what it had and says why. */
+  read_place(): Promise<boolean>;
+  /** The forecast a service answered, written into the place: its current reading, a day of hours and a week of days. False when the body is not a forecast the service could have sent. */
+  apply_forecast(args: {
+    body: string;
+  }): Promise<boolean>;
 }
 
 /** The actions `Place` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PLACE_ACTIONS = [] as const;
+export const PLACE_ACTIONS = ["read_place", "apply_forecast"] as const;
 
 /** The `tl.so.tilo.weather.Place` kind at `path`. */
 export function place(ws: tilo.Workspace, path: string): Place {
@@ -182,8 +192,8 @@ export function place(ws: tilo.Workspace, path: string): Place {
 
 /** Refresh — `tl.so.tilo.weather.Refresh`. */
 export interface Refresh extends tilo.Resource {
-  j4qvmrkj: string;  // job
   "6a665z7q": string;  // state
+  vawmqqsv: string[];  // waiting
   umztfj5e: number;  // done
   "6an5syvf": number;  // total
   lrbilhih: number;  // failed
@@ -223,8 +233,6 @@ export function found(ws: tilo.Workspace, path: string): Found {
 export interface Searching extends tilo.Resource {
   fmhvvp6l: string;  // wanted
   o4whnz6t: string;  // asked
-  xx2oi6v5: string;  // job
-  cqmaksmt: boolean;  // searching
   "5o5rohu5": Array<tilo.Entry<Found>>;  // found
   wgepvfwu: string;  // note
 }
@@ -275,7 +283,7 @@ export interface Locations extends tilo.Resource {
   /** Runs `remove_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   remove_placeMany(items: RemovePlaceArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
-  /** Stops an update that is running. */
+  /** Stops an update that is running; the places it had not read keep what they had. */
   stop_refresh(): Promise<void>;
   /** Runs `stop_refresh` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stop_refreshMany(items: StopRefreshArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -285,11 +293,15 @@ export interface Locations extends tilo.Resource {
   }): Promise<void>;
   /** Runs `retry_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   retry_placeMany(items: RetryPlaceArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Takes what the device has read so far: each place's answer as it lands, and what the service says of it. What an update reads is nobody's step of their own, so landing it says nothing and offers no undo of its own. A second read of the same place replaces the first. */
+  /** Reads one place an update has still to read, and says when the update has read them all. */
+  read_next(): Promise<void>;
+  /** Runs `read_next` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  read_nextMany(items: ReadNextArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes what the last read found: a place's reading and its hours and days land together, and the search's rows beside the field. What an update reads is nobody's step of their own, so landing it says nothing and offers no undo of its own. A second read of the same place replaces the first. */
   poll_weather(): Promise<void>;
   /** Runs `poll_weather` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   poll_weatherMany(items: PollWeatherArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Looks for places by name. The device asks the service away from the frame; the window takes the rows as they land. */
+  /** Looks for places by name: the window asks the service once per query as it is typed. */
   begin_search(): Promise<Searching>;
   /** Empties the field and stops looking. */
   end_search(args: {
@@ -313,154 +325,11 @@ export interface Locations extends tilo.Resource {
 
 /** The actions `Locations` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LOCATIONS_ACTIONS = ["save_place", "use_as_default", "use_as_defaultMany", "move_to_top", "move_to_topMany", "remove_place", "remove_placeMany", "stop_refresh", "stop_refreshMany", "retry_place", "retry_placeMany", "poll_weather", "poll_weatherMany", "begin_search", "end_search", "end_searchMany", "add_found", "accept_found", "accept_foundMany"] as const;
+export const LOCATIONS_ACTIONS = ["save_place", "use_as_default", "use_as_defaultMany", "move_to_top", "move_to_topMany", "remove_place", "remove_placeMany", "stop_refresh", "stop_refreshMany", "retry_place", "retry_placeMany", "read_next", "read_nextMany", "poll_weather", "poll_weatherMany", "begin_search", "end_search", "end_searchMany", "add_found", "accept_found", "accept_foundMany"] as const;
 
 /** The `tl.so.tilo.weather.Locations` kind at `path`. */
 export function locations(ws: tilo.Workspace, path: string): Locations {
   return resourceProxy(ws, path, SURFACE, LOCATIONS_ACTIONS) as unknown as Locations;
-}
-
-/** Ask — `tl.so.tilo.weather.Ask`. */
-export interface Ask extends tilo.Resource {
-  wf3zmolm: AskPlace[];  // places
-}
-
-/** The actions `Ask` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const ASK_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.weather.Ask` kind at `path`. */
-export function ask(ws: tilo.Workspace, path: string): Ask {
-  return resourceProxy(ws, path, SURFACE, ASK_ACTIONS) as unknown as Ask;
-}
-
-/** AskPlace — `tl.so.tilo.weather.AskPlace`. */
-export interface AskPlace extends tilo.Resource {
-  gdy7duy6: string;  // place_id
-  "5btxbecx": number;  // latitude
-  dcshjxzm: number;  // longitude
-}
-
-/** The actions `AskPlace` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const ASKPLACE_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.weather.AskPlace` kind at `path`. */
-export function askPlace(ws: tilo.Workspace, path: string): AskPlace {
-  return resourceProxy(ws, path, SURFACE, ASKPLACE_ACTIONS) as unknown as AskPlace;
-}
-
-/** SearchAsk — `tl.so.tilo.weather.SearchAsk`. */
-export interface SearchAsk extends tilo.Resource {
-  "4opjitfa": string;  // query
-}
-
-/** The actions `SearchAsk` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const SEARCHASK_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.weather.SearchAsk` kind at `path`. */
-export function searchAsk(ws: tilo.Workspace, path: string): SearchAsk {
-  return resourceProxy(ws, path, SURFACE, SEARCHASK_ACTIONS) as unknown as SearchAsk;
-}
-
-/** TakeAsk — `tl.so.tilo.weather.TakeAsk`. */
-export interface TakeAsk extends tilo.Resource {
-  "6vnqzh4l": string;  // job
-}
-
-/** The actions `TakeAsk` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const TAKEASK_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.weather.TakeAsk` kind at `path`. */
-export function takeAsk(ws: tilo.Workspace, path: string): TakeAsk {
-  return resourceProxy(ws, path, SURFACE, TAKEASK_ACTIONS) as unknown as TakeAsk;
-}
-
-/** Job — `tl.so.tilo.weather.Job`. */
-export interface Job extends tilo.Resource {
-  lwhvatgx: string;  // state
-  ka2h5wk7: number;  // done
-  lbqaguom: number;  // total
-}
-
-/** The actions `Job` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const JOB_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.weather.Job` kind at `path`. */
-export function job(ws: tilo.Workspace, path: string): Job {
-  return resourceProxy(ws, path, SURFACE, JOB_ACTIONS) as unknown as Job;
-}
-
-/** Taken — `tl.so.tilo.weather.Taken`. */
-export interface Taken extends tilo.Resource {
-  gbqubsmc: string[];  // answers
-  d4onixyo: string[];  // places
-  ra4o5i2z: string;  // error
-}
-
-/** The actions `Taken` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const TAKEN_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.weather.Taken` kind at `path`. */
-export function taken(ws: tilo.Workspace, path: string): Taken {
-  return resourceProxy(ws, path, SURFACE, TAKEN_ACTIONS) as unknown as Taken;
-}
-
-/** Answer — `tl.so.tilo.weather.Answer`. */
-export interface Answer extends tilo.Resource {
-  "5prprzwo": string;  // place_id
-  papzs3jy: boolean;  // ok
-  "2t7oi34p": string;  // reason
-  opdrm37r: number;  // status
-  oh3swlwe: string;  // message
-  szxryqtq: number;  // fetched
-  udln4y7a: string;  // time
-  bt4m22bz: number;  // temperature
-  "5wz5vx2n": number;  // apparent
-  kk67hrwa: number;  // humidity
-  wssxi3hh: number;  // precipitation
-  z2xmdn5s: number;  // code
-  "45ln3j6b": number;  // wind
-  "7sdt6b3s": number;  // wind_from
-  "6pbvus4v": number;  // pressure
-  "7twngswb": number;  // uv
-  gfeyv7li: boolean;  // is_day
-  do7cloel: string[];  // hour_at
-  adqc7myi: number[];  // hour_temp
-  m4tdmh3g: number[];  // hour_chance
-  "6w6giapb": number[];  // hour_code
-  ercv5gi6: boolean[];  // hour_day
-  "6vlbpjn2": string[];  // day_date
-  xpkpnifa: number[];  // day_weekday
-  "7mza74v3": number[];  // day_high
-  v5etkrnq: number[];  // day_low
-  lsdyx245: number[];  // day_chance
-  hw7afts4: number[];  // day_code
-  rv4jwm5h: number[];  // day_wind
-  eksw2wiu: number[];  // day_uv
-  cl5k7le3: string[];  // day_rise
-  zjervfc5: string[];  // day_set
-  "4kcw2w6l": boolean;  // air_ok
-  clhldsl6: string;  // air_at
-  fxpfimss: number | null;  // air_european
-  zhjhkay7: number | null;  // air_us
-  "55ge75je": number | null;  // air_pm2_5
-  "363wfecw": number | null;  // air_pm10
-  w77tgu5z: number | null;  // air_no2
-  qo2ngnib: number | null;  // air_ozone
-}
-
-/** The actions `Answer` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const ANSWER_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.weather.Answer` kind at `path`. */
-export function answer(ws: tilo.Workspace, path: string): Answer {
-  return resourceProxy(ws, path, SURFACE, ANSWER_ACTIONS) as unknown as Answer;
 }
 
 /** Weather — `tl.so.tilo.weather`. */
