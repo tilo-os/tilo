@@ -320,15 +320,15 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
             // what was delivered to it.
             let notes_app = rig.app_caller(&env, NOTES_PEER, NOTES, None).await;
             let agent = rig.caller(&env, 905, Some("scribe")).await;
-            let asked = id(0xc4b1);
-            invoke(&agent.handle, asked).await.unwrap();
+            let begun = id(0xc4b1);
+            invoke(&agent.handle, begun).await.unwrap();
             rig.stream.as_ref().unwrap().read().await.unwrap();
             let notes = &mut notes;
 
             // An edit continuing an edit, and a read, stay within it.
-            let edit = new_note(Some(asked));
+            let edit = new_note(Some(begun));
             let edit = ran(notes, &edit, &app_asks(&app, edit.clone()).await);
-            let read = notebook("read-page", asked);
+            let read = notebook("read-page", begun);
             let read = ran(notes, &read, &app_asks(&app, read.clone()).await);
 
             // The agent may edit Notes, but what continues its read reads:
