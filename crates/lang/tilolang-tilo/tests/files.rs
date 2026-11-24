@@ -625,10 +625,17 @@ impl Files {
     }
 
     fn window(&self) -> ViewInstance {
-        self.host
+        let mut window = self
+            .host
             .runtime()
             .open_view(&me(), &self.view, vec![Value::resource(&self.root)])
-            .expect("the window opens")
+            .expect("the window opens");
+        // These tests read the whole window, its cards and its rows alike, where a window on a
+        // screen reads the rows it shows: every row and every view inside one stands in the tree.
+        window
+            .set_lazy_rows(false)
+            .expect("the window's rows stand");
+        window
     }
 
     fn root_value(&self) -> Value {
