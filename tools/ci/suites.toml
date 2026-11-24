@@ -1471,28 +1471,6 @@ inputs = ["crates/ui/ui-core/assets/fonts/", "tools/font-catalog.py"]
 readers = ["crates/ui/font-catalog/build.rs"]
 
 [[cargo]]
-package = "tilo-agent-session"
-# The session tests mount apps against the controlled font fixture and share
-# the browser peer's server test support, and its typed-read tests name the
-# surface of an app read from that app's own committed file. One flow starts
-# the calendar server the holder's own tests start, from its source.
-inputs = [
-  "crates/core/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
-  "crates/ui/ui-core/assets/fonts/",
-  "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
-  "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
-  "crates/core/session-client/tests/support/",
-  "docs/tilo-sh/pages.toml",
-  "tools/with-test-environment.sh",
-]
-# One test binary includes the fixtures every file shares, the two examples
-# reuse the workspace-actions one, and the surface tests read the app's. The
-# update test carries the Notes and Tasks surfaces an earlier build wrote.
-readers = [
-  "crates/core/agent-session/tests/it.rs",
-]
-
-[[cargo]]
 package = "tilo-workspace-service"
 # The packaged-model tests bind actions against the surface the Clocks app
 # ships, read from the tree; the module its package carries comes from the
