@@ -20,13 +20,12 @@ use std::thread;
 
 use collab_types::PeerPresence;
 use runtime_collab::wire::{
-    Call, ContextUpdate, Event, FRAMING, HostFrame, Operation, Publication, Reply, Service,
-    Topic,
+    Call, ContextUpdate, Event, FRAMING, HostFrame, Operation, Publication, Reply, Service, Topic,
 };
 use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply as Store};
-use tilo_ui::collaboration::CollaborationManager;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::mpsc;
+use ui_core::collaboration::CollaborationManager;
 use uuid::Uuid;
 
 const TEST_APP_ID: &str = "ui-integration-test";
@@ -206,7 +205,7 @@ impl TypedBroker {
     /// `app_id` workspace.
     fn wait_subscribed(&self, app_id: &str, peer: u64, user_id: &str) {
         let channel =
-            tilo_ui::collaboration::channel_key::format(app_id, &Uuid::nil().to_string(), "");
+            ui_core::collaboration::channel_key::format(app_id, &Uuid::nil().to_string(), "");
         tilo_test_env::wait_until(
             format!("{user_id}'s record and presence subscriptions on {channel}"),
             || {
@@ -393,7 +392,7 @@ impl Connection {
                 tokio::task::spawn_local(async move {
                     while let Some(presence) = rx.recv().await {
                         deliver(Event::Presence {
-                            member: tilo_ui::permissions::MemberId::person(presence.author),
+                            member: ui_core::permissions::MemberId::person(presence.author),
                             presence: presence.presence,
                         });
                     }
@@ -418,4 +417,28 @@ impl Connection {
         drop(channels);
         Ok(task.abort_handle())
     }
+}
+
+/// A real change of a record that sets its `body` to `bytes`: what an app hands its record's
+/// store.
+pub fn change_carrying(bytes: Vec<u8>) -> Vec<u8> {
+    use automerge::transaction::Transactable as _;
+    let mut doc = automerge::AutoCommit::new();
+    doc.put(
+        automerge::ROOT,
+        "body",
+        automerge::ScalarValue::Bytes(bytes),
+    )
+    .unwrap();
+    doc.commit();
+    doc.save_after(&[])
+}
+
+/// Each change `bytes` carries, as the store takes and hands them on.
+pub fn changes_of(bytes: &[u8]) -> Vec<Vec<u8>> {
+    collab_types::parse_changes(bytes)
+        .unwrap()
+        .iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect()
 }

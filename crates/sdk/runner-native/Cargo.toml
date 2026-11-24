@@ -22,6 +22,8 @@ dx12-shader-cache = ["ui-core/dx12-shader-cache"]
 
 [dependencies]
 ui-core = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["native"] }
+# The Automerge workers an app's binary is started as; `run` serves them before the app starts.
+tilo-automerge-isolate.workspace = true
 
 # Location and screen capture through the XDG Desktop Portal exist only on
 # Linux; this is the one place the SDK turns them on, so no app selects a

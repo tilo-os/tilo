@@ -1,12 +1,12 @@
 use std::thread;
 use std::time::Duration;
 
-use crate::support::typed_collab::TypedBroker;
-use tilo_ui::app::App;
-use tilo_ui::collaboration::PresencePayload;
-use tilo_ui::presence::PresenceKey;
-use tilo_ui::state::State;
-use tilo_ui::widget::Container;
+use crate::support_collab::TypedBroker;
+use ui_core::app::App;
+use ui_core::collaboration::PresencePayload;
+use ui_core::presence::PresenceKey;
+use ui_core::state::State;
+use ui_core::widget::Container;
 
 #[test]
 fn cross_process_pump_lands_remote_cursor_on_peer_b() {
@@ -32,7 +32,7 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
         app_b.pump_collab_presence();
         app_b
             .presence_ctx()
-            .pointer_for(&key, &tilo_ui::permissions::MemberId::person("peer-a"))
+            .pointer_for(&key, &ui_core::permissions::MemberId::person("peer-a"))
             == Some((320.0, 240.0))
     });
 
@@ -40,11 +40,11 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
     let alice = presence
         .remote_cursors
         .iter()
-        .find(|c| c.member == tilo_ui::permissions::MemberId::person("peer-a"))
+        .find(|c| c.member == ui_core::permissions::MemberId::person("peer-a"))
         .expect("peer-a's pointer populates App B's remote cursors");
     assert_eq!(alice.position, [320.0, 240.0]);
     assert_eq!(
-        presence.pointer_for(&key, &tilo_ui::permissions::MemberId::person("peer-a")),
+        presence.pointer_for(&key, &ui_core::permissions::MemberId::person("peer-a")),
         Some((320.0, 240.0)),
     );
 
@@ -55,6 +55,6 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
             .presence_ctx()
             .remote_cursors
             .iter()
-            .all(|c| c.member != tilo_ui::permissions::MemberId::person("peer-a"))
+            .all(|c| c.member != ui_core::permissions::MemberId::person("peer-a"))
     });
 }

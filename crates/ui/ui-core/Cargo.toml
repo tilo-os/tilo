@@ -305,8 +305,6 @@ media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
-# The Automerge workers an app's binary is started as; `launch::run` serves them.
-tilo-automerge-isolate.workspace = true
 # The collaborative filesystem's records and history protocol, read by the
 # file history and conflict widgets.
 fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../../core/fs-protocol" }
@@ -429,8 +427,6 @@ tokio = { workspace = true, features = ["test-util"] }
 tilo-process-services = { path = "../../sdk/tilo-process-services", features = ["test-support"] }
 # The settings capability the shell hands an app, served by the fake broker.
 runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab", features = ["settings-host"] }
-# The device store's record commands the typed test host answers.
-tilo-resource-store = { path = "../../core/resource-store" }
 
 [[test]]
 name = "it"

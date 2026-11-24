@@ -23,9 +23,6 @@ mod support;
 
 #[path = "accessibility_geometry.rs"]
 mod accessibility_geometry;
-#[cfg(unix)]
-#[path = "coedit_keystone.rs"]
-mod coedit_keystone;
 #[path = "colorpicker_hex_input.rs"]
 mod colorpicker_hex_input;
 #[path = "component_text_input.rs"]
@@ -38,9 +35,6 @@ mod control_label_stays_inside_its_control;
 mod control_row_alignment;
 #[path = "controls_out_of_view_rest.rs"]
 mod controls_out_of_view_rest;
-#[cfg(unix)]
-#[path = "cross_process_presence_pump.rs"]
-mod cross_process_presence_pump;
 #[path = "data_table_test.rs"]
 mod data_table_test;
 #[path = "data_widget_text_alignment.rs"]
@@ -68,17 +62,8 @@ mod headless_app_test;
 mod immersive_widget_geometry;
 #[path = "incremental_render_regressions.rs"]
 mod incremental_render_regressions;
-#[cfg(unix)]
-#[path = "large_document_transfer.rs"]
-mod large_document_transfer;
-#[cfg(unix)]
-#[path = "large_frame_reassembly.rs"]
-mod large_frame_reassembly;
 #[path = "layout_walk_lists_each_child_once.rs"]
 mod layout_walk_lists_each_child_once;
-#[cfg(unix)]
-#[path = "live_text_sync.rs"]
-mod live_text_sync;
 #[path = "local_identity_is_a_person.rs"]
 mod local_identity_is_a_person;
 #[path = "menu_highlight_render.rs"]
@@ -103,12 +88,6 @@ mod presence_experience_test;
 mod process_entry_points;
 #[path = "profiling.rs"]
 mod profiling;
-#[cfg(unix)]
-#[path = "real_socket_n_peer.rs"]
-mod real_socket_n_peer;
-#[cfg(unix)]
-#[path = "real_socket_two_peer.rs"]
-mod real_socket_two_peer;
 #[path = "remote_cursor_presence.rs"]
 mod remote_cursor_presence;
 #[path = "resize_reflow_test.rs"]

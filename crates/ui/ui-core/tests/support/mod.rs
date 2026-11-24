@@ -14,8 +14,6 @@
 
 pub mod evidence;
 pub mod render;
-#[cfg(unix)]
-pub mod typed_collab;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -223,30 +221,6 @@ fn broadcast_to_others(
 
 pub fn document_mutation(event: &CollabEvent) -> Option<collab_types::DocumentMutation> {
     event.document_mutation().cloned()
-}
-
-/// A real change of a record that sets its `body` to `bytes`: what an app
-/// hands its record's store.
-pub fn change_carrying(bytes: Vec<u8>) -> Vec<u8> {
-    use automerge::transaction::Transactable as _;
-    let mut doc = automerge::AutoCommit::new();
-    doc.put(
-        automerge::ROOT,
-        "body",
-        automerge::ScalarValue::Bytes(bytes),
-    )
-    .unwrap();
-    doc.commit();
-    doc.save_after(&[])
-}
-
-/// Each change `bytes` carries, as the store takes and hands them on.
-pub fn changes_of(bytes: &[u8]) -> Vec<Vec<u8>> {
-    collab_types::parse_changes(bytes)
-        .unwrap()
-        .iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect()
 }
 
 /// Build a minimal headless `App` paired with a `Peer` for integration tests.

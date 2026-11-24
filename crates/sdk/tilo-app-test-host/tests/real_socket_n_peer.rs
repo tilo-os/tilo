@@ -11,9 +11,9 @@
 //!      distinct — and A never receives its own presence back.
 //!
 
-use crate::support::{document_mutation, typed_collab::TypedBroker};
-use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
-use tilo_ui::presence::PresenceKey;
+use crate::support_collab::TypedBroker;
+use ui_core::collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use ui_core::presence::PresenceKey;
 
 #[test]
 fn n_peer_fanout_and_per_peer_attribution() {
@@ -32,7 +32,7 @@ fn n_peer_fanout_and_per_peer_attribution() {
         evs.iter()
             .filter(|event| {
                 matches!(
-                    document_mutation(event),
+                    event.document_mutation().cloned(),
                     Some(collab_types::DocumentMutation::Incremental(data)) if data == b"X"
                 )
             })
@@ -71,7 +71,7 @@ fn n_peer_fanout_and_per_peer_attribution() {
         key: PresenceKey::Workspace { id: "2".into() },
         payload: PresencePayload::Pointer { x: 2.0, y: 2.0 },
     });
-    let uid_for = |evs: &[CollabEvent], ws: &str| -> Option<tilo_ui::permissions::MemberId> {
+    let uid_for = |evs: &[CollabEvent], ws: &str| -> Option<ui_core::permissions::MemberId> {
         evs.iter().find_map(|e| match e {
             CollabEvent::RemotePresenceUpdate {
                 member,
@@ -95,12 +95,12 @@ fn n_peer_fanout_and_per_peer_attribution() {
     // weaker check would still pass if the broker swapped them.
     assert_eq!(
         uid_a,
-        tilo_ui::permissions::MemberId::person("peer-a"),
+        ui_core::permissions::MemberId::person("peer-a"),
         "A's presence must be attributed to A"
     );
     assert_eq!(
         uid_b,
-        tilo_ui::permissions::MemberId::person("peer-b"),
+        ui_core::permissions::MemberId::person("peer-b"),
         "B's presence must be attributed to B"
     );
     assert_ne!(uid_a, uid_b, "A and B must be attributed distinct user ids");

@@ -5,7 +5,7 @@
 //!
 //! Runs against the production typed protocol: two real
 //! `CollaborationManager`s over collaboration-wire Unix sockets, real `automerge` documents, and the real
-//! `tilo_ui::widget::TextInput` render pass — no mocks of the thing under test.
+//! `ui_core::widget::TextInput` render pass — no mocks of the thing under test.
 //!
 //! Three proofs: converged co-edit renders identically on both peers
 //! (`peer_edit_converges_...`), a caret round-trips through the real
@@ -18,21 +18,22 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use collab_types::CommitNamed as _;
 
-use tilo_ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::MemberId;
-use tilo_ui::presence::{PathSegment, PresenceCtx, PresenceKey};
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::{TextInput, Widget};
+use ui_core::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
+use ui_core::offscreen::OffscreenRenderer;
+use ui_core::permissions::MemberId;
+use ui_core::presence::{PathSegment, PresenceCtx, PresenceKey};
+use ui_core::text_render::TextRenderer;
+use ui_core::theme::Theme;
+use ui_core::widget::{TextInput, Widget};
 
-use crate::support::typed_collab::TypedBroker;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
+use crate::support_collab::TypedBroker;
+use ui_core::vello::Scene;
+use ui_core::vello::kurbo::{Affine, Point};
+use ui_core::vello::peniko::Color;
 
 use std::collections::HashMap;
-use taffy::prelude::*;
+use ui_core::taffy;
+use ui_core::taffy::prelude::*;
 
 const W: u32 = 480;
 const H: u32 = 120;
@@ -194,7 +195,7 @@ fn render_widget(mut input: TextInput, doc: &AutoCommit, presence: &PresenceCtx)
     (&mut input as &mut dyn Widget).apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    (&mut input as &mut dyn Widget).draw(&mut tilo_ui::draw::DrawCtx::new(
+    (&mut input as &mut dyn Widget).draw(&mut ui_core::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
@@ -210,7 +211,7 @@ fn render_widget(mut input: TextInput, doc: &AutoCommit, presence: &PresenceCtx)
 
 fn render_bound(doc: &AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> LocalRender {
     let mut input = TextInput::new(Vec::new())
-        .with_text_role(tilo_ui::TextRole::LargeTitle)
+        .with_text_role(ui_core::TextRole::LargeTitle)
         .with_plain_chrome();
     input.bind_text(bound.clone());
     render_widget(input, doc, presence)
@@ -220,7 +221,7 @@ fn render_bound(doc: &AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> Loca
 /// the same key paints into this widget's local render.
 fn render_presence_probe(path: Vec<PathSegment>, presence: &PresenceCtx) -> LocalRender {
     let input = TextInput::new(path)
-        .with_text_role(tilo_ui::TextRole::LargeTitle)
+        .with_text_role(ui_core::TextRole::LargeTitle)
         .with_plain_chrome();
     let throwaway = AutoCommit::new();
     render_widget(input, &throwaway, presence)

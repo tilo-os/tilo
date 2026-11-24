@@ -1,6 +1,6 @@
-use crate::support::{document_mutation, typed_collab::TypedBroker};
-use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
-use tilo_ui::presence::PresenceKey;
+use crate::support_collab::TypedBroker;
+use ui_core::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
+use ui_core::presence::PresenceKey;
 use uuid::Uuid;
 
 #[test]
@@ -16,7 +16,7 @@ fn typed_socket_fans_out_on_its_own_route_only() {
             events.extend(peer_b.poll());
             events.iter().any(|event| {
                 matches!(
-                    document_mutation(event),
+                    event.document_mutation().cloned(),
                     Some(collab_types::DocumentMutation::Incremental(data)) if data == b"hello"
                 )
             })
@@ -26,7 +26,7 @@ fn typed_socket_fans_out_on_its_own_route_only() {
                 .iter()
                 .filter(|event| {
                     matches!(
-                        document_mutation(event),
+                        event.document_mutation().cloned(),
                         Some(collab_types::DocumentMutation::Incremental(data)) if data == b"hello"
                     )
                 })
@@ -37,7 +37,7 @@ fn typed_socket_fans_out_on_its_own_route_only() {
         assert!(
             peer_a.poll().iter().all(|event| {
                 !matches!(
-                    document_mutation(event),
+                    event.document_mutation().cloned(),
                     Some(collab_types::DocumentMutation::Incremental(data)) if data == b"hello"
                 )
             }),
@@ -52,7 +52,7 @@ fn typed_socket_fans_out_on_its_own_route_only() {
             peer_b.poll().iter().any(|event| matches!(
                 event,
                 CollabEvent::RemotePresenceUpdate { member, key: PresenceKey::Workspace { id }, payload: PresencePayload::Arrived }
-                    if *member == tilo_ui::permissions::MemberId::person("peer-a") && id == "77"
+                    if *member == ui_core::permissions::MemberId::person("peer-a") && id == "77"
             ))
         });
     }
@@ -76,13 +76,13 @@ fn typed_socket_fans_out_on_its_own_route_only() {
         tilo_test_env::wait_until("the photo edit on the photos route", || {
             photos.poll().iter().any(|event| {
                 matches!(
-                    document_mutation(event),
+                    event.document_mutation().cloned(),
                     Some(collab_types::DocumentMutation::Incremental(data)) if data == b"photo-edit"
                 )
             })
         });
         assert!(primary_observer.poll().iter().all(|event| !matches!(
-            document_mutation(event),
+            event.document_mutation().cloned(),
             Some(collab_types::DocumentMutation::Incremental(data)) if data == b"photo-edit"
         )));
     }

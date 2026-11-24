@@ -2,9 +2,9 @@
 //! split across reads. The typed RPC transport must reassemble it without
 //! truncation.
 
-use crate::support::typed_collab::TypedBroker;
-use crate::support::{change_carrying, changes_of};
-use tilo_ui::collaboration::CollabRequest;
+use crate::support_collab::TypedBroker;
+use crate::support_collab::{change_carrying, changes_of};
+use ui_core::collaboration::CollabRequest;
 
 #[test]
 fn large_frame_survives_split_reads() {

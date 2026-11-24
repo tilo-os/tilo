@@ -3,10 +3,10 @@
 //! and arrive at the peer byte-for-byte, with both bridges still connected
 //! afterwards.
 
-use crate::support::typed_collab::TypedBroker;
-use crate::support::{change_carrying, changes_of};
+use crate::support_collab::TypedBroker;
+use crate::support_collab::{change_carrying, changes_of};
 use collab_types::CommitNamed as _;
-use tilo_ui::collaboration::{CollabRequest, CollaborationManager};
+use ui_core::collaboration::{CollabRequest, CollaborationManager};
 
 const MIB: usize = 1024 * 1024;
 
@@ -49,9 +49,9 @@ fn connected_pair(broker: &TypedBroker) -> (CollaborationManager, CollaborationM
 #[test]
 fn a_late_joiner_onboards_a_document_larger_than_one_frame() {
     use automerge::transaction::Transactable;
-    use tilo_ui::app::App;
-    use tilo_ui::state::State;
-    use tilo_ui::widget::Container;
+    use ui_core::app::App;
+    use ui_core::state::State;
+    use ui_core::widget::Container;
 
     let body = payload(4 * MIB + 123, 77);
     let mut holder_state = State::new();
@@ -104,7 +104,7 @@ fn an_over_limit_mutation_is_refused_explicitly_and_collaboration_continues() {
 
     assert_eq!(
         sender.try_send(CollabRequest::document_incremental(vec![0; limit + 1])),
-        Err(tilo_ui::collaboration::CollabSendError::TooLarge {
+        Err(ui_core::collaboration::CollabSendError::TooLarge {
             actual: limit + 1,
             max: limit,
         })

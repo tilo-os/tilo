@@ -15382,19 +15382,25 @@ dependencies = [
 name = "tilo-app-test-host"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek 3.0.0",
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-action-policy",
  "tilo-app",
  "tilo-automerge",
+ "tilo-automerge-fork",
  "tilo-broker-core",
  "tilo-collab-types",
  "tilo-content",
  "tilo-desktop-model",
  "tilo-history",
  "tilo-reference",
+ "tilo-resource-store",
+ "tilo-runtime-collab",
  "tilo-test-env",
  "tilo-ui",
+ "tokio",
  "uuid",
  "workspace-hack",
 ]
@@ -19413,6 +19419,7 @@ dependencies = [
 name = "tilo-runner-native"
 version = "0.1.0"
 dependencies = [
+ "tilo-automerge-isolate",
  "tilo-ui",
  "workspace-hack",
 ]
@@ -20960,7 +20967,6 @@ dependencies = [
  "tilo-appearance",
  "tilo-automerge",
  "tilo-automerge-fork",
- "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-collab-types",
  "tilo-collaboration",
@@ -21003,7 +21009,6 @@ dependencies = [
  "tilo-registry-types",
  "tilo-render-protocol",
  "tilo-resource",
- "tilo-resource-store",
  "tilo-rich-edit",
  "tilo-rt",
  "tilo-runtime-collab",

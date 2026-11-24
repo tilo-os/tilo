@@ -27,7 +27,17 @@ tilo-automerge.workspace = true
 tilo-content = { path = "../../core/content" }
 tilo-history = { path = "../tilo-history" }
 tilo-reference = { path = "../../core/reference" }
-ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+# The toolkit's collaboration over a real socket, which the collaboration tests drive.
+ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["broker-transport"] }
+# The collaboration host the real-socket tests stand up: it speaks the collaboration wire and keeps
+# each channel's record as the device's store does, answering the store's record commands.
+runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab" }
+tilo-resource-store = { path = "../../core/resource-store" }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "sync", "macros"] }
+# The workspace policy and the person's key the co-editing test signs its moderation with.
+tilo-action-policy = { path = "../../core/action-policy" }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+automerge.workspace = true
 
 [[test]]
 name = "it"

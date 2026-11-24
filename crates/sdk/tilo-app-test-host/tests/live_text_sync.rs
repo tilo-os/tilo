@@ -4,11 +4,11 @@
 //! it in the other" — the App layer drives exactly these calls
 //! (`broadcast_doc_delta` -> document incremental; poll -> `load_incremental`).
 
-use crate::support::typed_collab::TypedBroker;
+use crate::support_collab::TypedBroker;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use collab_types::CommitNamed as _;
-use tilo_ui::collaboration::CollabRequest;
+use ui_core::collaboration::CollabRequest;
 
 fn text_of(doc: &AutoCommit) -> String {
     let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "text") else {

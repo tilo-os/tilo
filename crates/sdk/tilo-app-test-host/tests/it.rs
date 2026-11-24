@@ -124,6 +124,32 @@ pub mod settings;
 pub mod share_links;
 #[path = "support/checklist.rs"]
 pub mod support_checklist;
+// A collaboration host that keeps each channel's record as the device's store does, for the
+// tests that drive the toolkit's collaboration over real sockets.
+#[cfg(unix)]
+#[path = "coedit_keystone.rs"]
+pub mod coedit_keystone;
+#[cfg(unix)]
+#[path = "cross_process_presence_pump.rs"]
+pub mod cross_process_presence_pump;
+#[cfg(unix)]
+#[path = "large_document_transfer.rs"]
+pub mod large_document_transfer;
+#[cfg(unix)]
+#[path = "large_frame_reassembly.rs"]
+pub mod large_frame_reassembly;
+#[cfg(unix)]
+#[path = "live_text_sync.rs"]
+pub mod live_text_sync;
+#[cfg(unix)]
+#[path = "real_socket_n_peer.rs"]
+pub mod real_socket_n_peer;
+#[cfg(unix)]
+#[path = "real_socket_two_peer.rs"]
+pub mod real_socket_two_peer;
+#[cfg(unix)]
+#[path = "support/collab.rs"]
+pub mod support_collab;
 #[path = "surface_report.rs"]
 pub mod surface_report;
 #[path = "surface_semantics.rs"]
