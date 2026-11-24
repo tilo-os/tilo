@@ -6,6 +6,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use app_cli::RegistriesFile;
 
+use crate::daemon_fixture::Daemon;
 use crate::registry_fixture::Device;
 
 const OFFICIAL_KEY: &str = "d5dd5851bebac876b19986485184213ead36b67595b7efedf1144c120033b0bb";
@@ -52,6 +53,7 @@ tilo_test_env::scenario! {
     phase the_first_read_seeds_the_official_repository_and_keeps_its_pin;
     {
         let (device, _anchor) = device_with_anchor();
+        let _daemon = Daemon::start(device.apps.path());
         let seeded = repositories(&device);
         assert_eq!(seeded.registries.len(), 1);
         assert_eq!(seeded.registries[0].name, "Tilo main");
@@ -86,6 +88,7 @@ tilo_test_env::scenario! {
     phase repository_changes_validate_and_never_overwrite_a_broken_file;
     {
         let (device, _anchor) = device_with_anchor();
+        let _daemon = Daemon::start(device.apps.path());
         let path = device.config.path().join("registries.toml");
         repositories(&device);
         let seeded = std::fs::read_to_string(&path).unwrap();
@@ -189,6 +192,7 @@ tilo_test_env::scenario! {
     phase a_channel_is_selected_explicitly_and_persisted;
     {
         let (device, _anchor) = device_with_anchor();
+        let _daemon = Daemon::start(device.apps.path());
         let path = device.config.path().join("registries.toml");
         std::fs::write(
             &path,
@@ -225,6 +229,7 @@ tilo_test_env::scenario! {
                 &anchor.path().join("missing.pub"),
             )],
         );
+        let _daemon = Daemon::start(device.apps.path());
         assert!(repositories(&device).registries.is_empty());
         assert!(
             !device.config.path().join("registries.toml").exists(),
@@ -237,6 +242,7 @@ tilo_test_env::scenario! {
         // The desktop's search reads the kept catalogues synchronously and
         // must not create configuration as a side effect of being drawn.
         let (device, _anchor) = device_with_anchor();
+        let _daemon = Daemon::start(device.apps.path());
         assert!(app_cli::last_accepted_offers().is_empty());
         assert!(
             !device.config.path().join("registries.toml").exists(),

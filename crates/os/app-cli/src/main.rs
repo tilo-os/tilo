@@ -1129,20 +1129,18 @@ fn report_unreachable(items: &[app_cli::UnreachableRegistry]) {
 )]
 fn repo(cmd: RepoCmd) -> ExitCode {
     use app_cli::config;
-    let sockets = tilo_control::client::sockets_from_env();
-    let spelling = tilo_control::front::Spelling::standalone();
-    let call = |action: &str, args: serde_json::Value| {
-        tilo_control::front::call_action(&sockets, action, &args, &spelling)
-    };
+    // The registries are the workspace's records: every one of these is its action, asked of
+    // this computer's daemon, through the same path an agent or the Store takes.
+    let call = |action: &str, args: &serde_json::Value| app_cli::device::registries(action, args);
     let fail = |error: String| {
         eprintln!("app: {error}");
         ExitCode::FAILURE
     };
     match cmd {
-        RepoCmd::List { json: true } => match call("registry.list", serde_json::json!({})) {
+        RepoCmd::List { json: true } => match call("registry.list", &serde_json::json!({})) {
             Ok(value) => {
                 let Some(list) = config::registries_from_rows(&value) else {
-                    return fail("the desktop answered no registry list".into());
+                    return fail("the daemon answered no registry list".into());
                 };
                 match serde_json::to_string(&list) {
                     Ok(value) => {
@@ -1154,10 +1152,10 @@ fn repo(cmd: RepoCmd) -> ExitCode {
             }
             Err(error) => fail(error),
         },
-        RepoCmd::List { json: false } => match call("registry.list", serde_json::json!({})) {
+        RepoCmd::List { json: false } => match call("registry.list", &serde_json::json!({})) {
             Ok(value) => {
                 let Some(list) = config::registries_from_rows(&value) else {
-                    return fail("the desktop answered no registry list".into());
+                    return fail("the daemon answered no registry list".into());
                 };
                 for registry in list.registries {
                     println!(
@@ -1186,7 +1184,7 @@ fn repo(cmd: RepoCmd) -> ExitCode {
         } => {
             let answered = call(
                 "registry.add",
-                serde_json::json!({ "name": &name, "url": &url, "owner_key": &owner_key }),
+                &serde_json::json!({ "name": &name, "url": &url, "owner_key": &owner_key }),
             );
             match answered {
                 Ok(_) => {
@@ -1197,7 +1195,22 @@ fn repo(cmd: RepoCmd) -> ExitCode {
             }
         }
         RepoCmd::Remove { name } => {
-            match call("registry.remove", serde_json::json!({ "name": &name })) {
+            // A workspace with no registries offers nothing: the last one is disabled instead.
+            match call("registry.list", &serde_json::json!({})) {
+                Ok(value) => {
+                    if let Some(list) = config::registries_from_rows(&value)
+                        && list.registries.len() == 1
+                        && list.registries[0].name == name
+                    {
+                        return fail(format!(
+                            "'{name}' is the last repository; disable it instead \
+                             (`app repo disable '{name}'`)"
+                        ));
+                    }
+                }
+                Err(error) => return fail(error),
+            }
+            match call("registry.remove", &serde_json::json!({ "name": &name })) {
                 Ok(_) => {
                     println!("removed repository '{name}'");
                     ExitCode::SUCCESS
@@ -1206,7 +1219,7 @@ fn repo(cmd: RepoCmd) -> ExitCode {
             }
         }
         RepoCmd::Enable { name } => {
-            match call("registry.enable", serde_json::json!({ "name": &name })) {
+            match call("registry.enable", &serde_json::json!({ "name": &name })) {
                 Ok(_) => {
                     println!("enabled repository '{name}'");
                     ExitCode::SUCCESS
@@ -1215,7 +1228,7 @@ fn repo(cmd: RepoCmd) -> ExitCode {
             }
         }
         RepoCmd::Disable { name } => {
-            match call("registry.disable", serde_json::json!({ "name": &name })) {
+            match call("registry.disable", &serde_json::json!({ "name": &name })) {
                 Ok(_) => {
                     println!("disabled repository '{name}'");
                     ExitCode::SUCCESS
@@ -1225,7 +1238,7 @@ fn repo(cmd: RepoCmd) -> ExitCode {
         }
         RepoCmd::Channel { name, channel } => match call(
             "registry.channel",
-            serde_json::json!({ "name": &name, "channel": &channel }),
+            &serde_json::json!({ "name": &name, "channel": &channel }),
         ) {
             Ok(_) => {
                 println!("selected {channel} releases for '{name}'");

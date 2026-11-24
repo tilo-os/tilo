@@ -149,6 +149,24 @@ pub fn on_app(app: &str, action: &str) -> Result<Value, String> {
     Daemon::reach()?.workspace(&format!("workspace/apps/{app}#{action}"), &json!({}))
 }
 
+/// The workspace's registry action `action` (`registry.list`, `registry.add`,
+/// `registry.remove`, `registry.enable`, `registry.disable`, `registry.channel`) with
+/// `arguments`: the registries a workspace fetches apps from are its records, and every device
+/// asks the daemon for them rather than keeping a list of its own.
+///
+/// # Errors
+/// `action` is no registry action, the daemon could not be reached, or the workspace refused.
+pub fn registries(action: &str, arguments: &Value) -> Result<Value, String> {
+    let verb = action.strip_prefix("registry.").filter(|verb| {
+        matches!(
+            *verb,
+            "list" | "add" | "remove" | "enable" | "disable" | "channel"
+        )
+    });
+    let verb = verb.ok_or_else(|| format!("{action} is no registry action"))?;
+    Daemon::reach()?.workspace(&format!("workspace/registries#{verb}"), arguments)
+}
+
 /// One connection to the daemon's native endpoint, as MCP.
 pub struct Daemon {
     reader: BufReader<UnixStream>,

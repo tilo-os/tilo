@@ -19,9 +19,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use app_cli::config::{ConfigError, RegistriesFile, RegistryConfig};
 use package_actions::{Change, Entry, Replacement, SavedData, Target, Trust, Uploaded};
 use serde_json::{Value, json};
 use tilo_app_package::trust::{AttestorScope, RevokedKey, TrustedAttestor};
+use tilo_app_package::version::ReleaseChannel;
 use tilo_test_env::ScopedEnv;
 
 /// This computer's daemon, listening on the native endpoint `env` names to the programs the test
@@ -241,6 +243,8 @@ fn do_action(state: &Arc<State>, path: &str, args: &Value) -> Result<Value, Stri
         Ok(json!({}))
     } else if path == "workspace/apps#install" {
         install(state, args)
+    } else if let Some(verb) = path.strip_prefix("workspace/registries#") {
+        registries(verb, args)
     } else if let Some(rest) = path.strip_prefix("workspace/apps/") {
         let (app, action) = rest.split_once('#').ok_or("an app's action names it")?;
         match action {
@@ -477,6 +481,238 @@ fn earlier(state: &Arc<State>, app: &str) -> Vec<Value> {
         }
     }
     out
+}
+
+/// The workspace's registries, as this test's record keeps them: `TILO_STORE_CONFIG_DIR`'s
+/// `registries.toml`, which a test's reading takes in place of the workspace's record. The rules
+/// are `tilo_peer_state::state::package_registries`'s, so the CLI and its tests see the same
+/// refusals the workspace gives.
+fn registries(verb: &str, args: &Value) -> Result<Value, String> {
+    let dir = app_cli::config::config_dir().ok_or_else(|| ConfigError::NoConfigDir.to_string())?;
+    let path = dir.join("registries.toml");
+    let record = record(&path);
+    match verb {
+        "list" => Ok(rows(&seeded(&path, record)?)),
+        "add" => {
+            let mut list = editable(&path, record)?;
+            let name = text(args, "name")?;
+            let url = text(args, "url")?.trim_end_matches('/').to_owned();
+            let owner = text(args, "owner_key")?.to_ascii_lowercase();
+            let channel = channel(args.get("channel").and_then(Value::as_str))?;
+            if name.trim() != name
+                || name.is_empty()
+                || name.len() > 128
+                || name.chars().any(char::is_control)
+            {
+                return Err(ConfigError::EmptyName.to_string());
+            }
+            if list.registries.iter().any(|kept| kept.name == name) {
+                return Err(ConfigError::DuplicateName(name).to_string());
+            }
+            if !valid_url(&url) {
+                return Err(ConfigError::InvalidUrl.to_string());
+            }
+            if !valid_owner(&owner) {
+                return Err(ConfigError::InvalidOwnerKey.to_string());
+            }
+            list.registries.push(RegistryConfig {
+                name,
+                base_url: url,
+                owner_pubkey_hex: owner,
+                enabled: true,
+                channel,
+            });
+            save(&path, &list)?;
+            Ok(rows(&list))
+        }
+        "remove" => {
+            let mut list = editable(&path, record)?;
+            let name = text(args, "name")?;
+            let Some(at) = list.registries.iter().position(|kept| kept.name == name) else {
+                return Err(ConfigError::NotFound(name).to_string());
+            };
+            if list.registries.len() == 1 {
+                return Err(ConfigError::LastRegistry(name).to_string());
+            }
+            list.registries.remove(at);
+            save(&path, &list)?;
+            Ok(rows(&list))
+        }
+        "enable" | "disable" => {
+            let mut list = editable(&path, record)?;
+            let name = text(args, "name")?;
+            let Some(row) = list.registries.iter_mut().find(|kept| kept.name == name) else {
+                return Err(ConfigError::NotFound(name).to_string());
+            };
+            row.enabled = verb == "enable";
+            save(&path, &list)?;
+            Ok(rows(&list))
+        }
+        "channel" => {
+            let mut list = editable(&path, record)?;
+            let name = text(args, "name")?;
+            let channel = channel(args.get("channel").and_then(Value::as_str))?;
+            let Some(row) = list.registries.iter_mut().find(|kept| kept.name == name) else {
+                return Err(ConfigError::NotFound(name).to_string());
+            };
+            row.channel = channel;
+            save(&path, &list)?;
+            Ok(rows(&list))
+        }
+        other => Err(format!("the daemon offers no registry {other}")),
+    }
+}
+
+/// The registry record at `path` as it stands: absent, unreadable, or its list.
+enum Record {
+    Missing,
+    Broken(String),
+    Kept(RegistriesFile),
+}
+
+fn record(path: &Path) -> Record {
+    match std::fs::read_to_string(path) {
+        Ok(text) => match toml::from_str::<RegistriesFile>(&text) {
+            Ok(list) => Record::Kept(list),
+            Err(error) => Record::Broken(error.to_string()),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Record::Missing,
+        Err(error) => Record::Broken(error.to_string()),
+    }
+}
+
+/// The list a read answers: a fresh record seeds the official registry, a record whose pin was
+/// emptied is repaired, and one this test cannot read is answered with the seed in memory and
+/// never overwritten.
+fn seeded(path: &Path, record: Record) -> Result<RegistriesFile, String> {
+    match record {
+        Record::Missing => {
+            let list = RegistriesFile::seeded();
+            if !list.registries.is_empty() {
+                save(path, &list)?;
+            }
+            Ok(list)
+        }
+        Record::Broken(_) => Ok(RegistriesFile::seeded()),
+        Record::Kept(mut list) => {
+            // The row stays the record's; only the reading is whole, as the workspace's.
+            if let Some(official) = app_cli::config::official_owner_pubkey() {
+                for row in &mut list.registries {
+                    if row.name == "Tilo main"
+                        && (row.owner_pubkey_hex.is_empty()
+                            || !row.owner_pubkey_hex.bytes().any(|byte| byte != b'0'))
+                    {
+                        row.owner_pubkey_hex.clone_from(&official);
+                    }
+                }
+            }
+            Ok(list)
+        }
+    }
+}
+
+/// The list an edit changes: a record this test cannot read is refused, never overwritten.
+fn editable(path: &Path, record: Record) -> Result<RegistriesFile, String> {
+    match record {
+        Record::Broken(error) => Err(format!(
+            "the existing registry configuration is invalid; fix it before saving: {error}"
+        )),
+        other => seeded(path, other),
+    }
+}
+
+fn save(path: &Path, list: &RegistriesFile) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let text =
+        toml::to_string_pretty(list).map_err(|error| ConfigError::Encode(error).to_string())?;
+    std::fs::write(path, text).map_err(|error| ConfigError::Write(error).to_string())
+}
+
+/// The registries as the workspace's `registry.list` answers them.
+fn rows(list: &RegistriesFile) -> Value {
+    let rows: Vec<Value> = list
+        .registries
+        .iter()
+        .map(|row| {
+            json!({
+                "name": row.name,
+                "base_url": row.base_url,
+                "owner_pubkey_hex": row.owner_pubkey_hex,
+                "enabled": row.enabled,
+                "channel": match row.channel {
+                    ReleaseChannel::Stable => "stable",
+                    ReleaseChannel::Development => "development",
+                },
+            })
+        })
+        .collect();
+    json!({ "registries": rows })
+}
+
+fn text(args: &Value, name: &str) -> Result<String, String> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("a registry change names no {name}"))
+}
+
+fn channel(name: Option<&str>) -> Result<ReleaseChannel, String> {
+    match name {
+        None | Some("stable") => Ok(ReleaseChannel::Stable),
+        Some("development") => Ok(ReleaseChannel::Development),
+        Some(other) => Err(format!(
+            "a registry offers `stable` or `development` releases, not {other}"
+        )),
+    }
+}
+
+/// Whether `base` is a credential-free HTTPS address, or loopback HTTP for development, with no
+/// query or fragment (`tilo_peer_state::state::package_registries::valid_base_url`).
+fn valid_url(base: &str) -> bool {
+    if base.trim() != base || base.len() > 2048 || base.chars().any(char::is_control) {
+        return false;
+    }
+    if base.contains('@') || base.contains('?') || base.contains('#') {
+        return false;
+    }
+    let (rest, loopback_allowed) = if let Some(rest) = base.strip_prefix("https://") {
+        (rest, false)
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        (rest, true)
+    } else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty() || authority.contains(char::is_whitespace) {
+        return false;
+    }
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split(']').next().unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+    if host.is_empty() {
+        return false;
+    }
+    !loopback_allowed || loopback(host)
+}
+
+fn loopback(host: &str) -> bool {
+    host == "::1"
+        || host == "localhost"
+        || host.ends_with(".localhost")
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+/// A pinned owner key: 64 hexadecimal characters, never the placeholder.
+fn valid_owner(key: &str) -> bool {
+    key.len() == 64
+        && !key.eq_ignore_ascii_case("0".repeat(64).as_str())
+        && key.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Make `change` to this device's store, answering what it said.

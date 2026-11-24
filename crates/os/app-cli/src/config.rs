@@ -232,15 +232,6 @@ pub fn trust() -> TrustList {
     }
 }
 
-/// Run the workspace action `name` with `args`, through the desktop's action
-/// API, and answer what it answered.
-///
-/// # Errors
-/// No desktop answered, the action is unknown or ambiguous, or it failed.
-pub fn workspace_call(name: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
-    tilo_control::packages::call(name, args)
-}
-
 thread_local! {
     /// The list a caller hands [`load_registries`] for the duration of one call:
     /// a daemon reads one repository's catalogue with the row its caller named.
