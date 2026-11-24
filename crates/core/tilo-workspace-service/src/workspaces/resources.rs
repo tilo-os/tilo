@@ -850,13 +850,32 @@ impl GovernedWorkspace {
         } else {
             self.workspace().to_owned()
         };
-        let keys = self
+        let key_device = self
             .device
             .as_ref()
-            .ok_or("this device holds no group keys")?
+            .ok_or("this device holds no group keys")?;
+        let keys = match key_device
             .group_keys(&group, &write.readers, isolated)
             .await
-            .ok_or("this device holds no keys of the document's readers yet")??;
+        {
+            Some(Ok(keys)) => keys,
+            // A record written under a reader set this device takes part in and holds no keys
+            // of yet, as one it came to when the workspace gained a member: open the group as
+            // its reads of it do, and write under the keys that brings.
+            Some(Err(_)) if !isolated => {
+                match key_device.group_keys(&group, &write.readers, true).await {
+                    Some(Ok(keys)) => keys,
+                    Some(Err(error)) => return Err(error),
+                    None => {
+                        return Err(
+                            "this device holds no keys of the document's readers yet".into()
+                        );
+                    }
+                }
+            }
+            Some(Err(error)) => return Err(error),
+            None => return Err("this device holds no keys of the document's readers yet".into()),
+        };
         let founding = !peer.holds_document(app, &write.doc);
         let bytes = if founding {
             if !write.change.deps().is_empty() {

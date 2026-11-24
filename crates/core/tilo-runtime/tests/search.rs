@@ -301,20 +301,6 @@ fn a_conversation_sealed_to_its_people_is_found_by_them_alone() {
             .expect("Chat is built in");
         let person = tl_records::member(tilo_actions::MemberId::person(host.person()));
 
-        // Chat's record comes to need a key group of its own once another person is a member;
-        // a window of Chat opens it before its first write, and this device does too.
-        let chat_record = tilo_peer_state::document_frame::DocumentRoute {
-            app_id: CHAT.to_owned(),
-            cluster_id: workspace.clone(),
-            document: String::new(),
-        };
-        assert!(
-            matches!(
-                workspaces.own_route_keys(&chat_record, true).await,
-                Some(Ok(_))
-            ),
-            "this device holds Chat's record's keys"
-        );
         // Written through Chat's own actions over the workspace's store, no window of Chat open:
         // a channel's message, and a message the person writes to themselves.
         let who = person.clone();
