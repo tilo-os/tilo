@@ -919,7 +919,7 @@ fn a_held_connection_reaches_only_the_hosts_its_package_names() {
         web: vec!["localhost".into()],
         ..tilolang::meta::PackageMeta::default()
     };
-    let text = package::manifest_text(&meta, None, &[], &BuildOptions::default(), &"00".repeat(32));
+    let text = package::plain_manifest(&meta, &BuildOptions::default(), &"00".repeat(32));
     let view = launcher::manifest::ManifestView::from_toml_str(&text).unwrap();
     let decision = launcher::egress_proxy::EgressDecision::resolve(
         &view.sandbox.net.mode,

@@ -3,7 +3,10 @@
 //! name. A connection's password is concealed: search neither holds nor finds it.
 
 use tilolang_runtime::Actor;
-use tilolang_runtime::host_work::EngineHost;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::value::Value;
 use tilolang_tilo::host::Host;
 
@@ -14,9 +17,11 @@ const SOURCE: (&str, &str) = (
 const APP: &str = "so.tilo.db-client";
 
 /// The device's engine: the catalog the connection opened on, its columns, and the one result
-/// the window ran.
+/// the window ran, with what each started job named to run at its end.
 #[derive(Clone, Default)]
-struct Engine;
+struct Engine {
+    started: Rc<RefCell<Vec<(String, JobHandlers)>>>,
+}
 
 impl EngineHost for Engine {
     fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
@@ -55,12 +60,34 @@ impl EngineHost for Engine {
         }
     }
 
-    fn start(&self, app: &str, op: &str, _input: &str) -> Result<String, String> {
+    fn start(
+        &self,
+        app: &str,
+        op: &str,
+        _input: &str,
+        handlers: &JobHandlers,
+    ) -> Result<String, String> {
         assert_eq!(app, APP);
-        Ok(format!(r#"{{"job":"{op}-1"}}"#))
+        let job = format!("devices/ab/jobs/{op}-1");
+        self.started
+            .borrow_mut()
+            .push((job.clone(), handlers.clone()));
+        Ok(job)
     }
 
-    fn status(&self, job: &str) -> Result<String, String> {
+    fn job(&self, path: &str) -> Result<Option<serde_json::Value>, String> {
+        Ok(Some(Self::record(path)?))
+    }
+
+    fn cancel(&self, _job: &str) -> bool {
+        false
+    }
+}
+
+impl Engine {
+    /// The record of the job at `path` once it ended, with what it answered.
+    fn record(path: &str) -> Result<serde_json::Value, String> {
+        let job = path.rsplit('/').next().unwrap_or(path);
         let result = match job {
             "open-1" => r#"{"connection":1}"#,
             "query-1" => {
@@ -68,11 +95,11 @@ impl EngineHost for Engine {
             }
             other => return Err(format!("no job `{other}`")),
         };
-        Ok(serde_json::json!({"state": "done", "result": result, "error": ""}).to_string())
-    }
-
-    fn cancel(&self, _job: &str) -> bool {
-        false
+        Ok(serde_json::json!({
+            "id": path,
+            "state": "done",
+            "detail": {"state": "done", "result": result, "error": ""},
+        }))
     }
 }
 
@@ -82,6 +109,7 @@ fn me() -> Actor {
 
 struct Installed {
     host: Host,
+    engine: Engine,
     root: tilolang_runtime::ResourceRef,
     actions: Vec<(String, String)>,
 }
@@ -90,7 +118,8 @@ impl Installed {
     fn new() -> Self {
         let host = Host::new(me(), || None).expect("a host");
         host.set_clock(|| "2026-01-02T03:04:05Z".to_owned());
-        host.runtime().set_engine(Engine);
+        let engine = Engine::default();
+        host.runtime().set_engine(engine.clone());
         let package = host
             .load_builtin(SOURCE.0, SOURCE.1)
             .unwrap_or_else(|error| panic!("{error}"));
@@ -106,8 +135,28 @@ impl Installed {
             .expect("the app's root");
         Self {
             host,
+            engine,
             root,
             actions,
+        }
+    }
+
+    /// The job last started ends: the device runs what its start named for its end, as the
+    /// person who started it, handed the job's record.
+    fn job_ends(&self) {
+        let (job, handlers) = self
+            .engine
+            .started
+            .borrow()
+            .last()
+            .cloned()
+            .expect("a job was started");
+        let record = Engine::record(&job).unwrap_or_else(|why| panic!("{why}"));
+        let done = handlers.done.expect("the start names what runs at its end");
+        let call = self.host.runtime().job_call(&done, &record).unwrap();
+        match self.host.runtime().invoke_action(&me(), call) {
+            Ok(tilolang_runtime::InvokeOutcome::Done(_)) => {}
+            other => panic!("the job's end runs: {other:?}"),
         }
     }
 
@@ -176,7 +225,7 @@ fn the_open_connections_catalogue_is_findable_and_its_password_is_not() {
             Value::text("hunter2"),
         ],
     );
-    app.call("check", vec![app.root_value()]);
+    app.job_ends();
     // Runs a statement, so the window holds what it answered.
     app.call(
         "load_starter",
@@ -187,7 +236,7 @@ fn the_open_connections_catalogue_is_findable_and_its_password_is_not() {
         ],
     );
     app.call("run", vec![app.root_value()]);
-    app.call("check", vec![app.root_value()]);
+    app.job_ends();
     let connection = app.connection();
     app.call(
         "remember_password",
@@ -268,7 +317,7 @@ fn a_table_hit_opens_on_the_database_window() {
             Value::text(""),
         ],
     );
-    app.call("check", vec![app.root_value()]);
+    app.job_ends();
     let table = entries(&app.host)
         .into_iter()
         .find(|entry| entry.title == "albums" && entry.subtitle.as_deref() == Some("TableInfo"))

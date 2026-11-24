@@ -739,6 +739,13 @@ fn accessibility_text(acceptance: Option<&AtspiAcceptance>) -> String {
     })
 }
 
+/// The manifest of a package of no program of its own, translated into no other language: what
+/// the launcher reads of the app `meta`, signed by `publisher`.
+#[must_use]
+pub fn plain_manifest(meta: &PackageMeta, options: &BuildOptions, publisher: &str) -> String {
+    manifest_text(meta, None, None, &[], options, publisher)
+}
+
 /// The manifest of the app `meta` is, signed by `publisher` (hex Ed25519 key), with the name the
 /// app gives itself in every language `catalogues` translates it in, and what the package's
 /// `app.toml` declares when it carries a program of its own (`program`).

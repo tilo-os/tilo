@@ -7,7 +7,7 @@ mod cases {
     use crate::common::*;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tilolang_runtime::host_work::{EngineHost, Push};
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers, Push};
     use tilolang_runtime::{AmStore, ResourceRef, Runtime, Value};
 
     const APP: &str = include_str!("../../../../apps/tl/camera/app.tl");
@@ -54,9 +54,15 @@ mod cases {
             }
         }
 
-        fn start(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            _input: &str,
+            _handlers: &JobHandlers,
+        ) -> Result<String, String> {
             match op {
-                "record" => Ok(r#"{"job":"rec-1"}"#.to_owned()),
+                "record" => Ok("devices/ab/jobs/rec-1".to_owned()),
                 other => Err(format!("`{other}` is no op this device starts")),
             }
         }
@@ -71,8 +77,13 @@ mod cases {
             Err("this device shows no moving picture".to_owned())
         }
 
-        fn status(&self, _job: &str) -> Result<String, String> {
-            Ok(r#"{"state":"running","url":"","error":""}"#.to_owned())
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            Ok(Some(serde_json::json!({
+                "id": job,
+                "op": "record",
+                "state": "running",
+                "detail": {"state": "running", "url": "", "error": ""},
+            })))
         }
 
         fn cancel(&self, _job: &str) -> bool {
@@ -325,7 +336,7 @@ mod cases {
             let c = Camera::new();
             c.call("use_mode", vec![Value::resource(&c.root), Value::text("video")]);
             c.call("start_recording", vec![Value::resource(&c.root)]);
-            assert_eq!(c.read(&c.prefs(), "recording"), Value::text("rec-1"));
+            assert_eq!(c.read(&c.prefs(), "recording"), Value::text("devices/ab/jobs/rec-1"));
             assert!(
                 matches!(
                     c.read(&c.prefs(), "recording_since"),
