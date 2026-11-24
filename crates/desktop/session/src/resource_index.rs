@@ -59,6 +59,11 @@ impl RecordChanges {
         }
     }
 
+    /// `record` of `app` in `workspace` changed: the device's daemon took a write of it.
+    pub(crate) fn changed(&self, workspace: &str, app: &str, record: &str) {
+        self.changes.note(workspace, app, record, false);
+    }
+
     /// The keys settled: what had no keys here may read now, and the workspaces this device holds
     /// now are noted.
     pub(crate) fn settled(&self) {

@@ -1132,6 +1132,21 @@ impl Store {
         Ok(self.docs.get_mut(doc).map(Arc::make_mut))
     }
 
+    /// Whether the document `doc` holds the change `hash`.
+    pub fn has_change(&mut self, doc: &str, hash: &ChangeHash) -> bool {
+        self.existing(doc)
+            .ok()
+            .flatten()
+            .is_some_and(|held| held.get_change_by_hash(hash).is_some())
+    }
+
+    /// The document the content of the resource `id` of `kind` is written to: `None` for a
+    /// resource the store holds none of.
+    #[must_use]
+    pub fn content_doc(&self, kind: &str, id: &str) -> Option<String> {
+        self.content_of(kind, id).ok().map(|(doc, _)| doc)
+    }
+
     /// The content document of the resource `id` of `kind`, and its reader set.
     fn content_of(&self, kind: &str, id: &str) -> Result<(String, String), StoreError> {
         let held = self

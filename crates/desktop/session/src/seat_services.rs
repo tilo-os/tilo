@@ -351,6 +351,20 @@ impl SeatProvider {
                 };
                 Box::pin(std::future::ready(done.map(|()| Value::Null)))
             }
+            (calls::RECORDS, calls::CHANGED) => {
+                let Some(records) = parts.records.clone() else {
+                    return unserved("record changes");
+                };
+                let changed = (|| {
+                    records.changed(
+                        &field::<String>(&arguments, "workspace")?,
+                        &field::<String>(&arguments, "app")?,
+                        &field::<String>(&arguments, "record")?,
+                    );
+                    Ok(Value::Null)
+                })();
+                Box::pin(std::future::ready(changed))
+            }
             (calls::PUBLISHED, call) => self.published(call, &arguments),
             (calls::WORKSPACE_NODES, calls::ASK) => {
                 let Some(nodes) = parts.workspace_nodes.clone() else {
@@ -759,6 +773,14 @@ mod tests {
     /// The seat of a session holding `agents` and nothing else it could serve.
     fn holding(agents: SeatAgents) -> SeatParts {
         SeatParts {
+            agents: Some(agents),
+            ..serving_nothing()
+        }
+    }
+
+    /// The seat of a session that serves nothing.
+    fn serving_nothing() -> SeatParts {
+        SeatParts {
             audio_output: None,
             native_media: None,
             continuations: crate::launches::Launches::default().notes(),
@@ -772,8 +794,68 @@ mod tests {
             keyboard_shortcuts: crate::keyboard_shortcuts::servable(),
             service_sessions: None,
             file_clipboard: None,
-            agents: Some(agents),
+            agents: None,
         }
+    }
+
+    /// A record whose change the daemon's store takes reaches the session's roles that follow
+    /// records (the person's mentions, the activity), named by the document they read it as.
+    #[test]
+    fn a_record_the_daemon_takes_a_change_of_reaches_the_sessions_roles() {
+        use tilo_resource_store::wire::{Command, Edit};
+
+        use crate::references::testing::{NOTES, command, groceries, stamp};
+
+        const KITCHEN: &str = "6d1c1f36-0000-4000-8000-0000000000b1";
+        let daemon = crate::daemon_fixture::TestDaemon::writing(&[KITCHEN]);
+        let changes = daemon.changes();
+        let shell = daemon.shell_client();
+        serve_on(
+            shell.clone(),
+            SeatParts {
+                records: Some(crate::resource_index::RecordChanges::start(
+                    &daemon.reads(),
+                    changes.clone(),
+                )),
+                ..serving_nothing()
+            },
+        );
+        {
+            let _inside = tilo_rt::app().handle().enter();
+            tilo_workspace_service::apps::seat::tell_record_changes(
+                daemon.seat(),
+                daemon.workspaces().document_writes(),
+            );
+        }
+        tilo_test_env::wait_until("the session serves the seat", || daemon.seat().served());
+        let followed = changes.reader();
+
+        let note = groceries(&daemon, KITCHEN);
+        command(
+            &daemon,
+            KITCHEN,
+            NOTES,
+            Command::Edit {
+                kind: note.kind.clone(),
+                id: note.record.clone(),
+                edits: vec![Edit::Set {
+                    field: "title".to_owned(),
+                    value: serde_json::json!("Groceries and more"),
+                }],
+                stamp: stamp("add"),
+            },
+        )
+        .expect("the note is retitled");
+        let changed = tilo_test_env::wait_for("the session hears of the note changing", || {
+            followed.try_iter().find(|changed| {
+                changed.app == NOTES
+                    && tilo_resource_store::content_resource(&changed.record)
+                        == Some((note.kind.as_str(), note.record.as_str()))
+            })
+        });
+        assert_eq!(changed.workspace, KITCHEN);
+        assert!(!changed.replayed, "a change made now is news");
+        drop(shell);
     }
 
     /// The daemon admits an agent and the turn it works in on what the person's session

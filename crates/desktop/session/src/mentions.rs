@@ -148,9 +148,13 @@ impl Held {
                 ),
                 None => Default::default(),
             };
+            // A record the workspace's store keeps opens by its id, which its document's address
+            // names.
+            let record = tilo_resource_store::content_resource(look.record)
+                .map_or(look.record, |(_, id)| id);
             let place = Place {
                 app: look.app.to_owned(),
-                record: look.record.to_owned(),
+                record: record.to_owned(),
                 resource,
                 anchor,
             };
@@ -441,12 +445,13 @@ impl Mentions {
             }
             Poll::Ready(Fetched::Whole(whole)) => *whole,
         };
-        // The kind of the record a mention opens in: the one its document names, else, for the
-        // app's own record, which names none, the one its app's surface declares first.
-        let kind = if changed.record.is_empty() {
-            ui::app_surface::primary_kind(&changed.app)
-        } else {
-            resource_type(&doc)
+        // The kind of the record a mention opens in: the one the store founded it as, which its
+        // document's address names, else the one its document names, else, for the app's own
+        // record, which names none, the one its app's surface declares first.
+        let kind = match tilo_resource_store::content_resource(&changed.record) {
+            Some((kind, _)) => Some(kind.to_owned()),
+            None if changed.record.is_empty() => ui::app_surface::primary_kind(&changed.app),
+            None => resource_type(&doc),
         }
         .unwrap_or_default();
         let mut held = self.0.held.borrow_mut();

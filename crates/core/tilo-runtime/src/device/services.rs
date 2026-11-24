@@ -2638,6 +2638,12 @@ fn broker_services(
         tilo_rt::app().handle().clone(),
     );
     let forwarded = seat.forwarders();
+    // The session's roles that follow records hear of every record the workspaces took a change
+    // of, as the store commits it.
+    tilo_workspace_service::apps::seat::tell_record_changes(
+        seat.clone(),
+        parts.workspaces.copies().document_writes(),
+    );
     // Everything this device publishes to the apps attached to it: each resource served by the
     // provider that keeps it, through one table; what the seat's services publish (the sound, the
     // network, the displays Quick Settings changes) is every other one.

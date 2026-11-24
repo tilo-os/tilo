@@ -28,6 +28,53 @@ fn kind_of(
         .cloned()
 }
 
+/// `action`, an app's write of several of its records, as the store keeps it: each part names
+/// the document the record's content is written to, and the device that signs it as its author.
+/// The write of `record` (of `kind`) is one of them.
+///
+/// # Errors
+/// The action names another app's record, or one this store holds none of, or none of `record`.
+fn stored_action(
+    surfaces: &collab_types::app_surface::Surfaces,
+    store: &tilo_resource_store::Store,
+    (app, record, kind): (&str, &str, &str),
+    action: &collab_types::WorkspaceCommit,
+    device: [u8; 32],
+) -> Result<collab_types::WorkspaceCommit, String> {
+    if !action.covers(app, record) {
+        return Err(format!(
+            "the action the changes of {record} are part of names none of them"
+        ));
+    }
+    let mut stored = action.clone();
+    stored.author.device = device;
+    for part in &mut stored.parts {
+        if part.app != app {
+            return Err(format!(
+                "an action of {app} writes no record of {}",
+                part.app
+            ));
+        }
+        let kind = if part.document == record {
+            kind.to_owned()
+        } else {
+            kind_of(surfaces, store, app, None, &part.document).ok_or_else(|| {
+                format!(
+                    "the action writes {}, which this workspace holds none of",
+                    part.document
+                )
+            })?
+        };
+        part.document = store.content_doc(&kind, &part.document).ok_or_else(|| {
+            format!(
+                "the action writes {}, which this workspace holds none of",
+                part.document
+            )
+        })?;
+    }
+    Ok(stored)
+}
+
 impl Workspaces {
     /// The page from byte `from` of the changes of `app`'s `record` (of `kind`, when the route
     /// named it) in `workspace` past the heads `after` (hex), in the clear, and the heads they
@@ -203,11 +250,15 @@ impl Workspaces {
     /// (`names_caller`), then judged and kept as every write to the store is. The record's
     /// first changes found it: a resource of the route's kind, made by the verb of the first change that names one,
     /// unless `founding_refusal` says why the caller may not found one here.
+    ///
+    /// `action` is the action the changes are one part of when it wrote other records of the app
+    /// too, which come as writes of their own: the store takes the record's changes once every
+    /// record's are here, so a refused or lost write of one leaves every record as it was.
     pub(in crate::workspaces) async fn opened_record_change(
         &self,
         workspace: &str,
         (app, kind, record): (&str, Option<&str>, &str),
-        changes: &[u8],
+        (changes, action): (&[u8], Option<&collab_types::WorkspaceCommit>),
         names_caller: &(dyn Fn(&Stamp) -> bool + Sync),
         founding_refusal: Option<&str>,
     ) -> Result<(), String> {
@@ -277,11 +328,24 @@ impl Workspaces {
                 kind.to_owned()
             }
         };
-        let writes = self
-            .store_of(&mut governed)
-            .content_writes(&kind, record, parsed)
-            .map_err(|error| error.to_string())?;
-        self.keep_writes(governed, device, app, writes, None)
+        let (writes, action) = {
+            let store = self.store_of(&mut governed);
+            let writes = store
+                .content_writes(&kind, record, parsed)
+                .map_err(|error| error.to_string())?;
+            let action = match action.filter(|action| action.parts.len() > 1) {
+                Some(action) => Some(stored_action(
+                    &self.inner.host.surfaces,
+                    &store,
+                    (app, record, &kind),
+                    action,
+                    device.device(),
+                )?),
+                None => None,
+            };
+            (writes, action)
+        };
+        self.keep_writes(governed, device, app, writes, action)
             .await
             .map(drop)
     }
@@ -480,19 +544,40 @@ kind = "undoable"
     /// A workspace this service governs and writes in as the person's device, as a desktop's
     /// does, with the notes app's surface known here.
     async fn kitchen(dir: &std::path::Path) -> (TestHost, String) {
+        let (host, workspace, _) = kitchen_kept(dir).await;
+        (host, workspace)
+    }
+
+    /// The device's key, certificate and the keys of its channels: what it starts again with.
+    type Device = (
+        ed25519_dalek::SigningKey,
+        tilo_user_identity::DeviceCert,
+        std::sync::Arc<crate::workspaces::fixtures::TestGroupKeys>,
+    );
+
+    /// [`kitchen`], with what the device starts again with ([`started`]).
+    async fn kitchen_kept(dir: &std::path::Path) -> (TestHost, String, Device) {
         let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-        let host = test_host_holding(dir, &key, &cert, std::sync::Arc::default()).await;
+        let device = (key, cert, std::sync::Arc::default());
+        let host = started(dir, &device).await;
+        host.workspaces()
+            .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+            .unwrap();
+        let workspace = room(host.workspaces(), "Kitchen").await;
+        (host, workspace, device)
+    }
+
+    /// The service of `device`, started on what it keeps in `dir`, writing as the person's
+    /// device with the notes app's surface known here.
+    async fn started(dir: &std::path::Path, (key, cert, keys): &Device) -> TestHost {
+        let host = test_host_holding(dir, key, cert, std::sync::Arc::clone(keys)).await;
         let workspaces = host.workspaces();
         crate::workspaces::keep_surface(&workspaces.inner.host.surfaces, NOTES, SURFACE.as_bytes());
         workspaces.set_member_device(std::sync::Arc::new(crate::workspaces::MemberDevice {
-            cert,
-            signer: std::sync::Arc::new(key),
+            cert: cert.clone(),
+            signer: std::sync::Arc::new(key.clone()),
         }));
-        workspaces
-            .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
-            .unwrap();
-        let workspace = room(workspaces, "Kitchen").await;
-        (host, workspace)
+        host
     }
 
     /// A workspace this service founds as `name`, its content keys here before an app writes.
@@ -521,6 +606,17 @@ kind = "undoable"
         record: &str,
         changes: Vec<u8>,
     ) -> Result<Reply, String> {
+        write_part(workspaces, workspace, record, changes, None).await
+    }
+
+    /// [`write`], as the part of `action` that writes `record`.
+    async fn write_part(
+        workspaces: &Workspaces,
+        workspace: &str,
+        record: &str,
+        changes: Vec<u8>,
+        action: Option<&collab_types::WorkspaceCommit>,
+    ) -> Result<Reply, String> {
         let context = ResourceRequestContext::authenticated(
             NOTES,
             workspace,
@@ -535,7 +631,7 @@ kind = "undoable"
                     record: Some(record.to_owned()),
                     changes: Bytes(changes),
                     more: false,
-                    commit: None,
+                    commit: action.cloned(),
                 },
             )
             .await
@@ -780,6 +876,181 @@ kind = "undoable"
                 .is_err(),
             "a page past the end is refused"
         );
+    }
+
+    /// A note `record` founded in `workspace`, titled `title` by `by`: the window's copy of it.
+    async fn note(
+        workspaces: &Workspaces,
+        workspace: &str,
+        record: &str,
+        title: &str,
+        by: &Actor,
+    ) -> automerge::AutoCommit {
+        let mut note = automerge::AutoCommit::new();
+        note.put(automerge::ROOT, "title", title).unwrap();
+        commit(&mut note, &typed_by(by));
+        write(workspaces, workspace, record, note.save())
+            .await
+            .expect("the note is founded");
+        note
+    }
+
+    /// `note` titled `title` by `by`: the change, and the heads it leaves the note at.
+    fn retitled(
+        note: &mut automerge::AutoCommit,
+        title: &str,
+        by: &Actor,
+    ) -> (Vec<u8>, Vec<[u8; 32]>) {
+        let before = note.get_heads();
+        note.put(automerge::ROOT, "title", title).unwrap();
+        commit(note, &typed_by(by));
+        let heads = note.get_heads().iter().map(|head| head.0).collect();
+        (note.save_after(&before), heads)
+    }
+
+    /// One action of the notes app in `workspace` that wrote each record at its heads, as the
+    /// app's window commits to it.
+    fn action(workspace: &str, parts: [(&str, Vec<[u8; 32]>); 2]) -> collab_types::WorkspaceCommit {
+        collab_types::WorkspaceCommit::new(
+            uuid::Uuid::parse_str(workspace).unwrap(),
+            collab_types::CommitAuthor {
+                actor: None,
+                device: [0; 32],
+            },
+            1,
+            None,
+            None,
+            parts
+                .into_iter()
+                .map(|(record, heads)| collab_types::CommitPart {
+                    app: NOTES.to_owned(),
+                    document: record.to_owned(),
+                    heads,
+                })
+                .collect(),
+        )
+    }
+
+    /// An action that retitles two notes changes both once both are here, and neither before:
+    /// the first note's change waits for the second's.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_action_across_two_records_changes_both_once_both_are_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace) = kitchen(dir.path()).await;
+        let workspaces = host.workspaces();
+        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let mut plan = note(&workspaces, &workspace, "plan", "Plan", &me).await;
+        let mut list = note(&workspaces, &workspace, "list", "List", &me).await;
+        let (plan_b, plan_heads) = retitled(&mut plan, "Plan B", &me);
+        let (list_b, list_heads) = retitled(&mut list, "List B", &me);
+        let both = action(&workspace, [("plan", plan_heads), ("list", list_heads)]);
+
+        write_part(&workspaces, &workspace, "plan", plan_b, Some(&both))
+            .await
+            .expect("the store keeps the first record's part");
+        assert_eq!(
+            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            Some("Plan"),
+            "the first record waits for the action's other record"
+        );
+        write_part(&workspaces, &workspace, "list", list_b, Some(&both))
+            .await
+            .expect("the store keeps the second record's part");
+        assert_eq!(
+            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            Some("Plan B")
+        );
+        assert_eq!(
+            title_in(&workspaces, &workspace, "list").await.as_deref(),
+            Some("List B")
+        );
+    }
+
+    /// An action whose write of one record is refused changes neither record: the other
+    /// record's change, kept first, never reaches the store.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_action_across_two_records_one_refused_changes_neither() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace) = kitchen(dir.path()).await;
+        let workspaces = host.workspaces();
+        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let someone_else = Actor::Member(MemberId::person("someone-else"));
+        let mut plan = note(&workspaces, &workspace, "plan", "Plan", &me).await;
+        let mut list = note(&workspaces, &workspace, "list", "List", &me).await;
+        let (plan_heads, list_heads) = (
+            heads(&workspaces, &workspace, "plan").await,
+            heads(&workspaces, &workspace, "list").await,
+        );
+        let (plan_b, plan_at) = retitled(&mut plan, "Plan B", &me);
+        // Named as someone else's: the store refuses it.
+        let (list_b, list_at) = retitled(&mut list, "List B", &someone_else);
+        let both = action(&workspace, [("plan", plan_at), ("list", list_at)]);
+
+        write_part(&workspaces, &workspace, "plan", plan_b, Some(&both))
+            .await
+            .expect("the store keeps the first record's part");
+        let refused = write_part(&workspaces, &workspace, "list", list_b, Some(&both)).await;
+        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(heads(&workspaces, &workspace, "plan").await, plan_heads);
+        assert_eq!(heads(&workspaces, &workspace, "list").await, list_heads);
+        assert_eq!(
+            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            Some("Plan")
+        );
+        assert_eq!(
+            title_in(&workspaces, &workspace, "list").await.as_deref(),
+            Some("List")
+        );
+    }
+
+    /// A device that stops between an action's two writes holds neither when it starts again,
+    /// and one that stops after both holds both: the first write it kept waits for the second
+    /// again as the device replays what it kept.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_stop_between_an_actions_two_records_leaves_neither_and_after_both_leaves_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace, device) = kitchen_kept(dir.path()).await;
+        let workspaces = host.workspaces().clone();
+        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let mut plan = note(&workspaces, &workspace, "plan", "Plan", &me).await;
+        let mut list = note(&workspaces, &workspace, "list", "List", &me).await;
+        let mut shop = note(&workspaces, &workspace, "shop", "Shop", &me).await;
+        let mut chores = note(&workspaces, &workspace, "chores", "Chores", &me).await;
+
+        // One action stops after its first write.
+        let (plan_b, plan_at) = retitled(&mut plan, "Plan B", &me);
+        let (_, list_at) = retitled(&mut list, "List B", &me);
+        let cut = action(&workspace, [("plan", plan_at), ("list", list_at)]);
+        write_part(&workspaces, &workspace, "plan", plan_b, Some(&cut))
+            .await
+            .unwrap();
+        // Another makes both.
+        let (shop_b, shop_at) = retitled(&mut shop, "Shop B", &me);
+        let (chores_b, chores_at) = retitled(&mut chores, "Chores B", &me);
+        let whole = action(&workspace, [("shop", shop_at), ("chores", chores_at)]);
+        write_part(&workspaces, &workspace, "shop", shop_b, Some(&whole))
+            .await
+            .unwrap();
+        write_part(&workspaces, &workspace, "chores", chores_b, Some(&whole))
+            .await
+            .unwrap();
+        drop(workspaces);
+        host.shutdown().await;
+
+        let host = started(dir.path(), &device).await;
+        let workspaces = host.workspaces();
+        for (record, title) in [
+            ("plan", "Plan"),
+            ("list", "List"),
+            ("shop", "Shop B"),
+            ("chores", "Chores B"),
+        ] {
+            assert_eq!(
+                title_in(workspaces, &workspace, record).await.as_deref(),
+                Some(title),
+                "{record} after the device started again"
+            );
+        }
     }
 
     /// What `record` of the notes app is titled in `workspace`'s store; `None` when the store

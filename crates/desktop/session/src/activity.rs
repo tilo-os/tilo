@@ -1027,7 +1027,7 @@ fn read_workspace_records(
                 });
             acted.then(|| DocumentCheckout::package_primary(ResourceType::new(package.as_str())))
         } else {
-            ui::resource::identity(&document)
+            stored_checkout(&route).or_else(|| ui::resource::identity(&document))
         };
         let Some(checkout) = checkout else {
             continue;
@@ -1041,6 +1041,16 @@ fn read_workspace_records(
         });
     }
     read
+}
+
+/// The record whose content the workspace's store keeps in the document `route`: its kind and id
+/// as the store founded it, which the document's address names. `None` for any other document.
+fn stored_checkout(route: &str) -> Option<DocumentCheckout> {
+    let (kind, id) = tilo_resource_store::content_resource(route)?;
+    Some(DocumentCheckout::new(
+        DocumentId::parse(id)?,
+        ResourceType::new(kind),
+    ))
 }
 
 /// What the model asks of the session, over the one state this activity keeps.
@@ -1276,6 +1286,46 @@ mod tests {
             .find(|record| record.checkout.id == id)
             .expect("the workspace holds the record");
         assert!(budget.document.is_some(), "and its document is read");
+    }
+
+    /// A record a Rust app keeps in the workspace's store is in the workspace's history, as the
+    /// kind and id the store founded it as: its document holds its content alone.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_record_the_store_keeps_is_read_for_its_history_as_the_store_founded_it() {
+        use crate::references::testing::{NOTES, command, groceries, stamp};
+        use tilo_resource_store::wire::{Command, Edit};
+
+        const KITCHEN: &str = "6d1c1f36-0000-4000-8000-0000000000c1";
+        let daemon = crate::daemon_fixture::TestDaemon::writing(&[KITCHEN]);
+        let note = groceries(&daemon, KITCHEN);
+        command(
+            &daemon,
+            KITCHEN,
+            NOTES,
+            Command::Edit {
+                kind: note.kind.clone(),
+                id: note.record.clone(),
+                edits: vec![Edit::Set {
+                    field: "title".to_owned(),
+                    value: serde_json::json!("Groceries and more"),
+                }],
+                stamp: stamp("add"),
+            },
+        )
+        .expect("the note is retitled");
+
+        let held = crate::platform::records::Held::over(daemon.reads(), daemon.changes());
+        let noted: crate::platform::authors::Noted = Arc::new(|_| {});
+        let read = tilo_test_env::wait_for("the workspace's history reads the note", || {
+            let read = read_workspace_records(&held, KITCHEN, &noted);
+            read.into_iter().find(|record| {
+                record.app == NOTES
+                    && record.checkout.kind.as_str() == note.kind
+                    && record.checkout.id.route() == note.record
+            })
+        });
+        assert!(read.document.is_some(), "and its document is read");
     }
 
     use tilo_actions::InvocationId;
