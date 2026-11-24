@@ -465,10 +465,12 @@ pub fn workspaces_protocols(
         .collect()
 }
 
-/// A member device's link to its workspace over iroh: the first stream proves which device
-/// dialled it, the session handshake this service admits its members with, and the device proved
-/// is the one the workspace's admission decides on. A page dials with an endpoint key of its own,
-/// which is not its device key, and is admitted as the device it proved.
+/// A member device's link to its workspace over iroh. A device dials from the endpoint it runs
+/// under its device key, so the connection itself says which device it is, and its first stream
+/// names the workspace. A page dials with an endpoint key of its own, which is not its device
+/// key: its first stream opens with the session handshake this service admits members with, and
+/// it is admitted as the device it proved. Either way the workspace's admission decides on that
+/// device.
 #[derive(Clone, Debug)]
 struct WorkspaceLink {
     /// The workspaces' links, serving the workspace the dial names.
@@ -484,15 +486,38 @@ impl ProtocolHandler for WorkspaceLink {
                 .accept_bi()
                 .await
                 .map_err(|error| error.to_string())?;
-            let device = self
-                .server
-                .authenticate_member(&mut recv, &mut send)
+            // The first frame says which of the two dials this is; it is read again by
+            // whichever answers it, from the start of the stream.
+            let first = crate::frame::read_frame(&mut recv, MAX_FRAME_BYTES)
                 .await
                 .map_err(|error| error.to_string())?;
-            // The rest of the link is the connection, its device the one it proved.
+            let opens_with_hello =
+                crate::auth::decode_handshake::<crate::auth::Hello>(&first).is_ok();
+            let framed = crate::frame::frame(&first).map_err(|error| error.to_string())?;
+            let mut recv = tokio::io::AsyncReadExt::chain(std::io::Cursor::new(framed), recv);
+            if opens_with_hello {
+                let device = self
+                    .server
+                    .authenticate_member(&mut recv, &mut send)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                // The rest of the link is the connection, its device the one it proved.
+                let proved = Proved {
+                    connection,
+                    device: device.device_public_key,
+                    first: std::sync::Mutex::new(None),
+                };
+                return self.serving.serve_link(&proved).await;
+            }
+            // The endpoint's key is the device's, and the stream read is the link's own.
+            let device = *connection.remote_id().as_bytes();
             let proved = Proved {
                 connection,
-                device: device.device_public_key,
+                device,
+                first: std::sync::Mutex::new(Some((
+                    Box::new(send) as StreamSend,
+                    Box::new(recv) as StreamRecv,
+                ))),
             };
             self.serving.serve_link(&proved).await
         }
@@ -504,11 +529,13 @@ impl ProtocolHandler for WorkspaceLink {
     }
 }
 
-/// A link whose device is the one its first stream proved: an iroh endpoint's key is not always
-/// the device's, as a page's is not, so the transport's remote is the proved device.
+/// A link whose device is the one it proved: by its first stream's handshake, as an iroh
+/// endpoint's key is not always the device's (a page's is not), or by that key. `first` is the
+/// link's opening stream when it was read already to tell the two apart.
 struct Proved {
     connection: Connection,
     device: [u8; 32],
+    first: std::sync::Mutex<Option<(StreamSend, StreamRecv)>>,
 }
 
 impl Transport for Proved {
@@ -525,7 +552,15 @@ impl Transport for Proved {
     }
 
     fn accept_bi(&self) -> StreamFuture<'_, (StreamSend, StreamRecv)> {
-        Transport::accept_bi(&self.connection)
+        let first = self
+            .first
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        match first {
+            Some(first) => Box::pin(async move { Ok(first) }),
+            None => Transport::accept_bi(&self.connection),
+        }
     }
 
     fn remote(&self) -> [u8; 32] {
