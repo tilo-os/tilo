@@ -30,7 +30,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActionAddress, CatalogueRow, RemoteActionTarget, person_accounts, model_providers};
+use super::{ActionAddress, CatalogueRow, RemoteActionTarget, model_providers, person_accounts};
 
 /// The provider that answers the person's vault under.
 pub const PROVIDER: &str = "tilo.vault";
@@ -62,30 +62,6 @@ pub const KEEP_ENTRY: &str = "keep-entry";
 /// Forget one entry of the person's Passwords ([`ForgetEntry`]), answering
 /// the [`Entries`] that remain.
 pub const FORGET_ENTRY: &str = "forget-entry";
-
-/// Keep the secret a connector on the workspace's host signs in with
-/// ([`KeepConnectorSecret`]), answering the item's reference as [`Asked`]:
-/// an item of the vault like any other, titled for the connector and the
-/// purpose it serves, and never written into a record.
-pub const KEEP_CONNECTOR_SECRET: &str = "keep-connector-secret";
-
-/// The purposes a connector's worker may ask the host for a secret by.
-pub const CONNECTOR_PURPOSES: [&str; 2] = ["bot-token", "webhook"];
-
-/// What the vault titles the entry keeping connector `app`'s secret `purpose`
-/// for `item` under: what Passwords lists it as, so a person reads where a
-/// secret they did not type themselves came from.
-#[must_use]
-pub fn connector_title(app: &str, purpose: &str, item: &str) -> String {
-    format!("{app} {purpose} for {item}")
-}
-
-/// Where the vault keeps a connector's secret: the connector's own id, which
-/// is reverse DNS, as the origin it signs in at.
-#[must_use]
-pub fn connector_place(app: &str) -> String {
-    format!("https://{app}")
-}
 
 /// The use that fills a field of a web page from an item, by reference
 /// ([`FillPage`]): the action a leave names it by ([`use_word`]) and a
@@ -287,31 +263,6 @@ impl std::fmt::Debug for AddItem {
             .debug_struct("AddItem")
             .field("kind", &self.kind)
             .field("belongs_to", &self.belongs_to)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Keep the secret a connector on the workspace's host signs in with, as an
-/// item of the workspace's vault titled for the connector ([`connector_title`]).
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct KeepConnectorSecret {
-    /// The app whose connector it is (`so.tilo.discord`).
-    pub app: String,
-    /// What the worker asks for it by: one of [`CONNECTOR_PURPOSES`].
-    pub purpose: String,
-    /// The service's own name for it: `default` for the one it signs in with.
-    pub item: String,
-    pub secret: String,
-}
-
-impl std::fmt::Debug for KeepConnectorSecret {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("KeepConnectorSecret")
-            .field("app", &self.app)
-            .field("purpose", &self.purpose)
-            .field("item", &self.item)
             .finish_non_exhaustive()
     }
 }
@@ -808,6 +759,55 @@ pub fn call_rows() -> Vec<CatalogueRow> {
             ActionParam::optional("reason", ParamType::Text, REASON),
         ],
     )]
+}
+
+/// Hand one item's secret to a process of an app's own that speaks the item's protocol itself
+/// (a gateway login, voice, an SSH or VNC handshake, a database login), addressed at the item:
+/// `vault.item:<id>#release` ([`release_target`]), so the grant its person gives on it is a grant
+/// on that item alone. It takes no arguments and answers [`Released`].
+///
+/// Only a sandboxed process of the app, which a turn of work placed on a device that may read
+/// the item, receives it: the app's held connection. The secret is answered on that process's
+/// connection alone, and nothing keeps it: no record, argument, log or history. Every other use
+/// of an item stays a call the vault makes itself, such as [`WEB_CALL`].
+pub const RELEASE: &str = "release";
+
+/// Where [`RELEASE`] of `item` is addressed: the item itself.
+#[must_use]
+pub fn release_target(item: &ItemRef) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: ActionAddress::new(item.to_string(), RELEASE),
+    }
+}
+
+/// Whether `target` is a [`RELEASE`], of whatever it is addressed at.
+#[must_use]
+pub fn is_release(target: &RemoteActionTarget) -> bool {
+    target.provider == PROVIDER && target.address.action == RELEASE
+}
+
+/// The item a [`RELEASE`] at `target` is addressed at; `None` for any other call, or a release
+/// addressed at something that is no item.
+#[must_use]
+pub fn released_item(target: &RemoteActionTarget) -> Option<ItemRef> {
+    is_release(target)
+        .then(|| ItemRef::parse(&target.address.resource))
+        .flatten()
+}
+
+/// What [`RELEASE`] answers: the item's secret, for the process that asked alone. It prints
+/// nothing of the secret.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Released {
+    pub secret: String,
+}
+
+impl std::fmt::Debug for Released {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Released").finish_non_exhaustive()
+    }
 }
 
 /// The most places one asked-for secret belongs to.

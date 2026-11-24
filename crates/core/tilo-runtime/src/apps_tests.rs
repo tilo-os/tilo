@@ -704,6 +704,17 @@ tilo_test_env::scenario! {
         );
         start(&apps).expect("starting it again is no second process");
         assert_eq!(apps.launched.0.lock().unwrap().len(), 1, "one process keeps it");
+        // The daemon knows the process as the app's held connection, which a vault item may be
+        // released to.
+        let pid = *apps.launched.0.lock().unwrap().keys().next().unwrap();
+        assert_eq!(
+            apps.process_of(pid),
+            Some(super::ProcessOf::Launched {
+                app: BRIDGE.to_owned(),
+                workspace: WORKSPACE.to_owned(),
+                connection: true,
+            })
+        );
 
         apps.stop(WORKSPACE, BRIDGE);
         let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -715,6 +726,44 @@ tilo_test_env::scenario! {
             apps.launched.0.lock().unwrap().is_empty(),
             "its reaper forgets it once it ended"
         );
+    }
+}
+
+// A bridge has no window: its manifest says `type = "cli"`, and its held connection still starts,
+// with no window and no idle end.
+#[cfg(target_os = "linux")]
+tilo_test_env::scenario! {
+    fn an_app_with_no_window_keeps_its_connection;
+
+    phase a_cli_entrypoint_keeps_its_connection;
+    {
+        use tilo_workspace_service::work::HostConnections;
+        const BRIDGE: &str = "so.tilo.bridge";
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        store.install(
+            BRIDGE,
+            &manifest(BRIDGE, "cli", "connection = true\n"),
+            &[("probe", b"binary")],
+        );
+        let said = root.join("said");
+        let launcher = tilo_test_env::stand_in(
+            root.join("tilo-launcher"),
+            &format!("env > '{said}.env'\nhold\n", said = said.display()),
+        )
+        .unwrap();
+        let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+        assert!(
+            apps.start(BRIDGE, WORKSPACE).is_err(),
+            "it has no window to open"
+        );
+        HostConnections::start(&apps, WORKSPACE, BRIDGE)
+            .expect("its connection starts with no window");
+        assert!(apps.runs(WORKSPACE, BRIDGE));
+        let env = wait_for(&format!("{}.env", said.display()));
+        assert!(env.lines().any(|line| line == "TILO_NO_WINDOW=1"), "{env}");
+        assert!(!env.contains("TILO_NO_WINDOW_IDLE"), "{env}");
+        apps.stop(WORKSPACE, BRIDGE);
     }
 }
 

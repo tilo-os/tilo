@@ -592,6 +592,12 @@ impl Apps {
         self.launched.of(pid)
     }
 
+    /// What process of an app `pid` is, as [`Self::attested`] knows it: a sandboxed launch of the
+    /// app's own package (and whether it is its held connection), or a tilolang process.
+    pub(crate) fn process_of(&self, pid: u32) -> Option<ProcessOf> {
+        self.launched.process_of(pid)
+    }
+
     /// Record `pid` as the process this runtime started to run `app` in `workspace`, so a
     /// connection from it is admitted as that app: a tilolang instance, an origin connector or a
     /// task's host.
@@ -610,15 +616,19 @@ impl Apps {
     }
 
     fn launchable(&self, app_id: &str) -> Result<InstalledApp, String> {
-        let app = self
-            .installed()
-            .into_iter()
-            .find(|app| app.app_id == app_id)
-            .ok_or_else(|| format!("{app_id} is not installed"))?;
+        let app = self.installed_app(app_id)?;
         if !app.has_gui {
             return Err(format!("{app_id} has no window to open"));
         }
         Ok(app)
+    }
+
+    /// The installed package `app_id`, window or none.
+    fn installed_app(&self, app_id: &str) -> Result<InstalledApp, String> {
+        self.installed()
+            .into_iter()
+            .find(|app| app.app_id == app_id)
+            .ok_or_else(|| format!("{app_id} is not installed"))
     }
 
     /// Launch `app_id` into this profile's workspace through the platform
@@ -660,7 +670,13 @@ impl Apps {
                 "workspace {workspace} is not served by this runtime"
             ));
         }
-        let app = self.launchable(app_id)?;
+        // A held connection shows nothing, so it needs no window of its own: the launcher runs
+        // its entrypoint's `bin`.
+        let app = if shows == Shows::Connection {
+            self.installed_app(app_id)?
+        } else {
+            self.launchable(app_id)?
+        };
         // The record the app is asked to open, as a window of the session asks for one.
         let open_uri = open
             .map(|record| {
@@ -1126,6 +1142,22 @@ struct LaunchRecord {
     /// The launch shows no window: its connection takes the app's actions on its records and is
     /// never handed an `open`.
     no_window: bool,
+    /// The launch is the app's held connection.
+    connection: bool,
+}
+
+/// What process of an app this daemon started a pid is, while it is still that process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ProcessOf {
+    /// A launch of the app's own package in its sandbox, and whether it is its held connection.
+    Launched {
+        app: String,
+        workspace: String,
+        connection: bool,
+    },
+    /// A tilolang process the daemon started for the app: an instance, an origin connector or a
+    /// task host.
+    Started { app: String, workspace: String },
 }
 
 impl Launched {
@@ -1152,6 +1184,7 @@ impl Launched {
                 record: record.map(str::to_owned),
                 ticket,
                 no_window: shows != Shows::Window,
+                connection: shows == Shows::Connection,
             },
         );
         true
@@ -1238,6 +1271,34 @@ impl Launched {
             },
         );
         true
+    }
+
+    /// What process `pid` is, while it is still that process: one this runtime launched in the
+    /// app's sandbox, or one it started for a tilolang app.
+    pub(crate) fn process_of(&self, pid: u32) -> Option<ProcessOf> {
+        let started = self.2.lock_recover().get(&pid).map(|record| {
+            (
+                record.start_time,
+                record.app.clone(),
+                record.workspace.clone(),
+            )
+        });
+        if let Some((recorded, app, workspace)) = started {
+            return (process_start_time(pid) == Some(recorded))
+                .then_some(ProcessOf::Started { app, workspace });
+        }
+        let launched = self.0.lock_recover().get(&pid).map(|record| {
+            (
+                record.start_time,
+                ProcessOf::Launched {
+                    app: record.app.clone(),
+                    workspace: record.workspace.clone(),
+                    connection: record.connection,
+                },
+            )
+        });
+        let (recorded, launched) = launched?;
+        (process_start_time(pid) == Some(recorded)).then_some(launched)
     }
 
     /// The app and workspace `pid` is the process of, while it is still that process: one this

@@ -151,6 +151,9 @@ pub(crate) mod asking;
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod person_vault;
+// One vault item's secret handed to a process of an app's own that a turn placed here.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod vault_release;
 // The workspace's one vault, Passwords' document, as this device holds it.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod vault;
@@ -1187,6 +1190,13 @@ struct WorkspacesInner {
     asked_store: std::sync::OnceLock<Arc<tilo_actions::remote::asked::AskedStore>>,
     /// This host's dispatch, as that store hands it back the calls it keeps.
     asked_dispatch: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedDispatch>>,
+    /// The dispatch asked releases of vault items are kept under, and the records they are
+    /// written through ([`vault_release`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    release_asks: std::sync::OnceLock<(
+        Arc<dyn tilo_actions::remote::asked::AskedDispatch>,
+        Arc<dyn tilo_actions::remote::asked::AskedRecords>,
+    )>,
     /// What runs the workspaces' Linux machines, as a branch takes its
     /// source's and a deletion takes the workspace's ([`Workspaces::machines`]).
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
@@ -1594,6 +1604,8 @@ impl Workspaces {
                 asked_records: std::sync::OnceLock::new(),
                 asked_store: std::sync::OnceLock::new(),
                 asked_dispatch: std::sync::OnceLock::new(),
+                #[cfg(not(target_arch = "wasm32"))]
+                release_asks: std::sync::OnceLock::new(),
                 machines: std::sync::RwLock::default(),
                 own_readings: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),

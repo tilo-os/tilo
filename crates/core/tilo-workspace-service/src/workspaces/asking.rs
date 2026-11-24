@@ -260,6 +260,7 @@ impl Workspaces {
             self.inner.asked_store.set(Arc::clone(store)).is_ok(),
             "a host keeps one store of the calls that wait"
         );
+        self.keep_release_asks_in(store);
         self.action_service()
             .admit_approvals_from(Arc::clone(store));
         self.link_asked();

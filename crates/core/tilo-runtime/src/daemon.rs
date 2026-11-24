@@ -725,7 +725,7 @@ fn serve_app(
     session: &Arc<Daemon>,
     app: AppAt,
 ) -> io::Result<()> {
-    let frames = Frames::of_an_app(session, &app.app, &app.workspace);
+    let frames = Frames::of_an_app(session, &app);
     std::thread::Builder::new()
         .name("tilo-native-app".into())
         .spawn(move || {

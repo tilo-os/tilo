@@ -1217,3 +1217,92 @@ async fn the_hugging_face_account_is_released_its_access_token_alone() {
         "its sign-in left the workspace's vault"
     );
 }
+
+/// The bridge, installed on the member's device with what it needs, its process never run.
+struct HeldBridge;
+
+impl crate::work::HostConnections for HeldBridge {
+    fn connections(&self) -> Vec<(String, Vec<String>)> {
+        vec![(BRIDGE.to_owned(), Vec::new())]
+    }
+    fn installed(&self, app: &str) -> bool {
+        app == BRIDGE
+    }
+    fn gives(&self, _: &str, _: &str, _: &str) -> bool {
+        true
+    }
+    fn on_power(&self) -> bool {
+        true
+    }
+    fn start(&self, _: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn runs(&self, _: &str, _: &str) -> bool {
+        false
+    }
+    fn stop(&self, _: &str, _: &str) {}
+}
+
+/// The app whose held connection asks for a vault item.
+const BRIDGE: &str = "so.tilo.bridge";
+
+/// The member's device holds the bridge's connection, but the workspace's rules leave Passwords
+/// out of its person's role: it releases the bridge no vault item, and says why in the vault's
+/// words.
+#[tokio::test]
+async fn a_device_that_may_not_read_the_vault_releases_its_connection_nothing() {
+    use super::vault_release::{AppProcess, device_may_not_read};
+    use crate::work::{Order, Turn, takes_turn_in};
+
+    let members = Members::new().await;
+    let workspace = members.workspace.clone();
+    members
+        .rule_passwords_for_the_member(tilo_action_policy::Answer::Deny)
+        .await;
+    members.member.run_connections(Arc::new(HeldBridge));
+    // The member's is the only device here that runs the bridge: it waits for no other.
+    let at_once = Order {
+        server_grace: std::time::Duration::ZERO,
+        other_grace: std::time::Duration::ZERO,
+    };
+    takes_turn_in(
+        &members.member,
+        &workspace,
+        &Turn::connection(BRIDGE, Vec::new()),
+        at_once,
+    )
+    .await
+    .expect("the member's device takes the bridge's connection");
+    let item = ItemRef::parse("vault.item:0123456789abcdef0123456789abcdef").unwrap();
+    let process = AppProcess::connection(BRIDGE);
+    let call = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::person_vault::release_target(&item),
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let member = members.member.clone();
+    let refused = tilo_test_env::within("the member's device reads the rule", async {
+        loop {
+            match member
+                .release_to((BRIDGE, &workspace), &process, &call)
+                .await
+            {
+                Err(ActionCallError::Refused { reason })
+                    if reason == device_may_not_read(BRIDGE, MAY_NOT_USE_PASSWORDS) =>
+                {
+                    return reason;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+            }
+        }
+    })
+    .await;
+    assert!(refused.contains(MAY_NOT_USE_PASSWORDS));
+}

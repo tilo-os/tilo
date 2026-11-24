@@ -26,10 +26,8 @@ mod asked;
 // The account sign-ins socket a login's cloud service and origin connectors reach.
 pub mod account_sign_ins;
 mod commits;
-mod dispatch;
-#[cfg(target_os = "macos")]
-mod confirm;
 mod content;
+mod dispatch;
 #[cfg(target_os = "linux")]
 pub mod environments;
 // The device's content, and on Tilo OS the steps that change it; elsewhere a device offers no steps.
@@ -90,6 +88,8 @@ mod ticket_tests;
 pub(crate) mod unclaimed;
 #[cfg(test)]
 mod unclaimed_tests;
+// A vault item released to the app process whose connection asks for it.
+pub(crate) mod vault_release;
 mod vision;
 pub mod wake;
 pub mod wifi;

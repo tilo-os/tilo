@@ -28,11 +28,12 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
-use runtime_portal::process_link::Descriptor;
-use tilo_socket::Stream;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use runtime_portal::process_link::Descriptor;
+use tilo_socket::Stream;
 
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::DeviceCert;
@@ -281,6 +282,9 @@ pub(crate) type AppOf = Arc<dyn Fn(u32) -> Option<(String, String)> + Send + Syn
 pub(crate) struct AppAt {
     pub(crate) app: String,
     pub(crate) workspace: String,
+    /// The process the daemon recorded, which a release of a vault item is answered to
+    /// ([`crate::device::vault_release`]).
+    pub(crate) pid: u32,
 }
 
 /// One connection's account, and what it is admitted as.
@@ -445,10 +449,16 @@ impl Seats {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .clone();
-                app_of.and_then(|app_of| app_of(pid))
+                app_of
+                    .and_then(|app_of| app_of(pid))
+                    .map(|(app, workspace)| (app, workspace, pid))
             })
-            .filter(|(app, _)| !app.is_empty())
-            .map(|(app, workspace)| AppAt { app, workspace });
+            .filter(|(app, _, _)| !app.is_empty())
+            .map(|(app, workspace, pid)| AppAt {
+                app,
+                workspace,
+                pid,
+            });
         Seat {
             uid: peer.uid,
             admitted,

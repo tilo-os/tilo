@@ -2172,6 +2172,7 @@ fn a_process_the_daemon_started_is_its_app_and_another_process_of_the_account_is
         Some(AppAt {
             app: "so.tilo.notes".to_owned(),
             workspace: "a-workspace".to_owned(),
+            pid: started,
         }),
         "the process the daemon started is the app it runs"
     );

@@ -177,7 +177,7 @@ fn a_service(shown: Shown, elsewhere: String) -> Responder {
 
 /// Every log line written on this thread, at every level.
 #[derive(Clone, Default)]
-struct Lines(Arc<Mutex<Vec<u8>>>);
+pub(super) struct Lines(pub(super) Arc<Mutex<Vec<u8>>>);
 
 impl std::io::Write for Lines {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -200,7 +200,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
 
 /// Keep every log line this thread writes from now on, until the guard is
 /// dropped.
-fn logged() -> (Lines, tracing::subscriber::DefaultGuard) {
+pub(super) fn logged() -> (Lines, tracing::subscriber::DefaultGuard) {
     let lines = Lines::default();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)

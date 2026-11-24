@@ -1706,6 +1706,8 @@ mod mail_turn_tests;
 mod own_tests;
 #[cfg(all(test, feature = "agents"))]
 mod page_use_tests;
+#[cfg(all(test, feature = "agents"))]
+mod release_tests;
 #[cfg(test)]
 #[cfg(test)]
 mod sign_in_tests;

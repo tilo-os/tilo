@@ -42,6 +42,9 @@ type Trees = dyn Fn(Option<&str>) -> io::Result<(Tree, Caller)> + Send + Sync;
 pub(crate) struct Frames {
     tree: Arc<Trees>,
     uploads: Arc<remote::HostedContentPuts>,
+    /// What answers a release of a vault item to the app process the connection is, when it is
+    /// one the daemon started.
+    own_process: Option<(Tree, Caller)>,
 }
 
 impl Frames {
@@ -52,6 +55,7 @@ impl Frames {
         Self {
             tree: Arc::new(tree),
             uploads: Arc::default(),
+            own_process: None,
         }
     }
 
@@ -77,11 +81,15 @@ impl Frames {
 
     /// An app the daemon started, in `workspace`: the workspace's broker decides its calls with
     /// the app's grants, never the person's own rights ([`Daemon::app_tree`]). The app acts in
-    /// that workspace alone; a frame naming another is refused.
-    pub(crate) fn of_an_app(daemon: &Arc<Daemon>, app: &str, workspace: &str) -> Self {
+    /// that workspace alone; a frame naming another is refused. A release of a vault item is
+    /// answered for the very process the connection is ([`super::vault_release`]), on this
+    /// connection alone.
+    pub(crate) fn of_an_app(daemon: &Arc<Daemon>, at: &crate::seats::AppAt) -> Self {
+        let own = super::vault_release::OwnProcess::new(daemon, at.pid, &at.app, &at.workspace);
+        let caller = Caller::local_app(&at.app).in_workspace(&at.workspace);
         let (daemon, app, workspace) =
-            (Arc::downgrade(daemon), app.to_owned(), workspace.to_owned());
-        Self::new(move |named| {
+            (Arc::downgrade(daemon), at.app.clone(), at.workspace.clone());
+        let mut frames = Self::new(move |named| {
             if named.is_some_and(|named| named != workspace) {
                 return Err(io::Error::other(format!(
                     "{app} was started in another workspace and acts only there"
@@ -91,7 +99,9 @@ impl Frames {
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
             daemon.app_tree(&app, &workspace)
-        })
+        });
+        frames.own_process = Some((Arc::new(own) as Tree, caller));
+        frames
     }
 
     /// The device's workspaces as the key `key` (certified by `cert`) reaches them: what another
@@ -131,7 +141,16 @@ impl Frames {
         };
         let trees = Arc::clone(&self.tree);
         let mut admitted: HashMap<String, (Tree, Caller)> = HashMap::new();
+        let own_process = self.own_process.clone();
         let in_workspace = move |frame: &RemoteActionFrame| {
+            if let Some(own_process) = &own_process
+                && super::vault_release::is_release(frame)
+                && frame
+                    .workspace()
+                    .is_none_or(|named| own_process.1.workspace() == Some(named))
+            {
+                return Ok(own_process.clone());
+            }
             let Some(workspace) = frame.workspace() else {
                 return Ok(own.clone());
             };
