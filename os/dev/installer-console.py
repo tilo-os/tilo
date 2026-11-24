@@ -33,10 +33,12 @@ import itertools
 import json
 import math
 import os
+import re
 import socket
 import sys
 import time
 import uuid
+from pathlib import Path
 from urllib.parse import urlsplit
 
 _SEQ = itertools.count(1)
@@ -111,6 +113,16 @@ def unwrap(reply: dict, key: str) -> object:
     raise Refused(err.get("code", "unknown"), err.get("message", ""))
 
 
+def frame_version() -> int:
+    """The action-frame version the Rust side speaks, read from its one definition so this
+    driver never sends one the installer has moved past."""
+    source = Path(__file__).resolve().parents[2] / "crates/core/actions/src/remote.rs"
+    found = re.search(r"pub const REMOTE_ACTIONS_VERSION: u16 = (\d+);", source.read_text())
+    if found is None:
+        raise SystemExit(f"{source} defines no REMOTE_ACTIONS_VERSION")
+    return int(found.group(1))
+
+
 def invoke(path: str, provider: str, action: str, arguments: dict, phrase: str | None = None,
            timeout: float = 60) -> object:
     """Invoke `action` (ACTION@RESOURCE) of `provider` as an action frame; its output value."""
@@ -118,7 +130,7 @@ def invoke(path: str, provider: str, action: str, arguments: dict, phrase: str |
     if not at:
         raise Refused("invalid_arguments", f"{action}: name the action as ACTION@RESOURCE")
     invocation = str(uuid.uuid4())
-    frame = {"version": 3, "message": {"Invoke": {
+    frame = {"version": frame_version(), "message": {"Invoke": {
         "invocation": invocation,
         "target": {"provider": provider, "address": {"resource": resource, "action": name}},
         "argument": {"Json": arguments},

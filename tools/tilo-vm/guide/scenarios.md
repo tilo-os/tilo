@@ -213,7 +213,7 @@ Drive a scenario VM yourself (with `--keep`, or while a run is in progress):
 ```sh
 TILO_VM_CYCLE=<cycle> ./os/dev/vm.sh console          # prints the socket path
 tilo-control --socket <that path> raw \
-    '{"version":3,"message":{"CatalogueRequest":{"correlation":1,"query":{}}}}'   # its actions; "parent_resource" lists what one holds
+    '{"version":5,"message":{"CatalogueRequest":{"correlation":1,"query":{}}}}'   # its actions; "parent_resource" lists what one holds
 tilo-control --socket <that path> state-dump --pretty
 os/dev/installer-console.py --socket <that path> invoke next@installer
 os/dev/installer-console.py --socket <that path> invoke begin@installer.review --phrase /dev/vdb
