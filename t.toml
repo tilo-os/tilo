@@ -5953,7 +5953,7 @@ run = "bash tools/ci/publish/sign-boot-loader.sh /target/os/{arch}/release-image
 needs = ["os-release-image-{arch}", "os-assets", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 requires = ["arch={arch}"]
-env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing" }
+env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing", TILO_PCR_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-pcr-prediction" }
 isolation = "vm"
 outputs = ["/target/publish/os-release/{arch}/boot-loader/**"]
 on = ["dispatch"]
@@ -6102,7 +6102,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/sign-boot-loader.sh /target/os/aarch64/release-image-lenovo-83ed /target/publish/os-release/lenovo-83ed/boot-loader"
 needs = ["os-release-image-lenovo-83ed", "os-assets", "signing-tools"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
-env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing" }
+env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing", TILO_PCR_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-pcr-prediction" }
 requires = ["arch=arm64"]
 isolation = "vm"
 outputs = ["/target/publish/os-release/lenovo-83ed/boot-loader/**"]
@@ -8316,7 +8316,7 @@ name = "sign-host-loader"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/sign-boot-loader.sh /target/publish/host /target/publish/host-loader-signed"
 needs = ["image-host", "os-assets", "signing-tools"]
-env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing" }
+env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing", TILO_PCR_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-pcr-prediction" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/publish/host-loader-signed/**"]
