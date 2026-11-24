@@ -6850,9 +6850,18 @@
         },
         {
           "name": "zoom",
-          "doc": "How many logical pixels one page coordinate takes: the page is fitted to the stage's box, whole and centred, unless said.",
+          "doc": "How many logical pixels one page coordinate takes, as the person chose it: the page is fitted to the stage's box, whole and centred, unless said. The stage's wheel, pinch and keys report the zoom they took (`zoomed`), so a view that keeps it here finds the zoom where the person left it after a rebuild.",
           "type": {
             "option": "float"
+          }
+        },
+        {
+          "name": "pan",
+          "doc": "How far the page is moved from centred, in logical pixels, its x then its y: the stage keeps it within the travel the page's edges allow and reports the pan it took (`panned`).",
+          "type": {
+            "option": {
+              "list": "float"
+            }
           }
         },
         {
@@ -6920,6 +6929,28 @@
           "at": {
             "list": "int"
           }
+        },
+        {
+          "name": "zoomed",
+          "doc": "The person zoomed the page, by a wheel with the command modifier, a pinch or a key: carries the zoom they chose, in logical pixels a page coordinate, or 0 for the page fitted whole. A view that keeps it and gives it back as `zoom` finds the zoom where the person left it after a rebuild.",
+          "value": "float"
+        },
+        {
+          "name": "panned",
+          "doc": "The person moved the page: carries its new pan, its x then its y in window pixels. A view that keeps it and gives it back as `pan` finds the page where the person left it.",
+          "value": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "open",
+          "doc": "The person pressed Enter on the chosen place: carries what it stands for. The view opens it — a text box takes the typing.",
+          "value": "text"
+        },
+        {
+          "name": "delete",
+          "doc": "The person pressed Delete on the chosen place: carries what it stands for. The view removes it.",
+          "value": "text"
         }
       ],
       "semantics": {
