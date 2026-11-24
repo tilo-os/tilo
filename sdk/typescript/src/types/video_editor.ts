@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-editor@4e7740a3328993b0";
+export const SURFACE = "so.tilo.video-editor@45a11a013891294f";
 
 /** How a title's lines sit in its box. One of "left", "centre", "right". */
 export type Align = "left" | "centre" | "right";
@@ -49,6 +49,11 @@ export interface HearArgs {
 export interface SetTitleStyleArgs {
   bold: boolean;
   italic: boolean;
+}
+
+/** The arguments of `set_font`. */
+export interface SetFontArgs {
+  family: string;
 }
 
 /** The arguments of `set_title_look`. */
@@ -120,9 +125,39 @@ export interface SetLookArgs {
   value: number;
 }
 
+/** The arguments of `set_anchor`. */
+export interface SetAnchorArgs {
+  x: number;
+  y: number;
+}
+
+/** The arguments of `set_curve`. */
+export interface SetCurveArgs {
+  channel: string;
+  points: number[];
+}
+
+/** The arguments of `reset_curve`. */
+export interface ResetCurveArgs {
+  channel: string;
+}
+
+/** The arguments of `set_curve_mix`. */
+export interface SetCurveMixArgs {
+  mix: number;
+}
+
 /** The arguments of `set_mask`. */
 export interface SetMaskArgs {
   shape: string;
+}
+
+/** The arguments of `fill_frame`. */
+export interface FillFrameArgs {
+}
+
+/** The arguments of `fit_mask`. */
+export interface FitMaskArgs {
 }
 
 /** The arguments of `invert_mask`. */
@@ -168,10 +203,6 @@ export interface KeyColourArgs {
 export interface UnlinkClipArgs {
 }
 
-/** The arguments of `unplace_side_by_side`. */
-export interface UnplaceSideBySideArgs {
-}
-
 /** The arguments of `add_effect`. */
 export interface AddEffectArgs {
   form: string;
@@ -201,6 +232,11 @@ export interface ClearEffectsArgs {
 /** The arguments of `note_marker`. */
 export interface NoteMarkerArgs {
   note: string;
+}
+
+/** The arguments of `rename_marker`. */
+export interface RenameMarkerArgs {
+  words: string;
 }
 
 /** The arguments of `split_at`. */
@@ -244,7 +280,6 @@ export interface DrawStillArgs {
 
 /** The arguments of `begin_render`. */
 export interface BeginRenderArgs {
-  render_kind: string;
   resolution: string;
   container: string;
   fps: number;
@@ -344,6 +379,23 @@ export interface DuplicateClipsArgs {
   cs: Clip[];
 }
 
+/** The arguments of `trim_tracks`. */
+export interface TrimTracksArgs {
+  db: number;
+}
+
+/** The arguments of `check_mix`. */
+export interface CheckMixArgs {
+}
+
+/** The arguments of `hear_mix`. */
+export interface HearMixArgs {
+}
+
+/** The arguments of `forgot_mix`. */
+export interface ForgotMixArgs {
+}
+
 /** The arguments of `redraw`. */
 export interface RedrawArgs {
 }
@@ -416,12 +468,6 @@ export interface SplitAudioArgs {
   c: Clip;
 }
 
-/** The arguments of `place_side_by_side`. */
-export interface PlaceSideBySideArgs {
-  left: Clip;
-  right: Clip;
-}
-
 /** The arguments of `delete_media`. */
 export interface DeleteMediaArgs {
   m: Media;
@@ -432,8 +478,38 @@ export interface PreviewArgs {
   at: number;
 }
 
-/** The arguments of `preview_cut`. */
-export interface PreviewCutArgs {
+/** The arguments of `play_cut`. */
+export interface PlayCutArgs {
+  at: number;
+  rate: number;
+}
+
+/** The arguments of `stop_cut`. */
+export interface StopCutArgs {
+}
+
+/** The arguments of `pause_cut`. */
+export interface PauseCutArgs {
+}
+
+/** The arguments of `shuttle`. */
+export interface ShuttleArgs {
+  at: number;
+  way: number;
+}
+
+/** The arguments of `jump_to`. */
+export interface JumpToArgs {
+  at: number;
+}
+
+/** The arguments of `scrub_to`. */
+export interface ScrubToArgs {
+  at: number;
+}
+
+/** The arguments of `refresh_live`. */
+export interface RefreshLiveArgs {
 }
 
 /** The arguments of `export_cut`. */
@@ -505,6 +581,7 @@ export interface Media extends tilo.Resource {
   u37npdvi: boolean;  // bold
   wzbpbjsf: boolean;  // italic
   hlbhw6tg: number;  // backdrop
+  j34pf5ka: string;  // font
   /** The source's picture as the bin shows it. */
   draw_swatch(args: {
     width: number;
@@ -522,6 +599,12 @@ export interface Media extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_title_style` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_title_styleMany(items: SetTitleStyleArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The family a title's words are set in, drawn again as it changes. The system's own sans is an empty family, which a box with no faces installed can still honour. */
+  set_font(args: {
+    family: string;
+  }): Promise<void>;
+  /** Runs `set_font` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_fontMany(items: SetFontArgs[]): Promise<tilo.ActionAnswer[]>;
   set_title_look(args: {
     look: TitleLook;
     value: number;
@@ -547,7 +630,7 @@ export interface Media extends tilo.Resource {
 
 /** The actions `Media` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MEDIA_ACTIONS = ["draw_swatch", "draw_swatchMany", "hear", "hearMany", "set_title_style", "set_title_styleMany", "set_title_look", "set_title_lookMany", "redraw_media", "redraw_mediaMany", "set_align", "set_alignMany", "set_words", "set_wordsMany"] as const;
+export const MEDIA_ACTIONS = ["draw_swatch", "draw_swatchMany", "hear", "hearMany", "set_title_style", "set_title_styleMany", "set_font", "set_fontMany", "set_title_look", "set_title_lookMany", "redraw_media", "redraw_mediaMany", "set_align", "set_alignMany", "set_words", "set_wordsMany"] as const;
 
 /** The `tl.so.tilo.video-editor.Media` kind at `path`. */
 export function media(ws: tilo.Workspace, path: string): Media {
@@ -669,6 +752,8 @@ export interface Clip extends tilo.Resource {
   nu7xhxvx: number;  // pos_x
   vrqmvalw: number;  // pos_y
   "3ru7tn4m": number;  // rotation
+  mbctkint: number;  // anchor_x
+  iyrfpfiq: number;  // anchor_y
   kx3c765z: number;  // crop_left
   "4rl2tdsz": number;  // crop_right
   d4ryk5ir: number;  // crop_top
@@ -692,6 +777,11 @@ export interface Clip extends tilo.Resource {
   u3oht37u: number;  // mask_rotation
   iraobc5s: number;  // mask_feather
   "6njmwsei": boolean;  // mask_invert
+  ex66wj7a: number[];  // curve_master
+  n5lm4fa3: number[];  // curve_red
+  vl2qc7vg: number[];  // curve_green
+  ba2d3rjj: number[];  // curve_blue
+  qai4utug: number;  // curve_mix
   vmc7izdi: string;  // link
   wovh5j2b: boolean;  // link_follows
   poy7f6dc: boolean;  // sound_split
@@ -711,12 +801,46 @@ export interface Clip extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_look` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_lookMany(items: SetLookArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves the point a clip's scaling and turning go around: a corner, an edge or the middle, which is where a picture is pinned when it is made half the frame, turned or grown. */
+  set_anchor(args: {
+    x: number;
+    y: number;
+  }): Promise<void>;
+  /** Runs `set_anchor` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_anchorMany(items: SetAnchorArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets one channel's tone curve from the points a person shaped, applied to the picture at once. */
+  set_curve(args: {
+    channel: string;
+    points: number[];
+  }): Promise<void>;
+  /** Runs `set_curve` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_curveMany(items: SetCurveArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts one channel's curve back to the straight line: the picture as the grade alone leaves it. */
+  reset_curve(args: {
+    channel: string;
+  }): Promise<void>;
+  /** Runs `reset_curve` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reset_curveMany(items: ResetCurveArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** How much of the curve the picture takes: 0 bypasses it entirely, 1 is the curve as drawn. */
+  set_curve_mix(args: {
+    mix: number;
+  }): Promise<void>;
+  /** Runs `set_curve_mix` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_curve_mixMany(items: SetCurveMixArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Sets which shape limits where a clip shows: `off`, `rect` or `ellipse`. */
   set_mask(args: {
     shape: string;
   }): Promise<void>;
   /** Runs `set_mask` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_maskMany(items: SetMaskArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Fills the frame with the picture as it comes: every crop, scaling, turn and move taken back, so the source's own aspect-fit fills as much of the frame as it can. */
+  fill_frame(): Promise<void>;
+  /** Runs `fill_frame` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  fill_frameMany(items: FillFrameArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Fits the clip's mask over the picture as the frame shows it: the aspect-fit the source takes, then its crop, its scaling, its turn and its move, so a mask cuts out the picture rather than a box of guessed size. */
+  fit_mask(): Promise<void>;
+  /** Runs `fit_mask` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  fit_maskMany(items: FitMaskArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Keeps the inside of the clip's mask, or the outside of it. */
   invert_mask(args: {
     invert: boolean;
@@ -770,9 +894,6 @@ export interface Clip extends tilo.Resource {
   unlink_clip(): Promise<void>;
   /** Runs `unlink_clip` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   unlink_clipMany(items: UnlinkClipArgs[]): Promise<tilo.ActionAnswer[]>;
-  unplace_side_by_side(): Promise<void>;
-  /** Runs `unplace_side_by_side` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  unplace_side_by_sideMany(items: UnplaceSideBySideArgs[]): Promise<tilo.ActionAnswer[]>;
   add_effect(args: {
     form: string;
   }): Promise<void>;
@@ -805,7 +926,7 @@ export interface Clip extends tilo.Resource {
 
 /** The actions `Clip` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CLIP_ACTIONS = ["set_speed", "set_speedMany", "normal_speed", "normal_speedMany", "set_look", "set_lookMany", "set_mask", "set_maskMany", "invert_mask", "invert_maskMany", "set_transition", "set_transitionMany", "set_reverse", "set_reverseMany", "redraw_clip", "redraw_clipMany", "key_at", "key_atMany", "unkey", "unkeyMany", "key_colour", "key_colourMany", "thumb_frame", "unlink_clip", "unlink_clipMany", "unplace_side_by_side", "unplace_side_by_sideMany", "add_effect", "add_effectMany", "remove_effect", "remove_effectMany", "set_effect", "set_effectMany", "move_effect", "move_effectMany", "clear_effects", "clear_effectsMany"] as const;
+export const CLIP_ACTIONS = ["set_speed", "set_speedMany", "normal_speed", "normal_speedMany", "set_look", "set_lookMany", "set_anchor", "set_anchorMany", "set_curve", "set_curveMany", "reset_curve", "reset_curveMany", "set_curve_mix", "set_curve_mixMany", "set_mask", "set_maskMany", "fill_frame", "fill_frameMany", "fit_mask", "fit_maskMany", "invert_mask", "invert_maskMany", "set_transition", "set_transitionMany", "set_reverse", "set_reverseMany", "redraw_clip", "redraw_clipMany", "key_at", "key_atMany", "unkey", "unkeyMany", "key_colour", "key_colourMany", "thumb_frame", "unlink_clip", "unlink_clipMany", "add_effect", "add_effectMany", "remove_effect", "remove_effectMany", "set_effect", "set_effectMany", "move_effect", "move_effectMany", "clear_effects", "clear_effectsMany"] as const;
 
 /** The `tl.so.tilo.video-editor.Clip` kind at `path`. */
 export function clip(ws: tilo.Workspace, path: string): Clip {
@@ -824,11 +945,17 @@ export interface Marker extends tilo.Resource {
   }): Promise<void>;
   /** Runs `note_marker` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   note_markerMany(items: NoteMarkerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Renames a mark. A name of nothing is refused: a mark nobody can find in the list is not a marker. */
+  rename_marker(args: {
+    words: string;
+  }): Promise<void>;
+  /** Runs `rename_marker` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rename_markerMany(items: RenameMarkerArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Marker` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MARKER_ACTIONS = ["note_marker", "note_markerMany"] as const;
+export const MARKER_ACTIONS = ["note_marker", "note_markerMany", "rename_marker", "rename_markerMany"] as const;
 
 /** The `tl.so.tilo.video-editor.Marker` kind at `path`. */
 export function marker(ws: tilo.Workspace, path: string): Marker {
@@ -851,13 +978,16 @@ export interface Project extends tilo.Resource {
   qr6qe3cp: Array<tilo.Entry<Marker>>;  // markers
   "47vsdgaf": string;  // still
   dppbe5en: number;  // still_at
-  gkp4va33: string;  // proxy
+  kti7icrd: string;  // live
+  k4vs2hwv: number;  // live_rate
   xa5fpldf: string;  // job
-  dkhcppi4: string;  // job_kind
   myjdbgx2: number;  // job_done
   "63bjrnm4": number;  // job_total
   rhjs5vir: string;  // exported
   "4jky56y7": string;  // trouble
+  xryucmpo: number;  // over_db
+  "33lufvui": number[];  // clips_at
+  "5sdhdf7o": string[];  // hot_tracks
   /** Makes the clip `c` keeps on `track`, of `media`, at `start`, with its keys and effects. */
   restore_clip(args: {
     saved: string;
@@ -920,9 +1050,8 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `draw_still` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   draw_stillMany(items: DrawStillArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Starts a render: `preview` keeps the cut small for the window to play, `export` writes the file a person saves. */
+  /** Starts the render a person saves. */
   begin_render(args: {
-    render_kind: string;
     resolution: string;
     container: string;
     fps: number;
@@ -1070,6 +1199,24 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `duplicate_clips` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   duplicate_clipsMany(items: DuplicateClipsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Brings every track down by the same number of decibels, keeping the balance between them. A mix is a sum, so scaling every layer of it scales the sum: the balance the person set stays where they put it. Moving only the tracks caught over would change that balance and would not even guarantee the sum fits — two tracks at two-thirds each are over without either being over alone. A number that brings nothing down refuses rather than quietly doing nothing. */
+  trim_tracks(args: {
+    db: number;
+  }): Promise<void>;
+  /** Runs `trim_tracks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  trim_tracksMany(items: TrimTracksArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Asks this device to measure the cut's whole mix, and keeps where it went over full scale so the flag, the way to each place and the trim know what they are talking about. */
+  check_mix(): Promise<void>;
+  /** Runs `check_mix` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  check_mixMany(items: CheckMixArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes what a live play has heard so far: the mix clipping is heard as the cut plays, and the flag and its way there stand from the first place it went over. */
+  hear_mix(): Promise<void>;
+  /** Runs `hear_mix` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  hear_mixMany(items: HearMixArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Forgets a measurement of a mix that has been changed since: what was measured describes a sum that no longer exists. */
+  forgot_mix(): Promise<void>;
+  /** Runs `forgot_mix` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  forgot_mixMany(items: ForgotMixArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Draws the frame the preview last showed again, so an edit made after it is seen at once. A cut whose frame the window never showed draws nothing: there is no place to draw it at. */
   redraw(): Promise<void>;
   /** Runs `redraw` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -1131,7 +1278,7 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_frame_size` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_frame_sizeMany(items: SetFrameSizeArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Takes its shape from a source: what 'Use its format' does. */
+  /** Takes the cut's shape from a source: the frame size and rate it was shot at, so the cut is shown as the source is. The button that does it names the source, so pressing it is never a guess about which of several sources it meant. */
   adopt_format(args: {
     m: Media;
   }): Promise<void>;
@@ -1158,13 +1305,6 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `split_audio` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   split_audioMany(items: SplitAudioArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Puts two clips side by side: each half the frame, one left and one right. */
-  place_side_by_side(args: {
-    left: Clip;
-    right: Clip;
-  }): Promise<void>;
-  /** Runs `place_side_by_side` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  place_side_by_sideMany(items: PlaceSideBySideArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Takes a source out of the bin, and every clip that showed it with it. */
   delete_media(args: {
     m: Media;
@@ -1177,11 +1317,53 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `preview` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   previewMany(items: PreviewArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Renders the cut small, so the window plays it. */
-  preview_cut(): Promise<void>;
-  /** Runs `preview_cut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  preview_cutMany(items: PreviewCutArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Renders the cut to a file. */
+  /** Plays the cut from `at`: the device composites each frame as the playhead reaches it and mixes the sound for the same moment, so the window shows the cut itself rather than a render of it. A negative rate plays the footage and its sound backwards. */
+  play_cut(args: {
+    at: number;
+    rate: number;
+  }): Promise<void>;
+  /** Runs `play_cut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  play_cutMany(items: PlayCutArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Stops the live play: the device stops compositing and the sound stops with the picture. */
+  stop_cut(): Promise<void>;
+  /** Runs `stop_cut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  stop_cutMany(items: StopCutArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Stops the live play where it stands, and draws that frame: what pause does. */
+  pause_cut(): Promise<void>;
+  /** Runs `pause_cut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  pause_cutMany(items: PauseCutArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** One press of a shuttle control: the same way doubles the speed up to sixteen times, the other way starts again at normal speed that way. */
+  shuttle(args: {
+    at: number;
+    way: number;
+  }): Promise<void>;
+  /** Runs `shuttle` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  shuttleMany(items: ShuttleArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Stops the live play and draws the frame `at` in its place: what a jump or a frame step does. */
+  jump_to(args: {
+    at: number;
+  }): Promise<void>;
+  /** Runs `jump_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  jump_toMany(items: JumpToArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Where the live play has the playhead now, or -1 when nothing plays. */
+  live_at(): Promise<number>;
+  /** Scrubs to the second `at`: the live play stops, the frame under the playhead is drawn, and a short piece of the sound there is played. A drag runs this at every move. */
+  scrub_to(args: {
+    at: number;
+  }): Promise<void>;
+  /** Runs `scrub_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  scrub_toMany(items: ScrubToArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Whether the live play is still running: a word of nowhere means it is just starting, and a word at either end means it has stopped there. */
+  play_moving(): Promise<boolean>;
+  /** Hands the device the cut as it now is: an edit made while the cut plays is seen as it is made, rather than at the next play. */
+  refresh_live(): Promise<void>;
+  /** Runs `refresh_live` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  refresh_liveMany(items: RefreshLiveArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The cut's sound where the playhead was dragged: a short snippet, not the timeline's running sound. */
+  hear_scrub(args: {
+    at: number;
+  }): Promise<void>;
+  /** Renders the cut to a file, refusing when a source this device cannot read would leave the film missing its footage. */
   export_cut(args: {
     resolution: string;
     container: string;
@@ -1200,7 +1382,7 @@ export interface Project extends tilo.Resource {
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["restore_clip", "split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "adopt_probe", "adopt_probeMany", "refresh_source", "refresh_sourceMany", "relink", "relinkMany", "mark_missing", "mark_missingMany", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "move_to", "move_toMany", "trim_to", "trim_toMany", "move_marker", "move_markerMany", "moved", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clips", "remove_clipsMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "trim_start", "trim_startMany", "trim_end", "trim_endMany", "copy_clips", "cut_clips", "paste_track", "paste_clips", "paste_clipsMany", "duplicate_clips", "duplicate_clipsMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "place_side_by_side", "place_side_by_sideMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "preview_cut", "preview_cutMany", "export_cut", "export_cutMany", "poll_render", "poll_renderMany", "cancel_render", "cancel_renderMany"] as const;
+export const PROJECT_ACTIONS = ["restore_clip", "split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "adopt_probe", "adopt_probeMany", "refresh_source", "refresh_sourceMany", "relink", "relinkMany", "mark_missing", "mark_missingMany", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "move_to", "move_toMany", "trim_to", "trim_toMany", "move_marker", "move_markerMany", "moved", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clips", "remove_clipsMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "trim_start", "trim_startMany", "trim_end", "trim_endMany", "copy_clips", "cut_clips", "paste_track", "paste_clips", "paste_clipsMany", "duplicate_clips", "duplicate_clipsMany", "trim_tracks", "trim_tracksMany", "check_mix", "check_mixMany", "hear_mix", "hear_mixMany", "forgot_mix", "forgot_mixMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "play_cut", "play_cutMany", "stop_cut", "stop_cutMany", "pause_cut", "pause_cutMany", "shuttle", "shuttleMany", "jump_to", "jump_toMany", "live_at", "scrub_to", "scrub_toMany", "play_moving", "refresh_live", "refresh_liveMany", "hear_scrub", "export_cut", "export_cutMany", "poll_render", "poll_renderMany", "cancel_render", "cancel_renderMany"] as const;
 
 /** The `tl.so.tilo.video-editor.Project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {
@@ -1391,6 +1573,103 @@ export function jobState(ws: tilo.Workspace, path: string): JobState {
   return resourceProxy(ws, path, SURFACE, JOBSTATE_ACTIONS) as unknown as JobState;
 }
 
+/** LiveAsk — `tl.so.tilo.video-editor.LiveAsk`. */
+export interface LiveAsk extends tilo.Resource {
+  bgnkfxlo: string;  // project
+  appc64zf: number;  // from
+  xr7l6ray: number;  // rate
+  d6da6bsq: number;  // width
+  rydoez3z: number;  // height
+  cb3fxuvg: boolean;  // sound
+}
+
+/** The actions `LiveAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LIVEASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.video-editor.LiveAsk` kind at `path`. */
+export function liveAsk(ws: tilo.Workspace, path: string): LiveAsk {
+  return resourceProxy(ws, path, SURFACE, LIVEASK_ACTIONS) as unknown as LiveAsk;
+}
+
+/** CutAsk — `tl.so.tilo.video-editor.CutAsk`. */
+export interface CutAsk extends tilo.Resource {
+  "6drnl2tz": string;  // job
+  "7es5yzhp": string;  // project
+}
+
+/** The actions `CutAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CUTASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.video-editor.CutAsk` kind at `path`. */
+export function cutAsk(ws: tilo.Workspace, path: string): CutAsk {
+  return resourceProxy(ws, path, SURFACE, CUTASK_ACTIONS) as unknown as CutAsk;
+}
+
+/** LiveWord — `tl.so.tilo.video-editor.LiveWord`. */
+export interface LiveWord extends tilo.Resource {
+  it7no3yy: number;  // at
+  y32rbhqo: number;  // over_db
+  "2iqind2t": number[];  // overs
+  pejln2oj: string[];  // tracks
+}
+
+/** The actions `LiveWord` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LIVEWORD_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.video-editor.LiveWord` kind at `path`. */
+export function liveWord(ws: tilo.Workspace, path: string): LiveWord {
+  return resourceProxy(ws, path, SURFACE, LIVEWORD_ACTIONS) as unknown as LiveWord;
+}
+
+/** MixAnswer — `tl.so.tilo.video-editor.MixAnswer`. */
+export interface MixAnswer extends tilo.Resource {
+  czr6i2uz: number;  // over_db
+  pm66fu4a: number[];  // overs
+  hh44z4gm: string[];  // tracks
+}
+
+/** The actions `MixAnswer` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MIXANSWER_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.video-editor.MixAnswer` kind at `path`. */
+export function mixAnswer(ws: tilo.Workspace, path: string): MixAnswer {
+  return resourceProxy(ws, path, SURFACE, MIXANSWER_ACTIONS) as unknown as MixAnswer;
+}
+
+/** MixAsk — `tl.so.tilo.video-editor.MixAsk`. */
+export interface MixAsk extends tilo.Resource {
+  thpnmzhh: string;  // project
+}
+
+/** The actions `MixAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MIXASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.video-editor.MixAsk` kind at `path`. */
+export function mixAsk(ws: tilo.Workspace, path: string): MixAsk {
+  return resourceProxy(ws, path, SURFACE, MIXASK_ACTIONS) as unknown as MixAsk;
+}
+
+/** ScrubAsk — `tl.so.tilo.video-editor.ScrubAsk`. */
+export interface ScrubAsk extends tilo.Resource {
+  "52qgffcz": string;  // project
+  "2mvmk5yr": number;  // at
+  ccewf5ft: number;  // seconds
+}
+
+/** The actions `ScrubAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SCRUBASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.video-editor.ScrubAsk` kind at `path`. */
+export function scrubAsk(ws: tilo.Workspace, path: string): ScrubAsk {
+  return resourceProxy(ws, path, SURFACE, SCRUBASK_ACTIONS) as unknown as ScrubAsk;
+}
+
 /** Shot — `tl.so.tilo.video-editor.Shot`. */
 export interface Shot extends tilo.Resource {
   fagho4gr: string;  // name
@@ -1492,11 +1771,18 @@ export interface ShotClip extends tilo.Resource {
   hl2h6f76: number;  // pos_x
   nhestloi: number;  // pos_y
   ckydsf7y: number;  // rotation
+  "5drcv42q": number;  // anchor_x
+  "4whekfjf": number;  // anchor_y
   ttpiryuy: number;  // crop_left
   dazt7wt5: number;  // crop_right
   o5353t6h: number;  // crop_top
   lsgktf3d: number;  // crop_bottom
   mq4hgil7: string[];  // effects
+  "3onhtj2t": number[];  // curve_master
+  qahutbcr: number[];  // curve_red
+  zc6isz2b: number[];  // curve_green
+  "7ubzs7t5": number[];  // curve_blue
+  qjnl3pk6: number;  // curve_mix
   "6ahtwc73": string[];  // keys
   "2i54q4ly": boolean;  // key_enabled
   hcm6xmnu: number[];  // key_color
@@ -1670,6 +1956,7 @@ export interface SavedMedia extends tilo.Resource {
   oecwbkzv: boolean;  // bold
   qefzzmnw: boolean;  // italic
   npetd5wt: number;  // backdrop
+  ehpks3pq: string;  // font
 }
 
 /** The actions `SavedMedia` reaches before it is read: `ws` calls them without a
@@ -1726,6 +2013,8 @@ export interface SavedClip extends tilo.Resource {
   "7rxjc3mu": number;  // pos_x
   "4fkenwwm": number;  // pos_y
   n2rqdsw7: number;  // rotation
+  zdvk3o64: number;  // anchor_x
+  j4zszdmt: number;  // anchor_y
   fycn5pvk: number;  // crop_left
   "2tb4h5uc": number;  // crop_right
   "7madt25j": number;  // crop_top
@@ -1749,6 +2038,11 @@ export interface SavedClip extends tilo.Resource {
   zwo6h7ka: number;  // key_blue
   "6oop3g3z": string[];  // keys
   igcwp2fn: string[];  // effects
+  ol3bgzw4: number[];  // curve_master
+  p7y2saed: number[];  // curve_red
+  gyh2nxn7: number[];  // curve_green
+  jf6z7vea: number[];  // curve_blue
+  br257zpc: number;  // curve_mix
 }
 
 /** The actions `SavedClip` reaches before it is read: `ws` calls them without a

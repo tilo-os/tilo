@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.music@4532807ac4e7fdf3";
+export const SURFACE = "so.tilo.music@b2520efef4b013e0";
 
 /** The arguments of `remove_offline`. */
 export interface RemoveOfflineArgs {
@@ -44,6 +44,11 @@ export interface PickCoverArgs {
 /** The arguments of `set_cover`. */
 export interface SetCoverArgs {
   file: unknown;
+}
+
+/** The arguments of `follow_stream`. */
+export interface FollowStreamArgs {
+  p: unknown;
 }
 
 /** The arguments of `add_to_queue`. */
@@ -69,6 +74,7 @@ export interface RestoreRecArgs {
 /** The arguments of `note_failure`. */
 export interface NoteFailureArgs {
   reason: string;
+  at: number;
 }
 
 /** The arguments of `update_taste`. */
@@ -411,6 +417,8 @@ export interface Library extends tilo.Resource {
   w3c7fplo: string;  // home_state
   gmizjqwj: string;  // home_trouble
   vnufl2py: string;  // trouble
+  jelhifn2: string;  // player_trouble
+  bw27kdqh: number;  // player_at
   fkvdcomi: boolean;  // online
   /** The session this app plays through: the one it has, or one made now. It is kept both in `playing`, which a view reads, and in `sessions`, so the record is a resource of its own. */
   session(): Promise<unknown>;
@@ -418,6 +426,12 @@ export interface Library extends tilo.Resource {
   open_audio_file(args: {
     file: unknown;
   }): Promise<Track>;
+  /** Keeps the session's source the song's own address, so the live card and another device play the one the catalogue last answered with. */
+  follow_stream(args: {
+    p: unknown;
+  }): Promise<void>;
+  /** Runs `follow_stream` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  follow_streamMany(items: FollowStreamArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Opens a `music://` link: the song it names plays, and the album, artist or playlist it names opens on its page. A shell hands a link here whether or not a window of Music is open, and what this returns opens in the window; a link this library holds nothing for shows the library. */
   open_link(args: {
     link: string;
@@ -461,12 +475,15 @@ export interface Library extends tilo.Resource {
   lyrics_of(args: {
     p: unknown;
   }): Promise<void>;
-  /** Says why the player stopped. */
+  /** Says why the player stopped, and where, so the notice names the place and continues there. */
   note_failure(args: {
     reason: string;
+    at: number;
   }): Promise<void>;
   /** Runs `note_failure` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   note_failureMany(items: NoteFailureArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Asks the catalogue for the song's address again and plays it on from where it stopped: a stream its source stopped serving partway through, or one whose signed address expired, continues from that place rather than beginning again. */
+  retry_stream(): Promise<void>;
   /** Makes a playlist of the person's own: at Spotify too, when it is their catalogue and their Spotify is connected, so the playlist plays there as it does here. */
   new_mixtape(args: {
     name: string;
@@ -532,7 +549,7 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["session", "open_audio_file", "open_link", "add_to_queue", "add_to_queueMany", "play_next", "play_nextMany", "lyrics_now", "hide_rec", "hide_recMany", "restore_rec", "restore_recMany", "search", "open_suggestion", "lyrics_of", "note_failure", "note_failureMany", "new_mixtape", "set_catalogue", "connect_spotify", "finish_spotify", "disconnect_spotify", "spotify_devices", "transfer_playback", "remote_play", "remote_pause", "remote_next", "remote_previous", "spotify_now", "spotify_queue", "queue_on_spotify", "spotify_more", "update_taste", "update_tasteMany", "dismiss_artist", "dismiss_artistMany", "prefer_artist", "prefer_artistMany"] as const;
+export const LIBRARY_ACTIONS = ["session", "open_audio_file", "follow_stream", "follow_streamMany", "open_link", "add_to_queue", "add_to_queueMany", "play_next", "play_nextMany", "lyrics_now", "hide_rec", "hide_recMany", "restore_rec", "restore_recMany", "search", "open_suggestion", "lyrics_of", "note_failure", "note_failureMany", "retry_stream", "new_mixtape", "set_catalogue", "connect_spotify", "finish_spotify", "disconnect_spotify", "spotify_devices", "transfer_playback", "remote_play", "remote_pause", "remote_next", "remote_previous", "spotify_now", "spotify_queue", "queue_on_spotify", "spotify_more", "update_taste", "update_tasteMany", "dismiss_artist", "dismiss_artistMany", "prefer_artist", "prefer_artistMany"] as const;
 
 /** The `tl.so.tilo.music.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {

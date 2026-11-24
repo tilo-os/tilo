@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@e8d4764e347966ce";
+export const SURFACE = "so.tilo.chat@15809f6f8830fedc";
 
 /** One emoji of the workspace. */
 export interface Emoji {
@@ -422,9 +422,10 @@ export interface Conversations extends tilo.Resource {
   new_skill(args?: {
     name?: string;
   }): Promise<Skill>;
-  /** Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens. The people who read the reports there answer, react and start a thread under one as under any message. The channel is made under one key on every device, so reports filed apart open one. */
+  /** Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens. The people who read the reports there answer, react and start a thread under one as under any message. The channel is made under one key on every device, so reports filed apart open one. A report carries a recording of what happened where one was kept (Capture's last half minute, or any recording the person chose): it rides on the message as its file, and the report's row offers to replay it. */
   report_problem(args: {
     body: string;
+    recording?: unknown;
   }): Promise<Message>;
   /** Opens the direct message between the invoker and `who`, in the sidebar, or the one already open between the two of them: two people have one conversation, not a new empty one each time. With yourself it is your notes to self. A person is someone of the workspace: one who is not in it is refused, since no one but its members reads what is written here. */
   message_person(args: {

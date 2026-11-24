@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.console@25a248c332df2e65";
+export const SURFACE = "so.tilo.console@b4049dd394c133cc";
 
 /** The arguments of `stop_agent`. */
 export interface StopAgentArgs {
@@ -42,6 +42,30 @@ export interface LetAgentGoOnArgs {
 
 /** The arguments of `publish`. */
 export interface PublishArgs {
+}
+
+/** The arguments of `stop_client`. */
+export interface StopClientArgs {
+  client: string;
+}
+
+/** The arguments of `take_over_client`. */
+export interface TakeOverClientArgs {
+  client: string;
+}
+
+/** The arguments of `undo_client_session`. */
+export interface UndoClientSessionArgs {
+  client: string;
+}
+
+/** The arguments of `let_client_go_on`. */
+export interface LetClientGoOnArgs {
+  client: string;
+}
+
+/** The arguments of `open_connect`. */
+export interface OpenConnectArgs {
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -128,11 +152,43 @@ export interface Window extends tilo.Resource {
   agent_card(args: {
     client: string;
   }): Promise<AgentCard>;
+  /** Stops the client's working session, keeping its grant: the card's own Stop, by the client a card, a palette or an agent names. */
+  stop_client(args: {
+    client: string;
+  }): Promise<void>;
+  /** Runs `stop_client` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  stop_clientMany(items: StopClientArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Stops the client's session and opens what it changed last: the card's own Take over, by the client a card, a palette or an agent names. */
+  take_over_client(args: {
+    client: string;
+  }): Promise<void>;
+  /** Runs `take_over_client` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  take_over_clientMany(items: TakeOverClientArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes back every change of the client's newest session: the card's own Undo session, by the client a card, a palette or an agent names. */
+  undo_client_session(args: {
+    client: string;
+  }): Promise<void>;
+  /** Runs `undo_client_session` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  undo_client_sessionMany(items: UndoClientSessionArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes back the grant the client came in by: the card's own Revoke, by the client a card, a palette or an agent names. */
+  revoke_client(args: {
+    client: string;
+  }): Promise<void>;
+  /** Lets a stopped client's calls through again: the card's own Let it go on, by the client a card, a palette or an agent names. */
+  let_client_go_on(args: {
+    client: string;
+  }): Promise<void>;
+  /** Runs `let_client_go_on` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  let_client_go_onMany(items: LetClientGoOnArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Shows how an agent or another computer connects as this person: the window opens at Connect. */
+  open_connect(): Promise<void>;
+  /** Runs `open_connect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  open_connectMany(items: OpenConnectArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Window` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WINDOW_ACTIONS = ["publish", "publishMany", "session_link", "agent_card"] as const;
+export const WINDOW_ACTIONS = ["publish", "publishMany", "session_link", "agent_card", "stop_client", "stop_clientMany", "take_over_client", "take_over_clientMany", "undo_client_session", "undo_client_sessionMany", "revoke_client", "let_client_go_on", "let_client_go_onMany", "open_connect", "open_connectMany"] as const;
 
 /** The `tl.so.tilo.console.Window` kind at `path`. */
 export function consoleWindow(ws: tilo.Workspace, path: string): Window {
