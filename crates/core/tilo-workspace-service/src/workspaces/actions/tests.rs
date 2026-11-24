@@ -2733,3 +2733,42 @@ async fn two_devices_redeeming_one_invitation_at_once_admit_exactly_one() {
     );
     server.shutdown().await;
 }
+
+/// What members may post is the workspace's owners' setting: a member's own device asks for a
+/// change through `content.set-policy` and is refused, and the workspace's policy stands as it
+/// was. Every member reads it through `content.policy`, which no grant gates.
+#[tokio::test]
+async fn only_the_workspaces_owners_change_what_members_may_post() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+
+    let asked = request(
+        &workspace,
+        super::SET_CONTENT_POLICY,
+        json!({ "file_bytes": 1024 }),
+    );
+    assert_eq!(
+        invoke(&host, workspace_id, &caller(&ada), asked).await,
+        Err(ActionCallError::NotPermitted),
+        "a member who is no owner changes what the workspace lets members post"
+    );
+
+    let read = invoke(
+        &host,
+        workspace_id,
+        &caller(&ada),
+        request(&workspace, super::CONTENT_POLICY, json!({})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        read["file_bytes"],
+        tilo_action_policy::DEFAULT_FILE_BYTES,
+        "the policy stands as the owners left it"
+    );
+    server.shutdown().await;
+}

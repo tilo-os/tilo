@@ -62,12 +62,12 @@ pub mod environment_commands;
 pub mod environment_machines;
 pub mod environment_terminals;
 pub mod formats;
+pub mod model_providers;
 mod nodes;
 pub mod own_device;
 mod pending;
 pub mod person_accounts;
 pub mod person_connections;
-pub mod model_providers;
 pub mod person_telling;
 pub mod person_vault;
 mod providers;
@@ -225,6 +225,11 @@ pub const WORKSPACE_TRUST: &str = "trust";
 /// The registries a workspace fetches apps from, under its governance root
 /// (`workspace/registries`).
 pub const WORKSPACE_REGISTRIES: &str = "registries";
+/// The limits a workspace's owners set on what members post there, under its
+/// governance root (`workspace/content`): the largest file a host keeps and
+/// what one member's files may take, now and in any hour. Read by every
+/// member as the Workspace package's `content` root.
+pub const WORKSPACE_CONTENT: &str = "content";
 /// One app a workspace runs (`workspace/apps/<app>`, its id): what updates, pins and uninstalls
 /// it is published on it.
 pub const WORKSPACE_APP: &str = "apps/*";
@@ -292,7 +297,7 @@ pub const WORKSPACE_AGENT_DELETE: &str = "agent.delete";
 /// is its `person`, and one listed on [`WORKSPACE_APP`] on each app the workspace runs, which
 /// is its `app`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
 /// workspace's grants.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 41] = [
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 43] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
@@ -323,6 +328,8 @@ pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 41] = [
     ("copies.set", Some(WORKSPACE_SERVERS), "copies"),
     ("copies.read", Some(WORKSPACE_SERVERS), "keeps"),
     ("content.held", Some(WORKSPACE_SERVERS), "content"),
+    ("content.policy", Some(WORKSPACE_CONTENT), "policy"),
+    ("content.set-policy", Some(WORKSPACE_CONTENT), "set-policy"),
     ("trust.list", Some(WORKSPACE_TRUST), "list"),
     ("trust.revoked", Some(WORKSPACE_TRUST), "revoked"),
     ("trust.add", Some(WORKSPACE_TRUST), "add"),

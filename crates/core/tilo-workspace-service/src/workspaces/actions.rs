@@ -4766,8 +4766,8 @@ mod surface_tests {
         WORKSPACE_MEMBERS, WORKSPACE_WAITING,
     };
     use tilo_actions::remote::{
-        WORKSPACE_APP, WORKSPACE_APPS, WORKSPACE_PERMISSION, WORKSPACE_REGISTRIES,
-        WORKSPACE_SERVERS, WORKSPACE_TRUST,
+        WORKSPACE_APP, WORKSPACE_APPS, WORKSPACE_CONTENT, WORKSPACE_PERMISSION,
+        WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST,
     };
 
     use super::{VERBS, Verb};
@@ -4780,12 +4780,13 @@ mod surface_tests {
     /// governance tree, named after what it holds. Each is a resource type of its own, so a verb
     /// several offer (`list` on the members, the invitations and the servers) is one action of
     /// each, named by its type.
-    const RESOURCES: [(&str, &str); 10] = [
+    const RESOURCES: [(&str, &str); 11] = [
         ("members", "Members"),
         ("member", "Member"),
         ("invitations", "Invitations"),
         ("waiting", "Wait list"),
         ("servers", "Servers"),
+        ("content", "Content"),
         ("trust", "Trust"),
         ("registries", "Registries"),
         ("apps", "Apps"),
@@ -4803,6 +4804,7 @@ mod surface_tests {
             Some(WORKSPACE_INVITATIONS) => "invitations",
             Some(WORKSPACE_WAITING) => "waiting",
             Some(WORKSPACE_SERVERS) => "servers",
+            Some(WORKSPACE_CONTENT) => "content",
             Some(WORKSPACE_TRUST) => "trust",
             Some(WORKSPACE_REGISTRIES) => "registries",
             Some(WORKSPACE_APPS) => "apps",
@@ -4847,6 +4849,37 @@ mod surface_tests {
                 if *kind == "members" {
                     resource["fields"] = json!([
                         { "path": "people", "type": { "list": "actor" }, "readonly": true },
+                    ]);
+                }
+                // The content reads as its owners' limits and the content a limit refused: what
+                // every host is handed as `workspace.content` (`tilolang_tilo`'s
+                // `Host::give_content`), each refusal only to whoever reads it.
+                if *kind == "content" {
+                    resource["fields"] = json!([
+                        { "path": "file_bytes", "type": "int", "readonly": true },
+                        { "path": "member_bytes", "type": "int", "readonly": true },
+                        { "path": "hourly_bytes", "type": "int", "readonly": true },
+                        {
+                            "path": "refusals",
+                            "type": { "list": { "named": "Refusal" } },
+                            "readonly": true,
+                        },
+                    ]);
+                    resource["types"] = json!([
+                        {
+                            "name": "Refusal",
+                            "doc": "Content a host stopped keeping because a limit said so.",
+                            "fields": [
+                                { "name": "record", "type": "text", "title": "The record whose content it is." },
+                                { "name": "hash", "type": "text", "title": "The content's address, BLAKE3 hex." },
+                                { "name": "bytes", "type": "int", "title": "How many bytes it is." },
+                                { "name": "limit", "type": "text", "title": "The limit it went over: file, member, hourly, workspace or host." },
+                                { "name": "allowed", "type": "int", "title": "What that limit allowed, in bytes." },
+                                { "name": "member", "type": "text", "title": "Who posted it, by person id." },
+                                { "name": "at", "type": "int", "title": "When it was refused, Unix milliseconds." },
+                                { "name": "raise", "type": "text", "title": "Who can raise the limit: owners or host." },
+                            ],
+                        },
                     ]);
                 }
                 resource

@@ -153,6 +153,43 @@ id = "content"
 kind = "read"
 
 [[resources]]
+kind = "workspace.content"
+label = "Content"
+version = 1
+fields = [
+  { path = "file_bytes", type = "int", readonly = true },
+  { path = "member_bytes", type = "int", readonly = true },
+  { path = "hourly_bytes", type = "int", readonly = true },
+  { path = "refusals", type = { list = { named = "Refusal" } }, readonly = true },
+]
+
+[[resources.verbs]]
+id = "policy"
+kind = "read"
+
+[[resources.verbs]]
+id = "set-policy"
+kind = "outside"
+params = [
+  { name = "file_bytes", required = false, schema = { type = "integer" } },
+  { name = "member_bytes", required = false, schema = { type = "integer" } },
+  { name = "hourly_bytes", required = false, schema = { type = "integer" } },
+]
+
+[[resources.types]]
+name = "Refusal"
+fields = [
+  { name = "record", type = "text" },
+  { name = "hash", type = "text" },
+  { name = "bytes", type = "int" },
+  { name = "limit", type = "text" },
+  { name = "allowed", type = "int" },
+  { name = "member", type = "text" },
+  { name = "at", type = "int" },
+  { name = "raise", type = "text" },
+]
+
+[[resources]]
 kind = "workspace.trust"
 label = "Trust"
 version = 1
