@@ -54,6 +54,10 @@ TILO_IDENTITY_ROOT=$state/identity
 XDG_STATE_HOME=$state/state
 export TILO_IDENTITY_ROOT XDG_STATE_HOME HOME=$state TILO_RUNTIME_PROFILE=$state
 export TILO_SERVER_CONFIG=$config
+# The volume is the daemon's profile, which it refuses unless only its owner reads it: a volume
+# a platform made (or a directory a stack made) is the daemon's alone from here on.
+mkdir -p "$state"
+chmod 0700 "$state" || fail "the volume $state is not this image's user's to make private"
 mkdir -p "$state/identity" "$state/state" "$state/secrets"
 # The volume is the daemon's runtime profile too, which it refuses to start from while others
 # may read it: a fresh volume is made with the mount's or the umask's mode.
