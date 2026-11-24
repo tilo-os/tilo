@@ -14,18 +14,18 @@ description = "Local sockets named by a path of any length: Unix-domain sockets 
 name = "tilo_socket"
 path = "src/lib.rs"
 
-# A std-only leaf on Unix: `tilo_files::native::socket` re-exports it, and tools that
-# stay dependency-free (the `cargo desktop` launcher) bind and connect through it too.
+# A leaf with one platform call beside std: `tilo_files::native::socket` re-exports it, and
+# tools that stay dependency-free (the `cargo desktop` launcher) bind and connect through it too.
 [dependencies]
 tokio = { workspace = true, optional = true, features = ["io-util", "net", "rt", "sync"] }
 
 [features]
 # The same sockets for a tokio caller (`tilo_socket::tokio`).
-tokio = ["dep:tokio", "dep:libc"]
+tokio = ["dep:tokio"]
 
-# A tokio stream's first bytes, peeked without consuming them (`MSG_PEEK`).
+# A stream's first bytes, peeked without consuming them (`MSG_PEEK`, `PeekNamedPipe`).
 [target.'cfg(unix)'.dependencies]
-libc = { workspace = true, optional = true }
+libc.workspace = true
 
 # Named pipes, their DACL and the account a peer's token names.
 [target.'cfg(windows)'.dependencies]

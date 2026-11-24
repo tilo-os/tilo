@@ -10,9 +10,8 @@
 
 use std::ffi::OsString;
 use std::io::{self, BufRead as _};
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use tilo_socket::Stream;
 
 /// The MCP server's path under `runtime_dir`; `None` when there is none to
 /// look in, which leaves no private place for it.
@@ -62,7 +61,7 @@ fn session_name_in(var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
 ///
 /// # Errors
 /// Nothing answers at `server`, or the lines could not be carried.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn bridge(server: &Path, session_name: Option<String>) -> io::Result<()> {
     let stream = tilo_files::native::socket::connect(server)
         .map_err(|error| unreachable_server(server, &error))?;
@@ -215,7 +214,7 @@ pub fn unreachable_server(path: &Path, error: &io::Error) -> io::Error {
 
 /// The most the server reads from a client before it is admitted: its
 /// `initialize` and any discovery probe before it.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_HELLO: usize = 64 * 1024;
 /// What a client that gave no name of its own is called: what the person who decides who it is
 /// reads, and what the workspace calls it until it says otherwise.
@@ -367,7 +366,7 @@ pub fn parse_hello(line: &[u8]) -> Result<Hello, HelloError> {
 /// `budget` is what is left of [`MAX_HELLO`] for everything the client sends
 /// before its `initialize`, so probes cannot keep an unadmitted connection
 /// reading without end.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 fn read_hello_line(reader: &mut impl io::Read, budget: &mut usize) -> io::Result<Vec<u8>> {
     let mut line = Vec::new();
     let mut byte = [0_u8; 1];
@@ -400,7 +399,7 @@ fn read_hello_line(reader: &mut impl io::Read, budget: &mut usize) -> io::Result
 }
 
 /// The JSON-RPC "method not found" answer to a `server/discover` probe.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 fn not_found_reply(id: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -415,8 +414,8 @@ pub fn error_reply(id: &serde_json::Value, message: &str) -> serde_json::Value {
     serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":-32001,"message":message}})
 }
 
-#[cfg(unix)]
-fn write_line(stream: &mut std::os::unix::net::UnixStream, value: &serde_json::Value) {
+#[cfg(not(target_arch = "wasm32"))]
+fn write_line(stream: &mut Stream, value: &serde_json::Value) {
     use std::io::Write;
     let _ = stream.write_all(format!("{value}\n").as_bytes());
     let _ = stream.flush();
@@ -424,32 +423,10 @@ fn write_line(stream: &mut std::os::unix::net::UnixStream, value: &serde_json::V
 
 /// Whether the client on `stream` is still connected: a waiting prompt for
 /// a client that left is withdrawn rather than answered for nobody.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
-pub fn client_connected(stream: &std::os::unix::net::UnixStream) -> bool {
-    use std::os::fd::AsRawFd;
-    let mut byte = 0_u8;
-    // SAFETY: a one-byte peek into a live local, on a descriptor `stream`
-    // owns for the whole call.
-    let read = unsafe {
-        libc::recv(
-            stream.as_raw_fd(),
-            (&raw mut byte).cast(),
-            1,
-            libc::MSG_PEEK | libc::MSG_DONTWAIT,
-        )
-    };
-    match read {
-        0 => false,
-        n if n > 0 => true,
-        _ => {
-            let error = io::Error::last_os_error();
-            matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-            )
-        }
-    }
+pub fn client_connected(stream: &Stream) -> bool {
+    tilo_socket::connected(stream)
 }
 
 /// Serve one MCP server connection, whose peer the session has already
@@ -465,8 +442,8 @@ pub fn client_connected(stream: &std::os::unix::net::UnixStream) -> bool {
 /// Close after a refusal without a reset: a client that already queued more
 /// lines would otherwise have the error discarded with its unread input.
 /// Half-close, then drain a bounded amount briefly.
-#[cfg(unix)]
-fn finish_refusal(stream: &mut std::os::unix::net::UnixStream) {
+#[cfg(not(target_arch = "wasm32"))]
+fn finish_refusal(stream: &mut Stream) {
     use std::io::Read as _;
     let _ = stream.shutdown(std::net::Shutdown::Write);
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(200)));
@@ -486,8 +463,8 @@ fn finish_refusal(stream: &mut std::os::unix::net::UnixStream) {
 ///
 /// # Errors
 /// The client left, sent too much, or said nothing in time.
-#[cfg(unix)]
-pub fn read_first_line(stream: &mut std::os::unix::net::UnixStream) -> io::Result<Vec<u8>> {
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_first_line(stream: &mut Stream) -> io::Result<Vec<u8>> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
@@ -514,7 +491,7 @@ pub fn is_control_request(line: &[u8]) -> bool {
 /// admits acts through `provider` with no key of its own.
 #[cfg(all(unix, test))]
 fn serve<H>(
-    stream: std::os::unix::net::UnixStream,
+    stream: Stream,
     provider: H,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
 ) -> io::Result<()>
@@ -558,7 +535,7 @@ where
 /// programs run.
 #[derive(Default)]
 pub struct Beside {
-    #[cfg(unix)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub tasks: Option<std::sync::Arc<dyn crate::TaskHosts>>,
 }
 
@@ -569,9 +546,9 @@ pub struct Beside {
 ///
 /// # Errors
 /// Returns transport errors; a refusal is `Ok`.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn serve_with<H>(
-    mut stream: std::os::unix::net::UnixStream,
+    mut stream: Stream,
     first: Option<Vec<u8>>,
     server: impl FnOnce() -> Result<(H, tilo_actions::remote::Caller), String>,
     beside: Beside,
@@ -630,9 +607,9 @@ where
 ///
 /// # Errors
 /// Returns transport errors; a refusal is `Ok`.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn serve_as<H>(
-    mut stream: std::os::unix::net::UnixStream,
+    mut stream: Stream,
     first: Option<Vec<u8>>,
     admit: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Result<crate::McpServer<H>, String>,
 ) -> io::Result<()>
@@ -659,11 +636,8 @@ where
 
 /// The client's `initialize` on `stream`, after `first` when that was read already; `None`
 /// when the client sent something else first, which was answered and the connection ended.
-#[cfg(unix)]
-fn opening_hello(
-    stream: &mut std::os::unix::net::UnixStream,
-    mut first: Option<Vec<u8>>,
-) -> io::Result<Option<Hello>> {
+#[cfg(not(target_arch = "wasm32"))]
+fn opening_hello(stream: &mut Stream, mut first: Option<Vec<u8>>) -> io::Result<Option<Hello>> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
@@ -704,9 +678,9 @@ fn opening_hello(
 
 /// Answer `initialize`, the client's first request, as `server`, then every request after it,
 /// until the client leaves.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 fn serve_server<H>(
-    mut stream: std::os::unix::net::UnixStream,
+    mut stream: Stream,
     initialize: serde_json::Value,
     server: crate::McpServer<H>,
 ) -> io::Result<()>
@@ -776,7 +750,7 @@ pub struct Asking {
 }
 
 impl Asking {
-    #[cfg(unix)]
+    #[cfg(not(target_arch = "wasm32"))]
     fn is_empty(&self) -> bool {
         self.workspace.is_none() && self.key.is_none() && self.session_name.is_none()
     }
@@ -816,8 +790,8 @@ impl Asking {
 
 /// Relay this process's stdin to `stream` and `stream` to its stdout; the
 /// client's `initialize` says what `asking` asks, when it asks anything.
-#[cfg(unix)]
-pub fn bridge_stdio(mut stream: UnixStream, asking: Asking) -> io::Result<()> {
+#[cfg(not(target_arch = "wasm32"))]
+pub fn bridge_stdio(mut stream: Stream, asking: Asking) -> io::Result<()> {
     let mut writer = stream.try_clone()?;
     std::thread::Builder::new()
         .name("tilo-mcp-proxy-stdin".into())

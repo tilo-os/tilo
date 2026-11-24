@@ -137,12 +137,58 @@ pub fn account_display_name(uid: u32) -> String {
         .unwrap_or_else(|| format!("User {uid}"))
 }
 
-#[cfg(not(unix))]
-pub fn login_account_display_name() -> String {
+/// Human-facing name of the Windows account this process runs as: the full name the account
+/// carries (`GetUserNameExW` with `NameDisplay`), else its login name. A new person takes it as
+/// their name until they rename themselves; `uid` names no Windows account.
+#[cfg(windows)]
+pub fn account_display_name(_uid: u32) -> String {
+    use windows_sys::Win32::Security::Authentication::Identity::{GetUserNameExW, NameDisplay};
+
+    let mut length = 0_u32;
+    // SAFETY: asks how long the name is, with no buffer to write; a null pointer and a live
+    // length are what the call takes for that.
+    unsafe { GetUserNameExW(NameDisplay, std::ptr::null_mut(), &raw mut length) };
+    if length > 1 {
+        let mut name = vec![0_u16; length as usize];
+        // SAFETY: a buffer of the length the call just asked for, and a live length.
+        if unsafe { GetUserNameExW(NameDisplay, name.as_mut_ptr(), &raw mut length) } {
+            let name = String::from_utf16_lossy(&name[..(length as usize).saturating_sub(1)]);
+            let name = name.trim();
+            if !name.is_empty() {
+                return name.to_owned();
+            }
+        }
+    }
+    login_name()
+}
+
+/// Human-facing name on a host that is neither Unix nor Windows.
+#[cfg(not(any(unix, windows)))]
+pub fn account_display_name(uid: u32) -> String {
     std::env::var("USER")
         .ok()
         .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| format!("User {uid}"))
+}
+
+/// The login name of the account this process runs as.
+#[cfg(not(unix))]
+fn login_name() -> String {
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .ok()
+        .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(|| "Local user".to_string())
+}
+
+#[cfg(windows)]
+pub fn login_account_display_name() -> String {
+    account_display_name(0)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn login_account_display_name() -> String {
+    login_name()
 }
 
 /// File name for the primary single-device identity record. Matches
@@ -504,7 +550,6 @@ fn approved_label(label: &str) -> io::Result<()> {
 /// # Errors
 /// Invalid words, words for a different active identity, or a failure to
 /// restore the record or certify the device.
-#[cfg(unix)]
 pub fn restore_from_recovery_words(
     identity_dir: &Path,
     paths: &IdentityPaths,
@@ -535,7 +580,6 @@ pub fn restore_from_recovery_words(
 /// # Errors
 /// The backup does not open with the passphrase, or the identity cannot be kept or certify the
 /// device.
-#[cfg(unix)]
 pub fn restore_from_backup(
     identity_dir: &Path,
     paths: &IdentityPaths,

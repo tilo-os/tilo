@@ -17736,6 +17736,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-wire-frame",
  "tracing",
+ "windows-sys 0.61.2",
  "workspace-hack",
  "zeroize",
 ]
@@ -18079,7 +18080,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "hex",
- "libc",
  "serde",
  "serde_json",
  "tilo-action-policy",
@@ -19750,6 +19750,7 @@ dependencies = [
  "tracing-subscriber",
  "ush",
  "uuid",
+ "windows-sys 0.61.2",
  "workspace-hack",
  "zeroize",
 ]
@@ -20243,6 +20244,7 @@ dependencies = [
  "tilo-neighbour-wire",
  "tilo-paths",
  "tilo-runtime-collab",
+ "tilo-socket",
  "tilo-test-env",
  "tilo-unlock-protocol",
  "tilo-user-identity",

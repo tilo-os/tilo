@@ -248,7 +248,9 @@ pub fn shell_ui_handshake(app_id: &str, network_status_allowed: bool) -> Vec<u8>
 }
 
 /// Connect a window to the session shell, naming its app before the app can write: every window
-/// describes its controls, bar and cards there, so people and agents reach them in any app.
+/// describes its controls, bar and cards there, so people and agents reach them in any app. What
+/// the network's policy decides is a sandboxed launch's: only a Unix launcher serves one.
+#[cfg(unix)]
 pub fn resolve_shell_ui_bind(
     app_id: &str,
     egress: &crate::egress_proxy::EgressDecision,

@@ -60,12 +60,35 @@ pub fn descriptor_of(stream: tilo_socket::Stream) -> Descriptor {
     }
 }
 
+/// The descriptor of a memory buffer the system made (`tilo-render-protocol`'s sealed blob), to
+/// hand on in a packet: its own file descriptor on Unix, and on Windows the section's handle,
+/// which a packet carries as it is.
+///
+/// # Errors
+/// Windows could not say what kind of handle the buffer holds.
+#[cfg(any(unix, windows))]
+pub fn descriptor_of_buffer(buffer: Buffer) -> io::Result<Descriptor> {
+    #[cfg(unix)]
+    {
+        Ok(buffer)
+    }
+    #[cfg(windows)]
+    {
+        Descriptor::try_from(buffer)
+    }
+}
+
+/// A buffer the system made and sealed, as [`descriptor_of_buffer`] takes it.
+#[cfg(unix)]
+pub type Buffer = std::os::fd::OwnedFd;
+#[cfg(windows)]
+pub type Buffer = std::os::windows::io::OwnedHandle;
+
 /// The raw form of a descriptor a value being written names.
 #[cfg(unix)]
 type Raw = std::os::fd::RawFd;
 #[cfg(windows)]
 type Raw = std::os::windows::io::RawHandle;
-
 /// The most descriptors (on Windows, handles) one packet carries.
 #[cfg(any(unix, windows))]
 use crate::process_link::MAX_FDS;

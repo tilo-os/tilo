@@ -25,13 +25,14 @@ serde_bytes.workspace = true
 thiserror.workspace = true
 tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
 vello_encoding = { workspace = true, features = ["bump_estimate"] }
+# Anonymous shared memory, sealed where the system can seal it: the one implementation every
+# process boundary of the workspace hands immutable bytes over, a memfd on Unix and a
+# pagefile-backed section on Windows.
+tilo-shm = { version = "0.1.0", path = "../../platform/tilo-shm" }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "net", "std"] }
-# Anonymous shared memory, sealed where the system can seal it: the one implementation every
-# process boundary of the workspace hands immutable bytes over.
 memmap2 = "0.9.10"
-tilo-shm = { version = "0.1.0", path = "../../platform/tilo-shm" }
 
 [target.'cfg(windows)'.dependencies]
 # The pipe a window's patches cross between processes on Windows.

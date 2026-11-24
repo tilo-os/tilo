@@ -196,3 +196,20 @@ fn read_power() -> bool {
         }
     }
 }
+
+/// What Windows says powers this machine: on power while it reports AC power online, or cannot
+/// tell, as a machine with no battery runs on power.
+#[cfg(windows)]
+fn read_power() -> bool {
+    use windows_sys::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+
+    let mut status = SYSTEM_POWER_STATUS::default();
+    // SAFETY: a live output struct of the size the call writes.
+    if unsafe { GetSystemPowerStatus(&raw mut status) } == 0 {
+        tracing::warn!("Windows did not say what powers this machine, so it counts as on power");
+        return true;
+    }
+    // 1 is mains, 0 is battery, 255 says it cannot tell: a machine it cannot tell about runs on
+    // power, as one with no battery does.
+    status.ACLineStatus != 0
+}

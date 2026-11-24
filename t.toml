@@ -4670,16 +4670,21 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "build/windows-runtime-{arch}"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# The toolchain, the SDK and GStreamer come from the needs as pinned bytes; what is left is the
+# package store the build scripts read, so t keeps an answer and serves it to the heads that read
+# the same bytes.
+egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/windows/build.sh runtime {arch} /target/windows/sdk/sdk-{arch}.tar.zst /target/windows/{arch}/runtime"
 needs = ["build/windows-sdk-{arch}", "build/windows-gstreamer-x86_64"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 outputs = ["/target/windows/{arch}/runtime/tilo-runtime.exe", "/target/windows/{arch}/runtime/tilo-runtime.exe.sha256", "/target/windows/{arch}/runtime/platform-tests/*.exe", "/target/windows/{arch}/runtime/runtimes/**"]
 # The device daemon and both tilolang runtime programs cross-built for a
-# platform no other check builds them for: too slow for every head, but the
-# only thing that keeps the Windows port compiling, so main's newest head
-# gets it whenever t has room, bisected when it breaks.
+# platform no other check builds them for: the only thing that keeps the Windows
+# port compiling. It is a default check, so a change that reaches what it reads
+# builds and runs it, and t answers a change that reads the same bytes from the
+# cache. Main's newest head also gets it whenever t has room, so a break that
+# nothing else caught is bisected to its commit.
+default = true
 on = ["idle"]
 [check.matrix]
 arch = ["x86_64", "aarch64"]

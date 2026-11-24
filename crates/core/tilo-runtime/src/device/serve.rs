@@ -757,7 +757,6 @@ pub(crate) const STOPPED_WITHIN: Duration = STOPPING
     reason = "a daemon told to stop whose workers do not take the stop up cannot end through them"
 )]
 pub(crate) fn hear_stops(stop: Stop, within: Duration, native: PathBuf) -> Result<()> {
-    use tokio::signal::unix::{SignalKind, signal};
     std::thread::Builder::new()
         .name("tilo-signals".to_owned())
         .spawn(move || {
@@ -770,26 +769,7 @@ pub(crate) fn hear_stops(stop: Stop, within: Duration, native: PathBuf) -> Resul
             };
             runtime.block_on(async move {
                 let (signalled, mut heard) = tokio::sync::mpsc::channel(1);
-                for (kind, name) in [
-                    (SignalKind::terminate(), "SIGTERM"),
-                    (SignalKind::interrupt(), "SIGINT"),
-                    (SignalKind::hangup(), "SIGHUP"),
-                ] {
-                    let Ok(mut signal) = signal(kind) else {
-                        tracing::error!(
-                            signal = name,
-                            "this daemon cannot hear a stop by this signal"
-                        );
-                        continue;
-                    };
-                    let signalled = signalled.clone();
-                    tokio::spawn(async move {
-                        if signal.recv().await.is_some() {
-                            let _ = signalled.send(name).await;
-                        }
-                    });
-                }
-                drop(signalled);
+                listen_for_stops(signalled);
                 if let Some(name) = heard.recv().await {
                     stop.told_by(name);
                     if !stop.part_serves() {
@@ -824,6 +804,65 @@ pub(crate) fn hear_stops(stop: Stop, within: Duration, native: PathBuf) -> Resul
             });
         })?;
     Ok(())
+}
+
+/// Send `name` on `signalled` once `signal` answers, on a task of its own that owns the signal:
+/// one listener per way a holder can be told to stop.
+macro_rules! hear_stop {
+    ($signal:ident, $name:expr, $signalled:ident) => {{
+        let signalled = $signalled.clone();
+        let mut signal = $signal;
+        tokio::spawn(async move {
+            if signal.recv().await.is_some() {
+                let _ = signalled.send($name).await;
+            }
+        });
+    }};
+}
+
+/// Hear each way this platform stops a holder and send its name on `signalled`, keeping
+/// `signalled` open until the listeners end: a name a person's stop or their service's stop is
+/// known by.
+#[cfg(unix)]
+fn listen_for_stops(signalled: tokio::sync::mpsc::Sender<&'static str>) {
+    use tokio::signal::unix::{SignalKind, signal};
+    for (kind, name) in [
+        (SignalKind::terminate(), "SIGTERM"),
+        (SignalKind::interrupt(), "SIGINT"),
+        (SignalKind::hangup(), "SIGHUP"),
+    ] {
+        match signal(kind) {
+            Ok(signal) => hear_stop!(signal, name, signalled),
+            Err(error) => tracing::error!(
+                %error,
+                signal = name,
+                "this holder cannot hear a stop by this signal"
+            ),
+        }
+    }
+}
+
+/// Hear each control event Windows ends a process with: Ctrl-C and Ctrl-Break from the console,
+/// and Ctrl-Close and Ctrl-Shutdown from the system, which a service stop or a logout raises.
+#[cfg(windows)]
+fn listen_for_stops(signalled: tokio::sync::mpsc::Sender<&'static str>) {
+    use tokio::signal::windows;
+    macro_rules! hear_one {
+        ($listen:path, $name:literal) => {
+            match $listen() {
+                Ok(signal) => hear_stop!(signal, $name, signalled),
+                Err(error) => tracing::error!(
+                    %error,
+                    signal = $name,
+                    "this holder cannot hear a stop by this signal"
+                ),
+            }
+        };
+    }
+    hear_one!(windows::ctrl_c, "Ctrl-C");
+    hear_one!(windows::ctrl_break, "Ctrl-Break");
+    hear_one!(windows::ctrl_close, "Ctrl-Close");
+    hear_one!(windows::ctrl_shutdown, "Ctrl-Shutdown");
 }
 
 /// The peer this holder runs, once it does, until it ends.

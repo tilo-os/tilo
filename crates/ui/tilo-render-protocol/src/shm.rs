@@ -25,19 +25,30 @@
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use std::collections::VecDeque;
 use std::io;
+#[cfg(unix)]
 use std::os::fd::OwnedFd;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use std::os::fd::{AsFd, BorrowedFd};
+#[cfg(windows)]
+use std::os::windows::io::OwnedHandle;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use memmap2::MmapMut;
 
 pub use tilo_shm::Mapping;
 
+/// A buffer the system made and sealed: a file descriptor on Unix, and on Windows a section's
+/// handle, which a packet carries as it is.
+#[cfg(unix)]
+pub type Sealed = OwnedFd;
+#[cfg(windows)]
+pub type Sealed = OwnedHandle;
+
 /// An immutable buffer holding `bytes`: what an app registers an image's pixels or a font's
 /// bytes in, and hands a large patch batch or a module over in. A memfd sealed against writes and
-/// resizing on Linux, unlinked shared memory elsewhere; [`Mapping::map_sealed`] reads either.
-pub fn sealed_blob(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
+/// resizing on Linux, unlinked shared memory elsewhere, a pagefile-backed section on Windows;
+/// [`Mapping::map_sealed`] reads any of them.
+pub fn sealed_blob(name: &str, bytes: &[u8]) -> io::Result<Sealed> {
     tilo_shm::from_bytes(name, bytes)
 }
 

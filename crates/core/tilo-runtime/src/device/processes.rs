@@ -890,7 +890,9 @@ impl Processes {
             module: hash(&module),
         };
         let module_len = module.len() as u64;
-        let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
+        let module = runtime_portal::process_link::descriptor_of_buffer(
+            tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?,
+        )?;
         let request = InstanceRequest {
             app: instance.app.clone(),
             workspace: instance.workspace.clone(),
@@ -1040,7 +1042,9 @@ impl Processes {
             app: app.to_owned(),
             module_len: module.len() as u64,
         };
-        let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
+        let module = runtime_portal::process_link::descriptor_of_buffer(
+            tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?,
+        )?;
         ToProcess::Build {
             build: later,
             module,

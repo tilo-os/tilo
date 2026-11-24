@@ -21,6 +21,8 @@ tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # Certificates embedded in home-peer registrations and checked by the
 # trust policy.
 tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
+# The page's window link: a local stream, a Unix socket or a named pipe.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 # `EndpointAddr` in mesh profiles and home-peer registrations.
 iroh-base = { workspace = true, features = ["key"] }
 serde.workspace = true

@@ -1,12 +1,12 @@
 //! The names the person's devices go by, the agent id a client works as for one, and the line a
 //! `--connect --device` client asks its own host to carry it to one of them with ([`Forward`]).
 
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{self, Read as _, Write as _};
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "wasm32"))]
+use tilo_socket::Stream;
 use tilo_user_identity::DeviceCert;
 
 /// The first four bytes of a device key, as hex: enough to tell two devices
@@ -42,7 +42,7 @@ pub fn agent_id(client: &str, device: &DeviceCert) -> String {
 }
 
 /// The longest answer to a [`Forward`] read.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_ANSWER: usize = 64 * 1024;
 
 /// What a host answers a [`Forward`] with.
@@ -59,16 +59,16 @@ pub enum ForwardAnswer {
 ///
 /// # Errors
 /// The client left.
-#[cfg(unix)]
-pub fn open_forward(local: &mut UnixStream) -> io::Result<()> {
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_forward(local: &mut Stream) -> io::Result<()> {
     let mut line = serde_json::to_vec(&ForwardAnswer::Open).map_err(io::Error::other)?;
     line.push(b'\n');
     local.write_all(&line)
 }
 
 /// Tell a forwarding client its device's server does not open, and why.
-#[cfg(unix)]
-pub fn refuse_forward(mut local: UnixStream, reason: String) {
+#[cfg(not(target_arch = "wasm32"))]
+pub fn refuse_forward(mut local: Stream, reason: String) {
     let answer = ForwardAnswer::Refused { reason };
     if let Ok(mut line) = serde_json::to_vec(&answer) {
         line.push(b'\n');
@@ -129,8 +129,8 @@ pub fn forward_request(line: &[u8]) -> Option<Forward> {
 /// Ask the host at the other end of `stream` to carry it to the server
 /// `forward` names, and read whether that server opened. From `Ok` on, the
 /// stream is that server's.
-#[cfg(unix)]
-pub fn ask_forward(stream: &mut UnixStream, forward: &Forward) -> io::Result<()> {
+#[cfg(not(target_arch = "wasm32"))]
+pub fn ask_forward(stream: &mut Stream, forward: &Forward) -> io::Result<()> {
     let mut line = serde_json::to_vec(&ForwardLine {
         forward: forward.clone(),
     })

@@ -19,7 +19,9 @@
 //! may ask it to read their pictures, and a refusal stays a refusal.
 
 pub mod analysis;
-/// The image model as the device's daemon serves it, on its dispatch.
+/// The image model as the device's daemon serves it, on its dispatch: a picture's bytes come from
+/// the device's content store, which only a Unix device keeps.
+#[cfg(unix)]
 pub mod device;
 pub mod engine;
 pub mod index;

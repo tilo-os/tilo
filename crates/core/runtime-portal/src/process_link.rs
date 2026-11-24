@@ -27,6 +27,8 @@ use serde::{Deserialize, Serialize};
 use tilo_action_policy::MemberAccess;
 use tilo_formats::RegionFormats;
 
+#[cfg(any(unix, windows))]
+pub use crate::packet::descriptor_of_buffer;
 pub use crate::packet::{Descriptor, Packet, pair};
 
 #[cfg(windows)]

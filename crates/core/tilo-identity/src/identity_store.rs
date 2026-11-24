@@ -7,7 +7,7 @@ use collab_types::signer::{DeviceSigner, MaybeSendSync};
 use ed25519_dalek::VerifyingKey;
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod files;
 
 pub use collab_types::WorkspaceId;

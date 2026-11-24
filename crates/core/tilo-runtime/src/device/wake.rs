@@ -17,7 +17,11 @@ use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::workspaces::PersonResources;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 use tilo_workspace_service::workspaces::person_workspace::wake::{
-    self, Ipv4Subnet, MAGIC_PACKET_PORT, MAX_WAKE_ROUTES, WAKE_FACT, WakeInterfaceKind, WakeRoute,
+    self, Ipv4Subnet, MAGIC_PACKET_PORT, WAKE_FACT, WakeRoute,
+};
+#[cfg(target_os = "linux")]
+use tilo_workspace_service::workspaces::person_workspace::wake::{
+    MAX_WAKE_ROUTES, WakeInterfaceKind,
 };
 
 /// How often the device reads its own interfaces again.

@@ -9,10 +9,10 @@
 
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
 
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 pub use native::{OPEN, open};
 
 /// Hand every host search result this app is asked to continue to the runtime

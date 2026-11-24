@@ -128,8 +128,9 @@ tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-resource-store = { path = "../resource-store" }
 # The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
-# The workspace host every device runs, which the profile's own workspace is placed on.
-tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps", "device-keys", "files"] }
+# The workspace host every device runs, which the profile's own workspace is placed on. Its agents
+# are the ones this machine runs for the workspaces it holds, on every platform it serves.
+tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agents", "apps", "device-keys", "files"] }
 # The host services the broker is built with, the person's own devices among them.
 tilo-broker-core = { path = "../broker-core" }
 # An app's records are founded and written through a confined worker of this executable.
@@ -166,7 +167,7 @@ tilo-session-client = { path = "../session-client" }
 tilo-mcp = { path = "../tilo-mcp" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-user-identity = { path = "../tilo-user-identity" }
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true
@@ -196,11 +197,6 @@ tempfile.workspace = true
 # How long a runtime build nothing runs on is kept before the cache collects it.
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 
-# Agents run Rust apps' components in process, which a Windows device builds without; this
-# selection goes when the agent host stops linking the apps.
-[target.'cfg(not(windows))'.dependencies]
-tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agents"] }
-
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 # The log a daemon keeps trims, and the socket it stops taking connections at.
@@ -209,6 +205,10 @@ rustix = { workspace = true, features = ["fs", "net", "std"] }
 # Every tilolang process a Windows device starts runs in an AppContainer of its app's own.
 [target.'cfg(windows)'.dependencies]
 launcher-windows = { path = "../launcher-windows" }
+# The workspace's trust list, read through the desktop's action API.
+tilo-control = { path = "../../desktop/control-cli" }
+# What powers the machine: whether an app's long-lived connection runs now.
+windows-sys = { version = "0.61.2", features = ["Win32_System_Power"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

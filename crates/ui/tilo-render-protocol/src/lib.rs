@@ -41,7 +41,7 @@ pub mod validate;
 pub mod broker;
 #[cfg(unix)]
 pub mod channel;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod shm;
 
 mod bytes;

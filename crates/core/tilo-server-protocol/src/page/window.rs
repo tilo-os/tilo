@@ -13,6 +13,8 @@
 use std::io::{Read, Write};
 
 use serde::{Deserialize, Serialize};
+#[cfg(any(unix, windows))]
+use tilo_socket::Stream;
 
 use super::{PageAction, PagePatch};
 
@@ -84,17 +86,18 @@ pub fn receive<T: serde::de::DeserializeOwned>(
         .map_err(std::io::Error::other)
 }
 
-/// The device's end of a page's window: one ask at a time, each answered before the next.
-#[cfg(unix)]
+/// The device's end of a page's window: one ask at a time, each answered before the next. The
+/// link is a local stream — a Unix socket, or a named pipe on Windows.
+#[cfg(any(unix, windows))]
 pub struct WindowLink {
-    stream: std::os::unix::net::UnixStream,
+    stream: Stream,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl WindowLink {
     /// The window at the other end of `stream`.
     #[must_use]
-    pub const fn over(stream: std::os::unix::net::UnixStream) -> Self {
+    pub const fn over(stream: Stream) -> Self {
         Self { stream }
     }
 

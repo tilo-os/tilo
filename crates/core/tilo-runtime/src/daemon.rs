@@ -4,14 +4,17 @@ use crate::device::{
     local::Frames,
     services::{Daemon, UNNAMED_AGENT},
 };
+#[cfg(unix)]
+use crate::host;
 use crate::seats::{AppAt, Seated, Seats};
-use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, host};
+use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+#[cfg(target_os = "linux")]
+use std::process::Command;
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::Command,
     sync::{
         Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -21,7 +24,9 @@ use std::{
 use tilo_api::daemon::admission::{Admitted, ROOT};
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
-use tilo_mcp::lines::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader};
+use tilo_mcp::lines::{Answer, mcp_answer, serve_lines, spawn_reader};
+#[cfg(unix)]
+use tilo_mcp::lines::{Frame, read_frame};
 use tilo_mcp::session_api::{Asking, bridge_stdio};
 use tilo_socket::{Listener, Stream};
 

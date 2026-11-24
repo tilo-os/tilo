@@ -97,7 +97,7 @@ pub fn task_runtimes() -> Result<(String, String), String> {
 ///
 /// # Errors
 /// No tilolang app installed here runs on runtimes this device has.
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "android"))]
 pub fn task_runtimes() -> Result<(String, String), String> {
     let apps = app_catalogue::apps::read_from_env()
         .map_err(|error| format!("the installed apps are not known: {error}"))?;

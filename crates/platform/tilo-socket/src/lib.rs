@@ -12,9 +12,11 @@
 //! pipe's DACL and a check of the peer's token. [`tokio`] is the same for an async
 //! caller.
 //!
-//! The crate is std-only on Unix: `tilo_files::native::socket` re-exports it, and a
-//! tool that must stay small to start quickly (the `cargo desktop` launcher) can bind
-//! and connect through the same code without taking on a dependency graph.
+//! On Unix the crate adds nothing to std but libc for one call: three bytes of a
+//! peek, so a server can tell a client that left from one still there. The
+//! `tilo_files::native::socket` re-export and a tool that must stay small to start
+//! quickly (the `cargo desktop` launcher) bind and connect through the same code
+//! without taking on a dependency graph.
 
 use std::io;
 #[cfg(unix)]
@@ -129,6 +131,45 @@ pub fn is_bound(path: &Path) -> bool {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
+        false
+    }
+}
+
+/// Whether the peer at the other end of `stream` is still connected, without consuming what it
+/// sent: a peek that finds the connection over says it is not, and one that finds bytes waiting
+/// or nothing yet says it is.
+#[must_use]
+pub fn connected(stream: &Stream) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd as _;
+        let mut byte = 0_u8;
+        // SAFETY: a one-byte peek into a live local, on a descriptor `stream` owns for the whole
+        // call; `MSG_PEEK` leaves the bytes for the next read.
+        let read = unsafe {
+            libc::recv(
+                stream.as_raw_fd(),
+                (&raw mut byte).cast(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        match read {
+            0 => false,
+            read if read > 0 => true,
+            _ => matches!(
+                io::Error::last_os_error().kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ),
+        }
+    }
+    #[cfg(windows)]
+    {
+        windows::connected(stream)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = stream;
         false
     }
 }

@@ -23,7 +23,6 @@ blake3.workspace = true
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 fs-protocol = { package = "tilo-fs-protocol", path = "../fs-protocol" }
 hex.workspace = true
-libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { path = "../action-policy" }

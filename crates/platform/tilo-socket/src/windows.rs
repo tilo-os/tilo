@@ -43,7 +43,7 @@ use windows_sys::Win32::{
         Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
             GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-            PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
+            PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, PeekNamedPipe, WaitNamedPipeW,
         },
         Threading::{
             CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
@@ -613,6 +613,31 @@ pub(crate) fn is_bound(path: &Path) -> bool {
     // once on a name nothing serves.
     // SAFETY: a NUL-terminated name; then this thread's last error.
     unsafe { WaitNamedPipeW(name.as_ptr(), 1) != 0 || GetLastError() == ERROR_SEM_TIMEOUT }
+}
+
+/// Whether the other end of `stream` is still connected: a peek at the pipe fails once it is
+/// gone, and answers either way while an end is held.
+pub(crate) fn connected(stream: &Stream) -> bool {
+    // SAFETY: a live pipe handle; only the count of bytes waiting is asked for, which is not
+    // consumed.
+    let peeked = unsafe {
+        PeekNamedPipe(
+            stream.pipe.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if peeked != 0 {
+        return true;
+    }
+    // SAFETY: reads this thread's last error, right after the call.
+    !matches!(
+        unsafe { GetLastError() },
+        ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED
+    )
 }
 
 #[cfg(test)]

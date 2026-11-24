@@ -24,7 +24,16 @@ pub fn capabilities() -> Capabilities {
         // The language runtime: the daemon's own roles read and change the records of the apps
         // built into the build through it, and offer the styles the device's packages declare.
         tilolang: Some(Box::new(tilolang_workspace::host)),
-        providers: vec![Box::new(image_model)],
+        providers: {
+            #[cfg(unix)]
+            {
+                vec![Box::new(image_model)]
+            }
+            #[cfg(not(unix))]
+            {
+                Vec::new()
+            }
+        },
         #[cfg(target_os = "linux")]
         stay_awake: Some(Box::new(|| Box::pin(stay_awake::hold()))),
         #[cfg(not(target_os = "linux"))]
@@ -40,7 +49,9 @@ pub fn capabilities() -> Capabilities {
 }
 
 /// The device's image model, which apps ask by the addresses it publishes rather than through a
-/// connection of their own: one copy on the daemon's dispatch.
+/// connection of their own: one copy on the daemon's dispatch. Its pictures come from the device's
+/// content store, which only a Unix device keeps.
+#[cfg(unix)]
 fn image_model(at: &Mounting<'_>) {
     use tilo_vision_service::device::{APP, ImageModel, PROVIDER};
     if let Ok(model) = ImageModel::start(at.blob_socket, at.search.clone(), at.person) {

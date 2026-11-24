@@ -18,6 +18,9 @@ pub mod chromium_frame;
 #[cfg(target_os = "linux")]
 pub mod dbus_proxy;
 pub mod dev_env;
+/// The proxy an app's network goes through where a sandbox confines it: a Unix socket the
+/// sandboxed process reaches, which a Windows AppContainer needs none of.
+#[cfg(unix)]
 pub mod egress_proxy;
 #[cfg(target_os = "linux")]
 mod fd;
