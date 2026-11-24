@@ -1756,6 +1756,19 @@ impl LiveSession {
         self.shared.settle_call();
     }
 
+    /// What the call in `channel` lets `person` do, as the rules this session holds name them: a
+    /// device's person, or the stand-in a bridge carries someone from another service as. What a
+    /// bridge reads before it says a carried person's voice in the call.
+    #[must_use]
+    pub fn may(&self, channel: &str, person: &str) -> crate::calls::Directions {
+        let (rules, _) = &*self.shared.call_rules.lock_recover();
+        rules
+            .get(channel)
+            .map_or(crate::calls::Directions::BOTH, |rule| {
+                rule.may(Some(person))
+            })
+    }
+
     /// Seal and open under `keys` from now on: a channel whose epoch moved,
     /// or one sender's media keys where it holds those.
     pub fn set_keys(&self, keys: impl Into<LiveKeys>) {

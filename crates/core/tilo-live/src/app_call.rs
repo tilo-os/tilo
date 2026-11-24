@@ -281,9 +281,9 @@ impl ConnectorCall {
     /// naming the bridged participant it is theirs, while they hold its voice
     /// and the call lets them speak.
     fn carry_in(&mut self, frame: OutsideAudio) {
-        if self.carried.is_none() {
+        let Some(pair) = self.carried.clone() else {
             return;
-        }
+        };
         if !self.in_tilo || !self.heard_from.contains(&frame.speaker) {
             return;
         }
@@ -295,6 +295,16 @@ impl ConnectorCall {
             return;
         };
         let who = member.publisher(self.device);
+        // The session holds the call's rule by device; a carried person is denied as the
+        // stand-in they are here, which is no device of this call.
+        if !self
+            .speaker
+            .session()
+            .may(&pair.tilo, &member.person(self.device))
+            .publish
+        {
+            return;
+        }
         // The session holds the call's rule: what it lets through is what is heard.
         let Some(object) = self
             .voice
