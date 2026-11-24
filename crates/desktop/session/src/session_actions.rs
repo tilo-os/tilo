@@ -1068,22 +1068,19 @@ mod tests {
         }
     }
 
-    /// Every power-profile or power-mode action offered to agent `scribe` by the device's daemon
-    /// for the session's own catalogue.
+    /// Every power-profile or power-mode action the device's daemon lists of the session's own
+    /// catalogue, as the person at this device reads it.
     #[cfg(target_os = "linux")]
-    fn agent_profile_actions(
+    fn power_profile_actions(
         device: &mut Device,
         person_id: &str,
         workspace_id: &str,
     ) -> Vec<(String, String, String)> {
         let dispatch = device.dispatch();
-        let agent = Caller::local_person(person_id.to_owned())
-            .in_workspace(workspace_id)
-            .delegated_to("scribe")
-            .in_new_execution();
+        let person = Caller::local_person(person_id.to_owned()).in_workspace(workspace_id);
         let page = answered(device, || {
             dispatch.query(
-                &agent,
+                &person,
                 &CatalogueQuery {
                     provider: Some(tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned()),
                     max_results: 512,
@@ -1091,7 +1088,7 @@ mod tests {
                 },
             )
         })
-        .expect("the agent sees the session's catalogue");
+        .expect("the person sees the session's catalogue");
         page.rows
             .into_iter()
             .filter_map(|row| row.action)
@@ -1188,13 +1185,13 @@ mod tests {
             vec![Box::new(power_service), system_service],
         );
         assert_eq!(
-            agent_profile_actions(&mut session, &person_id, WORKSPACE),
+            power_profile_actions(&mut session, &person_id, WORKSPACE),
             vec![(
                 "power".to_owned(),
                 "set-power-mode".to_owned(),
                 "so.tilo.system.power".to_owned(),
             )],
-            "the agent's catalogue offers exactly one power-profile action"
+            "the catalogue offers exactly one power-profile action"
         );
         let person = Caller::local_person(person_id).in_workspace(WORKSPACE);
 
@@ -1294,7 +1291,7 @@ mod tests {
             vec![system_service],
         );
         assert_eq!(
-            agent_profile_actions(&mut session, &person_id, WORKSPACE),
+            power_profile_actions(&mut session, &person_id, WORKSPACE),
             vec![(
                 "power".to_owned(),
                 "set-power-mode".to_owned(),
