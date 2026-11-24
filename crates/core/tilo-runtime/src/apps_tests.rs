@@ -55,6 +55,33 @@ impl Store {
     /// Install `files` as package `id` with `manifest`, signed by a fixed
     /// publisher key.
     fn install(&mut self, id: &str, manifest: &str, files: &[(&str, &[u8])]) -> InstalledPackage {
+        self.install_signed(id, manifest, files, &SigningKey::from_bytes(&[7_u8; 32]))
+    }
+
+    /// Install a development build of `of` made by `identity`: the id its marking derives, the
+    /// marking, and `identity`'s signature.
+    fn install_dev(&mut self, of: &str, identity: &SigningKey) -> InstalledPackage {
+        let key = identity.verifying_key().to_bytes();
+        let id = tilo_app_package::dev_app_id(of, &key);
+        let text = manifest(
+            &id,
+            "gui",
+            &format!(
+                "[package.dev]\ndevice = \"ed25519:{}\"\nof = {of:?}",
+                hex::encode(key)
+            ),
+        );
+        self.install_signed(&id, &text, &[("probe", b"binary")], identity)
+    }
+
+    /// [`Self::install`] signed by `identity`.
+    fn install_signed(
+        &mut self,
+        id: &str,
+        manifest: &str,
+        files: &[(&str, &[u8])],
+        identity: &SigningKey,
+    ) -> InstalledPackage {
         let manifest_bytes = manifest.as_bytes().to_vec();
         let collection = Collection::from_entries(
             files
@@ -62,7 +89,7 @@ impl Store {
                 .map(|(path, bytes)| ((*path).to_string(), BlobHash::of(bytes))),
         );
         let collection_bytes = collection.encode();
-        let key = SigningKey::from_bytes(&[7_u8; 32]);
+        let key = identity;
         let mut signed = SignedRoot::unsigned(
             BlobHash::of(&manifest_bytes),
             BlobHash::of(&collection_bytes),
@@ -90,7 +117,7 @@ impl Store {
             package_id_hex: id_hex,
             payload_root: payload,
             manifest_path: meta.join("manifest.toml"),
-            publisher_key_hex: hex_key(&key),
+            publisher_key_hex: hex_key(key),
             pinned: false,
             installed_at: 0,
             last_used: 0,
@@ -636,6 +663,90 @@ tilo_test_env::scenario! {
             .unwrap_err();
         assert!(refused.contains("not served by this runtime"), "{refused}");
         assert!(apps.launched.0.lock().unwrap().is_empty(), "nothing started");
+    }
+}
+
+// A development build is a package of its own, marked with the device that built it and the app
+// it builds: it launches through the same path a window does, is attested under its own id, and
+// starts with none of the installed app's grants.
+#[cfg(target_os = "linux")]
+tilo_test_env::scenario! {
+    fn a_development_build_runs_as_itself_with_no_grants;
+
+    phase a_dev_build_launches_attested_under_its_own_id;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        let device = SigningKey::from_bytes(&[7_u8; 32]);
+        let of = "org.example.notes";
+        store.install(of, &manifest(of, "gui", ""), &[("probe", b"binary")]);
+        let dev = store.install_dev(of, &device);
+        let display = root.join("wayland-0");
+        std::fs::write(&display, b"").unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("WAYLAND_DISPLAY", &display);
+        let launcher = tilo_test_env::stand_in(root.join("tilo-launcher"), "sleep 600\n").unwrap();
+        let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+        let app = apps
+            .launchable(&dev.id)
+            .expect("the device launches the build it made");
+        assert_eq!(app.app_id.as_str(), dev.id, "it runs under its own id");
+        assert_ne!(app.app_id.as_str(), of);
+        let launch = apps.start(&dev.id, WORKSPACE).unwrap();
+        assert_eq!(
+            apps.attested(launch.pid),
+            Some((dev.id.clone(), WORKSPACE.to_owned())),
+            "the launch is attested as the dev build, not as the app it builds"
+        );
+        assert!(
+            apps.installed_here(of).is_ok(),
+            "the installed app is still the installed app"
+        );
+    }
+
+    // A dev build's grants start empty; the person's grant to the installed app never reaches it,
+    // and a grant it is given reaches it through the same ask, keyed by its own id.
+    phase a_dev_build_gets_the_grants_asked_for_under_its_own_id_and_no_others;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        let device = SigningKey::from_bytes(&[7_u8; 32]);
+        let of = "org.example.notes";
+        store.install(of, &reachable_manifest(of, "allowlist", &["mail.example.com"]), &[("probe", b"binary")]);
+        let dev = store.install_dev(of, &device);
+        let apps = installed(&store, &root, Vec::new());
+        let installed_app = apps.launchable(of).unwrap();
+        let dev_app = apps.launchable(&dev.id).unwrap();
+        // What the workspace granted the installed app.
+        let to_the_app = CapOverride::grant(
+            Grantee::person("person-7"),
+            Scope::NetHost("mail.example.com".into()),
+            Access::Write,
+        )
+        .through(of);
+        apps.keep_launch_grants(Arc::new(Granted(vec![to_the_app])));
+        assert!(
+            !apps.app_grants(&installed_app, WORKSPACE).sandbox.is_empty(),
+            "the installed app keeps its grant"
+        );
+        assert!(
+            apps.app_grants(&dev_app, WORKSPACE).sandbox.is_empty(),
+            "a dev build starts with none of the installed app's grants"
+        );
+        // The person answers the dev build's own ask.
+        let apps = installed(&store, &root, Vec::new());
+        let to_the_dev = CapOverride::grant(
+            Grantee::person("person-7"),
+            Scope::NetHost("mail.example.com".into()),
+            Access::Write,
+        )
+        .through(dev.id.as_str());
+        apps.keep_launch_grants(Arc::new(Granted(vec![to_the_dev])));
+        assert_eq!(
+            apps.app_grants(&dev_app, WORKSPACE).sandbox.len(),
+            1,
+            "the grant the person gave the dev build reaches it"
+        );
     }
 }
 

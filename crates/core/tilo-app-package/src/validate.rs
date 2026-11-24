@@ -130,6 +130,8 @@ pub enum ManifestError {
     BadPublisherIdentity(String),
     #[error("publisher.signature: {0}")]
     BadPublisherSignature(String),
+    #[error("package.dev: {0}")]
+    BadDevBuild(String),
     #[error("continuity.required repeats facet {0:?}")]
     DuplicateContinuityFacet(ContinuityFacet),
     #[error("continuity.required semantic state also requires presentation state")]
@@ -230,6 +232,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     validate_image(m)?;
     validate_language_pack(m)?;
     validate_declarations(m)?;
+    validate_dev_build(m)?;
 
     m.publisher
         .identity_bytes()
@@ -531,6 +534,37 @@ fn validate_image(m: &Manifest) -> Result<(), ManifestError> {
         if package.trim().is_empty() || package.trim() != package || !seen.insert(package) {
             return Err(ManifestError::BadImagePackage(package.clone()));
         }
+    }
+    Ok(())
+}
+
+/// `[package.dev]`: a development build names the device that built it and the app it builds,
+/// and runs under the id that pair derives, so it can never take an installed app's identity.
+fn validate_dev_build(m: &Manifest) -> Result<(), ManifestError> {
+    let Some(dev) = &m.package.dev else {
+        return Ok(());
+    };
+    if m.package.kind != Kind::App {
+        return Err(ManifestError::BadDevBuild(
+            "only an app has a development build".into(),
+        ));
+    }
+    if dev.of.trim().is_empty() || dev.of.len() > 255 {
+        return Err(ManifestError::BadDevBuild(
+            "it names no app it is a build of".into(),
+        ));
+    }
+    let device = dev
+        .device_bytes()
+        .map_err(|error| ManifestError::BadDevBuild(error.to_string()))?;
+    let expected = crate::manifest::dev_app_id(&dev.of, &device);
+    if m.package.id != expected {
+        return Err(ManifestError::BadDevBuild(format!(
+            "a build of {} by device ed25519:{} runs as {expected}, not {}",
+            dev.of,
+            hex::encode(device),
+            m.package.id
+        )));
     }
     Ok(())
 }

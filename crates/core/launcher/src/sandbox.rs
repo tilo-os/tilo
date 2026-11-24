@@ -1044,6 +1044,7 @@ mod tests {
             opens_secondary: false,
             continuity: crate::manifest::ContinuityContract::default(),
             capabilities: Vec::new(),
+            dev: None,
         }
     }
 

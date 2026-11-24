@@ -279,6 +279,37 @@ pub fn pack(
     pack_with_files(payload_dir, manifest, identity, Vec::new())
 }
 
+/// [`pack`] for a development build of `app` made by the device whose key is `identity`: the
+/// package carries the app's own manifest, renamed to the id its dev marking derives, marked as
+/// that device's build of `app`, and signed by that device. It installs only on that device
+/// (`package_store::installer::install_dev`) and runs apart from the installed app.
+///
+/// It keeps nothing the app's published ids name (`previously`), so a dev build is never taken
+/// for the app it builds.
+///
+/// # Errors
+///
+/// See [`pack`].
+pub fn pack_dev(
+    payload_dir: &Path,
+    manifest: &Manifest,
+    app: &str,
+    identity: &SigningIdentity,
+) -> Result<Packed, PackError> {
+    let device = identity.public_key_bytes();
+    let key = format!("ed25519:{}", hex::encode(device));
+    let mut manifest = manifest.clone();
+    manifest.package.id = crate::manifest::dev_app_id(app, &device);
+    manifest.package.previously.clear();
+    manifest.package.dev = Some(crate::manifest::DevBuild {
+        device: key.clone(),
+        of: app.to_owned(),
+    });
+    manifest.publisher.identity = key;
+    manifest.publisher.signature.clear();
+    pack_with_files(payload_dir, &manifest, identity, Vec::new())
+}
+
 pub(crate) fn pack_with_files(
     payload_dir: &Path,
     manifest: &Manifest,
@@ -344,5 +375,60 @@ mod tests {
         std::fs::write(&path, registry_types::key_file::encode(&key)).unwrap();
         let loaded = SigningIdentity::from_key_file(&path).unwrap();
         assert_eq!(loaded.public_key_bytes(), key.verifying_key().to_bytes());
+    }
+
+    #[test]
+    fn a_development_build_is_marked_and_signed_by_its_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = dir.path().join("payload");
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        std::fs::write(payload.join("bin/app"), b"program").unwrap();
+        let identity = SigningIdentity::from_seed(&[0x42; 32]);
+        let key = hex::encode(identity.public_key_bytes());
+        let manifest = Manifest::from_toml_str(&format!(
+            r#"[package]
+id = "org.example.notes"
+previously = ["org.example.old-notes"]
+version = "0.1.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:{key}"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "bin/app"
+type = "gui"
+"#
+        ))
+        .unwrap();
+        let packed = pack_dev(&payload, &manifest, "org.example.notes", &identity).unwrap();
+        let built = &packed.meta.manifest.package;
+        assert_eq!(
+            built.id,
+            crate::manifest::dev_app_id("org.example.notes", &identity.public_key_bytes())
+        );
+        let dev = built.dev.as_ref().expect("the marking");
+        assert_eq!(dev.of, "org.example.notes");
+        assert_eq!(dev.device, format!("ed25519:{key}"));
+        assert!(built.previously.is_empty(), "a dev build keeps no ids");
+        assert_eq!(
+            packed.meta.root.publisher_identity,
+            identity.public_key_bytes()
+        );
+        assert_eq!(
+            crate::verify(&packed.meta, &[identity.public_key_bytes()]),
+            crate::Verification::Trusted {
+                manifest: packed.meta.manifest.clone()
+            }
+        );
     }
 }

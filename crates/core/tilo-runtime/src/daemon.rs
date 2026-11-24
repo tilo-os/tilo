@@ -1783,11 +1783,36 @@ fn ask_launch(profile: &Path, request: &Value) -> io::Result<Value> {
 /// installed, started the way a window is. The caller names an app and nothing else: what runs,
 /// with which program, sandbox and grants, is the installed package.
 ///
+/// `dev_package` is a `.tapp` this device's developer built and signed as `app_id`'s
+/// development build: the daemon installs it as this device's, then starts it the same way.
+///
 /// # Errors
-/// The daemon does not run, the app is not installed, or the launcher refuses it.
+/// The daemon does not run, the app is not installed (or the development build is not this
+/// device's), or the launcher refuses it.
 #[cfg(unix)]
-pub fn run_app(profile: &Path, app_id: &str, workspace: Option<&str>) -> io::Result<()> {
+pub fn run_app(
+    profile: &Path,
+    app_id: &str,
+    workspace: Option<&str>,
+    dev_package: Option<&Path>,
+) -> io::Result<()> {
     let status = running(profile)?;
+    if let Some(package) = dev_package {
+        // The device's own package store decides whether this is its build: it verifies the
+        // signature and the dev marking, and refuses anything else.
+        package_actions::device::change_at(
+            &native_socket(profile)?,
+            &package_actions::Change::InstallDev {
+                file: package_actions::Uploaded {
+                    source: package
+                        .to_str()
+                        .ok_or_else(|| invalid("the development build's path is not UTF-8"))?
+                        .to_owned(),
+                },
+            },
+        )
+        .map_err(io::Error::other)?;
+    }
     let workspace = workspace.unwrap_or(&status.workspace).to_owned();
     if workspace.is_empty() {
         return Err(io::Error::other(
@@ -1816,7 +1841,12 @@ pub fn run_app(profile: &Path, app_id: &str, workspace: Option<&str>) -> io::Res
 /// # Errors
 /// Always [`io::ErrorKind::Unsupported`].
 #[cfg(windows)]
-pub fn run_app(_profile: &Path, _app_id: &str, _workspace: Option<&str>) -> io::Result<()> {
+pub fn run_app(
+    _profile: &Path,
+    _app_id: &str,
+    _workspace: Option<&str>,
+    _dev_package: Option<&Path>,
+) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "--run-app attaches a Unix app to the daemon; a Windows app is handed its services by \

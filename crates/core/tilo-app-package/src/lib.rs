@@ -31,12 +31,12 @@ pub use image::{
     ImageError, ImageSpec, TREE_FILE, TreeSpec, image_manifest, seal_image, seal_image_for,
 };
 pub use manifest::{
-    Capabilities, Cli, DEFAULT_PLATFORMS, Entrypoint, EntrypointType, Image, Manifest,
+    Capabilities, Cli, DEFAULT_PLATFORMS, DevBuild, Entrypoint, EntrypointType, Image, Manifest,
     ManifestParseError, NetMode, Package, Platform, Providers, Publisher, Requirement, Sandbox,
     SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment,
-    SplashSegmentError, Target, Trust, TrustAttestation, WindowKind,
+    SplashSegmentError, Target, Trust, TrustAttestation, WindowKind, dev_app_id,
 };
-pub use pack::{PackError, Packed, SigningIdentity, pack, sign_placeholder_root};
+pub use pack::{PackError, Packed, SigningIdentity, pack, pack_dev, sign_placeholder_root};
 pub use package::{MetaError, PackageMeta, is_safe_path};
 pub use registry_types::interfaces;
 pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootError};
@@ -143,6 +143,11 @@ pub fn platform_size_limit(platform: &str) -> u64 {
 pub fn app_size_limit(manifest: &Manifest) -> Option<u64> {
     if manifest.package.kind != Kind::App {
         return None;
+    }
+    // A development build is never published: it installs only on the device that built it, under
+    // the local-build ceiling.
+    if manifest.package.dev.is_some() {
+        return Some(MAX_DESKTOP_APP_TAPP_BYTES);
     }
     Some(
         manifest

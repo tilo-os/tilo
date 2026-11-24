@@ -12,5 +12,8 @@ mod support;
 #[path = "install.rs"]
 mod install;
 
+#[path = "dev.rs"]
+mod dev;
+
 #[path = "image.rs"]
 mod image;

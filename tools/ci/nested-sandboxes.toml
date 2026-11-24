@@ -4,6 +4,7 @@
 # some of them check (runtime-fs's native fixtures). tools/ci/nested_sandboxes.py reads it.
 packages = [
   "launcher",
+  "tilo-daemon",
   "tilo-runtime-bundle",
   "tilo-fs",
   "tilo-net",

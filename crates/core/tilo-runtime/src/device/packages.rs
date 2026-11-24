@@ -45,6 +45,9 @@ pub struct PackageCache {
 struct Writer {
     /// The cache's root, which every package, runtime and image of the device's is under.
     root: PathBuf,
+    /// The key of the device whose cache this is: the only device whose development builds it
+    /// installs.
+    device: [u8; 32],
     content: Arc<DeviceContent>,
     rows: Arc<Rows>,
     /// One Flatpak change at a time: the state of what this device installed is read, changed and
@@ -389,6 +392,7 @@ impl PackageCache {
             resources: vec![spec],
             writer: Writer {
                 root: root.to_owned(),
+                device: *device,
                 content,
                 rows,
                 flatpaks: Arc::default(),
@@ -473,6 +477,7 @@ impl Writer {
                 store: &store,
                 catalog: &catalog,
                 max_store_bytes: package_store::DEFAULT_MAX_STORE_BYTES,
+                device: Some(self.device),
             },
             change,
             &package_actions::Entry::Device(&files),

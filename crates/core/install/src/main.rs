@@ -66,6 +66,11 @@ enum Cmd {
     Install {
         /// Path to the .tapp file.
         tapp: PathBuf,
+        /// Install it as this device's development build of the app it names
+        /// (`[package.dev]`), signed by this device: it runs under its own id and starts with no
+        /// grants. Refused for a package another device signed, or one with no signature.
+        #[arg(long)]
+        dev: bool,
         /// Mark the package pinned (exempt from future GC eviction).
         #[arg(long)]
         pinned: bool,
@@ -482,6 +487,7 @@ fn make(change: Change) -> Result<(), String> {
                     store: &store,
                     catalog: &catalog,
                     max_store_bytes: package_store::DEFAULT_MAX_STORE_BYTES,
+                    device: None,
                 },
                 change,
                 &package_actions::Entry::ImageBuild,
@@ -967,6 +973,7 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::Install {
             tapp,
+            dev,
             pinned,
             force,
             preserve_held,
@@ -974,19 +981,33 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
             runtime,
             dry_run,
             payload_from,
-        } => make(Change::Install {
-            file: uploaded(&tapp),
-            trust: wire_trust(&trust),
-            pinned,
-            replacement: match (force, preserve_held) {
-                (false, _) => package_actions::Replacement::Refuse,
-                (true, false) => package_actions::Replacement::Replace,
-                (true, true) => package_actions::Replacement::PreserveHeld,
-            },
-            ignore_missing_runtime: runtime.ignore_missing_runtime,
-            dry_run,
-            payload_from,
-        }),
+        } => {
+            if dev {
+                if pinned || force || preserve_held || dry_run || payload_from.is_some() {
+                    return Err(
+                        "a development build is installed as it is: no --pinned, --force, \
+                         --preserve-held, --dry-run or --payload-from"
+                            .into(),
+                    );
+                }
+                return make(Change::InstallDev {
+                    file: uploaded(&tapp),
+                });
+            }
+            make(Change::Install {
+                file: uploaded(&tapp),
+                trust: wire_trust(&trust),
+                pinned,
+                replacement: match (force, preserve_held) {
+                    (false, _) => package_actions::Replacement::Refuse,
+                    (true, false) => package_actions::Replacement::Replace,
+                    (true, true) => package_actions::Replacement::PreserveHeld,
+                },
+                ignore_missing_runtime: runtime.ignore_missing_runtime,
+                dry_run,
+                payload_from,
+            })
+        }
         Cmd::Update {
             pkg_id,
             from,

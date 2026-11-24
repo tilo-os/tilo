@@ -101,6 +101,12 @@ pub enum Change {
         #[serde(default)]
         payload_from: Option<String>,
     },
+    /// Install the development build in `file`: a package this device's developer built and
+    /// signed, which runs under the id its `[package.dev]` marking derives, apart from any
+    /// installed app and its grants.
+    InstallDev {
+        file: Uploaded,
+    },
     /// Swap in a newer version of `app` (of every installed package without one), from `file`
     /// or the configured registries.
     Update {
@@ -274,6 +280,9 @@ pub struct Target<'a> {
     pub store: &'a PackageStore,
     pub catalog: &'a Catalog,
     pub max_store_bytes: u64,
+    /// The key of the device whose cache this is, when a device's daemon makes the change: the
+    /// only device whose development builds it installs.
+    pub device: Option<[u8; 32]>,
 }
 
 impl Target<'_> {
@@ -357,6 +366,7 @@ fn apply_here(target: &Target<'_>, change: Change, entry: &Entry<'_>) -> Result<
     let collects = matches!(
         change,
         Change::Install { dry_run: false, .. }
+            | Change::InstallDev { .. }
             | Change::Update { dry_run: false, .. }
             | Change::Uninstall { dry_run: false, .. }
     );
@@ -413,6 +423,29 @@ fn run(
             entry.registers_host_search(),
             said,
         ),
+        Change::InstallDev { file: named } => {
+            let Some(device) = target.device else {
+                return Err(Error::Policy(
+                    "a development build is installed by the device that built it".into(),
+                ));
+            };
+            let bytes = fs::read(entry.file(&named)?)?;
+            let report = installer::install_dev(
+                target.store,
+                target.catalog,
+                &bytes,
+                device,
+                &named.source,
+            )?;
+            said.line(format!(
+                "installed development build: {}",
+                report
+                    .selected
+                    .as_ref()
+                    .map_or_else(String::new, |selected| selected.id.clone())
+            ));
+            Ok(())
+        }
         Change::Update {
             app,
             file: named,

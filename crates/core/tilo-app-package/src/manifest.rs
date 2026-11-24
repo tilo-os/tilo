@@ -286,6 +286,53 @@ pub struct Package {
     /// `tilo-install` refuses the install with a clear error.
     #[serde(default)]
     pub isa: IsaRequirements,
+    /// `[package.dev]` — this package is a development build: the device whose developer built
+    /// and signed it, and the app it is a build of. It runs under an id of its own
+    /// ([`dev_app_id`]), so it never takes an installed app's identity or grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev: Option<DevBuild>,
+}
+
+/// `[package.dev]` — what makes a package a development build: the key of the device that built
+/// and signed it, and the app whose sources it was built from.
+///
+/// A dev build is installed only by the device whose key it names, which refuses one signed by
+/// another device or not signed at all.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevBuild {
+    /// The device that built it, as `ed25519:<hex>`: the key whose signature the package's root
+    /// carries, and the only device that installs it.
+    pub device: String,
+    /// The id of the app this is a development build of.
+    pub of: String,
+}
+
+impl DevBuild {
+    /// The device that built this, as key bytes.
+    ///
+    /// # Errors
+    ///
+    /// See [`Publisher::identity_bytes`].
+    pub fn device_bytes(&self) -> Result<[u8; 32], IdentityParseError> {
+        parse_ed25519_hex(&self.device)
+    }
+}
+
+/// The id a development build of `app` runs under on the device whose key is `device`: a name of
+/// its own, marked as that device's build, so a dev build never takes an installed app's id or
+/// the grants given to it.
+#[must_use]
+pub fn dev_app_id(app: &str, device: &[u8; 32]) -> String {
+    let key = hex::encode(device);
+    format!("{app}.dev.{}", &key[..16])
+}
+
+impl Package {
+    /// Whether this package is a development build.
+    #[must_use]
+    pub fn is_dev(&self) -> bool {
+        self.dev.is_some()
+    }
 }
 
 /// The text `texts` (a package's names or tag lines, by language tag) shows a reader of

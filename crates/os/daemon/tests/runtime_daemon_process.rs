@@ -21,17 +21,53 @@ fn runtime_binary() -> std::path::PathBuf {
 const LAUNCHER_START_CAP: Duration = Duration::from_secs(120);
 
 fn host(profile: &Path) -> Command {
-    let mut command = Command::new(runtime_binary());
+    let mut command = Command::new(runtime_bin(profile));
     command
         .env("TILO_RUNTIME_PROFILE", profile)
         // The device's key and certificates live in the profile, as the service names them to
         // this computer: the daemon starts as the person `set_up` certified only when the
         // certificate it reads is the one made here.
         .env("TILO_IDENTITY_ROOT", profile.join("identity"))
+        // The device's package cache, where a test installs the SDK app of its own, and the
+        // display a launch is handed (a file: nothing draws).
+        .env("TILO_APPS_DATA_DIR", profile.join("apps"))
+        .env("WAYLAND_DISPLAY", profile.join("wayland-0"))
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
         .env_remove("TILO_RUNTIME_STANDALONE");
     command
+}
+
+/// The runtime a test starts: the profile's own copy when it made one, beside the launcher the
+/// launch path looks for ([`DaemonProfile::start_with_launcher`]).
+fn runtime_bin(profile: &Path) -> PathBuf {
+    let copy = profile.join("host/tilo-runtime");
+    if copy.is_file() {
+        copy
+    } else {
+        runtime_binary()
+    }
+}
+
+/// The launcher a test's profile starts apps through: the build the run made for the runtime's
+/// tests, else one built beside the runtime binary, else the system's.
+fn launcher_binary() -> Option<PathBuf> {
+    if let Some(named) = std::env::var_os("TILO_TEST_LAUNCHER") {
+        return Some(PathBuf::from(named));
+    }
+    let beside = runtime_binary()
+        .parent()
+        .map(|dir| dir.join("tilo-launcher"))
+        .filter(|path| path.is_file());
+    tilo_test_env::started_variant("tilo-launcher", "fast", "dev-overrides")
+        .filter(|path| path.is_file())
+        .or(beside)
+        .or_else(|| {
+            ["/usr/libexec/tilo/tilo-launcher", "/usr/libexec/tilo-launcher"]
+                .into_iter()
+                .map(PathBuf::from)
+                .find(|path| path.is_file())
+        })
 }
 /// A profile named apart, and the daemon serving it: started by the test that owns the profile,
 /// as only the service starts this computer's own. A launcher never starts one. Its person's
@@ -78,6 +114,21 @@ impl DaemonProfile {
             std::thread::sleep(Duration::from_millis(25));
         }
     }
+    /// Start the profile's daemon with a launcher beside its runtime binary: apps this profile
+    /// installs are then started the way a window's launch starts them.
+    fn start_with_launcher(&mut self) -> Result<()> {
+        let launcher = launcher_binary().context(
+            "no tilo-launcher to start an app through: build it (cargo build -p launcher --bin \
+             tilo-launcher) or run this test through `t test`, which builds one for it",
+        )?;
+        let host = self.path().join("host");
+        std::fs::create_dir_all(&host)?;
+        std::fs::copy(runtime_binary(), host.join("tilo-runtime"))?;
+        std::fs::copy(launcher, host.join("tilo-launcher"))?;
+        std::fs::write(self.path().join("wayland-0"), b"")?;
+        self.start()
+    }
+
     /// Found the person's workspace here, as the first call of theirs in it does: this device's
     /// own client of the daemon asking in the workspace their key names. A key's run and a
     /// desktop's first call found it the same way.
@@ -628,5 +679,215 @@ fn a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run() -> 
         refused.contains("`tilo-runtime --run-app"),
         "the refusal must say how to run the program so this computer launches it: {refused}"
     );
+    Ok(())
+}
+
+/// A development build of `app` made by this profile's device: the SDK app, its package payload,
+/// the device's signature over it, and the id its marking derives. `lifetime_ms` is how long the
+/// app stays; `spawn_child` asks it to start a second process of itself.
+fn dev_package(
+    profile: &Path,
+    app: &str,
+    lifetime_ms: u64,
+    spawn_child: bool,
+) -> Result<(String, PathBuf)> {
+    let keys = tilo_device_identity::persist::IdentityPaths::under(profile.join("identity"));
+    let device = tilo_device_identity::persist::load_device_key(&keys)
+        .context("the profile's device key")?;
+    let identity = tilo_app_package::SigningIdentity::from_signing_key(device.clone());
+    let id = tilo_app_package::dev_app_id(app, &device.verifying_key().to_bytes());
+    let payload = profile.join(format!("dev-payload-{}", app.replace('.', "-")));
+    std::fs::create_dir_all(&payload)?;
+    std::fs::copy(tilo_test_env::package_binary!("tilo-sdk-app"), payload.join("app"))?;
+    std::fs::write(
+        payload.join("tilo-app-lifetime-ms"),
+        format!("{lifetime_ms}\n"),
+    )?;
+    if spawn_child {
+        std::fs::write(payload.join("tilo-app-spawn-child"), b"")?;
+    }
+    let isa = match std::env::consts::ARCH {
+        "x86_64" => "x86_64 = \"v3\"",
+        other if other.starts_with("aarch64") => "aarch64 = \"aarch64\"",
+        other => bail!("no package for the architecture {other}"),
+    };
+    let device_hex = hex::encode(device.verifying_key().to_bytes());
+    let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+        r#"[package]
+id = "{app}"
+name = "SDK app"
+version = "0.1.0"
+kind = "app"
+
+[package.isa]
+{isa}
+
+[publisher]
+identity = "ed25519:{device_hex}"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.services]
+collab = "optional@48"
+
+[entrypoint]
+bin = "app"
+type = "gui"
+"#
+    ))
+    .context("the dev build's manifest")?;
+    let packed = tilo_app_package::pack_dev(&payload, &manifest, app, &identity)
+        .context("packing the dev build")?;
+    let package = profile.join(format!("{id}.tapp"));
+    tilo_app_package::tapp::write_file(
+        &package,
+        &packed.meta,
+        Some(&packed),
+        tilo_app_package::tapp::WriteOptions {
+            existing: tilo_app_package::tapp::ExistingOutput::Replace,
+            size_limit: tilo_app_package::tapp::SizeLimit::LocalBuild,
+        },
+    )
+    .context("writing the dev build")?;
+    Ok((id, package))
+}
+
+/// Ask the profile's daemon to install the development build at `package` and start `app`
+/// through the same launch a window takes.
+fn run_app_dev(profile: &Path, app: &str, package: &Path) -> Result<std::process::Output> {
+    let output = host(profile)
+        .args(["--run-app", app, "--dev-package"])
+        .arg(package)
+        .output_locked()?;
+    ensure!(
+        output.status.success(),
+        "starting {app} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(output)
+}
+
+/// The app instances the daemon's MCP `resources/list` reports, once: each as its `app_id` and
+/// the `uri` of its own connection.
+fn apps_once(profile: &Path) -> Result<Vec<Value>> {
+    let reply = ask(
+        profile,
+        &json!({"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}),
+    )?;
+    let resources = reply
+        .get("result")
+        .and_then(|result| result.get("resources"))
+        .and_then(Value::as_array)
+        .with_context(|| format!("the reply reports no apps: {reply}"))?;
+    // Each is named `<app id> (<instance>)`.
+    Ok(resources
+        .iter()
+        .map(|resource| {
+            let name = resource["name"].as_str().unwrap_or_default();
+            let app_id = name.split_once(" (").map_or(name, |(app, _)| app);
+            json!({"app_id": app_id, "peer_id": resource["uri"]})
+        })
+        .collect())
+}
+
+/// The app instances `resources/list` reports, once `count` of them run.
+fn listed_apps(profile: &Path, count: usize) -> Result<Vec<Value>> {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let apps = apps_once(profile)?;
+        if apps.len() == count {
+            return Ok(apps);
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "expected {count} apps, got {apps:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// The app ids of `apps`, in the order they were listed.
+fn app_ids(apps: &[Value]) -> Vec<&str> {
+    apps.iter()
+        .filter_map(|app| app.get("app_id").and_then(Value::as_str))
+        .collect()
+}
+
+/// A native SDK program installed as this device's development build runs as it, joins the
+/// person's session as an app of its own, and a second one joins beside it; the first ending
+/// leaves the other running.
+#[test]
+fn independent_sdk_apps_late_join_and_one_ends_while_the_other_runs() -> Result<()> {
+    let mut profile = DaemonProfile::unstarted()?;
+    profile.start_with_launcher()?;
+    profile.found()?;
+    let (first_id, first_package) = dev_package(profile.path(), "dev.tilo.independent-first", 8_000, false)?;
+    let (second_id, second_package) =
+        dev_package(profile.path(), "dev.tilo.independent-second", 120_000, false)?;
+    run_app_dev(profile.path(), &first_id, &first_package)?;
+    let only = listed_apps(profile.path(), 1)?;
+    ensure!(
+        app_ids(&only) == [first_id.as_str()],
+        "the first app is not the only one listed: {only:?}"
+    );
+    let before = daemon(profile.path())?;
+    run_app_dev(profile.path(), &second_id, &second_package)?;
+    let both = listed_apps(profile.path(), 2)?;
+    let [one, two] = both.as_slice() else {
+        bail!("expected two apps, got {both:?}");
+    };
+    ensure!(
+        one.get("peer_id") != two.get("peer_id"),
+        "both apps name the same connection: {both:?}"
+    );
+    ensure!(
+        app_ids(&both).iter().any(|app| *app == first_id)
+            && app_ids(&both).iter().any(|app| *app == second_id),
+        "both apps are listed: {both:?}"
+    );
+    ensure!(
+        daemon(profile.path())? == before,
+        "the second app restarted the daemon"
+    );
+    ping(profile.path())?;
+    // The first app's package names a short life: it ends while the second keeps running.
+    let survivor = listed_apps(profile.path(), 1)?;
+    ensure!(
+        app_ids(&survivor) == [second_id.as_str()],
+        "the app that stayed is not the one listed: {survivor:?}"
+    );
+    ping(profile.path())?;
+    Ok(())
+}
+
+/// An app whose process starts another of itself gets two connections, and both are its
+/// instances: ordinary process spawning after the app adopted the services it was handed.
+#[test]
+fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() -> Result<()> {
+    let mut profile = DaemonProfile::unstarted()?;
+    profile.start_with_launcher()?;
+    profile.found()?;
+    let (id, package) = dev_package(profile.path(), "dev.tilo.parent-child", 30_000, true)?;
+    run_app_dev(profile.path(), &id, &package)?;
+    let both = listed_apps(profile.path(), 2)?;
+    let [one, two] = both.as_slice() else {
+        bail!("expected two instances, got {both:?}");
+    };
+    ensure!(
+        app_ids(&both).iter().all(|app| *app == id),
+        "another app was reported: {both:?}"
+    );
+    ensure!(
+        one.get("peer_id") != two.get("peer_id"),
+        "the parent and child share a connection: {both:?}"
+    );
+    ping(profile.path())?;
     Ok(())
 }

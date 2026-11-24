@@ -19,8 +19,23 @@ use crate::{Change, Report};
 /// action of the cache's, or the cache refused or failed it (what it said before then included).
 pub fn change(change: &Change) -> Result<Report, String> {
     let mut daemon = Daemon::reach()?;
+    ask(&mut daemon, change)
+}
+
+/// [`change`] through the daemon answering on `socket` instead of this account's own: the
+/// device whose profile names the socket.
+///
+/// # Errors
+/// As [`change`].
+pub fn change_at(socket: &Path, change: &Change) -> Result<Report, String> {
+    let mut daemon = Daemon::at(socket)?;
+    ask(&mut daemon, change)
+}
+
+/// Make `change` through `daemon`, putting each local file it names first.
+fn ask(daemon: &mut Daemon, change: &Change) -> Result<Report, String> {
     let mut asked = serde_json::to_value(change).map_err(|error| error.to_string())?;
-    put_files(&mut daemon, &mut asked)?;
+    put_files(daemon, &mut asked)?;
     let (action, arguments) = action_of(asked)?;
     let answer = daemon.call(
         "tilo_do",

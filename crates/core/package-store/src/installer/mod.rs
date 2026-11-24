@@ -527,6 +527,118 @@ pub fn check(candidate: &Candidate, trust: &Trust, report: &mut Report) -> Resul
     Ok(checked)
 }
 
+/// Install a development build: `bytes` is a `.tapp` a developer built and signed as
+/// `device`'s own dev build of an app.
+///
+/// The device installs only what it built itself, and only under the id its dev marking derives,
+/// so a dev build never takes an installed app's identity or grants.
+///
+/// # Errors
+/// The package is not marked as a dev build, names another device, is unsigned, is signed by
+/// another key, runs as an id its marking does not derive, or its id belongs to an app this
+/// device installed from a publisher.
+pub fn install_dev(
+    store: &PackageStore,
+    catalog: &Catalog,
+    bytes: &[u8],
+    device: [u8; 32],
+    source: &str,
+) -> Result<Report, Error> {
+    let key = hex::encode(device);
+    let refuse = |why: String| Error::Policy(format!("a development build: {why}"));
+    let mut blobs = std::collections::BTreeMap::new();
+    let tapp = tilo_app_package::tapp::read(bytes, &mut blobs)
+        .map_err(|error| refuse(error.to_string()))?;
+    let Some(dev) = tapp.meta.manifest.package.dev.clone() else {
+        return Err(refuse(
+            "it names no device it was built on (`[package.dev]`)".into(),
+        ));
+    };
+    let named = dev
+        .device_bytes()
+        .map_err(|error| refuse(format!("its device key: {error}")))?;
+    if named != device {
+        return Err(refuse(format!(
+            "it was built on another device, ed25519:{}; this device, ed25519:{key}, runs only \
+             its own",
+            hex::encode(named)
+        )));
+    }
+    if tapp.meta.root.publisher_identity != device {
+        return Err(refuse(format!(
+            "it is signed by ed25519:{}, not by this device",
+            hex::encode(tapp.meta.root.publisher_identity)
+        )));
+    }
+    match tilo_app_package::verify(&tapp.meta, &[device]) {
+        tilo_app_package::Verification::Trusted { .. } => {}
+        other => {
+            return Err(refuse(format!(
+                "it carries no signature this device made ({other:?})"
+            )));
+        }
+    }
+    if tapp.meta.manifest.package.kind != tilo_app_package::Kind::App {
+        return Err(refuse("it is no app".into()));
+    }
+    let expected = tilo_app_package::dev_app_id(&dev.of, &device);
+    if tapp.meta.manifest.package.id != expected {
+        return Err(refuse(format!(
+            "a build of {} runs as {expected}, not {}",
+            dev.of, tapp.meta.manifest.package.id
+        )));
+    }
+    let id = tapp.meta.manifest.package.id.clone();
+    if let Some(existing) = catalog
+        .find(&id)
+        .map_err(|error| Error::RegistryRead(error.to_string()))?
+    {
+        let installed = std::fs::read_to_string(&existing.manifest_path)
+            .ok()
+            .and_then(|text| tilo_app_package::Manifest::from_toml_str(&text).ok())
+            .and_then(|manifest| manifest.package.dev);
+        if installed.is_none() {
+            return Err(refuse(format!(
+                "{id} is an app this device installed; a development build never takes its id"
+            )));
+        }
+    }
+    // The store reads a candidate from a file: write the very package the device signed there.
+    let tmp = store.layout().tmp();
+    std::fs::create_dir_all(&tmp)?;
+    let path = tmp.join(format!(
+        "dev-{id}-{}.tapp",
+        std::process::id()
+    ));
+    tilo_app_package::tapp::write_file(
+        &path,
+        &tapp.meta,
+        Some(&blobs),
+        tilo_app_package::tapp::WriteOptions {
+            existing: tilo_app_package::tapp::ExistingOutput::Replace,
+            size_limit: tilo_app_package::tapp::SizeLimit::LocalBuild,
+        },
+    )
+    .map_err(|error| refuse(error.to_string()))?;
+    let installed = install(
+        store,
+        catalog,
+        &Candidate::staged(&path, source),
+        &Request {
+            trust: Trust {
+                require_publisher: Some(key),
+                allow_self_signed: true,
+                ..Trust::default()
+            },
+            replacement: Replacement::Replace,
+            ..Request::default()
+        },
+        None,
+    );
+    let _ = std::fs::remove_file(&path);
+    installed
+}
+
 /// Whether a user copy of `version` must be held in front of the image's copy: it is older, so only
 /// an explicit choice (a rollback, a forced install) put it there.
 fn held_below_image(layers: &crate::Layers, version: &str) -> bool {

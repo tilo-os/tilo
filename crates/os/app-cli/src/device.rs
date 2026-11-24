@@ -182,7 +182,16 @@ impl Daemon {
     /// No daemon answers on this computer.
     pub fn reach() -> Result<Self, String> {
         let socket = tilo_paths::machine::daemon_native()?;
-        let stream = tilo_files::native::socket::connect(&socket).map_err(|error| {
+        Self::at(&socket)
+    }
+
+    /// A connection to the daemon serving `socket`: this computer's own, or one a program names
+    /// (a runtime's profile, a test's).
+    ///
+    /// # Errors
+    /// No daemon answers on `socket`.
+    pub fn at(socket: &Path) -> Result<Self, String> {
+        let stream = tilo_files::native::socket::connect(socket).map_err(|error| {
             format!(
                 "Tilo's background service isn't answering on this computer ({}: {error}): \
                  changes to what it runs go through it. Run `tilo status` to see how it \
