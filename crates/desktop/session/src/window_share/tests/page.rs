@@ -354,8 +354,6 @@ impl Two {
             .session
             .step(Duration::from_millis(2))
             .expect("step");
-        carry(&mut self.host, &self.viewer);
-        carry(&mut self.viewer, &self.host);
         if let Some(app) = self.app.as_mut() {
             app.hear();
         }
@@ -1269,8 +1267,6 @@ impl TwoWindows {
             .session
             .step(Duration::from_millis(2))
             .expect("step");
-        carry(&mut self.host, &self.viewer);
-        carry(&mut self.viewer, &self.host);
         for app in apps.iter_mut() {
             app.hear();
         }

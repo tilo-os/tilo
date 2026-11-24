@@ -11,9 +11,8 @@
 //! A member views a window another device shares by asking the live session for its
 //! track; the keyframe's header says the codec, size and colour, and what comes
 //! is decoded into that tab's tile here ([`self::peer::PeerRead`]). Its viewer also says it
-//! views the window ([`SurfaceViewRequest`]) and sends its input back, as
-//! control messages to the hosting device alone: directly, or through the
-//! workspace's host where that device takes no connection. Another member's
+//! views the window ([`Control::View`]) and sends its input back on the same live session's
+//! share track, addressed to the hosting device alone ([`tilo_live::share`]). Another member's
 //! input reaches the window through a seat of its own ([`Compositor::open_seat`]),
 //! only while the person allows it, and the compositor's firewall refuses every
 //! member's input after the cut chord or while the session is locked. A session
@@ -30,10 +29,7 @@ use std::time::{Duration, Instant};
 use iroh::EndpointId;
 use media::StreamCodec;
 use media::realtime::CodecCapabilities;
-use neighbour_wire::{
-    MAX_SURFACE_VIEW_DECODERS, MAX_SURFACE_VIEW_SIDE, MAX_SURFACE_VIEWS, NeighbourMsg, PeerId,
-    SurfaceDecodeLimit, SurfaceId, SurfaceView,
-};
+use neighbour_wire::{PeerId, SurfaceId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_action_policy::share::{ShareAccess, is_of_share, share_grants};
@@ -52,17 +48,18 @@ use tilo_desktop_model::{
 };
 use tilo_live::live::Track;
 use tilo_live::live_session::LiveSession;
+use tilo_live::share::{
+    Control, DecodeLimit, InputEvent as SharedInput, MAX_DECODERS, MAX_VIEW_SIDE, Said, View,
+};
 use tilo_live::video::{Layer, VideoObject};
-use tilo_network_actor::WorkspaceId;
 use tilo_service::{Service, Started, Wake};
 use tilo_session_core::desktop::i18n::t;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_window_share::config::FlatpakShareConfig;
 use tilo_window_share::flatpak_share::{EncodedFrame, SharedFlatpakSession};
-use tilo_window_share::streaming::InputEvent as SharedInput;
 
 use crate::landing::{Landings, off_loop};
-use crate::sync::{Client, ReceivedSurface};
+use crate::sync::Client;
 use crate::workspace_view::WorkspaceView;
 use tilo_session_client::membership::{Membership, project};
 
@@ -198,7 +195,9 @@ struct Asked {
     device: EndpointId,
     at: Instant,
     /// The largest picture its hardware decoders take, by codec: what its stream is encoded for.
-    decode: Vec<SurfaceDecodeLimit>,
+    decode: Vec<DecodeLimit>,
+    /// The codecs it decodes in software.
+    software: Vec<String>,
     /// What the workspace calls it, which is how the bar names it ([`viewer`]).
     name: String,
 }
@@ -209,8 +208,8 @@ struct Received {
     tab: TabId,
     /// The device sharing it, which its viewer's input and keyframe requests go back to.
     host: EndpointId,
-    /// The workspace's topic its stream came in on, which those go back over.
-    ws: WorkspaceId,
+    /// The workspace whose live session its stream came in on, which those go back over.
+    workspace: String,
     /// Whether the session holds the tab its tile stands in yet.
     shown: bool,
     /// The stream as its keyframe or its page's announcement says it.
@@ -1168,12 +1167,18 @@ impl WindowShares {
         self.asked
             .iter()
             .filter(|((asking, _), _)| *asking == tab)
-            .map(|((_, peer), asked)| {
-                let mut caps = tilo_network_actor::media_caps::capabilities(*peer);
+            .map(|(_, asked)| {
                 let limits = decode_limits(&asked.decode);
-                caps.hardware_decode.extend(limits.keys().copied());
-                caps.hardware_decode_max = limits;
-                caps
+                CodecCapabilities {
+                    hardware_decode: asked
+                        .decode
+                        .iter()
+                        .filter_map(|limit| StreamCodec::from_wire_label(&limit.codec))
+                        .collect(),
+                    software_decode: CodecCapabilities::parse_labels(&asked.software),
+                    hardware_decode_max: limits,
+                    ..CodecCapabilities::default()
+                }
             })
             .collect()
     }
@@ -1327,17 +1332,16 @@ impl WindowShares {
     /// so each lets its tile go rather than waiting on pictures that stopped. A member that shows
     /// it because the workspace's governance names it learns it from the governance too.
     fn end(&self, hosted: &Hosted, tab: TabId, sync: &Client) {
-        let Some(ws) = sync.workspace_of(&hosted.workspace) else {
-            return;
-        };
-        let end = NeighbourMsg::SurfaceStreamEnd {
-            surface: tab,
-            source_peer: sync.peer(),
-            ts: 0,
-        };
-        for ((_, _), asked) in self.asked.iter().filter(|((asking, _), _)| *asking == tab) {
-            sync.publish_control(ws, end.clone(), asked.device);
-        }
+        let ended: Vec<Said> = self
+            .asked
+            .iter()
+            .filter(|((asking, _), _)| *asking == tab)
+            .map(|(_, asked)| Said {
+                to: *asked.device.as_bytes(),
+                control: Control::Ended { tab },
+            })
+            .collect();
+        sync.say(&hosted.workspace, &ended);
     }
 
     /// Take what the live session carried in: a member's ask to view this device's windows, their input,
@@ -1348,52 +1352,54 @@ impl WindowShares {
         session: &DesktopHandle,
         sync: &Client,
     ) {
-        let arrivals = sync.take_surfaces();
+        let arrivals = sync.take_share_objects();
         if arrivals.is_empty() {
             return;
         }
         let mut changed = false;
-        for ReceivedSurface {
-            ws,
-            from: publisher,
-            msg,
-        } in arrivals
-        {
+        for (workspace, heard) in arrivals {
+            let Ok(publisher) = EndpointId::from_bytes(&heard.sender) else {
+                continue;
+            };
+            let Some(Said { control, .. }) = Said::decode(&heard.body) else {
+                continue;
+            };
             // Someone else's speaker is one of the workspace's, by a handle: what a stream came
             // from and what its input names are the same member.
             let from = neighbour_wire::peer_handle(publisher.as_bytes());
-            match msg {
-                // Who asks and whose input it is is the device that sent it, as its route
-                // authenticated it, whatever the message says of itself.
-                NeighbourMsg::SurfaceViewRequest {
-                    workspace,
+            match control {
+                // Who asks and whose input it is is the device whose key sealed it, whatever the
+                // control says of itself.
+                Control::View {
                     views,
-                    decode,
-                    ..
+                    hardware,
+                    software,
                 } => {
-                    changed |=
-                        self.note_views(sync, ws, (from, publisher), &workspace, &views, &decode);
+                    changed |= self.note_views(
+                        sync,
+                        (from, publisher),
+                        &workspace,
+                        &views,
+                        (&hardware, &software),
+                    );
                 }
-                NeighbourMsg::RemoteInput { surface, event, .. } => {
-                    self.apply_input(compositor, from, surface, &event);
+                Control::Input { tab, event } => {
+                    self.apply_input(compositor, from, tab, event);
                 }
-                NeighbourMsg::SurfaceKeyframeRequest { surface, seq, .. } => {
-                    if let Some(hosted) = self.hosted.get(&surface) {
+                Control::Keyframe { tab, seq } => {
+                    if let Some(hosted) = self.hosted.get(&tab) {
                         hosted.share.request_keyframe(seq, Instant::now());
                     }
                 }
-                NeighbourMsg::SurfaceStreamStart {
-                    surface,
-                    tab: named,
-                    ..
-                } => {
+                Control::Page { tab: named, .. } => {
+                    let surface = named;
                     // A page's announcement, with what only this desktop knows of it: who it is to
                     // the sender, what the session calls the window, whose device it comes from, and
                     // the tab of this session that pictures it.
                     let place = self.pictured_in(named);
                     let (title, sharer) = session.read(|tree| tab_title(tree, place));
                     let Some(mut start) =
-                        PeerStreamStart::announced(&msg, sync.peer(), sharer, title, true)
+                        PeerStreamStart::announced(&control, from, sync.peer(), sharer, title, true)
                     else {
                         continue;
                     };
@@ -1416,7 +1422,7 @@ impl WindowShares {
                         Received {
                             tab: named,
                             host: publisher,
-                            ws,
+                            workspace,
                             shown,
                             start,
                             page,
@@ -1426,13 +1432,11 @@ impl WindowShares {
                     );
                     changed = true;
                 }
-                NeighbourMsg::SurfaceStreamEnd { surface, .. }
-                    if self.received.remove(&(from, surface)).is_some() =>
-                {
-                    session.end_peer_surface(from, surface, WhyEnded::SenderStopped);
+                Control::Ended { tab } if self.received.remove(&(from, tab)).is_some() => {
+                    session.end_peer_surface(from, tab, WhyEnded::SenderStopped);
                     changed = true;
                 }
-                _ => {}
+                Control::Ended { .. } => {}
             }
         }
         if changed {
@@ -1546,9 +1550,6 @@ impl WindowShares {
                     )
             });
             if !same {
-                let Some(ws) = sync.workspace_of(workspace) else {
-                    return;
-                };
                 if self
                     .received
                     .remove(&key)
@@ -1562,7 +1563,7 @@ impl WindowShares {
                     Received {
                         tab,
                         host: from,
-                        ws,
+                        workspace: workspace.to_owned(),
                         shown,
                         start,
                         page: false,
@@ -1661,10 +1662,9 @@ impl WindowShares {
     /// Send back what the tiles ask of the devices that share their windows: a viewer's pointer and
     /// keys, and the keyframe request of a stream that lost a unit.
     fn send_outgoing(&self, session: &DesktopHandle, sync: &Client) {
-        for msg in session.take_peer_outgoing() {
-            let surface = match &msg {
-                NeighbourMsg::RemoteInput { surface, .. }
-                | NeighbourMsg::SurfaceKeyframeRequest { surface, .. } => *surface,
+        for control in session.take_peer_outgoing() {
+            let surface = match &control {
+                Control::Input { tab, .. } | Control::Keyframe { tab, .. } => *tab,
                 _ => continue,
             };
             let Some(stream) = self
@@ -1675,8 +1675,12 @@ impl WindowShares {
                 continue;
             };
             // Where the stream came from is where its input goes: the device hosting the window,
-            // over the topic of its workspace.
-            sync.publish_control(stream.ws, msg, stream.host);
+            // on its workspace's live session.
+            let said = Said {
+                to: *stream.host.as_bytes(),
+                control,
+            };
+            sync.say(&stream.workspace, &[said]);
         }
     }
 
@@ -1729,22 +1733,16 @@ impl WindowShares {
     fn note_views(
         &mut self,
         sync: &Client,
-        ws: WorkspaceId,
         (peer, device): (PeerId, EndpointId),
         workspace: &str,
-        views: &[SurfaceView],
-        decode: &[SurfaceDecodeLimit],
+        views: &[View],
+        (decode, software): (&[DecodeLimit], &[String]),
     ) -> bool {
-        // The ask is made in a workspace whose topic it arrives on, and names windows and decoders
-        // the wire allows.
-        if WorkspaceId::parse(workspace) != Some(ws)
-            || views.len() > MAX_SURFACE_VIEWS
-            || decode.len() > MAX_SURFACE_VIEW_DECODERS
-            || views.iter().any(|view| {
-                !(1..=MAX_SURFACE_VIEW_SIDE).contains(&view.width)
-                    || !(1..=MAX_SURFACE_VIEW_SIDE).contains(&view.height)
-            })
-            || sync.workspace_of(workspace) != Some(ws)
+        // The live session opened only what the share profile bounds; a window of no size is
+        // nothing to stream.
+        if views
+            .iter()
+            .any(|view| view.width == 0 || view.height == 0)
         {
             return false;
         }
@@ -1760,8 +1758,9 @@ impl WindowShares {
             if let Some(asked) = self.asked.get_mut(&(*tab, peer)) {
                 asked.at = now;
                 asked.device = device;
-                if asked.decode != decode {
+                if asked.decode != decode || asked.software != software {
                     asked.decode = decode.to_vec();
+                    asked.software = software.to_vec();
                     changed = true;
                 }
                 // What names it may be heard after it first asked.
@@ -1776,6 +1775,7 @@ impl WindowShares {
                         device,
                         at: now,
                         decode: decode.to_vec(),
+                        software: software.to_vec(),
                         name: name.clone(),
                     },
                 );
@@ -1828,7 +1828,7 @@ impl WindowShares {
         compositor: &mut Compositor,
         peer: PeerId,
         surface: SurfaceId,
-        event: &[u8],
+        event: SharedInput,
     ) {
         // A member acts in the window while it views it: one that stopped viewing is no longer
         // among the viewers this device names, and reaches nothing. A viewer's pointer is in the
@@ -1842,10 +1842,6 @@ impl WindowShares {
                 (hosted.window.clone(), (picture.width, picture.height))
             })
         }) else {
-            return;
-        };
-        let Ok(event) = postcard::from_bytes::<SharedInput>(event) else {
-            tracing::debug!(peer, surface, "dropping malformed remote input");
             return;
         };
         // The person's cut, their own hand on this machine, and a locked session hold a viewer back
@@ -2025,7 +2021,7 @@ impl WindowShares {
             return;
         }
         let (width, height) = view_size(compositor);
-        let decode = local_decode();
+        let (hardware, software) = local_decode();
         // Every window of one host in one workspace goes in a single ask: an ask says what this
         // device wants of that host, so one naming a single window would take back the others.
         let mut asks: Vec<Ask> = Vec::new();
@@ -2054,23 +2050,25 @@ impl WindowShares {
             due,
         } in asks
         {
-            let Some(ws) = sync.workspace_of(&workspace).filter(|_| due) else {
+            if !due {
                 continue;
+            }
+            let ask = Said {
+                to: *host.as_bytes(),
+                control: Control::View {
+                    views: views
+                        .iter()
+                        .map(|tab| View {
+                            tab: *tab,
+                            width,
+                            height,
+                        })
+                        .collect(),
+                    hardware: hardware.clone(),
+                    software: software.clone(),
+                },
             };
-            let ask = NeighbourMsg::SurfaceViewRequest {
-                peer: sync.peer(),
-                workspace: workspace.clone(),
-                views: views
-                    .iter()
-                    .map(|tab| SurfaceView {
-                        tab: *tab,
-                        width,
-                        height,
-                    })
-                    .collect(),
-                decode: decode.clone(),
-            };
-            sync.publish_control(ws, ask, host);
+            sync.say(&workspace, &[ask]);
             for tab in views {
                 if let Some(watched) = self.watching.get_mut(&(workspace.clone(), tab)) {
                     watched.asked_at = now;
@@ -2308,24 +2306,29 @@ fn picture_start(
 
 /// The limits a viewer reported, by codec: codecs this build does not know and codecs without a
 /// limit carry none.
-fn decode_limits(decode: &[SurfaceDecodeLimit]) -> BTreeMap<StreamCodec, (u32, u32)> {
+fn decode_limits(decode: &[DecodeLimit]) -> BTreeMap<StreamCodec, (u32, u32)> {
     decode
         .iter()
         .filter_map(|entry| Some((StreamCodec::from_wire_label(&entry.codec)?, entry.max?)))
         .collect()
 }
 
-/// What this device's hardware decoders take, as a viewer tells a host.
-fn local_decode() -> Vec<SurfaceDecodeLimit> {
+/// What this device decodes, as a viewer tells a host: its hardware decoders with the largest
+/// picture each takes, and the codecs it decodes in software.
+fn local_decode() -> (Vec<DecodeLimit>, Vec<String>) {
     let caps = media::realtime::local_capabilities();
-    caps.hardware_decode
+    let hardware = caps
+        .hardware_decode
         .iter()
-        .take(MAX_SURFACE_VIEW_DECODERS)
-        .map(|codec| SurfaceDecodeLimit {
+        .take(MAX_DECODERS)
+        .map(|codec| DecodeLimit {
             codec: codec.wire_label().to_owned(),
             max: caps.hardware_decode_max.get(codec).copied(),
         })
-        .collect()
+        .collect();
+    let mut software = CodecCapabilities::labels(&caps.software_decode);
+    software.truncate(MAX_DECODERS);
+    (hardware, software)
 }
 
 /// The picture this device shows a window another member shares at: the largest monitor it has on,
@@ -2333,8 +2336,8 @@ fn local_decode() -> Vec<SurfaceDecodeLimit> {
 fn view_size(compositor: &Compositor) -> (u32, u32) {
     let side = |value: i32| {
         u32::try_from(value)
-            .unwrap_or(MAX_SURFACE_VIEW_SIDE)
-            .clamp(1, MAX_SURFACE_VIEW_SIDE)
+            .unwrap_or(MAX_VIEW_SIDE)
+            .clamp(1, MAX_VIEW_SIDE)
     };
     compositor
         .outputs()
@@ -2824,34 +2827,29 @@ mod window_tracks {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()
     }
 
-    /// The announcement of a window's page stream, as its host sends it.
-    fn announcement(tab: TabId, codec: &str) -> NeighbourMsg {
-        NeighbourMsg::SurfaceStreamStart {
-            surface: tab,
-            source_peer: neighbour_wire::peer_handle(&[9; 32]),
+    /// A window's page, as its host announces it.
+    fn received(tab: TabId, host: EndpointId) -> Received {
+        let page = Control::Page {
+            tab,
+            app_id: "so.tilo.browser".to_owned(),
             width: 800,
             height: 600,
-            codec: codec.to_owned(),
-            ts: 0,
-            sender_monotonic_ns_at_send: 0,
-            colorimetry: None,
-            hdr_static_metadata: None,
-            bit_depth: 8,
-            app_id: "so.tilo.browser".to_owned(),
-            tab,
-        }
-    }
-
-    fn received(tab: TabId, codec: &str, host: EndpointId) -> Received {
-        let msg = announcement(tab, codec);
+        };
         Received {
             tab,
             host,
-            ws: tilo_desktop_model::WorkspaceId::parse(WORKSPACE).expect("a workspace id"),
+            workspace: WORKSPACE.to_owned(),
             shown: true,
-            start: PeerStreamStart::announced(&msg, 11, "Laptop", "Browser", false)
-                .expect("a stream start"),
-            page: codec == ui::webview::paint::stream::wire::CODEC,
+            start: PeerStreamStart::announced(
+                &page,
+                neighbour_wire::peer_handle(&[9; 32]),
+                11,
+                "Laptop",
+                "Browser",
+                false,
+            )
+            .expect("a stream start"),
+            page: true,
             pictured: false,
             awaited: page::Awaited::Nothing,
         }
@@ -2877,7 +2875,7 @@ mod window_tracks {
             let mut streams = BTreeMap::new();
             streams.insert(
                 (neighbour_wire::peer_handle(&[9; 32]), TAB),
-                received(TAB, ui::webview::paint::stream::wire::CODEC, host(5)),
+                received(TAB, host(5)),
             );
             let wanted = tracks_to_show(&streams, &watching(), |tab| tab == TAB);
             assert_eq!(
@@ -2892,7 +2890,7 @@ mod window_tracks {
             let mut streams = BTreeMap::new();
             streams.insert(
                 (neighbour_wire::peer_handle(&[9; 32]), TAB),
-                received(TAB, ui::webview::paint::stream::wire::CODEC, host(5)),
+                received(TAB, host(5)),
             );
             assert!(
                 tracks_to_show(&streams, &watching(), |_| false).is_empty(),

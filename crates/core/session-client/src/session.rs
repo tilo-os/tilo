@@ -1579,8 +1579,8 @@ impl Task {
                 true
             }
             Command::Client(Cmd::Revoke(entry)) => self.revoke(entry),
-            Command::Client(Cmd::SendControl { ws, msg, target }) => {
-                self.send_control(ws, &msg, target);
+            Command::Client(Cmd::Share(workspace_id, said)) => {
+                self.say_share(workspace_id, &said);
                 true
             }
             // Handled by the caller's loop.
@@ -1590,25 +1590,15 @@ impl Task {
         }
     }
 
-    /// Say one shared window's control message to the device hosting it, on the workspace's
-    /// link: the host hands it to that device alone, stamped as this one's. Input lands within
-    /// its frame or not at all, so one said while the link is down is dropped.
-    fn send_control(
-        &self,
-        workspace_id: WorkspaceId,
-        msg: &neighbour_wire::NeighbourMsg,
-        _target: iroh_base::EndpointId,
-    ) {
-        if !matches!(
-            msg,
-            neighbour_wire::NeighbourMsg::RemoteInput { .. }
-                | neighbour_wire::NeighbourMsg::SurfaceKeyframeRequest { .. }
-                | neighbour_wire::NeighbourMsg::SurfaceViewRequest { .. }
-        ) {
+    /// Say `said` on `workspace_id`'s live session's share track: what a viewer says to the device
+    /// hosting a window, each object to the device it names alone. Input lands within its frame or
+    /// not at all, so what is said while the live session is not open is dropped.
+    fn say_share(&mut self, workspace_id: WorkspaceId, said: &[tilo_live::share::Said]) {
+        let Some(joined) = self.live_sessions.joined_mut(workspace_id) else {
             return;
-        }
-        if let Some(link) = self.links.get(&workspace_id) {
-            let _ = link.sync.send(msg.clone());
+        };
+        if let Err(error) = joined.live_session.say(said) {
+            tracing::debug!(%error, "a shared window's word was not said");
         }
     }
 

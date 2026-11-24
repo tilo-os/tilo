@@ -536,7 +536,7 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
             .iter()
             .any(|object| object.body == b"relay=moved")
     });
-    assert_eq!(live_session::TRACKS.len(), 3);
+    assert_eq!(live_session::TRACKS.len(), 4);
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -28,7 +28,8 @@ use media::realtime::PictureWake;
 use neighbour_wire::colorimetry::Colorimetry;
 use neighbour_wire::hdr_metadata::Hdr10Metadata;
 use neighbour_wire::unit_chain::{Admission, UnitChain};
-use neighbour_wire::{NeighbourMsg, PeerId, SurfaceId};
+use neighbour_wire::{PeerId, SurfaceId};
+use tilo_live::share::Control;
 use tilo_callstream::surface_decoder::{DecodedFrame, DecodedPixels, VideoDecoder};
 use tilo_color_pipeline::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
@@ -139,45 +140,39 @@ pub struct PeerStreamStart {
 }
 
 impl PeerStreamStart {
-    /// The start a [`NeighbourMsg::SurfaceStreamStart`] announces, with what
+    /// The start of the page `peer` announces ([`Control::Page`]), with what
     /// only this desktop knows: who it is to the sender, whose device it is,
     /// what the share lets it do, and what the tile calls the window. `None`
-    /// for any other message.
+    /// for any other control.
     pub fn announced(
-        message: &NeighbourMsg,
+        control: &Control,
+        peer: PeerId,
         local_peer: PeerId,
         sharer: impl Into<String>,
         title: impl Into<String>,
         writable: bool,
     ) -> Option<Self> {
-        let NeighbourMsg::SurfaceStreamStart {
-            surface,
-            source_peer,
+        let Control::Page {
+            tab,
+            app_id,
             width,
             height,
-            codec,
-            colorimetry,
-            hdr_static_metadata,
-            bit_depth,
-            app_id,
-            tab,
-            ..
-        } = message
+        } = control
         else {
             return None;
         };
         let app_id = app_id.clone();
         let title = title.into();
         Some(Self {
-            surface: *surface,
-            peer: *source_peer,
+            surface: *tab,
+            peer,
             local_peer,
             width: *width,
             height: *height,
-            codec: codec.clone(),
-            bit_depth: *bit_depth,
-            colorimetry: *colorimetry,
-            hdr: *hdr_static_metadata,
+            codec: ui::webview::paint::stream::wire::CODEC.to_owned(),
+            bit_depth: 8,
+            colorimetry: None,
+            hdr: None,
             app_id: app_id.clone(),
             tab: *tab,
             sharer: sharer.into(),
@@ -301,7 +296,7 @@ pub struct PeerSurface {
     keyframe_asked: Option<Instant>,
     ended: bool,
     /// What the tile asks its sender to do: keyframe requests.
-    outgoing: Vec<NeighbourMsg>,
+    outgoing: Vec<Control>,
     /// The window's page, when its sender publishes one (`tilo-paint`): the display list drawn
     /// here instead of a picture decoded here.
     page: Option<PageStream>,
@@ -533,9 +528,8 @@ impl PeerSurface {
         self.keyframe_asked = Some(ui::time::now());
         self.awaiting_keyframe = true;
         self.revision = self.revision.wrapping_add(1);
-        self.outgoing.push(NeighbourMsg::SurfaceKeyframeRequest {
-            peer: self.local_peer,
-            surface: self.surface,
+        self.outgoing.push(Control::Keyframe {
+            tab: self.surface,
             seq,
         });
     }
@@ -551,7 +545,7 @@ impl PeerSurface {
     }
 
     /// What this tile asks its sender to do, in order.
-    pub fn take_outgoing(&mut self) -> Vec<NeighbourMsg> {
+    pub fn take_outgoing(&mut self) -> Vec<Control> {
         std::mem::take(&mut self.outgoing)
     }
 }
@@ -754,7 +748,7 @@ impl PeerSurfaces {
     }
 
     /// Take what the tiles ask their senders to do, in order.
-    pub fn take_outgoing(&self) -> Vec<NeighbourMsg> {
+    pub fn take_outgoing(&self) -> Vec<Control> {
         self.tiles
             .values()
             .flat_map(|tile| tile.borrow_mut().take_outgoing())
@@ -873,7 +867,7 @@ pub(crate) trait PeerViews {
 
     /// What is left for the owner of each shared window in order: the keyframe requests of the
     /// streams that lost a unit, to be sent as they are.
-    fn take_peer_outgoing(&self) -> Vec<NeighbourMsg> {
+    fn take_peer_outgoing(&self) -> Vec<Control> {
         let peers = peers_of(self.desktop());
         peers.borrow().take_outgoing()
     }

@@ -1,8 +1,7 @@
 //! Two sessions in one workspace: one shares a window of its shell, the other shows it and reaches
 //! into it, and the bar on the sharing device says so. The window's pictures travel the
-//! workspace's live session, on an in-process relay both sessions' live sessions meet on; the state protocol
-//! has no transport between them, so the test carries what one would have said to the other, to
-//! the members each control message was for.
+//! workspace's live session, on an in-process relay both sessions' live sessions meet on, and so
+//! does what a viewer says to the window's host and the host to its viewers: their share tracks.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -54,8 +53,7 @@ use tilo_desktop_model::{
     CanvasPlace, GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
     WindowWidth, Workspace, WorkspaceId,
 };
-use tilo_network_actor::WorkspaceId as Topic;
-use tilo_window_share::streaming::InputEvent as SharedInput;
+use tilo_live::share::{Control, InputEvent as SharedInput, Said};
 use tokio::sync::mpsc::UnboundedReceiver;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_keyboard, wl_keyboard::WlKeyboard,
@@ -272,7 +270,8 @@ fn governed(mut shell: Layout, owner: &str, members: &[(String, Role)]) -> Layou
 struct Member {
     session: Session,
     sync: Rc<Client>,
-    said: UnboundedReceiver<Cmd>,
+    /// What the session says to the peer actor, kept so it has somewhere to go.
+    _said: UnboundedReceiver<Cmd>,
 }
 
 fn member(seed: u8, shell: Layout) -> Member {
@@ -344,40 +343,19 @@ fn member_on(
     Member {
         session,
         sync,
-        said,
+        _said: said,
     }
 }
 
-/// `from` said `msg` on `to` 's live session in the workspace: what the live session carries between the two
-/// devices.
-fn tell(to: &Member, from: &Member, msg: NeighbourMsg) {
-    let ws = to
-        .sync
-        .workspace_of(WORKSPACE)
-        .expect("the workspace's topic");
-    to.sync.hear(said(from, ws, msg));
-}
-
-/// One message `from` said, as the workspace's topic would have carried it.
-fn said(from: &Member, ws: Topic, msg: NeighbourMsg) -> Event {
-    Event::Msg {
-        ws,
-        peer: from.sync.publisher(),
-        msg: Box::new(msg),
-    }
-}
-
-/// Hand what `from` would have sent on the state protocol to `to`: a control message to the device it
-/// named, and nothing to anyone else. The window's pictures travel the live session.
-fn carry(from: &mut Member, to: &Member) {
-    while let Ok(outgoing) = from.said.try_recv() {
-        match outgoing {
-            Cmd::SendControl { ws, msg, target } if target == to.sync.publisher() => {
-                to.sync.hear(said(from, ws, *msg));
-            }
-            _ => {}
-        }
-    }
+/// `from` said `control` to `to` on its share track in the workspace.
+fn tell(to: &Member, from: &Member, control: Control) {
+    from.sync.say(
+        WORKSPACE,
+        &[Said {
+            to: *to.sync.publisher().as_bytes(),
+            control,
+        }],
+    );
 }
 
 /// Step both sessions, and the client whose window `a` shares, until `done` holds of the two
@@ -401,8 +379,6 @@ fn until(
             client.exchange();
         }
         b.session.step(Duration::from_millis(2)).expect("step");
-        carry(a, b);
-        carry(b, a);
         if done(a, b, client) {
             return;
         }
@@ -423,8 +399,6 @@ fn settle(a: &mut Member, client: &mut Option<TestClient>, b: &mut Member) {
         }
         a.session.step(Duration::from_millis(2)).expect("step");
         b.session.step(Duration::from_millis(2)).expect("step");
-        carry(a, b);
-        carry(b, a);
     }
 }
 
@@ -540,37 +514,23 @@ fn move_pointer(viewer: &Member, host: &Member, surface: u64, x: f64, y: f64) {
 
 /// Send one input event for the window of `surface` on `host` , as a member viewing it does.
 fn send_input(viewer: &Member, host: &Member, surface: u64, event: &SharedInput) {
-    let event = postcard::to_stdvec(event).expect("input");
-    let ws = host
-        .sync
-        .workspace_of(WORKSPACE)
-        .expect("the workspace's topic");
-    host.sync.hear(Event::Msg {
-        ws,
-        peer: viewer.sync.publisher(),
-        msg: Box::new(NeighbourMsg::RemoteInput {
-            peer: viewer.sync.peer(),
-            surface,
-            event,
-        }),
-    });
+    tell(
+        host,
+        viewer,
+        Control::Input {
+            tab: surface,
+            event: event.clone(),
+        },
+    );
 }
 
-/// The start of a stream `from` shares: its own window, of `app` , shown as `tab` of the workspace.
-fn stream_start(from: &Member, surface: u64, tab: u64) -> NeighbourMsg {
-    NeighbourMsg::SurfaceStreamStart {
-        surface,
-        source_peer: from.sync.peer(),
+/// The announcement of a page `from` shares as `tab`.
+fn page_start(tab: u64) -> Control {
+    Control::Page {
+        tab,
+        app_id: APP.to_owned(),
         width: 64,
         height: 64,
-        codec: "h264".to_owned(),
-        ts: 0,
-        sender_monotonic_ns_at_send: 0,
-        colorimetry: None,
-        hdr_static_metadata: None,
-        bit_depth: 8,
-        app_id: APP.to_owned(),
-        tab,
     }
 }
 
@@ -1597,8 +1557,6 @@ fn a_viewers_keys_text_clipboard_and_close_reach_the_shared_window() {
         if let Some(window) = window.as_mut() {
             window.exchange();
         }
-        carry(&mut host, &viewer);
-        carry(&mut viewer, &host);
     }
 
     // The member's keyboard reaches the window through its seat.
@@ -1763,7 +1721,7 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
 
     // What it sends to change anything is refused, however well formed: a stream of its own never
     // reaches the host's shell.
-    tell(&host, &viewer, stream_start(&viewer, 991, 4));
+    tell(&host, &viewer, page_start(4));
     settle(&mut host, &mut window, &mut viewer);
     assert!(
         rows(&shares(&host.session), "received").is_empty(),
@@ -1828,7 +1786,7 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
 
     // Its own stream reaches the host's shell: the window it shares is recorded there, waiting for
     // the tab the sender names. The host's shell shows no tab 4, so nothing decodes it here.
-    tell(&host, &member, stream_start(&member, 991, 4));
+    tell(&host, &member, page_start(4));
     until(&mut host, &mut window, &mut member, |host, _, _| {
         rows(&shares(&host.session), "received")
             .first()

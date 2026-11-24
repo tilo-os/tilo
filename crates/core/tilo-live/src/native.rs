@@ -66,7 +66,7 @@ const PREFACE_UNI_STREAMS: u32 = 4;
 /// [`MAX_HEARD`] and the tracks every device is read by, as the stream budget
 /// counts them.
 const HEARD: u32 = 32;
-const HEARD_TRACKS: u32 = 3;
+const HEARD_TRACKS: u32 = 4;
 const _: () = assert!(HEARD as usize == MAX_HEARD && HEARD_TRACKS as usize == TRACKS.len());
 /// Tracks asked for one by one that the stream budget of an admitted
 /// connection has room for beside the ones every device is read by: the

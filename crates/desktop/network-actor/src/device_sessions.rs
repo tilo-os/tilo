@@ -110,9 +110,6 @@ pub(super) struct Sibling {
     pub(super) revocations: Vec<RevocationEntry>,
     frames: mpsc::Sender<Vec<u8>>,
     pub(super) fabric: fabric_link::FabricLink,
-    /// Fingerprint of the last codec advert taken from it: a repeated
-    /// advert changes nothing.
-    caps_advert: Option<[u8; 32]>,
     tasks: [tokio::task::JoinHandle<()>; 2],
 }
 
@@ -335,15 +332,9 @@ impl ActorState {
             certs,
             revocations: hello.revocations,
             frames,
-            caps_advert: None,
             tasks,
         };
         tracing::info!(peer = %peer, "session with a device of the person started");
-        let advert = self.media_caps_message();
-        if let Ok(bytes) = postcard::to_allocvec(&advert) {
-            self.caps_sent = Some(message_fingerprint(&bytes));
-        }
-        sibling.send(&Frame::Msg(advert));
         let event = sibling.event();
         self.sibling_hello_sent = Some(hello_fingerprint(&own));
         self.siblings.insert(peer, sibling);
@@ -384,15 +375,6 @@ impl ActorState {
             }
             Heard::Msg(msg) => {
                 let news = match &msg {
-                    NeighbourMsg::MediaCapabilities { .. } => {
-                        let Ok(bytes) = postcard::to_allocvec(&msg) else {
-                            return;
-                        };
-                        let fingerprint = message_fingerprint(&bytes);
-                        self.siblings.get_mut(&peer).is_some_and(|sibling| {
-                            sibling.caps_advert.replace(fingerprint) != Some(fingerprint)
-                        })
-                    }
                     // A workspace's key group as one of the person's devices says it: its
                     // frames, an access request, and an ask for frames it lacks. The key
                     // service judges those as it judges a host's.

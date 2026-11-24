@@ -24,7 +24,6 @@ use crate::config::{EncoderChoice, FlatpakShareConfig};
 use crate::encoder::nv12::Region;
 use crate::encoder::{Codec, Encoder, EncoderError, EncoderInit, EncoderKind, FrameInput, build};
 use crate::hdr_metadata::{Hdr10Metadata, HdrConfig};
-use crate::streaming::{ShareRegistry, StreamingShare};
 use media::realtime::{CodecCapabilities, RealtimePolicy, negotiate, negotiate_hdr};
 use neighbour_wire::colorimetry::Colorimetry;
 use neighbour_wire::{PeerId, SurfaceId};
@@ -303,10 +302,9 @@ pub struct SharedFlatpakSession {
     throttle: Arc<Mutex<StreamingThrottle>>,
     /// Frames a second a changing window is streamed at.
     rate_hz: AtomicU32,
-    /// Owner-side check for a viewer's remote input; shared with
-    /// the compositor's `State` via `Arc` so input routing sees the same
-    /// permissions.
-    share_registry: Arc<Mutex<ShareRegistry>>,
+    /// The window's viewers, each with whether it only watches: a watching
+    /// viewer's input falls on the floor.
+    share_registry: Arc<Mutex<std::collections::HashMap<PeerId, bool>>>,
     /// Frame source: deposit fns write here from the compositor's commit
     /// hook, `encode_next_frame` drains via `Option::take` (drop-oldest).
     /// The capture timestamp is stamped at deposit time, not encode time,
@@ -372,8 +370,8 @@ impl SharedFlatpakSession {
     }
 
     /// Same as [`Self::start`], negotiating the codec with `receivers` (the
-    /// viewers' advertised capabilities; see
-    /// the compositor's `media_caps::capabilities`).
+    /// viewers' capabilities, as each says it views the window on the
+    /// workspace's live session, `tilo_live::share::Control::View`).
     ///
     /// # Errors
     ///
@@ -444,7 +442,7 @@ impl SharedFlatpakSession {
                 frame_interval(effective_fps),
             ))),
             rate_hz: AtomicU32::new(effective_fps),
-            share_registry: Arc::new(Mutex::new(ShareRegistry::new())),
+            share_registry: Arc::new(Mutex::new(std::collections::HashMap::new())),
             staged_frame: Arc::new(Mutex::new(None)),
             staged_ready: Arc::new(Condvar::new()),
             encoded: Mutex::new(Vec::new()),
@@ -961,16 +959,13 @@ impl SharedFlatpakSession {
     /// later via [`Self::set_read_only`]). It starts at
     /// [`Self::start_reader`]'s keyframe.
     pub fn add_viewer(&self, peer: PeerId, read_only: bool) {
-        let mut reg = self.share_registry.lock_recover();
-        reg.insert(peer, self.surface_id, StreamingShare { read_only });
-        drop(reg);
+        self.share_registry.lock_recover().insert(peer, read_only);
         let _ = self.start_reader();
     }
 
     /// Drop a viewer — subsequent `RemoteInput` events fall on the floor.
     pub fn drop_viewer(&self, peer: PeerId) {
-        let mut reg = self.share_registry.lock_recover();
-        reg.remove(peer, self.surface_id);
+        self.share_registry.lock_recover().remove(&peer);
     }
 
     /// Make the live viewer set exactly match the workspace's replicated
@@ -991,10 +986,7 @@ impl SharedFlatpakSession {
         desired: &std::collections::HashSet<PeerId>,
         read_only: &std::collections::HashSet<PeerId>,
     ) {
-        let existing = self
-            .share_registry
-            .lock_recover()
-            .peers_for(self.surface_id);
+        let existing = self.viewer_ids();
         for peer in existing {
             if !desired.contains(&peer) {
                 self.drop_viewer(peer);
@@ -1002,9 +994,9 @@ impl SharedFlatpakSession {
         }
         for peer in desired {
             let watching = read_only.contains(peer);
-            match self.viewer_share(*peer) {
+            match self.viewer_read_only(*peer) {
                 None => self.add_viewer(*peer, watching),
-                Some(share) if watching && !share.read_only => {
+                Some(false) if watching => {
                     self.set_read_only(*peer, true);
                 }
                 Some(_) => {}
@@ -1013,27 +1005,23 @@ impl SharedFlatpakSession {
     }
 
     pub fn set_read_only(&self, peer: PeerId, read_only: bool) {
-        let mut reg = self.share_registry.lock_recover();
-        reg.set_read_only(peer, self.surface_id, read_only);
+        if let Some(grant) = self.share_registry.lock_recover().get_mut(&peer) {
+            *grant = read_only;
+        }
     }
 
     pub fn accept_remote_input(&self, peer: PeerId) -> bool {
-        let reg = self.share_registry.lock_recover();
-        reg.accept_remote_input(peer, self.surface_id)
+        self.viewer_read_only(peer) == Some(false)
     }
 
-    /// Snapshot this viewer's current control grant so the compositor's
-    /// full firewall can mirror the session-owned permission immediately
-    /// before reviewing an inbound event.
-    pub fn viewer_share(&self, peer: PeerId) -> Option<StreamingShare> {
-        let reg = self.share_registry.lock_recover();
-        reg.get(peer, self.surface_id).cloned()
+    /// Whether `peer` only watches this window (`Some(true)`), may control
+    /// it (`Some(false)`), or is no viewer of it.
+    pub fn viewer_read_only(&self, peer: PeerId) -> Option<bool> {
+        self.share_registry.lock_recover().get(&peer).copied()
     }
 
     pub fn viewer_ids(&self) -> Vec<PeerId> {
-        self.share_registry
-            .lock_recover()
-            .peers_for(self.surface_id)
+        self.share_registry.lock_recover().keys().copied().collect()
     }
 
     /// Monotonic ns counter for outgoing wire messages; wraps at u64
@@ -1386,7 +1374,7 @@ mod tests {
 
             s.sync_viewers(&std::collections::HashSet::from([20]));
             assert!(
-                s.viewer_share(10).is_none(),
+                s.viewer_read_only(10).is_none(),
                 "removed recipients are retired"
             );
             assert!(s.accept_remote_input(20));

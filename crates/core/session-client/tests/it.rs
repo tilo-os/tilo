@@ -109,7 +109,5 @@ mod session_store;
 mod surface_by_hash;
 #[path = "voice_browsers.rs"]
 mod voice_browsers;
-#[path = "window_input.rs"]
-mod window_input;
 #[path = "write_before_record.rs"]
 mod write_before_record;

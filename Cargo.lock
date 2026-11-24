@@ -18471,6 +18471,7 @@ dependencies = [
  "key-group",
  "moq-net",
  "n0-future",
+ "postcard",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

@@ -397,15 +397,10 @@ pub enum Cmd {
     Leave(Topic),
     /// Publish `msg` on the topic of a workspace.
     Publish { ws: Topic, msg: Box<NeighbourMsg> },
-    /// Say one shared window's control message (a viewer's ask, input or keyframe request, a page's
-    /// announcement) to `target` alone: over the authenticated direct route while one is up, and
-    /// through the workspace's host to that device alone otherwise. A window's pictures travel the
-    /// workspace's live session ([`tilo_live::live::Track::Window`]).
-    SendControl {
-        ws: Topic,
-        msg: Box<NeighbourMsg>,
-        target: EndpointId,
-    },
+    /// Say what a shared window's viewer says to its host, or a host to its viewers (a viewer's
+    /// ask, input or keyframe request, a page's announcement), on `ws`'s live session's share
+    /// track ([`tilo_live::share`]): each to the device it names alone.
+    Share(Topic, Vec<tilo_live::share::Said>),
     /// Dial a workspace host: an always-on peer that keeps what this person's devices publish while
     /// the others are away.
     Connect(EndpointAddr),

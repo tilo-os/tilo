@@ -20,6 +20,8 @@ pub mod frame;
 pub mod preface;
 
 pub mod page;
+/// What a shared window's viewers and its host say to each other.
+pub mod share;
 /// The devices whose frames a scope opens.
 pub mod roster;
 pub mod video;

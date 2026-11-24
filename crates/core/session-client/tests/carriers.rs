@@ -674,6 +674,8 @@ async fn a_device_removed_while_connected_is_dropped_and_signs_for_nothing_after
     ada.host.server.shutdown().await;
 }
 
+/// The workspace admits a page, and its live session carries what the page says: where it points,
+/// and a key it presses on a window another device shares.
 async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier: Carrier) {
     let ada = Ada::start().await;
     let (key, cert, server_cert) = ada.certified(&ada.host.over(carrier)).await;
@@ -721,6 +723,42 @@ async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier
     assert_eq!(track, tilo_live::live::Track::Presence);
     assert_eq!(tilo_live::presence::decode(&body).unwrap(), said);
     assert_eq!(page.live_note(), None, "the page reached its live session");
+
+    // A key pressed on the page over a window the laptop shares reaches the laptop, as the page's
+    // own, on the same live session: its share track, sealed under the laptop's key.
+    let press = tilo_live::share::Said {
+        to: ada.laptop.cert.device_public_key,
+        control: tilo_live::share::Control::Input {
+            tab: 0x1e7,
+            event: tilo_live::share::InputEvent::Key {
+                keysym: 30,
+                pressed: true,
+                modifiers: 0,
+            },
+        },
+    };
+    let (from, heard) = wait_for("the page's key press at the laptop", || {
+        page.send(Cmd::Share(
+            crate::support::workspace(),
+            vec![press.clone()],
+        ))
+        .unwrap();
+        let events = events.drain();
+        async move {
+            events.into_iter().find_map(|event| match event {
+                Event::LiveSession {
+                    from,
+                    track: tilo_live::live::Track::Share,
+                    body,
+                    ..
+                } => Some((from, tilo_live::share::Said::decode(&body)?)),
+                _ => None,
+            })
+        }
+    })
+    .await;
+    assert_eq!(from, cert.device_public_key, "the press is the page's own");
+    assert_eq!(heard, press, "the press arrives whole");
 
     page.close();
     laptop.close();

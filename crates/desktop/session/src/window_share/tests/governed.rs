@@ -106,7 +106,7 @@ fn session_of(key: &SigningKey, label: &str, state: &Path) -> Member {
     Member {
         session,
         sync,
-        said,
+        _said: said,
     }
 }
 

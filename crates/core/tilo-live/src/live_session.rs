@@ -9,7 +9,7 @@
 //! relay copies is opaque to the relay and a frame from a device the roster
 //! does not name is refused before it is decrypted.
 //!
-//! Presence and the activity note are tracks every live session publishes.
+//! Presence, the activity note and the share track are tracks every live session publishes.
 //! A call's voice and pictures, a shared window and a window's page are not: a
 //! call's audio, a camera layer, a screen layer, a window or a page track exists
 //! only while a peer asks for it
@@ -62,20 +62,22 @@ use crate::scope::Scope;
 use crate::voice::{self, VoiceObject};
 
 /// The tracks a live session reads of every device it hears: the workspace's presence, the voice
-/// of the call it is in and the activity note. Presence and the activity note are published by
+/// of the call it is in, the activity note and what a shared window's viewers and host say to each
+/// other ([`crate::share`]). Presence, the activity note and the share track are published by
 /// every live session; a call's voice, like a call's pictures ([`Track::Camera`],
 /// [`Track::Screen`]), exists only while someone in the call asks for it.
-pub const TRACKS: [Track; 3] = [Track::Presence, Track::Audio, Track::Activity];
+pub const TRACKS: [Track; 4] = [Track::Presence, Track::Audio, Track::Activity, Track::Share];
 
 /// Devices of a scope one live session reads at once: the ones it hears.
 ///
 /// Each device read is one subscription per track of [`TRACKS`], held by this
 /// live session and by its relay for as long as the device is in the scope. Measured
 /// with every device of a live session and its relay in one process, each device a
-/// device hears holds about 250 KiB of them, so what a live session costs grows with
-/// the square of its devices: 277 MiB for thirty-three devices that all hear
-/// each other, a gibibyte for sixty-four and 4.3 GiB for a hundred and
-/// twenty-eight. Thirty-two keeps a relay, which is a member's own device,
+/// device hears held about 250 KiB of them when a device was read on three tracks,
+/// so what a live session costs grows with the square of its devices: 277 MiB for
+/// thirty-three devices that all hear each other, a gibibyte for sixty-four and
+/// 4.3 GiB for a hundred and twenty-eight, and the share track adds a fourth
+/// subscription per device to that. Thirty-two keeps a relay, which is a member's own device,
 /// within what it can hold, and is about what a session's transport let one
 /// device read before this was a number anyone chose. Devices beyond it are in the scope, are read by
 /// whoever has room for them, and are counted here as not heard
@@ -827,6 +829,20 @@ impl Shared {
         let opener = self.opener.lock_recover();
         opener.open(sender, stream(track), &sealed_as, frame)
     }
+
+    /// The body of one object `sender` published on its share track, when it is addressed to
+    /// this device ([`crate::share::open`]).
+    fn open_share(&self, sender: [u8; 32], object: &[u8]) -> Result<Option<Vec<u8>>, Refusal> {
+        let keys = self.keys.lock_recover().clone();
+        let roster = self.roster.lock_recover().clone();
+        crate::share::open(
+            (&keys, &roster),
+            &self.join.scope,
+            self.join.device,
+            sender,
+            object,
+        )
+    }
 }
 
 /// Start one reader per track for every device the roster names that no
@@ -1017,6 +1033,8 @@ pub struct LiveSession {
     /// One reader per device of the roster, by track: started when the device
     /// joins the roster, ended by itself once the roster no longer admits it.
     readers: Mutex<Vec<Task>>,
+    /// The sequence of the last object this live session said on its share track.
+    share_sequence: std::sync::atomic::AtomicU32,
     _demands: Vec<Task>,
     _origins: Vec<OriginTask>,
     /// The carrier this live session runs on now ([`reconnect`] replaces it), and the task watching it.
@@ -1113,6 +1131,7 @@ impl LiveSession {
             sent: Mutex::new((0, VecDeque::new())),
             shown: Mutex::new(BTreeMap::new()),
             readers: Mutex::new(readers),
+            share_sequence: std::sync::atomic::AtomicU32::new(0),
             _demands: demands,
             _origins: origins,
             _carrier: carrier,
@@ -1218,6 +1237,63 @@ impl LiveSession {
         }
         let (sealer, producer) = self.outlet(track)?;
         write_group(&producer, &sealer, objects)
+    }
+
+    /// Say `said` on this device's share track, as one burst: what a viewer of a shared window
+    /// says to its host and a host to its viewers ([`crate::share`]). Each object is sealed under
+    /// the share key of the device whose window it is about.
+    ///
+    /// # Errors
+    ///
+    /// [`LiveError::Ended`] when the session has ended, [`LiveError::Refused`] when this device's
+    /// keys do not hold the key an object is sealed under or a control is beyond the profile's
+    /// bounds, and [`LiveError::Unavailable`] when the broadcast is gone.
+    pub fn say(&self, said: &[crate::share::Said]) -> Result<(), LiveError> {
+        if said.is_empty() {
+            return Ok(());
+        }
+        if self.shared.ended() {
+            return Err(LiveError::Ended);
+        }
+        let keys = self.shared.keys.lock_recover().clone();
+        let mut objects = Vec::with_capacity(said.len());
+        for one in said {
+            let sequence = self
+                .share_sequence
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_add(1);
+            let object = crate::share::seal(
+                &keys,
+                &self.shared.join.scope,
+                self.shared.join.device,
+                sequence,
+                one,
+            )?;
+            objects.push((sequence, object));
+        }
+        let name = live::track(Track::Share);
+        let producer = self
+            .shared
+            .published
+            .lock_recover()
+            .get(name.as_str())
+            .cloned()
+            .ok_or(LiveError::Unavailable)?;
+        let Some(&(last, _)) = objects.last() else {
+            return Ok(());
+        };
+        let mut group = producer
+            .create_group(moq_net::group::Info::from(u64::from(last)))
+            .map_err(|_| LiveError::Unavailable)?;
+        for (sequence, object) in objects {
+            let timestamp = moq_net::Timestamp::from_scale(u64::from(sequence), 1)
+                .unwrap_or(moq_net::Timestamp::ZERO);
+            group
+                .write_frame(timestamp, object)
+                .map_err(|_| LiveError::Unavailable)?;
+        }
+        group.finish().map_err(|_| LiveError::Unavailable)?;
+        Ok(())
     }
 
     /// What `track` is sealed with and published on, while the session lasts.
@@ -1707,7 +1783,8 @@ pub const fn stream(track: Track) -> Stream {
         Track::Screen(_) => Stream::Screen,
         Track::Window(..) => Stream::Window,
         Track::Page(_) => Stream::Page,
-        Track::Input(_) | Track::Activity => Stream::Activity,
+        Track::Share => Stream::Share,
+        Track::Activity => Stream::Activity,
     }
 }
 
@@ -2106,6 +2183,21 @@ async fn read(
                     }
                     if track == Track::Presence && !shared.hears_presence() {
                         // Arrived as the subscription was let go.
+                        continue;
+                    }
+                    if track == Track::Share {
+                        // Addressed to one device, and sealed under its host's key: only what is
+                        // this device's is opened, and what is another's is passed by.
+                        match shared.open_share(device, &frame.payload) {
+                            Ok(Some(body)) => shared.deliver(Heard {
+                                sender: device,
+                                track,
+                                sequence,
+                                body,
+                            }),
+                            Ok(None) => {}
+                            Err(refusal) => shared.refused(&refusal),
+                        }
                         continue;
                     }
                     match shared.open(device, track, name, &frame.payload) {

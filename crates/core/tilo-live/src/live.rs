@@ -174,8 +174,9 @@ pub enum Track {
     Window(u64, Layer),
     /// One window's page as a paint stream.
     Page(u64),
-    /// Pointer and keyboard input for one window.
-    Input(u64),
+    /// What a viewer of a shared window and its host say to each other
+    /// ([`crate::share`]): one per device.
+    Share,
     /// What a device is doing, for its own surfaces.
     Activity,
 }
@@ -213,7 +214,7 @@ pub fn track(track: Track) -> String {
         Track::Screen(layer) => video::track(video::Source::Screen, layer),
         Track::Window(tab, layer) => format!("{}/{}", video::window_track(tab), layer_name(layer)),
         Track::Page(tab) => crate::page::track(tab),
-        Track::Input(tab) => format!("input/{tab:016x}"),
+        Track::Share => "share".to_owned(),
         Track::Activity => "activity".to_owned(),
     }
 }
@@ -251,6 +252,7 @@ pub fn parse_track(name: &str) -> Option<Track> {
         "presence" => return Some(Track::Presence),
         "audio" => return Some(Track::Audio),
         "activity" => return Some(Track::Activity),
+        "share" => return Some(Track::Share),
         _ => {}
     }
     if let Some((source, layer)) = video::parse_track(name) {
@@ -266,11 +268,6 @@ pub fn parse_track(name: &str) -> Option<Track> {
         let (window, layer) = rest.rsplit_once('/')?;
         let window = video::parse_window_track(&format!("window/{window}"))?;
         return Some(Track::Window(window, parse_layer(layer)?));
-    }
-    if let Some(tab) = name.strip_prefix("input/")
-        && tab.len() == 16
-    {
-        return u64::from_str_radix(tab, 16).ok().map(Track::Input);
     }
     None
 }
@@ -317,7 +314,7 @@ pub fn delivery(track: Track) -> Delivery {
                 max_objects: video::MAX_GROUP_OBJECTS,
             }
         }
-        Track::Input(_) => Delivery::Stream {
+        Track::Share => Delivery::Stream {
             max_age: Duration::from_secs(5),
         },
         Track::Presence | Track::Activity => Delivery::Stream {
@@ -331,7 +328,7 @@ pub fn delivery(track: Track) -> Delivery {
 pub const fn priority(track: Track) -> u8 {
     match track {
         Track::Audio => 200,
-        Track::Input(_) => 180,
+        Track::Share => 180,
         Track::Presence => 160,
         Track::Screen(_) => 120,
         Track::Window(..) => 100,
@@ -404,7 +401,7 @@ mod tests {
                 Track::Camera(Layer::High),
                 Track::Window(7, Layer::Low),
                 Track::Page(7),
-                Track::Input(7),
+                Track::Share,
                 Track::Activity,
             ];
             for track in tracks {

@@ -27,11 +27,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use iroh::EndpointId;
-use neighbour_wire::{NeighbourMsg, PeerId};
+use neighbour_wire::PeerId;
+use tilo_live::share::{Control, Said};
 use tilo_compositor::Compositor;
 use tilo_desktop_model::window_share::mapped_window;
 use tilo_desktop_model::{Layout, TabId};
-use tilo_network_actor::WorkspaceId;
 use tilo_session_core::desktop::i18n::t;
 
 use super::{Starting, WindowShares};
@@ -48,8 +48,6 @@ pub(super) struct Paged {
     pub(super) window: String,
     pub(super) app_id: String,
     pub(super) workspace: String,
-    /// The workspace's topic the announcement goes out on.
-    pub(super) ws: WorkspaceId,
     /// The window's size, which the announcement carries so a viewer reserves its place before the
     /// page's first frame.
     pub(super) width: u32,
@@ -60,30 +58,24 @@ pub(super) struct Paged {
 }
 
 impl Paged {
-    /// The announcement of this window's page: a stream of its own, its codec the display list.
-    fn stream_start_msg(&self, peer: PeerId) -> NeighbourMsg {
-        NeighbourMsg::SurfaceStreamStart {
-            surface: self.tab,
-            source_peer: peer,
-            app_id: self.app_id.clone(),
-            width: self.width,
-            height: self.height,
-            codec: ui::webview::paint::stream::wire::CODEC.to_owned(),
-            ts: 0,
-            sender_monotonic_ns_at_send: 0,
-            colorimetry: None,
-            hdr_static_metadata: None,
-            bit_depth: 8,
-            tab: self.tab,
+    /// The announcement of this window's page, to `device`: the window travels as its page.
+    fn announcement(&self, device: EndpointId) -> Said {
+        Said {
+            to: *device.as_bytes(),
+            control: Control::Page {
+                tab: self.tab,
+                app_id: self.app_id.clone(),
+                width: self.width,
+                height: self.height,
+            },
         }
     }
 
     /// The end of it, for a viewer that stops showing the window or a share that ends.
-    fn stream_end_msg(&self, peer: PeerId) -> NeighbourMsg {
-        NeighbourMsg::SurfaceStreamEnd {
-            surface: self.tab,
-            source_peer: peer,
-            ts: 0,
+    fn end_to(&self, device: EndpointId) -> Said {
+        Said {
+            to: *device.as_bytes(),
+            control: Control::Ended { tab: self.tab },
         }
     }
 }
@@ -213,9 +205,8 @@ impl WindowShares {
             let drawn = self.drawn(tree, pages, start.tab, &start.app_id);
             start.page = drawn != Drawn::Pictures;
             match sync.workspace_of(&start.workspace) {
-                Some(ws) if drawn == Drawn::Offered => {
-                    self.pages
-                        .insert(start.tab, page_of(compositor, &start, ws));
+                Some(_) if drawn == Drawn::Offered => {
+                    self.pages.insert(start.tab, page_of(compositor, &start));
                     self.changed();
                 }
                 _ => self.starting.push(start),
@@ -249,9 +240,7 @@ impl WindowShares {
             let Some(page) = self.pages.get(&tab) else {
                 continue;
             };
-            let ws = page.ws;
-            let start = page.stream_start_msg(sync.peer());
-            let end = page.stream_end_msg(sync.peer());
+            let mut said = Vec::new();
             let mut announced = page.announced.clone();
             let dropped: Vec<(PeerId, EndpointId)> = announced
                 .iter()
@@ -260,13 +249,14 @@ impl WindowShares {
                 .collect();
             for (peer, device) in dropped {
                 announced.remove(&peer);
-                sync.publish_control(ws, end.clone(), device);
+                said.push(page.end_to(device));
             }
             for (peer, device) in &viewers {
                 if announced.insert(*peer, *device).is_none() {
-                    sync.publish_control(ws, start.clone(), *device);
+                    said.push(page.announcement(*device));
                 }
             }
+            sync.say(&page.workspace, &said);
             if let Some(page) = self.pages.get_mut(&tab) {
                 page.announced = announced;
             }
@@ -276,15 +266,18 @@ impl WindowShares {
     /// Send the end of `page` 's announcement to the viewers it went to, so each drops the window
     /// rather than reading a track nothing publishes any more.
     pub(super) fn end_page(page: &Paged, sync: &Client) {
-        for device in page.announced.values() {
-            sync.publish_control(page.ws, page.stream_end_msg(sync.peer()), *device);
-        }
+        let ended: Vec<Said> = page
+            .announced
+            .values()
+            .map(|device| page.end_to(*device))
+            .collect();
+        sync.say(&page.workspace, &ended);
     }
 }
 
 /// The page of a window whose app draws it: the members showing it read the workspace's live
 /// live session, so no picture of it is captured or encoded here.
-fn page_of(compositor: &Compositor, start: &Starting, ws: WorkspaceId) -> Paged {
+fn page_of(compositor: &Compositor, start: &Starting) -> Paged {
     let (_, _, width, height) = compositor
         .shareable_window_rect(&start.window)
         .unwrap_or_default();
@@ -293,7 +286,6 @@ fn page_of(compositor: &Compositor, start: &Starting, ws: WorkspaceId) -> Paged 
         window: start.window.clone(),
         app_id: start.app_id.clone(),
         workspace: start.workspace.clone(),
-        ws,
         width: width.unsigned_abs(),
         height: height.unsigned_abs(),
         announced: BTreeMap::new(),

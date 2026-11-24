@@ -158,8 +158,9 @@ pub enum Stream {
     /// One window's page: its paint stream, sealed apart from every other
     /// window's.
     Page,
-    /// One window's input events.
-    Input,
+    /// What a viewer of a shared window and its host say to each other
+    /// ([`crate::share`]).
+    Share,
     /// A low-rate note of what this device is doing.
     Activity,
 }
@@ -167,9 +168,10 @@ pub enum Stream {
 impl Stream {
     /// The streams a device publishes of its own when it holds none of the
     /// workspace's media keys and is lent theirs instead (a session in a
-    /// workspace's VM): who is here, its shared windows and its windows'
-    /// pages. Never a call's audio or camera, and nothing anyone else sends.
-    pub const OWN: [Self; 3] = [Self::Presence, Self::Window, Self::Page];
+    /// workspace's VM): who is here, its shared windows, its windows' pages
+    /// and its share track, under whose key its viewers seal what they say to
+    /// it ([`crate::share`]). Never a call's audio or camera.
+    pub const OWN: [Self; 4] = [Self::Presence, Self::Window, Self::Page, Self::Share];
 
     /// The two bytes a media key is derived for: the kind of media, then the
     /// stream within it. A key is never one another stream's.
@@ -185,7 +187,7 @@ impl Stream {
             Self::Presence => [AUDIO, 1],
             Self::Window => [LIVE_SESSION, 0],
             Self::Page => [LIVE_SESSION, 3],
-            Self::Input => [LIVE_SESSION, 1],
+            Self::Share => [LIVE_SESSION, 1],
             Self::Activity => [LIVE_SESSION, 2],
         }
     }
@@ -202,7 +204,7 @@ impl Stream {
             Self::Window => "window",
             Self::Page => "page",
             Self::Presence => "presence",
-            Self::Input => "input",
+            Self::Share => "share",
             Self::Activity => "activity",
         }
     }
@@ -338,12 +340,43 @@ impl Opener {
             // opens nothing, not even frames it sealed itself.
             return Err(Refusal::NoKey(epoch));
         }
-        let key = self.keys.media_key(epoch, sender, stream)?;
-        let cipher = FrameCipher::new(&key).map_err(|_| Refusal::Primitive)?;
-        cipher
-            .open(&aad(epoch, seq, stream, track), sealed)
-            .map_err(|_| Refusal::Unauthenticated)
+        open_sealed(&self.keys, sender, (epoch, seq, sealed), stream, track)
     }
+}
+
+/// `frame`, sealed under `under`'s key of `stream` as the track `track` names,
+/// opened with whichever of `keys` derive that key: what a share object is
+/// opened with ([`crate::share`]), whose key is its host's, and which a device
+/// handed only its own keys opens when it is that host.
+///
+/// # Errors
+///
+/// As [`Opener::open`], without the roster: the caller checks who sent it.
+pub(crate) fn open_as(
+    keys: &LiveKeys,
+    under: [u8; 32],
+    stream: Stream,
+    track: &TrackName,
+    frame: &[u8],
+) -> Result<Vec<u8>, Refusal> {
+    let (epoch, rest) = frame.split_first_chunk::<8>().ok_or(Refusal::Truncated)?;
+    let (seq, sealed) = rest.split_first_chunk::<4>().ok_or(Refusal::Truncated)?;
+    let at = (u64::from_le_bytes(*epoch), u32::from_le_bytes(*seq), sealed);
+    open_sealed(keys, under, at, stream, track)
+}
+
+fn open_sealed(
+    keys: &LiveKeys,
+    under: [u8; 32],
+    (epoch, seq, sealed): (u64, u32, &[u8]),
+    stream: Stream,
+    track: &TrackName,
+) -> Result<Vec<u8>, Refusal> {
+    let key = keys.media_key(epoch, under, stream)?;
+    let cipher = FrameCipher::new(&key).map_err(|_| Refusal::Primitive)?;
+    cipher
+        .open(&aad(epoch, seq, stream, track), sealed)
+        .map_err(|_| Refusal::Unauthenticated)
 }
 
 /// What the tag covers besides the body: the epoch and sequence in the

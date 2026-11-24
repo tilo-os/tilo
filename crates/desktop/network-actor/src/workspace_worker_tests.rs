@@ -51,11 +51,7 @@ fn direct(connection: &Connection, bytes: Vec<u8>) -> Direct {
     Direct {
         addr: EndpointAddr::new(connection.remote_id()),
         cached: Some(connection.clone()),
-        msg: NeighbourMsg::RemoteInput {
-            peer: 0,
-            surface: 0,
-            event: Vec::new(),
-        },
+        msg: NeighbourMsg::RemoteAction { frame: Vec::new() },
         bytes,
         // Longer than the test: a write to a device that never reads stays
         // stalled throughout.
@@ -184,7 +180,7 @@ async fn a_workspace_whose_device_stalls_holds_up_no_other_workspace() {
 
     // Two of a person's devices, on topic 42.
     let [a, mut b] = crate::tests::two(crate::tests::linked(WORKSPACE, 2).await);
-    let (cmd_a, rx_b, a_id, b_id) = (&a.cmd, &mut b.rx, a.id, b.id);
+    let (cmd_a, rx_b, b_id) = (&a.cmd, &mut b.rx, b.id);
     a.lookup.add_endpoint_info(stalled.addr());
 
     // In workspace 7, the one other device takes what is sent to it and never
@@ -206,36 +202,15 @@ async fn a_workspace_whose_device_stalls_holds_up_no_other_workspace() {
         })
         .await
         .unwrap();
-    cmd_a
-        .send(NetCmd::PublishWorkspaceControl {
-            ws: WORKSPACE,
-            msg: NeighbourMsg::RemoteInput {
-                peer: crate::behaviour::peer_liveness_handle(&a_id),
-                surface: 7,
-                event: vec![1],
-            },
-            target: b_id,
-        })
-        .await
-        .unwrap();
-    let (mut fabric, mut input) = (false, false);
-    while !(fabric && input) {
-        match tilo_test_env::within("the other device's traffic", rx_b.recv())
+    while !matches!(
+        tilo_test_env::within("the other device's traffic", rx_b.recv())
             .await
-            .unwrap()
-        {
-            NetEvent::PersonalFabric {
-                payload: PersonalFabricPayload::Action(bytes),
-                ..
-            } if bytes == vec![4, 2] => fabric = true,
-            NetEvent::Msg {
-                ws: WORKSPACE,
-                msg: NeighbourMsg::RemoteInput { surface: 7, .. },
-                ..
-            } => input = true,
-            _ => {}
-        }
-    }
+            .unwrap(),
+        NetEvent::PersonalFabric {
+            payload: PersonalFabricPayload::Action(bytes),
+            ..
+        } if bytes == vec![4, 2]
+    ) {}
     assert!(
         opened.0.load(Ordering::SeqCst) < STALLED_SENDS,
         "the other device waited for every one of workspace 7's stalled sends"

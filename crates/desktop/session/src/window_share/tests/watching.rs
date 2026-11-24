@@ -94,7 +94,7 @@ fn member_outside_the_live_session(seed: u8, shell: Layout, salt: u16) -> Member
     Member {
         session,
         sync,
-        said,
+        _said: said,
     }
 }
 

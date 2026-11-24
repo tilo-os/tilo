@@ -156,7 +156,6 @@ mod tests {
                     window: "window".to_owned(),
                     app_id: "so.tilo.browser".to_owned(),
                     workspace: WORKSPACE.to_owned(),
-                    ws: tilo_desktop_model::WorkspaceId::parse(WORKSPACE).expect("a workspace id"),
                     width: 800,
                     height: 600,
                     announced: std::collections::BTreeMap::new(),
@@ -168,6 +167,7 @@ mod tests {
                     device: iroh::SecretKey::from_bytes(&[5; 32]).public(),
                     at: std::time::Instant::now(),
                     decode: Vec::new(),
+                    software: Vec::new(),
                     name: "Ada".to_owned(),
                 },
             );

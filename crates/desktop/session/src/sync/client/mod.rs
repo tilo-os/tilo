@@ -17,8 +17,6 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use iroh::{EndpointAddr, EndpointId};
 #[cfg(target_os = "linux")]
-use neighbour_wire::NeighbourMsg;
-#[cfg(target_os = "linux")]
 use tilo_desktop_model::Layout;
 #[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::Nearby;
@@ -119,18 +117,6 @@ fn attach_bound(
     link.inspect(|link| link.attach(Arc::new(outbox)));
     live.as_ref()
         .map(|live| Arc::new(live.saying()) as Arc<dyn SayPresence>)
-}
-
-/// One window stream's message as it reached this device: another member's shared window, or a
-/// member's ask to view one of this device's.
-#[derive(Clone, Debug)]
-#[cfg(target_os = "linux")]
-pub(crate) struct ReceivedSurface {
-    /// The workspace's topic it came in on.
-    pub(crate) ws: Topic,
-    /// The device that published it.
-    pub(crate) from: EndpointId,
-    pub(crate) msg: NeighbourMsg,
 }
 
 /// What this desktop's endpoint carries beside the client's own commands: the ownership sessions and
@@ -326,9 +312,6 @@ pub(crate) struct Local {
     /// The actions of the person's devices that arrived ahead of the pass routing them: what the
     /// session took at once ([`Client::fabric_actions_now`]) left these for it.
     fabric_waiting: RefCell<Vec<crate::platform::fabric::PersonalFabricActionEnvelope>>,
-    /// The window streams that reached this device: their frames, starts, ends and control, which
-    /// the shares take ([`Self::take_surfaces`]).
-    surfaces: RefCell<Vec<ReceivedSurface>>,
     /// The call audio the workspaces' live sessions heard since the last call, each with the
     /// workspace it was heard in: what the calls playing it take ([`Self::take_call_audio`]).
     call_audio: RefCell<Vec<(String, Heard)>>,
@@ -340,6 +323,10 @@ pub(crate) struct Local {
     /// call, each with the workspace it was heard in: what the sessions showing those windows draw
     /// ([`Self::take_window_objects`]).
     window_objects: RefCell<Vec<(String, Heard)>>,
+    /// What shared windows' viewers and hosts said to this device on the workspaces' live sessions
+    /// since the last call, each with the workspace it was heard in: what the shares take
+    /// ([`Self::take_share_objects`]).
+    share_objects: RefCell<Vec<(String, Heard)>>,
     /// The workspaces whose host said their owner deleted them since the last call: what the
     /// session takes off the shell and out of this device's record ([`Self::take_deleted`]).
     deleted: RefCell<Vec<tilo_desktop_model::WorkspaceId>>,
@@ -377,6 +364,9 @@ pub(crate) struct Local {
         RefCell<std::collections::BTreeMap<String, Arc<tilo_live::live_session::LiveSession>>>,
     #[cfg(test)]
     test_runtime: RefCell<Option<tokio::runtime::Handle>>,
+    /// Everything this device said on the share tracks, in order: what a test counts.
+    #[cfg(test)]
+    test_said: RefCell<Vec<tilo_live::share::Said>>,
 }
 
 /// Whether the person of `device` may read `workspace`'s files, as the workspace's people and
@@ -440,11 +430,6 @@ impl Local {
                 _ => {}
             }
         }
-        // A window's stream is not presence: it goes to the shares, which read it on the pass
-        // ([`Self::take_surfaces`]).
-        if self.keep_surface(event) {
-            return true;
-        }
         // What a workspace's members say about a record's content is the records' own content service's to
         // take, and the devices it can be handed over from follow them.
         self.follow_content_sources(event, client);
@@ -452,30 +437,6 @@ impl Local {
             return true;
         }
         false
-    }
-
-    /// Keep `event`'s message for the shares if it is one of a window's stream; whether it was.
-    fn keep_surface(&self, event: &Event) -> bool {
-        let Event::Msg { ws, peer, msg } = event else {
-            return false;
-        };
-        if !matches!(
-            &**msg,
-            NeighbourMsg::SurfaceStreamStart { .. }
-                | NeighbourMsg::SurfaceFrame { .. }
-                | NeighbourMsg::SurfaceStreamEnd { .. }
-                | NeighbourMsg::RemoteInput { .. }
-                | NeighbourMsg::SurfaceKeyframeRequest { .. }
-                | NeighbourMsg::SurfaceViewRequest { .. }
-        ) {
-            return false;
-        }
-        self.surfaces.borrow_mut().push(ReceivedSurface {
-            ws: *ws,
-            from: *peer,
-            msg: (**msg).clone(),
-        });
-        true
     }
 
     /// Hand `event` to the content store when it is one of a record's content messages; whether it
@@ -579,13 +540,6 @@ impl Local {
         change(topology)
     }
 
-    /// Take the window-stream messages that reached this device since the last call.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn take_surfaces(&self) -> Vec<ReceivedSurface> {
-        std::mem::take(&mut *self.surfaces.borrow_mut())
-    }
-
     /// Take the workspaces whose host said their owner deleted them since the last call.
     #[must_use]
     pub(crate) fn take_deleted(&self) -> Vec<tilo_desktop_model::WorkspaceId> {
@@ -617,16 +571,34 @@ impl Local {
     #[cfg(target_os = "linux")]
     pub(crate) fn take_window_objects(&self) -> Vec<(String, Heard)> {
         #[cfg(test)]
+        self.hear_test_live_sessions();
+        std::mem::take(&mut *self.window_objects.borrow_mut())
+    }
+
+    /// Take what shared windows' viewers and hosts said to this device on the workspaces' live
+    /// sessions since the last call, each with the workspace it was heard in and already opened
+    /// ([`tilo_live::share`]).
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_share_objects(&self) -> Vec<(String, Heard)> {
+        #[cfg(test)]
+        self.hear_test_live_sessions();
+        std::mem::take(&mut *self.share_objects.borrow_mut())
+    }
+
+    /// Sort what a test's live sessions heard into what the shares take.
+    #[cfg(all(test, target_os = "linux"))]
+    fn hear_test_live_sessions(&self) {
         for (workspace, live_session) in self.test_live_sessions.borrow().iter() {
             while let Some(heard) = live_session.try_recv() {
-                if matches!(heard.track, Track::Page(_) | Track::Window(..)) {
-                    self.window_objects
-                        .borrow_mut()
-                        .push((workspace.clone(), heard));
-                }
+                let kept = match heard.track {
+                    Track::Page(_) | Track::Window(..) => &self.window_objects,
+                    Track::Share => &self.share_objects,
+                    _ => continue,
+                };
+                kept.borrow_mut().push((workspace.clone(), heard));
             }
         }
-        std::mem::take(&mut *self.window_objects.borrow_mut())
     }
 
     /// The workspaces' live sessions this session is in now, by workspace.
@@ -960,6 +932,14 @@ impl Local {
                     // A shared window's pictures or page, already opened: the session showing that
                     // window draws them.
                     self.window_objects
+                        .borrow_mut()
+                        .push((workspace.clone(), object));
+                    continue;
+                }
+                if object.track == Track::Share {
+                    // What a shared window's viewer or host said to this device, already opened:
+                    // the shares take it.
+                    self.share_objects
                         .borrow_mut()
                         .push((workspace.clone(), object));
                     continue;
@@ -1615,13 +1595,6 @@ impl Client {
         self
     }
 
-    /// Take the window-stream messages that reached this device since the last call.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn take_surfaces(&self) -> Vec<ReceivedSurface> {
-        self.hosting.local.take_surfaces()
-    }
-
     /// Take the work the workspaces' agents narrated since the last call, by workspace, admitted
     /// and bound to the agent that did it: what this device's apps draw as that agent's cursor.
     #[must_use]
@@ -1658,6 +1631,14 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn take_window_objects(&self) -> Vec<(String, Heard)> {
         self.hosting.local.take_window_objects()
+    }
+
+    /// Take what shared windows' viewers and hosts said to this device since the last call,
+    /// already opened.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_share_objects(&self) -> Vec<(String, Heard)> {
+        self.hosting.local.take_share_objects()
     }
 
     /// The workspaces' live sessions this session is in now, by workspace: what a call's voice and
@@ -1724,15 +1705,34 @@ impl Client {
         self.hosting.local.show_tracks(live_session, sender, tracks);
     }
 
-    /// Say `msg` to `target` alone, as a workspace-control message on `ws`'s topic: a shared
-    /// window's control, directly or through the workspace's host.
+    /// Say `said` on `workspace`'s live session's share track: what a shared window's viewer says to
+    /// its host and a host to its viewers, each object to the device it names alone
+    /// ([`tilo_live::share`]). Nothing is said while the workspace's live session is not open: a
+    /// viewer says its view again, and input lands within its frame or not at all.
     #[cfg(target_os = "linux")]
-    pub(crate) fn publish_control(&self, ws: Topic, msg: NeighbourMsg, target: EndpointId) {
-        self.inner.say(Cmd::SendControl {
-            ws,
-            msg: Box::new(msg),
-            target,
-        });
+    pub(crate) fn say(&self, workspace: &str, said: &[tilo_live::share::Said]) {
+        if said.is_empty() {
+            return;
+        }
+        #[cfg(test)]
+        self.hosting
+            .local
+            .test_said
+            .borrow_mut()
+            .extend_from_slice(said);
+        let Some(live_session) = self.live_sessions().remove(workspace) else {
+            tracing::debug!(%workspace, "a shared window's word waits for no live session");
+            return;
+        };
+        if let Err(error) = live_session.say(said) {
+            tracing::debug!(%workspace, %error, "a shared window's word was not said");
+        }
+    }
+
+    /// Everything this device said on the share tracks so far, in order.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn said_on_shares(&self) -> Vec<tilo_live::share::Said> {
+        self.hosting.local.test_said.borrow().clone()
     }
 
     /// The workspaces' live resources, as far as the devices this session reaches go: a row live
@@ -2044,10 +2044,10 @@ impl Local {
                 commands,
                 desktop_events,
                 fabric_waiting: RefCell::default(),
-                surfaces: RefCell::new(Vec::new()),
                 call_audio: RefCell::new(Vec::new()),
                 call_pictures: RefCell::new(Vec::new()),
                 window_objects: RefCell::new(Vec::new()),
+                share_objects: RefCell::new(Vec::new()),
                 deleted: RefCell::new(Vec::new()),
                 engine,
                 link,
@@ -2061,6 +2061,8 @@ impl Local {
                 live: RefCell::new(live),
                 #[cfg(test)]
                 test_live_sessions: RefCell::default(),
+                #[cfg(test)]
+                test_said: RefCell::default(),
                 #[cfg(test)]
                 test_runtime: RefCell::default(),
             }),
@@ -2079,10 +2081,10 @@ impl Local {
             commands,
             desktop_events,
             fabric_waiting: RefCell::default(),
-            surfaces: RefCell::new(Vec::new()),
             call_audio: RefCell::new(Vec::new()),
             call_pictures: RefCell::new(Vec::new()),
             window_objects: RefCell::new(Vec::new()),
+            share_objects: RefCell::new(Vec::new()),
             deleted: RefCell::new(Vec::new()),
             engine: None,
             link: None,
@@ -2096,6 +2098,8 @@ impl Local {
             live: RefCell::new(None),
             #[cfg(test)]
             test_live_sessions: RefCell::default(),
+            #[cfg(test)]
+            test_said: RefCell::default(),
             #[cfg(test)]
             test_runtime: RefCell::default(),
         }

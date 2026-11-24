@@ -49,10 +49,6 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         // The workspace's state, published media, injected input and control consent change what
         // other members see or run.
         NeighbourMsg::SyncResp { .. }
-        | NeighbourMsg::SurfaceFrame { .. }
-        | NeighbourMsg::SurfaceStreamStart { .. }
-        | NeighbourMsg::SurfaceStreamEnd { .. }
-        | NeighbourMsg::RemoteInput { .. }
         | NeighbourMsg::PermissionGrant { .. } => Some((TreePath::root(), ActionKind::Undoable)),
         // A document op: the least any op is (a comment). What each envelope changes is decided
         // again against the author's member access by the broker.
@@ -68,11 +64,6 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::DocumentContentPiece { .. }
         | NeighbourMsg::DocumentContentLacks { .. }
         | NeighbourMsg::DocumentContentRefused { .. }
-        // A viewer asking for a keyframe of a stream it receives; the owner checks it is one.
-        | NeighbourMsg::SurfaceKeyframeRequest { .. }
-        // A member saying which of the receiving device's windows it views: it may see the
-        // workspace's windows, and is streamed them read only.
-        | NeighbourMsg::SurfaceViewRequest { .. }
         // Ephemeral liveness of a member who can see the workspace; nothing is written to its
         // state.
         | NeighbourMsg::Heartbeat { .. }
@@ -88,17 +79,23 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::MlsAccessRequest { .. } => {
             Some((TreePath::root(), ActionKind::Read))
         }
-        // Settled before the check: identity is how a sender becomes known at all; a codec advert,
-        // a device's verdicts on its siblings' writes and its ask for a group's frames travel only
-        // between the person's own devices, never in a workspace.
+        // Settled before the check: identity is how a sender becomes known at all; a device's
+        // verdicts on its siblings' writes and its ask for a group's frames travel only between
+        // the person's own devices, never in a workspace.
         NeighbourMsg::IdentityHello { .. }
-        | NeighbourMsg::MediaCapabilities { .. }
         | NeighbourMsg::MlsGovernanceWanted { .. }
         | NeighbourMsg::WriteRefusals { .. }
-        // Retired generations, refused where they enter
-        // (`NeighbourMsg::is_retired`).
+        // Retired generations, refused where they enter (`NeighbourMsg::is_retired`): a shared
+        // window's messages travel the workspace's live session (`tilo_live::share`).
         | NeighbourMsg::IdentityAnnouncement { .. }
-        | NeighbourMsg::PermissionRequest { .. } => None,
+        | NeighbourMsg::PermissionRequest { .. }
+        | NeighbourMsg::SurfaceFrame { .. }
+        | NeighbourMsg::SurfaceStreamStart { .. }
+        | NeighbourMsg::SurfaceStreamEnd { .. }
+        | NeighbourMsg::RemoteInput { .. }
+        | NeighbourMsg::MediaCapabilities { .. }
+        | NeighbourMsg::SurfaceKeyframeRequest { .. }
+        | NeighbourMsg::SurfaceViewRequest { .. } => None,
     }
 }
 
@@ -187,7 +184,7 @@ mod tests {
                     ts: 0,
                     seq: 0,
                 },
-                Some(change()),
+                None,
             ),
             (
                 NeighbourMsg::SurfaceStreamStart {
@@ -204,7 +201,7 @@ mod tests {
                     app_id: String::new(),
                     tab: 0,
                 },
-                Some(change()),
+                None,
             ),
             (
                 NeighbourMsg::SurfaceStreamEnd {
@@ -212,7 +209,7 @@ mod tests {
                     source_peer: 1,
                     ts: 0,
                 },
-                Some(change()),
+                None,
             ),
             (
                 NeighbourMsg::RemoteInput {
@@ -220,7 +217,7 @@ mod tests {
                     surface: 7,
                     event: Vec::new(),
                 },
-                Some(change()),
+                None,
             ),
             (
                 NeighbourMsg::PermissionRequest {
@@ -388,7 +385,7 @@ mod tests {
                     surface: 7,
                     seq: 3,
                 },
-                Some(read()),
+                None,
             ),
             (
                 NeighbourMsg::LivePresence {
@@ -408,7 +405,7 @@ mod tests {
                     }],
                     decode: Vec::new(),
                 },
-                Some(read()),
+                None,
             ),
             (
                 NeighbourMsg::WriteRefusals {

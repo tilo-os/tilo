@@ -73,10 +73,8 @@ fn a_window_is_said_to_be_pictured_in_the_turn_its_tile_takes_the_picture() {
                 client.exchange();
             }
             host.session.step(Duration::from_millis(2)).expect("step");
-            carry(&mut host, &viewer);
         }
         viewer.session.step(Duration::from_millis(2)).expect("step");
-        carry(&mut viewer, &host);
         turns += 1;
     }
     let reading = shares(&viewer.session);

@@ -1,6 +1,8 @@
 //! Peer-sync wire protocol: a single tagged enum ([`NeighbourMsg`]) carrying
-//! every cross-host payload (CRDT sync, presence, surface frames, remote
-//! input, capability negotiation). Transport bindings (a direct device
+//! every cross-host payload of the state link (CRDT sync, governance,
+//! actions, content). What streams between devices (a call, a shared window's
+//! pictures, its viewers' input) travels the workspace's live session
+//! (`tilo_live`), never this link. Transport bindings (a direct device
 //! connection, a durable host, an in-process hub) operate on it without inspecting the payload.
 //!
 //! The encoding is postcard over serde's default externally tagged enum
@@ -20,7 +22,6 @@ pub mod colorimetry;
 /// pieces: what every key holder of a workspace speaks, host or page.
 pub mod content;
 pub mod hdr_metadata;
-pub mod input;
 mod key_scope;
 pub mod placement;
 pub mod retention;
@@ -137,13 +138,6 @@ pub fn peer_handle(device_public_key: &[u8; 32]) -> PeerId {
 /// Wayland surface identifier — local handle used for streaming/input routing.
 pub type SurfaceId = u64;
 
-/// How many windows one [`NeighbourMsg::SurfaceViewRequest`] names at most.
-pub const MAX_SURFACE_VIEWS: usize = 64;
-/// How many decode limits one [`NeighbourMsg::SurfaceViewRequest`] carries
-/// at most.
-pub const MAX_SURFACE_VIEW_DECODERS: usize = 8;
-/// The largest side a viewer may ask a window be streamed at.
-pub const MAX_SURFACE_VIEW_SIDE: u32 = 8192;
 
 /// One window a viewer shows: the workspace tab holding it (the same id on
 /// every device of the workspace) and the tile's size in logical pixels.
@@ -359,6 +353,11 @@ pub enum NeighbourMsg {
         changes: Vec<Vec<u8>>,
         workspace: String,
     },
+    /// Retired: a shared window travels the workspace's live session
+    /// (`tilo_live::share`). No build produces it and receivers refuse it
+    /// ([`NeighbourMsg::is_retired`]); it stays only so every later Postcard
+    /// discriminant keeps its value.
+    ///
     /// One encoded access unit (H.264/HEVC), frame (VP9) or temporal unit
     /// (AV1) for a shared surface, in the codec the preceding
     /// [`Self::SurfaceStreamStart`] named. `encoded_h264` keeps its historical
@@ -381,6 +380,11 @@ pub enum NeighbourMsg {
         /// the next delta to its decoder: it waits for the next keyframe.
         seq: u64,
     },
+    /// Retired: a shared window travels the workspace's live session
+    /// (`tilo_live::share`). No build produces it and receivers refuse it
+    /// ([`NeighbourMsg::is_retired`]); it stays only so every later Postcard
+    /// discriminant keeps its value.
+    ///
     /// Explicit start-of-stream announcement for a shared surface.
     ///
     /// Distinct from `SurfaceFrame` so late joiners can size a decoder /
@@ -434,6 +438,11 @@ pub enum NeighbourMsg {
         #[serde(default)]
         tab: u64,
     },
+    /// Retired: a shared window travels the workspace's live session
+    /// (`tilo_live::share`). No build produces it and receivers refuse it
+    /// ([`NeighbourMsg::is_retired`]); it stays only so every later Postcard
+    /// discriminant keeps its value.
+    ///
     /// Explicit end-of-stream (owner tore down the share, or the surface
     /// unmapped). Receivers drop their `PeerView` + decoder on receipt, instead of
     /// waiting out the 15s heartbeat-eviction path that implicit end-of-stream
@@ -443,6 +452,11 @@ pub enum NeighbourMsg {
         source_peer: PeerId,
         ts: u64,
     },
+    /// Retired: a shared window travels the workspace's live session
+    /// (`tilo_live::share`). No build produces it and receivers refuse it
+    /// ([`NeighbourMsg::is_retired`]); it stays only so every later Postcard
+    /// discriminant keeps its value.
+    ///
     /// Serialized input event from `peer` targeting `surface`.
     RemoteInput {
         peer: PeerId,
@@ -570,6 +584,11 @@ pub enum NeighbourMsg {
     /// transport; nothing in the frame names it. Appended to preserve all
     /// existing Postcard discriminants.
     RemoteAction { frame: Vec<u8> },
+    /// Retired: a shared window travels the workspace's live session
+    /// (`tilo_live::share`). No build produces it and receivers refuse it
+    /// ([`NeighbourMsg::is_retired`]); it stays only so every later Postcard
+    /// discriminant keeps its value.
+    ///
     /// Which video codecs a peer can encode and decode, split by whether
     /// hardware does it. Broadcast with the heartbeat so a screen-share sender
     /// can pick a codec every viewer takes: a peer that never sends this is
@@ -643,6 +662,11 @@ pub enum NeighbourMsg {
         offset: u64,
         bytes: Vec<u8>,
     },
+    /// Retired: a shared window travels the workspace's live session
+    /// (`tilo_live::share`). No build produces it and receivers refuse it
+    /// ([`NeighbourMsg::is_retired`]); it stays only so every later Postcard
+    /// discriminant keeps its value.
+    ///
     /// Viewer `peer` cannot continue decoding `surface`: a unit before
     /// [`Self::SurfaceFrame::seq`] `seq` never reached it, or its decoder
     /// rejected one, and the deltas after reference what it lacks. The owner
@@ -663,6 +687,11 @@ pub enum NeighbourMsg {
     /// rides it (a wave) reaches the workspace's people with or without a host.
     /// Appended to preserve every existing Postcard discriminant.
     LivePresence { peer: PeerId, frame: Vec<u8> },
+    /// Retired: a shared window travels the workspace's live session
+    /// (`tilo_live::share`). No build produces it and receivers refuse it
+    /// ([`NeighbourMsg::is_retired`]); it stays only so every later Postcard
+    /// discriminant keeps its value.
+    ///
     /// Viewer `peer`, a member of the workspace `workspace` names, shows these of the
     /// receiving device's windows (host and unconfined programs' windows, which cross
     /// a workspace that shares its layout as hosted on that device): it streams
@@ -787,13 +816,18 @@ impl NeighbourMsg {
             // receiver must see before trusting the certificate.
             Self::IdentityAnnouncement { .. }
             // Never acted on; control consent rides `PermissionGrant`.
-            | Self::PermissionRequest { .. } => true,
-            Self::SyncReq { .. }
-            | Self::SyncResp { .. }
+            | Self::PermissionRequest { .. }
+            // A shared window's stream, its viewers' asks and input and what each decodes travel
+            // the workspace's live session (`tilo_live::share`).
             | Self::SurfaceFrame { .. }
             | Self::SurfaceStreamStart { .. }
             | Self::SurfaceStreamEnd { .. }
             | Self::RemoteInput { .. }
+            | Self::MediaCapabilities { .. }
+            | Self::SurfaceKeyframeRequest { .. }
+            | Self::SurfaceViewRequest { .. } => true,
+            Self::SyncReq { .. }
+            | Self::SyncResp { .. }
             | Self::PermissionGrant { .. }
             | Self::Heartbeat { .. }
             | Self::IdentityHello { .. }
@@ -802,15 +836,12 @@ impl NeighbourMsg {
             | Self::ScrollbackResponse { .. }
             | Self::IdentityAnnouncementV2 { .. }
             | Self::RemoteAction { .. }
-            | Self::MediaCapabilities { .. }
             | Self::MlsGovernance { .. }
             | Self::MlsAccessRequest { .. }
             | Self::DocumentContentWant { .. }
             | Self::DocumentContentPiece { .. }
             | Self::DocumentContentLacks { .. }
-            | Self::SurfaceKeyframeRequest { .. }
             | Self::LivePresence { .. }
-            | Self::SurfaceViewRequest { .. }
             | Self::WriteRefusals { .. }
             | Self::MlsGovernanceWanted { .. }
             | Self::DocumentContentRefused { .. } => false,
@@ -1363,8 +1394,9 @@ mod tests {
     }
 
     /// Only generations no build produces any more are retired: the identity
-    /// predecessor and the permission request control consent replaced. Every
-    /// other variant, including the identity successor, stays live.
+    /// predecessor, the permission request control consent replaced, and a
+    /// shared window's messages, which travel the live session. Every other
+    /// variant, including the identity successor, stays live.
     #[test]
     fn only_the_unproduced_generations_are_retired() {
         let mut retired: Vec<&str> = fixtures()
@@ -1373,7 +1405,21 @@ mod tests {
             .map(|(_, message)| variant(message))
             .collect();
         retired.sort_unstable();
-        assert_eq!(retired, ["IdentityAnnouncement", "PermissionRequest"]);
+        retired.dedup();
+        assert_eq!(
+            retired,
+            [
+                "IdentityAnnouncement",
+                "MediaCapabilities",
+                "PermissionRequest",
+                "RemoteInput",
+                "SurfaceFrame",
+                "SurfaceKeyframeRequest",
+                "SurfaceStreamEnd",
+                "SurfaceStreamStart",
+                "SurfaceViewRequest",
+            ]
+        );
     }
 
     /// Names every variant through an exhaustive match, so adding a variant

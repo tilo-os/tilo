@@ -33,6 +33,8 @@ tokio = { workspace = true, optional = true, features = ["macros", "sync", "time
 # A frame names its stream in a stream's handshake; a carrier's handshake is
 # serde too.
 serde = { workspace = true, features = ["derive"] }
+# What a shared window's viewers and host say to each other is one postcard value per object.
+postcard = { workspace = true, features = ["alloc"] }
 serde_json = { workspace = true, optional = true }
 moq-net = { workspace = true, optional = true }
 # Plain future polling: the client carrier runs in a page as it does natively.

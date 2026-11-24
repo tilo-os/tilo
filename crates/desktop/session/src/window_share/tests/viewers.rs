@@ -15,26 +15,14 @@ struct Carried {
     ends: usize,
 }
 
-/// Hand what `from` would have sent on the state protocol to each of `to` it was for, as [`carry`]
-/// does for one member: a control message to the device it names, and nothing to anyone else. The
-/// window's pictures travel the live session. Answers how often each of `to` was told a window's
-/// share ended, in their order.
-fn carry_to_each(from: &mut Member, to: &[&Member]) -> Vec<usize> {
-    let mut ends = vec![0; to.len()];
-    while let Ok(outgoing) = from.said.try_recv() {
-        let Cmd::SendControl { ws, msg, target } = outgoing else {
-            continue;
-        };
-        for (member, ended) in to.iter().zip(&mut ends) {
-            if target == member.sync.publisher() {
-                if matches!(*msg, NeighbourMsg::SurfaceStreamEnd { .. }) {
-                    *ended += 1;
-                }
-                member.sync.hear(said(from, ws, (*msg).clone()));
-            }
-        }
-    }
-    ends
+/// How often `host` told `viewer` on its share track that a window's share ended.
+fn ends_told(host: &Member, viewer: &Member) -> usize {
+    let viewer = *viewer.sync.publisher().as_bytes();
+    host.sync
+        .said_on_shares()
+        .iter()
+        .filter(|said| said.to == viewer && matches!(said.control, Control::Ended { .. }))
+        .count()
 }
 
 /// How many objects `member` 's live session opened in the workspace. A member that shows one shared
@@ -60,9 +48,8 @@ fn tracks_asked(member: &Member, host: &Member) -> Vec<tilo_live::live::Track> {
 }
 
 /// Three devices of one workspace: one shares a window of its shell, and the two others show it.
-/// Their live sessions meet on the test's relay, which carries the window's pictures; no transport
-/// runs between the three state live sessions either, so every pass carries what each of them said to the
-/// device it was for. Each member is kept on the heap: three sessions side by side are more than a
+/// Their live sessions meet on the test's relay, which carries the window's pictures and what each
+/// says to the others on its share track. Each member is kept on the heap: three sessions side by side are more than a
 /// test's stack holds.
 struct Three {
     /// The two members showing the window.
@@ -70,8 +57,6 @@ struct Three {
     /// The client whose window the host shares.
     window: Option<TestClient>,
     host: Box<Member>,
-    /// How often the host told each viewer the window's share ended, in their order.
-    ends: [usize; 2],
     /// The tab the shared window stands in, on all three sessions.
     tab: u64,
 }
@@ -95,13 +80,11 @@ impl Three {
             viewers,
             window,
             host,
-            ends: [0; 2],
             tab,
         }
     }
 
-    /// One pass of the client and of each of the three sessions, with what their live sessions said
-    /// carried after it.
+    /// One pass of the client and of each of the three sessions.
     fn pass(&mut self) {
         if let Some(client) = self.window.as_mut() {
             client.exchange();
@@ -116,19 +99,6 @@ impl Three {
         for viewer in &mut self.viewers {
             viewer.session.step(Duration::from_millis(2)).expect("step");
         }
-        self.carry();
-    }
-
-    /// Carry what each of the three said to the device it was for, counting how often the host
-    /// told each viewer the window's share ended.
-    fn carry(&mut self) {
-        let [first, second] = &mut self.viewers;
-        let ended = carry_to_each(&mut self.host, &[&**first, &**second]);
-        for (kept, ended) in self.ends.iter_mut().zip(ended) {
-            *kept += ended;
-        }
-        carry_to_each(first, &[&*self.host, &**second]);
-        carry_to_each(second, &[&*self.host, &**first]);
     }
 
     /// What the live sessions carried to each viewer so far, in their order: the window's pictures its
@@ -136,7 +106,7 @@ impl Three {
     fn carried(&self) -> [Carried; 2] {
         [0, 1].map(|at| Carried {
             pictures: pictures_heard(&self.viewers[at]),
-            ends: self.ends[at],
+            ends: ends_told(&self.host, &self.viewers[at]),
         })
     }
 

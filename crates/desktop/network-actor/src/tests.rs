@@ -596,7 +596,7 @@ async fn personal_fabric_unknown_extension_preserves_following_streams() {
 }
 
 #[tokio::test]
-async fn remote_input_bypasses_a_saturated_surface_frame_queue() {
+async fn a_remote_action_bypasses_a_saturated_surface_frame_queue() {
     let (endpoint, _lookup) = endpoint().await;
     let peer = endpoint.id();
     let (media_tx, mut media_rx) = mpsc::channel(1);
@@ -614,10 +614,8 @@ async fn remote_input_bypasses_a_saturated_surface_frame_queue() {
             peer,
             connection_incarnation: 1,
             fingerprint: [0; 32],
-            msg: NeighbourMsg::RemoteInput {
-                peer: 9,
-                surface: 11,
-                event: vec![1],
+            msg: NeighbourMsg::RemoteAction {
+                frame: vec![11],
             },
         },
     )
@@ -627,7 +625,7 @@ async fn remote_input_bypasses_a_saturated_surface_frame_queue() {
     assert!(matches!(
         input_rx.try_recv(),
         Ok(InternalEvent::SurfaceFrame {
-            msg: NeighbourMsg::RemoteInput { surface: 11, .. },
+            msg: NeighbourMsg::RemoteAction { .. },
             ..
         })
     ));
@@ -677,23 +675,15 @@ async fn tally_of(cmd: &mpsc::Sender<NetCmd>) -> std::collections::BTreeMap<&'st
     answer.await.unwrap().snapshot()
 }
 
-/// Wait on `rx` until the other device has said who it is and what it can
-/// decode, as it does once when their session comes up.
-async fn await_identity_and_codecs(rx: &mut mpsc::Receiver<NetEvent>) {
-    let (mut identity, mut codecs) = (false, false);
-    while !(identity && codecs) {
-        match tilo_test_env::within("the other device's identity and codecs", rx.recv())
+/// Wait on `rx` until the other device has said who it is, as it does once
+/// when their session comes up.
+async fn await_identity(rx: &mut mpsc::Receiver<NetEvent>) {
+    while !matches!(
+        tilo_test_env::within("the other device's identity", rx.recv())
             .await
-            .unwrap()
-        {
-            NetEvent::Sibling { .. } => identity = true,
-            NetEvent::SiblingMsg {
-                msg: NeighbourMsg::MediaCapabilities { .. },
-                ..
-            } => codecs = true,
-            _ => {}
-        }
-    }
+            .unwrap(),
+        NetEvent::Sibling { .. }
+    ) {}
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -707,9 +697,9 @@ async fn linked_devices_keep_liveness_on_the_transport_and_say_nothing_while_idl
     let mut b = device_of(&root, key(), WorkspaceId::from_u128(42), TICK).await;
     link(&[&a, &b]).await;
 
-    // Phase `a_new_device_hears_identity_and_codecs_once_per_session`.
-    await_identity_and_codecs(&mut a.rx).await;
-    await_identity_and_codecs(&mut b.rx).await;
+    // Phase `a_new_device_hears_identity_once_per_session`.
+    await_identity(&mut a.rx).await;
+    await_identity(&mut b.rx).await;
 
     // Phase `a_linked_idle_pair_sends_no_application_message`. Before
     // the transport carried liveness every tick sent a heartbeat, an
@@ -803,165 +793,6 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
                 ),
                 "personal action leaked to a non-target device"
             );
-        }
-    }
-    // Phase `direct_workspace_control_input_reaches_only_the_exact_target`.
-    {
-        let [a, mut b, mut c] = three(linked(WorkspaceId::from_u128(43), 3).await);
-        let (cmd_a, a_id, b_id) = (&a.cmd, a.id, b.id);
-        let (rx_b, rx_c) = (&mut b.rx, &mut c.rx);
-
-        for _ in 0..2 {
-            cmd_a
-                .send(NetCmd::PublishWorkspaceControl {
-                    ws: WorkspaceId::from_u128(43),
-                    msg: NeighbourMsg::RemoteInput {
-                        peer: crate::behaviour::peer_liveness_handle(&a_id),
-                        surface: 7,
-                        event: vec![0x51, 0x4f, 0x53],
-                    },
-                    target: b_id,
-                })
-                .await
-                .unwrap();
-        }
-
-        let mut delivered = 0;
-        while delivered < 2 {
-            let event = tilo_test_env::within("a message on rx_b", rx_b.recv())
-                .await
-                .unwrap();
-            if matches!(
-                event,
-                NetEvent::Msg {
-                    msg: NeighbourMsg::RemoteInput { surface: 7, .. },
-                    ..
-                }
-            ) {
-                delivered += 1;
-            }
-        }
-        while let Ok(Some(event)) = timeout(Duration::from_millis(500), rx_c.recv()).await {
-            assert!(
-                !matches!(
-                    event,
-                    NetEvent::Msg {
-                        msg: NeighbourMsg::RemoteInput { .. },
-                        ..
-                    }
-                ),
-                "direct input leaked to a non-target workspace peer"
-            );
-        }
-    }
-    // Phase `a_view_said_again_reaches_the_windows_device_each_time`.
-    {
-        let [a, mut b] = two(linked(WorkspaceId::from_u128(47), 2).await);
-        let (cmd_a, a_id, b_id) = (&a.cmd, a.id, b.id);
-        // A viewer says which windows it views every few seconds, in the same bytes each time,
-        // and the device hosting them stops naming a viewer it no longer hears: every saying
-        // arrives, none is dropped as a copy of the first.
-        for _ in 0..3 {
-            cmd_a
-                .send(NetCmd::PublishWorkspaceControl {
-                    ws: WorkspaceId::from_u128(47),
-                    msg: NeighbourMsg::SurfaceViewRequest {
-                        peer: crate::behaviour::peer_liveness_handle(&a_id),
-                        workspace: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
-                        views: vec![neighbour_wire::SurfaceView {
-                            tab: 7,
-                            width: 800,
-                            height: 600,
-                        }],
-                        decode: Vec::new(),
-                    },
-                    target: b_id,
-                })
-                .await
-                .unwrap();
-        }
-        let mut heard = 0;
-        while heard < 3 {
-            let event = tilo_test_env::within("a viewer's word on rx_b", b.rx.recv())
-                .await
-                .unwrap();
-            if matches!(
-                event,
-                NetEvent::Msg {
-                    msg: NeighbourMsg::SurfaceViewRequest { .. },
-                    ..
-                }
-            ) {
-                heard += 1;
-            }
-        }
-    }
-    // Phase `a_windows_announcement_said_again_reaches_the_watching_device_each_time`.
-    {
-        let [a, mut b] = two(linked(WorkspaceId::from_u128(48), 2).await);
-        let (cmd_a, a_id, b_id) = (&a.cmd, a.id, b.id);
-        let owner = crate::behaviour::peer_liveness_handle(&a_id);
-        // A window whose app draws its page is announced to the device showing it, and the end
-        // of its share is said to that device. The announcement says the window, its size and
-        // its codec and nothing of when, so the same window shared again is announced in the
-        // bytes of the first time, as its end is. The order is the one two machines took: shared,
-        // stopped, shared again. The second announcement, dropped as a copy of the first, left
-        // the watching device asking the peer network for the window's pictures, which a page has none
-        // of, so the window shared a second time was never drawn there.
-        let announced = || NeighbourMsg::SurfaceStreamStart {
-            surface: 7,
-            source_peer: owner,
-            width: 811,
-            height: 708,
-            codec: "tilo-paint".into(),
-            ts: 0,
-            sender_monotonic_ns_at_send: 0,
-            colorimetry: None,
-            hdr_static_metadata: None,
-            bit_depth: 8,
-            app_id: "so.tilo.browser".into(),
-            tab: 7,
-        };
-        let ended = || NeighbourMsg::SurfaceStreamEnd {
-            surface: 7,
-            source_peer: owner,
-            ts: 0,
-        };
-        let said = [
-            ("the announcement of the first share on rx_b", announced()),
-            ("the end of the first share on rx_b", ended()),
-            ("the announcement of the second share on rx_b", announced()),
-            ("the end of the second share on rx_b", ended()),
-        ];
-        for (what, msg) in said {
-            let starts = matches!(msg, NeighbourMsg::SurfaceStreamStart { .. });
-            cmd_a
-                .send(NetCmd::PublishWorkspaceControl {
-                    ws: WorkspaceId::from_u128(48),
-                    msg,
-                    target: b_id,
-                })
-                .await
-                .unwrap();
-            // Each is waited for before the next is said, so what arrives is the one just said.
-            loop {
-                let event = tilo_test_env::within(what, b.rx.recv()).await.unwrap();
-                let heard = match event {
-                    NetEvent::Msg {
-                        msg: NeighbourMsg::SurfaceStreamStart { surface: 7, .. },
-                        ..
-                    } => Some(true),
-                    NetEvent::Msg {
-                        msg: NeighbourMsg::SurfaceStreamEnd { surface: 7, .. },
-                        ..
-                    } => Some(false),
-                    _ => None,
-                };
-                if let Some(started) = heard {
-                    assert_eq!(started, starts, "{what}: the other message arrived");
-                    break;
-                }
-            }
         }
     }
 }

@@ -883,14 +883,9 @@ async fn carry_out(
             .send(NetCmd::Publish { ws, msg: *msg })
             .await
             .is_ok(),
-        Cmd::SendControl { ws, msg, target } => network
-            .send(NetCmd::PublishWorkspaceControl {
-                ws,
-                msg: *msg,
-                target,
-            })
-            .await
-            .is_ok(),
+        // A shared window's word is said on the workspace's live session, which the desktop holds
+        // itself ([`super::Client::say`]): nothing of it rides the peer actor.
+        Cmd::Share(..) => true,
         Cmd::Connect(addr) => network.send(NetCmd::ConnectHost { addr }).await.is_ok(),
         Cmd::WatchSiblings => network
             .send(NetCmd::WatchSiblings {
