@@ -92,7 +92,7 @@ class Vault:
 
     `web_call` sends a secret it keeps as the key of a request, and `ask` has
     the person type a new one into a field the system writes, on their own
-    device. Only an app's held connection is handed a secret itself
+    device. Only an app's own connection is handed a secret itself
     (`release`), where its grant on that item allows it.
     """
 
@@ -123,7 +123,7 @@ class Vault:
     def release(self, item: str) -> Any:
         """The secret of the vault item `item` (`vault.item:…`), handed to this app.
 
-        Only the process the daemon launched to hold an app's connection is
+        Only the process the daemon launched for an app's connection is
         handed one, and only for an item the workspace granted the app: an item
         it has no grant on raises `Refused`, and its person is asked once
         whether it may. The secret is answered to the caller and kept nowhere.
