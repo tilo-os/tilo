@@ -329,7 +329,8 @@ pub fn verify_recorded(
         }
         _ => true,
     };
-    if !(in_resource && names_verb) && !declared_step(context, &statement.target, keeper) {
+    let named = (in_resource && names_verb) || declared_step(context, &statement.target, keeper);
+    if !named {
         return Err(StatementMismatch::Target.into());
     }
     let cert = signer_of(
@@ -443,7 +444,8 @@ pub fn verify_carried(
             (action.app.is_empty() || action.app == record.app)
                 && declares(&statement.target, record.app, &action.kind, &action.action)
         });
-    if !(in_record && names_verb) && !declared {
+    let named = (in_record && names_verb) || declared;
+    if !named {
         return Err(StatementMismatch::Target.into());
     }
     let cert = signer_of(
