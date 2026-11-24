@@ -51,6 +51,6 @@ pub fn published(workspaces: &Arc<crate::device::workspaces::ServiceWorkspaces>)
 
 /// Whether `write` is a write to a workspace's accounts record.
 fn accounts_record(write: &tilo_workspace_service::workspaces::ResourceWrite) -> bool {
-    write.app == accounts::person::ACCOUNTS_OWNER
+    write.app == tilo_app_id::apps::SETTINGS
         && write.record == tilo_workspace_service::workspaces::account_logins::accounts_document()
 }
