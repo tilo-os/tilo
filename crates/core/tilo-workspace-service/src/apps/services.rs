@@ -219,57 +219,6 @@ pub trait RealtimeServices: Send + Sync {
 
     fn disconnect(&self, peer_id: u64);
 }
-/// The host's speaker groups: the broker admits only the certified Settings route, then hands it
-/// the validated command.
-pub trait SpeakerServices: Send + Sync {
-    /// Runs one validated speaker-group command.
-    fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply;
-
-    /// Resolves once what a [`runtime_collab::SpeakerCommand::Snapshot`]
-    /// would show may have changed since `after` (0 at first, then the value
-    /// the previous wait returned), with the value to wait from next. It
-    /// names nothing: Settings asks for a snapshot, which the host checks as
-    /// it checks every command. `None` when the host cannot say when its
-    /// speaker groups change; the broker then answers unimplemented.
-    fn changed(&self, after: u64) -> Option<SpeakerChange> {
-        let _ = after;
-        None
-    }
-}
-
-/// A wait for the speaker groups' next change, as [`SpeakerServices::changed`]
-/// returns it.
-pub type SpeakerChange = ChangeWait;
-
-/// The host's drives, as Files lists them: the broker admits only the certified Files route to
-/// wait on them.
-pub trait DriveServices: Send + Sync {
-    /// Resolves once the drive list may have changed since `after` (0 at
-    /// first, then the value the previous wait returned), with the value to
-    /// wait from next. It names nothing: Files asks for the list again.
-    /// `None` when the host cannot say when its drives change; the broker
-    /// then answers unimplemented.
-    fn changed(&self, after: u64) -> Option<DriveChange>;
-}
-
-/// A wait for the drive list's next change, as [`DriveServices::changed`]
-/// returns it.
-pub type DriveChange = ChangeWait;
-
-/// The person's apps, as Files lists them: the broker admits only the certified Files route to
-/// wait on them.
-pub trait ApplicationServices: Send + Sync {
-    /// Resolves once the app list may have changed since `after` (0 at first,
-    /// then the value the previous wait returned), with the value to wait
-    /// from next. It names nothing: Files asks for the list again. `None`
-    /// when the host cannot say when its apps change; the broker then
-    /// answers unimplemented.
-    fn changed(&self, after: u64) -> Option<ApplicationChange>;
-}
-
-/// A wait for the app list's next change, as
-/// [`ApplicationServices::changed`] returns it.
-pub type ApplicationChange = ChangeWait;
 /// The host's Wi-Fi credential continuity across the person's devices: the broker admits only the
 /// certified Settings route. A host without radios installs none.
 pub trait WifiContinuityServices: Send + Sync {
@@ -802,13 +751,6 @@ pub struct ProcessServices {
     pub content_store: Option<Arc<dyn ContentStoreServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
-    pub speakers: Option<Arc<dyn SpeakerServices>>,
-    /// The drives Files lists, which tell its certified route when they change
-    /// (`drivesChanged`); without it Files lists none.
-    pub drives: Option<Arc<dyn DriveServices>>,
-    /// The person's apps Files lists, which tell its certified route when they change
-    /// (`applicationsChanged`); without it its Applications place asks on a timer.
-    pub applications: Option<Arc<dyn ApplicationServices>>,
     /// The session's settings, which apps reach through their channel; without it apps have none beyond
     /// their own process.
     pub settings: Option<Arc<dyn settings_store::SettingsSource>>,

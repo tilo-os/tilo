@@ -34,11 +34,9 @@ use crate::apps::collab_app_broker::{
     NativeMediaServices,
 };
 use crate::apps::services::{
-    ApplicationChange, ApplicationServices, BrowserServiceSessionRequestContext,
-    BrowserServiceSessionServices, Caller, ChangeWait, DriveChange, DriveServices,
+    BrowserServiceSessionRequestContext, BrowserServiceSessionServices, Caller,
     FileClipboardContext, FileClipboardServices, ItemAnswering, LaunchPlace, LauncherServices,
-    PublishedResources, Reading, ResourceWatch, SpeakerChange, SpeakerServices,
-    WifiContinuityServices,
+    PublishedResources, Reading, ResourceWatch, WifiContinuityServices,
 };
 use crate::workspaces::providers::Providers;
 
@@ -61,9 +59,6 @@ pub mod calls {
     pub const NATIVE_MEDIA: &str = "native_media";
     pub const CONTINUATIONS: &str = "continuations";
     pub const DOCUMENT_INDEX: &str = "document_index";
-    pub const DRIVES: &str = "drives";
-    pub const APPLICATIONS: &str = "applications";
-    pub const SPEAKERS: &str = "speakers";
     pub const PUBLISHED: &str = "published";
     pub const WORKSPACE_NODES: &str = "workspace_nodes";
     pub const SETTINGS: &str = "settings";
@@ -239,37 +234,6 @@ impl Seat {
                 tracing::warn!(%service, %call, %error, "the seat did not take what it was told");
             }
         });
-    }
-
-    /// The next change of what `service` keeps after `after`, as the seat says it: a wait that
-    /// is asked again once the seat could not be asked, so a session starting later is followed
-    /// too.
-    fn changed(&self, service: &'static str, extra: Value, after: u64) -> ChangeWait {
-        let seat = self.clone();
-        Box::pin(async move {
-            let mut arguments = match extra {
-                Value::Object(map) => map,
-                _ => Map::new(),
-            };
-            arguments.insert("after".into(), json!(after));
-            loop {
-                match seat
-                    .call(service, calls::CHANGED, Value::Object(arguments.clone()))
-                    .await
-                    .and_then(|next| next.as_u64().ok_or_else(|| "no change number".to_owned()))
-                {
-                    Ok(next) if next != after => return next,
-                    // The seat held the wait as long as it holds one: ask again.
-                    Ok(_) => {}
-                    Err(error) => {
-                        if seat.served() {
-                            tracing::warn!(service, %error, "the seat's change could not be waited for");
-                        }
-                        tokio::time::sleep(ASK_AGAIN).await;
-                    }
-                }
-            }
-        })
     }
 
     /// `future` run on the seat's runtime, its answer sent on the channel returned.
@@ -453,40 +417,6 @@ impl tilo_broker_core::services::DocumentIndexChanges for SeatDocumentIndex {
             calls::CHANGED,
             json!({"workspace": workspace, "app": app, "record": record}),
         );
-    }
-}
-
-/// When the drives the seat's computer has change.
-pub struct SeatDrives(pub Seat);
-
-impl DriveServices for SeatDrives {
-    fn changed(&self, after: u64) -> Option<DriveChange> {
-        Some(self.0.changed(calls::DRIVES, Value::Null, after))
-    }
-}
-
-/// When the apps the seat's computer has change.
-pub struct SeatApplications(pub Seat);
-
-impl ApplicationServices for SeatApplications {
-    fn changed(&self, after: u64) -> Option<ApplicationChange> {
-        Some(self.0.changed(calls::APPLICATIONS, Value::Null, after))
-    }
-}
-
-/// The speaker groups of the fabric the seat runs on.
-pub struct SeatSpeakers(pub Seat);
-
-impl SpeakerServices for SeatSpeakers {
-    fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply {
-        self.0
-            .call_blocking(calls::SPEAKERS, calls::COMMAND, json!({"command": command}))
-            .and_then(read)
-            .unwrap_or_else(|reason| runtime_collab::SpeakerReply::Rejected { reason })
-    }
-
-    fn changed(&self, after: u64) -> Option<SpeakerChange> {
-        Some(self.0.changed(calls::SPEAKERS, Value::Null, after))
     }
 }
 
@@ -1745,9 +1675,6 @@ pub struct Forwarders {
     pub native_media: Arc<dyn NativeMediaServices>,
     pub continuations: Arc<dyn tilo_broker_core::steps::ContinuationServices>,
     pub document_index_changes: Arc<dyn tilo_broker_core::services::DocumentIndexChanges>,
-    pub drives: Arc<dyn DriveServices>,
-    pub applications: Arc<dyn ApplicationServices>,
-    pub speakers: Arc<dyn SpeakerServices>,
     pub workspace_nodes: Arc<dyn tilo_broker_core::services::WorkspaceNodeActions>,
     pub keyboard_shortcuts: Arc<dyn tilo_broker_core::services::KeyboardShortcutServices>,
     pub browser_service_sessions: Arc<dyn BrowserServiceSessionServices>,
@@ -1767,9 +1694,6 @@ impl Seat {
             native_media: Arc::new(SeatNativeMedia(self.clone())),
             continuations: Arc::new(SeatContinuations(self.clone())),
             document_index_changes: Arc::new(SeatDocumentIndex(self.clone())),
-            drives: Arc::new(SeatDrives(self.clone())),
-            applications: Arc::new(SeatApplications(self.clone())),
-            speakers: Arc::new(SeatSpeakers(self.clone())),
             workspace_nodes: Arc::new(SeatWorkspaceNodes(self.clone())),
             keyboard_shortcuts: Arc::new(SeatKeyboardShortcuts::follow(self.clone())),
             browser_service_sessions: Arc::new(SeatBrowserServiceSessions(self.clone())),

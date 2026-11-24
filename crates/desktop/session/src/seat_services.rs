@@ -1,9 +1,8 @@
 //! The seat this session holds for its device, served to the device's daemon over the shell link
 //! (`tilo_workspace_service::apps::seat`): the screen and its windows' notes, the sound apps play,
 //! the calls they capture, the person's settings and the displays Settings changes, the board of
-//! live activities, what the session's services publish, the roles that follow records,
-//! the drives and apps Files lists, the speaker groups and Nearby Send's spool, and the asks about
-//! a workspace's nodes.
+//! live activities, what the session's services publish, the roles that follow records, and the
+//! asks about a workspace's nodes.
 //!
 //! The daemon admits every app and forwards each call of these services here with the facts it
 //! admitted the app on; no app reaches this provider itself. Each call is answered by the same
@@ -41,10 +40,6 @@ pub(crate) struct SeatParts {
     pub continuations: Arc<dyn tilo_broker_core::steps::ContinuationServices>,
     /// What notes the workspaces' records changing, for the roles that follow them.
     pub records: Option<Arc<crate::resource_index::RecordChanges>>,
-    /// The tools service, whose drive and app lists Files follows.
-    pub tools: Option<crate::tools::Handle>,
-    /// The fabric whose speaker groups Settings manages.
-    pub fabric: Option<crate::platform::fabric::SharedLink>,
     /// What the session's services publish (the sound, the network, the displays), as apps read
     /// and change it.
     pub published: Arc<dyn PublishedResources>,
@@ -171,17 +166,6 @@ fn blocking<T: serde::Serialize + Send + 'static>(
             .await
             .map_err(|error| error.to_string())?
             .and_then(answered)
-    })
-}
-
-/// A wait for `change` held at most [`HELD`], answered with the next change number: `after` when
-/// nothing changed meanwhile.
-fn held(change: Option<Pin<Box<dyn Future<Output = u64> + Send>>>, after: u64) -> Answer {
-    Box::pin(async move {
-        let change = change.ok_or("this session cannot say when that changes")?;
-        Ok(json!(
-            tokio::time::timeout(HELD, change).await.unwrap_or(after)
-        ))
     })
 }
 
@@ -384,47 +368,6 @@ impl SeatProvider {
                     );
                     Ok(())
                 })
-            }
-            (calls::DRIVES | calls::APPLICATIONS, calls::CHANGED) => {
-                let after = match field::<u64>(&arguments, "after") {
-                    Ok(after) => after,
-                    Err(why) => return failed(why),
-                };
-                let Some(tools) = &parts.tools else {
-                    return unserved("drive or app lists");
-                };
-                let change = if service == calls::DRIVES {
-                    tilo_workspace_service::apps::services::DriveServices::changed(tools, after)
-                } else {
-                    tilo_workspace_service::apps::services::ApplicationServices::changed(
-                        tools, after,
-                    )
-                };
-                held(change, after)
-            }
-            (calls::SPEAKERS, calls::COMMAND) => {
-                let Some(fabric) = parts.fabric.clone() else {
-                    return unserved("speaker groups");
-                };
-                blocking(move || {
-                    let command = field::<runtime_collab::SpeakerCommand>(&arguments, "command")?;
-                    Ok(tilo_speaker_service::settings::handle(&fabric, command))
-                })
-            }
-            (calls::SPEAKERS, calls::CHANGED) => {
-                let after = match field::<u64>(&arguments, "after") {
-                    Ok(after) => after,
-                    Err(why) => return failed(why),
-                };
-                let Some(fabric) = &parts.fabric else {
-                    return unserved("speaker groups");
-                };
-                held(
-                    Some(Box::pin(tilo_speaker_service::settings::changed(
-                        fabric, after,
-                    ))),
-                    after,
-                )
             }
             (calls::PUBLISHED, call) => self.published(call, &arguments),
             (calls::WORKSPACE_NODES, calls::ASK) => {
@@ -838,8 +781,6 @@ mod tests {
             native_media: None,
             continuations: crate::launches::Launches::default().notes(),
             records: None,
-            tools: None,
-            fabric: None,
             published: crate::app_wire::Link::new(tilo_service::LoopWake::default().handle()),
             workspace_nodes: None,
             settings: None,

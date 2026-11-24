@@ -73,6 +73,11 @@ impl Service for Served {
         }
         let effect = decode::<SpeakerEffect>(&self.resources(), resource, action, arguments)?;
         let command = effect.command().map_err(ApiError::InvalidArguments)?;
+        if !command.valid() {
+            return Err(ApiError::InvalidArguments(
+                "the speakers take no group, device or name of that shape".to_owned(),
+            ));
+        }
         match tilo_speaker_service::settings::handle(&self.fabric, command) {
             runtime_collab::SpeakerReply::Done { .. } => {
                 // The next reader reads the groups as the command left them.
@@ -100,8 +105,105 @@ impl Service for Served {
     }
 }
 
-/// The speakers as a view of another language reads them (`device.speakers`).
-#[must_use]
-pub(crate) fn surface() -> tilo_actions::surface::Surface {
-    tilo_speaker_service::published::surface()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::fabric::{
+        AudioEndpoint, AudioEndpointKind, DeviceAbout, DeviceId, DeviceKind, EndpointSelector,
+        FabricCapabilities, FabricLink, PersonDevice, PersonDevices, PersonalFabricAction,
+        PersonalFabricSendError, SpeakerFabricState,
+    };
+
+    /// This laptop's devices, with the one output it publishes.
+    struct Fabric {
+        local: DeviceId,
+        converged: PersonDevices,
+    }
+
+    impl Fabric {
+        fn laptop() -> Self {
+            let local = DeviceId::new("this-laptop").expect("a device id");
+            let mut device = PersonDevice::new(
+                local.clone(),
+                DeviceAbout {
+                    label: "This laptop".into(),
+                    kind: DeviceKind::Laptop,
+                    capabilities: FabricCapabilities {
+                        audio_output: true,
+                        audio_group: true,
+                        ..FabricCapabilities::default()
+                    },
+                },
+            );
+            device.online = true;
+            device.last_seen_unix_ms = 1;
+            device.speakers = SpeakerFabricState {
+                endpoints: vec![AudioEndpoint {
+                    selector: EndpointSelector::mint(&local, "alsa_output.analog-stereo"),
+                    kind: AudioEndpointKind::Output,
+                    label: "Speakers".into(),
+                    is_default: true,
+                }],
+                ..SpeakerFabricState::default()
+            };
+            let converged = PersonDevices::new([device]);
+            Self { local, converged }
+        }
+    }
+
+    impl FabricLink for Fabric {
+        fn devices(&self) -> PersonDevices {
+            self.converged.clone()
+        }
+
+        fn online_device_ids(&self) -> std::collections::BTreeSet<DeviceId> {
+            std::collections::BTreeSet::from([self.local.clone()])
+        }
+
+        fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
+            Some((self.local.clone(), "This laptop".into()))
+        }
+
+        fn try_send_personal_fabric_action(
+            &self,
+            _: &DeviceId,
+            _: PersonalFabricAction,
+        ) -> Result<[u8; 16], PersonalFabricSendError> {
+            Err(PersonalFabricSendError::Rejected("no transport".into()))
+        }
+
+        fn require_media(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_speakers_are_the_devices_reading_and_its_verbs_refuse_what_cannot_be_a_group() {
+        let mut served = Served::new(std::sync::Arc::new(Fabric::laptop()));
+        let reading = served.read(RESOURCE).expect("the speakers are published");
+        assert_eq!(reading["devices"][0]["label"], "This laptop");
+        assert_eq!(
+            reading["devices"][0]["outputs"].as_array().map(Vec::len),
+            Some(1),
+            "the output this laptop publishes is what a set can take"
+        );
+        assert!(served.poll(), "the first pass publishes the reading");
+        assert!(!served.poll(), "a pass that changed nothing is no revision");
+
+        let mut identify = Map::new();
+        identify.insert("device".into(), Value::from("this-laptop"));
+        identify.insert("output".into(), Value::from("not an output"));
+        let refused = served.invoke(RESOURCE, "identify", &identify).err();
+        assert!(
+            matches!(refused, Some(ApiError::InvalidArguments(_))),
+            "an output that is no selector never reaches the speakers: {refused:?}"
+        );
+        assert!(
+            matches!(
+                served.invoke("session:elsewhere", "identify", &identify).err(),
+                Some(ApiError::Unknown(_))
+            ),
+            "the verbs are the speakers' own"
+        );
+    }
 }

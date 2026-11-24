@@ -22,9 +22,6 @@ use tilo_broker_core::services::LaunchPlace;
 use tilo_desktop_model::app::AppKind as Builtin;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
-use tilo_workspace_service::apps::services::{
-    ApplicationChange, ApplicationServices, DriveChange, DriveServices,
-};
 
 use crate::Launches;
 use crate::drives::{Medium, files_on};
@@ -83,9 +80,6 @@ struct Inner {
     asks: std::sync::Mutex<Vec<Ask>>,
     /// The drives and the apps as they were last told.
     now: std::sync::Mutex<Now>,
-    /// The revision of each list, which Files' waits follow.
-    drives_changed: tokio::sync::watch::Sender<u64>,
-    apps_changed: tokio::sync::watch::Sender<u64>,
 }
 
 #[derive(Default)]
@@ -109,36 +103,18 @@ impl Handle {
                 wake,
                 asks: std::sync::Mutex::new(Vec::new()),
                 now: std::sync::Mutex::new(Now::default()),
-                // One before the first wait (which asks from 0), so a first ask is answered at once
-                // rather than waited on.
-                drives_changed: tokio::sync::watch::channel(1).0,
-                apps_changed: tokio::sync::watch::channel(1).0,
             }),
         }
     }
 
     /// The media attached now, as the session's own list of them reads.
     pub(crate) fn saw_media(&self, media: Vec<Medium>) {
-        {
-            let mut now = self.inner.now.lock_recover();
-            if now.media == media {
-                return;
-            }
-            now.media = media;
-        }
-        bump(&self.inner.drives_changed);
+        self.inner.now.lock_recover().media = media;
     }
 
     /// The person's apps, as the session's lists last read them.
     pub(crate) fn saw_apps(&self, apps: &[AppEntry]) {
-        {
-            let mut now = self.inner.now.lock_recover();
-            if now.apps.as_deref() == Some(apps) {
-                return;
-            }
-            now.apps = Some(apps.to_vec());
-        }
-        bump(&self.inner.apps_changed);
+        self.inner.now.lock_recover().apps = Some(apps.to_vec());
     }
 
     /// The sheet questions left for the loop since its last pass: taken once,
@@ -211,41 +187,6 @@ impl Tools {
     pub(crate) fn handle(&self) -> &Handle {
         &self.handle
     }
-}
-
-impl DriveServices for Handle {
-    fn changed(&self, after: u64) -> Option<DriveChange> {
-        Some(wait(&self.inner.drives_changed, after))
-    }
-}
-
-impl ApplicationServices for Handle {
-    fn changed(&self, after: u64) -> Option<ApplicationChange> {
-        Some(wait(&self.inner.apps_changed, after))
-    }
-}
-
-/// Move `revision` on by one, waking the waits that follow it.
-fn bump(revision: &tokio::sync::watch::Sender<u64>) {
-    revision.send_modify(|revision| *revision = revision.wrapping_add(1).max(1));
-}
-
-/// Resolves once `revision` is past `after` , with the revision to wait from next. Subscribed now,
-/// so a change in between is still seen.
-fn wait(revision: &tokio::sync::watch::Sender<u64>, after: u64) -> DriveChange {
-    let mut changes = revision.subscribe();
-    Box::pin(async move {
-        loop {
-            let current = *changes.borrow_and_update();
-            if current > after {
-                return current;
-            }
-            if changes.changed().await.is_err() {
-                // The revision outlives every wait and never closes.
-                std::future::pending::<()>().await;
-            }
-        }
-    })
 }
 
 /// Accept an app's connection until the session ends.
@@ -783,7 +724,6 @@ fn refused(message: &str) -> ToolReply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_portal::tools::{AppKind, AppRemoval};
 
     fn medium(device: &str) -> Medium {
         Medium {
@@ -821,47 +761,6 @@ mod tests {
             let reply = document_apps(&handle.inner, &caller, "/home/you/notes.pdf");
             assert!(!reply.accepted);
             assert!(reply.documents.is_empty());
-        }
-
-        phase the_app_list_announces_a_change_only_when_it_changes;
-        {
-            let handle = Handle::new(Arc::new(Launches::default()), std::sync::Arc::new(|| {}));
-            let first = vec![AppEntry {
-                id: "so.tilo.notes".into(),
-                name: "Notes".into(),
-                package: Some("so.tilo.notes".into()),
-                icon: None,
-                program: None,
-                removal: AppRemoval::RemoveFromApps,
-                kind: AppKind::Tilo,
-                size: None,
-            }];
-            // What the loop waits for is the announcement: a wait past the last one it saw returns
-            // at once while the list moved, and never while it did not.
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_time()
-                .build()
-                .expect("the test's runtime");
-            let announced = |after: u64| {
-                runtime.block_on(async {
-                    let changed = ApplicationServices::changed(&handle, after)
-                        .expect("the app list is waited on");
-                    tokio::time::timeout(Duration::from_millis(50), changed)
-                        .await
-                        .ok()
-                })
-            };
-            handle.saw_apps(&first);
-            let after_first = announced(0).expect("the first list is a change from none");
-            assert!(
-                announced(after_first).is_none(),
-                "the same list wakes nobody"
-            );
-            handle.saw_apps(&[]);
-            assert!(
-                announced(after_first).is_some(),
-                "a changed list wakes the wait"
-            );
         }
     }
 }

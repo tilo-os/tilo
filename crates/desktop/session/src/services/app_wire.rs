@@ -206,12 +206,11 @@ fn acting_fabric(
 /// the launcher hands its apps, and the link the loop answers their calls through.
 /// The broker it serves on is `collaboration` 's, which the session's channel service checks a
 /// workspace's sealed records with, and whose keys an endpoint asks a record's keys from. What the
-/// app wire takes from the session besides its broker: who keeps its agents, the sessions they work
-/// in, and the tools service apps reach their lists' changes through.
+/// app wire takes from the session besides its broker: who keeps its agents and the sessions they
+/// work in.
 pub(crate) struct Knitted {
     pub(crate) agents: Option<std::sync::Arc<crate::agents::Roster>>,
     pub(crate) agent_sessions: Option<std::sync::Arc<crate::agent_sessions::AgentSessions>>,
-    pub(crate) tools: Option<crate::tools::Handle>,
 }
 
 #[expect(
@@ -327,8 +326,6 @@ pub(crate) fn start_app_wire(
                     layout: &layout,
                     calls_service: calls_service.as_ref(),
                     records,
-                    tools: services.tools,
-                    fabric: fabric.clone(),
                     view: view.as_ref(),
                     engine: engine.as_ref(),
                     shell,
@@ -395,7 +392,6 @@ pub(crate) fn start_app_wire(
                         None => None,
                     },
                     lists: options.lists.clone(),
-                    tools: services.tools,
                     task_programs,
                     session_actions,
                     settings_steps,
@@ -439,8 +435,6 @@ struct SeatInputs<'a> {
     layout: &'a std::sync::Arc<LayoutAuthority>,
     calls_service: Option<&'a tilo_native_media::NativeMediaService>,
     records: Option<std::sync::Arc<crate::resource_index::RecordChanges>>,
-    tools: Option<crate::tools::Handle>,
-    fabric: Option<crate::platform::fabric::SharedLink>,
     view: Option<&'a std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     engine: Option<&'a std::sync::Arc<crate::engine::Engine>>,
     shell: &'a runtime_collab::ShellClient,
@@ -460,8 +454,6 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         layout,
         calls_service,
         records,
-        tools,
-        fabric,
         view,
         engine,
         shell,
@@ -492,7 +484,6 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         }),
         continuations: options.launches.notes(),
         records,
-        tools,
         // Where this computer's networks wake it and what it saved: the passphrases are the
         // daemon's, which this session asks them of.
         wifi_continuity: crate::wifi_continuity::WifiContinuity::new(
@@ -507,7 +498,6 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
                     dyn tilo_workspace_service::apps::services::WifiContinuityServices,
                 >
         }),
-        fabric,
         published: std::sync::Arc::clone(link) as _,
         workspace_nodes: crate::workspace_nodes::WorkspaceNodes::service(view),
         settings,

@@ -302,14 +302,6 @@ impl ChannelSession {
                 .map(|reply| -> Answering {
                     Box::pin(async move { reply.await.map_err(Refusal::refusal) })
                 }),
-            Service::Speaker => {
-                channel
-                    .speaker_dispatch(body)
-                    .map_err(failed)
-                    .map(|reply| -> Answering {
-                        Box::pin(async move { reply.await.map_err(Refusal::refusal) })
-                    })
-            }
             Service::CommittedDocument => runtime_collab::committed_document::Request::decode(body)
                 .map_err(Into::into)
                 .map(|request| -> Answering {
@@ -608,9 +600,6 @@ impl JoinedChannel {
             .revalidate_admission(&route, &self.verified_identity)?;
         let services = &self.state.services;
         match of {
-            Changes::Speakers => speaker_change(services, &route.app_id, after),
-            Changes::Drives => drive_changes::drive_change(services, &route.app_id, after),
-            Changes::Applications => app_changes::app_change(services, &route.app_id, after),
             Changes::RetiredNearbyTransfers => Err(BrokerError::unimplemented(
                 "nearby transfers are the device daemon's".to_owned(),
             )),
@@ -730,52 +719,6 @@ impl JoinedChannel {
             .await
             .map_err(|error| BrokerError::failed(error.to_string()))?
         }))
-    }
-
-    /// Answer a speaker-group command, JSON both ways. Only the certified
-    /// Settings route manages the person's speaker groups.
-    pub(super) fn speaker_dispatch(
-        &self,
-        bytes: &[u8],
-    ) -> Result<impl Future<Output = Result<Vec<u8>, BrokerError>> + use<>, BrokerError> {
-        let route = self.route();
-        self.state
-            .revalidate_admission(&route, &self.verified_identity)?;
-        if route.app_id != SPEAKER_APP_ID {
-            return Err(BrokerError::failed(
-                "speaker groups are managed only by the certified Settings application".into(),
-            ));
-        }
-        if bytes.len() > runtime_collab::MAX_SPEAKER_WIRE_BYTES {
-            return Err(BrokerError::failed(
-                "speaker command exceeds the local protocol bound".into(),
-            ));
-        }
-        let command = serde_json::from_slice::<runtime_collab::SpeakerCommand>(bytes)
-            .map_err(|error| BrokerError::failed(error.to_string()))?;
-        if !command.valid() {
-            return Err(BrokerError::failed(
-                "speaker command is structurally invalid".into(),
-            ));
-        }
-        let speakers = self.state.services.speakers.clone().ok_or_else(|| {
-            BrokerError::failed("speaker groups are unsupported by this provider".into())
-        })?;
-        Ok(async move {
-            // The groups are the fabric's, which may be the seat's to ask: off the broker's
-            // event loop, which carries that ask.
-            let reply = tokio::task::spawn_blocking(move || speakers.command(command))
-                .await
-                .map_err(|error| BrokerError::failed(error.to_string()))?;
-            let reply = serde_json::to_vec(&reply)
-                .map_err(|error| BrokerError::failed(error.to_string()))?;
-            if reply.len() > runtime_collab::MAX_SPEAKER_WIRE_BYTES {
-                return Err(BrokerError::failed(
-                    "speaker reply exceeds the local protocol bound".into(),
-                ));
-            }
-            Ok(reply)
-        })
     }
 
     /// Answer the app's remote-action `frame` with the frame its caller,

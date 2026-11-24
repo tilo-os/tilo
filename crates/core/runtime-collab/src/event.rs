@@ -170,28 +170,6 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     },
     /// Retired with the results above.
     RetiredNearbyTransferChanged,
-    /// What a speaker snapshot would show may have changed: a device came or
-    /// went, a member answered, a calibration moved on. It names nothing;
-    /// Settings asks for a fresh
-    /// [`SpeakerCommand::Snapshot`](crate::SpeakerCommand::Snapshot)
-    /// instead of asking on a timer. The first arrives once the route joins,
-    /// so it also starts the view. Only the certified Settings route
-    /// receives these.
-    SpeakersChanged,
-    /// The drives the shell lists may have changed: one was plugged in,
-    /// taken out, opened or closed. It names nothing; Files asks the tools
-    /// service for the list again instead of asking on a timer. The first
-    /// arrives once the route joins, so it also fetches the first list. Only
-    /// the certified Files route receives these.
-    DrivesChanged,
-    /// The person's apps may have changed: one was installed, removed from
-    /// their apps or uninstalled, here or on another of their devices. It
-    /// names nothing; Files asks the tools service for the list again
-    /// instead of asking on a timer, and asks once when it comes to its
-    /// Applications place for what changed while it was not there. The
-    /// first arrives once the route joins. Only the certified Files route
-    /// receives these.
-    ApplicationsChanged,
     Realtime(collab_types::realtime::RealtimeEvent),
     /// The store's answer to the app's resource command `request_id`, in the store's encoding
     /// (`tilo_resource_store::wire::Reply`).

@@ -1,5 +1,4 @@
 use super::*;
-use crate::apps::BrokerErrorKind;
 use crate::apps::services::WifiContinuityServices;
 
 #[derive(Default)]
@@ -135,71 +134,5 @@ tilo_test_env::scenario! {
         )
         .expect_err("host without Wi-Fi fails explicitly");
         assert!(unsupported.to_string().contains("unsupported by this host"));
-    }
-
-    phase only_the_certified_settings_route_waits_for_speaker_changes;
-    {
-        let service = Arc::new(WaitingSpeakers {
-            announces: true,
-            waits: Mutex::new(Vec::new()),
-        });
-        let services = ProcessServices {
-            speakers: Some(service.clone()),
-            ..Default::default()
-        };
-        let change =
-            speaker_change(&services, "so.tilo.settings", 4).expect("Settings waits on its route");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("runtime");
-        assert_eq!(runtime.block_on(change), 5, "the host's next change");
-
-        for app in [tilo_app_id::apps::FILE_EXPLORER, "so.tilo.browser", ""] {
-            let refused = speaker_change(&services, app, 0)
-                .err()
-                .expect("only the certified Settings route waits");
-            assert!(refused.to_string().contains("certified Settings"));
-        }
-        assert_eq!(
-            *service.waits.lock().expect("waits"),
-            [4],
-            "a refused route never reaches the host"
-        );
-
-        for services in [
-            ProcessServices::default(),
-            ProcessServices {
-                speakers: Some(Arc::new(WaitingSpeakers {
-                    announces: false,
-                    waits: Mutex::new(Vec::new()),
-                })),
-                ..Default::default()
-            },
-        ] {
-            let unannounced = speaker_change(&services, "so.tilo.settings", 0)
-                .err()
-                .expect("a host that cannot announce changes says so");
-            assert_eq!(unannounced.kind, BrokerErrorKind::Unimplemented);
-        }
-    }
-
-}
-
-/// Speaker groups that record each wait and answer it with the next
-/// revision, or (`announces: false`) cannot say when they change.
-struct WaitingSpeakers {
-    announces: bool,
-    waits: Mutex<Vec<u64>>,
-}
-
-impl crate::apps::services::SpeakerServices for WaitingSpeakers {
-    fn command(&self, _command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply {
-        runtime_collab::SpeakerReply::Done { group: None }
-    }
-
-    fn changed(&self, after: u64) -> Option<crate::apps::services::SpeakerChange> {
-        self.waits.lock().expect("waits").push(after);
-        self.announces
-            .then(|| Box::pin(std::future::ready(after.wrapping_add(1))) as _)
     }
 }

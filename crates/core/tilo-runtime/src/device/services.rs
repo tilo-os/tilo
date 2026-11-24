@@ -2448,9 +2448,6 @@ fn broker_services(
         }),
         continuations: Some(forwarded.continuations),
         document_index_changes: Some(forwarded.document_index_changes),
-        drives: Some(forwarded.drives),
-        applications: Some(forwarded.applications),
-        speakers: Some(forwarded.speakers),
         workspace_nodes: Some(forwarded.workspace_nodes),
         // The device's keyboard shortcuts, the person's account credentials and Files'
         // clipboard are the desktop session's.

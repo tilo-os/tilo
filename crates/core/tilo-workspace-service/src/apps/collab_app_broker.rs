@@ -22,8 +22,6 @@ mod catalogue;
 mod routing;
 mod shown_actions;
 use tilo_actions::remote::argument_digest;
-use tilo_app_id::apps::FILE_EXPLORER as FILES_APP_ID;
-use tilo_app_id::apps::SETTINGS as SPEAKER_APP_ID;
 use tilo_app_id::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
 mod invocation;
 use authority::*;
@@ -65,7 +63,6 @@ pub use observed_launch::AppOpen;
 mod offload_api;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
-mod app_changes;
 #[cfg(test)]
 mod app_settings_tests;
 #[cfg(test)]
@@ -79,7 +76,6 @@ pub use content_put::CONTENT_PUT_REFUSED;
 #[cfg(test)]
 mod directory_disclosure_tests;
 mod directory_pagination;
-mod drive_changes;
 mod durable_local_invocation;
 mod staged_admission;
 pub use staged_admission::StagedJob;

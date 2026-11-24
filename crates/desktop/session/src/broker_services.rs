@@ -25,11 +25,10 @@ use tilo_broker_core::services::{
 use tilo_broker_core::steps::ContinuationServices;
 use tilo_workspace_keys::KeyProvider;
 use tilo_workspace_service::apps::services::{
-    ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
-    DisplayControlServices, DriveServices, FileClipboardServices, LauncherServices,
-    ProcessServices, PublishedResources, RealtimeServices, ShortcutLibraryServices,
-    SpeakerServices, WifiContinuityServices, WorkspaceControlServices, WorkspaceGrants,
-    WorkspaceMemberships,
+    AudioOutputServices, BrowserServiceSessionServices, DisplayControlServices,
+    FileClipboardServices, LauncherServices, ProcessServices, PublishedResources,
+    RealtimeServices, ShortcutLibraryServices, WifiContinuityServices, WorkspaceControlServices,
+    WorkspaceGrants, WorkspaceMemberships,
 };
 
 /// What this session serves of one service.
@@ -132,9 +131,6 @@ broker_services! {
     content_store: Arc<dyn ContentStoreServices>,
     workspace_control: Arc<dyn WorkspaceControlServices>,
     realtime: Arc<dyn RealtimeServices>,
-    speakers: Arc<dyn SpeakerServices>,
-    drives: Arc<dyn DriveServices>,
-    applications: Arc<dyn ApplicationServices>,
     settings: Arc<dyn settings_store::SettingsSource>,
     display_control: Arc<dyn DisplayControlServices>,
     live_activities: Arc<runtime_collab::LiveActivities>,
@@ -266,7 +262,6 @@ pub(crate) const CALLED_SERVICES: &[(&str, &str)] = &[
         "ui::collaboration::wifi_continuity_command",
         "wifi_continuity",
     ),
-    ("ui::collaboration::speaker_command", "speakers"),
     ("ui::collaboration::display_control", "display_control"),
     (
         "ui::collaboration::browser_service_sessions",

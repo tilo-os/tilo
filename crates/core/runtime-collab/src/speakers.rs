@@ -8,8 +8,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Maximum encoded size of one speaker command or reply.
-pub const MAX_SPEAKER_WIRE_BYTES: usize = 64 * 1024;
 pub const MAX_SPEAKER_DEVICES: usize = 64;
 pub const MAX_SPEAKER_ENDPOINTS: usize = 32;
 pub const MAX_SPEAKER_GROUPS: usize = 16;

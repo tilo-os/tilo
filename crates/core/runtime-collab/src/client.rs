@@ -15,11 +15,11 @@ use crate::wire::{
 };
 use crate::{ChannelContext, Invocation, PresenceEvent};
 use crate::{
-    ExportedAction, PresencePayload, SpeakerCommand, SpeakerReply, SurfaceDelta,
+    ExportedAction, PresencePayload, SurfaceDelta,
     WifiContinuityCommand, WifiContinuityReply, WorkspaceControlEvent, WorkspaceControlInput,
     audio_output, committed_document, file_clipboard, native_media,
 };
-use crate::{MAX_SPEAKER_WIRE_BYTES, MAX_WIFI_CONTINUITY_WIRE_BYTES};
+use crate::MAX_WIFI_CONTINUITY_WIRE_BYTES;
 
 /// Where a connection's calls hand the host descriptors, if it can.
 #[cfg(unix)]
@@ -793,28 +793,6 @@ impl RecordHandle {
             &reply,
             MAX_WIFI_CONTINUITY_WIRE_BYTES,
             WifiContinuityReply::valid,
-        )
-    }
-
-    /// Ask the shell's speaker-group authority from the authenticated
-    /// Settings route.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the command or reply violates its wire
-    /// contract or the host refuses it.
-    pub async fn speaker_command(
-        &self,
-        command: &SpeakerCommand,
-    ) -> Result<SpeakerReply, NotAvailable> {
-        let command_json =
-            encode_bounded_command("speaker", command, command.valid(), MAX_SPEAKER_WIRE_BYTES)?;
-        let reply = self.command(Service::Speaker, command_json, &[]).await?;
-        decode_bounded_reply(
-            "speaker",
-            &reply,
-            MAX_SPEAKER_WIRE_BYTES,
-            SpeakerReply::valid,
         )
     }
 

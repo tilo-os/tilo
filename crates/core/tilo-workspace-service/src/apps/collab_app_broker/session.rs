@@ -878,31 +878,6 @@ pub(super) fn delegate_browser_service_session_command(
     reply.encode().map_err(|_| refused())
 }
 
-/// The only application that manages the person's speaker groups.
-use tilo_app_id::apps::SETTINGS as SPEAKER_APP_ID;
-
-/// The wait for the speaker groups' next change past `after` for a
-/// connection on `route_app`: only the certified Settings route may wait, as
-/// only it may command.
-pub(super) fn speaker_change(
-    services: &ProcessServices,
-    route_app: &str,
-    after: u64,
-) -> Result<crate::apps::services::SpeakerChange, BrokerError> {
-    if route_app != SPEAKER_APP_ID {
-        return Err(BrokerError::failed(
-            "speaker groups are managed only by the certified Settings application".into(),
-        ));
-    }
-    services
-        .speakers
-        .as_ref()
-        .and_then(|service| service.changed(after))
-        .ok_or_else(|| {
-            BrokerError::unimplemented("this host does not say when speaker groups change".into())
-        })
-}
-
 impl JoinedChannel {
     /// Open a workspace control session with `target`, for an editor of
     /// this channel's workspace, checked again at every step.

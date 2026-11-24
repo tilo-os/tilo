@@ -29,9 +29,8 @@ use tilo_workspace_service::apps::NativePeerBrokerConfig;
 use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
 use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
 use tilo_workspace_service::apps::services::{
-    ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
-    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch, SpeakerChange,
-    SpeakerServices, WifiContinuityServices, WorkspaceMemberships,
+    BrowserServiceSessionServices, Caller, DisplayControlServices, ProcessServices,
+    PublishedResources, Reading, ResourceWatch, WifiContinuityServices, WorkspaceMemberships,
 };
 use tilo_workspace_service::workspaces::providers::Providers;
 use tokio::sync::{mpsc, oneshot};
@@ -475,24 +474,6 @@ impl PublishedResources for Link {
     }
 }
 
-/// The speaker groups this session's fabric carries, as the broker's
-/// Settings route commands them: Settings asks for a snapshot, creates,
-/// edits and calibrates a group, and follows their changes, and the speaker
-/// service answers from the fabric the loop pumps.
-struct FabricSpeakers(crate::platform::fabric::SharedLink);
-
-impl SpeakerServices for FabricSpeakers {
-    fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply {
-        tilo_speaker_service::settings::handle(&self.0, command)
-    }
-
-    fn changed(&self, after: u64) -> Option<SpeakerChange> {
-        Some(Box::pin(tilo_speaker_service::settings::changed(
-            &self.0, after,
-        )))
-    }
-}
-
 /// Who is present on which device, as a session in a workspace's VM hears it: the person's own
 /// devices on a live session with it, as its fabric hears them. The workspaces' links are its
 /// host's to hear.
@@ -578,9 +559,6 @@ pub struct Hosted {
     /// The apps this device has, as search last read them: what the broker
     /// admits an app's declared actions against, by its signed manifest.
     pub lists: Lists,
-    /// The session's tools service, while it serves one: what Files' waits
-    /// for its drive and app lists' changes are answered from.
-    pub tools: Option<crate::tools::Handle>,
     /// The programs the agents working this session's tasks write, which this
     /// session's links runs as steps of their runs.
     pub task_programs:
@@ -1203,13 +1181,12 @@ fn broker_services(
         action_offload,
         journal_root,
         lists,
-        tools,
         task_programs,
         session_actions,
         settings_steps,
         file_clipboard,
         item_lending,
-        fanout,
+        fanout: _,
     } = hosted;
     // What each window this session runs shows, kept with its launches: read
     // by the service a window's app speaks on, and by the session's own passes.
@@ -1373,22 +1350,6 @@ fn broker_services(
             "the person creates and joins workspaces from the session, not on an app's behalf",
         ),
         realtime: BrokerService::unserved("this session serves no realtime continuity"),
-        // The speaker groups of the fabric this session runs on.
-        speakers: BrokerService::when(fabric.clone().map(|fabric| {
-            std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
-        })),
-        // Files waits on the tools service for both lists to change, and asks
-        // it for the lists themselves: the drive list and the app list are
-        // that service's, in this session as in the launcher's.
-        drives: BrokerService::when(
-            tools
-                .clone()
-                .map(|tools| std::sync::Arc::new(tools) as std::sync::Arc<dyn DriveServices>),
-        ),
-        applications: BrokerService::when(
-            tools
-                .map(|tools| std::sync::Arc::new(tools) as std::sync::Arc<dyn ApplicationServices>),
-        ),
         settings: BrokerService::when(settings),
         display_control: BrokerService::when(display_control),
         // Every app shows its live activity (a running timer, a stopwatch)
@@ -1697,107 +1658,6 @@ fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::fabric::{
-        DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
-        PersonalFabricAction,
-    };
-    use crate::platform::fabric::{FabricLink, PersonalFabricSendError};
-    use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
-    use tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint;
-
-    /// This laptop's devices, with the one output it publishes.
-    struct Fabric {
-        local: DeviceId,
-        converged: PersonDevices,
-        record: Devices,
-    }
-
-    impl Fabric {
-        fn laptop() -> Self {
-            let local = DeviceId::new("this-laptop").expect("a device id");
-            let mut device = PersonDevice::new(
-                local.clone(),
-                DeviceAbout {
-                    label: "This laptop".into(),
-                    kind: DeviceKind::Laptop,
-                    capabilities: FabricCapabilities {
-                        audio_output: true,
-                        audio_group: true,
-                        ..FabricCapabilities::default()
-                    },
-                },
-            );
-            device.online = true;
-            device.last_seen_unix_ms = 1;
-            let converged = PersonDevices::new([device]);
-            let record = record_of(&local);
-            Self {
-                local,
-                converged,
-                record,
-            }
-        }
-    }
-
-    /// The person's devices record with this device's one output.
-    fn record_of(local: &DeviceId) -> Devices {
-        use tilo_resource::Replica;
-        let mut record = Replica::<Devices>::new();
-        record
-            .apply(Devices::KEEP_DEVICE.with((local.as_str().to_owned(), "00".to_owned())))
-            .expect("the device is kept");
-        let endpoints = vec![SpeakerEndpoint {
-            selector: crate::platform::fabric::EndpointSelector::mint(
-                local,
-                "alsa_output.analog-stereo",
-            )
-            .to_hex(),
-            microphone: false,
-            label: "Speakers".into(),
-            is_default: true,
-        }];
-        record
-            .apply(Devices::SAY_SPEAKER_ENDPOINTS.with((
-                local.as_str().to_owned(),
-                hex::encode(postcard::to_allocvec(&endpoints).expect("endpoints encode")),
-            )))
-            .expect("the device offers its output");
-        record.state().expect("the record reads")
-    }
-
-    impl FabricLink for Fabric {
-        fn devices(&self) -> PersonDevices {
-            self.converged.clone()
-        }
-
-        fn person_devices(&self) -> Option<Devices> {
-            Some(self.record.clone())
-        }
-
-        fn apply_person_devices(&self, _: tilo_resource::Invoke<Devices>) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn online_device_ids(&self) -> std::collections::BTreeSet<DeviceId> {
-            std::collections::BTreeSet::from([self.local.clone()])
-        }
-
-        fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
-            Some((self.local.clone(), "This laptop".into()))
-        }
-
-        fn try_send_personal_fabric_action(
-            &self,
-            _: &DeviceId,
-            _: PersonalFabricAction,
-        ) -> Result<[u8; 16], PersonalFabricSendError> {
-            Err(PersonalFabricSendError::Rejected("no transport".into()))
-        }
-
-        fn require_media(&self) -> Result<(), String> {
-            Ok(())
-        }
-    }
 
     /// The activity's links, which these tests serve nothing on.
     fn requests() -> tilo_session_core::desktop::session::ActivityRequests {
@@ -1850,7 +1710,6 @@ mod tests {
             action_offload: None,
             journal_root: None,
             lists,
-            tools: None,
             task_programs: None,
             session_actions: Some(test_session_actions()),
             settings_steps: None,
@@ -1884,41 +1743,6 @@ mod tests {
             assert!(
                 with.document_content.is_none() && with.content_store.is_none(),
                 "a record's content is the device's daemon's, and an app reaches it there"
-            );
-        }
-
-        phase the_session_answers_settings_speaker_route_from_its_fabric;
-        // Settings reaches the speaker groups of the fabric this session runs
-        // on, and of nothing else: a session without one has no speaker route.
-        {
-            assert!(
-                services(None).speakers.is_none(),
-                "a session on no fabric carries no speaker groups"
-            );
-
-            let speakers = services(Some(std::sync::Arc::new(Fabric::laptop())))
-                .speakers
-                .expect("the speaker route is registered");
-            let runtime_collab::SpeakerReply::Snapshot { snapshot } =
-                speakers.command(runtime_collab::SpeakerCommand::Snapshot)
-            else {
-                panic!("Settings asks for a snapshot");
-            };
-            assert!(snapshot.media_enabled);
-            let labels = snapshot
-                .devices
-                .iter()
-                .map(|device| device.label.as_str())
-                .collect::<Vec<_>>();
-            assert_eq!(labels, ["This laptop"]);
-            assert_eq!(
-                snapshot.devices[0].outputs.len(),
-                1,
-                "the output this laptop publishes is what Settings can put in a set"
-            );
-            assert!(
-                speakers.changed(0).is_some(),
-                "and it tells Settings when that changes"
             );
         }
 
@@ -2297,10 +2121,6 @@ mod tests {
         assert!(
             shortcut_catalogue(&services),
             "every shortcut of this desktop is listed"
-        );
-        assert!(
-            services.drives.is_none() && services.applications.is_none(),
-            "nothing is told to Files from a session that serves it nothing"
         );
         assert!(
             services.workspace_memberships.is_none(),

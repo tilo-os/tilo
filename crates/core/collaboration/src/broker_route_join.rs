@@ -4,7 +4,7 @@
 
 use super::{
     BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteSpec, SdkCommand, SdkJoinContext,
-    SdkRoute, change_waits, committed_document, follow_channel_keys, native_media, record_sync,
+    SdkRoute, committed_document, follow_channel_keys, native_media, record_sync,
     spawn_content_stream, spawn_context_stream, spawn_presence_stream, spawn_realtime_stream,
     take_invocations_once_current, tokio_mpsc,
 };
@@ -249,7 +249,6 @@ pub(super) async fn join_route(
         follow_channel_keys(channel.clone(), channel_id.clone(), key_signals.clone());
     }
     tilo_startup_metrics::startup_mark("collab-join-window-binding");
-    change_waits::follow(&spec.app_id, &channel, inbound_tx);
     // A route whose record arrives as committed reads follows it through them;
     // any other reads what the store holds of its record as it opens, and again
     // each time the store says it changed.

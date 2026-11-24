@@ -172,7 +172,7 @@ pub use broker::SessionServices;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
     EndpointChannelKeys, SessionResource, display_control, has_resource_connection,
-    resource_command, speaker_command, wifi_continuity_command,
+    resource_command, wifi_continuity_command,
 };
 // Committed reads live with the broker worker that retains them. Without the
 // broker transport no committed capture can exist, but the type stays part of
@@ -255,14 +255,6 @@ pub use collab_types::{CommitAuthor, CommitPart, DocumentMutation, UnitMutation,
 /// app is written in: the broker runs a check only for an invocation of it.
 pub use runtime_collab::approved_checks::ACTION_ID as APPROVED_CHECK_ACTION;
 pub use runtime_collab::{
-    CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneInfo,
-    CalibrationMicrophoneRun, CalibrationMicrophoneState, CalibrationPhaseInfo,
-    MAX_SPEAKER_NAME_CHARS, MicrophoneStatus, SpeakerCommand, SpeakerDeviceInfo,
-    SpeakerEndpointInfo, SpeakerGroupInfo, SpeakerMemberInfo, SpeakerMemberSpec,
-    SpeakerMemberStatus, SpeakerPlaybackInfo, SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot,
-    SpeakerTrimInfo,
-};
-pub use runtime_collab::{
     NearbyTransferPhase, NetworkWakeStatus, PortableWifiSecurity, WifiContinuityCommand,
     WifiContinuityReply,
 };
@@ -282,15 +274,6 @@ pub fn wifi_continuity_command(
     _command: runtime_collab::WifiContinuityCommand,
 ) -> Result<runtime_collab::WifiContinuityReply, String> {
     Err("Wi-Fi continuity requires the certified collaboration service".to_string())
-}
-
-/// Ask the shell's speaker-group authority. Without the broker transport
-/// there is no certified collaboration service to carry it.
-#[cfg(not(feature = "broker-transport"))]
-pub fn speaker_command(
-    _command: runtime_collab::SpeakerCommand,
-) -> Result<runtime_collab::SpeakerReply, String> {
-    Err("speakers need the certified collaboration service".to_string())
 }
 
 /// The native display control service is unavailable without an admitted broker.

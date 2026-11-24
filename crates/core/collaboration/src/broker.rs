@@ -33,8 +33,6 @@ mod fixtures;
 #[path = "broker_published.rs"]
 mod published;
 pub use published::SessionResource;
-#[path = "change_waits.rs"]
-mod change_waits;
 #[path = "committed_document.rs"]
 pub(super) mod committed_document;
 #[path = "inbound_bridge.rs"]
@@ -116,7 +114,7 @@ const WIFI_CONTINUITY_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The transport's outbound queue as the process reaches it from outside: the
 /// session's published resources ([`SessionResource`]) and the device commands
-/// ([`wifi_continuity_command`], [`speaker_command`]).
+/// ([`wifi_continuity_command`]).
 static PUBLISHED_COMMAND_BRIDGE: std::sync::OnceLock<
     std::sync::Mutex<Option<tokio_mpsc::WeakSender<QueuedSdkCommand>>>,
 > = std::sync::OnceLock::new();
@@ -152,39 +150,6 @@ pub fn wifi_continuity_command(
     reply_rx
         .recv_timeout(WIFI_CONTINUITY_TIMEOUT)
         .map_err(|_| "Wi-Fi continuity service did not respond".to_string())?
-}
-
-const SPEAKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Ask the shell's speaker-group authority over the launcher-authenticated
-/// Settings route. Run it off the frame thread; a lost broker times out into
-/// an ordinary unavailable result.
-pub fn speaker_command(
-    command: runtime_collab::SpeakerCommand,
-) -> Result<runtime_collab::SpeakerReply, String> {
-    let sender = PUBLISHED_COMMAND_BRIDGE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .map_err(|_| "speaker service is unavailable".to_string())?
-        .as_ref()
-        .and_then(tokio_mpsc::WeakSender::upgrade)
-        .ok_or_else(|| "speakers need the certified collaboration service".to_string())?;
-    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-    let state = BridgeState::new();
-    if !enqueue_sdk_command(
-        &sender,
-        SdkCommand::Speakers {
-            app_id: "so.tilo.settings".into(),
-            command,
-            reply: reply_tx,
-        },
-        &state,
-    ) {
-        return Err("speaker command queue is unavailable".into());
-    }
-    reply_rx
-        .recv_timeout(SPEAKER_COMMAND_TIMEOUT)
-        .map_err(|_| "the speaker service did not respond".to_string())?
 }
 
 /// How long a store command waits for its workspace's answer.
@@ -1053,11 +1018,6 @@ enum SdkCommand {
         app_id: String,
         command: runtime_collab::WifiContinuityCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::WifiContinuityReply, String>>,
-    },
-    Speakers {
-        app_id: String,
-        command: runtime_collab::SpeakerCommand,
-        reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
     },
     DisplayControl {
         origin: runtime_collab::settings::DisplayOrigin,
@@ -3691,24 +3651,6 @@ async fn drive_shovel(
                     route
                         .channel
                         .wifi_continuity_command(&command)
-                        .await
-                        .map_err(|error| error.to_string())
-                } else {
-                    Err("primary collaboration route is unavailable".into())
-                };
-                let _ = reply.send(result);
-            }
-            SdkCommand::Speakers {
-                app_id: _,
-                command,
-                reply,
-            } => {
-                let result = if let Some(key) = primary.as_ref()
-                    && let Some(route) = routes.get_mut(key)
-                {
-                    route
-                        .channel
-                        .speaker_command(&command)
                         .await
                         .map_err(|error| error.to_string())
                 } else {

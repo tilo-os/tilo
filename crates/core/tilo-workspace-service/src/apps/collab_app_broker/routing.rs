@@ -206,9 +206,6 @@ impl AppBrokerState {
             | CollabEvent::ActionVerdicts { .. }
             | CollabEvent::RetiredNearbyTransferCommandResult { .. }
             | CollabEvent::RetiredNearbyTransferChanged
-            | CollabEvent::SpeakersChanged
-            | CollabEvent::DrivesChanged
-            | CollabEvent::ApplicationsChanged
             | CollabEvent::Realtime(_)
             | CollabEvent::DocumentContent { .. }
             | CollabEvent::DocumentContentState { .. }

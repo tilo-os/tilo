@@ -1200,8 +1200,7 @@ impl Session {
         // automation's arming both refuse a device its workspace revoked.
         let revocations = crate::engine::revocations_of(engine.as_ref());
         // The typed opens an app asks this session for: one service, made
-        // here so the broker below serves Files' waits for its lists'
-        // changes, and started from the services table.
+        // here and started from the services table.
         let tools = crate::tools::Handle::new(
             std::sync::Arc::clone(&options.launches),
             options.wake.handle(),
@@ -1219,7 +1218,6 @@ impl Session {
             crate::services::app_wire::Knitted {
                 agents: Some(agents.roster()),
                 agent_sessions: Some(std::sync::Arc::clone(&agent_sessions)),
-                tools: Some(tools.clone()),
             },
             crate::services::app_wire::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
