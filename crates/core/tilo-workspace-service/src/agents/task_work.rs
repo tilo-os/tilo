@@ -834,8 +834,13 @@ mod session_tests {
         for (source, ids) in PACKAGES {
             host.load_builtin(source, ids).unwrap();
         }
-        // The device's Tasks, which a new task is added to: made as an app makes its root.
-        host.root_of(TASKS).unwrap();
+        // The roots of the device's apps (its Tasks, which a new task is added to, its
+        // Notebook, which a task's note is made in): made as an app makes its root, by the
+        // document each is kept in.
+        let roots: BTreeMap<String, String> = [TASKS, "so.tilo.notes"]
+            .into_iter()
+            .map(|app| (format!("tl:{app}"), host.root_of(app).unwrap().doc))
+            .collect();
         let mut service = tilolang_service::ResourceService::new(host, person);
         let mut sent: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         let mut moved = || {
@@ -852,21 +857,19 @@ mod session_tests {
             documents
         };
         opened.send(moved()).unwrap();
-        // The Tasks of the device, as its service publishes them: what a new task is added to.
-        let tasks_root = format!("tl:{TASKS}");
-        let tasks_kind = format!("tl.{TASKS}.Tasks");
         while let Ok(ask) = asks.recv() {
-            let resource = if ask.resource == tasks_root {
-                service
+            // An app's own actions are asked of the app (`tl:<app>`): its root, as the
+            // device's service publishes it.
+            let resource = match roots.get(&ask.resource) {
+                Some(doc) => service
                     .resources()
                     .into_iter()
-                    .find(|resource| resource.kind == tasks_kind)
-                    .expect("the device publishes its Tasks")
+                    .find(|resource| resource.id.as_str().contains(doc.as_str()))
+                    .unwrap_or_else(|| panic!("the device publishes {}'s root", ask.resource))
                     .id
                     .as_str()
-                    .to_owned()
-            } else {
-                ask.resource.clone()
+                    .to_owned(),
+                None => ask.resource.clone(),
             };
             let started = service.invoke_as(&ask.invoker, &resource, &ask.action, &ask.arguments);
             let done = match started {
@@ -1284,7 +1287,11 @@ mod session_tests {
         assert!(request.contains("not your first session"), "{request}");
         assert!(request.contains("$0.75 of $1.00 is left"), "{request}");
         assert!(request.contains("`tl:so.tilo.notes:"), "{request}");
-        assert!(request.contains("`Tasks/1 Book the venue`"), "{request}");
+        assert!(
+            request.contains("`Tasks/1 Book the venue`"),
+            "{request}\nthe task as the store keeps it: {:?}",
+            host.content(&work.task.id).await
+        );
         assert_eq!(
             actions(&broker),
             [
