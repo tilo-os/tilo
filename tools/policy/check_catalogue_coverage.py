@@ -281,7 +281,7 @@ def package_at(root: Path, unit: Path, revision: str) -> dict[str, int]:
         return {}
     texts = tree_texts(root, revision, relatives)
     with tempfile.TemporaryDirectory(prefix="catalogue-") as scratch:
-        held = scratch / "package"
+        held = Path(scratch) / "package"
         for relative in relatives:
             path = held / relative.name
             path.parent.mkdir(parents=True, exist_ok=True)
