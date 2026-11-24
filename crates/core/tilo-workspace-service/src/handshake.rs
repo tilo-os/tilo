@@ -22,9 +22,7 @@ use crate::auth::{
 use crate::frame::{read_frame, write_frame, write_refusal};
 use crate::policy::TrustPolicy;
 use tilo_lock::RwLockRecover as _;
-use tilo_server_protocol::entering::{
-    Entered, Entry,
-};
+use tilo_server_protocol::entering::{Entered, Entry};
 
 /// The most bytes a pre-authentication frame may declare. The session's
 /// 64 MiB limit would let a few hundred idle peers pin the host's memory.
@@ -244,6 +242,7 @@ impl LiveIdentity {
         )
         .await
     }
+}
 
 /// How long a device that was told why its hello is refused has to read it.
 const REFUSAL_READ: Duration = Duration::from_secs(5);
