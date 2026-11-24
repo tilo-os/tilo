@@ -2496,8 +2496,7 @@ impl<'a> Parser<'a> {
             // A UI call's named block is the view's part of that name, read as its block's
             // content: `std.page(x, header: { ... })` fills `header` as `{ header: { ... } }`
             // does.
-            if ui && name.is_some() && self.is(&Tok::LBrace) {
-                let name = name.expect("a named argument");
+            if ui && self.is(&Tok::LBrace) && let Some(name) = name {
                 let body = self.ui_block()?;
                 self.ui_parts.push((name, body));
                 if !self.eat(&Tok::Comma) {

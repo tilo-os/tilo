@@ -254,7 +254,7 @@ impl Checker<'_> {
                     args: None,
                 }
             }
-            _ => return None,
+            J::Array(_) => return None,
         };
         Some(ast::Expr { kind, span })
     }
