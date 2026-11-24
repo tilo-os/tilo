@@ -399,12 +399,15 @@ impl Checker<'_> {
             }
         }
         let in_view = matches!(self.st.ctx, super::Ctx::View);
-        if scope.is_none() && in_view {
+        // Another app's records it publishes (`tilo.invocations#Invocation`) are listed by that
+        // app, which the view follows: a query of them needs no resource to look in.
+        let listed = info.id.contains('#');
+        if scope.is_none() && in_view && !listed {
             self.err(
                 "E105",
                 span,
                 format!(
-                    "a query in a view looks inside a resource: `query({}, in: x, ...)`; one over the whole workspace is search's",
+                    "a query in a view looks inside a resource, or at another app's records: `query({}, in: x, ...)`; one over the whole workspace is search's",
                     key.name
                 ),
             );

@@ -872,4 +872,110 @@ view note(n: other.Note) {
             );
         }
     }
+
+    /// An app that lists its records rather than running here (a workspace's invocations): each
+    /// asks someone something, waits or runs, and its filters are the defaults of its fields.
+    fn listed() -> Meta {
+        let mut listed = meta(json!({
+            "app": "tilo.listed",
+            "types": [
+                {"id": "tilo.listed#Ask", "name": "Ask", "fields": [
+                    {"id": "Ask.words", "name": "words", "type": "Text"},
+                    {"id": "Ask.status", "name": "status", "type": "enum Status"},
+                    {"id": "Ask.person", "name": "person", "type": "Option<Actor>"},
+                ]},
+            ],
+            "enums": [
+                {"id": "tilo.listed#Status", "name": "Status", "doc": "", "variants": [
+                    {"id": "Status.waiting", "name": "waiting", "doc": "", "fields": []},
+                    {"id": "Status.running", "name": "running", "doc": "", "fields": []},
+                ]},
+            ],
+        }));
+        tilolang::search::describe_defaults(&mut listed);
+        listed
+    }
+
+    /// What is asked of the person looking: the app's records that wait for them, read from its
+    /// listing with no resource to look in.
+    const ASKING_VIEW: &str = r#"app test.asking "Asking"
+
+use tilo.listed as listed
+
+view asking() {
+  stack {
+    for ask in query(listed.Ask, status: .waiting, person: me) {
+      row { text(ask.words) }
+    }
+  }
+}
+"#;
+
+    /// The app's listing, `asks` its records.
+    fn listing(asks: serde_json::Value) -> String {
+        json!({ "items": asks }).to_string()
+    }
+
+    tilo_test_env::scenario! {
+        fn a_view_lists_another_apps_records_and_follows_them;
+
+        phase what_waits_for_the_person_is_listed_once_its_listing_comes;
+        {
+            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let app = listed();
+            assert!(
+                app.types[0].search.filters.iter().any(|f| f.key == "status"),
+                "a listed type is filtered by its fields: {:?}",
+                app.types[0].search
+            );
+            rt.load_foreign(app.clone()).unwrap();
+            let view = App::compile(ASKING_VIEW, std::slice::from_ref(&app));
+            view.load(&rt);
+            let mut opened = rt
+                .open_view(&me(), &view.view("asking"), Vec::new())
+                .unwrap_or_else(|why| panic!("{why}"));
+            assert_eq!(drawn(&opened), Vec::<String>::new(), "nothing is listed yet");
+            let wanted = rt.take_wanted();
+            assert_eq!(
+                wanted,
+                [("*".to_owned(), "tilo.listed#Ask".to_owned())],
+                "the host is asked for the app's listing, once"
+            );
+            let all = tilolang_runtime::foreign::listing_of("tilo.listed#Ask");
+            rt.set_reading(
+                &all,
+                &listing(json!([
+                    {"id": "a1", "words": "Send the report?", "status": "waiting", "person": "me"},
+                    {"id": "a2", "words": "Book the room?", "status": "running", "person": "me"},
+                    {"id": "a3", "words": "Pay the invoice?", "status": "waiting", "person": "you"},
+                    {"id": "a4", "words": "Read the folder", "status": "running"},
+                ])),
+            )
+            .expect("a listing");
+            opened.poll_patches().unwrap();
+            assert_eq!(
+                drawn(&opened),
+                ["Send the report?"],
+                "only what waits for the person looking: {}",
+                dump(opened.tree())
+            );
+
+            // A record that stops waiting leaves, and a new one comes.
+            rt.set_reading(
+                &all,
+                &listing(json!([
+                    {"id": "a1", "words": "Send the report?", "status": "running", "person": "me"},
+                    {"id": "a5", "words": "Delete the draft?", "status": "waiting", "person": "me"},
+                ])),
+            )
+            .expect("a listing");
+            opened.poll_patches().unwrap();
+            assert_eq!(drawn(&opened), ["Delete the draft?"]);
+            assert!(rt.take_wanted().is_empty(), "the listing is asked for once");
+
+            // Each listed record is the app's own, by its id: what answering it names.
+            let ask = ResourceRef::parse_id("a5", "tilo.listed#Ask").expect("an id");
+            assert_eq!(rt.read(&ask, "words").unwrap(), Value::text("Delete the draft?"));
+        }
+    }
 }

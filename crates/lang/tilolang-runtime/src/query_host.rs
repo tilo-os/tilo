@@ -173,6 +173,22 @@ impl Core {
         match held {
             Value::Coll(coll) => Ok(Value::Coll(Rc::new(coll.queried(pred, order)))),
             Value::List(items) => self.query_list(items, &pred, order.as_ref()),
+            // Every record of another app's type, as that app lists them: read from its
+            // listing, which the view runs again on when it moves.
+            Value::Opt(None) | Value::Unit if ty.contains('#') => {
+                let key = crate::foreign::foreign_type(ty)
+                    .ok_or_else(|| format!("query: `{ty}` names no app's type"))?;
+                let listing = crate::foreign::listing_of(ty);
+                self.note_reading(crate::foreign::reading_key(&listing));
+                let items = {
+                    let author = self.frames.borrow().top()?.module.clone();
+                    let registry = self.registry.borrow();
+                    self.foreign
+                        .borrow_mut()
+                        .listed(&key, Some(&author), &registry)?
+                };
+                self.query_foreign(items, &pred, order.as_ref())
+            }
             Value::Opt(None) | Value::Unit => self.query_all(ty, &pred, order.as_ref()),
             other => trap(format!(
                 "query: `in:` is a collection or a list of resources, not {}",

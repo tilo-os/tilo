@@ -540,6 +540,79 @@ impl Foreign {
     }
 }
 
+impl Foreign {
+    /// The records of another app's type `key` as that app lists them: the reading of its listing
+    /// ([`listing_of`]), each item a record of the type, named by its own `id`. A listing that has
+    /// not come in yet is asked of the host, and lists nothing until it does; the view that asked
+    /// runs again then, as one reading any field of it does.
+    ///
+    /// # Errors
+    ///
+    /// Why the host could not read it, or an item that is not a record of the type.
+    pub(crate) fn listed(
+        &mut self,
+        key: &TypeKey,
+        author: Option<&ModuleHash>,
+        registry: &Registry,
+    ) -> Result<Vec<Value>, String> {
+        let target = listing_of(&format!("{}#{}", key.app, key.name));
+        let at = Self::key(&target);
+        if !self.arrive(&target)? {
+            self.want(at, &target);
+            return Ok(Vec::new());
+        }
+        let Some((json, _)) = self.source(&at) else {
+            return Ok(Vec::new());
+        };
+        let Some(items) = json.get(LISTED) else {
+            return Err(format!(
+                "the listing of `{}#{}` holds no `{LISTED}`",
+                key.app, key.name
+            ));
+        };
+        let items = items.clone();
+        let (value, records) = {
+            let mut decoder = Decoder {
+                author,
+                registry,
+                base: target.id_string(),
+                steps: Vec::new(),
+                records: Vec::new(),
+            };
+            let value = decoder.down(LISTED, &items, &Ty::List(Box::new(Ty::Record(key.clone()))));
+            (value, decoder.records)
+        };
+        let value = value.map_err(|why| format!("the listing of `{}`: {why}", key.name))?;
+        for (record, steps) in records {
+            self.place(&record, steps, at.clone());
+        }
+        match value {
+            Value::List(items) => Ok(items),
+            other => Err(format!("the listing of `{}` read as {}", key.name, other.kind_name())),
+        }
+    }
+}
+
+/// What the listing of another app's records is named by in place of a record's id: a query
+/// over all of that app's records of a type (`query(invocations.Invocation, status: .waiting)`)
+/// reads the reading of `<app>#<Type>@*`, which the host follows from the app.
+pub const LISTING: &str = "*";
+
+/// Where a listing's reading holds its records: `{"items": [...]}`.
+pub const LISTED: &str = "items";
+
+/// The resource the listing of the type `ty` (`<app>#<Type>`) is read as ([`LISTING`]).
+#[must_use]
+pub fn listing_of(ty: &str) -> ResourceRef {
+    ResourceRef::root(LISTING, ty)
+}
+
+/// Whether `target` names the listing of its type rather than a record of it.
+#[must_use]
+pub fn is_listing(target: &ResourceRef) -> bool {
+    target.item.is_none() && target.doc == LISTING
+}
+
 /// `value`, read as `ty`, as a field of that type reads here. A field of a map reads as the
 /// list of its entries, each a key and its value: what the store holds of one, and what
 /// `keys()` and `get(key)` of a field are asked of. A map anywhere else in a reading (what an
@@ -597,6 +670,7 @@ pub(crate) fn lit_of_value(kind: crate::meta::FieldKind, value: &Value) -> Optio
         Value::Opt(Some(inner)) => return lit_of_value(kind, inner),
         Value::Enum(e) => Lit::Variant(e.variant.clone()),
         Value::Ref(r) => Lit::Ref(r.target.id_string()),
+        Value::Actor(who) => Lit::Actor(who.clone()),
         Value::List(items) if kind == crate::meta::FieldKind::Set => Lit::Set(
             items
                 .iter()
@@ -992,9 +1066,14 @@ impl Decoder<'_> {
             })?;
         for field in &info.fields {
             let Some((step, value)) = held(json, field) else {
-                // A field the reading leaves out is none, or the value the type declares for
-                // it; one that has neither is missing, not empty.
-                if matches!(field.ty, Ty::Option(_)) || field.default.is_some() {
+                // A field the reading leaves out is none, empty (a service leaves out a list
+                // it holds nothing in), or the value the type declares for it; one that has
+                // none of those is missing.
+                if matches!(
+                    field.ty,
+                    Ty::Option(_) | Ty::List(_) | Ty::Set(_) | Ty::Map(_)
+                ) || field.default.is_some()
+                {
                     continue;
                 }
                 return Err(format!(
@@ -1112,6 +1191,17 @@ fn plain(json: &Json, ty: &Ty) -> Result<Value, String> {
         Ty::Float | Ty::Length(_) => json.as_f64().map(Value::Float),
         Ty::Bool => json.as_bool().map(Value::Bool),
         Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => json.as_str().map(Value::text),
+        // A person a service names by their root key (an invocation's `person`), as the
+        // workspace names its members everywhere outside a record.
+        Ty::Actor if json.is_string() => json
+            .as_str()
+            .filter(|key| !key.is_empty())
+            .and_then(|key| tilo_actions::policy::PersonId::parse(key).ok())
+            .map(|person| {
+                Value::Actor(crate::ids::Actor::Member(crate::ids::MemberId::Person(
+                    person,
+                )))
+            }),
         _ => tagged(json, "actor")
             .and_then(|who| serde_json::from_value(who.clone()).ok())
             .map(Value::Actor),

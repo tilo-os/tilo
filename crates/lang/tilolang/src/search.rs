@@ -535,6 +535,27 @@ pub fn defaults(info: &TypeInfo, env: &Env) -> SearchMeta {
     out
 }
 
+/// Give every type of `meta` that declares no search of its own the defaults ([`defaults`]): what
+/// the records of an app that publishes a description rather than compiled code (an invocation of
+/// the workspace) are filtered by, so a query of them is typed and answered as one of a
+/// tilolang type is.
+pub fn describe_defaults(meta: &mut crate::meta::PackageMeta) {
+    let mut env = Env {
+        app: meta.app.clone(),
+        ..Env::default()
+    };
+    let alias = meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned();
+    env.add_import(&alias, meta);
+    for declared in &mut meta.types {
+        if declared.search.declared || !declared.search.filters.is_empty() {
+            continue;
+        }
+        if let Some(info) = env.types.iter().find(|info| info.id == declared.id) {
+            declared.search = defaults(info, &env);
+        }
+    }
+}
+
 /// How the fields of the resource a predicate is over are written.
 #[derive(Clone, Copy)]
 enum Fields<'a> {
