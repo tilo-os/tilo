@@ -22,10 +22,10 @@ from tilo import Entry, Invocation, Resource
 __all__ = [
     "Notice",
     "Settings",
+    "Screen",
     "ProblemReport",
     "TiloSettings",
     "ImportThemeArgs",
-    "MoveSharedScreenArgs",
     "OpenPaneArgs",
     "ShowSettingArgs",
     "ReviewContrastArgs",
@@ -37,15 +37,6 @@ ImportThemeArgs = TypedDict("ImportThemeArgs", {
     "file": "Any",
 })
 """The arguments of `import_theme`."""
-
-MoveSharedScreenArgs = TypedDict("MoveSharedScreenArgs", {
-    "night": "Any",
-    "screens": "list[Any]",
-    "picked": "int",
-    "start": "list[float]",
-    "let_go": "list[float]",
-})
-"""The arguments of `move_shared_screen`."""
 
 OpenPaneArgs = TypedDict("OpenPaneArgs", {
     "page": "str",
@@ -78,7 +69,7 @@ ReviewContrastNowArgs = TypedDict("ReviewContrastNowArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.settings@4968411ed7e719ce"
+    __surface__ = "so.tilo.settings@64438680099d8fe6"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -139,7 +130,7 @@ class Notice(Resource):
 
 class Settings(Resource):
     """Settings — `tl.so.tilo.settings.Settings`."""
-    __surface__ = "so.tilo.settings@4968411ed7e719ce"
+    __surface__ = "so.tilo.settings@64438680099d8fe6"
     vfi4twig: str  # pane
 
     def import_theme(self, *, file: Any) -> None:
@@ -155,38 +146,41 @@ class Settings(Resource):
     __actions__ = frozenset({"import_theme", "import_theme_many"})
 
 
+class Screen(Resource):
+    """Screen — `tl.so.tilo.settings.Screen`."""
+    __surface__ = "so.tilo.settings@64438680099d8fe6"
+    jv7udxtv: str  # device
+    yffzojmk: str  # device_label
+    ygrxnhgi: str  # output
+    pyvmb3xc: str  # connector
+    qkogq64e: str  # name
+    wl63r7vc: int  # x
+    ifqfxckm: int  # y
+    ckht7p7n: int  # own_x
+    mw6cqvcw: int  # own_y
+    yfbxh7yj: int  # width
+    dhxa4orb: int  # height
+    pokqvk7i: bool  # local
+    jqmgcbem: bool  # online
+
+
 class ProblemReport(Resource):
     """ProblemReport — `tl.so.tilo.settings.ProblemReport`."""
-    __surface__ = "so.tilo.settings@4968411ed7e719ce"
+    __surface__ = "so.tilo.settings@64438680099d8fe6"
     kb2c7b7e: str  # body
 
 
 class TiloSettings(Resource):
     """Settings — `tl.so.tilo.settings`."""
-    __surface__ = "so.tilo.settings@4968411ed7e719ce"
-    def move_shared_screen(self,
-        *,
-        night: Any,
-        screens: list[Any],
-        picked: int,
-        start: list[float],
-        let_go: list[float],
-    ) -> None:
-        """Move the device whose screen was dragged so that screen stands where the pointer was let go, in the shared space's own pixels, snapped to a small grid. Every screen of that device moves with it; a drag too small to mean anything is not a change."""
-        return self.action("move_shared_screen", night=night, screens=screens, picked=picked, start=start, let_go=let_go)
-
-    def move_shared_screen_many(self, items: list[MoveSharedScreenArgs]) -> list[dict[str, Any]]:
-        """Runs `move_shared_screen` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("move_shared_screen", items)
-
+    __surface__ = "so.tilo.settings@64438680099d8fe6"
     def move_screen(self,
         *,
-        screens: Any,
+        screens: list[Screen],
         picked: int,
         start: list[float],
         let_go: list[float],
     ) -> None:
-        """Move the screen picked to where the pointer was let go, in the desktop's own pixels, snapped to a small grid: a drag too small to mean anything is not a change."""
+        """Move the screen picked to where the pointer let it go. This device's own screens keep the arrangement their desktop gives them; another device's screens move together by the person's shared layout, this device's too when it has only one. A drag too small to mean anything is not a change."""
         return self.action("move_screen", screens=screens, picked=picked, start=start, let_go=let_go)
 
     def set_sdr_brightness(self,
@@ -278,6 +272,6 @@ class TiloSettings(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"move_shared_screen", "move_shared_screen_many", "move_screen", "set_sdr_brightness", "open_pane", "open_pane_many", "show_setting", "show_setting_many", "open_manage_page", "open_invoice", "set_processors_room", "set_memory_room", "send_problem_report", "review_contrast", "review_contrast_many", "review_contrast_on", "review_contrast_on_many", "review_contrast_now", "review_contrast_now_many", "export_theme"})
+    __actions__ = frozenset({"move_screen", "set_sdr_brightness", "open_pane", "open_pane_many", "show_setting", "show_setting_many", "open_manage_page", "open_invoice", "set_processors_room", "set_memory_room", "send_problem_report", "review_contrast", "review_contrast_many", "review_contrast_on", "review_contrast_on_many", "review_contrast_now", "review_contrast_now_many", "export_theme"})
 
 

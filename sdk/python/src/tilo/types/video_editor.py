@@ -42,6 +42,12 @@ __all__ = [
     "RenderAsk",
     "JobAnswer",
     "JobState",
+    "LiveAsk",
+    "CutAsk",
+    "LiveWord",
+    "MixAnswer",
+    "MixAsk",
+    "ScrubAsk",
     "Shot",
     "ShotMedia",
     "ShotTrack",
@@ -63,6 +69,7 @@ __all__ = [
     "DrawSwatchArgs",
     "HearArgs",
     "SetTitleStyleArgs",
+    "SetFontArgs",
     "SetTitleLookArgs",
     "RedrawMediaArgs",
     "SetAlignArgs",
@@ -77,7 +84,13 @@ __all__ = [
     "SetSpeedArgs",
     "NormalSpeedArgs",
     "SetLookArgs",
+    "SetAnchorArgs",
+    "SetCurveArgs",
+    "ResetCurveArgs",
+    "SetCurveMixArgs",
     "SetMaskArgs",
+    "FillFrameArgs",
+    "FitMaskArgs",
     "InvertMaskArgs",
     "SetTransitionArgs",
     "SetReverseArgs",
@@ -86,13 +99,13 @@ __all__ = [
     "UnkeyArgs",
     "KeyColourArgs",
     "UnlinkClipArgs",
-    "UnplaceSideBySideArgs",
     "AddEffectArgs",
     "RemoveEffectArgs",
     "SetEffectArgs",
     "MoveEffectArgs",
     "ClearEffectsArgs",
     "NoteMarkerArgs",
+    "RenameMarkerArgs",
     "SplitAtArgs",
     "TroubleArgs",
     "AdoptProbeArgs",
@@ -117,6 +130,10 @@ __all__ = [
     "TrimEndArgs",
     "PasteClipsArgs",
     "DuplicateClipsArgs",
+    "TrimTracksArgs",
+    "CheckMixArgs",
+    "HearMixArgs",
+    "ForgotMixArgs",
     "RedrawArgs",
     "SampleKeyArgs",
     "FilmstripArgs",
@@ -131,10 +148,15 @@ __all__ = [
     "DeleteTrackArgs",
     "LinkClipsArgs",
     "SplitAudioArgs",
-    "PlaceSideBySideArgs",
     "DeleteMediaArgs",
     "PreviewArgs",
-    "PreviewCutArgs",
+    "PlayCutArgs",
+    "StopCutArgs",
+    "PauseCutArgs",
+    "ShuttleArgs",
+    "JumpToArgs",
+    "ScrubToArgs",
+    "RefreshLiveArgs",
     "ExportCutArgs",
     "PollRenderArgs",
     "CancelRenderArgs",
@@ -168,6 +190,11 @@ SetTitleStyleArgs = TypedDict("SetTitleStyleArgs", {
     "italic": "bool",
 })
 """The arguments of `set_title_style`."""
+
+SetFontArgs = TypedDict("SetFontArgs", {
+    "family": "str",
+})
+"""The arguments of `set_font`."""
 
 SetTitleLookArgs = TypedDict("SetTitleLookArgs", {
     "look": "TitleLook",
@@ -238,10 +265,40 @@ SetLookArgs = TypedDict("SetLookArgs", {
 })
 """The arguments of `set_look`."""
 
+SetAnchorArgs = TypedDict("SetAnchorArgs", {
+    "x": "float",
+    "y": "float",
+})
+"""The arguments of `set_anchor`."""
+
+SetCurveArgs = TypedDict("SetCurveArgs", {
+    "channel": "str",
+    "points": "list[float]",
+})
+"""The arguments of `set_curve`."""
+
+ResetCurveArgs = TypedDict("ResetCurveArgs", {
+    "channel": "str",
+})
+"""The arguments of `reset_curve`."""
+
+SetCurveMixArgs = TypedDict("SetCurveMixArgs", {
+    "mix": "float",
+})
+"""The arguments of `set_curve_mix`."""
+
 SetMaskArgs = TypedDict("SetMaskArgs", {
     "shape": "str",
 })
 """The arguments of `set_mask`."""
+
+FillFrameArgs = TypedDict("FillFrameArgs", {
+})
+"""The arguments of `fill_frame`."""
+
+FitMaskArgs = TypedDict("FitMaskArgs", {
+})
+"""The arguments of `fit_mask`."""
 
 InvertMaskArgs = TypedDict("InvertMaskArgs", {
     "invert": "bool",
@@ -286,10 +343,6 @@ UnlinkClipArgs = TypedDict("UnlinkClipArgs", {
 })
 """The arguments of `unlink_clip`."""
 
-UnplaceSideBySideArgs = TypedDict("UnplaceSideBySideArgs", {
-})
-"""The arguments of `unplace_side_by_side`."""
-
 AddEffectArgs = TypedDict("AddEffectArgs", {
     "form": "str",
 })
@@ -320,6 +373,11 @@ NoteMarkerArgs = TypedDict("NoteMarkerArgs", {
     "note": "str",
 })
 """The arguments of `note_marker`."""
+
+RenameMarkerArgs = TypedDict("RenameMarkerArgs", {
+    "words": "str",
+})
+"""The arguments of `rename_marker`."""
 
 SplitAtArgs = TypedDict("SplitAtArgs", {
     "c": "Clip",
@@ -361,7 +419,6 @@ DrawStillArgs = TypedDict("DrawStillArgs", {
 """The arguments of `draw_still`."""
 
 BeginRenderArgs = TypedDict("BeginRenderArgs", {
-    "render_kind": "str",
     "resolution": "str",
     "container": "str",
     "fps": "int",
@@ -462,6 +519,23 @@ DuplicateClipsArgs = TypedDict("DuplicateClipsArgs", {
 })
 """The arguments of `duplicate_clips`."""
 
+TrimTracksArgs = TypedDict("TrimTracksArgs", {
+    "db": "float",
+})
+"""The arguments of `trim_tracks`."""
+
+CheckMixArgs = TypedDict("CheckMixArgs", {
+})
+"""The arguments of `check_mix`."""
+
+HearMixArgs = TypedDict("HearMixArgs", {
+})
+"""The arguments of `hear_mix`."""
+
+ForgotMixArgs = TypedDict("ForgotMixArgs", {
+})
+"""The arguments of `forgot_mix`."""
+
 RedrawArgs = TypedDict("RedrawArgs", {
 })
 """The arguments of `redraw`."""
@@ -534,12 +608,6 @@ SplitAudioArgs = TypedDict("SplitAudioArgs", {
 })
 """The arguments of `split_audio`."""
 
-PlaceSideBySideArgs = TypedDict("PlaceSideBySideArgs", {
-    "left": "Clip",
-    "right": "Clip",
-})
-"""The arguments of `place_side_by_side`."""
-
 DeleteMediaArgs = TypedDict("DeleteMediaArgs", {
     "m": "Media",
 })
@@ -550,9 +618,39 @@ PreviewArgs = TypedDict("PreviewArgs", {
 })
 """The arguments of `preview`."""
 
-PreviewCutArgs = TypedDict("PreviewCutArgs", {
+PlayCutArgs = TypedDict("PlayCutArgs", {
+    "at": "float",
+    "rate": "float",
 })
-"""The arguments of `preview_cut`."""
+"""The arguments of `play_cut`."""
+
+StopCutArgs = TypedDict("StopCutArgs", {
+})
+"""The arguments of `stop_cut`."""
+
+PauseCutArgs = TypedDict("PauseCutArgs", {
+})
+"""The arguments of `pause_cut`."""
+
+ShuttleArgs = TypedDict("ShuttleArgs", {
+    "at": "float",
+    "way": "float",
+})
+"""The arguments of `shuttle`."""
+
+JumpToArgs = TypedDict("JumpToArgs", {
+    "at": "float",
+})
+"""The arguments of `jump_to`."""
+
+ScrubToArgs = TypedDict("ScrubToArgs", {
+    "at": "float",
+})
+"""The arguments of `scrub_to`."""
+
+RefreshLiveArgs = TypedDict("RefreshLiveArgs", {
+})
+"""The arguments of `refresh_live`."""
 
 ExportCutArgs = TypedDict("ExportCutArgs", {
     "resolution": "str",
@@ -581,7 +679,7 @@ ForgetProjectArgs = TypedDict("ForgetProjectArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -642,7 +740,7 @@ class Notice(Resource):
 
 class Media(Resource):
     """Media — `tl.so.tilo.video-editor.Media`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     efejoszz: str  # name
     pcamqw4n: Form  # form
     wj2aohfd: float  # duration
@@ -686,6 +784,7 @@ class Media(Resource):
     u37npdvi: bool  # bold
     wzbpbjsf: bool  # italic
     hlbhw6tg: float  # backdrop
+    j34pf5ka: str  # font
 
     def draw_swatch(self, *, width: int) -> None:
         """The source's picture as the bin shows it."""
@@ -714,6 +813,14 @@ class Media(Resource):
     def set_title_style_many(self, items: list[SetTitleStyleArgs]) -> list[dict[str, Any]]:
         """Runs `set_title_style` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_title_style", items)
+
+    def set_font(self, *, family: str) -> None:
+        """The family a title's words are set in, drawn again as it changes. The system's own sans is an empty family, which a box with no faces installed can still honour."""
+        return self.action("set_font", family=family)
+
+    def set_font_many(self, items: list[SetFontArgs]) -> list[dict[str, Any]]:
+        """Runs `set_font` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_font", items)
 
     def set_title_look(self,
         *,
@@ -753,19 +860,19 @@ class Media(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"draw_swatch", "draw_swatch_many", "hear", "hear_many", "set_title_style", "set_title_style_many", "set_title_look", "set_title_look_many", "redraw_media", "redraw_media_many", "set_align", "set_align_many", "set_words", "set_words_many"})
+    __actions__ = frozenset({"draw_swatch", "draw_swatch_many", "hear", "hear_many", "set_title_style", "set_title_style_many", "set_font", "set_font_many", "set_title_look", "set_title_look_many", "redraw_media", "redraw_media_many", "set_align", "set_align_many", "set_words", "set_words_many"})
 
 
 class Effect(Resource):
     """Effect — `tl.so.tilo.video-editor.Effect`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     ktghxc36: str  # form
     lj3ggezn: float  # amount
 
 
 class Track(Resource):
     """Track — `tl.so.tilo.video-editor.Track`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     hyiqyr2d: str  # name
     voeh7uw2: Form  # form
     h5vj7qoc: int  # index
@@ -830,7 +937,7 @@ class Track(Resource):
 
 class Key(Resource):
     """Key — `tl.so.tilo.video-editor.Key`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     @property
     def _362ioruy(self) -> str:
         """param (`362ioruy` on the wire)."""
@@ -865,7 +972,7 @@ class Key(Resource):
 
 class Clip(Resource):
     """Clip — `tl.so.tilo.video-editor.Clip`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     azbufhus: str  # name
     tpxg6k4q: Track  # track
     y4qdvmxb: Media  # media
@@ -917,6 +1024,8 @@ class Clip(Resource):
     @_3ru7tn4m.setter
     def _3ru7tn4m(self, value: float) -> None:
         self.edit("3ru7tn4m", value=value)
+    mbctkint: float  # anchor_x
+    iyrfpfiq: float  # anchor_y
     kx3c765z: float  # crop_left
     @property
     def _4rl2tdsz(self) -> float:
@@ -968,6 +1077,11 @@ class Clip(Resource):
     @_6njmwsei.setter
     def _6njmwsei(self, value: bool) -> None:
         self.edit("6njmwsei", value=value)
+    ex66wj7a: list[float]  # curve_master
+    n5lm4fa3: list[float]  # curve_red
+    vl2qc7vg: list[float]  # curve_green
+    ba2d3rjj: list[float]  # curve_blue
+    qai4utug: float  # curve_mix
     vmc7izdi: str  # link
     wovh5j2b: bool  # link_follows
     poy7f6dc: bool  # sound_split
@@ -1000,6 +1114,46 @@ class Clip(Resource):
         """Runs `set_look` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_look", items)
 
+    def set_anchor(self,
+        *,
+        x: float,
+        y: float,
+    ) -> None:
+        """Moves the point a clip's scaling and turning go around: a corner, an edge or the middle, which is where a picture is pinned when it is made half the frame, turned or grown."""
+        return self.action("set_anchor", x=x, y=y)
+
+    def set_anchor_many(self, items: list[SetAnchorArgs]) -> list[dict[str, Any]]:
+        """Runs `set_anchor` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_anchor", items)
+
+    def set_curve(self,
+        *,
+        channel: str,
+        points: list[float],
+    ) -> None:
+        """Sets one channel's tone curve from the points a person shaped, applied to the picture at once."""
+        return self.action("set_curve", channel=channel, points=points)
+
+    def set_curve_many(self, items: list[SetCurveArgs]) -> list[dict[str, Any]]:
+        """Runs `set_curve` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_curve", items)
+
+    def reset_curve(self, *, channel: str) -> None:
+        """Puts one channel's curve back to the straight line: the picture as the grade alone leaves it."""
+        return self.action("reset_curve", channel=channel)
+
+    def reset_curve_many(self, items: list[ResetCurveArgs]) -> list[dict[str, Any]]:
+        """Runs `reset_curve` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("reset_curve", items)
+
+    def set_curve_mix(self, *, mix: float) -> None:
+        """How much of the curve the picture takes: 0 bypasses it entirely, 1 is the curve as drawn."""
+        return self.action("set_curve_mix", mix=mix)
+
+    def set_curve_mix_many(self, items: list[SetCurveMixArgs]) -> list[dict[str, Any]]:
+        """Runs `set_curve_mix` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_curve_mix", items)
+
     def set_mask(self, *, shape: str) -> None:
         """Sets which shape limits where a clip shows: `off`, `rect` or `ellipse`."""
         return self.action("set_mask", shape=shape)
@@ -1007,6 +1161,22 @@ class Clip(Resource):
     def set_mask_many(self, items: list[SetMaskArgs]) -> list[dict[str, Any]]:
         """Runs `set_mask` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_mask", items)
+
+    def fill_frame(self) -> None:
+        """Fills the frame with the picture as it comes: every crop, scaling, turn and move taken back, so the source's own aspect-fit fills as much of the frame as it can."""
+        return self.action("fill_frame")
+
+    def fill_frame_many(self, items: list[FillFrameArgs]) -> list[dict[str, Any]]:
+        """Runs `fill_frame` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("fill_frame", items)
+
+    def fit_mask(self) -> None:
+        """Fits the clip's mask over the picture as the frame shows it: the aspect-fit the source takes, then its crop, its scaling, its turn and its move, so a mask cuts out the picture rather than a box of guessed size."""
+        return self.action("fit_mask")
+
+    def fit_mask_many(self, items: list[FitMaskArgs]) -> list[dict[str, Any]]:
+        """Runs `fit_mask` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("fit_mask", items)
 
     def invert_mask(self, *, invert: bool) -> None:
         """Keeps the inside of the clip's mask, or the outside of it."""
@@ -1095,14 +1265,6 @@ class Clip(Resource):
         """Runs `unlink_clip` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("unlink_clip", items)
 
-    def unplace_side_by_side(self) -> None:
-        """Runs the app's action."""
-        return self.action("unplace_side_by_side")
-
-    def unplace_side_by_side_many(self, items: list[UnplaceSideBySideArgs]) -> list[dict[str, Any]]:
-        """Runs `unplace_side_by_side` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("unplace_side_by_side", items)
-
     def add_effect(self, *, form: str) -> None:
         """Runs the app's action."""
         return self.action("add_effect", form=form)
@@ -1153,12 +1315,12 @@ class Clip(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_speed", "set_speed_many", "normal_speed", "normal_speed_many", "set_look", "set_look_many", "set_mask", "set_mask_many", "invert_mask", "invert_mask_many", "set_transition", "set_transition_many", "set_reverse", "set_reverse_many", "redraw_clip", "redraw_clip_many", "key_at", "key_at_many", "unkey", "unkey_many", "key_colour", "key_colour_many", "thumb_frame", "unlink_clip", "unlink_clip_many", "unplace_side_by_side", "unplace_side_by_side_many", "add_effect", "add_effect_many", "remove_effect", "remove_effect_many", "set_effect", "set_effect_many", "move_effect", "move_effect_many", "clear_effects", "clear_effects_many"})
+    __actions__ = frozenset({"set_speed", "set_speed_many", "normal_speed", "normal_speed_many", "set_look", "set_look_many", "set_anchor", "set_anchor_many", "set_curve", "set_curve_many", "reset_curve", "reset_curve_many", "set_curve_mix", "set_curve_mix_many", "set_mask", "set_mask_many", "fill_frame", "fill_frame_many", "fit_mask", "fit_mask_many", "invert_mask", "invert_mask_many", "set_transition", "set_transition_many", "set_reverse", "set_reverse_many", "redraw_clip", "redraw_clip_many", "key_at", "key_at_many", "unkey", "unkey_many", "key_colour", "key_colour_many", "thumb_frame", "unlink_clip", "unlink_clip_many", "add_effect", "add_effect_many", "remove_effect", "remove_effect_many", "set_effect", "set_effect_many", "move_effect", "move_effect_many", "clear_effects", "clear_effects_many"})
 
 
 class Marker(Resource):
     """Marker — `tl.so.tilo.video-editor.Marker`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     @property
     def _6gy3r5jn(self) -> str:
         """name (`6gy3r5jn` on the wire)."""
@@ -1186,14 +1348,22 @@ class Marker(Resource):
         """Runs `note_marker` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("note_marker", items)
 
+    def rename_marker(self, *, words: str) -> None:
+        """Renames a mark. A name of nothing is refused: a mark nobody can find in the list is not a marker."""
+        return self.action("rename_marker", words=words)
+
+    def rename_marker_many(self, items: list[RenameMarkerArgs]) -> list[dict[str, Any]]:
+        """Runs `rename_marker` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename_marker", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"note_marker", "note_marker_many"})
+    __actions__ = frozenset({"note_marker", "note_marker_many", "rename_marker", "rename_marker_many"})
 
 
 class Project(Resource):
     """Project — `tl.so.tilo.video-editor.Project`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     hdhd7ufr: str  # name
     sggyvq5o: float  # fps
     rv7tdvl6: int  # width
@@ -1229,9 +1399,9 @@ class Project(Resource):
     def _47vsdgaf(self, value: str) -> None:
         self.edit("47vsdgaf", value=value)
     dppbe5en: float  # still_at
-    gkp4va33: str  # proxy
+    kti7icrd: str  # live
+    k4vs2hwv: float  # live_rate
     xa5fpldf: str  # job
-    dkhcppi4: str  # job_kind
     myjdbgx2: int  # job_done
     @property
     def _63bjrnm4(self) -> int:
@@ -1250,6 +1420,23 @@ class Project(Resource):
     @_4jky56y7.setter
     def _4jky56y7(self, value: str) -> None:
         self.edit("4jky56y7", value=value)
+    xryucmpo: float  # over_db
+    @property
+    def _33lufvui(self) -> list[float]:
+        """clips_at (`33lufvui` on the wire)."""
+        return self.fields["33lufvui"]
+
+    @_33lufvui.setter
+    def _33lufvui(self, value: list[float]) -> None:
+        self.edit("33lufvui", value=value)
+    @property
+    def _5sdhdf7o(self) -> list[str]:
+        """hot_tracks (`5sdhdf7o` on the wire)."""
+        return self.fields["5sdhdf7o"]
+
+    @_5sdhdf7o.setter
+    def _5sdhdf7o(self, value: list[str]) -> None:
+        self.edit("5sdhdf7o", value=value)
 
     def restore_clip(self,
         *,
@@ -1348,13 +1535,12 @@ class Project(Resource):
 
     def begin_render(self,
         *,
-        render_kind: str,
         resolution: str,
         container: str,
         fps: int,
     ) -> None:
-        """Starts a render: `preview` keeps the cut small for the window to play, `export` writes the file a person saves."""
-        return self.action("begin_render", render_kind=render_kind, resolution=resolution, container=container, fps=fps)
+        """Starts the render a person saves."""
+        return self.action("begin_render", resolution=resolution, container=container, fps=fps)
 
     def begin_render_many(self, items: list[BeginRenderArgs]) -> list[dict[str, Any]]:
         """Runs `begin_render` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -1586,6 +1772,38 @@ class Project(Resource):
         """Runs `duplicate_clips` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("duplicate_clips", items)
 
+    def trim_tracks(self, *, db: float) -> None:
+        """Brings every track down by the same number of decibels, keeping the balance between them. A mix is a sum, so scaling every layer of it scales the sum: the balance the person set stays where they put it. Moving only the tracks caught over would change that balance and would not even guarantee the sum fits — two tracks at two-thirds each are over without either being over alone. A number that brings nothing down refuses rather than quietly doing nothing."""
+        return self.action("trim_tracks", db=db)
+
+    def trim_tracks_many(self, items: list[TrimTracksArgs]) -> list[dict[str, Any]]:
+        """Runs `trim_tracks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("trim_tracks", items)
+
+    def check_mix(self) -> None:
+        """Asks this device to measure the cut's whole mix, and keeps where it went over full scale so the flag, the way to each place and the trim know what they are talking about."""
+        return self.action("check_mix")
+
+    def check_mix_many(self, items: list[CheckMixArgs]) -> list[dict[str, Any]]:
+        """Runs `check_mix` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("check_mix", items)
+
+    def hear_mix(self) -> None:
+        """Takes what a live play has heard so far: the mix clipping is heard as the cut plays, and the flag and its way there stand from the first place it went over."""
+        return self.action("hear_mix")
+
+    def hear_mix_many(self, items: list[HearMixArgs]) -> list[dict[str, Any]]:
+        """Runs `hear_mix` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("hear_mix", items)
+
+    def forgot_mix(self) -> None:
+        """Forgets a measurement of a mix that has been changed since: what was measured describes a sum that no longer exists."""
+        return self.action("forgot_mix")
+
+    def forgot_mix_many(self, items: list[ForgotMixArgs]) -> list[dict[str, Any]]:
+        """Runs `forgot_mix` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("forgot_mix", items)
+
     def redraw(self) -> None:
         """Draws the frame the preview last showed again, so an edit made after it is seen at once. A cut whose frame the window never showed draws nothing: there is no place to draw it at."""
         return self.action("redraw")
@@ -1689,7 +1907,7 @@ class Project(Resource):
         return self.many("set_frame_size", items)
 
     def adopt_format(self, *, m: Media) -> None:
-        """Takes its shape from a source: what 'Use its format' does."""
+        """Takes the cut's shape from a source: the frame size and rate it was shot at, so the cut is shown as the source is. The button that does it names the source, so pressing it is never a guess about which of several sources it meant."""
         return self.action("adopt_format", m=m)
 
     def adopt_format_many(self, items: list[AdoptFormatArgs]) -> list[dict[str, Any]]:
@@ -1728,18 +1946,6 @@ class Project(Resource):
         """Runs `split_audio` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("split_audio", items)
 
-    def place_side_by_side(self,
-        *,
-        left: Clip,
-        right: Clip,
-    ) -> None:
-        """Puts two clips side by side: each half the frame, one left and one right."""
-        return self.action("place_side_by_side", left=left, right=right)
-
-    def place_side_by_side_many(self, items: list[PlaceSideBySideArgs]) -> list[dict[str, Any]]:
-        """Runs `place_side_by_side` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("place_side_by_side", items)
-
     def delete_media(self, *, m: Media) -> None:
         """Takes a source out of the bin, and every clip that showed it with it."""
         return self.action("delete_media", m=m)
@@ -1756,13 +1962,81 @@ class Project(Resource):
         """Runs `preview` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("preview", items)
 
-    def preview_cut(self) -> None:
-        """Renders the cut small, so the window plays it."""
-        return self.action("preview_cut")
+    def play_cut(self,
+        *,
+        at: float,
+        rate: float,
+    ) -> None:
+        """Plays the cut from `at`: the device composites each frame as the playhead reaches it and mixes the sound for the same moment, so the window shows the cut itself rather than a render of it. A negative rate plays the footage and its sound backwards."""
+        return self.action("play_cut", at=at, rate=rate)
 
-    def preview_cut_many(self, items: list[PreviewCutArgs]) -> list[dict[str, Any]]:
-        """Runs `preview_cut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("preview_cut", items)
+    def play_cut_many(self, items: list[PlayCutArgs]) -> list[dict[str, Any]]:
+        """Runs `play_cut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("play_cut", items)
+
+    def stop_cut(self) -> None:
+        """Stops the live play: the device stops compositing and the sound stops with the picture."""
+        return self.action("stop_cut")
+
+    def stop_cut_many(self, items: list[StopCutArgs]) -> list[dict[str, Any]]:
+        """Runs `stop_cut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("stop_cut", items)
+
+    def pause_cut(self) -> None:
+        """Stops the live play where it stands, and draws that frame: what pause does."""
+        return self.action("pause_cut")
+
+    def pause_cut_many(self, items: list[PauseCutArgs]) -> list[dict[str, Any]]:
+        """Runs `pause_cut` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("pause_cut", items)
+
+    def shuttle(self,
+        *,
+        at: float,
+        way: float,
+    ) -> None:
+        """One press of a shuttle control: the same way doubles the speed up to sixteen times, the other way starts again at normal speed that way."""
+        return self.action("shuttle", at=at, way=way)
+
+    def shuttle_many(self, items: list[ShuttleArgs]) -> list[dict[str, Any]]:
+        """Runs `shuttle` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("shuttle", items)
+
+    def jump_to(self, *, at: float) -> None:
+        """Stops the live play and draws the frame `at` in its place: what a jump or a frame step does."""
+        return self.action("jump_to", at=at)
+
+    def jump_to_many(self, items: list[JumpToArgs]) -> list[dict[str, Any]]:
+        """Runs `jump_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("jump_to", items)
+
+    def live_at(self) -> float:
+        """Where the live play has the playhead now, or -1 when nothing plays."""
+        return self.action("live_at")
+
+    def scrub_to(self, *, at: float) -> None:
+        """Scrubs to the second `at`: the live play stops, the frame under the playhead is drawn, and a short piece of the sound there is played. A drag runs this at every move."""
+        return self.action("scrub_to", at=at)
+
+    def scrub_to_many(self, items: list[ScrubToArgs]) -> list[dict[str, Any]]:
+        """Runs `scrub_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("scrub_to", items)
+
+    def play_moving(self) -> bool:
+        """Whether the live play is still running: a word of nowhere means it is just starting, and a word at either end means it has stopped there."""
+        return self.action("play_moving")
+
+    def refresh_live(self) -> None:
+        """Hands the device the cut as it now is: an edit made while the cut plays is seen as it is made, rather than at the next play."""
+        return self.action("refresh_live")
+
+    def refresh_live_many(self, items: list[RefreshLiveArgs]) -> list[dict[str, Any]]:
+        """Runs `refresh_live` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("refresh_live", items)
+
+    def hear_scrub(self, *, at: float) -> None:
+        """The cut's sound where the playhead was dragged: a short snippet, not the timeline's running sound."""
+        return self.action("hear_scrub", at=at)
 
     def export_cut(self,
         *,
@@ -1770,7 +2044,7 @@ class Project(Resource):
         container: str,
         fps: int,
     ) -> None:
-        """Renders the cut to a file."""
+        """Renders the cut to a file, refusing when a source this device cannot read would leave the film missing its footage."""
         return self.action("export_cut", resolution=resolution, container=container, fps=fps)
 
     def export_cut_many(self, items: list[ExportCutArgs]) -> list[dict[str, Any]]:
@@ -1795,12 +2069,12 @@ class Project(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"restore_clip", "split_at", "split_at_many", "shifted", "trouble", "trouble_many", "absorb", "adopt_probe", "adopt_probe_many", "refresh_source", "refresh_source_many", "relink", "relink_many", "mark_missing", "mark_missing_many", "draw_still", "draw_still_many", "begin_render", "begin_render_many", "rename_project", "rename_project_many", "import_files", "import_files_many", "import_one", "import_one_many", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_drag_many", "move_to", "move_to_many", "trim_to", "trim_to_many", "move_marker", "move_marker_many", "moved", "split_clip", "split_clip_many", "cut_at", "cut_at_many", "remove_clips", "remove_clips_many", "ripple_delete", "ripple_delete_many", "nudge", "nudge_many", "trim_start", "trim_start_many", "trim_end", "trim_end_many", "copy_clips", "cut_clips", "paste_track", "paste_clips", "paste_clips_many", "duplicate_clips", "duplicate_clips_many", "redraw", "redraw_many", "sample_key", "sample_key_many", "filmstrip", "filmstrip_many", "draw_next_strip", "draw_next_strip_many", "add_title", "add_marker", "remove_marker", "remove_marker_many", "mark_in", "mark_in_many", "mark_out", "mark_out_many", "clear_marks", "clear_marks_many", "set_frame_rate", "set_frame_rate_many", "set_frame_size", "set_frame_size_many", "adopt_format", "adopt_format_many", "add_track", "delete_track", "delete_track_many", "link_clips", "link_clips_many", "split_audio", "split_audio_many", "place_side_by_side", "place_side_by_side_many", "delete_media", "delete_media_many", "preview", "preview_many", "preview_cut", "preview_cut_many", "export_cut", "export_cut_many", "poll_render", "poll_render_many", "cancel_render", "cancel_render_many"})
+    __actions__ = frozenset({"restore_clip", "split_at", "split_at_many", "shifted", "trouble", "trouble_many", "absorb", "adopt_probe", "adopt_probe_many", "refresh_source", "refresh_source_many", "relink", "relink_many", "mark_missing", "mark_missing_many", "draw_still", "draw_still_many", "begin_render", "begin_render_many", "rename_project", "rename_project_many", "import_files", "import_files_many", "import_one", "import_one_many", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_drag_many", "move_to", "move_to_many", "trim_to", "trim_to_many", "move_marker", "move_marker_many", "moved", "split_clip", "split_clip_many", "cut_at", "cut_at_many", "remove_clips", "remove_clips_many", "ripple_delete", "ripple_delete_many", "nudge", "nudge_many", "trim_start", "trim_start_many", "trim_end", "trim_end_many", "copy_clips", "cut_clips", "paste_track", "paste_clips", "paste_clips_many", "duplicate_clips", "duplicate_clips_many", "trim_tracks", "trim_tracks_many", "check_mix", "check_mix_many", "hear_mix", "hear_mix_many", "forgot_mix", "forgot_mix_many", "redraw", "redraw_many", "sample_key", "sample_key_many", "filmstrip", "filmstrip_many", "draw_next_strip", "draw_next_strip_many", "add_title", "add_marker", "remove_marker", "remove_marker_many", "mark_in", "mark_in_many", "mark_out", "mark_out_many", "clear_marks", "clear_marks_many", "set_frame_rate", "set_frame_rate_many", "set_frame_size", "set_frame_size_many", "adopt_format", "adopt_format_many", "add_track", "delete_track", "delete_track_many", "link_clips", "link_clips_many", "split_audio", "split_audio_many", "delete_media", "delete_media_many", "preview", "preview_many", "play_cut", "play_cut_many", "stop_cut", "stop_cut_many", "pause_cut", "pause_cut_many", "shuttle", "shuttle_many", "jump_to", "jump_to_many", "live_at", "scrub_to", "scrub_to_many", "play_moving", "refresh_live", "refresh_live_many", "hear_scrub", "export_cut", "export_cut_many", "poll_render", "poll_render_many", "cancel_render", "cancel_render_many"})
 
 
 class Editor(Resource):
     """Editor — `tl.so.tilo.video-editor.Editor`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     ws67tq4i: list[Entry[Project]]  # projects
     i3vrs6nt: Project | None  # open
     qyx2uds6: list[Entry[Any]]  # sessions
@@ -1852,7 +2126,7 @@ class Editor(Resource):
 
 class Probed(Resource):
     """Probed — `tl.so.tilo.video-editor.Probed`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     bc2o5yk6: str  # kind
     jb7opba6: float  # duration
     duh5etpe: int  # width
@@ -1864,13 +2138,13 @@ class Probed(Resource):
 
 class ProbeAsk(Resource):
     """ProbeAsk — `tl.so.tilo.video-editor.ProbeAsk`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     dx4zjyh5: str  # url
 
 
 class StillAsk(Resource):
     """StillAsk — `tl.so.tilo.video-editor.StillAsk`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     itbf6wf4: str  # project
     @property
     def _5klklgrm(self) -> float:
@@ -1886,26 +2160,26 @@ class StillAsk(Resource):
 
 class StillAnswer(Resource):
     """StillAnswer — `tl.so.tilo.video-editor.StillAnswer`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     fqmupsg5: str  # url
 
 
 class WaveAsk(Resource):
     """WaveAsk — `tl.so.tilo.video-editor.WaveAsk`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     hv2hn45e: str  # url
     u2gsuh7h: int  # buckets
 
 
 class Peaks(Resource):
     """Peaks — `tl.so.tilo.video-editor.Peaks`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     xatqduw2: list[float]  # peaks
 
 
 class RenderAsk(Resource):
     """RenderAsk — `tl.so.tilo.video-editor.RenderAsk`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     @property
     def _4xhy5qpi(self) -> str:
         """project (`4xhy5qpi` on the wire)."""
@@ -1922,7 +2196,7 @@ class RenderAsk(Resource):
 
 class JobAnswer(Resource):
     """JobAnswer — `tl.so.tilo.video-editor.JobAnswer`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     @property
     def _2qflgu2y(self) -> str:
         """job (`2qflgu2y` on the wire)."""
@@ -1935,7 +2209,7 @@ class JobAnswer(Resource):
 
 class JobState(Resource):
     """JobState — `tl.so.tilo.video-editor.JobState`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     @property
     def _2lqqe2u4(self) -> str:
         """state (`2lqqe2u4` on the wire)."""
@@ -1950,9 +2224,93 @@ class JobState(Resource):
     tlb73mjx: str  # error
 
 
+class LiveAsk(Resource):
+    """LiveAsk — `tl.so.tilo.video-editor.LiveAsk`."""
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
+    bgnkfxlo: str  # project
+    appc64zf: float  # from
+    xr7l6ray: float  # rate
+    d6da6bsq: int  # width
+    rydoez3z: int  # height
+    cb3fxuvg: bool  # sound
+
+
+class CutAsk(Resource):
+    """CutAsk — `tl.so.tilo.video-editor.CutAsk`."""
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
+    @property
+    def _6drnl2tz(self) -> str:
+        """job (`6drnl2tz` on the wire)."""
+        return self.fields["6drnl2tz"]
+
+    @_6drnl2tz.setter
+    def _6drnl2tz(self, value: str) -> None:
+        self.edit("6drnl2tz", value=value)
+    @property
+    def _7es5yzhp(self) -> str:
+        """project (`7es5yzhp` on the wire)."""
+        return self.fields["7es5yzhp"]
+
+    @_7es5yzhp.setter
+    def _7es5yzhp(self, value: str) -> None:
+        self.edit("7es5yzhp", value=value)
+
+
+class LiveWord(Resource):
+    """LiveWord — `tl.so.tilo.video-editor.LiveWord`."""
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
+    it7no3yy: float  # at
+    y32rbhqo: float  # over_db
+    @property
+    def _2iqind2t(self) -> list[float]:
+        """overs (`2iqind2t` on the wire)."""
+        return self.fields["2iqind2t"]
+
+    @_2iqind2t.setter
+    def _2iqind2t(self, value: list[float]) -> None:
+        self.edit("2iqind2t", value=value)
+    pejln2oj: list[str]  # tracks
+
+
+class MixAnswer(Resource):
+    """MixAnswer — `tl.so.tilo.video-editor.MixAnswer`."""
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
+    czr6i2uz: float  # over_db
+    pm66fu4a: list[float]  # overs
+    hh44z4gm: list[str]  # tracks
+
+
+class MixAsk(Resource):
+    """MixAsk — `tl.so.tilo.video-editor.MixAsk`."""
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
+    thpnmzhh: str  # project
+
+
+class ScrubAsk(Resource):
+    """ScrubAsk — `tl.so.tilo.video-editor.ScrubAsk`."""
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
+    @property
+    def _52qgffcz(self) -> str:
+        """project (`52qgffcz` on the wire)."""
+        return self.fields["52qgffcz"]
+
+    @_52qgffcz.setter
+    def _52qgffcz(self, value: str) -> None:
+        self.edit("52qgffcz", value=value)
+    @property
+    def _2mvmk5yr(self) -> float:
+        """at (`2mvmk5yr` on the wire)."""
+        return self.fields["2mvmk5yr"]
+
+    @_2mvmk5yr.setter
+    def _2mvmk5yr(self, value: float) -> None:
+        self.edit("2mvmk5yr", value=value)
+    ccewf5ft: float  # seconds
+
+
 class Shot(Resource):
     """Shot — `tl.so.tilo.video-editor.Shot`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     fagho4gr: str  # name
     fsxs4zep: float  # fps
     ebteysdk: int  # width
@@ -1967,7 +2325,7 @@ class Shot(Resource):
 
 class ShotMedia(Resource):
     """ShotMedia — `tl.so.tilo.video-editor.ShotMedia`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     jws44pym: str  # id
     @property
     def _6irok5cm(self) -> str:
@@ -2032,7 +2390,7 @@ class ShotMedia(Resource):
 
 class ShotTrack(Resource):
     """ShotTrack — `tl.so.tilo.video-editor.ShotTrack`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     wzjt7soo: str  # id
     @property
     def _2phnzuqk(self) -> str:
@@ -2060,7 +2418,7 @@ class ShotTrack(Resource):
 
 class ShotClip(Resource):
     """ShotClip — `tl.so.tilo.video-editor.ShotClip`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     jeeiaroo: str  # id
     akxlh23d: str  # track
     pptlby5v: str  # media
@@ -2105,11 +2463,46 @@ class ShotClip(Resource):
     hl2h6f76: float  # pos_x
     nhestloi: float  # pos_y
     ckydsf7y: float  # rotation
+    @property
+    def _5drcv42q(self) -> float:
+        """anchor_x (`5drcv42q` on the wire)."""
+        return self.fields["5drcv42q"]
+
+    @_5drcv42q.setter
+    def _5drcv42q(self, value: float) -> None:
+        self.edit("5drcv42q", value=value)
+    @property
+    def _4whekfjf(self) -> float:
+        """anchor_y (`4whekfjf` on the wire)."""
+        return self.fields["4whekfjf"]
+
+    @_4whekfjf.setter
+    def _4whekfjf(self, value: float) -> None:
+        self.edit("4whekfjf", value=value)
     ttpiryuy: float  # crop_left
     dazt7wt5: float  # crop_right
     o5353t6h: float  # crop_top
     lsgktf3d: float  # crop_bottom
     mq4hgil7: list[str]  # effects
+    @property
+    def _3onhtj2t(self) -> list[float]:
+        """curve_master (`3onhtj2t` on the wire)."""
+        return self.fields["3onhtj2t"]
+
+    @_3onhtj2t.setter
+    def _3onhtj2t(self, value: list[float]) -> None:
+        self.edit("3onhtj2t", value=value)
+    qahutbcr: list[float]  # curve_red
+    zc6isz2b: list[float]  # curve_green
+    @property
+    def _7ubzs7t5(self) -> list[float]:
+        """curve_blue (`7ubzs7t5` on the wire)."""
+        return self.fields["7ubzs7t5"]
+
+    @_7ubzs7t5.setter
+    def _7ubzs7t5(self, value: list[float]) -> None:
+        self.edit("7ubzs7t5", value=value)
+    qjnl3pk6: float  # curve_mix
     @property
     def _6ahtwc73(self) -> list[str]:
         """keys (`6ahtwc73` on the wire)."""
@@ -2159,7 +2552,7 @@ class ShotClip(Resource):
 
 class ShotEffect(Resource):
     """ShotEffect — `tl.so.tilo.video-editor.ShotEffect`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     ai7thy2p: str  # id
     seoccvzw: str  # form
     y2yjk3ou: float  # amount
@@ -2167,7 +2560,7 @@ class ShotEffect(Resource):
 
 class ShotKey(Resource):
     """ShotKey — `tl.so.tilo.video-editor.ShotKey`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     fpeyg4lm: str  # param
     frbcwy5c: float  # t
     hxcqnoii: float  # v
@@ -2176,7 +2569,7 @@ class ShotKey(Resource):
 
 class ThumbAsk(Resource):
     """ThumbAsk — `tl.so.tilo.video-editor.ThumbAsk`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     zbk6etmx: str  # url
     mom4w6zg: float  # at
     qdxfi3dv: int  # width
@@ -2185,7 +2578,7 @@ class ThumbAsk(Resource):
 
 class SampleAsk(Resource):
     """SampleAsk — `tl.so.tilo.video-editor.SampleAsk`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     @property
     def _47t7hgmm(self) -> str:
         """project (`47t7hgmm` on the wire)."""
@@ -2201,7 +2594,7 @@ class SampleAsk(Resource):
 
 class SampleAnswer(Resource):
     """SampleAnswer — `tl.so.tilo.video-editor.SampleAnswer`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     twwt37df: float  # red
     @property
     def _6j7i6jgf(self) -> float:
@@ -2216,7 +2609,7 @@ class SampleAnswer(Resource):
 
 class ShotMarker(Resource):
     """ShotMarker — `tl.so.tilo.video-editor.ShotMarker`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     @property
     def _5evudwdu(self) -> str:
         """id (`5evudwdu` on the wire)."""
@@ -2240,7 +2633,7 @@ class ShotMarker(Resource):
 
 class Saved(Resource):
     """Saved — `tl.so.tilo.video-editor.Saved`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     y5f2zb7y: str  # name
     pfj7sab5: float  # fps
     @property
@@ -2262,7 +2655,7 @@ class Saved(Resource):
 
 class SavedMedia(Resource):
     """SavedMedia — `tl.so.tilo.video-editor.SavedMedia`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     y4ivogi5: str  # name
     @property
     def _4yybplx2(self) -> str:
@@ -2296,11 +2689,12 @@ class SavedMedia(Resource):
     oecwbkzv: bool  # bold
     qefzzmnw: bool  # italic
     npetd5wt: float  # backdrop
+    ehpks3pq: str  # font
 
 
 class SavedTrack(Resource):
     """SavedTrack — `tl.so.tilo.video-editor.SavedTrack`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     hahxd2bf: str  # name
     @property
     def _6eogjiom(self) -> str:
@@ -2320,7 +2714,7 @@ class SavedTrack(Resource):
 
 class SavedClip(Resource):
     """SavedClip — `tl.so.tilo.video-editor.SavedClip`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     xelrculp: str  # name
     nakmpr6q: int  # track
     b6xll7vm: int  # media
@@ -2371,6 +2765,8 @@ class SavedClip(Resource):
     def _4fkenwwm(self, value: float) -> None:
         self.edit("4fkenwwm", value=value)
     n2rqdsw7: float  # rotation
+    zdvk3o64: float  # anchor_x
+    j4zszdmt: float  # anchor_y
     fycn5pvk: float  # crop_left
     @property
     def _2tb4h5uc(self) -> float:
@@ -2443,18 +2839,23 @@ class SavedClip(Resource):
     def _6oop3g3z(self, value: list[str]) -> None:
         self.edit("6oop3g3z", value=value)
     igcwp2fn: list[str]  # effects
+    ol3bgzw4: list[float]  # curve_master
+    p7y2saed: list[float]  # curve_red
+    gyh2nxn7: list[float]  # curve_green
+    jf6z7vea: list[float]  # curve_blue
+    br257zpc: float  # curve_mix
 
 
 class Copied(Resource):
     """Copied — `tl.so.tilo.video-editor.Copied`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     vnb2e4hr: str  # kind
     jrywinsx: list[str]  # clips
 
 
 class CopiedClip(Resource):
     """CopiedClip — `tl.so.tilo.video-editor.CopiedClip`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     fazzk3sz: SavedClip  # clip
     @property
     def _636l34ow(self) -> str:
@@ -2471,7 +2872,7 @@ class CopiedClip(Resource):
 
 class SavedMarker(Resource):
     """SavedMarker — `tl.so.tilo.video-editor.SavedMarker`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
     s6k7ckvj: str  # name
     bglc57r5: float  # t
     @property
@@ -2487,5 +2888,5 @@ class SavedMarker(Resource):
 
 class VideoEditor(Resource):
     """Video Editor — `tl.so.tilo.video-editor`."""
-    __surface__ = "so.tilo.video-editor@4e7740a3328993b0"
+    __surface__ = "so.tilo.video-editor@45a11a013891294f"
 
