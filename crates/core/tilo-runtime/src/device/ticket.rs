@@ -100,6 +100,7 @@ pub(crate) fn catalogue(query: &CatalogueQuery) -> CataloguePage {
 pub(crate) fn device_only_catalogue(query: &CatalogueQuery) -> CataloguePage {
     catalogue_of(query, |action| {
         matches!(action, INFO | LOG_IN | FOUND | RESTORE)
+            || matches!(action, super::records::SET | super::records::REMOVE)
     })
 }
 
@@ -307,6 +308,11 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
             .into_iter()
             .map(|action| row(tilo_actions::remote::device_tickets::descriptor(action))),
     );
+    // The device's own settings: what it keeps before anyone claims it, read through the record
+    // API and changed here.
+    if keep(super::records::SET) {
+        rows.extend(settings_rows());
+    }
     // A server's turn among its person's servers, which its own daemon answers:
     // the automatic update path asks the machine itself before it reboots.
     let updates = CatalogueResource {
@@ -390,6 +396,49 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         })
         .collect();
     CataloguePage::from_rows(REVISION.to_owned(), rows, query)
+}
+
+/// The settings rows: the device's own records resource, and the actions that write one.
+fn settings_rows() -> Vec<CatalogueRow> {
+    let resource = CatalogueResource {
+        id: super::records::RESOURCE.to_owned(),
+        kind: "settings".to_owned(),
+        label: "Settings".to_owned(),
+        presentation: None,
+    };
+    let row = |action| CatalogueRow {
+        provider: PROVIDER.to_owned(),
+        app_id: super::records::RESOURCE.to_owned(),
+        parent_resource: String::new(),
+        resource: resource.clone(),
+        action,
+        ..CatalogueRow::default()
+    };
+    let mut descriptor = descriptor(
+        super::records::SET,
+        "Change a setting",
+        "Keep a setting of this device: what its greeter and launcher read before anyone \
+         claims it, and after.",
+        &[
+            ActionParam::required("name", ParamType::Text, "The setting's name."),
+            ActionParam::required("value", ParamType::Object, "What the setting is set to."),
+        ],
+    );
+    descriptor.address =
+        tilo_actions::ActionAddress::new(super::records::RESOURCE, super::records::SET);
+    descriptor.resource_kind = "settings".to_owned();
+    descriptor.resource_label = "Settings".to_owned();
+    let mut remove = descriptor.clone();
+    remove.address =
+        tilo_actions::ActionAddress::new(super::records::RESOURCE, super::records::REMOVE);
+    remove.action_label = "Remove a setting".to_owned();
+    remove.description = Some("Forget a setting this device kept.".to_owned());
+    remove.params = vec![ActionParam::required(
+        "name",
+        ParamType::Text,
+        "The setting's name.",
+    )];
+    vec![row(None), row(Some(descriptor)), row(Some(remove))]
 }
 
 /// The machine controls' rows: the [`SERVER`] resource and each of its actions.

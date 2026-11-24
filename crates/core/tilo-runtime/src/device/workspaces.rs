@@ -113,6 +113,9 @@ pub(crate) struct ServiceWorkspaces {
     /// The device's one search index, once the daemon keeps it: what every caller's search of
     /// these workspaces is answered from.
     search: OnceLock<Arc<super::search::DeviceSearch>>,
+    /// The records the device keeps as its own, once the person's services run: its settings,
+    /// read through the one record API in its own space and in the person's workspace.
+    records: OnceLock<Arc<super::records::DeviceRecords>>,
 }
 
 impl ServiceWorkspaces {
@@ -195,7 +198,19 @@ impl ServiceWorkspaces {
             content: OnceLock::new(),
             keepers: Mutex::new(Vec::new()),
             search: OnceLock::new(),
+            records: OnceLock::new(),
         }
+    }
+
+    /// Keep the device's records `records`, once the person's services run: what the settings
+    /// actions write and what reads in the person's workspace answer.
+    pub(crate) fn hold_device_records(&self, records: Arc<super::records::DeviceRecords>) {
+        let _ = self.records.set(records);
+    }
+
+    /// The records this device keeps as its own, once the person's services kept them.
+    pub(crate) fn device_records(&self) -> Option<&Arc<super::records::DeviceRecords>> {
+        self.records.get()
     }
 
     /// Found `workspace`, called `name`, here unless the service holds it already, and enter it

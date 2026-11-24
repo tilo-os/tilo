@@ -95,6 +95,10 @@ impl ThisDevice {
                 calls: std::sync::Mutex::default(),
                 runtime: tilo_rt::app().handle().clone(),
                 packages: std::sync::OnceLock::new(),
+                records: Arc::new(super::records::DeviceRecords::at(
+                    self.place.dir(),
+                    self.key.verifying_key().to_bytes(),
+                )),
             }),
             None,
         );
@@ -208,12 +212,19 @@ struct Answering {
     runtime: tokio::runtime::Handle,
     /// The device's package cache, which it answers before a login as after it.
     packages: std::sync::OnceLock<Arc<dyn ActionProvider + Send + Sync>>,
+    /// The records the device keeps as its own: its settings, read, written and followed through
+    /// the one record API before anyone claims it.
+    records: Arc<super::records::DeviceRecords>,
 }
 
 impl DeviceOnly {
     /// The device actions of the device whose key is `key`, its certificates kept in `place`.
     #[cfg(test)]
     pub(crate) fn new(key: SigningKey, place: Place) -> Self {
+        let records = Arc::new(super::records::DeviceRecords::at(
+            place.dir(),
+            key.verifying_key().to_bytes(),
+        ));
         Self(
             Arc::new(Answering {
                 key,
@@ -222,9 +233,15 @@ impl DeviceOnly {
                 calls: std::sync::Mutex::default(),
                 runtime: tilo_rt::app().handle().clone(),
                 packages: std::sync::OnceLock::new(),
+                records,
             }),
             None,
         )
+    }
+
+    /// The records this device keeps as its own.
+    pub(crate) fn records(&self) -> Arc<super::records::DeviceRecords> {
+        Arc::clone(&self.0.records)
     }
 
     /// These actions with the device's package cache `packages` among them: the first cache
@@ -497,6 +514,22 @@ impl ActionProvider for DeviceOnly {
                     .map_err(|reason| ActionCallError::Refused { reason }),
             );
         }
+        // The device's own records: its settings, written here before anyone claims it.
+        if request.target.provider == PROVIDER && address.resource == super::records::RESOURCE {
+            let answer = match &request.argument {
+                InvokeArgument::Json(args) => self.0.records.act(caller, &address.action, args),
+                _ => Err(ActionCallError::InvalidRequest {
+                    reason: "a setting action asks with its arguments".to_owned(),
+                }),
+            };
+            let update = match answer {
+                Ok(value) => super::ticket::succeeded(invocation, value),
+                Err(error) => {
+                    super::ticket::failed_as(invocation, "device-setting", &error.to_string())
+                }
+            };
+            return Pending::ready(Ok(self.keep(invocation, update)));
+        }
         if request.target.provider != PROVIDER || address.resource != RESOURCE {
             return Pending::ready(Err(self.needs_a_person()));
         }
@@ -562,5 +595,11 @@ impl ActionProvider for DeviceOnly {
 
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.packages()?.content_puts()
+    }
+
+    /// The records this device keeps as its own: its settings, read and followed before anyone
+    /// claims it as they are after (`devices/<device>/settings/...`).
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        Some(self.0.records.clone())
     }
 }

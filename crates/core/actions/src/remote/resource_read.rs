@@ -37,6 +37,34 @@ pub struct ResourceAddress {
     pub record: String,
 }
 
+/// The app a device's own settings are read under ([`device_record_space`]): the record
+/// `keymap` there is `devices/<device>/settings/keymap`.
+pub const DEVICE_SETTINGS: &str = "settings";
+
+/// The record space a device that no person is founded on keeps its own records in, as the
+/// `workspace` of a [`ResourceAddress`]: `devices/<device hex>`. No workspace has this id (a
+/// workspace's is a UUID), so a read naming it is a read of the device's own records, decided by
+/// the device alone rather than by a workspace's governance.
+///
+/// This is the device case of the one record API: the same [`super::RemoteActionMessage::ResourceRead`],
+/// follow and wake answer the records as any workspace's, so the greeter and the launcher read
+/// the settings the device kept before anyone claimed it the way their views read any record.
+#[must_use]
+pub fn device_record_space(device: &[u8; 32]) -> String {
+    format!("devices/{}", hex::encode(device))
+}
+
+/// The address of the device record `record` the device `device` keeps: its settings, in the
+/// space [`device_record_space`] names.
+#[must_use]
+pub fn device_record_address(device: &[u8; 32], record: &str) -> ResourceAddress {
+    ResourceAddress {
+        workspace: device_record_space(device),
+        app: DEVICE_SETTINGS.to_owned(),
+        record: record.to_owned(),
+    }
+}
+
 /// What a read of one record answers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResourceCopy {

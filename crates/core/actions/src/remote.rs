@@ -139,10 +139,10 @@ pub use line::{LineClient, LinePut, serve_lines};
 pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use resource_read::{
-    Decided, HeldCopies, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS,
+    DEVICE_SETTINGS, Decided, HeldCopies, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS,
     RESOURCE_READS_UNAVAILABLE, ResourceAddress, ResourceAsk, ResourceChange, ResourceChanges,
     ResourceCopy, ResourceReadings, ResourceReads, ResourceWake, answer_read, answered,
-    read_resources, readings_of,
+    device_record_address, device_record_space, read_resources, readings_of,
 };
 pub use search::{FOUND_FILE, Found, NOT_NARROWED, ResourceSearch, Within, stem_word};
 #[cfg(any(test, feature = "test-support"))]

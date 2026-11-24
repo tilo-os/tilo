@@ -928,6 +928,18 @@ impl Daemon {
             key_sessions.as_ref(),
             keeping.as_ref().zip(itself.clone()),
         )?;
+        // The records the device kept before anyone claimed it: its settings. The person's
+        // services carry them into their own workspace, where they read them through the same
+        // record API, and the settings actions write the one store from then on.
+        let records = Arc::new(super::records::DeviceRecords::at(
+            identity.place.dir(),
+            identity.key.verifying_key().to_bytes(),
+        ));
+        records.carry_into(&identity.cert.user_public_key);
+        workspaces.hold_device_records(Arc::clone(&records));
+        workspaces
+            .copies()
+            .publish_own(tilo_actions::remote::DEVICE_SETTINGS, records);
         let home = Arc::new(super::home::Home::new(
             Arc::clone(&workspaces),
             identity.cert.clone(),
@@ -3867,6 +3879,14 @@ impl ActionProvider for RuntimeActionProvider {
         // running here cancelled.
         if let Some(answered) = self.stop_or_go_on(caller, &request) {
             return answered;
+        }
+        // The device's own records: its settings, written through the same actions before the
+        // person's services ran and after, once the device is theirs.
+        if request.target.provider == super::records::PROVIDER
+            && request.target.address.resource == super::records::RESOURCE
+            && let Some(records) = self.workspaces.device_records()
+        {
+            return Pending::ready(Ok(records.receipt_for(caller, &request)));
         }
         if let Some(tickets) = &self.tickets
             && Tickets::answers(&request)
