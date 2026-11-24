@@ -664,8 +664,7 @@ impl GovernedSession {
 /// The sheet the session hosts, as the person at this session presses it.
 fn settings_sheet(
     session: &mut GovernedSession,
-) -> tilo_app::framework::testing::HeadlessApp<tilo_sheets::workspace_settings::WorkspaceSettingsApp>
-{
+) -> tilo_app_test_host::TestApp<tilo_sheets::workspace_settings::WorkspaceSettingsApp> {
     session
         .session()
         .invoke(
@@ -680,7 +679,7 @@ fn settings_sheet(
         .workspace_settings()
         .expect("the session hosts workspace settings")
         .clone();
-    let mut app = tilo_app::framework::testing::HeadlessApp::<
+    let mut app = tilo_app_test_host::TestApp::<
         tilo_sheets::workspace_settings::WorkspaceSettingsApp,
     >::for_person_with_lent(&session.person, state)
     .expect("the sheet");
@@ -711,9 +710,7 @@ fn shown_role(session: &mut GovernedSession, who: &str) -> Option<String> {
 
 /// Press the control `id` of `app` , as a person's own gesture.
 fn press(
-    app: &mut tilo_app::framework::testing::HeadlessApp<
-        tilo_sheets::workspace_settings::WorkspaceSettingsApp,
-    >,
+    app: &mut tilo_app_test_host::TestApp<tilo_sheets::workspace_settings::WorkspaceSettingsApp>,
     id: &str,
 ) {
     app.harness()
@@ -724,9 +721,7 @@ fn press(
 
 /// Activate the element `name` says, as a screen reader does.
 fn activate(
-    app: &mut tilo_app::framework::testing::HeadlessApp<
-        tilo_sheets::workspace_settings::WorkspaceSettingsApp,
-    >,
+    app: &mut tilo_app_test_host::TestApp<tilo_sheets::workspace_settings::WorkspaceSettingsApp>,
     name: &str,
 ) {
     let node = app

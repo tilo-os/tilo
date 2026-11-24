@@ -50,6 +50,8 @@ zeroize.workspace = true
 qrcode.workspace = true
 image = { workspace = true, features = ["png", "jpeg"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 # The session shell's chooser client, for tests that drive the chooser the
 # app reaches on a device.

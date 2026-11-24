@@ -287,15 +287,15 @@ fn count(resources: &[tilo_actions::ResourceSpec]) -> usize {
 
 /// A checklist window holding `tasks` tasks. Its genesis seeds as many as
 /// the last live window was asked for; the rest are added here.
-fn checklist(tasks: u32) -> Result<TestApp<Scaling>, Box<dyn std::error::Error>> {
+fn checklist(tasks: u32) -> Result<HeadlessApp<Scaling>, Box<dyn std::error::Error>> {
     checklist_in::<Scaling>(tasks)
 }
 
 /// [`checklist`] in the window `A`.
 fn checklist_in<A: ResourceApp<Resource = Checklist>>(
     tasks: u32,
-) -> Result<TestApp<A>, Box<dyn std::error::Error>> {
-    let mut app = TestApp::<A>::for_person("ada")?;
+) -> Result<HeadlessApp<A>, Box<dyn std::error::Error>> {
+    let mut app = HeadlessApp::<A>::for_person("ada")?;
     let seeded = u32::try_from(app.state().tasks.len())?;
     if let Some(missing) = tasks.checked_sub(seeded).filter(|&missing| missing > 0) {
         app.call("seed", serde_json::json!({ "count": missing }))?;
@@ -347,7 +347,7 @@ fn per_frame(tasks: u32) -> Result<[(f64, f64); 2], Box<dyn std::error::Error>> 
     let mut app = checklist(tasks)?;
     app.harness()
         .perform_named("draft", &tilo_app::a11y::Action::Focus)?;
-    let sync = |app: &mut TestApp<Scaling>, name: &str, steps| {
+    let sync = |app: &mut HeadlessApp<Scaling>, name: &str, steps| {
         let report = run_scenario(
             app.harness(),
             &PerfScenario {

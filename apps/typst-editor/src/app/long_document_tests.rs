@@ -7,7 +7,7 @@ use std::time::Duration;
 use super::*;
 use crate::resource::{TypstEditorShell, Workspace};
 
-pub(super) type Live = ui::framework::testing::TestApp<TypstEditorShell>;
+pub(super) type Live = tilo_app_test_host::TestApp<TypstEditorShell>;
 
 pub(super) fn looped_source(chapters: usize) -> String {
     format!(

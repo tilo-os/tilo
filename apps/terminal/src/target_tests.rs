@@ -207,7 +207,7 @@ fn tab(
     (widget, opened)
 }
 
-type App = ui::framework::testing::TestApp<crate::TerminalShell>;
+type App = tilo_app_test_host::TestApp<crate::TerminalShell>;
 
 fn host_tab(
     app: &mut App,

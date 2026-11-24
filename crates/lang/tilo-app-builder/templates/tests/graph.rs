@@ -1,7 +1,7 @@
 use generated_app::{App, Projects};
 use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Invoke, Replica, TestApp};
+use ui::prelude::{HeadlessApp, Invoke, Replica};
 
 #[test]
 fn creating_a_project_needs_a_name_and_clears_the_draft() {
@@ -25,7 +25,7 @@ fn creating_a_project_needs_a_name_and_clears_the_draft() {
 
 #[test]
 fn serialized_screen_and_native_controls_share_one_resource() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.harness()
         .perform_named("name-input", &Action::SetValue("Atlas".into()))
         .expect("the draft input remains addressable");

@@ -42,6 +42,8 @@ rand.workspace = true
 # collection build, and the app then links the whole runtime statically.
 discord-samples = { package = "discord", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }
 # The bridge reads a real Chat resource in its tests.
 tilo-reference = { path = "../../crates/core/reference" }
 # The bridge bot's program is built and checked against the real surfaces.

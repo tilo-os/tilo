@@ -1050,4 +1050,5 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
 #[cfg(test)]
 mod tests;
 
-ui::reach_tests!(TerminalShell);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(TerminalShell);

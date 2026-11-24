@@ -4,7 +4,7 @@
 use example_shared_checklist::{App, Checklist};
 use ui::a11y::Action;
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Edit, Id, Invoke, Replica, TestApp};
+use ui::prelude::{Edit, HeadlessApp, Id, Invoke, Replica};
 
 #[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
 fn edit(edit: &Edit<Checklist>) -> Invoke<Checklist> {
@@ -140,7 +140,7 @@ fn history_is_attributed() {
 /// after it.
 #[test]
 fn undo_takes_back_only_my_own_actions() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.invoke(edit(&Checklist::paths().name.replace("Groceries")))
         .expect("rename");
     let mut grace = Replica::<Checklist>::from_doc(app.peer_document()).as_author("grace");
@@ -161,7 +161,7 @@ fn undo_takes_back_only_my_own_actions() {
 /// Removing every checked item is one action, so one undo brings them back.
 #[test]
 fn clearing_checked_items_is_one_undo_step() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     for title in ["Milk", "Bread", "Eggs"] {
         app.invoke(Checklist::ADD.with(title)).expect("add");
     }
@@ -181,7 +181,7 @@ fn clearing_checked_items_is_one_undo_step() {
 
 #[test]
 fn a_viewer_follows_but_cannot_edit() {
-    let mut app = TestApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
+    let mut app = HeadlessApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
     assert!(
         app.invoke(edit(&Checklist::paths().name.replace("Mine")))
             .is_err()
@@ -193,7 +193,7 @@ fn a_viewer_follows_but_cannot_edit() {
 
 #[test]
 fn initial_native_app_contract_is_certified() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
 }
@@ -202,7 +202,7 @@ fn initial_native_app_contract_is_certified() {
 /// until it is added, and then it is one invocation of `add`.
 #[test]
 fn typing_the_next_item_writes_nothing_until_it_is_added() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let versions = app.versions().len();
     app.harness()
         .perform_named("draft-input", &Action::SetValue("Milk".into()))

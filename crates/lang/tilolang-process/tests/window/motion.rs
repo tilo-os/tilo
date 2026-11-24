@@ -18,8 +18,8 @@
 )]
 
 use crate::change_marks::Driven;
+use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
-use ui::framework::testing::TestApp;
 use ui::headless::InspectionNode;
 use ui::time::testing::with_monotonic_time;
 

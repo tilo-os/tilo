@@ -3,7 +3,7 @@ use std::time::Duration;
 use example_virtual_list::{App, Feed, ITEM_COUNT};
 use ui::a11y::{AccessNode, Action, Role};
 use ui::headless::{InspectionNode, SemanticExpectation};
-use ui::prelude::{Replica, TestApp};
+use ui::prelude::{HeadlessApp, Replica};
 
 fn semantics_of(node: &InspectionNode, id: &str) -> Option<AccessNode> {
     if node.test_id.as_deref() == Some(id) {
@@ -32,7 +32,7 @@ fn opening_an_activity_is_remembered() {
 /// stable, heights vary, and each row's button is its own control.
 #[test]
 fn app_exposes_a_sparse_interactive_virtual_list() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let harness = app.harness();
     harness
         .perform_named("activity-list", &Action::Focus)
@@ -88,7 +88,7 @@ fn app_exposes_a_sparse_interactive_virtual_list() {
 
 #[test]
 fn initial_native_app_contract_is_certified() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
 }

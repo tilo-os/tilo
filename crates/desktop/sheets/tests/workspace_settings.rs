@@ -2,20 +2,20 @@
 //! what each tab shows, what its controls ask of the shell, and what the
 //! keys do.
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings::{
     Settings, WorkspaceSettingsApp, WorkspaceSettingsEffect, WorkspaceSettingsState, scenario,
 };
 use ui::a11y::Action as A11yAction;
-use ui::framework::testing::HeadlessApp;
 
 const VIEWPORT: (u32, u32) = (1280, 900);
 
-fn staged(scenario: &str) -> HeadlessApp<WorkspaceSettingsApp> {
-    HeadlessApp::<WorkspaceSettingsApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
+fn staged(scenario: &str) -> TestApp<WorkspaceSettingsApp> {
+    TestApp::<WorkspaceSettingsApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
-fn says(app: &mut HeadlessApp<WorkspaceSettingsApp>, text: &str) -> bool {
+fn says(app: &mut TestApp<WorkspaceSettingsApp>, text: &str) -> bool {
     app.harness().a11y_nodes().iter().any(|(_, node)| {
         node.label().is_some_and(|label| label.contains(text))
             || node.description().is_some_and(|said| said.contains(text))
@@ -24,7 +24,7 @@ fn says(app: &mut HeadlessApp<WorkspaceSettingsApp>, text: &str) -> bool {
 }
 
 /// Whether the control named `name` takes input.
-fn enabled(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) -> bool {
+fn enabled(app: &mut TestApp<WorkspaceSettingsApp>, name: &str) -> bool {
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -34,17 +34,17 @@ fn enabled(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) -> bool {
 
 /// The settings a scenario stages, shown through a state as the shell lends
 /// it.
-fn mounted(scenario: &str) -> (HeadlessApp<WorkspaceSettingsApp>, WorkspaceSettingsState) {
+fn mounted(scenario: &str) -> (TestApp<WorkspaceSettingsApp>, WorkspaceSettingsState) {
     mounted_with(staged_settings(scenario))
 }
 
 /// `settings` shown through a state, as the shell lends it.
-fn mounted_with(settings: Settings) -> (HeadlessApp<WorkspaceSettingsApp>, WorkspaceSettingsState) {
+fn mounted_with(settings: Settings) -> (TestApp<WorkspaceSettingsApp>, WorkspaceSettingsState) {
     let state = WorkspaceSettingsState::default();
     state.show(settings);
     state.presentation().open(false);
     let mut app =
-        HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state.clone()).unwrap();
+        TestApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state)
@@ -54,7 +54,7 @@ fn staged_settings(name: &str) -> Settings {
     scenario(Some(name))
 }
 
-fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
+fn press(app: &mut TestApp<WorkspaceSettingsApp>, id: &str) {
     app.harness()
         .perform_named(id, &A11yAction::Activate)
         .unwrap();
@@ -562,7 +562,7 @@ tilo_test_env::scenario! {
             .collect();
         let (mut app, state) = mounted_with(settings.clone());
         let row = "ws-agent-answer-app-9-change";
-        let at = |app: &mut HeadlessApp<WorkspaceSettingsApp>| {
+        let at = |app: &mut TestApp<WorkspaceSettingsApp>| {
             app.harness().targets().get(row).map(|bounds| bounds.y0)
         };
         let top = at(&mut app).expect("the row is laid out");
@@ -664,7 +664,7 @@ tilo_test_env::scenario! {
     // line up under each other down the review.
     {
         let (mut app, _) = mounted("agent-review");
-        let segments = |app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str| {
+        let segments = |app: &mut TestApp<WorkspaceSettingsApp>, name: &str| {
             let nodes: std::collections::HashMap<_, _> =
                 app.harness().a11y_nodes().into_iter().collect();
             let (_, group) = nodes
@@ -836,7 +836,7 @@ tilo_test_env::scenario! {
         state.show(settings);
         state.presentation().open(false);
         let mut app =
-            HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state).unwrap();
+            TestApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state).unwrap();
         app.harness().resize(VIEWPORT).unwrap();
         app.settle();
 
@@ -868,7 +868,7 @@ tilo_test_env::scenario! {
         state.show(settings);
         state.presentation().open(false);
         let mut app =
-            HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state).unwrap();
+            TestApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state).unwrap();
         app.harness().resize(VIEWPORT).unwrap();
         app.settle();
 

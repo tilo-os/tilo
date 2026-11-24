@@ -2,8 +2,8 @@
 //! row a person opens is pushed in, and the push settles within its motion and leaves the
 //! window asking for no frames.
 
+use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
-use ui::framework::testing::TestApp;
 use ui::headless::{FrameHarness, FrameSchedule};
 use ui::motion::{Direction, Drill};
 use ui::time::testing::with_monotonic_time;

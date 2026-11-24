@@ -2147,7 +2147,7 @@ mod tests {
 
     /// The controls the studio's markup editor offers now, by their ids.
     fn editor_controls(
-        app: &mut tilo_app::framework::testing::HeadlessApp<tilo_capture_studio::CaptureStudioApp>,
+        app: &mut tilo_app_test_host::TestApp<tilo_capture_studio::CaptureStudioApp>,
     ) -> Vec<String> {
         use ui::widget::Widget as _;
         app.surface_mut::<tilo_capture_studio::StudioSurface>()
@@ -2163,13 +2163,13 @@ mod tests {
     /// shot its receipt sends or saves as any other.
     #[test]
     fn a_stroke_an_action_draws_is_in_the_picture_the_studio_keeps() {
-        use tilo_app::framework::testing::HeadlessApp;
+        use tilo_app_test_host::TestApp;
         use tilo_capture_studio::{CaptureEffect, CaptureStudioApp};
 
         let pictures = tempfile::tempdir().expect("a folder");
         let state = Studio::new();
         let (mut studio, mut compositor, _said) = studio_with(pictures.path(), state.clone());
-        let mut app = HeadlessApp::<CaptureStudioApp>::for_person_with_lent("person", state)
+        let mut app = TestApp::<CaptureStudioApp>::for_person_with_lent("person", state)
             .expect("the studio app");
         app.harness().resize((1280, 800)).expect("a window");
 

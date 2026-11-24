@@ -1,7 +1,7 @@
 use crate::tests::Parsed as _;
 use crate::{ChipDesignShell, VerificationRecord};
 use serde_json::{Value, json};
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 
 fn example(stage: &str) -> Value {
     let hash = "a".repeat(64);

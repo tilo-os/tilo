@@ -3,7 +3,7 @@ use std::time::Duration;
 use example_background_task::{App, MAX_LIMIT, Search, Task, count_primes, is_prime};
 use ui::a11y::Action;
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Invoke, Replica, TestApp};
+use ui::prelude::{HeadlessApp, Invoke, Replica};
 
 /// The limit, edited at its path as the number field edits it.
 #[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
@@ -29,7 +29,7 @@ fn the_limit_is_validated_and_durable() {
     assert!(search.apply(limit(1)).is_err());
     assert!(search.apply(limit(MAX_LIMIT + 1)).is_err());
 
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.invoke(limit(100)).expect("set the limit");
     let app = app.reopen().expect("the app reopens");
     assert_eq!(app.state().limit, 100);
@@ -38,7 +38,7 @@ fn the_limit_is_validated_and_durable() {
 /// Run is an action anyone can start; its result replaces the spinner.
 #[test]
 fn counting_runs_in_the_background_on_the_resource_input() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     assert!(
         app.harness().resources().iter().any(|resource| {
             resource.kind == "example.prime-search"
@@ -62,7 +62,7 @@ fn counting_runs_in_the_background_on_the_resource_input() {
 
 #[test]
 fn a_running_count_can_be_cancelled() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.invoke(limit(MAX_LIMIT)).expect("set the limit");
     app.harness()
         .perform_named("run-task", &Action::Activate)
@@ -81,7 +81,7 @@ fn a_running_count_can_be_cancelled() {
 /// An agent's Run answers with the count once the worker finishes.
 #[test]
 fn an_agent_runs_the_count_as_a_job() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.invoke(limit(100)).expect("set the limit");
     let output = app.effect(&Task::Run).expect("the count finishes");
     assert_eq!(output.value, Some(ui::serde_json::json!(25)));
@@ -92,7 +92,7 @@ fn an_agent_runs_the_count_as_a_job() {
 
 #[test]
 fn initial_native_app_contract_is_certified() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
 }

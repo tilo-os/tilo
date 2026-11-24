@@ -1349,7 +1349,7 @@ fn capture_history() -> tilo_messaging::HistoryPage {
 mod route_tests {
     use super::*;
     use crate::MessagesShell;
-    use ui::framework::testing::TestApp;
+    use tilo_app_test_host::TestApp;
 
     const PERSON: &str = "00000000-0000-4000-8000-000000000001";
 

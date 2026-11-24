@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn a_new_tab_opens_the_most_recent_environment_and_never_the_host_by_habit() {
-        let app = ui::framework::testing::TestApp::<crate::TerminalShell>::new().unwrap();
+        let app = tilo_app_test_host::TestApp::<crate::TerminalShell>::new().unwrap();
         let recent = RecentTarget::in_settings(
             app.settings::<DeviceEnvironments>(),
             ui::framework::testing::TEST_WORKSPACE,

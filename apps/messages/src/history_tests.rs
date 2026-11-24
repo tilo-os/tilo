@@ -2,11 +2,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 
+use tilo_app_test_host::TestApp;
 use tilo_contact_directory::{ContactDirectory, routing};
 use tilo_messaging::{
     Delivery, Direction, HistoryClient, HistoryFuture, HistoryHost, HistoryPage, Message,
 };
-use ui::framework::testing::TestApp;
 use ui::prelude::Id;
 use ui::tilo_resource::SharedResource as _;
 

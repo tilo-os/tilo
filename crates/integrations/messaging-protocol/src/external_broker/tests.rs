@@ -350,7 +350,7 @@ fn messages_sends_once_confirmed_and_keeps_text_private(
     owner: &Owner,
     broker: &ExternalBroker,
     calls: &AtomicUsize,
-) -> ui::framework::testing::TestApp<messages::MessagesShell> {
+) -> tilo_app_test_host::TestApp<messages::MessagesShell> {
     let mut app = messages_over(owner, broker.client());
     let send = messages::MessagesEffect::Send {
         choice: route_choice(owner, &route(owner.service)),
@@ -379,10 +379,10 @@ fn messages_sends_once_confirmed_and_keeps_text_private(
 fn messages_over(
     owner: &Owner,
     client: tilo_messaging::MessagingClient,
-) -> ui::framework::testing::TestApp<messages::MessagesShell> {
+) -> tilo_app_test_host::TestApp<messages::MessagesShell> {
     use tilo_contact_directory::ContactDirectory;
     let route = route(owner.service);
-    let mut app = ui::framework::testing::TestApp::<messages::MessagesShell>::for_person_with_lent(
+    let mut app = tilo_app_test_host::TestApp::<messages::MessagesShell>::for_person_with_lent(
         &owner.actor,
         client,
     )
@@ -433,10 +433,10 @@ impl ui::framework::ResourceApp for AccountOwnerFixture {
 pub(crate) fn project_account_metadata(
     owner: &Owner,
     route: &Route,
-    app: &mut ui::framework::testing::TestApp<messages::MessagesShell>,
+    app: &mut tilo_app_test_host::TestApp<messages::MessagesShell>,
 ) {
     let mut settings =
-        ui::framework::testing::TestApp::<AccountOwnerFixture>::for_person(&owner.actor).unwrap();
+        tilo_app_test_host::TestApp::<AccountOwnerFixture>::for_person(&owner.actor).unwrap();
     let metadata = settings
         .shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
         .unwrap();

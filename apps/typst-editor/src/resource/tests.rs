@@ -2,7 +2,7 @@
 //! tree) and as the app hosts it.
 
 use super::*;
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Edit, Replica, Resource as _};
 

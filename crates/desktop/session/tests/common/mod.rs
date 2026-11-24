@@ -264,7 +264,7 @@ pub fn shot(session: &mut Session, name: &str) -> tilo_compositor::Screenshot {
 
 /// A window of an app as it draws now, settled, kept as `name.png` where `TL_SHELL_SHOTS` names.
 pub fn app_shot<A: tilo_app::framework::ResourceApp>(
-    app: &mut tilo_app::framework::testing::HeadlessApp<A>,
+    app: &mut tilo_app_test_host::TestApp<A>,
     name: &str,
 ) {
     let Some(dir) = std::env::var_os("TL_SHELL_SHOTS") else {

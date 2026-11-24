@@ -5,8 +5,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
-use ui::framework::testing::HeadlessApp;
 use ui::tilo_resource::profiling::observe;
 
 /// What the process logged while the window closed.
@@ -34,7 +34,7 @@ fn closing_the_gallery_ends_its_instance_at_once_and_quietly() {
     let profile = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("gallery-close-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&profile);
-    let mut app = HeadlessApp::<TlApp>::open_data_dir(&profile).expect("the gallery opens");
+    let mut app = TestApp::<TlApp>::open_data_dir(&profile).expect("the gallery opens");
     app.settle();
     let log = Log::default();
     let writer = log.clone();

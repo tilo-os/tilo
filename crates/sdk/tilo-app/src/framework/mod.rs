@@ -46,7 +46,7 @@
 //!
 //! # Test the public workflow
 //!
-//! [`testing::TestApp`] mounts the real app on an isolated profile. Start with
+//! [`testing::HeadlessApp`] mounts the real app on an isolated profile. Start with
 //! [`actions`](testing::HeadlessApp::actions) to discover the member's
 //! complete action contracts, then [`call_on`](testing::HeadlessApp::call_on)
 //! using the discovered address and JSON arguments. Test a refusal before
@@ -315,7 +315,7 @@
 //!   [`ResourceApp::scenario_input`], driven through the window's own event
 //!   path. The capture then waits until no surface reports unfinished visual work (an async
 //!   page render, a decode). [`stage`] runs a scenario on any harness, and
-//!   [`TestApp::capture`](testing::HeadlessApp::capture) composes the exact
+//!   [`HeadlessApp::capture`](testing::HeadlessApp::capture) composes the exact
 //!   frame `--shots` writes in a test.
 
 mod adopt_windows;

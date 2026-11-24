@@ -1,5 +1,4 @@
 [package]
-autotests = false
 name = "tilo-app"
 version = "0.1.0"
 edition = "2024"
@@ -33,8 +32,6 @@ test-support = [
     "ui-core/test-support",
     "tilo-resource/test-support",
     "tilo-actions/test-support",
-    "dep:tilo-broker-core",
-    "dep:tilo-desktop-model",
 ]
 # Backend features of the native runner; on wasm32 they have no effect.
 webview-adblock = ["tilo-runner-native?/webview-adblock"]
@@ -103,10 +100,6 @@ tracing.workspace = true
 # the native build below adds its directory store for `render`.
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 
-[[test]]
-name = "it"
-path = "tests/it.rs"
-
 # Per-input cost against resource size; reads the framework's phase profiler.
 [[example]]
 name = "framework-scaling"
@@ -122,14 +115,9 @@ tilo-seal = { version = "0.1.0", path = "../../core/tilo-seal" }
 # The test hosts keep a profile's records in the native store.
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
-# The headless test host decides the records another workspace holds as the workspace broker
-# does, in the workspace it holds (`test-support`): a window itself never decides them, so the
-# desktop and the apps reach no host's broker through this crate.
-tilo-broker-core = { version = "0.1.0", path = "../../core/broker-core", optional = true }
-tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model", optional = true }
 
 [dev-dependencies]
-# The integration tests use the test tools behind `test-support`.
+# The tests use the test tools behind `test-support`.
 tilo-app = { path = ".", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 # The workspace a chain test's devices keep their records in.

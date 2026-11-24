@@ -4,17 +4,17 @@
 
 use std::path::PathBuf;
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::uninstall::{
     App, Going, REMOVE_DATA_SWITCH, Removal, UninstallApp, UninstallEffect, UninstallState,
 };
 use ui::a11y::Action as A11yAction;
-use ui::framework::testing::HeadlessApp;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-fn staged(scenario: &str) -> HeadlessApp<UninstallApp> {
-    let mut app = HeadlessApp::<UninstallApp>::capture_at(Some(scenario), VIEWPORT).unwrap();
+fn staged(scenario: &str) -> TestApp<UninstallApp> {
+    let mut app = TestApp::<UninstallApp>::capture_at(Some(scenario), VIEWPORT).unwrap();
     app.settle();
     app
 }
@@ -43,18 +43,17 @@ fn installed(device_wide: bool) -> App {
 }
 
 /// The sheet as the shell lends it, with `app` asked about.
-fn mounted(app: App) -> (HeadlessApp<UninstallApp>, UninstallState) {
+fn mounted(app: App) -> (TestApp<UninstallApp>, UninstallState) {
     let state = UninstallState::default();
     state.show(app);
     state.presentation().open(true);
-    let mut app =
-        HeadlessApp::<UninstallApp>::for_person_with_lent("person", state.clone()).unwrap();
+    let mut app = TestApp::<UninstallApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state)
 }
 
-fn says(app: &mut HeadlessApp<UninstallApp>, text: &str) -> bool {
+fn says(app: &mut TestApp<UninstallApp>, text: &str) -> bool {
     app.harness().a11y_nodes().iter().any(|(_, node)| {
         node.label().is_some_and(|label| label.contains(text))
             || node.description().is_some_and(|said| said.contains(text))
@@ -62,7 +61,7 @@ fn says(app: &mut HeadlessApp<UninstallApp>, text: &str) -> bool {
     })
 }
 
-fn press(app: &mut HeadlessApp<UninstallApp>, id: &str) {
+fn press(app: &mut TestApp<UninstallApp>, id: &str) {
     app.harness()
         .perform_named(id, &A11yAction::Activate)
         .unwrap();

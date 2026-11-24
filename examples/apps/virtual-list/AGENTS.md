@@ -19,7 +19,7 @@ contains this project's longer workflow. Use `tilolang --help` or a command's
 3. Use shared widgets and the theme. Put visible strings in `locales/*.ftl`,
    and pass Fluent message ids to controls. Start empty; keep sample data in
    tests or explicit demos. Tilo OS owns window chrome.
-4. Extend `tests/app.rs`. `Replica` tests actions without a window; `TestApp`
+4. Extend `tests/app.rs`. `Replica` tests actions without a window; `HeadlessApp`
    drives the production resource and view. Check the visible result, undo,
    reopening, and refusal of edits by a viewer where relevant. A destructive
    action Undo takes back runs at once and offers Undo; one Undo cannot take

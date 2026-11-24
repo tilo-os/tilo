@@ -185,7 +185,7 @@ fn a_refused_action_changes_nothing() {
 ```
 
 `Replica::new().as_author("ada")` gives each replica an author for merge and
-undo tests, and `TestApp::<App>::new()` runs the real app headlessly so a test
+undo tests, and `HeadlessApp::<App>::new()` runs the real app headlessly so a test
 can press controls by id and read the published actions. Prefer semantic
 assertions (roles, names, state) over pixels. In the Tilo checkout:
 

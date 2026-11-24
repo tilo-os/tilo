@@ -587,7 +587,7 @@ mod window_tests {
 
     /// Bring the window's save status to `at`, as its wake there would,
     /// then run a frame.
-    fn frame_at(app: &mut TestApp<DraftApp>, at: Instant) {
+    fn frame_at(app: &mut HeadlessApp<DraftApp>, at: Instant) {
         app.harness()
             .with_widget_mut(|root: &mut crate::framework::root::ResourceRoot| {
                 crate::framework::root::RootModel::save_indicator_mut(root).follow(at);
@@ -599,7 +599,7 @@ mod window_tests {
     #[test]
     fn a_window_is_silent_until_a_save_stalls_then_offers_try_again_when_it_fails() {
         ui_core::i18n::I18nManager::init("en-US");
-        let mut app = TestApp::<DraftApp>::new().unwrap();
+        let mut app = HeadlessApp::<DraftApp>::new().unwrap();
         app.settle();
         assert_eq!(bar(), None, "a stored record says nothing");
 

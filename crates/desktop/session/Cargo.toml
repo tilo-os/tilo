@@ -546,6 +546,8 @@ ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support
 # The sheets' apps mounted for a person, so a test presses a control of one
 # as the person's own gesture.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../sdk/tilo-app-test-host" }
 wayland-client.workspace = true
 # What a scanner reads from a code the session draws: the invite sheet's
 # test decodes the invitation back out of its QR.

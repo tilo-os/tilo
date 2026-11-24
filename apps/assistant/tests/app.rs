@@ -7,6 +7,7 @@
 )]
 
 use std::sync::Arc;
+use tilo_app_test_host::TestApp;
 
 use assistant::App;
 use serde_json::json;

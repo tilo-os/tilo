@@ -551,7 +551,7 @@ async fn framework_projection_keeps_private_child_metadata_off_signed_wire_and_b
         .run_until(Box::pin(async {
             let fixture = Fixture::new().await;
             let mut app =
-                app_framework::framework::testing::TestApp::<FrameworkProjectionApp>::new()
+                app_framework::framework::testing::HeadlessApp::<FrameworkProjectionApp>::new()
                     .unwrap();
             app.settle();
             let resources = app.harness().resources();

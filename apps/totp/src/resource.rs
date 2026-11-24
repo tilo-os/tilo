@@ -382,7 +382,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    use ui::prelude::TestApp;
+    use tilo_app_test_host::TestApp;
     use ui::secrets::SecretBackend;
     use ui::tilo_actions::{Availability, ConfirmationPolicy, OperationKind, RiskLevel};
     use vello::kurbo;
@@ -1080,4 +1080,5 @@ mod tests {
     }
 }
 
-ui::reach_tests!(TotpShell);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(TotpShell);

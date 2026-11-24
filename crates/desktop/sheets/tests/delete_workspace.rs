@@ -1,29 +1,29 @@
 //! "Delete \<name\>?" as a person, a screen reader and an agent meet it:
 //! what goes with the workspace, and the answer being the person's own.
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::delete_workspace::{
     Asked, DeleteWorkspaceApp, DeleteWorkspaceEffect, DeleteWorkspaceState,
 };
 use ui::a11y::Action as A11yAction;
-use ui::framework::testing::HeadlessApp;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
 /// The sheet as the shell lends it, asking about the workspace called
 /// `name`.
-fn mounted(name: &str) -> (HeadlessApp<DeleteWorkspaceApp>, DeleteWorkspaceState) {
+fn mounted(name: &str) -> (TestApp<DeleteWorkspaceApp>, DeleteWorkspaceState) {
     let state = DeleteWorkspaceState::default();
     state.show(name.to_owned());
     state.presentation().open(true);
     let mut app =
-        HeadlessApp::<DeleteWorkspaceApp>::for_person_with_lent("person", state.clone()).unwrap();
+        TestApp::<DeleteWorkspaceApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state)
 }
 
-fn says(app: &mut HeadlessApp<DeleteWorkspaceApp>, text: &str) -> bool {
+fn says(app: &mut TestApp<DeleteWorkspaceApp>, text: &str) -> bool {
     app.harness().a11y_nodes().iter().any(|(_, node)| {
         node.label().is_some_and(|label| label.contains(text))
             || node.description().is_some_and(|said| said.contains(text))
@@ -31,7 +31,7 @@ fn says(app: &mut HeadlessApp<DeleteWorkspaceApp>, text: &str) -> bool {
     })
 }
 
-fn press(app: &mut HeadlessApp<DeleteWorkspaceApp>, id: &str) {
+fn press(app: &mut TestApp<DeleteWorkspaceApp>, id: &str) {
     app.harness()
         .perform_named(id, &A11yAction::Activate)
         .unwrap();

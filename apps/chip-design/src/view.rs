@@ -933,12 +933,13 @@ fn reported_tools(receipt: &VerificationReceipt) -> Vec<Property> {
     properties
 }
 
-ui::reach_tests!(ChipDesignShell);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(ChipDesignShell);
 
 #[cfg(test)]
 mod agent_disclosure_tests {
+    use tilo_app_test_host::TestApp;
     use ui::framework::ResourceApp;
-    use ui::framework::testing::TestApp;
     use ui::tilo_actions::ResourceSpec;
 
     /// The document read of the first resource of `kind` any scenario publishes, invoked as

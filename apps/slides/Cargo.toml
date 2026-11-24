@@ -67,6 +67,8 @@ image = { workspace = true, default-features = false, features = ["png"] }
 # collection build, and the app then links the whole runtime statically.
 slides-samples = { package = "slides", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }
 tilo-test-env = { path = "../../tools/test-env" }
 tempfile.workspace = true
 

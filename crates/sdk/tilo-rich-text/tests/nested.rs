@@ -11,6 +11,7 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
+use tilo_app_test_host::TestApp;
 use tilo_document::RichText;
 use ui::prelude::*;
 use ui::serde_json::{self, json};

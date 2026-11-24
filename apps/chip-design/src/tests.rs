@@ -1,4 +1,4 @@
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 use ui::tilo_resource::{ActionRef, Doc, Invoke, Replica, Resource as _};
 
 use crate::{ChipDesignShell, Project as ChipProject, ProjectState};
@@ -1213,7 +1213,7 @@ fn the_window_bars_operator_graph_opens_the_graph() {
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(|| {
-        ui::framework::testing::TestApp::<ChipDesignShell>::drive("operator-graph")
+        tilo_app_test_host::TestApp::<ChipDesignShell>::drive("operator-graph")
     })
     .unwrap_or_else(|error| panic!("{error}"));
 }

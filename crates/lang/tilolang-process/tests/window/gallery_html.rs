@@ -4,11 +4,11 @@
 //! the page last answered is sent as patches onto the elements it holds (`Page::patch`).
 
 use base64::Engine as _;
+use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
 use ui::a11y::Role;
 use ui::composition::page::{Page, PageAction, Patch};
 use ui::composition::{Composed, Composition};
-use ui::framework::testing::TestApp;
 use ui::headless::FrameHarness;
 
 const PLACES: [&str; 15] = [

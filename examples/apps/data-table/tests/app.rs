@@ -3,7 +3,7 @@ use std::time::Duration;
 use example_data_table::{App, ROW_COUNT, Review};
 use ui::a11y::{AccessNode, Action, Role};
 use ui::headless::{InspectionNode, SemanticExpectation};
-use ui::prelude::{Replica, TestApp};
+use ui::prelude::{HeadlessApp, Replica};
 
 fn semantics_of(node: &InspectionNode, id: &str) -> Option<AccessNode> {
     if node.test_id.as_deref() == Some(id) {
@@ -26,7 +26,7 @@ fn opening_rows_keeps_the_most_recent_first() {
 
 #[test]
 fn app_exposes_a_virtualized_table_whose_rows_open_through_the_resource() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let harness = app.harness();
     harness
         .perform_named("rows-table", &Action::Focus)
@@ -87,7 +87,7 @@ fn app_exposes_a_virtualized_table_whose_rows_open_through_the_resource() {
 
 #[test]
 fn rows_select_through_direct_touch() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let harness = app.harness();
     harness
         .wait_for_named("open-3", Duration::from_secs(1))
@@ -111,7 +111,7 @@ fn rows_select_through_direct_touch() {
 
 #[test]
 fn initial_native_app_contract_is_certified() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
 }

@@ -2,7 +2,7 @@
 //! storage, permissions, undo and history, without a window.
 //!
 //! Prefer [`tilo_resource::Replica`] for the resource's own behaviour (it
-//! needs no UI). Use [`TestApp`] to prove what the host adds: that controls
+//! needs no UI). Use [`HeadlessApp`] to prove what the host adds: that controls
 //! invoke actions, that undo reverts them, that a viewer is refused, that
 //! state survives a reopen.
 //!
@@ -21,7 +21,9 @@ use super::app::{ResourceApp, definition, prepare_on, role_permissions};
 use super::headless::{AUTHOR, INSTANCE, operation, profile_directory, surface_of};
 use super::root::ResourceRoot;
 
-pub use super::headless::{DATA_DIR_WORKSPACE, HeadlessApp, TEST_WORKSPACE, surface_in};
+pub use super::headless::{
+    Alone, DATA_DIR_WORKSPACE, HeadlessApp, Host, TEST_WORKSPACE, surface_in,
+};
 
 /// The hang bound and bounded waits a test uses, re-exported from the
 /// toolkit's `test-support` so an app's tests reach them through `ui`
@@ -41,9 +43,6 @@ pub use reach::{
     check_scenarios_reach_every_action, unreachable_actions, unreachable_actions_in_share,
 };
 
-/// The name tests use for [`HeadlessApp`].
-pub type TestApp<A> = HeadlessApp<A>;
-
 /// The windows [`check_window_sidebar_button`] opens an app in: one wide
 /// enough to dock a sidebar beside any content, and one so narrow the
 /// sidebar is a screen of its own or a drawer over the content.
@@ -55,8 +54,8 @@ pub const SIDEBAR_BUTTON_WINDOWS: [(u32, u32); 2] = [(1280, 800), (400, 800)];
 /// ([`FrameHarness::check_window_sidebar_button`]). A narrow window keeps the
 /// button on the sidebar's own screen, behind the screen the person is on,
 /// and the check takes the bar's way back to it.
-pub fn check_window_sidebar_button<A: ResourceApp>(
-    mut open: impl FnMut() -> Result<HeadlessApp<A>, LaunchError>,
+pub fn check_window_sidebar_button<A: ResourceApp, H: Host>(
+    mut open: impl FnMut() -> Result<HeadlessApp<A, H>, LaunchError>,
 ) -> Result<(), String> {
     for viewport in SIDEBAR_BUTTON_WINDOWS {
         let mut app = open().map_err(|error| format!("{viewport:?}: the app opens: {error}"))?;
@@ -101,7 +100,7 @@ pub fn surface_in_root<A: ResourceApp, S: ui_core::widget::Widget + 'static>(
 /// attributed to `author`, through the same executor as a hosted one, so
 /// the test exercises the surface's real write path. Queued invocations
 /// ([`Dispatcher::apply`](super::Dispatcher::apply)) are not taken by anyone: drive those through
-/// [`TestApp`].
+/// [`HeadlessApp`].
 pub fn detached_dispatcher<R: Resource>(author: &tilo_resource::MemberId) -> super::Dispatcher<R> {
     super::Dispatcher::new("test", R::KIND, false, Some(author))
 }
@@ -277,7 +276,7 @@ pub fn drive_live_embedded<A: ResourceApp, T>(
 /// the edits it applies now ([`Dispatcher::apply_now`](super::Dispatcher::apply_now)) go through the same
 /// replayable executor a hosted surface's do, attributed to a test author,
 /// onto the document the test hands the surface. Invocations it queues are
-/// resolved by a host only; test those through [`TestApp`].
+/// resolved by a host only; test those through [`HeadlessApp`].
 pub fn dispatcher<R: Resource>(app_id: &'static str) -> super::Dispatcher<R> {
     super::Dispatcher::new(app_id, R::KIND, false, Some(&MemberId::person(AUTHOR)))
 }

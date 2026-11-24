@@ -39,6 +39,8 @@ assistant-model = { path = "../assistant-model" }
 # collection build, and the app then links the whole runtime statically.
 assistant-samples = { package = "assistant", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }
 # The workspace a test's window is in, and Chat as the session's API reaches it.
 tilo-test-env = { path = "../../tools/test-env" }
 

@@ -1,11 +1,11 @@
 use example_tree_browser::{App, Notebook, SECTIONS};
 use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Invoke, Replica, TestApp};
+use ui::prelude::{HeadlessApp, Invoke, Replica};
 
 #[test]
 fn the_detail_pane_follows_the_selection_and_edits_its_own_section() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let harness = app.harness();
     let targets = harness.targets();
     for target in [
@@ -85,7 +85,7 @@ fn the_detail_pane_follows_the_selection_and_edits_its_own_section() {
 
 #[test]
 fn compact_windows_navigate_between_full_width_panes() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let harness = app.harness();
     harness.resize((460, 820)).expect("compact layout");
     harness
@@ -144,7 +144,7 @@ fn only_sections_take_notes() {
 
 #[test]
 fn initial_native_app_contract_is_certified() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
 }

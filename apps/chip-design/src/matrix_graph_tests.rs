@@ -2,7 +2,7 @@
 use crate::operator_graph::RESOURCE_ID;
 use crate::tests::Parsed as _;
 use crate::{ChipDesignShell, OperatorNode, Project as ChipProject};
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 
 fn add(
     app: &mut TestApp<ChipDesignShell>,

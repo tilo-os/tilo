@@ -7,8 +7,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use tilo_app_test_host::TestApp;
 use ui::framework::ActionControl;
-use ui::framework::testing::TestApp;
 use ui::lock::MutexRecover as _;
 use ui::tilo_actions::ActionOutput;
 use ui::tilo_actions::remote::model_providers::{Assignment, OfferedModel};

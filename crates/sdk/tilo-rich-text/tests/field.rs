@@ -11,11 +11,11 @@
 )]
 
 use serde::{Deserialize, Serialize};
+use tilo_app_test_host::TestApp;
 use tilo_document::{RichText, RichTextAction};
 use tilo_rich_text::RichTextFieldViews;
 use ui::automerge::transaction::Transactable;
 use ui::automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
-use ui::framework::testing::TestApp;
 use ui::framework::{ResourceApp, ViewCx};
 use ui::permissions::Role;
 use ui::tilo_actions::{Action, ActionError, Doc};

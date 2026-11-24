@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::model::Resolution;
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 use ui::tilo_actions::ResourceSpec as Published;
 use ui::tilo_resource::{Edit, Effect as _, Replica, Resource as _};
 
@@ -461,7 +461,7 @@ fn twenty_megabyte_sources_open_through_the_actual_resource_and_stay_scrollable(
     use std::time::Instant;
     let (left, right) = crate::diff_view::performance_tests::unique_sources();
     let bytes = left.len();
-    let mut app = ui::framework::testing::HeadlessApp::<DiffmergeShell>::new().unwrap();
+    let mut app = tilo_app_test_host::TestApp::<DiffmergeShell>::new().unwrap();
     let open = Session::OPEN_COMPARISON.with(session::OpenComparison {
         left_label: "large-before.rs".into(),
         left,
@@ -509,11 +509,11 @@ fn twenty_megabyte_sources_open_through_the_actual_resource_and_stay_scrollable(
 
 #[test]
 fn the_header_controls_drive_the_comparison_through_the_shell() {
-    use ui::framework::testing::HeadlessApp;
+    use tilo_app_test_host::TestApp;
     use ui::headless::{Control, ControlInput};
 
-    let mut app = HeadlessApp::<DiffmergeShell>::capture(Some("diff")).expect("the diff stages");
-    let find = |app: &mut HeadlessApp<DiffmergeShell>, name: &str| -> Option<Control> {
+    let mut app = TestApp::<DiffmergeShell>::capture(Some("diff")).expect("the diff stages");
+    let find = |app: &mut TestApp<DiffmergeShell>, name: &str| -> Option<Control> {
         app.harness()
             .controls()
             .into_iter()

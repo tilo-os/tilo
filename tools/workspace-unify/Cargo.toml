@@ -1050,6 +1050,7 @@ doc = false
 "tilo-app-registry" = { path = "../../crates/core/app-registry", default-features = false, features = [] }
 "tilo-app-state" = { path = "../../crates/system/app-state", default-features = false, features = [] }
 "tilo-app-template-smoke" = { path = "../../tools/tilo-app-template-smoke", default-features = false, features = [] }
+"tilo-app-test-host" = { path = "../../crates/sdk/tilo-app-test-host", default-features = false, features = [] }
 "tilo-app-window" = { path = "../../crates/sdk/tilo-app-window", default-features = false, features = [] }
 "tilo-appearance" = { path = "../../crates/platform/tilo-appearance", default-features = false, features = [] }
 "tilo-archive" = { path = "../../crates/engines/tilo-archive", default-features = false, features = [] }
@@ -3565,6 +3566,7 @@ doc = false
 "tilo-app-registry" = { path = "../../crates/core/app-registry", default-features = false, features = [] }
 "tilo-app-state" = { path = "../../crates/system/app-state", default-features = false, features = ["watch"] }
 "tilo-app-template-smoke" = { path = "../../tools/tilo-app-template-smoke", default-features = false, features = [] }
+"tilo-app-test-host" = { path = "../../crates/sdk/tilo-app-test-host", default-features = false, features = [] }
 "tilo-app-window" = { path = "../../crates/sdk/tilo-app-window", default-features = false, features = [] }
 "tilo-appearance" = { path = "../../crates/platform/tilo-appearance", default-features = false, features = [] }
 "tilo-archive" = { path = "../../crates/engines/tilo-archive", default-features = false, features = [] }

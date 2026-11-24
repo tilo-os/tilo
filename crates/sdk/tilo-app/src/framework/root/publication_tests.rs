@@ -234,8 +234,8 @@ fn outline(resource: &tilo_actions::ResourceSpec) -> serde_json::Value {
     })
 }
 
-fn shelf(items: i64) -> Result<TestApp<ShelfApp>, String> {
-    let mut app = TestApp::<ShelfApp>::new().map_err(|error| format!("{error:?}"))?;
+fn shelf(items: i64) -> Result<HeadlessApp<ShelfApp>, String> {
+    let mut app = HeadlessApp::<ShelfApp>::new().map_err(|error| format!("{error:?}"))?;
     app.call("grow", json!({ "by": items }))
         .map_err(|error| format!("{error:?}"))?;
     Ok(app)
@@ -420,7 +420,7 @@ tilo_test_env::scenario! {
 
     phase rows_handed_out_again_publish_the_nodes_they_published;
     {
-        let mut app = TestApp::<KeptShelfApp>::new().expect("the shelf opens");
+        let mut app = HeadlessApp::<KeptShelfApp>::new().expect("the shelf opens");
         app.call("grow", json!({ "by": 2 }))
             .expect("the shelf grows");
         let doc = document(&app);
@@ -475,7 +475,7 @@ tilo_test_env::scenario! {
 }
 
 /// The shelf's document, as its record holds it now.
-fn document(app: &TestApp<impl ResourceApp>) -> AutoCommit {
+fn document(app: &HeadlessApp<impl ResourceApp>) -> AutoCommit {
     app.read_document(Clone::clone)
 }
 

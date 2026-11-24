@@ -4012,7 +4012,7 @@ mod tests {
         {
             // The bar's Open Photos asks the window's session to open Photos,
             // and the bar says so.
-            let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
+            let mut app = tilo_app_test_host::TestApp::<SampleCamera>::new().unwrap();
             let session = std::sync::Arc::new(ui::tilo_actions::remote::TestProvider::new());
             app.harness().set_session_api(
                 ui::RemoteActions::with_provider(
@@ -4559,7 +4559,7 @@ mod tests {
         }
     }
 
-    fn disk_camera(name: &str) -> (ui::framework::testing::TestApp<DiskCamera>, PathBuf) {
+    fn disk_camera(name: &str) -> (tilo_app_test_host::TestApp<DiskCamera>, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "camera-{name}-{}-{}",
             std::process::id(),
@@ -4568,12 +4568,12 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         CAPTURE_DIR.with(|slot| *slot.borrow_mut() = Some(dir.clone()));
         (
-            ui::framework::testing::TestApp::<DiskCamera>::new().unwrap(),
+            tilo_app_test_host::TestApp::<DiskCamera>::new().unwrap(),
             dir,
         )
     }
 
-    fn push_frame(app: &mut ui::framework::testing::TestApp<DiskCamera>, seed: u8) {
+    fn push_frame(app: &mut tilo_app_test_host::TestApp<DiskCamera>, seed: u8) {
         assert_eq!(
             app.with_surface::<CameraApp, _>(|camera| {
                 camera.push_camera_frame(frame::viewfinder(seed, 128, 96))
@@ -4671,7 +4671,7 @@ mod tests {
             std::fs::remove_dir_all(&dir).ok();
         }
         {
-            let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
+            let mut app = tilo_app_test_host::TestApp::<SampleCamera>::new().unwrap();
             app.effect_on(crate::actions::DOCUMENT_ROW, &CameraEffect::CapturePage)
                 .expect("the sample scanner captures a page");
             assert_eq!(
@@ -5102,7 +5102,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (services, recorder) = ui::process::ProcessServices::recording();
         let _host = ui::process::enter(&services);
-        let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
+        let mut app = tilo_app_test_host::TestApp::<SampleCamera>::new().unwrap();
 
         let payload = "https://example.test/scanned-from-a-saved-photo";
         let image = dir.join("code.png");
@@ -5153,7 +5153,7 @@ mod tests {
 
     #[test]
     fn open_photos_asks_the_window_s_session_to_open_photos() {
-        let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
+        let mut app = tilo_app_test_host::TestApp::<SampleCamera>::new().unwrap();
         let refused = app
             .harness()
             .invoke_published("camera.capture", "open-photos", &serde_json::Map::new())
@@ -5189,7 +5189,7 @@ mod tests {
 
     #[test]
     fn the_rows_offer_the_camera_effects_on_what_they_act_on() {
-        let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
+        let mut app = tilo_app_test_host::TestApp::<SampleCamera>::new().unwrap();
         let resources = app.harness().resources();
         let camera = resources
             .iter()

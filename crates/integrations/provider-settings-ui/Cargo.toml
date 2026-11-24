@@ -27,6 +27,8 @@ taffy.workspace = true
 [dev-dependencies]
 # Mounted native tests use the SDK's complete native test driver.
 ui = { package = "tilo-app", version = "0.1.0", path = "../../sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../sdk/tilo-app-test-host" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

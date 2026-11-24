@@ -12,6 +12,8 @@ zeroize.workspace = true
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../sdk/tilo-app-test-host" }
 
 [lints]
 workspace = true

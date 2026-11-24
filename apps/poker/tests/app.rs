@@ -10,7 +10,8 @@ use std::collections::HashSet;
 
 use poker::game::{BUY_IN, Street};
 use poker::{App, Table};
-use ui::prelude::{Invoke, Replica, TestApp};
+use tilo_app_test_host::TestApp;
+use ui::prelude::{Invoke, Replica};
 
 /// Everyone at the table, each with their own replica of it: an action is applied by its
 /// player's replica and synced to the others, as the workspace delivers it.

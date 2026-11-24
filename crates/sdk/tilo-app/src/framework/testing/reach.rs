@@ -2,7 +2,7 @@
 //! arguments sampled from each action's own schema. A test tool only: it is
 //! built with `test-support`, so no release binary carries it.
 
-use super::HeadlessApp;
+use super::{HeadlessApp, Host};
 use crate::framework::app::ResourceApp;
 
 /// Drive every `shares`th scenario `A` stages from the `share`th, and each
@@ -15,7 +15,7 @@ use crate::framework::app::ResourceApp;
 /// # Errors
 /// Each scenario that did not open, or whose drive left published actions
 /// unreachable, with those actions.
-pub fn check_scenarios_reach_every_action<A: ResourceApp>(
+pub fn check_scenarios_reach_every_action<A: ResourceApp, H: Host>(
     share: usize,
     shares: usize,
     long: &[&str],
@@ -26,7 +26,7 @@ pub fn check_scenarios_reach_every_action<A: ResourceApp>(
         if !long && index.checked_rem(shares) != Some(share) {
             continue;
         }
-        let mut app = match HeadlessApp::<A>::drive(scenario) {
+        let mut app = match HeadlessApp::<A, H>::drive(scenario) {
             Ok(app) => app,
             Err(error) => {
                 failures.push(format!("{scenario}: {error}"));
@@ -76,7 +76,7 @@ pub fn check_scenarios_reach_every_action<A: ResourceApp>(
 /// asked; one that is unavailable now, refuses the sample as arguments (a
 /// payload only another answer can build, such as a review to restore), or
 /// ran and failed at its job, was reached.
-pub fn unreachable_actions<A: ResourceApp>(app: &mut HeadlessApp<A>) -> Vec<String> {
+pub fn unreachable_actions<A: ResourceApp, H: Host>(app: &mut HeadlessApp<A, H>) -> Vec<String> {
     unreachable_actions_in_share(app, 0, 1)
 }
 
@@ -87,8 +87,8 @@ pub fn unreachable_actions<A: ResourceApp>(app: &mut HeadlessApp<A>) -> Vec<Stri
 /// own test running beside the others; the shares together ask every
 /// action. A resource's actions stay in one share, so one that withdraws
 /// its row spares the walk the rest of the row's, as in a whole walk.
-pub fn unreachable_actions_in_share<A: ResourceApp>(
-    app: &mut HeadlessApp<A>,
+pub fn unreachable_actions_in_share<A: ResourceApp, H: Host>(
+    app: &mut HeadlessApp<A, H>,
     share: usize,
     shares: usize,
 ) -> Vec<String> {
@@ -207,7 +207,7 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
 }
 
 /// How many dialogs and sheets `app` shows now.
-fn dialogs<A: ResourceApp>(app: &mut HeadlessApp<A>) -> usize {
+fn dialogs<A: ResourceApp, H: Host>(app: &mut HeadlessApp<A, H>) -> usize {
     app.harness()
         .a11y_nodes()
         .iter()

@@ -1,7 +1,7 @@
 use generated_app::{App, Document};
 use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Invoke, Replica, ResourceApp as _, TestApp};
+use ui::prelude::{HeadlessApp, Invoke, Replica, ResourceApp as _};
 
 fn body(text: &str) -> Invoke<Document> {
     Invoke::edit(&Document::paths().body.replace(text)).expect("an edit")
@@ -21,7 +21,7 @@ fn concurrent_edits_converge() {
 
 #[test]
 fn the_preview_follows_the_inputs_and_undo_reverts() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.harness()
         .perform_named(
             "document-title-input",
@@ -43,7 +43,7 @@ fn the_preview_follows_the_inputs_and_undo_reverts() {
 
 #[test]
 fn clearing_runs_at_once_with_undo_and_the_document_survives_a_relaunch() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.invoke(Document::SET_CONTENT.with(("Plan".into(), "Ship it".into())))
         .expect("set content");
     app.invoke(Document::CLEAR.invoke())

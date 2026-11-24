@@ -1,0 +1,676 @@
+//! The framework on the real component runtime: controls invoke actions,
+//! undo reverts them, viewers are refused, state survives a relaunch, and
+//! the history of every action is attributed.
+
+use tilo_app::prelude::*;
+use tilo_app_test_host::TestApp;
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Checklist {
+    pub title: String,
+    pub items: Collection<Item>,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Item {
+    pub text: String,
+    pub done: bool,
+}
+
+#[resource(
+    kind = "test.checklist",
+    app = "so.tilo.test-checklist",
+    catalogue = "tests/locales"
+)]
+impl Checklist {
+    /// Rename the checklist.
+    #[action]
+    pub fn rename(&mut self, title: String) {
+        self.title = title;
+    }
+
+    /// Add an item.
+    #[action]
+    pub fn add(&mut self, cx: &mut ActionCx, text: String) {
+        self.items.push(cx.id(), Item { text, done: false });
+    }
+
+    /// Check or uncheck an item.
+    #[action]
+    pub fn set_done(&mut self, item: &Id, done: bool) -> Result<(), &'static str> {
+        self.items.get_mut(item).ok_or("no such item")?.done = done;
+        Ok(())
+    }
+
+    /// Remove every checked item.
+    #[action(destructive)]
+    pub fn clear_done(&mut self) {
+        self.items.retain(|_, item| !item.done);
+    }
+}
+
+struct ChecklistApp;
+
+impl ResourceApp for ChecklistApp {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-checklist";
+    const TITLE: &'static str = "Checklist";
+
+    fn view(cx: &mut ViewCx<Checklist>) -> Element {
+        Box::new(
+            Column::new()
+                .push(Box::new(cx.control_with(
+                    |shown| TextInput::from_state(shown).with_id("title"),
+                    |list| list.title.clone(),
+                    Checklist::RENAME,
+                )))
+                .push(Box::new(cx.text(|list| {
+                    let open = list.items.values().filter(|item| !item.done).count();
+                    format!("{open} open")
+                })))
+                .push(Box::new(cx.each(
+                    |list| &list.items,
+                    |row| {
+                        let id = row.item().cloned().unwrap_or_else(|| Id::from_raw(""));
+                        let label =
+                            row.read(|item| item.map(|item| item.text.clone()).unwrap_or_default());
+                        let control = format!("set-done-{id}");
+                        Box::new(row.control_with(
+                            |shown| {
+                                Checkbox::from_state(shown)
+                                    .with_id(&control)
+                                    .with_label(label)
+                            },
+                            |item| item.done,
+                            Checklist::SET_DONE.map(move |done| (id.clone(), done)),
+                        ))
+                    },
+                )))
+                .push(Box::new(
+                    cx.button("Clear done", Checklist::CLEAR_DONE.invoke()),
+                )),
+        )
+    }
+}
+
+/// The same checklist, declared as showing secrets.
+struct SecretChecklistApp;
+
+impl ResourceApp for SecretChecklistApp {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-secret-checklist";
+    const TITLE: &'static str = "Secret checklist";
+    const BEHAVIOUR: tilo_app::application::ComponentBehaviour =
+        tilo_app::application::ComponentBehaviour {
+            capture_protected: true,
+            ..tilo_app::application::ComponentBehaviour::DEFAULT
+        };
+
+    fn view(cx: &mut ViewCx<Checklist>) -> Element {
+        ChecklistApp::view(cx)
+    }
+}
+
+#[test]
+fn the_live_window_withholds_itself_from_captures_only_when_the_app_declares_it() {
+    use tilo_app::framework::testing::inspect_live_window;
+    assert!(
+        inspect_live_window::<SecretChecklistApp, _>(tilo_app::App::capture_protected).unwrap()
+    );
+    assert!(!inspect_live_window::<ChecklistApp, _>(tilo_app::App::capture_protected).unwrap());
+}
+
+/// The same checklist, as the session's on-screen input surface.
+struct InputSurfaceApp;
+
+impl ResourceApp for InputSurfaceApp {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-input-surface";
+    const TITLE: &'static str = "Input surface";
+    const BEHAVIOUR: tilo_app::application::ComponentBehaviour =
+        tilo_app::application::ComponentBehaviour {
+            window: tilo_app::application::WindowRole::InputSurface,
+            ..tilo_app::application::ComponentBehaviour::DEFAULT
+        };
+
+    fn view(cx: &mut ViewCx<Checklist>) -> Element {
+        ChecklistApp::view(cx)
+    }
+}
+
+/// An input surface floats over another app's content, so its window paints no
+/// ground of its own: what its view does not paint is the app under it. A
+/// keyboard that hides its keys leaves nothing behind on the app it typed into.
+#[test]
+fn an_input_surface_window_stands_on_no_ground() {
+    let mut app = TestApp::<InputSurfaceApp>::new().unwrap();
+    let harness = app.harness();
+    let (width, height) = harness.frame_output().logical_size;
+    let pixels = harness.render_rgba_transparent();
+    for (x, y) in [(0, height - 1), (width - 1, height - 1)] {
+        let at = usize::try_from((y * width + x) * 4).unwrap();
+        assert_eq!(
+            pixels[at..at + 4],
+            [0, 0, 0, 0],
+            "the app under the input surface shows through at ({x}, {y})"
+        );
+    }
+    let mut window = TestApp::<ChecklistApp>::new().unwrap();
+    let harness = window.harness();
+    let (width, height) = harness.frame_output().logical_size;
+    let pixels = harness.render_rgba_transparent();
+    let at = usize::try_from(((height - 1) * width) * 4).unwrap();
+    assert_ne!(
+        pixels[at + 3],
+        0,
+        "a window that is not an input surface stands on the ground"
+    );
+}
+
+/// The picture a host draws from an input surface is clear where its view
+/// paints nothing: the keyboard's window floats over the app it types into, so
+/// a keyboard that has hidden its keys leaves that app showing.
+#[test]
+fn an_input_surface_picture_is_clear_where_its_view_paints_nothing() {
+    let mut app = TestApp::<InputSurfaceApp>::new().unwrap();
+    let shown = app.call("render", serde_json::json!({})).unwrap().unwrap();
+    let address = shown["content"].as_str().expect("a stored picture");
+    let hash = tilo_app::tilo_actions::content_hash(address).expect("a content address");
+    let png = app.content().read(hash).expect("the picture is stored");
+    let picture = tilo_app::png::decode_rgba8(&png).unwrap();
+    let width = usize::try_from(picture.width).unwrap();
+    let bottom_left = usize::try_from(picture.height - 1).unwrap() * width * 4;
+    assert_eq!(
+        picture.rgba[bottom_left + 3],
+        0,
+        "the window under the input surface shows through its unpainted foot"
+    );
+    let painted = picture
+        .rgba
+        .chunks_exact(4)
+        .filter(|pixel| pixel[3] > 0)
+        .count();
+    assert!(painted > 0, "the view itself is drawn");
+}
+
+tilo_test_env::scenario! {
+    fn an_input_surface_announces_itself_and_needs_no_workspace;
+
+    phase an_input_surface_window_announces_its_own_app_id;
+    {
+        use tilo_app::framework::testing::inspect_live_window;
+        assert_eq!(
+            inspect_live_window::<InputSurfaceApp, _>(|app| app.window_app_id().map(str::to_owned))
+                .unwrap()
+                .as_deref(),
+            Some("so.tilo.test-input-surface")
+        );
+        assert_eq!(
+            inspect_live_window::<ChecklistApp, _>(|app| app.window_app_id().map(str::to_owned))
+                .unwrap(),
+            None
+        );
+    }
+
+    phase an_input_surface_runs_without_a_workspace_runtime;
+    {
+        let args = tilo_app::launch::LaunchArgs::component();
+        assert!(!tilo_app::framework::launch_spec::<InputSurfaceApp>().attaches_runtime(&args));
+        assert!(tilo_app::framework::launch_spec::<ChecklistApp>().attaches_runtime(&args));
+    }
+}
+
+fn texts(app: &TestApp<ChecklistApp>) -> Vec<(String, bool)> {
+    app.state()
+        .items
+        .values()
+        .map(|item| (item.text.clone(), item.done))
+        .collect()
+}
+
+tilo_test_env::scenario! {
+    fn actions_update_the_record_and_view_as_undoable_attributed_versions;
+
+    phase actions_through_the_api_update_the_record_and_the_view;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::ADD.with("milk")).unwrap();
+        app.invoke(Checklist::ADD.with("eggs")).unwrap();
+        assert_eq!(
+            texts(&app),
+            [("milk".into(), false), ("eggs".into(), false)]
+        );
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(inspection.contains("2 open"), "{inspection}");
+
+        let checkbox = app
+            .harness()
+            .targets()
+            .keys()
+            .find(|name| name.starts_with("set-done-"))
+            .cloned()
+            .unwrap();
+        app.harness().click_named(&checkbox).unwrap();
+        assert_eq!(
+            app.state().items.values().filter(|item| item.done).count(),
+            1
+        );
+
+        // A destructive action of the record is undoable: the click applies
+        // it at once, nobody is asked, and Undo takes it back.
+        app.harness().click_named("clear-done").unwrap();
+        app.settle();
+        assert_eq!(app.asking(), None);
+        assert_eq!(app.state().items.len(), 1);
+        assert!(app.undo());
+        assert_eq!(app.state().items.len(), 2);
+        app.invoke(Checklist::CLEAR_DONE.invoke()).unwrap();
+        assert_eq!(app.state().items.len(), 1);
+    }
+
+    phase typing_in_a_bound_field_is_an_action;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.harness().click_named("title").unwrap();
+        app.harness().type_text("Groceries");
+        assert_eq!(app.state().title, "Groceries");
+    }
+
+    phase undo_and_redo_revert_actions;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::RENAME.with("First")).unwrap();
+        app.invoke(Checklist::RENAME.with("Second")).unwrap();
+        assert!(app.undo());
+        assert_eq!(app.state().title, "First");
+        assert!(app.redo());
+        assert_eq!(app.state().title, "Second");
+    }
+
+    phase undo_reverts_a_text_splice_exactly;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::RENAME.with("first thought")).unwrap();
+        app.invoke(Checklist::RENAME.with("second thought"))
+            .unwrap();
+        assert!(app.undo());
+        assert_eq!(app.state().title, "first thought");
+        assert!(app.undo());
+        assert_eq!(app.state().title, "");
+        assert!(app.redo());
+        assert!(app.redo());
+        assert_eq!(app.state().title, "second thought");
+    }
+
+    phase state_survives_a_relaunch;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::ADD.with("persisted")).unwrap();
+        let app = app.reopen().unwrap();
+        assert_eq!(texts(&app), [("persisted".into(), false)]);
+    }
+
+    phase every_action_is_an_attributed_version;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::RENAME.with("Weekly")).unwrap();
+        let last = app.versions().pop().unwrap();
+        let entry = last.context.expect("an action records an entry");
+        let Some(tilo_actions::Did::Verb(verb)) = &entry.what else {
+            panic!("a verb: {entry:?}");
+        };
+        assert_eq!(verb.action.action, "rename");
+        assert_eq!(verb.args["title"].as_str(), Some("Weekly"));
+        assert!(entry.invoker.is_some(), "attributed: {entry:?}");
+    }
+
+    phase history_restores_a_past_version_through_the_host;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::RENAME.with("Groceries")).unwrap();
+        app.invoke(Checklist::ADD.with("milk")).unwrap();
+        let past = app.state();
+        let version = app.versions().pop().unwrap().hash;
+        app.invoke(Checklist::RENAME.with("Hardware")).unwrap();
+        app.invoke(Checklist::ADD.with("nails")).unwrap();
+        assert_ne!(app.state(), past);
+
+        let harness = app.harness();
+        assert!(
+            harness.targets().contains_key("history-open"),
+            "a framework app has History"
+        );
+        harness.click_named("history-open").unwrap();
+        let entry = tilo_app::history_source::entry_id_from_hash(&version.to_string());
+        let target = format!(
+            "timeline-entry:{}",
+            tilo_app::HistoryEntryId::hex(&entry)
+        );
+        harness
+            .perform_semantic_named(
+                "activity_timeline",
+                Some(&target),
+                &tilo_app::a11y::Action::Activate,
+            )
+            .unwrap();
+        harness.click_named("history-restore").unwrap();
+        harness
+            .click_named("history-restore-review.primary")
+            .unwrap();
+        harness.relayout();
+        assert_eq!(app.state(), past);
+
+        // Back in the live app, the restore is one undoable step.
+        app.harness().click_named("history-back-live").unwrap();
+        assert!(app.undo());
+        assert_eq!(app.state().title, "Hardware");
+    }
+}
+
+tilo_test_env::scenario! {
+    fn actions_are_guarded_by_role_and_confirmed_for_every_surface;
+
+    phase a_viewer_cannot_edit;
+    {
+        let mut app = TestApp::<ChecklistApp>::with_role(tilo_app::Role::Viewer).unwrap();
+        assert!(app.invoke(Checklist::ADD.with("sneaky")).is_err());
+        assert!(app.state().items.is_empty());
+    }
+
+    phase the_palette_and_agents_see_every_action;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        let resources = app.harness().resources();
+        let ids: Vec<_> = resources
+            .iter()
+            .flat_map(|resource| resource.actions.iter().map(|spec| spec.id.clone()))
+            .collect();
+        for id in ["rename", "add", "set-done", "clear-done", "apply"] {
+            assert!(
+                ids.iter().any(|candidate| candidate == id),
+                "{id} in {ids:?}"
+            );
+        }
+    }
+
+    phase the_generic_apply_action_is_for_agents_and_scripts_only;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        let resources = app.harness().resources();
+        let apply = resources
+            .iter()
+            .flat_map(|resource| &resource.actions)
+            .find(|spec| spec.id == tilo_app::tilo_resource::APPLY)
+            .expect("apply is published for agents and scripts");
+        assert!(!apply.reaches_people(), "never a palette row");
+        assert!(apply.contract.confirmation_depends_on_arguments());
+        let named = resources
+            .iter()
+            .flat_map(|resource| &resource.actions)
+            .find(|spec| spec.id == "rename")
+            .unwrap();
+        assert!(named.reaches_people(), "named actions stay in the palette");
+    }
+
+    phase a_destructive_typed_value_is_treated_like_its_named_action;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(typed(ChecklistAction::Rename(checklist::Rename {
+            title: "Weekly".into(),
+        })))
+        .unwrap();
+        assert_eq!(app.state().title, "Weekly");
+
+        app.invoke(Checklist::ADD.with("milk")).unwrap();
+        let id = app.state().items.ids().next().cloned().unwrap();
+        app.invoke(typed(ChecklistAction::SetDone(checklist::SetDone {
+            item: id,
+            done: true,
+        })))
+        .unwrap();
+
+        // `clear_done` is `#[action(destructive)]` and undoable: reached
+        // through `apply` it applies at once, as its named declaration does.
+        app.invoke(typed(ChecklistAction::ClearDone(checklist::ClearDone {})))
+            .unwrap();
+        assert!(app.state().items.is_empty());
+    }
+
+    phase allowing_once_in_app_admits_one_call_and_the_next_asks_again;
+    // A grant given once is spent by the in-app call it admits: the host
+    // revokes it as part of admitting the call, and the next call asks again.
+    // Where nothing can revoke it, it is never relied on at all.
+    {
+        use std::sync::{Arc, Mutex};
+        use tilo_app::permissions::policy::{
+            Answer, Grant, GrantId, Grantee, KindSet, Lifetime, TreePath,
+        };
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.set_role(tilo_app::permissions::Role::Viewer);
+        let viewer = app.permissions();
+        let mut access = viewer.access().clone();
+        let workspace = TreePath::workspace(&access.policy.workspace);
+        let person = Grantee::person(access.person_id().unwrap_or_default());
+        std::sync::Arc::make_mut(&mut access.policy)
+            .grants
+            .extend([
+                Grant::new(
+                    "asks",
+                    person.clone(),
+                    workspace.clone(),
+                    KindSet::UNDOABLE,
+                    Answer::Ask,
+                    Grantee::person("owner"),
+                ),
+                Grant::new(
+                    "once",
+                    person,
+                    workspace.app(ChecklistApp::ID),
+                    KindSet::UNDOABLE,
+                    Answer::Allow,
+                    Grantee::person("owner"),
+                )
+                .with_lifetime(Lifetime::Once),
+            ]);
+        let granted = viewer.with_access(access);
+
+        // Nothing here can revoke it: the grant given once is not relied on.
+        app.set_permissions(granted.clone());
+        let without_host = app.invoke(Checklist::RENAME.with("Without a host"));
+        assert!(
+            matches!(
+                without_host,
+                Err(tilo_actions::ApiError::ConfirmationRequired)
+            ),
+            "{without_host:?}"
+        );
+
+        let revoked: Arc<Mutex<Vec<GrantId>>> = Arc::default();
+        let host = Arc::clone(&revoked);
+        app.set_permissions(granted.with_once_spender(Arc::new(move |spent| {
+            host.lock().unwrap().extend_from_slice(spent);
+            Ok(())
+        })));
+        app.invoke(Checklist::RENAME.with("Once")).unwrap();
+        assert_eq!(app.state().title, "Once");
+        assert_eq!(
+            *revoked.lock().unwrap(),
+            vec![GrantId::new("once")],
+            "admitting the call handed the spent grant to the host"
+        );
+        assert!(matches!(
+            app.invoke(Checklist::RENAME.with("Twice")),
+            Err(tilo_actions::ApiError::ConfirmationRequired)
+        ));
+        assert_eq!(app.state().title, "Once", "the second call changed nothing");
+    }
+}
+
+fn typed(operation: ChecklistAction) -> Invoke<Checklist> {
+    Invoke::apply(&tilo_app::tilo_resource::Stamped {
+        operation,
+        now_ms: 0,
+    })
+    .unwrap()
+}
+
+#[test]
+fn the_framework_paints_the_window_ground_live_and_in_shots() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let ground = theme.tokens.colors.surfaces.content.to_rgba8();
+        let ground = [ground.r, ground.g, ground.b, ground.a];
+        let harness = app.harness();
+        harness.set_theme(theme.clone());
+        let (width, height) = harness.frame_output().logical_size;
+        let corners = |rgba: &[u8], frame: &str| {
+            let w = usize::try_from(width).unwrap();
+            let h = usize::try_from(height).unwrap();
+            // The view fills from the top; the bottom corners are ground.
+            for (x, y) in [(0, h - 1), (w - 1, h - 1)] {
+                let at = (y * w + x) * 4;
+                assert_eq!(
+                    rgba[at..at + 4],
+                    ground,
+                    "{}: the {frame} corner ({x}, {y}) is not the window ground",
+                    theme.name
+                );
+            }
+        };
+        // What the app's own frame paints, before any clear colour: a live
+        // window, a hosted tile and a capture all show this.
+        corners(&harness.render_rgba_transparent(), "drawn");
+        let shot = out.path().join(format!("{}.png", theme.name));
+        harness.render_png(&shot);
+        let png = tilo_app::png::read_rgba8(&shot).unwrap();
+        assert_eq!((png.width, png.height), (width, height));
+        corners(&png.rgba, "shot");
+    }
+}
+
+/// A capture prepares the component in the host's appearance and only then
+/// switches to the theme the shot names. Every retained control face must
+/// follow: a framework `cx.button` in a light shot is the light neutral
+/// face, not the dark one it was first painted with.
+#[test]
+fn a_light_capture_repaints_framework_buttons_in_the_light_theme() {
+    fn find<'a>(
+        node: &'a tilo_app::headless::InspectionNode,
+        name: &str,
+    ) -> Option<&'a tilo_app::headless::InspectionNode> {
+        if node
+            .semantics
+            .as_ref()
+            .is_some_and(|s| s.name.as_deref() == Some(name))
+        {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, name))
+    }
+
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    let harness = app.harness();
+    harness.set_theme(Theme::dark());
+    let _ = harness.render_rgba();
+    let light = Theme::light();
+    harness.set_theme(light.clone());
+    let rgba = harness.render_rgba();
+    let (width, _) = harness.frame_output().logical_size;
+    let inspection = harness.inspection();
+    let button = find(&inspection.root, "Clear done").expect("the button is in the tree");
+    let [x, y, _, h] = button.rect;
+    let face = tilo_app::widget::ButtonFace::new(
+        tilo_app::vello::kurbo::Rect::new(0.0, 0.0, 80.0, 32.0),
+        "x",
+    );
+    let (fill, _, _) = face.colors(&light);
+    let expected = fill.to_rgba8();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are small non-negative pixel positions in the test window"
+    )]
+    let (row, col) = ((y + h / 2.0).round() as usize, (x + 4.0).round() as usize);
+    let at = (row * width as usize + col) * 4;
+    let probe = &rgba[at..at + 4];
+    for (channel, (got, want)) in probe
+        .iter()
+        .zip([expected.r, expected.g, expected.b])
+        .enumerate()
+    {
+        assert!(
+            got.abs_diff(want) <= 2,
+            "channel {channel}: the button paints {probe:?}, the light neutral face is {expected:?}"
+        );
+    }
+}
+
+thread_local! {
+    /// Whether the fragile view fails every frame from now on.
+    static FRAGILE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A view that fails every frame once told to, as a view with a bug does.
+#[derive(Default)]
+struct Fragile {
+    rect: Rect,
+}
+
+impl Widget for Fragile {
+    fn sync(&mut self, _: &tilo_app::widget::AppModel, _: &tilo_app::widget::ModelPath) {
+        assert!(!FRAGILE_FAILS.get(), "the fragile view failed");
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut tilo_app::advanced::TaffyTree<()>,
+        _: &Theme,
+        _: &mut std::collections::HashMap<tilo_app::advanced::NodeId, *mut dyn Widget>,
+    ) -> tilo_app::advanced::NodeId {
+        taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        _: &tilo_app::advanced::TaffyTree<()>,
+        _: tilo_app::advanced::NodeId,
+        origin: Point,
+    ) {
+        self.rect = Rect::from_origin_size(origin, Size::ZERO);
+    }
+
+    fn name(&self) -> &'static str {
+        "Fragile"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+struct FragileApp;
+
+impl ResourceApp for FragileApp {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-fragile";
+    const TITLE: &'static str = "Fragile";
+
+    fn view(_: &mut ViewCx<Checklist>) -> Element {
+        Box::new(Fragile::default())
+    }
+}
+
+/// A test that fails while its app is open fails alone: closing the app as
+/// the failure unwinds runs none of its frames again, so the failure is not
+/// repeated in a destructor, which would abort every test in the binary.
+#[test]
+fn an_app_open_when_a_test_fails_closes_without_failing_again() {
+    let mut app = TestApp::<FragileApp>::new().unwrap();
+    FRAGILE_FAILS.set(true);
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        app.settle();
+    }));
+    FRAGILE_FAILS.set(false);
+    assert!(failed.is_err(), "the view's failure fails the test");
+}

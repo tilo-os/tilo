@@ -12,7 +12,7 @@ use crate::resource::{CommandAnswer, ItemKind, Terminal};
 use crate::sessions::Sessions;
 use crate::target::RecentTarget;
 
-type App = ui::framework::testing::TestApp<crate::TerminalShell>;
+type App = tilo_app_test_host::TestApp<crate::TerminalShell>;
 
 const KEY: &str = "0123456789abcdef0123456789abcdef";
 use tilo_test_env::hang_bound;

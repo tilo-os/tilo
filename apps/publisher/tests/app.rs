@@ -1,6 +1,7 @@
 use publisher::{App, KeyEffect, Publisher};
+use tilo_app_test_host::TestApp;
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Invoke, Replica, TestApp};
+use ui::prelude::{Invoke, Replica};
 use ui::tilo_resource::Path;
 
 /// Replace the text of one field of the profile, as its input does.

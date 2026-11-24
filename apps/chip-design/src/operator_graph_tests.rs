@@ -1,7 +1,7 @@
 use crate::operator_graph::RESOURCE_ID;
 use crate::tests::{Parsed as _, on_peer};
 use crate::{ChipDesignShell, OperatorKind, OperatorNode, Project as ChipProject, ProjectState};
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 use ui::graph_editor::Edge;
 use ui::tilo_resource::{Invoke, Resource as _};
 

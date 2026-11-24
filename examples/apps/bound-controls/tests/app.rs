@@ -1,7 +1,7 @@
 use example_bound_controls::{App, Preferences};
 use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Atom, Edit, Invoke, Replica, TestApp};
+use ui::prelude::{Atom, Edit, HeadlessApp, Invoke, Replica};
 
 #[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
 fn edit(edit: &Edit<Preferences>) -> Invoke<Preferences> {
@@ -27,7 +27,7 @@ fn edits_out_of_range_are_refused() {
 /// Each control edits its field, and the resource holds what was chosen.
 #[test]
 fn every_control_edits_its_field() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let harness = app.harness();
     harness
         .perform_named("name-input", &Action::SetValue("Ada".into()))
@@ -60,7 +60,7 @@ fn every_control_edits_its_field() {
 #[test]
 fn controls_follow_edits_from_elsewhere() {
     let p = Preferences::paths();
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.invoke(edit(&p.refresh_minutes.set(45.0)))
         .expect("set refresh");
     app.invoke(edit(&p.updates.set(false)))
@@ -84,7 +84,7 @@ fn controls_follow_edits_from_elsewhere() {
 /// A viewer's controls are disabled and its edits are refused.
 #[test]
 fn a_viewer_cannot_change_preferences() {
-    let mut app = TestApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
+    let mut app = HeadlessApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
     app.harness()
         .expect(&SemanticExpectation::named("name-input").enabled(false))
         .expect("the input disables itself");
@@ -98,7 +98,7 @@ fn a_viewer_cannot_change_preferences() {
 /// publishes.
 #[test]
 fn initial_native_app_contract_is_certified() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
 }

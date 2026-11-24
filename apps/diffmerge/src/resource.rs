@@ -96,4 +96,5 @@ impl ResourceApp for DiffmergeShell {
 #[cfg(test)]
 mod tests;
 
-ui::reach_tests!(DiffmergeShell);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(DiffmergeShell);

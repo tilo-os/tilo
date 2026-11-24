@@ -75,4 +75,5 @@ impl ResourceApp for LogsShell {
     }
 }
 
-ui::reach_tests!(LogsShell);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(LogsShell);

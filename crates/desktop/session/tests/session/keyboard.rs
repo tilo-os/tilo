@@ -14,9 +14,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use tilo_accessibility_settings::OnScreenKeyboard;
-use tilo_session_core::desktop::verbs::SHELL_RESOURCE;
 use tilo_session::AppSocket;
 use tilo_session::keyboard;
+use tilo_session_core::desktop::verbs::SHELL_RESOURCE;
 
 use super::lock::{CLOSE, apart, pictures, private_home};
 

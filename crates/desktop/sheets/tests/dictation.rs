@@ -3,23 +3,23 @@
 //! shown while it is heard, and every answer going back to the session's
 //! state.
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::dictation::{
     Answer, Dictation, DictationApp, DictationState, Failure, Prompt, RecoveryReason, Stage,
 };
 use ui::a11y::Action as A11yAction;
-use ui::framework::testing::HeadlessApp;
 use ui::prelude::Resource as _;
 use ui::prelude::tilo_actions::{OperationKind, ResourceSpec};
 use ui::vello::kurbo::Rect;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-fn staged(scenario: &str) -> HeadlessApp<DictationApp> {
-    HeadlessApp::<DictationApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
+fn staged(scenario: &str) -> TestApp<DictationApp> {
+    TestApp::<DictationApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
 /// Every button, by its label, where it stands.
-fn buttons(app: &mut HeadlessApp<DictationApp>) -> Vec<(String, Rect)> {
+fn buttons(app: &mut TestApp<DictationApp>) -> Vec<(String, Rect)> {
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -35,7 +35,7 @@ fn buttons(app: &mut HeadlessApp<DictationApp>) -> Vec<(String, Rect)> {
 }
 
 /// What a screen reader is told by the card, all of it.
-fn told(app: &mut HeadlessApp<DictationApp>) -> String {
+fn told(app: &mut TestApp<DictationApp>) -> String {
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -74,11 +74,10 @@ fn recovery(id: u64) -> Prompt {
     }
 }
 
-fn mounted(prompt: Prompt) -> (HeadlessApp<DictationApp>, DictationState) {
+fn mounted(prompt: Prompt) -> (TestApp<DictationApp>, DictationState) {
     let state = DictationState::default();
     state.show(Some(prompt));
-    let mut app =
-        HeadlessApp::<DictationApp>::for_person_with_lent("person", state.clone()).unwrap();
+    let mut app = TestApp::<DictationApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state)

@@ -42,6 +42,8 @@ shortcuts-samples = { package = "shortcuts", path = ".", features = ["samples"] 
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-test-env = { path = "../../tools/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }
 
 [lints]
 workspace = true

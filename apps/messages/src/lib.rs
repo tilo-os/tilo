@@ -323,7 +323,8 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(MessagesShell)
 }
 
-ui::reach_tests!(MessagesShell);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(MessagesShell);
 
 /// German is one of the languages the app ships, and it reads in German: the copy comes
 /// from `locales/de-DE.ftl`, never from the English source catalogue beside it.

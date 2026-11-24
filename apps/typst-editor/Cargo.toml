@@ -63,6 +63,8 @@ workspace-hack = { version = "0.1" }
 # collection build, and the app then links the whole runtime statically.
 typst-editor-samples = { package = "typst-editor", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../tools/test-env" }
 # The plugin module the wasm host's bound is tested with, written as WAT.

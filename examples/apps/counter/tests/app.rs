@@ -1,6 +1,6 @@
 use example_counter::{App, Counter, LIMIT};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Invoke, Replica, ResourceApp as _, TestApp};
+use ui::prelude::{HeadlessApp, Invoke, Replica, ResourceApp as _};
 
 /// Setting the count: an edit at its path.
 #[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
@@ -30,7 +30,7 @@ fn edits_and_verbs_validate_and_a_refusal_changes_nothing() {
 /// action with its label and typed parameters.
 #[test]
 fn every_action_is_published_with_its_parameters() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let resources = app.harness().resources();
     let counter = resources
         .iter()
@@ -58,7 +58,7 @@ fn every_action_is_published_with_its_parameters() {
 /// each press is one undo step.
 #[test]
 fn buttons_invoke_the_action_and_undo_reverts_each_press() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.harness().click_named("add-ten").expect("+10");
     app.harness().click_named("subtract-one").expect("-1");
     app.harness()
@@ -75,7 +75,7 @@ fn buttons_invoke_the_action_and_undo_reverts_each_press() {
 /// nobody; one Undo brings the count back.
 #[test]
 fn reset_runs_at_once_and_undo_brings_the_count_back() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.invoke(set(5)).expect("set");
     app.invoke(Counter::RESET.invoke())
         .expect("an undoable reset runs at once");
@@ -88,21 +88,21 @@ fn reset_runs_at_once_and_undo_brings_the_count_back() {
 /// Permissions are enforced on every action: a viewer can read but not edit.
 #[test]
 fn a_viewer_cannot_count() {
-    let mut app = TestApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
+    let mut app = HeadlessApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
     assert!(app.invoke(Counter::ADD.with(1)).is_err());
     assert_eq!(app.state().count, 0);
 }
 
 #[test]
 fn the_counted_scenario_stages_through_actions() {
-    let app = TestApp::<App>::capture(Some("counted")).expect("stage");
+    let app = HeadlessApp::<App>::capture(Some("counted")).expect("stage");
     assert_eq!(app.state().count, 42);
 }
 
 /// Every control that causes an effect is bound to a published action.
 #[test]
 fn initial_native_app_contract_is_certified() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
 }

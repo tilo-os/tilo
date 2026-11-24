@@ -10,8 +10,8 @@ use ui::tilo_resource::{Replica, Resource as _};
 use crate::resource::{TypstEditorShell, Workspace};
 use ui::widget::DrawChild;
 
-fn live_fixture(viewport: (u32, u32)) -> ui::framework::testing::TestApp<TypstEditorShell> {
-    let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+fn live_fixture(viewport: (u32, u32)) -> tilo_app_test_host::TestApp<TypstEditorShell> {
+    let mut app = tilo_app_test_host::TestApp::<TypstEditorShell>::new().unwrap();
     for invoke in TypstEditorShell::scenario(None) {
         app.invoke(invoke).unwrap();
     }
@@ -87,13 +87,13 @@ fn shown_source(app: &TypstApp, doc: &AutoCommit) -> String {
 #[test]
 fn hosted_capture_finishes_the_real_preview_compile_before_its_first_render() {
     let mut app =
-        ui::framework::testing::TestApp::<TypstEditorShell>::capture_at(None, (1280, 800)).unwrap();
+        tilo_app_test_host::TestApp::<TypstEditorShell>::capture_at(None, (1280, 800)).unwrap();
     assert_compiled_welcome(&mut app);
 }
 
 #[test]
 fn live_preview_finishes_the_real_compile_after_published_source_actions() {
-    let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+    let mut app = tilo_app_test_host::TestApp::<TypstEditorShell>::new().unwrap();
     let file = app.state().files.ids().next().unwrap().clone();
     let (_, sample) = crate::resource::sample_files(None).remove(0);
     let source = Workspace::paths().files.item(&file).source;
@@ -106,7 +106,7 @@ fn live_preview_finishes_the_real_compile_after_published_source_actions() {
     assert_compiled_welcome(&mut app);
 }
 
-fn assert_compiled_welcome(app: &mut ui::framework::testing::TestApp<TypstEditorShell>) {
+fn assert_compiled_welcome(app: &mut tilo_app_test_host::TestApp<TypstEditorShell>) {
     app.with_surface::<TypstApp, _>(|view| {
         assert!(
             !view.compiling(),
@@ -242,7 +242,7 @@ fn open_save_and_export_work_where_files_have_no_paths() {
     });
     let services = ui::process::ProcessServices::null().with_files(host);
     let _host = ui::process::enter(&services);
-    let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+    let mut app = tilo_app_test_host::TestApp::<TypstEditorShell>::new().unwrap();
     app.effect(&TypstEffect::OpenFile { path: None })
         .expect("the open lands");
     app.settle();
@@ -310,7 +310,7 @@ fn failed_save_keeps_its_retry_destination_and_success_clears_the_failure() {
 
 #[test]
 fn a_new_file_opens_over_a_blank_one_but_never_over_work() {
-    let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+    let mut app = tilo_app_test_host::TestApp::<TypstEditorShell>::new().unwrap();
     app.settle();
     app.invoke(crate::resource::new_file(
         "letter.typ",
@@ -340,7 +340,7 @@ fn a_new_file_opens_over_a_blank_one_but_never_over_work() {
 fn opening_another_document_clears_save_recovery_only_after_a_successful_read() {
     use crate::actions::TypstEffect;
 
-    let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+    let mut app = tilo_app_test_host::TestApp::<TypstEditorShell>::new().unwrap();
     let file = app.state().files.ids().next().unwrap().clone();
     let source = Workspace::paths().files.item(&file).source;
     app.invoke(ui::tilo_resource::Invoke::edit(&source.replace("= Document A")).unwrap())
@@ -855,7 +855,7 @@ fn control_rects(app: &TypstApp) -> Vec<(String, Rect)> {
 }
 #[test]
 fn an_empty_document_previews_as_empty_not_as_a_blank_page() {
-    let mut live = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+    let mut live = tilo_app_test_host::TestApp::<TypstEditorShell>::new().unwrap();
     live.harness().resize((1280, 800)).unwrap();
     live.settle();
     live.with_surface::<TypstApp, _>(|view| {
@@ -948,7 +948,7 @@ fn the_bar_says_where_the_window_is_and_holds_every_command() {
 
 #[test]
 fn the_bar_marks_an_unsaved_document_until_it_is_saved() {
-    let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+    let mut app = tilo_app_test_host::TestApp::<TypstEditorShell>::new().unwrap();
     app.harness().resize((1280, 800)).unwrap();
     app.settle();
     let file = app.state().files.ids().next().expect("a file").clone();

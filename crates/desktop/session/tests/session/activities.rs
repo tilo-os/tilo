@@ -207,7 +207,9 @@ fn standing(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
 #[track_caller]
 fn gone(session: &mut Session, name: &str) {
     crate::common::wait_for(session, format!("the shell's {name} to go"), |session| {
-        crate::common::on_screen(session, name).is_none().then_some(())
+        crate::common::on_screen(session, name)
+            .is_none()
+            .then_some(())
     });
 }
 
@@ -299,7 +301,7 @@ fn a_call_is_ended_and_a_recording_stopped_from_their_cards() {
     crate::common::wait_for(&mut session, "the presses to reach their apps", |session| {
         (commands(session, "so.tilo.calls") == ["mute", "hang-up"]
             && commands(session, "so.tilo.capture") == ["stop"])
-            .then_some(())
+        .then_some(())
     });
 }
 
@@ -321,7 +323,9 @@ fn the_cards_dock_in_the_corner_the_person_chose_three_at_most() {
 
     standing(&mut session, "End call");
     let places = session.shell_controls("Card place");
-    crate::common::press_where(&mut session, "a card's place menu", |_| places.first().copied());
+    crate::common::press_where(&mut session, "a card's place menu", |_| {
+        places.first().copied()
+    });
     crate::common::press_control(&mut session, "Cards at the top left");
     crate::common::wait_for(&mut session, "the cards at the top left", |session| {
         let (x, y, _, _) = crate::common::on_screen(session, "End call")?;
@@ -338,17 +342,28 @@ fn a_phone_drops_the_card_from_under_the_bar() {
     let mut session = session_wide(420);
     settle(&mut session, 8);
     show(&session, CLOCKS, tea(), true);
-    let at = |session: &Session, name: &str| crate::common::on_screen_at(session, name, 420, HEIGHT);
+    let at =
+        |session: &Session, name: &str| crate::common::on_screen_at(session, name, 420, HEIGHT);
     crate::common::wait_for(&mut session, "the pill", |session| at(session, "Tea, live"));
-    assert!(at(&session, "A minute more").is_none(), "no card stands until asked for");
+    assert!(
+        at(&session, "A minute more").is_none(),
+        "no card stands until asked for"
+    );
 
     crate::common::press_at(&mut session, "Tea, live", 420, HEIGHT);
     let (x, y, w, _) = crate::common::wait_for(&mut session, "the card", |session| {
         at(session, "Back to the bar")?;
         at(session, "A minute more")
     });
-    assert!(y > f64::from(BAR) && y < f64::from(HEIGHT) / 2.0, "under the bar: {y}");
-    assert!(x < 100.0 && x + w > 300.0, "the card's row spans the phone: {:?}", (x, w));
+    assert!(
+        y > f64::from(BAR) && y < f64::from(HEIGHT) / 2.0,
+        "under the bar: {y}"
+    );
+    assert!(
+        x < 100.0 && x + w > 300.0,
+        "the card's row spans the phone: {:?}",
+        (x, w)
+    );
     super::shell::capture_to(&mut session, &shots_dir(), "phone-card");
 
     crate::common::press_at(&mut session, "Fold Tea back", 420, HEIGHT);
@@ -379,8 +394,7 @@ fn a_songs_card_takes_it_along_its_length() {
         let presses = pressed(session, "so.tilo.music");
         let seek = presses.iter().find(|press| press["command"] == "seek")?;
         let fraction = seek["fraction"].as_f64()?;
-        ((fraction - 0.75).abs() < 0.08
-            && presses.iter().any(|press| press["command"] == "next"))
-        .then_some(())
+        ((fraction - 0.75).abs() < 0.08 && presses.iter().any(|press| press["command"] == "next"))
+            .then_some(())
     });
 }

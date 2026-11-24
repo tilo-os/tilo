@@ -2935,7 +2935,7 @@ mod tests {{
 
     #[test]
     fn graph_checked_controls_use_resource_actions_and_permissions() {{
-        let mut app = TestApp::<GraphApp>::new().expect("the graph app opens");
+        let mut app = HeadlessApp::<GraphApp>::new().expect("the graph app opens");
         app.harness().perform_named("ordinary-enabled", &Action::ToggleCheck)
             .expect("the ordinary graph toggle invokes the resource action");
         assert!(app.state().enabled);
@@ -2952,7 +2952,7 @@ mod tests {{
 
     #[test]
     fn graph_factory_binds_shared_graph_values_and_document_state() {{
-        let mut app = ui::prelude::TestApp::<GraphApp>::new().expect("the graph app opens");
+        let mut app = ui::prelude::HeadlessApp::<GraphApp>::new().expect("the graph app opens");
         let values = app.surface_mut::<GraphForm>().values.clone();
         app.harness().perform_named("first-value", &Action::SetValue("Ada".into()))
             .expect("first graph form edits the shared value");
@@ -9848,7 +9848,7 @@ fn app_readme(spec: &AppSpec) -> String {
     );
     let _ = writeln!(
         out,
-        "The app is written on the Tilo app framework: its state is a `#[derive(Model)]` resource, every edit is an `#[action]` method, and the view binds controls to those actions (`cx.input`, `cx.checkbox`, `cx.button`, `cx.control`, `cx.each`). Storage, sync, collaboration, history, per-author undo, permissions, the action palette, agents, scripts and search come from the framework; `Replica` tests the resource and `TestApp` tests the running app. `tilolang doctor` rejects apps that remove this surface.\n"
+        "The app is written on the Tilo app framework: its state is a `#[derive(Model)]` resource, every edit is an `#[action]` method, and the view binds controls to those actions (`cx.input`, `cx.checkbox`, `cx.button`, `cx.control`, `cx.each`). Storage, sync, collaboration, history, per-author undo, permissions, the action palette, agents, scripts and search come from the framework; `Replica` tests the resource and `HeadlessApp` tests the running app. `tilolang doctor` rejects apps that remove this surface.\n"
     );
     let (resource, action, arguments) = readme_action_example(spec.template);
     let resource = format!("{}.{resource}", spec.app_id);

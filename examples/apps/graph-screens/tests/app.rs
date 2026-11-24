@@ -1,7 +1,7 @@
 use example_graph_screens::{App, Projects, components, screens};
 use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Invoke, Replica, TestApp};
+use ui::prelude::{HeadlessApp, Invoke, Replica};
 use ui::{UiGraphHandle, UiNode};
 
 #[test]
@@ -26,7 +26,7 @@ fn creating_a_project_needs_a_name_and_clears_the_draft() {
 
 #[test]
 fn serialized_screen_and_native_controls_share_one_resource() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.harness()
         .perform_named("name-input", &Action::SetValue("Atlas".into()))
         .expect("the draft input remains addressable");
@@ -80,7 +80,7 @@ fn serialized_graph_edits_have_shared_undo_history() {
 /// under its name, and every registered screen builds.
 #[test]
 fn screens_mount_rust_components_and_all_build() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.harness()
         .expect(
             &SemanticExpectation::named("project-summary-title")
@@ -101,7 +101,7 @@ fn screens_mount_rust_components_and_all_build() {
 /// holds on every screen.
 #[test]
 fn the_about_link_navigates_through_a_published_action() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let about_title = SemanticExpectation::named("title")
         .role(Role::Heading { level: 1 })
         .name("About");
@@ -134,7 +134,7 @@ fn the_about_link_navigates_through_a_published_action() {
 /// an effect is bound to a published action.
 #[test]
 fn initial_native_app_contract_is_certified() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
 }

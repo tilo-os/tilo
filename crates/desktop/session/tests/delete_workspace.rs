@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use tilo_app::framework::testing::HeadlessApp;
+use tilo_app_test_host::TestApp;
 use tilo_session::Session;
 use tilo_session_core::desktop::i18n::t;
 use tilo_sheets::SheetState as _;
@@ -197,7 +197,7 @@ fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
         .workspace_settings()
         .expect("workspace settings")
         .clone();
-    let mut app = HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state)
+    let mut app = TestApp::<WorkspaceSettingsApp>::for_person_with_lent("person", state)
         .expect("the sheet draws");
     app.harness().resize((1280, 900)).expect("a screen");
     app.settle();

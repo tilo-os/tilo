@@ -1,7 +1,7 @@
 use generated_app::{App, Items};
 use ui::a11y::Action;
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Edit, Id, Invoke, Replica, TestApp};
+use ui::prelude::{Edit, HeadlessApp, Id, Invoke, Replica};
 
 fn edit(edit: &Edit<Items>) -> Invoke<Items> {
     Invoke::edit(edit).expect("an edit")
@@ -44,7 +44,7 @@ fn items_are_added_edited_and_removed() {
 
 #[test]
 fn the_list_starts_empty_and_rows_edit_their_item() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     let inspection = app.harness().inspection_json().expect("inspection");
     assert!(inspection.contains("Nothing here yet"), "{inspection}");
 
@@ -75,7 +75,7 @@ fn the_list_starts_empty_and_rows_edit_their_item() {
 
 #[test]
 fn items_survive_a_relaunch() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.invoke(Items::ADD.with("Call Ada")).expect("add");
     let app = app.reopen().expect("the app reopens");
     assert_eq!(titles(&app.state()), ["Call Ada"]);

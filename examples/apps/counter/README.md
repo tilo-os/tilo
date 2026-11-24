@@ -14,7 +14,7 @@ surface the palette, agents and scripts use exactly as the buttons do.
 Read:
 
 - `src/lib.rs`: the model and its check, its verbs, and a view that binds buttons with `actions.bind_invocation` and `cx.button`.
-- `tests/app.rs`: the same edits and verbs through `Replica` (no UI) and through `TestApp` (the running app).
+- `tests/app.rs`: the same edits and verbs through `Replica` (no UI) and through `HeadlessApp` (the running app).
 
 Start your own app from it:
 

@@ -22,13 +22,13 @@ use discord::bridge;
 use discord::resource::Discord;
 use discord::{APP_ID, Guild, KIND};
 use serde_json::{Value, json};
+use tilo_app_test_host::TestApp;
 use tilo_automation::{
     ActorFilter, Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec,
 };
 use tilo_workspace_service::tl_records::runtime::Actor;
 use tilo_workspace_service::tl_records::runtime::Value as TlValue;
 use tilo_workspace_service::tl_records::{Opened, ResourceStore};
-use ui::framework::testing::TestApp;
 use ui::tilo_actions::ActionKey;
 use ui::tilo_actions::params::{ActionParam, ParamType};
 use ui::tilo_actions::remote::CatalogueRow;
@@ -1130,10 +1130,9 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
     };
 
     let state = ada.state().unwrap();
-    let guild: discord_bridge::Guild = serde_json::from_value(
-        ui::tilo_resource::Model::to_json(&state),
-    )
-    .expect("the guild reads as the bridge's");
+    let guild: discord_bridge::Guild =
+        serde_json::from_value(ui::tilo_resource::Model::to_json(&state))
+            .expect("the guild reads as the bridge's");
     let plan = discord::bridge::plan(
         discord::bridge::Reading {
             guild: &guild,

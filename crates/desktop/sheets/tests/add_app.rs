@@ -4,15 +4,15 @@
 
 use std::path::PathBuf;
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::add_app::{AddApp, AddAppEffect, AddState, MOVE, MOVE_SWITCH, Offer};
 use ui::a11y::Action as A11yAction;
-use ui::framework::testing::HeadlessApp;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-fn staged(scenario: &str) -> HeadlessApp<AddApp> {
-    let mut app = HeadlessApp::<AddApp>::capture_at(Some(scenario), VIEWPORT).unwrap();
+fn staged(scenario: &str) -> TestApp<AddApp> {
+    let mut app = TestApp::<AddApp>::capture_at(Some(scenario), VIEWPORT).unwrap();
     app.settle();
     app
 }
@@ -27,17 +27,17 @@ fn appimage() -> Offer {
 }
 
 /// The sheet as the shell lends it, with `offer` asked about.
-fn mounted(offer: Offer) -> (HeadlessApp<AddApp>, AddState) {
+fn mounted(offer: Offer) -> (TestApp<AddApp>, AddState) {
     let state = AddState::default();
     state.show(offer);
     state.presentation().open(true);
-    let mut app = HeadlessApp::<AddApp>::for_person_with_lent("person", state.clone()).unwrap();
+    let mut app = TestApp::<AddApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state)
 }
 
-fn says(app: &mut HeadlessApp<AddApp>, text: &str) -> bool {
+fn says(app: &mut TestApp<AddApp>, text: &str) -> bool {
     app.harness().a11y_nodes().iter().any(|(_, node)| {
         node.label().is_some_and(|label| label.contains(text))
             || node.description().is_some_and(|said| said.contains(text))
@@ -45,7 +45,7 @@ fn says(app: &mut HeadlessApp<AddApp>, text: &str) -> bool {
     })
 }
 
-fn press(app: &mut HeadlessApp<AddApp>, id: &str) {
+fn press(app: &mut TestApp<AddApp>, id: &str) {
     app.harness()
         .perform_named(id, &A11yAction::Activate)
         .unwrap();

@@ -100,7 +100,7 @@ tilo_test_env::scenario! {
     phase platform_search_delivers_only_the_latest_bounded_query_to_a_view;
     {
         QUERIES.with_borrow_mut(Vec::clear);
-        let mut app = TestApp::<ViewQueryApp>::new().unwrap();
+        let mut app = HeadlessApp::<ViewQueryApp>::new().unwrap();
         QUERIES.with_borrow_mut(Vec::clear);
         app.harness()
             .with_widget_mut(|root: &mut ResourceRoot| {
@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
                 .map(|phase| phase.calls)
                 .sum()
         };
-        let mut app = TestApp::<WakingServerApp>::new().unwrap();
+        let mut app = HeadlessApp::<WakingServerApp>::new().unwrap();
         let query = SearchQuery::new("archive");
         let (search, token) = app
             .harness()
@@ -200,7 +200,7 @@ tilo_test_env::scenario! {
     {
         LOOKING.with(|looking| looking.set(false));
         FOUND.with_borrow_mut(Vec::clear);
-        let mut app = TestApp::<ViewServerApp>::new().unwrap();
+        let mut app = HeadlessApp::<ViewServerApp>::new().unwrap();
         let query = SearchQuery::new("archive");
         let (search, first) = app
             .harness()
@@ -298,7 +298,7 @@ impl ResourceApp for WakingServerApp {
 
 #[test]
 fn a_hit_opens_the_app_at_its_anchor_and_scopes_narrow_the_search() {
-    let mut app = TestApp::<MailApp>::new().unwrap();
+    let mut app = HeadlessApp::<MailApp>::new().unwrap();
     let (titles, mut scoped, declared, reminder) = app
         .harness()
         .with_widget_mut(|root: &mut ResourceRoot| {
@@ -367,7 +367,7 @@ fn a_hit_opens_the_app_at_its_anchor_and_scopes_narrow_the_search() {
 }
 
 /// How many indexes of its entries `app`'s resource has started.
-fn index_builds<A: ResourceApp>(app: &mut TestApp<A>) -> usize {
+fn index_builds<A: ResourceApp>(app: &mut HeadlessApp<A>) -> usize {
     app.harness()
         .with_widget_mut(|root: &mut ResourceRoot| root.search.borrow().builds)
         .unwrap()
@@ -378,7 +378,7 @@ tilo_test_env::scenario! {
 
     phase the_action_directory_names_the_search_source_without_indexing_it;
     {
-        let mut app = TestApp::<MailApp>::new().unwrap();
+        let mut app = HeadlessApp::<MailApp>::new().unwrap();
         let mut named = Vec::new();
         for edit in 0..4 {
             app.invoke(Mailbox::SET_SUBJECT.with(format!("Draft {edit}")))
@@ -456,7 +456,7 @@ tilo_test_env::scenario! {
         let pumped = ui_core::background::Pumped::new();
         let _background = pumped.background().enter();
         FORCE_OFF_FRAME.with(|forced| forced.set(Some(true)));
-        let mut app = TestApp::<MailApp>::new().unwrap();
+        let mut app = HeadlessApp::<MailApp>::new().unwrap();
 
         // The first search: the index of the mailbox is not built yet, so the
         // frame that asks builds nothing and answers from the last index (none).
@@ -496,7 +496,7 @@ tilo_test_env::scenario! {
     phase edits_while_an_index_builds_cost_one_build_after_it;
     {
         let pumped = ui_core::background::Pumped::new();
-        let search = |app: &mut TestApp<ShelfApp>| {
+        let search = |app: &mut HeadlessApp<ShelfApp>| {
             let _background = pumped.background().enter();
             app.harness()
                 .with_widget_mut(|root: &mut ResourceRoot| {
@@ -508,7 +508,7 @@ tilo_test_env::scenario! {
                 })
                 .unwrap()
         };
-        let mut app = TestApp::<ShelfApp>::new().unwrap();
+        let mut app = HeadlessApp::<ShelfApp>::new().unwrap();
         app.invoke(Shelf::RETITLE.with("Storm Tales")).unwrap();
         assert!(
             search(&mut app).is_empty(),
@@ -659,7 +659,7 @@ impl ResourceApp for NotebookApp {
 }
 
 /// What the app's one search source finds for `needle`.
-fn found(app: &mut TestApp<NotebookApp>, needle: &str) -> Vec<ui_core::search::SearchResult> {
+fn found(app: &mut HeadlessApp<NotebookApp>, needle: &str) -> Vec<ui_core::search::SearchResult> {
     app.harness()
         .with_widget_mut(|root: &mut ResourceRoot| {
             RootSearch::search_providers(root)[0].search(needle)
@@ -673,7 +673,7 @@ tilo_test_env::scenario! {
     phase a_labelled_item_is_found_as_the_reference_that_opens_it;
     {
         ITEMS_OPENED.with_borrow_mut(Vec::clear);
-        let mut app = TestApp::<NotebookApp>::new().unwrap();
+        let mut app = HeadlessApp::<NotebookApp>::new().unwrap();
         app.invoke(Notebook::ADD.with("Groceries")).unwrap();
         let hit = found(&mut app, "groceries")
             .into_iter()
@@ -712,7 +712,7 @@ tilo_test_env::scenario! {
 
     phase a_services_hits_are_listed_with_the_items_of_the_app;
     {
-        let mut app = TestApp::<NotebookApp>::new().unwrap();
+        let mut app = HeadlessApp::<NotebookApp>::new().unwrap();
         app.invoke(Notebook::ADD.with("Nyan notes")).unwrap();
         app.settle();
         let hits = found(&mut app, "nyan");
@@ -745,7 +745,7 @@ tilo_test_env::scenario! {
 
     phase a_record_the_person_may_not_read_is_found_nothing;
     {
-        let mut app = TestApp::<NotebookApp>::new().unwrap();
+        let mut app = HeadlessApp::<NotebookApp>::new().unwrap();
         app.invoke(Notebook::ADD.with("Groceries")).unwrap();
         app.settle();
         assert_eq!(found(&mut app, "groceries").len(), 1);

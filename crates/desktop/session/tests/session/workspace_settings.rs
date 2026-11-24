@@ -25,13 +25,13 @@ fn own_workspace(session: &Session, members: &[&str]) {
 
 /// The sheet as a person presses it: the app the session hosts, lent the state the session lends its
 /// own, so a press arrives as the person's own.
-fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
+fn sheet(session: &Session) -> TestApp<WorkspaceSettingsApp> {
     let state = session
         .workspace_settings()
         .expect("workspace settings")
         .clone();
-    let mut app = HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent(PERSON, state)
-        .expect("the sheet");
+    let mut app =
+        TestApp::<WorkspaceSettingsApp>::for_person_with_lent(PERSON, state).expect("the sheet");
     app.harness().resize((1280, 900)).expect("a screen");
     app.settle();
     app
@@ -80,7 +80,7 @@ fn front_workspace(session: &Session) -> String {
 }
 
 /// Press the control `id` of `app` , as a person's own gesture.
-fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
+fn press(app: &mut TestApp<WorkspaceSettingsApp>, id: &str) {
     app.harness()
         .perform_named(id, &ui::a11y::Action::Activate)
         .unwrap_or_else(|error| panic!("press {id}: {error}"));
@@ -89,7 +89,7 @@ fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
 
 /// Activate the element `name` says, as a screen reader does: the menu items a control opens have
 /// no id of their own, only what they say.
-fn activate(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
+fn activate(app: &mut TestApp<WorkspaceSettingsApp>, name: &str) {
     let node = app
         .harness()
         .a11y_node_named(name)
@@ -104,7 +104,7 @@ fn activate(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
 /// one segment of the line, addressed by the app the line answers for. The line's control is named
 /// by its scope rather than the words over it, since two installed apps can share a name (the Rust
 /// Notes and the tilolang Notes are both "Notes") and the words would name either.
-fn choose(app: &mut HeadlessApp<WorkspaceSettingsApp>, scope: &str, kind: &str, segment: usize) {
+fn choose(app: &mut TestApp<WorkspaceSettingsApp>, scope: &str, kind: &str, segment: usize) {
     press(
         app,
         &format!("ws-agent-answer-{scope}-{kind}:segment:{segment}"),
@@ -115,7 +115,7 @@ fn choose(app: &mut HeadlessApp<WorkspaceSettingsApp>, scope: &str, kind: &str, 
 /// shows.
 fn show_tab(
     session: &mut Session,
-    app: &mut HeadlessApp<WorkspaceSettingsApp>,
+    app: &mut TestApp<WorkspaceSettingsApp>,
     tab: &WorkspaceSettingsEffect,
 ) {
     app.effect(tab).expect("show the tab");
@@ -640,7 +640,7 @@ fn answers_of(session: &Session, agent: &str) -> Vec<tilo_action_policy::Grant> 
 }
 
 /// Let the session answer an ask the sheet made, and the sheet settle.
-fn settle(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>) {
+fn settle(session: &mut Session, app: &mut TestApp<WorkspaceSettingsApp>) {
     session.step(Duration::from_millis(1)).unwrap();
     app.settle();
 }
@@ -1123,7 +1123,7 @@ fn held_by_chat(
 
 /// Every name the sheet says, with what it says of it, as a screen reader reads it. A list row
 /// is named by its title and its secondary line; it is said here by the line it is titled with.
-fn said(app: &mut HeadlessApp<WorkspaceSettingsApp>) -> Vec<(String, String)> {
+fn said(app: &mut TestApp<WorkspaceSettingsApp>) -> Vec<(String, String)> {
     let titles: std::collections::HashMap<_, _> =
         app.harness().a11y_row_titles().into_iter().collect();
     app.harness()
@@ -1282,7 +1282,7 @@ fn held_agents(
 }
 
 /// The Agents tab of the workspace in front, open.
-fn agents_tab(session: &mut Session) -> HeadlessApp<WorkspaceSettingsApp> {
+fn agents_tab(session: &mut Session) -> TestApp<WorkspaceSettingsApp> {
     invoke(session, CHROME_RESOURCE, "workspace-settings");
     session.step(Duration::from_millis(1)).unwrap();
     let mut app = sheet(session);
@@ -1298,7 +1298,7 @@ fn agents_tab(session: &mut Session) -> HeadlessApp<WorkspaceSettingsApp> {
 
 /// `name` typed into the Agents tab's field and added: the tab makes an agent where Chat's record
 /// keeps it.
-fn make_agent(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
+fn make_agent(session: &mut Session, app: &mut TestApp<WorkspaceSettingsApp>, name: &str) {
     press(app, "ws-agents-new");
     app.harness()
         .perform_named(

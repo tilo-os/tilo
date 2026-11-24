@@ -39,6 +39,8 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../sdk/tilo-app-test-host" }
 
 [lints]
 workspace = true

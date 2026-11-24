@@ -3,10 +3,10 @@
 //! still work and taking one back, and what it says when this person may not
 //! invite here.
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::invite::{Invite, InviteApp, InviteEffect, InviteState, sample};
 use ui::a11y::Action as A11yAction;
-use ui::framework::testing::HeadlessApp;
 
 const VIEWPORT: (u32, u32) = (1280, 900);
 /// The link a made invitation hands over: the site's short link, which the
@@ -15,17 +15,17 @@ const LINK: &str = "https://tilo.sh/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGGHHHI
 
 /// The sheet shown through a state as the shell lends it, which is where its
 /// asks arrive.
-fn mounted(invite: Invite) -> (HeadlessApp<InviteApp>, InviteState) {
+fn mounted(invite: Invite) -> (TestApp<InviteApp>, InviteState) {
     let state = InviteState::default();
     state.show(invite);
     state.presentation().open(false);
-    let mut app = HeadlessApp::<InviteApp>::for_person_with_lent("person", state.clone()).unwrap();
+    let mut app = TestApp::<InviteApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state)
 }
 
-fn press(app: &mut HeadlessApp<InviteApp>, id: &str) {
+fn press(app: &mut TestApp<InviteApp>, id: &str) {
     app.harness()
         .perform_named(id, &A11yAction::Activate)
         .unwrap_or_else(|error| panic!("press {id}: {error}"));
@@ -33,7 +33,7 @@ fn press(app: &mut HeadlessApp<InviteApp>, id: &str) {
 }
 
 /// Whether some control or text the screen reader hears holds `text`.
-fn says(app: &mut HeadlessApp<InviteApp>, text: &str) -> bool {
+fn says(app: &mut TestApp<InviteApp>, text: &str) -> bool {
     app.harness().a11y_nodes().iter().any(|(_, node)| {
         node.label().is_some_and(|label| label.contains(text))
             || node.description().is_some_and(|said| said.contains(text))
@@ -42,7 +42,7 @@ fn says(app: &mut HeadlessApp<InviteApp>, text: &str) -> bool {
 }
 
 /// Whether the widget with test id `id` is drawn.
-fn drawn(app: &mut HeadlessApp<InviteApp>, id: &str) -> bool {
+fn drawn(app: &mut TestApp<InviteApp>, id: &str) -> bool {
     fn find(node: &ui::headless::InspectionNode, id: &str) -> bool {
         (node.test_id.as_deref() == Some(id) && node.rect[2] > 0.0 && node.rect[3] > 0.0)
             || node.children.iter().any(|child| find(child, id))
@@ -51,7 +51,7 @@ fn drawn(app: &mut HeadlessApp<InviteApp>, id: &str) -> bool {
 }
 
 /// Which of `segments` stand chosen, in the order they are drawn.
-fn chosen(app: &mut HeadlessApp<InviteApp>, segments: &[&str]) -> Vec<String> {
+fn chosen(app: &mut TestApp<InviteApp>, segments: &[&str]) -> Vec<String> {
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -62,7 +62,7 @@ fn chosen(app: &mut HeadlessApp<InviteApp>, segments: &[&str]) -> Vec<String> {
 }
 
 /// Whether the control named `name` takes input.
-fn enabled(app: &mut HeadlessApp<InviteApp>, name: &str) -> bool {
+fn enabled(app: &mut TestApp<InviteApp>, name: &str) -> bool {
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -76,7 +76,7 @@ tilo_test_env::scenario! {
 
     phase the_sheet_lists_the_part_the_link_brings_someone_in_at_and_who_it_is_for;
     {
-        let mut app = HeadlessApp::<InviteApp>::capture_at(Some("ready"), VIEWPORT).expect("the sheet");
+        let mut app = TestApp::<InviteApp>::capture_at(Some("ready"), VIEWPORT).expect("the sheet");
         for text in [
             "Invite people",
             "They join as",
@@ -113,7 +113,7 @@ tilo_test_env::scenario! {
     phase a_person_who_may_not_invite_here_is_told_why_and_cannot_make_a_link;
     {
         let mut app =
-            HeadlessApp::<InviteApp>::capture_at(Some("unable"), VIEWPORT).expect("the sheet");
+            TestApp::<InviteApp>::capture_at(Some("unable"), VIEWPORT).expect("the sheet");
         assert!(
             says(
                 &mut app,
@@ -327,7 +327,7 @@ tilo_test_env::scenario! {
 }
 
 /// Where the widget with test id `id` stands, in logical window coordinates.
-fn rect_of(app: &mut HeadlessApp<InviteApp>, id: &str) -> [f64; 4] {
+fn rect_of(app: &mut TestApp<InviteApp>, id: &str) -> [f64; 4] {
     fn find(node: &ui::headless::InspectionNode, id: &str) -> Option<[f64; 4]> {
         if node.test_id.as_deref() == Some(id) && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
             return Some(node.rect);

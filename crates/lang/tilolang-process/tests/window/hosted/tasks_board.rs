@@ -8,9 +8,9 @@
 //! light and dark, before and after a drag.
 
 use crate::change_marks::Driven as _;
+use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
 use ui::a11y::Role;
-use ui::framework::testing::TestApp;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);

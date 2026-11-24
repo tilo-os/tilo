@@ -148,6 +148,7 @@ members = [
     "crates/ui/font-catalog",
     "crates/sdk/runner-native",
     "crates/sdk/tilo-app",
+    "crates/sdk/tilo-app-test-host",
     "crates/sdk/tilo-caps",
     "crates/sdk/tilo-history",
     "crates/ui/tilo-cpu-raster",

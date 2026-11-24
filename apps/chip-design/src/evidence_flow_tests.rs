@@ -2,7 +2,7 @@ use crate::tests::Parsed as _;
 use crate::{ChipDesignShell, VerificationRecord};
 use serde_json::{Value, json};
 use sha2::Digest;
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/evidence-flow.json")).unwrap()
 }

@@ -7,8 +7,8 @@
 //! sizes, light and dark.
 
 use crate::change_marks::{menu_items, right_click};
+use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
-use ui::framework::testing::TestApp;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);

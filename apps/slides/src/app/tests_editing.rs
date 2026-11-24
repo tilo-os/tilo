@@ -1006,7 +1006,7 @@ fn right_click_or_a_held_finger_opens_the_words_menu() {
 
 #[test]
 fn an_agent_edits_a_text_boxes_words_through_their_own_resource() {
-    let mut app = ui::framework::testing::TestApp::<crate::resource::SlidesShell>::new().unwrap();
+    let mut app = tilo_app_test_host::TestApp::<crate::resource::SlidesShell>::new().unwrap();
     let deck = crate::deck::mirror(&app.state());
     let slide = &deck.slides[0];
     let element = slide

@@ -3,8 +3,8 @@
 //! reach agents and `tilo-control actions`; and a card's context menu offers its actions.
 
 use crate::change_marks::{flattened, menu_items, right_click};
+use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
-use ui::framework::testing::TestApp;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 

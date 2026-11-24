@@ -108,6 +108,8 @@ tilo-test-env = { path = "../../tools/test-env" }
 # then reads — they must not interleave).
 serial_test.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }
 
 [lints]
 workspace = true

@@ -4,9 +4,9 @@ use super::*;
 use crate::model::{Presence, Remote};
 use crate::resource::RemoteShell;
 use iroh_base::SecretKey;
+use tilo_app_test_host::TestApp;
 use ui::framework::ResourceApp as _;
 use ui::headless::Framed;
-use ui::prelude::TestApp;
 use ui::tilo_resource::{Atom, Invoke};
 
 /// What `app` submitted, comparable: each invocation's action and arguments.

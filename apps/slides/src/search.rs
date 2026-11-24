@@ -94,7 +94,7 @@ fn preview(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::model::seed_deck;
-    use ui::framework::testing::TestApp;
+    use tilo_app_test_host::TestApp;
 
     fn seeded() -> TestApp<crate::SlidesShell> {
         let mut app = TestApp::<crate::SlidesShell>::new().unwrap();

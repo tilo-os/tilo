@@ -7,9 +7,9 @@
 use std::path::Path;
 use std::process::Command;
 
+use tilo_app_test_host::TestApp;
 use tilo_test_env::SpawnUnderEnvLock;
 use tilolang_process::window::app::TlApp;
-use ui::framework::testing::HeadlessApp;
 use ui::tilo_resource::profiling::observe;
 
 /// The profile a started process opens, when it is one ([`start`]).
@@ -88,11 +88,11 @@ fn started(profile: &Path) {
         .with_writer(std::io::stderr)
         .try_init();
     crate::support::installed("gallery");
-    let (app, opening) = observe(|| HeadlessApp::<TlApp>::open_data_dir(profile));
+    let (app, opening) = observe(|| TestApp::<TlApp>::open_data_dir(profile));
     let mut app = app.expect("the gallery opens");
     // What the window reads off the frame lands, and its pages are listed, as they are by the
     // time a person closes the window or the process is killed.
-    let listed = |app: &mut HeadlessApp<TlApp>| {
+    let listed = |app: &mut TestApp<TlApp>| {
         app.harness()
             .targets()
             .keys()

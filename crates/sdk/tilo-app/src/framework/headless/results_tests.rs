@@ -1,5 +1,5 @@
 //! Retained results must come from the real framework semantic API.
-use crate::framework::{ResourceApp, ViewCx, testing::TestApp};
+use crate::framework::{ResourceApp, ViewCx, testing::HeadlessApp};
 use crate::prelude::*;
 use serde_json::{Map, Value, json};
 use tilo_resource::{Doc, ModelError};
@@ -86,7 +86,7 @@ tilo_test_env::scenario! {
 
     phase readable_parent_does_not_promote_private_custom_children;
     {
-        let mut app = TestApp::<DocumentApp>::new().unwrap();
+        let mut app = HeadlessApp::<DocumentApp>::new().unwrap();
         app.settle();
         let resources = app.harness().resources();
         let root = resources
@@ -115,7 +115,7 @@ tilo_test_env::scenario! {
 
     phase activation_is_a_view_action_that_preserves_the_document_and_owner;
     {
-        let mut app = TestApp::<DocumentApp>::new().unwrap();
+        let mut app = HeadlessApp::<DocumentApp>::new().unwrap();
         app.settle();
         let record = app.record().clone();
         let heads = app.read_document(Transactable::base_heads);
@@ -141,7 +141,7 @@ tilo_test_env::scenario! {
 }
 #[test]
 fn semantic_read_render_and_refusal_are_retained_with_real_content() {
-    let mut app = TestApp::<DocumentApp>::new().unwrap();
+    let mut app = HeadlessApp::<DocumentApp>::new().unwrap();
     app.settle();
     app.harness().retain_invocation_results();
     app.harness()

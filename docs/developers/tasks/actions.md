@@ -38,7 +38,7 @@ Effect ids share the root resource's action surface. `InspectPackage` becomes
 `inspect-package`; keep names distinct across effect enums and root actions.
 The effect's `operation` names its vocabulary, not an id prefix.
 
-Test the action through the generated `TestApp` harness. Enumerate the
+Test the action through the generated `HeadlessApp` harness. Enumerate the
 permission-filtered action descriptors and invoke their stable identities;
 display labels and pointer coordinates do not identify an operation. Confirmed
 effects and role restrictions use the same host action API as the controls.

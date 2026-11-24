@@ -29,6 +29,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../tilo-app-test-host" }
 
 [lints]
 workspace = true

@@ -1151,7 +1151,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::app::AuthenticatorApp;
     use crate::resource::{TotpEffect, TotpShell};
-    use ui::prelude::TestApp;
+    use tilo_app_test_host::TestApp;
 
     pub(crate) type Hosted = TestApp<TotpShell>;
 

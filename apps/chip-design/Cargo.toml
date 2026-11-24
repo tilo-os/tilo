@@ -30,6 +30,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }
 tempfile.workspace = true
 
 [lints]

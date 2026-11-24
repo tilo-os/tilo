@@ -687,4 +687,5 @@ fn job_prompt(
 
 ui::dev_reload_entry!(App);
 
-ui::reach_tests!(App);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(App);

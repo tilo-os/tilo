@@ -3,9 +3,9 @@
 
 use std::time::Duration;
 
-use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_session::Session;
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_sheets::directory::Status;
 
 /// Point this computer at the community site `site` for the test's lifetime. Returns the

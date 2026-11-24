@@ -111,7 +111,7 @@ mod tests {
 
     use super::*;
     use crate::model::Connection;
-    use ui::prelude::TestApp;
+    use tilo_app_test_host::TestApp;
     use ui::tilo_actions::{ConfirmationPolicy, OperationKind};
     use ui::tilo_resource::{Atom, Replica, Resource as _};
     use uuid::Uuid;
@@ -451,7 +451,8 @@ mod tests {
     }
 }
 
-ui::reach_tests!(
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(
     RemoteShell,
     shares: [share_0, share_1, share_2],
 );
@@ -463,7 +464,7 @@ mod window_bar_tests {
     #[test]
     fn the_window_bars_sidebar_button_flips_the_sidebar() {
         ui::framework::testing::check_window_sidebar_button(
-            ui::framework::testing::TestApp::<super::RemoteShell>::new,
+            tilo_app_test_host::TestApp::<super::RemoteShell>::new,
         )
         .unwrap_or_else(|error| panic!("{error}"));
     }

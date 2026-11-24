@@ -4,7 +4,7 @@
 //! as a window does with [`Bench::send`] and the harness, and reads the deck
 //! the document holds with [`Bench::deck`].
 
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 use ui::tilo_resource::Invoke;
 use vello::kurbo::Point;
 use winit::event::{ElementState, WindowEvent};

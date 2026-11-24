@@ -208,8 +208,8 @@ impl ResourceApp for WindowsShell {
 mod tests {
     use super::*;
     use crate::provider::CompatibilityProvider;
+    use tilo_app_test_host::TestApp;
     use ui::a11y::Action as AccessibilityAction;
-    use ui::prelude::TestApp;
     use ui::tilo_resource::Replica;
 
     fn reported(app_id: &str, route: Route, recommended: Route) -> Catalogue {
@@ -368,7 +368,8 @@ mod tests {
     #[test]
     fn a_route_choice_is_the_controls_own_change() {
         let mut app =
-            ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("detail")).unwrap();
+            tilo_app_test_host::TestApp::<crate::resource::WindowsShell>::capture(Some("detail"))
+                .unwrap();
         let first = crate::provider::SampleProvider::new().catalogue().apps[0]
             .id
             .clone();
@@ -478,7 +479,7 @@ mod capture_tests {
         let dir = tempfile::tempdir().unwrap();
         for scenario in super::SCENARIOS {
             let mut app =
-                ui::framework::testing::TestApp::<super::WindowsShell>::capture(Some(scenario))
+                tilo_app_test_host::TestApp::<super::WindowsShell>::capture(Some(scenario))
                     .unwrap();
             app.harness()
                 .render_png(&dir.path().join(format!("{scenario}.png")));
@@ -486,4 +487,5 @@ mod capture_tests {
     }
 }
 
-ui::reach_tests!(WindowsShell);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(WindowsShell);

@@ -175,7 +175,7 @@ mod tests {
     use super::*;
     use crate::actions::OskEffect;
     use crate::surface::OskSurface;
-    use ui::framework::testing::TestApp;
+    use tilo_app_test_host::TestApp;
     use ui::tilo_resource::Effect;
 
     fn prefs(app: &TestApp<OskShell>) -> OskPreferences {
@@ -564,4 +564,5 @@ mod tests {
     }
 }
 
-ui::reach_tests!(OskShell, shares: [share_0, share_1, share_2]);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(OskShell, shares: [share_0, share_1, share_2]);

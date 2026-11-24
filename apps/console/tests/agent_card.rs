@@ -10,9 +10,9 @@
 )]
 
 use serde_json::json;
+use tilo_app_test_host::TestApp;
 use tilo_console::{App, ConsoleEffect};
 use ui::collaboration::{CollabEvent, CollabRequest};
-use ui::prelude::*;
 use ui::tilo_actions::InvocationUpdate;
 use ui::tilo_actions::remote::device_tickets;
 use ui::tilo_actions::remote::mcp_server;

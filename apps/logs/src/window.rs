@@ -1038,7 +1038,8 @@ mod tests {
     use super::*;
     use crate::journal::sample_entries;
     use crate::resource::LogsShell;
-    use ui::prelude::{Invoke, TestApp};
+    use tilo_app_test_host::TestApp;
+    use ui::prelude::Invoke;
     use ui::tilo_resource::Atom;
 
     fn captured(viewport: (u32, u32)) -> TestApp<LogsShell> {

@@ -172,7 +172,7 @@ mod tests {
     use crate::model::seed_deck;
     use ui::tilo_resource::{Invoke, Replica};
 
-    use ui::framework::testing::TestApp;
+    use tilo_app_test_host::TestApp;
 
     fn titles(app: &TestApp<SlidesShell>) -> (String, usize) {
         let state = app.state();
@@ -363,7 +363,8 @@ mod tests {
     }
 }
 
-ui::reach_tests!(
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(
     SlidesShell,
     shares: [share_0, share_1, share_2, share_3],
 );

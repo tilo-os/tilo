@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use shortcuts::{APP_ID, App, Workbench};
+use tilo_app_test_host::TestApp;
 use ui::a11y::Action;
 use ui::headless::SemanticExpectation;
-use ui::prelude::TestApp;
 use ui::tilo_actions::remote::{
     ActionProvider, Caller, CataloguePage, CatalogueResource, CatalogueRow, InvokeArgument,
     TestProvider,
@@ -977,10 +977,8 @@ fn the_save_review_says_what_saving_allows() {
 /// window wide enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
-    ui::framework::testing::check_window_sidebar_button(
-        ui::framework::testing::TestApp::<App>::new,
-    )
-    .unwrap_or_else(|error| panic!("{error}"));
+    ui::framework::testing::check_window_sidebar_button(tilo_app_test_host::TestApp::<App>::new)
+        .unwrap_or_else(|error| panic!("{error}"));
 }
 
 /// A draft with an `if` holding the list step in its `then` block, built the

@@ -3,36 +3,35 @@
 //! waits, the wireless receivers, and every
 //! choice going to the shell.
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::displays::{
     Band, Discovery, DisplaysApp, DisplaysEffect, DisplaysState, Layout, LayoutRow, Link, Receiver,
     Sheet,
 };
-use ui::framework::testing::HeadlessApp;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-fn staged(scenario: &str) -> HeadlessApp<DisplaysApp> {
-    HeadlessApp::<DisplaysApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
+fn staged(scenario: &str) -> TestApp<DisplaysApp> {
+    TestApp::<DisplaysApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
-fn mounted(sheet: Sheet) -> (HeadlessApp<DisplaysApp>, DisplaysState) {
+fn mounted(sheet: Sheet) -> (TestApp<DisplaysApp>, DisplaysState) {
     use tilo_sheets::SheetState as _;
     let state = DisplaysState::default();
     state.presentation().open(true);
     state.show(sheet);
-    let mut app =
-        HeadlessApp::<DisplaysApp>::for_person_with_lent("person", state.clone()).unwrap();
+    let mut app = TestApp::<DisplaysApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state)
 }
 
-fn key(app: &mut HeadlessApp<DisplaysApp>, spec: &str) {
+fn key(app: &mut TestApp<DisplaysApp>, spec: &str) {
     app.harness().key(spec);
     app.settle();
 }
 
-fn super_key(app: &mut HeadlessApp<DisplaysApp>, spec: &str, shift: bool) {
+fn super_key(app: &mut TestApp<DisplaysApp>, spec: &str, shift: bool) {
     let mut held = vec!["Super".to_owned()];
     if shift {
         held.push("Shift".to_owned());
@@ -60,7 +59,7 @@ fn two_displays() -> Sheet {
 }
 
 /// The name of the row the highlight is on.
-fn highlighted(app: &mut HeadlessApp<DisplaysApp>) -> Option<String> {
+fn highlighted(app: &mut TestApp<DisplaysApp>) -> Option<String> {
     app.harness()
         .a11y_nodes()
         .into_iter()

@@ -503,7 +503,7 @@ fn an_approved_private_capsule_installs_the_chosen_installer() {
             stand_in_service(service, &std::sync::atomic::AtomicBool::new(false), &asked);
         });
     }
-    let mut app = ui::prelude::TestApp::<crate::resource::WindowsShell>::new().unwrap();
+    let mut app = tilo_app_test_host::TestApp::<crate::resource::WindowsShell>::new().unwrap();
     app.with_widget(|window: &mut WindowsWindow| {
         let provider = crate::provider::LiveProvider::over(
             compat_service::SessionClient::from_owned_fd(manager.into()),

@@ -2,7 +2,7 @@
 //! of the live screen through the view.
 
 use super::*;
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 use ui::tilo_resource::{Invoke, Replica};
 
 fn feed(app: &mut TestApp<TerminalShell>, bytes: &[u8]) {
@@ -253,7 +253,7 @@ fn history_entries_render_as_the_apps_sentences() {
 
 #[test]
 fn the_session_publishes_its_effects_and_the_links_on_screen() {
-    let mut app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal");
+    let mut app = tilo_app_test_host::TestApp::<TerminalShell>::new().expect("terminal");
     let mut output = Vec::new();
     for line in 0..100 {
         output.extend_from_slice(format!("line {line:03}\r\n").as_bytes());
@@ -313,7 +313,7 @@ fn the_session_publishes_its_effects_and_the_links_on_screen() {
 }
 
 fn captured<T>(scenario: &str, read: impl FnOnce(&mut crate::TerminalView) -> T) -> T {
-    let mut app = ui::framework::testing::TestApp::<TerminalShell>::capture(Some(scenario))
+    let mut app = tilo_app_test_host::TestApp::<TerminalShell>::capture(Some(scenario))
         .unwrap_or_else(|error| panic!("{scenario} stages: {error}"));
     app.with_surface(read)
         .expect("the terminal surface is hosted")

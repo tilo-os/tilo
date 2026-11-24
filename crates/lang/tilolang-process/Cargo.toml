@@ -180,6 +180,8 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 # An app's windows as the framework runs them, in the headless frame harness.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+# The headless test host the tests open the app in, as a person's device hosts it.
+tilo-app-test-host = { path = "../../sdk/tilo-app-test-host" }
 # Mail's engine, and the stand-in IMAP and SMTP servers Mail's windows run against.
 mail-engine = { path = "../../integrations/mail-engine", features = ["test-support"] }
 tilo-account-probe = { path = "../../integrations/account-probe", features = ["test-support"] }

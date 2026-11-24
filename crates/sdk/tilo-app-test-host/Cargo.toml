@@ -1,0 +1,42 @@
+[package]
+autotests = false
+name = "tilo-app-test-host"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+description = "Headless test host for Tilo apps: a window opened as the workspace broker hosts it, deciding the actions of records another workspace holds."
+
+[dependencies]
+tilo-app = { path = "../tilo-app", default-features = false, features = ["test-support"] }
+# What the workspace broker says of an action a window shows, in the workspace holding its record.
+tilo-broker-core = { path = "../../core/broker-core" }
+tilo-desktop-model = { path = "../../desktop/desktop-model" }
+
+[dev-dependencies]
+tilo-app = { path = "../tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+# The workspace a chain test's devices keep their records in.
+uuid.workspace = true
+# What the tests read and write beside the app, as the SDK itself does.
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
+durable-store = { package = "tilo-durable-store", path = "../../system/durable-store" }
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tilo-automerge.workspace = true
+tilo-content = { path = "../../core/content" }
+tilo-history = { path = "../tilo-history" }
+tilo-reference = { path = "../../core/reference" }
+ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The unified feature set is native.
+workspace-hack = { version = "0.1" }

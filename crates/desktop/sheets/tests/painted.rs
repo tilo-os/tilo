@@ -11,12 +11,12 @@
 //! each, every sheet paid for both. Here one renderer draws frame after
 //! frame, as a window's does.
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::dictation::DictationApp;
 use tilo_sheets::display_confirm::DisplayConfirmApp;
 use tilo_sheets::displays::DisplaysApp;
 use tilo_sheets::shortcut_guide::ShortcutGuideApp;
 use ui::framework::ResourceApp;
-use ui::framework::testing::HeadlessApp;
 use ui::offscreen::OffscreenRenderer;
 use ui::vello::peniko::Color;
 
@@ -47,9 +47,9 @@ fn painted<A: ResourceApp>(
     renderer: &mut OffscreenRenderer,
     scenario: &str,
     shows: &[(Place, Shows)],
-) -> (HeadlessApp<A>, Vec<u8>) {
+) -> (TestApp<A>, Vec<u8>) {
     let sheet = A::ID;
-    let mut app = HeadlessApp::<A>::capture_at(Some(scenario), VIEWPORT)
+    let mut app = TestApp::<A>::capture_at(Some(scenario), VIEWPORT)
         .unwrap_or_else(|error| panic!("{sheet} {scenario} is staged: {error:?}"));
     let pixels = app.harness().render_rgba_with(renderer, Color::TRANSPARENT);
     assert!(

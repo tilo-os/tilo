@@ -154,10 +154,10 @@ async fn observe(fixture: &Fixture, kind: ReceiptType) -> Result<bool, SendError
 pub(super) fn messages_with_client(
     fixture: &Fixture,
     client: tilo_messaging::MessagingClient,
-) -> ui::framework::testing::TestApp<messages::MessagesShell> {
+) -> tilo_app_test_host::TestApp<messages::MessagesShell> {
     use messages::{MessagesEffect, MessagesShell};
     use tilo_contact_directory::ContactDirectory;
-    let mut app = ui::framework::testing::TestApp::<MessagesShell>::for_person_with_lent(
+    let mut app = tilo_app_test_host::TestApp::<MessagesShell>::for_person_with_lent(
         &fixture.owner.actor,
         client,
     )

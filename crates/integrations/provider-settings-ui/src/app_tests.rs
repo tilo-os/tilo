@@ -6,7 +6,7 @@ use agent_provider_config::protocol::{ErrorKind, ModelError};
 use agent_provider_config::{EndpointLocation, Interaction, ProviderConfig, ProviderProfile};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 use ui::lock::MutexRecover as _;
 use ui::tilo_resource::Effect;
 

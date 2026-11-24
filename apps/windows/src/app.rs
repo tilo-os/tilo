@@ -2735,7 +2735,7 @@ mod tests {
     fn manager_state_is_honest_and_routes_are_stable() {
         {
             let mut app =
-                ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("wide"))
+                tilo_app_test_host::TestApp::<crate::resource::WindowsShell>::capture(Some("wide"))
                     .unwrap();
             let first = crate::provider::SampleProvider::new().catalogue().apps[0]
                 .id
@@ -2779,7 +2779,8 @@ mod tests {
     #[test]
     fn the_window_bar_names_the_shown_app_and_adds_one() {
         let mut app =
-            ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("wide")).unwrap();
+            tilo_app_test_host::TestApp::<crate::resource::WindowsShell>::capture(Some("wide"))
+                .unwrap();
         app.harness().present_in_window_bar();
         app.settle();
         let shown = crate::provider::SampleProvider::new().catalogue().apps[0]
@@ -2940,7 +2941,8 @@ mod tests {
             assert!(ids.contains(&"windows-confirm-vm-install".to_owned()));
         }
         {
-            let mut app = ui::prelude::TestApp::<crate::resource::WindowsShell>::new().unwrap();
+            let mut app =
+                tilo_app_test_host::TestApp::<crate::resource::WindowsShell>::new().unwrap();
             app.with_widget(|window: &mut WindowsWindow| {
                 let mut app = window.app.borrow_mut();
                 app.use_provider(Box::new(SampleProvider::new()));

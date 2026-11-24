@@ -3,7 +3,7 @@
 //! content the workspace holds, and decks carried in and out as `.pptx` content.
 
 use serde_json::{Value, json};
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 
 use crate::resource::SlidesShell;
 

@@ -286,7 +286,8 @@ pub(crate) struct CaptureFile(pub(crate) Id);
 #[cfg(test)]
 mod tests;
 
-ui::reach_tests!(TypstEditorShell);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(TypstEditorShell);
 
 /// German is one of the languages the app ships, and it reads in German: the
 /// copy comes from `locales/de-DE.ftl`, never from the English source beside

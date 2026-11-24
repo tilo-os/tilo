@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use crate::common::publisher;
 use tilo_actions::ResourceSpec;
-use tilo_app::framework::testing::HeadlessApp;
+use tilo_app_test_host::TestApp;
 use tilo_compositor::clipboard_history::TEXT_MIME;
 use tilo_compositor::{Compositor, InputEvent, KeyRepeat, OutputConfig, Selection};
 use tilo_onboarding::OnboardingEffect;

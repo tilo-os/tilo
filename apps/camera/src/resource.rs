@@ -148,8 +148,8 @@ mod tests {
     use super::*;
     use crate::actions::CameraEffect;
     use crate::model::CameraDevicePreferences;
+    use tilo_app_test_host::TestApp;
     use ui::framework::LiveRow;
-    use ui::prelude::TestApp;
 
     #[test]
     fn mode_lens_and_preferences_are_effects_and_rows_carry_effects() {
@@ -238,4 +238,5 @@ mod tests {
     }
 }
 
-ui::reach_tests!(CameraShell);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(CameraShell);

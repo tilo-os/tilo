@@ -3,8 +3,8 @@
 //! reader does not hold as only being there. Each capture is kept as a PNG at a desktop's and a
 //! phone's width, light and dark, for review against the design language.
 
+use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
-use ui::framework::testing::TestApp;
 
 /// Every text the rich text in the window shows and says, as its inspection reads it, a line
 /// each.

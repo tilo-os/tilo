@@ -14,7 +14,7 @@
 use std::time::{Duration, SystemTime};
 
 use ed25519_dalek::SigningKey;
-use tilo_app::framework::testing::HeadlessApp;
+use tilo_app_test_host::TestApp;
 use tilo_compositor::InputEvent;
 use tilo_desktop_model::WorkspaceId;
 use tilo_network_actor::DeviceIdentity;
@@ -147,7 +147,7 @@ fn invitations_on_the_sheet(session: &mut Session, count: usize) -> usize {
 
 /// Decode pixels painted by the invitation sheet on its screen, using the same
 /// detector as Camera. The decoder returns the QR payload and version.
-fn scanned(app: &mut HeadlessApp<InviteApp>) -> Result<(Vec<u8>, usize), String> {
+fn scanned(app: &mut TestApp<InviteApp>) -> Result<(Vec<u8>, usize), String> {
     app.settle();
     let harness = app.harness();
     let (width, height) = harness.device_size();
@@ -237,8 +237,8 @@ fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
 }
 
 /// The sheet for `state` , drawn on a screen.
-fn sheet_app(state: &tilo_sheets::invite::InviteState) -> HeadlessApp<InviteApp> {
-    let mut app = HeadlessApp::<InviteApp>::for_person_with_lent("person", state.clone())
+fn sheet_app(state: &tilo_sheets::invite::InviteState) -> TestApp<InviteApp> {
+    let mut app = TestApp::<InviteApp>::for_person_with_lent("person", state.clone())
         .expect("the sheet draws");
     app.harness()
         .resize((WIDTH as u32, HEIGHT as u32))
@@ -249,7 +249,7 @@ fn sheet_app(state: &tilo_sheets::invite::InviteState) -> HeadlessApp<InviteApp>
 
 /// Press the sheet's create button, and answer with the link it shows once the session has it: a
 /// short link is shown when its site has kept it.
-fn press_create(app: &mut HeadlessApp<InviteApp>, session: &mut Session) -> String {
+fn press_create(app: &mut TestApp<InviteApp>, session: &mut Session) -> String {
     app.harness()
         .perform_named("invite-create", &A11yAction::Activate)
         .expect("the create button is pressed");

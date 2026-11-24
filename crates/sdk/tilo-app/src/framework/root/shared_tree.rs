@@ -999,7 +999,7 @@ mod tests {
     /// The board's tree as kept between versions, checked against the one
     /// built from scratch, and what the root publishes from it against what
     /// it publishes as ordinary trees.
-    fn kept_tree(app: &mut TestApp<BoardApp>) -> SharedResource {
+    fn kept_tree(app: &mut HeadlessApp<BoardApp>) -> SharedResource {
         let doc = app.read_document(Clone::clone);
         app.harness()
             .with_widget_mut(|root: &mut ResourceRoot| {
@@ -1079,7 +1079,7 @@ mod tests {
             .expect("the root is the board's")
     }
 
-    fn call(app: &mut TestApp<BoardApp>, action: &str, arguments: serde_json::Value) {
+    fn call(app: &mut HeadlessApp<BoardApp>, action: &str, arguments: serde_json::Value) {
         app.call(action, arguments)
             .unwrap_or_else(|error| panic!("{action}: {error:?}"));
     }
@@ -1089,7 +1089,7 @@ mod tests {
 
         phase the_kept_tree_is_the_one_built_from_scratch_after_any_edit;
         {
-            let mut app = TestApp::<BoardApp>::new().expect("the board opens");
+            let mut app = HeadlessApp::<BoardApp>::new().expect("the board opens");
             let mut seed = 0x2545_f491_4f6c_dd1d_u64;
             let mut random = move |below: usize| {
                 seed ^= seed << 13;
@@ -1171,7 +1171,7 @@ mod tests {
         // opens empty, and its first task and the removal of its last are where
         // the kept tree has no item to share or to keep.
         {
-            let mut app = TestApp::<BoardApp>::new().expect("the board opens");
+            let mut app = HeadlessApp::<BoardApp>::new().expect("the board opens");
             let opened = kept_tree(&mut app);
             assert_eq!(opened.children().len(), 0, "a board opens with no item");
             call(&mut app, "add", json!({ "title": "Only", "index": 0 }));
@@ -1200,7 +1200,7 @@ mod tests {
 
         phase an_edit_no_item_depends_on_shares_every_item;
         {
-            let mut app = TestApp::<BoardApp>::new().expect("the board opens");
+            let mut app = HeadlessApp::<BoardApp>::new().expect("the board opens");
             for task in 0..50 {
                 call(
                     &mut app,
@@ -1332,7 +1332,7 @@ mod tests {
     /// site's workspace listed no conversation to agents or the palette).
     #[test]
     fn a_rows_view_replaces_the_frameworks_item_view() {
-        let mut app = TestApp::<ViewedBoardApp>::new().expect("the board opens");
+        let mut app = HeadlessApp::<ViewedBoardApp>::new().expect("the board opens");
         app.call("add", json!({ "title": "Read", "index": 0 }))
             .expect("a task is added");
         let app_task = app.state().tasks.ids().next().cloned().expect("the task");
@@ -1434,7 +1434,7 @@ mod tests {
     /// The live tree of `app`, the head bound controls look up, and the
     /// live revision they are of.
     fn tagged_tree(
-        app: &mut TestApp<TaggedApp>,
+        app: &mut HeadlessApp<TaggedApp>,
     ) -> (SharedResource, std::rc::Rc<tilo_actions::ResourceSpec>, u64) {
         app.harness()
             .with_widget_mut(|root: &mut ResourceRoot| {
@@ -1448,8 +1448,8 @@ mod tests {
             .expect("the root is the tagged draft's")
     }
 
-    fn tagged(tags: &[&str]) -> TestApp<TaggedApp> {
-        let mut app = TestApp::<TaggedApp>::new().expect("the draft opens");
+    fn tagged(tags: &[&str]) -> HeadlessApp<TaggedApp> {
+        let mut app = HeadlessApp::<TaggedApp>::new().expect("the draft opens");
         for tag in tags {
             app.call("tag", json!({ "tag": tag }))
                 .expect("the draft is tagged");

@@ -1,7 +1,7 @@
 use crate::tests::Parsed as _;
 use crate::{ChipDesignShell, VerificationRecord};
+use tilo_app_test_host::TestApp;
 use ui::application::OpenFile;
-use ui::framework::testing::TestApp;
 
 #[test]
 fn handed_json_and_collected_binary_open_the_exact_undoable_report() {

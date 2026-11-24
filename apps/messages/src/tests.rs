@@ -1,6 +1,6 @@
 use crate::{MessagesEffect, MessagesShell};
+use tilo_app_test_host::TestApp;
 use tilo_contact_directory::ContactDirectory;
-use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Id, SharedResource as _};
 
 #[test]

@@ -2,22 +2,22 @@
 //! what it shows for each input, and what pressing a key or Done asks the
 //! shell.
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{
     Guide, GuideEffect, GuideState, Modality, Pair, Shortcut, ShortcutGuideApp,
 };
 use ui::a11y::Action as A11yAction;
-use ui::framework::testing::HeadlessApp;
 use ui::input::{KeyLegend, KeyboardBinding, KeyboardModifier};
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-fn staged(scenario: &str) -> HeadlessApp<ShortcutGuideApp> {
-    HeadlessApp::<ShortcutGuideApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
+fn staged(scenario: &str) -> TestApp<ShortcutGuideApp> {
+    TestApp::<ShortcutGuideApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
 /// Whether the guide says `text`, as a name or a description.
-fn says(app: &mut HeadlessApp<ShortcutGuideApp>, text: &str) -> bool {
+fn says(app: &mut TestApp<ShortcutGuideApp>, text: &str) -> bool {
     app.harness().a11y_nodes().iter().any(|(_, node)| {
         node.label().is_some_and(|label| label.contains(text))
             || node.description().is_some_and(|said| said.contains(text))
@@ -48,12 +48,12 @@ fn guide() -> Guide {
     }
 }
 
-fn mounted(guide: Guide) -> (HeadlessApp<ShortcutGuideApp>, GuideState) {
+fn mounted(guide: Guide) -> (TestApp<ShortcutGuideApp>, GuideState) {
     let state = GuideState::default();
     state.show(guide);
     state.presentation().open(false);
     let mut app =
-        HeadlessApp::<ShortcutGuideApp>::for_person_with_lent("person", state.clone()).unwrap();
+        TestApp::<ShortcutGuideApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state)

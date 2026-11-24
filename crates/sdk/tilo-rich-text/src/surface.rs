@@ -1225,8 +1225,8 @@ impl<S: RichTextSource + 'static> ui::undo::CommittedActions for RichTextSurface
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_app_test_host::TestApp;
     use ui::automerge::ROOT;
-    use ui::framework::testing::TestApp;
     use ui::framework::{ResourceApp, ViewCx};
     use ui::tilo_resource::Invoke;
 

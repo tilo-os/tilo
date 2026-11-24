@@ -1549,11 +1549,10 @@ fn clipboard_gestures_route_through_confirmed_actions() {
 
     {
         use crate::resource::TerminalEffect;
-        let mut viewer =
-            ui::framework::testing::TestApp::<crate::resource::TerminalShell>::with_role(
-                ui::Role::Viewer,
-            )
-            .expect("terminal");
+        let mut viewer = tilo_app_test_host::TestApp::<crate::resource::TerminalShell>::with_role(
+            ui::Role::Viewer,
+        )
+        .expect("terminal");
         for effect in [
             TerminalEffect::Paste {
                 text: "denied".into(),
@@ -1577,7 +1576,7 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
     use crate::resource::TerminalEffect;
     use vello::kurbo::Point;
     let mut app =
-        ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
+        tilo_app_test_host::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
     let writes = app
         .with_surface(|terminal: &mut crate::TerminalView| {
             terminal.accept_input_for_test();
@@ -2080,7 +2079,8 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
-                &Theme::dark().with_text_scale(2.0),&PresenceCtx::empty().draw_env(),
+                &Theme::dark().with_text_scale(2.0),
+                &PresenceCtx::empty().draw_env(),
             );
             send_key(
                 &mut widget,
@@ -2194,7 +2194,8 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             &mut scene,
             Affine::IDENTITY,
             &mut text_renderer,
-            &theme,&PresenceCtx::empty().draw_env(),
+            &theme,
+            &PresenceCtx::empty().draw_env(),
         );
 
         let menu = widget.context_menu_rect();
@@ -2751,8 +2752,8 @@ fn terminal_resource_identity_convergence_and_presence() {
 
     {
         use ui::presence::PresenceKey;
-        let mut a = ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new()
-            .expect("terminal");
+        let mut a =
+            tilo_app_test_host::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
         a.with_surface(|terminal: &mut crate::TerminalView| terminal.feed(b"peer-a-line-one\r\n"))
             .expect("hosted terminal");
         a.settle();
@@ -4078,7 +4079,7 @@ tilo_test_env::scenario! {
 #[serial_test::serial]
 fn an_agents_narrated_run_lands_at_the_prompt() {
     let mut app =
-        ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
+        tilo_app_test_host::TestApp::<crate::resource::TerminalShell>::new().expect("terminal");
     app.settle();
     let prompt = app
         .with_surface(|terminal: &mut crate::TerminalView| terminal.prompt_rect())

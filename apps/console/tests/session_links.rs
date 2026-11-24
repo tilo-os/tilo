@@ -9,6 +9,7 @@
 )]
 
 use std::sync::{Arc, Mutex};
+use tilo_app_test_host::TestApp;
 
 use serde_json::json;
 use tilo_console::{App, ConsoleEffect};

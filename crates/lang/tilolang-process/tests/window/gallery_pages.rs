@@ -4,11 +4,11 @@
 //! sample is the control drawn still and inert; a radio group chooses through the action its radio
 //! performs.
 
+use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
 use ui::a11y::{Action, Role};
 use ui::composition::page::Page;
 use ui::composition::{Composed, Composition};
-use ui::framework::testing::TestApp;
 use ui::headless::FrameHarness;
 
 use super::gallery_html::{nodes, row, shows, until};

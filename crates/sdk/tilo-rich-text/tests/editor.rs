@@ -9,9 +9,9 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
+use tilo_app_test_host::TestApp;
 use tilo_document::{RichText, RichTextAction};
 use tilo_rich_text::RichTextViews;
-use ui::framework::testing::TestApp;
 use ui::framework::{ResourceApp, ViewCx};
 use ui::permissions::Role;
 use ui::tilo_actions::Action;

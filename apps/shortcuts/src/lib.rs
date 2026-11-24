@@ -154,4 +154,5 @@ impl ResourceApp for App {
     }
 }
 
-ui::reach_tests!(App, shares: [share_0, share_1, share_2]);
+#[cfg(test)]
+tilo_app_test_host::reach_tests!(App, shares: [share_0, share_1, share_2]);

@@ -6,9 +6,9 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
+use tilo_app_test_host::TestApp;
 use tilo_console::App;
 use ui::collaboration::{CollabEvent, CollabRequest};
-use ui::prelude::*;
 use ui::tilo_actions::remote::device_tickets;
 use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;

@@ -2,19 +2,19 @@
 //! agent meet it: a card on every display, Keep with the keyboard, and the
 //! answer going back to the shell.
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::display_confirm::{ConfirmEffect, ConfirmState, DisplayConfirmApp, Question};
 use ui::a11y::Action as A11yAction;
-use ui::framework::testing::HeadlessApp;
 use ui::vello::kurbo::Rect;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-fn staged(scenario: &str) -> HeadlessApp<DisplayConfirmApp> {
-    HeadlessApp::<DisplayConfirmApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
+fn staged(scenario: &str) -> TestApp<DisplayConfirmApp> {
+    TestApp::<DisplayConfirmApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
 /// Every button, by its label, where it stands.
-fn buttons(app: &mut HeadlessApp<DisplayConfirmApp>) -> Vec<(String, Rect)> {
+fn buttons(app: &mut TestApp<DisplayConfirmApp>) -> Vec<(String, Rect)> {
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -38,11 +38,11 @@ fn question(tool: Option<&str>) -> Question {
     }
 }
 
-fn mounted(question: Question) -> (HeadlessApp<DisplayConfirmApp>, ConfirmState) {
+fn mounted(question: Question) -> (TestApp<DisplayConfirmApp>, ConfirmState) {
     let state = ConfirmState::default();
     state.ask(question);
     let mut app =
-        HeadlessApp::<DisplayConfirmApp>::for_person_with_lent("person", state.clone()).unwrap();
+        TestApp::<DisplayConfirmApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state)

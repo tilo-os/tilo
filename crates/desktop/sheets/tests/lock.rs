@@ -4,10 +4,10 @@
 
 use std::sync::mpsc::Receiver;
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::lock::{Battery, LockApp, LockEffect, LockState, Media, Shown, Status};
 use ui::a11y::Action as A11yAction;
-use ui::framework::testing::HeadlessApp;
 use ui::passcode_keyboard::{PasscodeKey, PasscodeKeyboard};
 use ui::tokens::Spacing;
 use ui::vello::kurbo::{Point, Rect};
@@ -20,7 +20,7 @@ const VIEWPORT: (u32, u32) = (1280, 800);
 /// Every reading of it is at rest: the screen the shell puts up arrives
 /// growing and fading from nothing, so a frame taken while it comes up says
 /// how it moves, not what it says.
-fn locked(shown: Shown) -> (HeadlessApp<LockApp>, LockState, Receiver<LockEffect>) {
+fn locked(shown: Shown) -> (TestApp<LockApp>, LockState, Receiver<LockEffect>) {
     let _settled = ui::motion::testing::settled();
     let state = LockState::default();
     // What the screen asks goes to the session through the connection its
@@ -29,7 +29,7 @@ fn locked(shown: Shown) -> (HeadlessApp<LockApp>, LockState, Receiver<LockEffect
     state.ask_with(outgoing);
     state.show(shown);
     state.presentation().open(false);
-    let mut app = HeadlessApp::<LockApp>::for_person_with_lent("person", state.clone()).unwrap();
+    let mut app = TestApp::<LockApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state, asked)
@@ -79,7 +79,7 @@ fn song() -> Media {
 
 /// Every control the screen offers, named as the screen reader says it, with
 /// where it sits.
-fn controls(app: &mut HeadlessApp<LockApp>) -> Vec<(String, Rect)> {
+fn controls(app: &mut TestApp<LockApp>) -> Vec<(String, Rect)> {
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -94,7 +94,7 @@ fn controls(app: &mut HeadlessApp<LockApp>) -> Vec<(String, Rect)> {
         .collect()
 }
 
-fn labels(app: &mut HeadlessApp<LockApp>) -> Vec<String> {
+fn labels(app: &mut TestApp<LockApp>) -> Vec<String> {
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -224,7 +224,7 @@ tilo_test_env::scenario! {
 }
 
 /// Where the screen puts the node labelled `label`.
-fn place(app: &mut HeadlessApp<LockApp>, label: &str) -> Rect {
+fn place(app: &mut TestApp<LockApp>, label: &str) -> Rect {
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -548,7 +548,7 @@ impl Touch {
     }
 
     /// Tap `key` where the screen draws it.
-    fn tap(&mut self, app: &mut HeadlessApp<LockApp>, key: PasscodeKey) {
+    fn tap(&mut self, app: &mut TestApp<LockApp>, key: PasscodeKey) {
         let theme = app.harness().theme().clone();
         let (key_height, gap) = (
             f64::from(theme.tokens.metrics.panel_row_height),
@@ -567,7 +567,7 @@ impl Touch {
 }
 
 /// A finger on a point of the screen that is not a control.
-fn touch_screen(app: &mut HeadlessApp<LockApp>, at: Point) {
+fn touch_screen(app: &mut TestApp<LockApp>, at: Point) {
     app.harness().click_at(at.x, at.y);
     app.settle();
 }
@@ -638,7 +638,7 @@ tilo_test_env::scenario! {
 
 /// A control the screen publishes by name, where it sits and whether it is
 /// offering to do anything.
-fn placed(app: &mut HeadlessApp<LockApp>, name: &str) -> (Rect, bool) {
+fn placed(app: &mut TestApp<LockApp>, name: &str) -> (Rect, bool) {
     let nodes = app.harness().a11y_nodes();
     let Some((_, node)) = nodes
         .into_iter()
@@ -663,7 +663,7 @@ fn unlocks(asked: &Receiver<LockEffect>) -> usize {
 }
 
 /// What has the keyboard, named as the screen reader announces it.
-fn holds_keyboard(app: &mut HeadlessApp<LockApp>) -> Option<String> {
+fn holds_keyboard(app: &mut TestApp<LockApp>) -> Option<String> {
     app.harness()
         .focused_access_node()
         .and_then(|node| node.name)

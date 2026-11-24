@@ -1,19 +1,19 @@
 use example_localized::{App, Shelf};
 use ui::headless::{InspectionNode, SemanticExpectation};
 use ui::i18n::{I18nManager, PseudoLocale};
-use ui::prelude::{Invoke, TestApp};
+use ui::prelude::{HeadlessApp, Invoke};
 
 /// The app in a known language, whatever the machine running the test uses.
 #[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
-fn open(locale: &str) -> TestApp<App> {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+fn open(locale: &str) -> HeadlessApp<App> {
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     I18nManager::set_locale(locale);
     app.harness().relayout();
     app
 }
 
 #[expect(clippy::panic, reason = "a test helper fails the test loudly")]
-fn says(app: &mut TestApp<App>, target: &str, name: &str) {
+fn says(app: &mut HeadlessApp<App>, target: &str, name: &str) {
     app.harness()
         .expect(&SemanticExpectation::named(target).name(name))
         .unwrap_or_else(|error| panic!("{target} should read {name:?}: {error:?}"));

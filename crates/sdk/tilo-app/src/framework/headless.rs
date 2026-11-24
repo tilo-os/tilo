@@ -1,6 +1,6 @@
 //! One framework app mounted headlessly: the real component runtime,
 //! storage, permissions, undo and history, without a window. Tests drive it
-//! as [`TestApp`](super::testing::TestApp); the app binary's own modes drive
+//! as [`HeadlessApp`](super::testing::HeadlessApp); the app binary's own modes drive
 //! it too, so it ships in every release app: `--surface` reports the
 //! surface it publishes, `--bench` captures its fixtures, and `--data-dir`
 //! and `--shots` open it on a profile of their own.
@@ -212,9 +212,26 @@ pub(super) fn window_content(directory: &std::path::Path) -> tilo_content::Conte
     super::app::profile_content(directory).for_one_workspace()
 }
 
+/// What hosts a headless window beside the app, in place of the device's daemon: a window
+/// names its host the actions of the records it shows that another workspace holds (a person's
+/// profile records), and only a host holding that workspace decides them.
+pub trait Host {
+    /// Take up the window `harness` opened for `author`, before its first frame.
+    fn opened(harness: &mut FrameHarness, author: &str);
+}
+
+/// No host beside the window, as in a capture or a fixture seeder run on its own: the actions
+/// of records another workspace holds stay undecided, so their controls say they are being
+/// checked.
+pub struct Alone;
+
+impl Host for Alone {
+    fn opened(_: &mut FrameHarness, _: &str) {}
+}
+
 /// One framework app mounted headlessly: a test, a fixture seeder or an
-/// inspection tool drives it through the real runtime.
-pub struct HeadlessApp<A: ResourceApp> {
+/// inspection tool drives it through the real runtime, hosted as `H` says.
+pub struct HeadlessApp<A: ResourceApp, H: Host = Alone> {
     harness: FrameHarness,
     /// Where the window's documents are kept: another window of this profile
     /// shares them ([`Self::open_window`]).
@@ -243,7 +260,7 @@ pub struct HeadlessApp<A: ResourceApp> {
     /// The window is a capture: every motion in it reads arrived while this
     /// is held, so what it photographs is the window at rest.
     _settled: Option<ui_core::motion::testing::Settled>,
-    marker: std::marker::PhantomData<A>,
+    marker: std::marker::PhantomData<(A, H)>,
 }
 
 /// Stand in for the hosts keeping the records `A` declares kept by them
@@ -275,41 +292,11 @@ fn serve_kept<A: ResourceApp>(
     }
 }
 
-/// Decide in `harness`, as the workspace broker does, the actions of the records `author`'s window
-/// shows that another workspace holds: this host holds the person's own workspace, founded with them
-/// as its owner, which holds their profile records; any other is not held here.
-#[cfg(feature = "test-support")]
-fn decide_each_record_where_it_is_kept(harness: &mut FrameHarness, author: &str) {
-    let actor = tilo_broker_core::BrokerActor::person(author);
-    let own = tilo_actions::policy::roles::workspace_of_person(author).and_then(|id| {
-        let mut workspace =
-            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::parse(&id)?, "");
-        workspace.policy = tilo_actions::policy::WorkspacePolicy::new(id.clone(), author);
-        Some((id, workspace))
-    });
-    harness.decide_shown_actions(Box::new(move |actions| {
-        let now = ui_core::time::unix_now();
-        actions
-            .iter()
-            .map(|action| ui_core::shown_actions::ActionDecision {
-                action: action.clone(),
-                verdict: actor.shown_verdict(
-                    own.as_ref()
-                        .filter(|(id, _)| action.workspace.as_ref() == Some(id))
-                        .map(|(_, workspace)| workspace),
-                    action,
-                    now,
-                ),
-            })
-            .collect()
-    }));
-}
-
 pub(super) fn operation(error: impl std::fmt::Display) -> LaunchError {
     LaunchError::Operation(error.to_string())
 }
 
-impl<A: ResourceApp> HeadlessApp<A> {
+impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// The content store the app's profile keeps the bytes its record names
     /// in: what `cx.content()` reads and writes on this device.
     #[must_use]
@@ -944,8 +931,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )?;
         let mut harness = opened.harness;
         serve_kept::<A>(&mut harness, &opened.profile.settings(), author);
-        #[cfg(feature = "test-support")]
-        decide_each_record_where_it_is_kept(&mut harness, author);
+        H::opened(&mut harness, author);
         Ok(Self {
             harness,
             owner: opened.owner,
@@ -2567,7 +2553,7 @@ pub(super) fn surface_of<A: ResourceApp, S: ui_core::widget::Widget + 'static>(
     ui_core::widget::find_mut::<S>(root.content.as_mut())
 }
 
-impl<A: ResourceApp> Drop for HeadlessApp<A> {
+impl<A: ResourceApp, H: Host> Drop for HeadlessApp<A, H> {
     fn drop(&mut self) {
         // A test that failed is unwinding: close the app without running
         // its frames again, so whatever failed it cannot fail closing too

@@ -9,25 +9,24 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
+use tilo_app_test_host::TestApp;
 use tilo_onboarding::{
     OnboardingApp, OnboardingEffect, OnboardingState, Page, Screen, Secrets, TourPage,
 };
 use ui::framework::ResourceApp as _;
-use ui::framework::testing::HeadlessApp;
 use ui::tilo_resource::Effect as _;
 use ui::vello::kurbo::Rect;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-fn staged(scenario: &str) -> HeadlessApp<OnboardingApp> {
-    HeadlessApp::<OnboardingApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
+fn staged(scenario: &str) -> TestApp<OnboardingApp> {
+    TestApp::<OnboardingApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
-fn mounted(page: Page) -> (HeadlessApp<OnboardingApp>, OnboardingState) {
+fn mounted(page: Page) -> (TestApp<OnboardingApp>, OnboardingState) {
     let state = OnboardingState::new(Secrets::default(), None);
     state.show(page);
-    let mut app =
-        HeadlessApp::<OnboardingApp>::for_person_with_lent("person", state.clone()).unwrap();
+    let mut app = TestApp::<OnboardingApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state)
@@ -46,7 +45,7 @@ fn page(screen: Screen) -> Page {
 /// Every control with a name, by that name, where it stands. A list row is
 /// named by its title and its detail; it is named here by the line it is
 /// titled with.
-fn named(app: &mut HeadlessApp<OnboardingApp>) -> Vec<(String, Rect)> {
+fn named(app: &mut TestApp<OnboardingApp>) -> Vec<(String, Rect)> {
     let titles: std::collections::HashMap<_, _> =
         app.harness().a11y_row_titles().into_iter().collect();
     app.harness()
@@ -63,7 +62,7 @@ fn named(app: &mut HeadlessApp<OnboardingApp>) -> Vec<(String, Rect)> {
         .collect()
 }
 
-fn press(app: &mut HeadlessApp<OnboardingApp>, label: &str) {
+fn press(app: &mut TestApp<OnboardingApp>, label: &str) {
     let at = named(app)
         .into_iter()
         .find(|(name, _)| name == label)
@@ -73,7 +72,7 @@ fn press(app: &mut HeadlessApp<OnboardingApp>, label: &str) {
     app.settle();
 }
 
-fn says(app: &mut HeadlessApp<OnboardingApp>, text: &str) -> bool {
+fn says(app: &mut TestApp<OnboardingApp>, text: &str) -> bool {
     app.harness().a11y_nodes().into_iter().any(|(_, node)| {
         node.label().is_some_and(|label| label.contains(text))
             || node.description().is_some_and(|said| said.contains(text))

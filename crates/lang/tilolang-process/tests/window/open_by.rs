@@ -3,8 +3,8 @@
 //! Both are the window's detail level, in the app's plain window with no session
 //! (`tilolang dev`'s) — the same one path a session's window takes.
 
+use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
-use ui::framework::testing::TestApp;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 

@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::model::{CaptureKind, Facing};
-use ui::framework::testing::TestApp;
+use tilo_app_test_host::TestApp;
 use ui::tilo_resource::Replica;
 
 fn capture(id: &str, label: &str) -> SharedCapture {

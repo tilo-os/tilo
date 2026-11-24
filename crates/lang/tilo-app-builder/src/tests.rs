@@ -3146,7 +3146,7 @@ tilo_test_env::scenario! {
                     "{template:?}"
                 );
                 let test = app_test(&spec);
-                assert!(test.contains("TestApp::<"), "{template:?}");
+                assert!(test.contains("HeadlessApp::<"), "{template:?}");
                 assert!(!test.contains("app_root"), "{template:?}");
             }
         }

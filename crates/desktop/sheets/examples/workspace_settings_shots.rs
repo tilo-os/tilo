@@ -4,8 +4,8 @@
 //!     cargo build -p tilo-sheets --example workspace_settings_shots
 //!     target/debug/examples/workspace_settings_shots <dir> [scenario…]
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
-use ui::framework::testing::HeadlessApp;
 
 fn main() -> Result<(), String> {
     let dir = std::env::args()
@@ -31,7 +31,7 @@ fn main() -> Result<(), String> {
 
 fn shoot<A: ui::framework::ResourceApp>(name: &str, path: &std::path::Path) -> Result<(), String> {
     let mut app =
-        HeadlessApp::<A>::capture_at(Some(name), (1280, 900)).map_err(|error| error.to_string())?;
+        TestApp::<A>::capture_at(Some(name), (1280, 900)).map_err(|error| error.to_string())?;
     app.settle();
     app.harness().render_png(path);
     Ok(())

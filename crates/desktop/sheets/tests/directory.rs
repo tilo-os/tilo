@@ -4,18 +4,18 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use tilo_app_test_host::TestApp;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::directory::{
     self, Directory, DirectoryApp, DirectoryEffect, DirectoryState, Listing, ListingAction, Status,
 };
 use ui::a11y::Action as A11yAction;
-use ui::framework::testing::HeadlessApp;
 use ui::headless::FrameHarness;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
-fn staged(scenario: &str) -> HeadlessApp<DirectoryApp> {
-    HeadlessApp::<DirectoryApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
+fn staged(scenario: &str) -> TestApp<DirectoryApp> {
+    TestApp::<DirectoryApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
 fn frame_says(frame: &FrameHarness, text: &str) -> bool {
@@ -26,7 +26,7 @@ fn frame_says(frame: &FrameHarness, text: &str) -> bool {
     })
 }
 
-fn says(app: &mut HeadlessApp<DirectoryApp>, text: &str) -> bool {
+fn says(app: &mut TestApp<DirectoryApp>, text: &str) -> bool {
     frame_says(app.harness(), text)
 }
 
@@ -54,12 +54,11 @@ fn directory() -> Directory {
     }
 }
 
-fn mounted(directory: Directory) -> (HeadlessApp<DirectoryApp>, DirectoryState) {
+fn mounted(directory: Directory) -> (TestApp<DirectoryApp>, DirectoryState) {
     let state = DirectoryState::default();
     state.show(directory);
     state.presentation().open(false);
-    let mut app =
-        HeadlessApp::<DirectoryApp>::for_person_with_lent("person", state.clone()).unwrap();
+    let mut app = TestApp::<DirectoryApp>::for_person_with_lent("person", state.clone()).unwrap();
     app.harness().resize(VIEWPORT).unwrap();
     app.settle();
     (app, state)

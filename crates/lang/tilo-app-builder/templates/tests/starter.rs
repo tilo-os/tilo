@@ -1,7 +1,7 @@
 use generated_app::{App, Greeting};
 use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Invoke, Replica, TestApp};
+use ui::prelude::{HeadlessApp, Invoke, Replica};
 
 fn name(text: &str) -> Invoke<Greeting> {
     Invoke::edit(&Greeting::paths().name.replace(text)).expect("an edit")
@@ -18,7 +18,7 @@ fn greeting_actions_edit_the_name() {
 
 #[test]
 fn the_name_field_edits_the_greeting() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.harness()
         .expect(&SemanticExpectation::named("greeting").name("Who should we greet?"))
         .expect("the app starts empty");
@@ -38,14 +38,14 @@ fn the_name_field_edits_the_greeting() {
 
 #[test]
 fn a_viewer_cannot_edit() {
-    let mut app = TestApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
+    let mut app = HeadlessApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
     assert!(app.invoke(name("Eve")).is_err());
     assert_eq!(app.state().name, "");
 }
 
 #[test]
 fn the_name_survives_a_relaunch() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
+    let mut app = HeadlessApp::<App>::new().expect("the app opens");
     app.invoke(name("Grace")).expect("rename");
     let app = app.reopen().expect("the app reopens");
     assert_eq!(app.state().name, "Grace");
@@ -53,7 +53,7 @@ fn the_name_survives_a_relaunch() {
 
 #[test]
 fn collaboration_updates_the_view_and_undo_preserves_peer_edits() {
-    let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
+    let mut app = HeadlessApp::<App>::for_person("ada").expect("the app opens");
     app.invoke(name("Ada")).expect("initial name");
     let mut peer = Replica::<Greeting>::from_doc(app.peer_document()).as_author("grace");
 
