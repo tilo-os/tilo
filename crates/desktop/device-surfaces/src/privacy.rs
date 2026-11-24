@@ -114,6 +114,10 @@ pub struct InUse {
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
 pub struct Answer {
+    /// The answer as the resource it is: the consent the session's portal publishes
+    /// (`portal:consent:…`), whose `forget` takes it back.
+    #[serde(rename = "$address", default)]
+    pub address: tilo_resource::Handle<ConsentRow>,
     /// The application it answers for.
     pub app: String,
     /// What people call it, from the device's own lists.
@@ -152,6 +156,29 @@ pub fn surface() -> tilo_resource::surface::Surface {
     )
 }
 
+/// One answer the person gave, as the resource it is: the consent the session's portal publishes
+/// for it, which is what its `forget` is called on.
+#[derive(tilo_resource::Row)]
+#[row(kind = "portal.consent", label = "Consent")]
+pub struct ConsentRow;
+
+/// What a kept device answer offers.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.portal.consent")]
+pub enum ConsentEffect {
+    /// Take back what the application was allowed or refused
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent)]
+    Forget,
+}
+
+/// A kept device answer as a view of another language calls it: the `forget` its reading's
+/// address offers.
+#[must_use]
+pub fn consent_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::row_surface::<ConsentRow, ConsentEffect>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +201,9 @@ mod tests {
                 }],
             }],
             answers: vec![Answer {
+                address: tilo_resource::Handle::new(
+                    "portal:consent:Laptop\u{1f}so.tilo.recorder\u{1f}camera",
+                ),
                 app: "so.tilo.recorder".into(),
                 name: "Recorder".into(),
                 capability: Capability::Camera,
@@ -199,5 +229,28 @@ mod tests {
         assert_eq!(surface.kind, "privacy");
         assert_eq!(surface.label, "Privacy");
         assert!(surface.verbs.is_empty(), "a posture has no verbs");
+    }
+
+    /// An answer's address is the consent resource the pane calls `forget` on: the surface says
+    /// which kind the row is, and that kind offers the one verb that takes an answer back.
+    #[test]
+    fn an_answer_is_the_consent_its_forget_is_called_on() {
+        let answer = Answer {
+            address: tilo_resource::Handle::new(
+                "portal:consent:Laptop\u{1f}so.tilo.recorder\u{1f}camera",
+            ),
+            app: "so.tilo.recorder".into(),
+            ..Answer::default()
+        };
+        let json = serde_json::to_value(&answer).expect("the answer writes as JSON");
+        assert_eq!(
+            json["$address"],
+            serde_json::json!("portal:consent:Laptop\u{1f}so.tilo.recorder\u{1f}camera"),
+            "the address is where the answer's own verb is called"
+        );
+        let consent = consent_surface();
+        assert_eq!(consent.kind, "portal.consent");
+        let verbs: Vec<&str> = consent.verbs.iter().map(|verb| verb.id.as_str()).collect();
+        assert_eq!(verbs, vec!["forget"]);
     }
 }

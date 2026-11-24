@@ -78,6 +78,9 @@ pub fn device_surfaces() -> Vec<Surface> {
         inputs::surface(),
         keyboard::surface(),
         privacy::surface(),
+        // The answer a view reads is a resource of the session's portal: its address carries the
+        // `forget` that takes it back.
+        privacy::consent_surface(),
         notifications::surface(),
         osd::surface(),
         controls::night_light_surface(),

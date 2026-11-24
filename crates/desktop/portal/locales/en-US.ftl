@@ -12,6 +12,5 @@ so-tilo-portal-shortcut-activate = Press the app's shortcut
 so-tilo-portal-shortcut-deactivate = Release the app's shortcut
 so-tilo-portal-shortcut-unbind = Unbind the app's shortcut
 so-tilo-portal-inhibition-end = End the app's hold
-so-tilo-portal-consent-forget = Forget what the app was allowed
 so-tilo-portal-remote-control-end = Stop the app controlling this computer
 so-tilo-portal-restore-forget = Forget the remembered share

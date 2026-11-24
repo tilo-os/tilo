@@ -72,10 +72,15 @@ view permissions_pane() {
                 } else if answered.capability == .location { .map_pin } else { .keyboard },
             ) {
                 trailing: {
-                    if answered.allowed {
-                        ui.Chip("Allowed", tone: .neutral)
-                    } else {
-                        ui.Chip("Refused", tone: .warning)
+                    row(gap: .tight, align: .center, wrap: true) {
+                        if answered.allowed {
+                            ui.Chip("Allowed", tone: .neutral)
+                        } else {
+                            ui.Chip("Refused", tone: .warning)
+                        }
+                        ui.Button("Take back", size: .small, role: .plain) {
+                            on press: answered.forget()
+                        }
                     }
                 }
             }

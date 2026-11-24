@@ -103,20 +103,7 @@ const CONSENT_PREFIX: &str = "portal:consent:";
 #[row(kind = "portal", label = "Portal")]
 pub struct PortalRoot;
 
-/// One app's kept answer, as a declared type.
-#[derive(tilo_resource::Row)]
-#[row(kind = "portal.consent", label = "Consent")]
-pub struct ConsentRow;
-
-/// What a kept device answer offers.
-#[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.portal.consent")]
-pub enum ConsentEffect {
-    /// Take back what the app was allowed
-    #[effect(kind = "outside")]
-    #[effect(own_device, idempotent)]
-    Forget,
-}
+pub use tilo_device_surfaces::privacy::{ConsentEffect, ConsentRow};
 
 /// A kept answer's resource: `portal:consent:<device>\u{1f}<app>\u{1f}<capability>`.
 #[must_use]

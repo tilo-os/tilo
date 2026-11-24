@@ -1806,6 +1806,7 @@ d-laci57k4 = Permissions pane
     .w-workspace-access-can-t-be-checked = Der Zugriff im Arbeitsbereich ist nicht prüfbar; es ist unbekannt, was die Arbeitsbereiche vergeben haben. Versuche es erneut, wenn der Desktop fertig gestartet ist.
     .w-no-workspace-here-gives-anything-beyond = Kein Arbeitsbereich hier gibt etwas über seine eigenen Dokumente hinaus.
     .w-this-workspace = Dieser Arbeitsbereich
+    .w-take-back = Zurücknehmen
 
 d-3mj4u2bp = Einfügekürzel-Wörter
     .w-pastes-with-ctrl-shift-v = Fügt mit Strg+Umschalt+V ein

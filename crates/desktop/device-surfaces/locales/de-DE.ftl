@@ -111,3 +111,9 @@ so-tilo-session-invite-show-connect = Agent oder Computer verbinden
 so-tilo-session-invite-show-pair-device = Gerät hinzufügen
 so-tilo-session-invite-open-link = Einen Link öffnen
 so-tilo-session-invite-cancel-invitation = Einladung zurückziehen
+
+## The privacy reading's actions, and the consent each answer is
+
+so-tilo-session-privacy-set-secrets-access = Eine Anwendung gespeicherte Geheimnisse nutzen lassen oder stoppen
+so-tilo-session-privacy-forget-secrets = Die gespeicherten Geheimnisse einer Anwendung vergessen
+so-tilo-portal-consent-forget = Vergessen, was die App durfte

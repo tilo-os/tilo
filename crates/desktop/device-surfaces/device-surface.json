@@ -10155,6 +10155,12 @@
           "doc": "One answer the person gave about a device of theirs, and how long it stands.",
           "fields": [
             {
+              "name": "$address",
+              "type": {
+                "resource": "portal.consent"
+              }
+            },
+            {
               "name": "app",
               "type": "text"
             },
@@ -10323,6 +10329,21 @@
           ]
         }
       ]
+    },
+    {
+      "kind": "portal.consent",
+      "label": "Consent",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "forget",
+          "label": "Forget what the app was allowed",
+          "description": "Take back what the application was allowed or refused",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": []
     },
     {
       "kind": "notifications",

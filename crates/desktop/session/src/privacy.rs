@@ -291,6 +291,9 @@ fn reading_of(sources: &dyn Sources) -> Reading {
             let capability = capability_of_device(kept.answer.cap)?;
             let (standing, until_unix_ms) = standing_of(kept.answer.lifetime);
             Some(Answer {
+                // The answer as the resource it is: the consent this session's portal publishes
+                // for it, whose `forget` takes it back from any of the person's devices.
+                address: tilo_resource::Handle::new(tilo_portal::consent_resource(&kept.answer)),
                 app: kept.answer.app.clone(),
                 name: sources.app_name(&kept.answer.app),
                 capability,

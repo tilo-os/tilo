@@ -9,10 +9,13 @@
     reason = "test assertions"
 )]
 
+use std::cell::RefCell;
 use std::path::Path;
+use std::rc::Rc;
 
+use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::runtime::{Actor, ViewInstance};
+use tilolang_tilo::runtime::{Actor, Value, ViewInstance};
 
 const APP: &str = "so.tilo.settings";
 
@@ -48,8 +51,8 @@ fn serve(host: &Host, id: &str, ty: &str, reading: &str) {
         .expect("the reading is served");
 }
 
-/// The lines the Permissions pane shows, its text as written.
-fn line(host: &Host) -> Vec<String> {
+/// The Permissions pane opened as its own view.
+fn pane(host: &Host) -> ViewInstance {
     let id = host
         .package(APP)
         .expect("the app is loaded")
@@ -69,8 +72,36 @@ fn line(host: &Host) -> Vec<String> {
         )
         .expect("the pane opens");
     view.poll_patches().expect("the pane draws");
-    texts(&view)
+    view
 }
+
+/// The lines the Permissions pane shows, its text as written.
+fn line(host: &Host) -> Vec<String> {
+    texts(&pane(host))
+}
+
+/// The key of the control of `kind` whose label `label` reads, as the pane lays it out.
+fn labelled(tree: &tilolang_runtime::UiNode, kind: &str, label: &str) -> String {
+    tree.of_kind(kind)
+        .into_iter()
+        .find(|node| node.props.get("label") == Some(&Value::text(label)))
+        .unwrap_or_else(|| panic!("a {kind} labelled {label}"))
+        .key
+        .clone()
+}
+
+/// One invocation as it was sent, with its arguments by name.
+struct Sent(Rc<RefCell<Vec<Invocation>>>);
+
+impl Invoker for Sent {
+    fn invoke(&self, invocation: &Invocation) -> Invoked {
+        self.0.borrow_mut().push(invocation.clone());
+        Invoked::Done(Value::Unit)
+    }
+}
+
+/// The form an answer's address takes: the portal's consent resource for it.
+const RECORDER_CONSENT: &str = "portal:consent:Laptop\u{1f}so.tilo.recorder\u{1f}camera";
 
 /// The texts a view shows: its text as written, and its rich text flattened.
 fn texts(view: &ViewInstance) -> Vec<String> {
@@ -101,10 +132,12 @@ const PRIVACY: &str = r#"{
          "mute_known": false, "watched": false, "in_use": []}
     ],
     "answers": [
-        {"app": "so.tilo.recorder", "name": "Recorder", "capability": "camera", "allowed": true,
+        {"$address": "portal:consent:Laptop\u001fso.tilo.recorder\u001fcamera",
+         "app": "so.tilo.recorder", "name": "Recorder", "capability": "camera", "allowed": true,
          "standing": "until-revoked", "until_unix_ms": 0, "device": "Laptop",
          "this_device": true},
-        {"app": "so.tilo.meet", "name": "Meet", "capability": "microphone", "allowed": false,
+        {"$address": "portal:consent:Phone\u001fso.tilo.meet\u001fmicrophone",
+         "app": "so.tilo.meet", "name": "Meet", "capability": "microphone", "allowed": false,
          "standing": "session", "until_unix_ms": 0, "device": "Phone", "this_device": false}
     ]
 }"#;
@@ -311,5 +344,60 @@ fn the_window_says_a_root_nothing_published_could_not_be_read() {
     assert!(
         !said.contains("could not be read"),
         "the row gives way to the pane: {said}"
+    );
+}
+
+/// The session publishes the workspaces' grants beside this device's privacy in every test here.
+fn serve_access(host: &Host) {
+    serve(
+        host,
+        "workspace/access",
+        "tilo.workspace#Access",
+        r#"{"known": true, "workspaces": []}"#,
+    );
+}
+
+/// Each answer is a resource of the session's portal, and taking it back runs the consent
+/// resource's own `forget`: the app that answered, on the address the answer carries.
+#[test]
+fn the_pane_takes_back_an_answer_on_its_own_resource() {
+    let host = settings();
+    serve(&host, "session:privacy", "so.tilo.device#Privacy", PRIVACY);
+    serve_access(&host);
+    let mut view = pane(&host);
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+
+    view.press(&labelled(view.tree(), "ui.Button", "Take back"))
+        .expect("the answer is taken back");
+
+    let sent = sent.borrow();
+    let [
+        Invocation::Action {
+            app,
+            name,
+            target,
+            args,
+            ..
+        },
+    ] = sent.as_slice()
+    else {
+        panic!("one answer's own verb: {sent:?}");
+    };
+    assert_eq!(
+        (app.as_str(), name.as_str()),
+        ("so.tilo.device", "forget"),
+        "the consent's own verb, as the device surface publishes it"
+    );
+    assert!(
+        args.is_empty(),
+        "the resource is the address the call runs on, never an argument: {args:?}"
+    );
+    assert_eq!(
+        target
+            .as_ref()
+            .map(tilolang_tilo::runtime::ResourceRef::id_string),
+        Some(RECORDER_CONSENT.to_owned()),
+        "the first answer the pane lists"
     );
 }
