@@ -2,15 +2,16 @@
 name = "tilo-app-window"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
-license.workspace = true
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "A tilolang app's window in the toolkit: the generic adapter, the shell composition and the toolkit's widgets, built from the component patches an app instance sends and reporting what the person did."
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 tilo-rich-edit = { version = "0.1.0", path = "../../ui/tilo-rich-edit" }
 # Dates and clocks as the person set them: how a day or a time reads in a sentence, said the
 # same way a window's toolkit says it and an app process without the toolkit does.
@@ -44,7 +45,7 @@ workspace-hack = { version = "0.1" }
 # from the device's content store and stages a file the toolkit plays. A page's media element
 # plays the address itself, so this is native only.
 tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
-media = { package = "tilo-media", path = "../../engines/tilo-media" }
+media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media" }
 
 [[example]]
 name = "component-catalogue"
