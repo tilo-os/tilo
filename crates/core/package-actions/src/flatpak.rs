@@ -395,7 +395,7 @@ pub fn reading(
             match remote {
                 Some(remote) => flatpak
                     .catalogue(remote)
-                    .and_then(|rows| Ok(serde_json::json!({ "rows": rows }))),
+                    .map(|rows| serde_json::json!({ "rows": rows })),
                 None => Err("`name` names the repository to read".into()),
             }
         }
