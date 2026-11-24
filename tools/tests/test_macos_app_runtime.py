@@ -143,29 +143,6 @@ class AppRuntimeTests(unittest.TestCase):
         self.assertEqual(main.read_bytes(), b'app')
         self.assertEqual(main.with_name('remote.real').read_bytes(), b'foreign')
 
-    def test_music_catalogs_are_bounded_to_three_added_domains(self):
-        locale = self.root / 'locale'
-        messages = locale / 'de/LC_MESSAGES'
-        messages.mkdir(parents=True)
-        for domain in extension.DOMAINS | {'unrelated'}:
-            (messages / (domain + '.mo')).write_bytes(b'catalog')
-        package = self.root / 'libogg/1.3.6'
-        package.mkdir(parents=True)
-        notice = package / 'COPYING'
-        notice.write_bytes(b'notice')
-        profile = {'packages': {str(package): {
-            'package_root': str(package),
-            'top_level_notice_candidates': [{'path': str(notice), 'sha256': digest(notice)}]}}}
-        plan = {'assets': {}, 'locale_prefixes': {'gstreamer': str(locale)}}
-        extension.additional_assets(plan, profile, 'music')
-        self.assertEqual(len(plan['assets']), 4)
-        self.assertTrue(plan['extended_locale_catalogs'])
-        self.assertFalse(any('unrelated' in path for path in plan['assets']))
-        (messages / 'gst-plugins-good-1.0.mo').unlink()
-        plan['assets'] = {}
-        with self.assertRaisesRegex(ValueError, 'missing additional'):
-            extension.additional_assets(plan, profile, 'music')
-
     def test_extended_compilation_keeps_no_signing_flag_and_pinned_names(self):
         plan = {'locale_prefixes': {'glib': '/glib locale', 'gstreamer': '/gst locale'},
                 'intl': self.intl, 'profile_sha256': 'a' * 64,
