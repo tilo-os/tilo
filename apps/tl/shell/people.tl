@@ -591,26 +591,62 @@ view back_to_everyone() {
 /// Whose view this is while this person follows someone: their face and "Following Ada" where the
 /// bar's glance value stands, with the way to stop. The person's own clock gives way to it, as
 /// their own view is not the one the bar is saying.
+///
+/// A bar too narrow for the words folds the chip into their face, with Stop beside it: their face
+/// and the way to stop stay on a phone, where the bar shows no other face of them.
 view follow_chip() {
     let board = device.people
+    // A bar too narrow for the words folds the chip into their face, with Stop's own mark beside it.
+    let folded = space.compact
     if board.following != "" {
         if let who = board.rows.find(p -> p.key == board.following) {
             let name = who.name
+            let label = std.say("Following {name}")
             row(gap: .tight, align: .center) {
-                if let face = face_of(who) {
-                    ui.Button(std.say("Following {name}"), faces: [face], role: .bar) {
-                        on press: device.show_person(device.people, person: who.key)
-                    }
-                } else {
-                    ui.Button(std.say("Following {name}"), icon: .eye, role: .bar) {
-                        on press: device.show_person(device.people, person: who.key)
-                    }
-                }
-                ui.Button("Stop", icon: .square, size: .small, role: .plain) {
+                following_face(who, label, words: not folded)
+                ui.Button("Stop", icon: .square, icon_only: folded, size: .small, role: .plain) {
                     on press: device.unfollow(device.people)
                 }
             }
         }
+    } else if board.stopped != "" {
+        // Their own input took their view back: the bar says so where it said whose view this was,
+        // and the moment passes. Someone who left takes the following with them, and says nothing.
+        if let who = board.rows.find(p -> p.key == board.stopped) {
+            if let face = face_of(who) {
+                ui.Chip(std.say("Stopped following"), faces: [face])
+            } else {
+                ui.Chip(std.say("Stopped following"), icon: .eye_off)
+            }
+        } else {
+            ui.Chip(std.say("Stopped following"), icon: .eye_off)
+        }
+    }
+}
+
+/// The face of the person followed, a press on which opens their card: with `label`, whose view
+/// this is, beside it where the bar has room, and alone where it has none.
+view following_face(who: device.Person, label: Text, words: Bool) {
+    if let face = face_of(who) {
+        ui.Button(label, faces: [face], icon_only: not words, role: .bar) {
+            on press: device.show_person(device.people, person: who.key)
+        }
+    } else {
+        ui.Button(label, icon: .eye, icon_only: not words, role: .bar) {
+            on press: device.show_person(device.people, person: who.key)
+        }
+    }
+}
+
+/// What stands where the bar's glance value does: the time, unless this person follows someone or
+/// their own input has just ended it — a view that is not their own is said where the clock
+/// stands, so the clock keeps out of its way ([`follow_chip`]).
+view clock_or_follow() {
+    let board = device.people
+    if board.following != "" or board.stopped != "" {
+        follow_chip()
+    } else {
+        clock()
     }
 }
 
