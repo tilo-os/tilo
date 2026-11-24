@@ -301,19 +301,34 @@ async fn flow_every_device_manages_every_other() {
         .tickets
         .reach_at(laptop_cert.device_public_key, laptop.own.endpoint().addr());
 
-    // The record of the person's devices: each device their root certified is kept in it before
-    // anyone asks. The phone holds the person's workspace as a member copy, so its write is
-    // carried to the device that keeps it, which decides it as the person writing their own
-    // record, and the phone's copy has it at once.
+    // The record of the person's devices: each key their root certified is written there by the
+    // device that holds their own workspace, as the device that keeps the root does at approve.
+    // The phone holds that workspace as a member copy, so the holder's write reaches its copy by
+    // sync, and it renames the devices in that copy.
     for cert in [&laptop_cert, &phone_cert, &server_cert] {
-        person_workspace::apply(
-            phone.own.copies(),
-            devices::DEVICES,
-            devices::Devices::keeping(cert).unwrap(),
-        )
-        .await
-        .expect("the phone keeps the person's device in their record, unasked");
+        devices::keep(&hosted, cert)
+            .await
+            .expect("the person's certified devices are in their record");
     }
+    let person_key = phone_cert.user_public_key;
+    tilo_test_env::within("the person's devices reach the phone's copy", async {
+        loop {
+            let record = devices::of(phone.own.copies(), &person_key).await;
+            let held = record.listed(&person_key);
+            let known = |cert: &DeviceCert| {
+                held.iter()
+                    .any(|listed| listed.cert.device_public_key == cert.device_public_key)
+            };
+            if [&laptop_cert, &phone_cert, &server_cert]
+                .iter()
+                .all(|cert| known(cert))
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
 
     // The phone lists the laptop and the server and renames them.
     let laptop_key = hex::encode(laptop_cert.device_public_key);
@@ -327,7 +342,6 @@ async fn flow_every_device_manages_every_other() {
     }
     // The phone's writes were carried to the device that keeps the workspace, which decided
     // them as the person's own: its record calls the devices what the phone called them.
-    let person_key = phone_cert.user_public_key;
     tilo_test_env::within(
         "the phone's names reach the record the workspace is kept with",
         async {

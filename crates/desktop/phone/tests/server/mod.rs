@@ -43,12 +43,29 @@ impl Server {
         let person = support::key(7);
         let host = test_server::Host::of(&person, WORKSPACE_NAME);
         let workspace = host.workspace().to_owned();
+        // The person's own workspace, where their list of workspaces and the record of their
+        // devices are kept, as a server keeps it for them; the workspace they signed the phone in
+        // to is named there, as it reaches every device of theirs.
+        runtime.block_on(async {
+            tilo_workspace_service::workspaces::person_workspace::found(host.workspaces())
+                .await
+                .expect("the person's own workspace is founded on their server");
+            host.workspaces()
+                .list_known_for(&person.verifying_key().to_bytes())
+                .await;
+        });
         Self {
             runtime,
             host,
             person,
             workspace,
         }
+    }
+
+    /// Where this server keeps the person's workspaces: the person's own, where their devices are
+    /// listed, among them.
+    pub fn workspaces(&self) -> tilo_workspace_service::workspaces::Workspaces {
+        self.host.workspaces().clone()
     }
 
     /// Where a device the person's laptop lets in enters: this host's workspace, at this host.

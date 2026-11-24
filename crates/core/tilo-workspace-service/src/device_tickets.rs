@@ -39,7 +39,7 @@ use tilo_device_identity::login::{
 };
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::ActionService;
-use tilo_peer_state::new_device::ServedTicket;
+use tilo_peer_state::new_device::{Keeping, ServedTicket};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, StatementSigner};
 
 use crate::workspaces::{Workspaces, person_workspace, servers};
@@ -361,7 +361,7 @@ impl TicketServer {
             );
         }
         let enter = issuer.entry().await?;
-        Ok(ServedTicket::new(
+        let served = ServedTicket::new(
             ticket,
             cert.user_public_key,
             enter,
@@ -375,7 +375,13 @@ impl TicketServer {
             }),
             RevocationList::new(),
             expires_at_ns,
-        ))
+        );
+        // Every device of the person's lists the computer from now on: the record of their own
+        // workspace, which this device writes as the redemption completes.
+        Ok(match self.0.issuer.servers() {
+            Some(workspaces) => served.kept_by(Arc::new(KeptInRecord(workspaces))),
+            None => served,
+        })
     }
 
     /// Have the tickets `actions` serves look at the kept tickets again when a computer brings a
@@ -444,10 +450,6 @@ impl Approver for RootApprover {
                     tickets.taken(plan).await;
                 }
             }
-            // Every device of the person's lists the computer from now on.
-            if let Some(tickets) = &tickets {
-                tickets.keep_in_record(&cert).await;
-            }
             let signature = device
                 .sign(asked.digest.to_vec())
                 .await
@@ -461,17 +463,22 @@ impl Approver for RootApprover {
     }
 }
 
-impl TicketServer {
-    /// Keep `cert`, a computer the person's root just certified here, in the record of their own
-    /// workspace, where every device of theirs reads their devices. A device that holds no copy
-    /// of that workspace leaves it to the host the computer enters, which keeps it there.
-    async fn keep_in_record(&self, cert: &DeviceCert) {
-        let Some(workspaces) = self.0.issuer.servers() else {
+/// The record of the person's devices, in their own workspace `workspaces` holds: where a computer
+/// a ticket here certified is listed, so every device of theirs reads it among their own and the
+/// hosts holding the workspace admit it.
+struct KeptInRecord(Workspaces);
+
+impl Keeping for KeptInRecord {
+    fn keep(&self, cert: DeviceCert) {
+        let workspaces = self.0.clone();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        if let Err(error) = person_workspace::devices::keep(&workspaces, cert).await {
-            tracing::warn!(%error, "the added computer is listed once it enters");
-        }
+        runtime.spawn(async move {
+            if let Err(error) = person_workspace::devices::keep(&workspaces, &cert).await {
+                tracing::warn!(%error, "the added computer is listed once it enters");
+            }
+        });
     }
 }
 

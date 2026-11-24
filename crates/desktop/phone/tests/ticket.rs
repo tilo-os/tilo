@@ -27,7 +27,12 @@ fn a_phone_signs_in_with_a_ticket_and_sees_its_workspace_and_its_apps() {
     let mut home = support::Home::new();
     let server = Server::start();
     home.relay(&server.relay_url());
-    let laptop = support::Issuing::start(server.runtime.handle(), &server.person, server.entry());
+    let laptop = support::Issuing::start(
+        server.runtime.handle(),
+        &server.person,
+        server.entry(),
+        server.workspaces(),
+    );
     let scratch = tempfile::tempdir().unwrap();
     // The workspace runs Notes, its host keeping the package; the phone lists it once it joins.
     server.install(&server::notes_tapp(scratch.path()));

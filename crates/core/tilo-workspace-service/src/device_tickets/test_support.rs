@@ -10,8 +10,10 @@ use tilo_device_identity::login::{
     Approval, Approved, Approver, Asked, Entry, Reached, TICKET_LIFETIME_NS, Ticket,
 };
 use tilo_peer_state::actions::{ActionService, NoActions};
-use tilo_peer_state::new_device::ServedTicket;
+use tilo_peer_state::new_device::{Keeping, ServedTicket};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+
+use crate::workspaces::{Workspaces, person_workspace};
 
 /// The person's laptop, serving one ticket: a device that logs in with it is certified by the
 /// person's root and enters the person's workspace on their server.
@@ -24,8 +26,14 @@ pub struct Issuing {
 
 impl Issuing {
     /// The laptop of the person whose root is `person`, printing a ticket into `entry`, served
-    /// on `runtime`.
-    pub fn start(runtime: &tokio::runtime::Handle, person: &SigningKey, entry: Entry) -> Self {
+    /// on `runtime`, and listing a device its ticket made in the record of the person's devices,
+    /// which `workspaces`, the server keeping their own workspace, holds.
+    pub fn start(
+        runtime: &tokio::runtime::Handle,
+        person: &SigningKey,
+        entry: Entry,
+        workspaces: Workspaces,
+    ) -> Self {
         let laptop = key(8);
         let cert = certified(person, &laptop, "the person's laptop", true);
         let endpoint = runtime.block_on(endpoint(&laptop));
@@ -43,6 +51,7 @@ impl Issuing {
                     device: laptop.clone(),
                     cert,
                 }),
+                Arc::new(KeptInRecord(workspaces)),
             )
         };
         Self {
@@ -86,6 +95,25 @@ impl Approver for RootSigns {
             approver: self.cert.clone(),
             signature: self.device.sign(&asked.digest).to_bytes(),
         })))
+    }
+}
+
+/// The record of the person's devices, in their own workspace `workspaces` holds: where the laptop
+/// lists the phone its ticket made, as the device that issues a ticket does before it answers it.
+struct KeptInRecord(Workspaces);
+
+impl Keeping for KeptInRecord {
+    fn keep(&self, cert: DeviceCert) {
+        let workspaces = self.0.clone();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            let kept = person_workspace::devices::keep(&workspaces, &cert).await;
+            if let Err(error) = kept {
+                tracing::warn!(%error, "the laptop does not list the phone among the person's devices");
+            }
+        });
     }
 }
 
@@ -145,19 +173,23 @@ fn serving(
     person: [u8; 32],
     entry: Entry,
     approver: Arc<dyn Approver>,
+    keep: Arc<dyn Keeping>,
 ) -> Router {
     let service = ActionService::new(key.clone(), Arc::new(NoActions));
     service.admit_uncertified(
         tilo_device_identity::login::SCOPE,
-        Arc::new(ServedTicket::new(
-            ticket,
-            person,
-            entry,
-            DeviceCapabilities::member(),
-            approver,
-            RevocationList::new(),
-            tilo_clock::unix_now_ns().saturating_add(TICKET_LIFETIME_NS),
-        )),
+        Arc::new(
+            ServedTicket::new(
+                ticket,
+                person,
+                entry,
+                DeviceCapabilities::member(),
+                approver,
+                RevocationList::new(),
+                tilo_clock::unix_now_ns().saturating_add(TICKET_LIFETIME_NS),
+            )
+            .kept_by(keep),
+        ),
     );
     Router::builder(endpoint.clone())
         .accept(tilo_peer_state::actions::ACTIONS_ALPN, service)

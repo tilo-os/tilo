@@ -32,7 +32,12 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
     let scratch = tempfile::tempdir().unwrap();
     // The workspace runs Notes before the phone ever joins it; nothing is installed on the phone.
     server.install(&server::notes_tapp(scratch.path()));
-    let laptop = support::Issuing::start(server.runtime.handle(), &server.person, server.entry());
+    let laptop = support::Issuing::start(
+        server.runtime.handle(),
+        &server.person,
+        server.entry(),
+        server.workspaces(),
+    );
     let mut phone =
         tilo_runtime::in_process::Device::start(&support::profile()).expect("the phone's daemon");
     phone
