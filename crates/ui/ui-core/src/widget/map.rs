@@ -218,7 +218,7 @@ impl MapCamera {
 }
 
 /// Places at points on a pannable, zoomable surface, each a view of its own.
-#[derive(Component, Default)]
+#[derive(Component)]
 #[component(name = "Map", role = "Group", label = "name")]
 pub struct MapProps {
     /// What the map is, for assistive technology.
@@ -327,6 +327,44 @@ pub struct MapProps {
     /// once more when every one is done.
     #[component(event(value = String, at = Vec<i64>))]
     pub saved: Event,
+    /// Whether a press on its empty surface runs now.
+    pub enabled: bool,
+    /// Why it cannot be pressed now, where the name does not say (an action whose requirement
+    /// does not hold): spoken as its description beside its name.
+    pub description: Option<String>,
+}
+
+/// A map takes a press until something says otherwise.
+impl Default for MapProps {
+    fn default() -> Self {
+        Self {
+            name: None,
+            ground: false,
+            world: false,
+            basemap: None,
+            pins: Vec::new(),
+            tracks: Vec::new(),
+            markers: Vec::new(),
+            areas: Vec::new(),
+            drop: Event::None,
+            press: Event::None,
+            frame: Event::None,
+            context: Event::None,
+            resize: Event::None,
+            seen: Event::None,
+            drawn: Event::None,
+            outline: Vec::new(),
+            hint: None,
+            latitude: None,
+            longitude: None,
+            zoom: None,
+            at: Event::None,
+            marker: Event::None,
+            saved: Event::None,
+            enabled: true,
+            description: None,
+        }
+    }
 }
 
 /// One pin of a map, as an instance gives it: its key, its place and the view it shows.
@@ -841,6 +879,9 @@ pub struct Map {
     /// What a press on the empty canvas does: the map reports the canvas point under it, and the
     /// view stands what belongs there (the shell's canvas opens its caret).
     press: Event,
+    /// Whether a press on it runs now, and why it cannot when it does not.
+    enabled: bool,
+    description: Option<String>,
     /// What a drag across the empty canvas does: the map reports the rectangle it covered, in
     /// canvas pixels, and the view lays what it answers into that rectangle.
     frame: Event,
@@ -1023,6 +1064,8 @@ impl Map {
             focused: false,
             drop: Event::None,
             press: Event::None,
+            enabled: true,
+            description: None,
             frame: Event::None,
             context: Event::None,
             resize: Event::None,
@@ -1712,6 +1755,8 @@ impl Described for Map {
             at,
             marker,
             saved,
+            enabled,
+            description,
         } = props;
         let mut map = Self::new();
         map.hint = hint.filter(|hint| !hint.trim().is_empty());
@@ -1730,6 +1775,8 @@ impl Described for Map {
         map.at = at;
         map.marker_event = marker;
         map.saved = saved;
+        map.enabled = enabled;
+        map.description = description;
         map.basemap = basemap.filter(|template| template.contains("%z"));
         map.tracks = tracks
             .into_iter()
@@ -1831,6 +1878,8 @@ impl Described for Map {
             at,
             marker,
             saved,
+            enabled,
+            description,
         } = props;
         let hint = hint.filter(|hint| !hint.trim().is_empty());
         if hint != self.hint {
@@ -1897,6 +1946,8 @@ impl Described for Map {
         }
         self.drop = drop;
         self.press = press;
+        self.enabled = enabled;
+        self.description = description;
         self.frame = frame;
         self.context = context;
         self.at = at;
@@ -2926,10 +2977,12 @@ impl Map {
                         *ctx.handled = true;
                         return;
                     }
-                    self.press.fire(Some(crate::component::Value::List(vec![
-                        crate::component::Value::Int(from.x.round() as i64),
-                        crate::component::Value::Int(from.y.round() as i64),
-                    ])));
+                    if self.enabled {
+                        self.press.fire(Some(crate::component::Value::List(vec![
+                            crate::component::Value::Int(from.x.round() as i64),
+                            crate::component::Value::Int(from.y.round() as i64),
+                        ])));
+                    }
                     if self.focus.is_some() {
                         let (latitude, longitude) = mercator_unproject(from);
                         self.at.fire(Some(crate::component::Value::List(vec![
@@ -3190,10 +3243,16 @@ impl Widget for Map {
     /// The canvas as a group named for what it is; its pins' views are its children, walked
     /// through the region that places them.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        // Why it cannot be pressed now, if it says: read beside its name, never instead.
+        let described = self
+            .description
+            .clone()
+            .filter(|why| !why.trim().is_empty())
+            .or_else(|| self.shown_hint().map(str::to_owned));
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Group)
                 .with_optional_name((!self.name.is_empty()).then(|| self.name.clone()))
-                .with_optional_description(self.shown_hint().map(str::to_owned)),
+                .with_optional_description(described),
         )
     }
 

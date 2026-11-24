@@ -1341,7 +1341,8 @@ impl Core {
         if !flag(action, AVAILABLE) {
             node.props.insert("disabled".to_owned(), on_off(true));
             if let Some(reason) = opt_text(action, REASON) {
-                node.props.insert("reason".to_owned(), Value::text(reason));
+                node.props
+                    .insert("description".to_owned(), Value::text(reason));
             }
         }
         if let Some(Value::Action(run)) = action_field(action, RUN) {

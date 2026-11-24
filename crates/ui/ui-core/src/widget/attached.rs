@@ -54,7 +54,7 @@ impl MenuPart {
                 destructive: item.destructive,
                 checked: item.checked,
                 disabled: item.disabled,
-                reason: item.reason.clone(),
+                description: item.description.clone(),
                 group: item.group.clone(),
                 key: item.key.clone(),
                 link: item.link.clone(),

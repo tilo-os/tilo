@@ -979,7 +979,7 @@ view this_window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool
             "Reveal",
             icon: .corner_up_right,
             disabled: w.focused,
-            reason: "It is in front already",
+            description: "It is in front already",
         ) {
             on choose: session.focus(window(w))
         }
@@ -1028,13 +1028,13 @@ view this_window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool
         ui.MenuItem("Every window the same") {
             on choose: equal_widths(w)
         }
-        ui.MenuItem("Wider", disabled: strip_width(w) >= 1000, reason: "As wide as it gets") {
+        ui.MenuItem("Wider", disabled: strip_width(w) >= 1000, description: "As wide as it gets") {
             on choose: session.resize(
                 strip: the_strip(layout_strip(w)),
                 permille: wider_than(strip_width(w)),
             )
         }
-        ui.MenuItem("Narrower", disabled: strip_width(w) <= 333, reason: "As narrow as it gets") {
+        ui.MenuItem("Narrower", disabled: strip_width(w) <= 333, description: "As narrow as it gets") {
             on choose: session.resize(
                 strip: the_strip(layout_strip(w)),
                 permille: narrower_than(strip_width(w)),

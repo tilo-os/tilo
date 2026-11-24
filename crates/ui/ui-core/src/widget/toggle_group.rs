@@ -241,6 +241,9 @@ pub struct Segment {
     pub icon: Option<Icon>,
     pub hint: Option<String>,
     pub disabled: bool,
+    /// Why it cannot be chosen now, where the label does not say (an action whose requirement
+    /// does not hold): spoken as its description beside its name, and shown as its tooltip.
+    pub description: Option<String>,
 }
 
 impl Segment {
@@ -251,6 +254,7 @@ impl Segment {
             icon: None,
             hint: None,
             disabled: false,
+            description: None,
         }
     }
 
@@ -261,12 +265,19 @@ impl Segment {
             icon: Some(icon),
             hint: None,
             disabled: false,
+            description: None,
         }
     }
 
     #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.disabled = !enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_description(mut self, why: impl Into<String>) -> Self {
+        self.description = Some(why.into());
         self
     }
 
@@ -283,6 +294,13 @@ impl Segment {
     }
 
     fn tooltip(&self) -> String {
+        if let Some(why) = self
+            .description
+            .as_deref()
+            .filter(|why| !why.trim().is_empty())
+        {
+            return why.to_owned();
+        }
         match &self.hint {
             Some(hint) => format!("{}  {hint}", self.label),
             None => self.label.clone(),
@@ -639,6 +657,25 @@ impl ToggleGroup {
         };
         if kinds(&self.presses) != kinds(&presses) {
             self.presses = presses;
+            self.cache_dirty = true;
+        }
+    }
+
+    /// Why each segment cannot be chosen now, in order: what a segment with an action of its own
+    /// says when that action's requirement does not hold.
+    pub fn set_descriptions(&mut self, descriptions: Vec<Option<String>>) {
+        let changed = descriptions.into_iter().zip(self.segments.iter_mut()).fold(
+            false,
+            |changed, (why, segment)| {
+                if segment.description != why {
+                    segment.description = why;
+                    true
+                } else {
+                    changed
+                }
+            },
+        );
+        if changed {
             self.cache_dirty = true;
         }
     }
@@ -1636,6 +1673,7 @@ impl ToggleGroup {
                     icon: segment.icon,
                     hint: segment.hint.clone(),
                     disabled: segment.disabled,
+                    description: segment.description.clone(),
                 },
                 _ => Segment {
                     label: segment.label.clone(),
@@ -1643,6 +1681,7 @@ impl ToggleGroup {
                     icon: segment.icon,
                     hint: segment.hint.clone(),
                     disabled: segment.disabled,
+                    description: segment.description.clone(),
                 },
             })
             .collect()
@@ -1985,7 +2024,8 @@ impl Widget for ToggleGroup {
             .position(|segment| segment.contains(point))?;
         let segment = self.segments.get(index)?;
         let rect = *self.segment_rects.get(index)?;
-        (segment.icon.is_some() || segment.hint.is_some()).then(|| (rect, segment.tooltip()))
+        (segment.icon.is_some() || segment.hint.is_some() || segment.description.is_some())
+            .then(|| (rect, segment.tooltip()))
     }
 
     fn build_layout(
@@ -2415,6 +2455,10 @@ impl Widget for ToggleGroup {
                             .disabled(!self.is_enabled() || s.disabled),
                     )
                     .with_position(i.saturating_add(1), count);
+                let node = match s.description.as_deref() {
+                    Some(why) => node.with_description(why.to_owned()),
+                    None => node,
+                };
                 match self.segment_rects.get(i) {
                     Some(rect) => node.with_bounds(self.target_rect(*rect)),
                     None => node,

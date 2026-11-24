@@ -645,6 +645,8 @@ pub struct Chip {
     focused: bool,
     activation: Activation,
     tooltip: Option<String>,
+    /// Why it cannot be pressed now, where the label does not say.
+    description: Option<String>,
     accessible_name: Option<String>,
     metrics: PillMetrics,
     /// `metrics.min_pointer_target`: the hit rect grows to this even though
@@ -687,6 +689,7 @@ impl Chip {
             dirty: true,
             activation: Activation::new(label.clone()),
             tooltip: None,
+            description: None,
             accessible_name: None,
             label,
             face: None,
@@ -756,6 +759,36 @@ impl Chip {
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
         self
+    }
+
+    /// Whether it can be pressed now: a chip that cannot is drawn dimmed and takes no press.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.set_enabled(enabled);
+        self
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        let disabled = !enabled;
+        if self.activation.state.disabled != disabled {
+            self.activation.state.disabled = disabled;
+            self.dirty = true;
+        }
+    }
+
+    /// Why it cannot be pressed now, where the label does not say: spoken as its description
+    /// beside its name, and shown as its tooltip.
+    #[must_use]
+    pub fn with_description(mut self, why: impl Into<String>) -> Self {
+        self.description = Some(why.into());
+        self
+    }
+
+    pub fn set_description(&mut self, why: Option<String>) {
+        if self.description != why {
+            self.description = why;
+            self.dirty = true;
+        }
     }
 
     #[must_use]
@@ -954,6 +987,9 @@ impl Chip {
     }
 
     fn press(&mut self) -> bool {
+        if self.activation.state.disabled {
+            return false;
+        }
         if self.flips() {
             self.flipped();
             return true;
@@ -1140,8 +1176,13 @@ impl Widget for Chip {
             hovered: self.pressable() && self.hovered && !remove_hovered,
             pressed: false,
             focused: self.focused,
-            disabled: false,
+            // A chip that runs nothing is a value, never a control that stands dimmed.
+            disabled: self.activation.is_bound() && !self.activation.is_enabled(),
         });
+        // A chip that cannot be pressed now is its rest face under the shared disabled veil.
+        if shown.disabled {
+            crate::widget::paint_disabled(scene, transform, &pill);
+        }
         paint_pill(
             &PillPaint {
                 face: self.face.as_ref(),
@@ -1158,6 +1199,9 @@ impl Widget for Chip {
             text_renderer,
             theme,
         );
+        if shown.disabled {
+            scene.pop_layer();
+        }
         if shown.focused {
             let radius = f64::from(theme.tokens.radii.full).min(pill.height() / 2.0);
             crate::widget::paint_focus_ring(scene, transform, pill, radius, theme);
@@ -1306,18 +1350,20 @@ impl Chip {
             .clone()
             .unwrap_or_else(|| self.label.clone());
         if self.selectable {
-            Some(
-                AccessNode::new(Role::ToggleButton)
-                    .with_name(name)
-                    .with_bounds(self.rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.focused)
-                            .selected(self.selected)
-                            .checked(self.selected),
-                    ),
-            )
+            let node = AccessNode::new(Role::ToggleButton)
+                .with_name(name)
+                .with_bounds(self.rect)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.focused)
+                        .selected(self.selected)
+                        .checked(self.selected),
+                );
+            Some(match &self.description {
+                Some(why) => node.with_description(why.clone()),
+                None => node,
+            })
         } else if self.activation.is_bound() {
             let mut state = AccessState::new()
                 .focusable(true)
@@ -1326,12 +1372,15 @@ impl Chip {
             if self.menu {
                 state = state.expanded(false);
             }
-            Some(
-                AccessNode::new(Role::Button)
-                    .with_name(name)
-                    .with_bounds(self.rect)
-                    .with_state(state),
-            )
+            let node = AccessNode::new(Role::Button)
+                .with_name(name)
+                .with_bounds(self.rect)
+                .with_state(state);
+            // Why it cannot be pressed now, if it says: read beside its name, never instead.
+            Some(match &self.description {
+                Some(why) => node.with_description(why.clone()),
+                None => node,
+            })
         } else {
             // A chip that names a value rather than running anything reads as that value, as a
             // `Text` does: its words are what a reader, a screen reader and a test find it by,

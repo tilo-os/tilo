@@ -8,7 +8,7 @@ use super::{Anchor, Drawing, Ink, Meaning, Shape, Weight};
 use crate::tokens::TextRole;
 
 /// Shapes drawn with the design system over a box of their own.
-#[derive(Component, Default)]
+#[derive(Component)]
 #[component(name = "Drawing", role = "Image", label = "label")]
 pub struct DrawingProps {
     /// The shapes, drawn in order, each over the ones before it.
@@ -65,6 +65,39 @@ pub struct DrawingProps {
     /// A pinch over the drawing: the scale factor the fingers ask for, 1 for none.
     #[component(event(value = f64))]
     pub pinch: Event,
+    /// Whether a press on it runs now.
+    pub enabled: bool,
+    /// Why it cannot be pressed now, where the label does not say (an action whose requirement
+    /// does not hold): spoken as its description beside its name.
+    pub description: Option<String>,
+}
+
+/// A drawing takes a press until something says otherwise.
+impl Default for DrawingProps {
+    fn default() -> Self {
+        Self {
+            shapes: Vec::new(),
+            meaning: Meaning::default(),
+            label: None,
+            value: None,
+            width: None,
+            height: None,
+            motion: crate::motion::Feel::default(),
+            press: Event::None,
+            hover: Event::None,
+            pointer: Event::None,
+            drag_start: Event::None,
+            drag: Event::None,
+            drag_end: Event::None,
+            press_at: Event::None,
+            drag_at: Event::None,
+            release_at: Event::None,
+            wheel: Event::None,
+            pinch: Event::None,
+            enabled: true,
+            description: None,
+        }
+    }
 }
 
 impl Described for Drawing {
@@ -93,8 +126,9 @@ impl Described for Drawing {
         self.label = props.label;
         self.value = props.value;
         let index = |at: usize| Value::Int(i64::try_from(at).unwrap_or(i64::MAX));
+        self.description = props.description;
         let press = props.press;
-        self.on_press = (!press.is_none())
+        self.on_press = (props.enabled && !press.is_none())
             .then(|| -> Box<dyn FnMut(usize)> { Box::new(move |at| press.fire(Some(index(at)))) });
         let hover = props.hover;
         self.on_hover = (!hover.is_none()).then(|| -> Box<dyn FnMut(Option<usize>)> {

@@ -66,6 +66,9 @@ pub struct SegmentProps {
     pub hint: Option<String>,
     /// Whether it can be chosen now.
     pub enabled: bool,
+    /// Why it cannot be chosen now, where the label does not say (an action whose requirement
+    /// does not hold): spoken as its description beside the name, and shown on hover.
+    pub description: Option<String>,
     /// Whether it is the choice the strip shows as made: what a setting holds, where the strip's
     /// choices run their own actions and hold no index of their own.
     pub chosen: bool,
@@ -83,6 +86,7 @@ impl Default for SegmentProps {
             icon: None,
             hint: None,
             enabled: true,
+            description: None,
             chosen: false,
             press: Event::default(),
         }
@@ -100,6 +104,9 @@ impl From<SegmentProps> for Segment {
         }
         if let Some(hint) = props.hint {
             segment = segment.with_hint(hint);
+        }
+        if let Some(why) = props.description.filter(|why| !why.trim().is_empty()) {
+            segment = segment.with_description(why);
         }
         segment.with_enabled(props.enabled)
     }
@@ -226,6 +233,17 @@ impl Described for ToggleGroup {
         self.set_enabled(enabled);
         self.set_selected(chosen_at(selected, &options));
         self.set_presses(presses(&mut options));
+        self.set_descriptions(
+            options
+                .iter()
+                .map(|option| {
+                    option
+                        .description
+                        .clone()
+                        .filter(|why| !why.trim().is_empty())
+                })
+                .collect(),
+        );
         true
     }
 }

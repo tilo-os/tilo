@@ -41,7 +41,7 @@ use crate::widget::{Decorator, Element, IconSize, IconWidget, Spacer, Text, Widg
 
 /// A window on a shell: the window surface with its edge and shadow, holding the
 /// window's content and its controls, clipped to its radius.
-#[derive(Component, Default)]
+#[derive(Component)]
 #[component(name = "WindowFrame", role = "Group", label = "name")]
 pub struct WindowFrameProps {
     /// The window's key where it stands: what finds the frame by id, as the row it arrived in
@@ -80,6 +80,11 @@ pub struct WindowFrameProps {
     /// window asks for nothing.
     #[component(data)]
     pub keep: Option<String>,
+    /// Whether the window's bar takes a press now.
+    pub enabled: bool,
+    /// Why it cannot be pressed now, where the name does not say (an action whose requirement
+    /// does not hold): spoken as its description beside the name.
+    pub description: Option<String>,
     /// A press on the window's bar, where nothing on it took the press: the person reaching for
     /// the window, which the shell answers by bringing it forward with the keyboard in it.
     #[component(event(press))]
@@ -87,6 +92,27 @@ pub struct WindowFrameProps {
     /// The window's content, filling the window.
     #[component(part(default))]
     pub body: Option<Element>,
+}
+
+/// A window takes a press on its bar until something says otherwise.
+impl Default for WindowFrameProps {
+    fn default() -> Self {
+        Self {
+            key: String::new(),
+            name: None,
+            glyph: None,
+            focused: false,
+            lists_actions: false,
+            controls: None,
+            tabs: None,
+            carries: None,
+            keep: None,
+            enabled: true,
+            description: None,
+            press: Event::None,
+            body: None,
+        }
+    }
 }
 
 /// What the frame's own bar shows this layout: the window's tabs, the place it shows, the
@@ -159,6 +185,9 @@ pub struct WindowFrame {
     keep: Option<String>,
     /// What a press on the bar does.
     press: crate::widget::Press,
+    /// Whether the bar takes a press now, and why it cannot when it does not.
+    enabled: bool,
+    description: Option<String>,
     /// Where the pointer last was, in the frame's logical coordinates.
     cursor: Point,
 }
@@ -251,6 +280,8 @@ impl Described for WindowFrame {
             tabs,
             carries,
             keep,
+            enabled,
+            description,
             press,
             body,
         } = props;
@@ -308,6 +339,8 @@ impl Described for WindowFrame {
             lift: None,
             keep,
             press: crate::widget::Press::of(press),
+            enabled,
+            description,
             cursor: Point::ZERO,
         }
     }
@@ -327,6 +360,8 @@ impl Described for WindowFrame {
         self.lists_actions = props.lists_actions;
         self.carries = props.carries;
         self.keep = props.keep;
+        self.enabled = props.enabled;
+        self.description = props.description;
         self.press = crate::widget::Press::of(props.press);
         true
     }
@@ -660,6 +695,7 @@ impl Decorator for WindowFrame {
                         ..
                     }
                 )
+                && self.enabled
                 && self.bar.contains(self.cursor)
             {
                 self.press.run();
@@ -692,6 +728,9 @@ impl Decorator for WindowFrame {
             } => {
                 self.layers.handle_event(event, ctx);
                 if *ctx.handled || !self.bar.contains(self.cursor) {
+                    return;
+                }
+                if !self.enabled {
                     return;
                 }
                 self.lift = Some(Lift {
@@ -892,8 +931,13 @@ impl Decorator for WindowFrame {
     /// The frame is a group named for the window, and what it holds is read inside it.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.name.as_ref().map(|name| {
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_optional_name(Some(name.clone()))
+            let node = crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_optional_name(Some(name.clone()));
+            // Why it cannot be pressed now, if it says: read beside its name, never instead.
+            match &self.description {
+                Some(why) => node.with_description(why.clone()),
+                None => node,
+            }
         })
     }
 }

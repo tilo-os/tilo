@@ -18,7 +18,7 @@ use crate::widget::{TaffyTreeExt, Widget};
 
 /// A bar control for people: their faces, a label and a press, with faces opening who is here
 /// and an invite opening the host's invite flow.
-#[derive(Component, Default)]
+#[derive(Component)]
 #[component(name = "BarChip", role = "Button", label = "name")]
 pub struct BarChipProps {
     /// The chip's name for assistive technology, and its tooltip when it shows only a glyph.
@@ -40,9 +40,34 @@ pub struct BarChipProps {
     pub label_width: Option<f64>,
     /// A person whose presence colour washes the chip's body: who the state it says is about.
     pub tone: Option<Person>,
+    /// Whether it can be pressed now.
+    pub enabled: bool,
+    /// Why it cannot be pressed now, where the name does not say (an action whose requirement
+    /// does not hold): spoken as its description beside the name, and shown on hover.
+    pub description: Option<String>,
     /// A press: the chip's action.
-    #[component(event)]
+    #[component(event(press))]
     pub press: Event,
+}
+
+/// A chip is pressable until something says otherwise.
+impl Default for BarChipProps {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            label: None,
+            icon: None,
+            trailing: None,
+            who: Vec::new(),
+            open: false,
+            focused: false,
+            label_width: None,
+            tone: None,
+            enabled: true,
+            description: None,
+            press: Event::None,
+        }
+    }
 }
 
 impl BarChipProps {
@@ -87,8 +112,8 @@ impl BarChip {
             .overflow(overflow)
             .at_height(self.face_height(theme))
             .open(self.props.open)
-            .hovered(self.hovered)
-            .pressed(self.pressed)
+            .hovered(self.props.enabled && self.hovered)
+            .pressed(self.props.enabled && self.pressed)
             .focused(self.focused);
         if let Some(label) = &self.props.label {
             chip = chip.label(label);
@@ -111,6 +136,9 @@ impl BarChip {
     }
 
     fn fire_press(&mut self) {
+        if !self.props.enabled {
+            return;
+        }
         if let Some(press) = &mut self.press {
             press();
         }
@@ -199,14 +227,25 @@ impl Widget for BarChip {
         }
         let faces = self.props.faces(theme);
         let ground = theme.tokens.colors.surfaces.base;
+        // A chip that cannot be pressed now is its rest face under the shared disabled veil.
+        let disabled = !self.props.enabled;
+        if disabled {
+            crate::widget::paint_disabled(scene, transform, &self.rect);
+        }
         let _ = self.face(theme, &faces).paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
             ground,
         );
+        if disabled {
+            scene.pop_layer();
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if !self.props.enabled {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.hovered = self.rect.contains(ctx.logical(position));
@@ -271,8 +310,21 @@ impl Widget for BarChip {
         let mut node = AccessNode::new(Role::Button)
             .with_name(&self.props.name)
             .with_bounds(self.rect)
-            .with_state(AccessState::new().focusable(true).focused(self.focused));
-        if !self.props.who.is_empty() {
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.focused)
+                    .disabled(!self.props.enabled),
+            );
+        // Why it cannot be pressed now, if it says: read beside its name, never instead of it.
+        if let Some(why) = self
+            .props
+            .description
+            .as_deref()
+            .filter(|why| !why.trim().is_empty())
+        {
+            node = node.with_description(why.to_owned());
+        } else if !self.props.who.is_empty() {
             node = node.with_description(
                 self.props
                     .who
@@ -286,8 +338,7 @@ impl Widget for BarChip {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.rect
-            .contains(point)
+        (self.props.enabled && self.rect.contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
     }
 

@@ -472,6 +472,8 @@ pub struct Drawing {
     dirty: bool,
     pub(crate) layout_dirty: bool,
     pub(crate) on_press: Option<Box<dyn FnMut(usize)>>,
+    /// Why a press on it does not run now, where the label does not say.
+    pub(crate) description: Option<String>,
     pub(crate) on_hover: Option<Box<dyn FnMut(Option<usize>)>>,
     /// The pointer moved over the drawing, at fractions of its box.
     pub(crate) on_pointer: Option<Box<dyn FnMut(f64, f64)>>,
@@ -957,7 +959,7 @@ impl Widget for Drawing {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        Some(match self.meaning {
+        let node = match self.meaning {
             Meaning::Progress => AccessNode::new(Role::ProgressBar)
                 .with_optional_name(self.label.clone())
                 .with_optional_value(self.value.map(percent)),
@@ -965,6 +967,11 @@ impl Widget for Drawing {
                 AccessNode::new(Role::Image).with_optional_name(self.label.clone())
             }
             Meaning::Decoration => return None,
+        };
+        // Why it cannot be pressed now, if it says: read beside its name, never instead.
+        Some(match &self.description {
+            Some(why) => node.with_description(why.clone()),
+            None => node,
         })
     }
 

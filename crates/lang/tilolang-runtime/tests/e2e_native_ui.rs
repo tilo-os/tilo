@@ -231,6 +231,64 @@ view letter(l: Letter) {
         assert_eq!(send.props.get("description"), None);
     }
 
+    const LETTER_TOOLBAR: &str = r#"app so.tilo.letter "Letter"
+
+type Letter {
+    to: Text
+    sent: Bool = false
+}
+
+action address(l: Letter, to: Text) {
+    l.to = to
+}
+
+action send(l: Letter) {
+    require l.to != "" "It goes to nobody yet"
+    l.sent = true
+}
+
+view letter(l: Letter) {
+    ui.Toolbar {
+        ui.ToolbarButton("Send") {
+            on press: send(l)
+        }
+    }
+}
+"#;
+
+    /// A toolbar command bound to an action stands dimmed while that action's `require` fails,
+    /// saying why in its words, and is ready once it holds: the same rule its neighbouring
+    /// `ui.Button` follows, so a toolbar command never holds props its component does not take.
+    #[test]
+    fn a_toolbar_command_bound_to_an_action_says_why_its_require_keeps_it_dimmed() {
+        let app = App::compile(LETTER_TOOLBAR, &[]);
+        let rt = runtime(&app);
+        let l = rt.create("Letter").unwrap();
+        let mut view = rt
+            .open_view(&me(), &app.view("letter"), vec![Value::resource(&l)])
+            .unwrap();
+        let send = of_kind(view.tree(), "ui.ToolbarButton")[0].clone();
+        assert_eq!(
+            send.props.get("enabled"),
+            Some(&Value::Int(0)),
+            "{}",
+            dump(view.tree())
+        );
+        assert_eq!(text_prop(&send, "description"), "It goes to nobody yet");
+        rt.invoke_action(
+            &me(),
+            (
+                app.action("address").as_str(),
+                vec![Value::resource(&l), Value::text("ada@analytical.example")],
+            ),
+        )
+        .unwrap();
+        view.poll_patches().unwrap();
+        let send = of_kind(view.tree(), "ui.ToolbarButton")[0].clone();
+        assert_eq!(send.props.get("enabled"), None, "{}", dump(view.tree()));
+        assert_eq!(send.props.get("description"), None);
+    }
+
     #[test]
     fn dates_reach_the_ui_and_a_date_control_edits_them() {
         let app = App::compile(TASKS, &[]);

@@ -9,7 +9,7 @@ use crate::widget::{Press, Tone};
 
 /// A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an applied
 /// filter.
-#[derive(Component, Default)]
+#[derive(Component)]
 #[component(name = "Chip", role = "Button", label = "label")]
 pub struct ChipProps {
     /// What it names, in a word or two.
@@ -22,12 +22,33 @@ pub struct ChipProps {
     pub tone: Tone,
     /// Whether the filter it stands for is on; without it the chip is no filter.
     pub selected: Option<bool>,
+    /// Whether it can be pressed now.
+    pub enabled: bool,
+    /// Why it cannot be pressed now, where the label does not say (an action whose requirement
+    /// does not hold): spoken as its description beside the name, and shown on hover.
+    pub description: Option<String>,
     /// It was pressed: open or apply what it names.
     #[component(event(press))]
     pub press: Event,
     /// Its remove button was pressed: take it away.
     #[component(event(press))]
     pub remove: Event,
+}
+
+/// A chip is pressable until something says otherwise.
+impl Default for ChipProps {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            icon: None,
+            tone: Tone::default(),
+            selected: None,
+            enabled: true,
+            description: None,
+            press: Event::None,
+            remove: Event::None,
+        }
+    }
 }
 
 impl Described for Chip {
@@ -39,6 +60,8 @@ impl Described for Chip {
             icon,
             tone,
             selected,
+            enabled,
+            description,
             press,
             remove,
         } = props;
@@ -57,6 +80,10 @@ impl Described for Chip {
             Event::Action(binding) => chip.on_action(binding),
             Event::View(intent) => chip.on_open(intent.sender()),
         };
+        if let Some(why) = description.filter(|why| !why.trim().is_empty()) {
+            chip = chip.with_description(why.clone()).tooltip(why);
+        }
+        chip = chip.with_enabled(enabled);
         chip = chip.with_remove_press(Press::of(remove));
         chip
     }
@@ -67,6 +94,8 @@ impl Described for Chip {
             icon,
             tone,
             selected,
+            enabled,
+            description,
             press,
             remove,
         } = props;
@@ -85,6 +114,8 @@ impl Described for Chip {
         self.selectable = selected.is_some();
         self.set_selected(selected.unwrap_or(false));
         self.activation.set_event(press);
+        self.set_enabled(enabled);
+        self.set_description(description.filter(|why| !why.trim().is_empty()));
         let remove = Press::of(remove);
         if remove.is_none() {
             self.removable = false;

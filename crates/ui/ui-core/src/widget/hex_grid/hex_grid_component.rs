@@ -12,7 +12,7 @@ crate::component::choice!(HexColumn, "HexColumn", {
 
 /// Bytes as a dense grid: an offset down the side, hexadecimal pairs and the same bytes as text
 /// across, with the cursor, the selection and a search's matches drawn over them.
-#[derive(Component, Default)]
+#[derive(Component)]
 #[component(name = "HexGrid", role = "Table", label = "label")]
 pub struct HexGridProps {
     /// The rows shown, each its bytes as hexadecimal pairs without spaces (`"00ff2a"`).
@@ -51,6 +51,35 @@ pub struct HexGridProps {
     /// moves by, down for a positive number.
     #[component(event(value = i64))]
     pub wheel: Event,
+    /// Whether a press on a byte runs now.
+    pub enabled: bool,
+    /// Why it cannot be pressed now, where the label does not say (an action whose requirement
+    /// does not hold): spoken as its description beside its name.
+    pub description: Option<String>,
+}
+
+/// A grid takes a press until something says otherwise.
+impl Default for HexGridProps {
+    fn default() -> Self {
+        Self {
+            rows: Vec::new(),
+            changed: Vec::new(),
+            total: 0,
+            first: 0,
+            columns: 0,
+            cursor: None,
+            anchor: None,
+            column: HexColumn::default(),
+            matches: Vec::new(),
+            at_match: None,
+            label: None,
+            press: Event::None,
+            key: Event::None,
+            wheel: Event::None,
+            enabled: true,
+            description: None,
+        }
+    }
 }
 
 impl Described for HexGrid {
@@ -80,6 +109,8 @@ impl Described for HexGrid {
             || matches != self.matches
             || props.at_match != self.at_match
             || props.label != self.label
+            || props.enabled != self.enabled
+            || props.description != self.description
         {
             changed = true;
         }
@@ -94,8 +125,10 @@ impl Described for HexGrid {
         self.matches = matches;
         self.at_match = props.at_match;
         self.label = props.label;
+        self.enabled = props.enabled;
+        self.description = props.description;
         let press = props.press;
-        self.on_press = (!press.is_none()).then(|| {
+        self.on_press = (props.enabled && !press.is_none()).then(|| {
             Box::new(move |at: usize, column: HexColumn, extend: bool| {
                 press.fire(Some(crate::component::Value::List(vec![
                     crate::component::Value::Text(at.to_string()),

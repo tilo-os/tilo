@@ -462,7 +462,7 @@ struct Command {
     key: Option<String>,
     group: Option<String>,
     enabled: bool,
-    reason: Option<String>,
+    description: Option<String>,
     /// What choosing the row presses: the action the view bound to it, or the view's own event.
     press: Press,
 }
@@ -475,7 +475,7 @@ impl Command {
             destructive,
             checked,
             disabled,
-            reason,
+            description,
             group,
             key,
             link,
@@ -490,7 +490,7 @@ impl Command {
             key,
             group,
             enabled: !disabled,
-            reason,
+            description,
             press: Press::of(choose).leading_to(link),
         }
     }
@@ -511,8 +511,8 @@ impl Command {
             Some(key) => item.with_shortcut(key.clone()),
             None => item,
         };
-        let item = match &self.reason {
-            Some(reason) => item.with_description(reason.clone()),
+        let item = match &self.description {
+            Some(description) => item.with_description(description.clone()),
             None => item,
         };
         match &self.group {

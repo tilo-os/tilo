@@ -1358,6 +1358,18 @@
           "type": {
             "option": "bool"
           }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether it can be pressed now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the label does not say (an action whose requirement does not hold): spoken as its description beside the name, and shown on hover.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [
@@ -2477,6 +2489,18 @@
               ]
             }
           }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether a press on it runs now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the label does not say (an action whose requirement does not hold): spoken as its description beside its name.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [
@@ -3253,6 +3277,18 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether a press on a byte runs now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the label does not say (an action whose requirement does not hold): spoken as its description beside its name.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [
@@ -3958,6 +3994,18 @@
           "doc": "The zoom the map opens at, about its centre (`latitude`, `longitude`).",
           "type": {
             "option": "float"
+          }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether a press on its empty surface runs now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the name does not say (an action whose requirement does not hold): spoken as its description beside its name.",
+          "type": {
+            "option": "text"
           }
         }
       ],
@@ -5110,12 +5158,25 @@
           "type": {
             "option": "actor"
           }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether it can be pressed now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the name does not say (an action whose requirement does not hold): spoken as its description beside the name, and shown on hover.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [
         {
           "name": "press",
-          "doc": "A press: the chip's action."
+          "doc": "A press: the chip's action.",
+          "press": true
         }
       ],
       "semantics": {
@@ -8257,6 +8318,18 @@
             "option": "text"
           },
           "data": true
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether the window's bar takes a press now.",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the name does not say (an action whose requirement does not hold): spoken as its description beside the name.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "parts": [
@@ -9275,12 +9348,12 @@
         },
         {
           "name": "disabled",
-          "doc": "It cannot run now (a `require` of its action does not hold). It is listed all the same, drawn as unavailable, and says `reason`.",
+          "doc": "It cannot run now (a `require` of its action does not hold). It is listed all the same, drawn as unavailable, and says `description`.",
           "type": "bool"
         },
         {
-          "name": "reason",
-          "doc": "Why it cannot run now, in the person's words (`require`'s own): read with the row, and kept beside the label so a person sees what it waits on.",
+          "name": "description",
+          "doc": "Why it cannot run now, in the person's words (`require`'s own): read with the row, and kept beside the label so a person sees what it waits on. The name is the one every control gives the reason it cannot be pressed now.",
           "type": {
             "option": "text"
           }
@@ -10579,6 +10652,13 @@
           "type": "bool"
         },
         {
+          "name": "description",
+          "doc": "Why it cannot be chosen now, where the label does not say (an action whose requirement does not hold): spoken as its description beside the name, and shown on hover.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "chosen",
           "doc": "Whether it is the choice the strip shows as made: what a setting holds, where the strip's choices run their own actions and hold no index of their own.",
           "type": "bool"
@@ -10627,6 +10707,13 @@
           "type": "bool"
         },
         {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the label does not say (an action whose requirement does not hold): spoken as its description beside the name, shown on hover, and carried by its row in the More menu.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "dot",
           "doc": "A dot at its corner: something new behind it.",
           "type": "bool"
@@ -10658,7 +10745,8 @@
       "events": [
         {
           "name": "press",
-          "doc": "It was pressed (a click, Enter or Space, the More menu, an assistive technology)."
+          "doc": "It was pressed (a click, Enter or Space, the More menu, an assistive technology).",
+          "press": true
         }
       ],
       "semantics": {

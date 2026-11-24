@@ -130,7 +130,7 @@ struct Command {
     key: Option<String>,
     group: Option<String>,
     enabled: bool,
-    reason: Option<String>,
+    description: Option<String>,
     press: Press,
 }
 
@@ -142,7 +142,7 @@ impl Command {
             destructive,
             checked,
             disabled,
-            reason,
+            description,
             group,
             key,
             link,
@@ -157,7 +157,7 @@ impl Command {
             key,
             group,
             enabled: !disabled,
-            reason,
+            description,
             press: Press::of(choose).leading_to(link),
         }
     }
@@ -178,8 +178,8 @@ impl Command {
             Some(key) => entry.with_shortcut(key.clone()),
             None => entry,
         };
-        let entry = match &self.reason {
-            Some(reason) => entry.with_description(reason.clone()),
+        let entry = match &self.description {
+            Some(description) => entry.with_description(description.clone()),
             None => entry,
         };
         match &self.group {

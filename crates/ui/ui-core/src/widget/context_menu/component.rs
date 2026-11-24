@@ -22,11 +22,12 @@ pub struct MenuItemProps {
     /// Whether it is the one chosen now, in a menu of choices (a sort order).
     pub checked: Option<bool>,
     /// It cannot run now (a `require` of its action does not hold). It is listed all
-    /// the same, drawn as unavailable, and says `reason`.
+    /// the same, drawn as unavailable, and says `description`.
     pub disabled: bool,
     /// Why it cannot run now, in the person's words (`require`'s own): read with
-    /// the row, and kept beside the label so a person sees what it waits on.
-    pub reason: Option<String>,
+    /// the row, and kept beside the label so a person sees what it waits on. The name is the
+    /// one every control gives the reason it cannot be pressed now.
+    pub description: Option<String>,
     /// The run of commands it stands in (`group: "Due"`), as the app names it:
     /// consecutive rows of one run fold into one row that opens them.
     pub group: Option<String>,
@@ -73,8 +74,11 @@ impl MenuItemProps {
             Some(key) => item.with_shortcut(key),
             None => item,
         };
-        let item = match props.reason.filter(|reason| !reason.trim().is_empty()) {
-            Some(reason) => item.with_description(reason),
+        let item = match props
+            .description
+            .filter(|description| !description.trim().is_empty())
+        {
+            Some(description) => item.with_description(description),
             None => item,
         };
         match props.group {
@@ -103,8 +107,11 @@ impl MenuItemProps {
             Some(key) => entry.with_shortcut(key),
             None => entry,
         };
-        let entry = match props.reason.filter(|reason| !reason.trim().is_empty()) {
-            Some(reason) => entry.with_description(reason),
+        let entry = match props
+            .description
+            .filter(|description| !description.trim().is_empty())
+        {
+            Some(description) => entry.with_description(description),
             None => entry,
         };
         match props.group {
@@ -123,7 +130,7 @@ impl From<OfferedAction> for MenuItemProps {
             destructive: action.destructive,
             checked: action.on,
             disabled: false,
-            reason: None,
+            description: None,
             group: None,
             key: action.key,
             link: None,

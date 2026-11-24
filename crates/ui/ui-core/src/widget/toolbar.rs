@@ -51,6 +51,10 @@ pub struct ToolbarCommand {
     pub glyph: Option<GlyphPainter>,
     pub active: Option<bool>,
     pub accessible_name: Option<String>,
+    /// Why it cannot be pressed now, where that says more than the label (an action whose
+    /// requirement does not hold): spoken as its description beside the name, shown on hover,
+    /// and carried by its row in the More menu.
+    pub description: Option<String>,
     pub enabled: bool,
     pub dot: bool,
     pub priority: i32,
@@ -72,6 +76,7 @@ impl ToolbarCommand {
             glyph: None,
             active: None,
             accessible_name: None,
+            description: None,
             enabled: true,
             dot: false,
             priority: 0,
@@ -305,6 +310,25 @@ impl Toolbar {
             command.accessible_name = Some(name.to_string());
         }
         self
+    }
+
+    /// The last pushed command says why it cannot be pressed now, where its label does not.
+    #[must_use]
+    pub fn with_description(mut self, why: impl Into<String>) -> Self {
+        if let Some(command) = self.last_command() {
+            command.description = Some(why.into());
+        }
+        self
+    }
+
+    pub fn set_description(&mut self, index: usize, why: Option<String>) {
+        if let Some(command) = self.command_mut(index)
+            && command.description != why
+        {
+            command.description = why;
+            self.menu_indices.clear();
+            self.reconcile_menu();
+        }
     }
 
     #[must_use]
@@ -901,6 +925,9 @@ impl Toolbar {
                             }
                             if let Some(address) = command.published_address() {
                                 row = row.for_action(address);
+                            }
+                            if let Some(why) = &command.description {
+                                row = row.with_description(why.clone());
                             }
                             row.with_enabled(command.is_enabled())
                         }
@@ -1832,6 +1859,24 @@ impl Widget for Toolbar {
             .modal_capture()
             .or_else(|| self.item_menu.as_ref().and_then(|(_, m)| m.modal_capture()))
     }
+    /// The command under the pointer says why it cannot be pressed now, as a button does.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        self.targets().into_iter().find_map(|target| {
+            let Target::Item(index) = target else {
+                return None;
+            };
+            let rect = self.target_rect(target)?;
+            if !rect.contains(point) {
+                return None;
+            }
+            let why = self
+                .command(index)?
+                .description
+                .as_deref()
+                .filter(|why| !why.trim().is_empty())?;
+            Some((rect, why.to_owned()))
+        })
+    }
     fn name(&self) -> &'static str {
         "Toolbar"
     }
@@ -1843,7 +1888,7 @@ impl Widget for Toolbar {
             .targets()
             .iter()
             .map(|target| {
-                let (name, route, expanded, checked, enabled) = match target {
+                let (name, route, expanded, checked, enabled, why) = match target {
                     Target::Item(index) => {
                         let command = self.command(*index);
                         let open = self.item_menu.as_ref().is_some_and(|(i, _)| i == index);
@@ -1853,6 +1898,7 @@ impl Widget for Toolbar {
                             command.and_then(|c| c.menu.as_ref()).map(|_| open),
                             command.and_then(|c| c.active),
                             command.is_none_or(|c| c.is_enabled()),
+                            command.and_then(|c| c.description.clone()),
                         )
                     }
                     Target::Overflow => (
@@ -1861,6 +1907,7 @@ impl Widget for Toolbar {
                         Some(self.menu.is_open()),
                         None,
                         true,
+                        None,
                     ),
                 };
                 let role = if checked.is_some() {
@@ -1868,7 +1915,7 @@ impl Widget for Toolbar {
                 } else {
                     Role::Button
                 };
-                AccessNode::new(role)
+                let node = AccessNode::new(role)
                     .with_name(name)
                     .with_action_target(route)
                     .with_bounds(self.target_rect(*target).unwrap_or(Rect::ZERO))
@@ -1881,7 +1928,13 @@ impl Widget for Toolbar {
                         checked,
                         disabled: !enabled,
                         ..Default::default()
-                    })
+                    });
+                // Why it cannot be pressed now, if it says: read beside its name, never
+                // instead of it.
+                match why {
+                    Some(why) => node.with_description(why),
+                    None => node,
+                }
             })
             .collect();
         if self.menu.is_open() {
@@ -1892,19 +1945,21 @@ impl Widget for Toolbar {
                 .filter_map(|(row, index)| {
                     let index = (*index)?;
                     let command = self.command(index)?;
-                    Some(
-                        AccessNode::new(Role::MenuItem)
-                            .with_name(command.name().to_owned())
-                            .with_action_target(format!("toolbar.item.{index}"))
-                            .with_bounds(self.menu.row_bounds(row).unwrap_or(Rect::ZERO))
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: self.focused && self.menu.hovered() == Some(row),
-                                checked: command.active,
-                                disabled: !command.is_enabled(),
-                                ..Default::default()
-                            }),
-                    )
+                    let node = AccessNode::new(Role::MenuItem)
+                        .with_name(command.name().to_owned())
+                        .with_action_target(format!("toolbar.item.{index}"))
+                        .with_bounds(self.menu.row_bounds(row).unwrap_or(Rect::ZERO))
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.focused && self.menu.hovered() == Some(row),
+                            checked: command.active,
+                            disabled: !command.is_enabled(),
+                            ..Default::default()
+                        });
+                    Some(match &command.description {
+                        Some(why) => node.with_description(why.clone()),
+                        None => node,
+                    })
                 })
                 .collect();
             children.push(

@@ -37,6 +37,10 @@ pub struct ToolbarButtonProps {
     pub toggled: Option<bool>,
     /// Whether it can be pressed now. A command with nothing to do never can.
     pub enabled: bool,
+    /// Why it cannot be pressed now, where the label does not say (an action whose requirement
+    /// does not hold): spoken as its description beside the name, shown on hover, and carried by
+    /// its row in the More menu.
+    pub description: Option<String>,
     /// A dot at its corner: something new behind it.
     pub dot: bool,
     /// How long it stays in the row where the window is narrow: higher stays longer, and of
@@ -49,7 +53,7 @@ pub struct ToolbarButtonProps {
     #[component(part)]
     pub menu: Vec<MenuItemProps>,
     /// It was pressed (a click, Enter or Space, the More menu, an assistive technology).
-    #[component(event)]
+    #[component(event(press))]
     pub press: Event,
 }
 
@@ -61,6 +65,7 @@ impl Default for ToolbarButtonProps {
             icon: None,
             toggled: None,
             enabled: true,
+            description: None,
             dot: false,
             priority: 0,
             joined: false,
@@ -140,13 +145,14 @@ fn push_command(bar: Toolbar, props: ToolbarButtonProps) -> Toolbar {
         icon,
         toggled,
         enabled,
+        description,
         dot,
         priority,
         joined,
         menu,
         press,
     } = props;
-    let mut bar = if menu.is_empty() {
+    let bar = if menu.is_empty() {
         let enabled = enabled && !press.is_none();
         let run: Box<dyn FnMut()> = match &press {
             Event::View(intent) => Box::new(intent.sender()),
@@ -170,6 +176,10 @@ fn push_command(bar: Toolbar, props: ToolbarButtonProps) -> Toolbar {
             command.icon = icon;
         }
         bar
+    };
+    let mut bar = match description.filter(|why| !why.trim().is_empty()) {
+        Some(why) => bar.with_description(why),
+        None => bar,
     };
     if let Some(command) = bar.last_command() {
         command.dot = dot;
@@ -240,6 +250,10 @@ impl Described for Toolbar {
                 self.set_active(index, on);
             }
             self.set_enabled(index, enabled);
+            self.set_description(
+                index,
+                command.description.filter(|why| !why.trim().is_empty()),
+            );
             self.set_dot(index, command.dot);
             if has_menu {
                 let items = command
@@ -280,5 +294,42 @@ mod tests {
         let mut toolbar = Toolbar::from_props("format", bold(false));
         assert!(toolbar.set_props(bold(true)));
         assert_eq!(toolbar.command(0).and_then(|c| c.active), Some(true));
+    }
+
+    /// A command the person cannot press now says why, as a button does: assistive technology
+    /// reads the reason beside the command's name, wherever the command stands.
+    #[test]
+    fn a_command_says_why_it_cannot_be_pressed() {
+        let mut toolbar = Toolbar::from_props(
+            "format",
+            ToolbarProps {
+                items: vec![ToolbarPart::Button(ToolbarButtonProps {
+                    label: "Send".into(),
+                    enabled: false,
+                    description: Some("It goes to nobody yet".into()),
+                    ..ToolbarButtonProps::default()
+                })],
+                vertical: false,
+            },
+        );
+        // Lay it out in a wide row, so the command shows in it rather than in the More menu.
+        let theme = crate::theme::Theme::dark();
+        let mut text = crate::text_render::TextRenderer::new();
+        toolbar.lay_out_in(
+            vello::kurbo::Rect::new(0.0, 0.0, 400.0, 80.0),
+            &mut text,
+            &theme,
+        );
+        let node = crate::widget::Widget::accessibility(&toolbar).expect("a toolbar speaks");
+        let command = node
+            .children
+            .iter()
+            .find(|child| child.name.as_deref() == Some("Send"))
+            .expect("the command is read");
+        assert_eq!(
+            command.description.as_deref(),
+            Some("It goes to nobody yet")
+        );
+        assert!(command.state.disabled, "the command cannot be pressed");
     }
 }

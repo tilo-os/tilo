@@ -73,6 +73,9 @@ pub struct HexGrid {
     focused: bool,
     dirty: bool,
     pub(crate) on_press: Option<Box<dyn FnMut(usize, HexColumn, bool)>>,
+    /// Whether a press on a byte runs now, and why it cannot when it does not.
+    pub(crate) enabled: bool,
+    pub(crate) description: Option<String>,
     pub(crate) on_key: Option<Box<dyn FnMut(String)>>,
     pub(crate) on_wheel: Option<Box<dyn FnMut(i64)>>,
 }
@@ -98,6 +101,8 @@ impl Default for HexGrid {
             focused: false,
             dirty: false,
             on_press: None,
+            enabled: true,
+            description: None,
             on_key: None,
             on_wheel: None,
         }
@@ -639,11 +644,14 @@ impl Widget for HexGrid {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::Role;
-        Some(
-            crate::a11y::AccessNode::new(Role::Table)
-                .with_optional_name(self.label.clone())
-                .with_hashed_key("hex_grid"),
-        )
+        let node = crate::a11y::AccessNode::new(Role::Table)
+            .with_optional_name(self.label.clone())
+            .with_hashed_key("hex_grid");
+        // Why it cannot be pressed now, if it says: read beside its name, never instead.
+        Some(match &self.description {
+            Some(why) => node.with_description(why.clone()),
+            None => node,
+        })
     }
 
     /// A grid takes the keyboard from a press: the keys it types land in the byte under the

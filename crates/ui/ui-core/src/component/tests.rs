@@ -1096,3 +1096,36 @@ fn a_person_wears_the_colour_that_travels_with_them() {
     assert_eq!(worn(Some(1)), crate::tokens::PresenceHue::Orange);
     assert_eq!(worn(None), crate::tokens::PresenceHue::of_actor(&identity));
 }
+
+/// A component whose press is bound to an action says why it cannot be pressed now. The runtime
+/// dims the node whose `press` is bound to an action whose `require` does not hold and gives the
+/// node `enabled` and the reason as `description`, so every component that takes a press must
+/// take both, or the app it stands in fails to open the moment its press is refused. Read over
+/// the registry, so a component that forgets either fails here the day it is written rather than
+/// in a person's window.
+#[test]
+fn every_component_that_takes_a_press_takes_the_reason_it_cannot_run() {
+    let catalogue = toolkit().catalogue();
+    let mut missing = Vec::new();
+    for component in &catalogue.components {
+        let Some(press) = component.events.iter().find(|event| event.name == "press") else {
+            continue;
+        };
+        if press.value.is_none() && !press.press {
+            missing.push(format!(
+                "{}: its press runs a bound action, so declare it `#[component(event(press))]`",
+                component.name
+            ));
+        }
+        for prop in ["enabled", "description"] {
+            if component.prop(prop).is_none() {
+                missing.push(format!(
+                    "{}.{prop}: a component whose press a view binds an action to takes it, or its \
+                     app cannot open while that action is refused",
+                    component.name
+                ));
+            }
+        }
+    }
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
+}
