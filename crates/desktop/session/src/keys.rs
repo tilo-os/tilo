@@ -223,20 +223,6 @@ impl SwitcherKey {
             Self::Hold => {}
         }
     }
-
-    /// What a press on the walk's panel asks: the card under the pointer chosen, or gone to, or the
-    /// panel dismissed.
-    pub(crate) fn of_panel(
-        ask: tilo_session_core::desktop::host::contract::SwitcherAsk,
-    ) -> Vec<Self> {
-        use tilo_session_core::desktop::host::contract::SwitcherAsk;
-        let place = |at: usize| Self::Place(i64::try_from(at).unwrap_or(i64::MAX));
-        match ask {
-            SwitcherAsk::Hover(at) => vec![place(at)],
-            SwitcherAsk::Choose(at) => vec![place(at), Self::Commit],
-            SwitcherAsk::Dismiss => vec![Self::Cancel],
-        }
-    }
 }
 
 /// Alt+Tab's keys: the chord that opens the session's walk, and every key it answers while it is up.

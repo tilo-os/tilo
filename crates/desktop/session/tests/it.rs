@@ -303,8 +303,6 @@ mod window_menu;
 mod window_menu_probe;
 #[path = "window_share_live.rs"]
 mod window_share_live;
-#[path = "window_switcher.rs"]
-mod window_switcher;
 #[path = "windows_compat.rs"]
 mod windows_compat;
 #[path = "workspace_agents.rs"]

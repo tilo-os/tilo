@@ -3,29 +3,10 @@
 //! carry out.
 
 use tilo_desktop_model::commands::DesktopCommand;
-use tilo_desktop_model::{Layout, StripId, TabId, WorkspaceId};
+use tilo_desktop_model::{StripId, TabId, WorkspaceId};
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
 use crate::desktop::host::chrome::ChromeIntent;
-
-/// The person pressed one of the music widget's controls.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MusicAction {
-    PlayPause,
-    Previous,
-    Next,
-}
-
-/// What the pointer and presses on the switcher's panel ask: the walk's position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SwitcherAsk {
-    /// The pointer stands over this card: the walk goes there.
-    Hover(usize),
-    /// A press on this card: the walk goes there, and goes to it.
-    Choose(usize),
-    /// A press off the panel, which is no press on anything behind it: the walk ends where it is.
-    Dismiss,
-}
 
 /// The host action that lists the workspaces this computer may join.
 pub const JOIN_WORKSPACE: &str = "join-workspace";
@@ -52,18 +33,6 @@ pub const SESSION_SHUT_DOWN: &str = "session-shut-down";
 pub const REPORT_PROBLEM: &str = "session-report-problem";
 /// What the host answers about the person at this desktop and the workspace it shows.
 pub trait DesktopRules {
-    /// The tree as the chrome shows it: the surface's, with who is here as the active workspace's
-    /// members.
-    fn tree(&self) -> Layout;
-
-    /// Changes whenever who is here does, beyond the tree.
-    fn people_revision(&self) -> u64 {
-        0
-    }
-
-    /// The person this desktop acts for.
-    fn author(&self) -> String;
-
     /// Whether the person may run `command` on the active workspace.
     ///
     /// # Errors
@@ -107,20 +76,13 @@ pub trait DesktopRules {
 
     /// The person made `strip` : it is theirs from now on.
     fn made_strip(&self, _strip: StripId) {}
-
-    /// Where the workspace shown is hosted (`example.org`), named beside the workspace; `None` on
-    /// the person's own desktop.
-    fn workspace_host(&self) -> Option<String> {
-        None
-    }
 }
 
 /// What the desktop asks of its host.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DesktopAsk {
-    /// A request of the chrome the layers do not answer themselves: the people and profile
-    /// popovers, inviting, quick settings, the clock, and the menu a secondary press on the shell
-    /// asks for at that place.
+    /// A request the layers do not answer themselves: who is here, a person's row, inviting, and
+    /// pairing another device.
     Intent(ChromeIntent),
     /// The person chose a host action (`id`) in the workspace menu.
     HostAction(String),
@@ -160,21 +122,11 @@ pub enum DesktopAsk {
     /// A fixed shortcut the layers have no part in (a capture, the shortcut guide, cutting a remote
     /// control): the host's to carry out.
     FixedShortcut(FixedAction),
-    /// The person pressed one of the music widget's controls: the host steers the player it shows.
-    Music(MusicAction),
     /// The person chose Wait on a window that says it stopped responding: its app gets another
     /// period to answer.
     WaitWindow(TabId),
     /// The person chose Force quit on such a window: the host ends its app.
     ForceQuitApp(TabId),
-    /// The pointer on the switcher's panel: which card it stands over, and whether it pressed it.
-    Switcher(SwitcherAsk),
-    /// The person took back the grant `id`, its key in hex, in the overview of their Tilo: the
-    /// key is revoked among their keys (`tilo_actions::remote::device_tickets::REVOKE`).
-    RevokeAgentGrant(String),
-    /// The person pressed the agent of `client` in the overview of their Tilo: the host opens its
-    /// card beside the work, the same card its face opens anywhere else.
-    OpenAgent(String),
     /// The person asked for Settings at the page `link` names, which only
     /// the host can open: its search runs where the workspaces are.
     OpenSettings(String),

@@ -1,36 +1,14 @@
 //! The desktop under the tilolang shell: the session's own desktop, which it runs each frame, and
-//! the policy that places the windows in the wells the shell draws; the music the shell's controls
-//! steer, and the apps that run, as the portal asks of them.
+//! the policy that places the windows in the wells the shell draws; and the apps that run, as the
+//! portal asks of them.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_session_core::desktop::host::contract::DesktopAsk;
-use tilo_session_core::desktop::host::contract::MusicAction as Action;
 
 use crate::Options;
 use crate::platform::surfaces::{ShellDesktop, WellPolicy, desktop};
-
-impl crate::Shared {
-    /// Steer the player in front, as the panel's own controls do: the music widget's play or pause,
-    /// previous and next are the `media` resource's actions, which every caller reaches through the
-    /// same API.
-    pub(crate) fn music(&self, action: Action) {
-        let action = match action {
-            Action::PlayPause => "play-pause",
-            Action::Previous => "previous",
-            Action::Next => "next",
-        };
-        let address = tilo_actions::ActionAddress::new(crate::MEDIA, action);
-        if let Err(error) = self.published.invoke(
-            &address,
-            &serde_json::Map::new(),
-            &mut tilo_session_core::surfaces::Look::none(),
-        ) {
-            tracing::warn!(%error, ?action, "the shell's music control did not reach the player");
-        }
-    }
-}
 
 /// The apps that run now, in the states the portal asks of them: the app in front is in use, the
 /// ones behind it only run.

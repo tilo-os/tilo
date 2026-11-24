@@ -259,7 +259,6 @@ impl Session {
         self.shared.follow_layout(underway);
         self.follow_controllers()?;
         self.follow_displays()?;
-        self.follow_fullscreen();
         self.follow_overlays();
         self.follow_setup();
         self.serve_agent_runs_and_services();
@@ -859,7 +858,7 @@ fn session<'a>(
         published: &shared.published,
         handle: &shared.handle,
         overlays: &shared.overlays,
-        overview: shared.overview.open_cell(),
+        overview: &shared.overview,
         view: shared.view.as_deref(),
         agent_sessions: &shared.agent_sessions,
         sync: shared.sync.as_deref(),

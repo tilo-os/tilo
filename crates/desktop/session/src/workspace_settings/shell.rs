@@ -9,13 +9,13 @@ use std::cell::{Cell, RefCell};
 
 use collab_types::caps::Effect;
 use tilo_action_policy::{Refusal, Role};
+use tilo_desktop_model::{Layout, Workspace};
 use tilo_session_core::desktop::authority::WorkspaceAuthority as _;
 use tilo_session_core::desktop::host::chrome::ChromeIntent;
-use tilo_session_core::desktop::people::PeopleNames;
-use tilo_session_core::desktop::workspace_settings as domain;
-use tilo_desktop_model::{Layout, Workspace};
 use tilo_session_core::desktop::i18n::{t, t_args};
+use tilo_session_core::desktop::people::PeopleNames;
 use tilo_session_core::desktop::state::DesktopHandle;
+use tilo_session_core::desktop::workspace_settings as domain;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings as sheet;
 
@@ -292,7 +292,7 @@ fn ask(
         | sheet::WorkspaceSettingsEffect::Grant { .. }
         | sheet::WorkspaceSettingsEffect::Revoke { .. } => governance_ask(state, fed, effect),
         sheet::WorkspaceSettingsEffect::ReviewActivity => {
-            intent(intents, ChromeIntent::ShowActivity(None));
+            intent(intents, ChromeIntent::ShowActivity);
         }
         sheet::WorkspaceSettingsEffect::Invite => intent(intents, ChromeIntent::Invite),
         sheet::WorkspaceSettingsEffect::NextWorkspaceDefault { resource } => {
@@ -423,7 +423,8 @@ fn custom_role_change(
     change: tilo_action_policy::Change,
 ) {
     govern(state, fed, move |ws, actor| {
-        ws.policy.change_all_as_at(actor, vec![change.clone()], tilo_clock::unix_now())
+        ws.policy
+            .change_all_as_at(actor, vec![change.clone()], tilo_clock::unix_now())
     });
 }
 
@@ -1015,12 +1016,7 @@ fn own_name() -> Option<String> {
 
 /// The People tab: who shares the workspace, their roles, the holders of
 /// the workspace with what each can read.
-fn people(
-    ws: &Workspace,
-    names: &PeopleNames,
-    person: &str,
-    holders: &[Holder],
-) -> sheet::People {
+fn people(ws: &Workspace, names: &PeopleNames, person: &str, holders: &[Holder]) -> sheet::People {
     let kept: Vec<domain::people::MemberHolder> = holders
         .iter()
         .map(|holder| domain::people::MemberHolder {

@@ -26,8 +26,8 @@ use serde::Deserialize;
 use tilo_app_launch::{Connects, Launch, Open};
 use tilo_compositor::{Compositor, ReadableWatch};
 
-use tilo_session_core::desktop::launchpad::LaunchpadAction;
 use tilo_desktop_model::apps::app_ids_match;
+use tilo_session_core::desktop::launchpad::LaunchpadAction;
 use ui::Theme;
 use ui::WindowAppearance;
 use ui::floating_surface::{
@@ -611,7 +611,6 @@ impl AppTabs {
                 // the app's windows stand for it.
                 None => desktop.with_policy(|policy| policy.shows(&card.app)),
             };
-            self.cards.see(&card.app, &card.activity, in_view);
             let wanted = if in_view || card.stood_down {
                 None
             } else {

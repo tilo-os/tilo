@@ -31,12 +31,12 @@ pub(crate) struct Time {
 }
 
 impl Time {
-    fn now(activities: &crate::chrome::Activities) -> Self {
+    fn now(activities: &crate::shell::activities::Activities) -> Self {
         let mut time = Self {
             clock: ui::clock::time_of_day(ui::clock::local_now()),
             ..Self::default()
         };
-        let Some(published) = activities.published(crate::chrome::CLOCKS_APP) else {
+        let Some(published) = activities.published(crate::shell::activities::CLOCKS_APP) else {
             return time;
         };
         let Some(summary) = published.summary.filter(|_| published.overlay) else {
@@ -67,11 +67,11 @@ pub(crate) fn surface() -> tilo_actions::surface::Surface {
 /// The time as the session's services publish it.
 pub(crate) struct Served {
     published: Time,
-    activities: std::rc::Rc<crate::chrome::Activities>,
+    activities: std::rc::Rc<crate::shell::activities::Activities>,
 }
 
 impl Served {
-    pub(crate) fn new(activities: std::rc::Rc<crate::chrome::Activities>) -> Self {
+    pub(crate) fn new(activities: std::rc::Rc<crate::shell::activities::Activities>) -> Self {
         Self {
             published: Time::default(),
             activities,

@@ -11,7 +11,7 @@
 //! [`Present`]: ui::floating_surface::FloatingSurfaceClientMessage::Present
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilo_desktop_policy::cards::Placements;
@@ -82,9 +82,6 @@ struct Shared {
     cards: BTreeMap<Key, Presented>,
     /// The place the floating layer gave each card this pass, in shell pixels.
     slots: BTreeMap<Key, Rect>,
-    /// The cards whose app has its own window on the shell: the app draws them there, and they stand
-    /// down.
-    in_view: BTreeSet<Key>,
 }
 
 /// The cards the apps draw themselves, shared by the session that authorises them and the layer
@@ -104,34 +101,6 @@ impl Cards {
     /// Where the shell places the cards' windows.
     pub(crate) fn placements(&self) -> Placements {
         self.placements.clone()
-    }
-
-    /// The whole window size the app asked for the activity's card, when it presented one: what the
-    /// layer reserves for it, and what the session lays its window out by.
-    pub(crate) fn size(&self, app: &str, activity: &str) -> Option<Size> {
-        self.shared
-            .borrow()
-            .cards
-            .get(&(app.to_owned(), activity.to_owned()))
-            .map(Presented::window_size)
-    }
-
-    /// Whether the app's own window is on the shell now: the activity is drawn there, and no card
-    /// shows.
-    pub(crate) fn in_view(&self, app: &str, activity: &str) -> bool {
-        self.shared
-            .borrow()
-            .in_view
-            .contains(&(app.to_owned(), activity.to_owned()))
-    }
-
-    /// Whether the app's card is drawn now: it was told where to stand, and its window is up there.
-    pub(crate) fn live(&self, app: &str, activity: &str) -> bool {
-        let shared = self.shared.borrow();
-        shared
-            .cards
-            .get(&(app.to_owned(), activity.to_owned()))
-            .is_some_and(|card| self.placements.drawn(&card.token))
     }
 
     /// The place the layer gave the activity's card this pass.
@@ -179,17 +148,6 @@ impl Cards {
             .borrow_mut()
             .slots
             .insert((app.to_owned(), activity.to_owned()), at);
-    }
-
-    /// Note whether the app's own window is on the shell.
-    pub(crate) fn see(&self, app: &str, activity: &str, in_view: bool) {
-        let key = (app.to_owned(), activity.to_owned());
-        let mut shared = self.shared.borrow_mut();
-        if in_view {
-            shared.in_view.insert(key);
-        } else {
-            shared.in_view.remove(&key);
-        }
     }
 
     /// Record the place the app was told to draw its card at (`None`: it draws the activity
@@ -343,7 +301,6 @@ impl Cards {
             .find(|(_, card)| card.connection == connection && card.activity == activity)
             .map(|(key, _)| key.clone())?;
         let card = shared.cards.remove(&key)?;
-        shared.in_view.remove(&key);
         shared.slots.remove(&key);
         Some(card)
     }
@@ -362,7 +319,6 @@ impl Cards {
         gone.into_iter()
             .map(|(key, card)| {
                 shared.slots.remove(&key);
-                shared.in_view.remove(&key);
                 card
             })
             .collect()
@@ -446,7 +402,6 @@ mod tests {
             );
             assert_eq!(cards.connection_closed(8).len(), 0);
             assert_eq!(cards.connection_closed(7).len(), 1);
-            assert!(cards.size("so.tilo.chat", "chat-call:voice").is_none());
         }
 
         phase another_connection_cannot_resume_a_card_that_stood_down;
@@ -494,33 +449,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn a_card_is_drawn_where_the_layer_placed_it_while_it_stands;
-
-        phase a_card_with_no_place_from_the_layer_is_drawn_nowhere;
-        {
-            let cards = Cards::new();
-            cards
-                .present("so.tilo.chat", 7, &call("chat-call:voice"))
-                .unwrap();
-            let card = cards.presented().remove(0);
-            cards.told(
-                "so.tilo.chat",
-                "chat-call:voice",
-                Some(Rect::new(100.0, 100.0, 460.0, 340.0)),
-            );
-            assert!(
-                !cards.live("so.tilo.chat", "chat-call:voice"),
-                "no window is up yet"
-            );
-            cards.placements().place(
-                &card.token,
-                (368, 248),
-                Some(Rect::new(100.0, 100.0, 468.0, 348.0)),
-            );
-            cards.placements().mapped(&card.token, 3);
-            assert!(cards.live("so.tilo.chat", "chat-call:voice"));
-            cards.placements().suspend(&card.token);
-            assert!(!cards.live("so.tilo.chat", "chat-call:voice"), "stood down");
-        }
 
         phase a_card_is_adopted_once_its_window_is_up_and_again_after_it_stands_down;
         {

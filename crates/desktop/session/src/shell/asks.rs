@@ -1,7 +1,8 @@
-//! What the desktop and its chrome ask the session to do, and the verbs the session answers them
-//! with: the queue of asks the shell and the bars leave on every frame, the host actions only a
-//! session can carry out (a new workspace, its settings, joining and leaving one), the shortcuts
-//! the chrome leaves to its host, and the tray clicks an application answers.
+//! What the tilolang shell and the sheets over it ask their host to do, and the verbs the session
+//! answers them with: the queue of asks the shell leaves on every frame, the requests only the host
+//! carries out (who is here, inviting, History, renaming or leaving the workspace), the host
+//! actions only a session can carry out (a new workspace, its settings, joining and leaving one),
+//! the launchpad's verbs, and the shortcuts the shell leaves to its host.
 
 use tilo_actions::ActionAddress;
 use tilo_desktop_model::WorkspaceId;
@@ -12,7 +13,9 @@ use tilo_session_core::desktop::host::contract::{
     WORKSPACE_SETTINGS,
 };
 use tilo_session_core::desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
+use tilo_session_core::desktop::navigation::ChromeEffect;
 use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SHELL_RESOURCE};
+use ui::search::Scope;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
 use crate::i18n::{t, t_args};
@@ -72,15 +75,10 @@ impl Shared {
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
         for ask in asks {
             match ask {
-                DesktopAsk::Intent(intent) => self.bar_ask(intent),
+                DesktopAsk::Intent(intent) => self.intent(intent),
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
                 DesktopAsk::FixedShortcut(action) => self.fixed_shortcut(action),
                 DesktopAsk::HostAction(action) => self.host_action(&action),
-                DesktopAsk::Music(action) => self.music(action),
-                // A card of Alt+Tab's panel under the pointer, a press on
-                // one, or a press away from the panel: the shell's own verbs,
-                // as the keys ask for them.
-                DesktopAsk::Switcher(action) => self.switcher_ask(action),
                 DesktopAsk::LeftWorkspace(name) => {
                     workspaces::left_workspace(&*self.telling(), &name);
                 }
@@ -128,24 +126,12 @@ impl Shared {
                 DesktopAsk::OpenSettings(link) => {
                     crate::quick_settings::open_settings(self, &link);
                 }
-                // The grant's key is taken back among the person's keys, as Console takes it
-                // back: whatever this session offers it on answers, and without one the person
-                // hears that it did not happen.
-                DesktopAsk::RevokeAgentGrant(grant) => self.revoke_agent_grant(grant),
-                // An agent's card, opened by the agent's own face in the overview: the same ask
-                // its face makes anywhere else, which brings the card forward beside the work.
-                DesktopAsk::OpenAgent(client) => {
-                    self.invoke_app_action(LaunchpadAppAction::ask_agent(
-                        &client,
-                        tilo_session_core::desktop::launchpad::AgentAsk::Card,
-                    ));
-                }
             }
         }
         // What the press asked is carried out: what it closed may be raised again, though the press
         // it closed for may already be over—a quick click comes up faster than its own toggle does.
-        // The bar's toggle of what it just closed arrives as an intent the chrome raises: while one
-        // stands, the press it came from has not been carried out yet and its surface stays down.
+        // While a request stands, the press it came from has not been carried out yet and its
+        // surface stays down.
         if self.asks.borrow().is_empty() && self.intents.borrow().is_empty() {
             self.overlays.settle_press();
         }
@@ -181,17 +167,34 @@ impl Shared {
         }
     }
 
-    /// What the bar and the shell ask of the chrome's, carried out where only the session can: quick
-    /// settings, who is here, the person's own card, an activity's card, an invitation, an
-    /// application's tray, and the menu a secondary press on the shell asks the chrome to put at
-    /// that place.
-    pub(crate) fn bar_ask(&self, intent: ChromeIntent) {
+    /// Carry out what the shell's parts and the sheets over it asked of their host since the last
+    /// pass. The centre a banner asked for opens too.
+    pub(crate) fn follow_intents(&self) {
+        let intents = std::mem::take(&mut *self.intents.borrow_mut());
+        for intent in intents {
+            self.intent(intent);
+        }
+        if let Some(open) = self.notices.take_centre_ask() {
+            let centre = tilo_session_core::desktop::overlays::Overlay::Centre.name();
+            if open {
+                self.surfaces.open(centre);
+            } else {
+                self.surfaces.close(centre);
+            }
+        }
+    }
+
+    /// Carry out `intent` where only the session can: who is here, a person's row, an invitation,
+    /// another device, History, and the workspace in front's name, leaving and deleting.
+    fn intent(&self, intent: ChromeIntent) {
+        let refused = |done: Result<(), String>| {
+            if let Err(refusal) = done {
+                self.handle.acknowledge(refusal);
+            }
+        };
         match intent {
-            ChromeIntent::ToggleQuickSettings => self.toggle_quick_settings(),
-            ChromeIntent::ShowQuickSettings => self.show_quick_settings(),
-            // The bar's faces, the launcher's Happening now header and a press on someone in a
-            // banner all open who is here: one surface at a time, so what stood over the shell goes
-            // down.
+            // Who is here and a press on someone in a banner open the roster: one surface at a
+            // time, so what stood over the shell goes down.
             ChromeIntent::TogglePeople => {
                 if !self.people.borrow().is_open() {
                     self.surfaces.clear_shell();
@@ -204,29 +207,74 @@ impl Shared {
                 self.surfaces.clear_panel();
                 self.people.borrow().show_person(&person);
             }
-            // This person's own avatar in the bar: their own card, the same card as anyone else's,
-            // where the roster stands.
-            ChromeIntent::ToggleProfile => self.people.borrow().show_self(),
-            // Pulling an activity out of the bar's pill: its card is the floating layer's to draw.
-            ChromeIntent::ExpandActivity { app, activity } => {
-                self.activities.expand(&app, &activity);
-            }
             // Inviting people: the link into the workspace in front is made in the invite sheet,
-            // wherever it was asked for — the bar's invite button, the roster's footer, workspace
-            // settings or the launchpad's own verb.
+            // wherever it was asked for — the roster's footer, workspace settings or the
+            // launchpad's own verb.
             ChromeIntent::Invite => self.open_invite(),
             // Another of the person's devices: the ticket it joins with, from Settings' devices
             // page, wherever it was asked for — their own card or Settings' Devices and access.
             ChromeIntent::PairDevice => self.open_add_device(),
-            // A secondary press on the shell asks for the menu of the workspaces, as the bar's
-            // workspace name opens it.
-            ChromeIntent::ToggleWorkspaceMenu { .. } => {
-                self.surfaces
-                    .toggle(tilo_session_core::desktop::overlays::Overlay::Workspaces.name());
+            ChromeIntent::ShowActivity => {
+                let workspace = self
+                    .handle
+                    .read(|tree| tree.active_workspace().map(|held| held.id().to_string()));
+                if let Some(workspace) = workspace
+                    && let Err(error) = self.handle.dispatch(ChromeEffect::Activity {
+                        workspace,
+                        view: tilo_session_core::desktop::navigation::ActivityView::CatchUp,
+                        author: None,
+                    })
+                {
+                    tracing::warn!(%error, "the workspace's history did not open");
+                }
             }
-            // A click on an application's tray icon is the application's own to answer.
-            ChromeIntent::AppTray { key, request } => self.tray_request(&key, request),
-            other => tracing::debug!(?other, "shell ask the session has no part in yet"),
+            ChromeIntent::RenameWorkspace { name } => {
+                let unchanged = self.handle.read(|tree| {
+                    tree.active_workspace()
+                        .is_some_and(|workspace| workspace.name == name.trim())
+                });
+                if !unchanged {
+                    self.handle.ruled_command(
+                        &tilo_desktop_model::commands::DesktopCommand::RenameWorkspace { name },
+                    );
+                }
+            }
+            ChromeIntent::LeaveWorkspace => refused(self.handle.leave_workspace(None)),
+            ChromeIntent::DeleteWorkspaceConfirmed => {
+                refused(self.handle.delete_workspace(None, Some(true)));
+            }
+        }
+    }
+
+    /// A verb of the empty shell's launchpad, as its card, its host action and its resource action
+    /// all ask for it: the app action the verb declares, what only the session can do, and else the
+    /// app itself. A verb whose app this device does not have opens nothing: the person is shown
+    /// the apps it does have, never a window of an app that is not here.
+    pub(crate) fn launchpad(&self, action: LaunchpadAction) {
+        if !crate::host_actions::offers(&self.lists, action) {
+            return self.handle.open_search(Scope::WindowGroup(None), None);
+        }
+        if let Some(app_action) = action.app_action() {
+            return self.invoke_app_action(app_action);
+        }
+        match action {
+            // Bringing people in: the link into this workspace is made in the invite sheet.
+            LaunchpadAction::Invite => self.open_invite(),
+            LaunchpadAction::Activity => self.intents.borrow_mut().push(ChromeIntent::ShowActivity),
+            other => match other.app_target() {
+                Some((app, _)) => {
+                    let launch = ChromeEffect::OpenApp {
+                        app: app.into(),
+                        beside: None,
+                        background: None,
+                        float: None,
+                    };
+                    if let Err(error) = self.handle.dispatch(launch) {
+                        tracing::warn!(%error, app, "launchpad");
+                    }
+                }
+                None => self.handle.open_search(Scope::WindowGroup(None), None),
+            },
         }
     }
 
@@ -463,50 +511,6 @@ impl Shared {
             t_args("action-failed-body", &[("reason", why.to_string().into())]),
         );
         self.notifications.borrow().tell(&notice);
-    }
-
-    /// What the pointer asked of Alt+Tab's panel: hovering a card reaches it,
-    /// a press on one goes there and closes the walk, and a press away from
-    /// the panel leaves the person where they were.
-    fn switcher_ask(&self, ask: tilo_session_core::desktop::host::contract::SwitcherAsk) {
-        // The walk is the session shell's, as the keys reach it: the panel's presses ask for the
-        // same verbs.
-        let walking = self.overlays.switcher_up().then(|| self.overlays.scope());
-        self.invocations.borrow_mut().extend(
-            crate::keys::SwitcherKey::of_panel(ask)
-                .into_iter()
-                .filter_map(|key| key.asks(walking)),
-        );
-    }
-
-    /// Hand a click on the tray icon at `key` to the application that owns it, as the click reached
-    /// the bar. An item that went away between the click and this ask, or a request the application
-    /// refuses, is said so in the log rather than passed over in silence: the person saw their
-    /// click do nothing and this is why.
-    fn tray_request(
-        &self,
-        key: &str,
-        request: tilo_session_core::desktop::host::chrome::AppTrayRequest,
-    ) {
-        use tilo_session_core::desktop::host::chrome::AppTrayRequest;
-        let Some(tray) = &self.tray else {
-            tracing::warn!(key, "no tray is served: the click reaches no application");
-            return;
-        };
-        let request = match request {
-            AppTrayRequest::Activate { x, y } => tilo_tray::TrayRequest::Activate { x, y },
-            AppTrayRequest::SecondaryActivate { x, y } => {
-                tilo_tray::TrayRequest::SecondaryActivate { x, y }
-            }
-            AppTrayRequest::ContextMenu { x, y } => tilo_tray::TrayRequest::ContextMenu { x, y },
-        };
-        let named = key.to_owned();
-        let refused = tray.request_or_else(key, request, move |error| {
-            tracing::warn!(key = %named, %error, "a tray click did not reach its application");
-        });
-        if let Err(error) = refused {
-            tracing::warn!(key, %error, "a tray click did not reach its application");
-        }
     }
 
     /// Carry out the host action `id` the person chose: what only the session can do about

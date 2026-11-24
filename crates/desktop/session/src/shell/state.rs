@@ -599,7 +599,7 @@ pub struct ShellService {
     seen: Option<(u64, Overlay, bool, u64, bool, u64, bool)>,
     /// The desktop's one shortcut table, so a menu row shows the chord a press doing the same thing
     /// would be, as the person binds it now.
-    shortcuts: crate::panels::mount::Shortcuts,
+    shortcuts: crate::shell::mount::Shortcuts,
     /// The keys a held Super reaches, as the shell's card shows them.
     peek: SuperPeek,
     /// The picker's picks, written into the field the person types in beside dictation.
@@ -619,7 +619,7 @@ impl ShellService {
     pub(crate) fn new(
         handle: DesktopHandle,
         surfaces: Surfaces,
-        shortcuts: crate::panels::mount::Shortcuts,
+        shortcuts: crate::shell::mount::Shortcuts,
         peek: SuperPeek,
         emoji: EmojiLink,
         power_offers: crate::power_menu::Offers,
@@ -652,7 +652,7 @@ impl ShellService {
         services: &Rc<std::cell::RefCell<tilo_service::Services>>,
         handle: &DesktopHandle,
         surfaces: Surfaces,
-        shortcuts: crate::panels::mount::Shortcuts,
+        shortcuts: crate::shell::mount::Shortcuts,
         peek: SuperPeek,
         emoji: EmojiLink,
         power_offers: crate::power_menu::Offers,
@@ -901,7 +901,7 @@ impl Service for ShellService {
                     .collect(),
             })),
             FOCUS => {
-                let target = crate::chrome::keyboard_target_in(
+                let target = crate::shell::keyboard_target_in(
                     &self.handle,
                     &self.surfaces.overlays,
                     self.surfaces.shell,
@@ -1236,4 +1236,35 @@ fn fixed_row_shortcut(id: &str) -> Option<&'static str> {
         window_menu::NEW_TAB => "fixed-duplicate-tab",
         _ => return None,
     })
+}
+
+impl crate::Session {
+    /// The rows of the window menu the session shows now, in order, as a
+    /// harness reads them: a submenu's rows read after the row that opens it,
+    /// a rule between groups is no row at all, and the list is empty while the
+    /// menu is closed.
+    #[must_use]
+    pub fn window_menu_rows(&self) -> Vec<String> {
+        fn walked(rows: &[serde_json::Value], into: &mut Vec<String>) {
+            for row in rows {
+                if row.get("separator").and_then(serde_json::Value::as_bool) == Some(true) {
+                    continue;
+                }
+                if let Some(label) = row.get("label").and_then(serde_json::Value::as_str) {
+                    into.push(label.to_owned());
+                }
+                if let Some(children) = row.get("children").and_then(serde_json::Value::as_array) {
+                    walked(children, into);
+                }
+            }
+        }
+        let Some(reading) = self.read(crate::shell::state::WINDOW_MENU) else {
+            return Vec::new();
+        };
+        let mut rows = Vec::new();
+        if let Some(top) = reading.get("rows").and_then(serde_json::Value::as_array) {
+            walked(top, &mut rows);
+        }
+        rows
+    }
 }

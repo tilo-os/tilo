@@ -13,6 +13,7 @@ type ShellHeads = Vec<(String, Vec<automerge::ChangeHash>)>;
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
+use tilo_session_core::desktop::overlays::{Overlays, Part, Target};
 use tilo_session_core::surface::{ShellSurface, SurfaceLayer};
 
 use tilo_service::Services;
@@ -24,6 +25,13 @@ use crate::displays;
 
 #[cfg(target_os = "linux")]
 pub mod state;
+
+pub(crate) mod activities;
+pub(crate) mod asks;
+pub(crate) mod mount;
+pub(crate) mod osd;
+pub(crate) mod rules;
+pub(crate) mod shortcut_guide;
 
 #[cfg(target_os = "linux")]
 pub mod part;
@@ -92,7 +100,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::displays::surface(),
         crate::displays::screen_surface(),
         crate::notifications::surface(),
-        crate::osd::surface(),
+        crate::shell::osd::surface(),
         crate::controls::night_light_surface(),
         crate::notifications::banners_surface(),
         crate::time::surface(),
@@ -1397,7 +1405,7 @@ pub(crate) fn under(host: impl ShellSurface + 'static) -> Rc<RefCell<dyn ShellSu
 pub(crate) fn chrome_surface(
     desktop: tilo_session_core::desktop::state::DesktopHandle,
     surfaces: crate::device_lists::Surfaces,
-    shortcuts: crate::panels::mount::Shortcuts,
+    shortcuts: crate::shell::mount::Shortcuts,
     asks: Rc<RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
 ) -> tilo_session_core::surfaces::Shared {
     Rc::new(RefCell::new(ShellChrome {
@@ -1430,7 +1438,7 @@ struct ShellChrome {
     desktop: tilo_session_core::desktop::state::DesktopHandle,
     surfaces: crate::device_lists::Surfaces,
     /// The desktop's one shortcut table, which the chrome's resource names beside its verbs.
-    shortcuts: crate::panels::mount::Shortcuts,
+    shortcuts: crate::shell::mount::Shortcuts,
     /// What only the session answers: a person's card and the roster.
     asks: Rc<RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
 }
@@ -2259,6 +2267,34 @@ impl crate::Session {
             .as_ref()
             .ok_or_else(|| "the shell does not run".to_owned())?
             .run_action(action, arguments)
+    }
+}
+
+/// What holds the keyboard over the shell: a surface opened over the field the person types in,
+/// else the shell's search from the pass it says it is open, and what the overlay stack says
+/// otherwise. A key typed between the shell opening its search and the search's surface being
+/// published is the search's, not the window's behind it.
+pub(crate) fn keyboard_target(
+    handle: &tilo_session_core::desktop::state::DesktopHandle,
+    overlays: &Overlays,
+) -> Target {
+    keyboard_target_in(handle, overlays, false)
+}
+
+/// [`keyboard_target`] for a shell that draws its own screen: its own launcher takes the keys
+/// where the desktop's palette would, so Enter and the arrows reach the shell's view rather than a
+/// palette nothing draws.
+pub(crate) fn keyboard_target_in(
+    handle: &tilo_session_core::desktop::state::DesktopHandle,
+    overlays: &Overlays,
+    own_shell: bool,
+) -> Target {
+    if let Some(over) = overlays.over() {
+        Target::Surface(over)
+    } else if !own_shell && handle.search_open() {
+        Target::Surface(Part::Search)
+    } else {
+        overlays.target()
     }
 }
 

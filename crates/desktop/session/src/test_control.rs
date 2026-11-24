@@ -195,9 +195,7 @@ pub(crate) struct Session<'a> {
     pub(crate) published: &'a Surfaces,
     pub(crate) handle: &'a DesktopHandle,
     pub(crate) overlays: &'a Overlays,
-    /// Whether the overview the person sees is up: its pictures' own flag, which the chrome writes
-    /// as it draws and the shell writes as its views show it, so the state says the one overview
-    /// either way.
+    /// Whether the overview the person sees is up, as the shell's surfaces turn it.
     pub(crate) overview: &'a std::cell::Cell<bool>,
     pub(crate) view: Option<&'a WorkspaceView>,
     /// The agents the person admitted at its socket, as the session's bar shows them.

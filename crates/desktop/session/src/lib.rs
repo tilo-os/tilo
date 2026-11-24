@@ -108,8 +108,6 @@ pub mod apps;
 #[cfg(target_os = "linux")]
 mod asked_turns;
 #[cfg(target_os = "linux")]
-mod asks;
-#[cfg(target_os = "linux")]
 mod audio_output;
 #[cfg(target_os = "linux")]
 mod automation;
@@ -139,8 +137,6 @@ mod cards;
 mod carets;
 #[cfg(target_os = "linux")]
 mod change_feed;
-#[cfg(target_os = "linux")]
-mod chrome;
 #[cfg(target_os = "linux")]
 mod clipboard;
 #[cfg(target_os = "linux")]
@@ -220,8 +216,6 @@ pub mod firstboot;
 #[cfg(target_os = "linux")]
 mod followed_resource;
 #[cfg(target_os = "linux")]
-mod listings;
-#[cfg(target_os = "linux")]
 mod formats;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
@@ -231,6 +225,8 @@ mod held;
 mod here;
 #[cfg(target_os = "linux")]
 mod host_shell;
+#[cfg(target_os = "linux")]
+mod listings;
 // What the session publishes for the quick settings to draw: the Devices section's rows, the
 // clipboard's copies and the notification centre.
 #[cfg(target_os = "linux")]
@@ -305,14 +301,9 @@ mod notifications;
 #[cfg(target_os = "linux")]
 mod options;
 #[cfg(target_os = "linux")]
-mod osd;
-mod overview;
-#[cfg(target_os = "linux")]
 mod owner_session;
 #[cfg(target_os = "linux")]
 mod page_track;
-#[cfg(target_os = "linux")]
-mod panels;
 #[cfg(target_os = "linux")]
 mod part_binding;
 #[cfg(target_os = "linux")]
@@ -334,8 +325,6 @@ mod power;
 pub use power::system_service;
 #[cfg(target_os = "linux")]
 mod media_controls;
-#[cfg(target_os = "linux")]
-mod press_outside;
 #[cfg(target_os = "linux")]
 mod program_asks;
 #[cfg(target_os = "linux")]
@@ -389,8 +378,6 @@ mod sheets;
 pub mod shell;
 #[cfg(target_os = "linux")]
 mod shell_document;
-#[cfg(target_os = "linux")]
-mod shortcut_guide;
 #[cfg(target_os = "linux")]
 mod sockets;
 #[cfg(target_os = "linux")]

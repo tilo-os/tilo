@@ -931,7 +931,7 @@ pub(crate) struct DeviceLists {
     pub(crate) surfaces: Surfaces,
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the person
     /// putting the floating one away hides it until Clocks shows something new.
-    pub(crate) activities: Rc<crate::chrome::Activities>,
+    pub(crate) activities: Rc<crate::shell::activities::Activities>,
     /// The running applications' tray items, when their watcher serves: the bar shows them,
     /// and the person's clicks go back through it.
     pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
@@ -966,7 +966,7 @@ pub(crate) struct Shared {
     pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
-    pub(crate) activities: Rc<crate::chrome::Activities>,
+    pub(crate) activities: Rc<crate::shell::activities::Activities>,
     pub(crate) surfaces: Surfaces,
     pub(crate) tray: Option<std::sync::Arc<tilo_tray::Tray>>,
     pub(crate) view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
@@ -1161,7 +1161,7 @@ impl DeviceLists {
     pub(crate) fn due_timer(&self) -> Option<(String, String, String)> {
         let announced = self
             .activities
-            .published(crate::chrome::CLOCKS_APP)?
+            .published(crate::shell::activities::CLOCKS_APP)?
             .announce?;
         let title = if announced.title.is_empty() {
             crate::i18n::t("clock-due-title")

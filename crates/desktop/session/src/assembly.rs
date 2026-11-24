@@ -129,7 +129,7 @@ pub(crate) struct Shared {
     /// The hardware keys' readout: what the last press said, and when it goes,
     /// published as `device.osd` for the shell that draws it.
     #[cfg(target_os = "linux")]
-    pub(crate) osd: crate::osd::Shared,
+    pub(crate) osd: crate::shell::osd::Shared,
     /// How far the fingers carrying the strip shown have travelled since they landed: what the
     /// shell's row was scrolled by already.
     #[cfg(target_os = "linux")]
@@ -270,7 +270,7 @@ pub(crate) struct Shared {
     /// The apps' live activities on the bar, which the pill names and the
     /// controls pressed on it go back to the app through.
     #[cfg(target_os = "linux")]
-    pub(crate) activities: Rc<crate::chrome::Activities>,
+    pub(crate) activities: Rc<crate::shell::activities::Activities>,
     /// The running applications' tray items, which the bar shows and whose
     /// clicks the session hands back to the applications.
     #[cfg(target_os = "linux")]
@@ -383,9 +383,9 @@ pub(crate) struct Shared {
     /// The person's settings, kept in step with their other devices.
     #[cfg(target_os = "linux")]
     pub(crate) settings: crate::person_settings::PersonSettings,
-    /// The overview's pictures and the clock they fly on, which its panel
-    /// in the chrome draws with.
-    pub(crate) overview: crate::overview::Overview,
+    /// Whether the overview is the surface up: the shell's surfaces turn it as they open and close
+    /// it, and the control socket's state reads it.
+    pub(crate) overview: Rc<Cell<bool>>,
     /// Dictation: the speech the person allows once per dictation, and the
     /// sheet they answer on.
     #[cfg(target_os = "linux")]
@@ -397,7 +397,7 @@ pub(crate) struct Shared {
     /// The shortcut guide: the sheet naming every key the desktop answers,
     /// and the table it explains.
     #[cfg(target_os = "linux")]
-    pub(crate) shortcut_guide: crate::shortcut_guide::ShortcutGuide,
+    pub(crate) shortcut_guide: crate::shell::shortcut_guide::ShortcutGuide,
     /// Who is here, as the bar's faces open it: the roster it shows and
     /// where everyone else's pointer is.
     #[cfg(target_os = "linux")]
@@ -405,9 +405,6 @@ pub(crate) struct Shared {
     /// Whose view this device follows — its own presence word — and which of their place it
     /// already brought forward.
     pub(crate) follow: RefCell<tilo_session_core::presence::Follow>,
-    /// The monitors of the displays a fullscreen window owns, which the
-    /// bars read.
-    pub(crate) fullscreen: Rc<RefCell<Vec<String>>>,
     /// Whether the person may invite someone into the workspace in front, as
     /// the loop last answered it: the bar's invite button and the roster's
     /// footer are offered on it.

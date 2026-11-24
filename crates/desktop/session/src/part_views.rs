@@ -56,7 +56,7 @@ impl PartViews {
         let surface = Part::named(part);
         let focused = Rc::new(move || {
             surface.is_some_and(|surface| {
-                crate::chrome::keyboard_target(&handle, &overlays) == Target::Surface(surface)
+                crate::shell::keyboard_target(&handle, &overlays) == Target::Surface(surface)
             })
         });
         let host = Rc::new(RefCell::new(PartView::new(part, self.scale, focused)));

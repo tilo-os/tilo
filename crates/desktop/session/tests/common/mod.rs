@@ -22,6 +22,7 @@ pub mod directory;
 pub mod held;
 pub mod people;
 pub mod probe;
+pub mod switcher;
 pub mod tree;
 pub mod window;
 

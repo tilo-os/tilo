@@ -10,17 +10,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use settings_store::display_identify::{
+    IDENTIFY_MS, IdentifyRequest, display_names, display_numbers,
+};
 use settings_store::hardware::DisplayHardwareSnapshot;
 use tilo_compositor::OutputInfo;
-use settings_store::display_identify::{IdentifyRequest, IDENTIFY_MS, display_names, display_numbers};
 use tilo_session_core::desktop::host::chrome::{Ask, Label};
 use ui::time::{Duration, Instant};
 
-/// The Identify answers this session has given, and the shell's end of them: what the bar reads each
-/// pass.
+/// The Identify answers this session has given, and the shell's end of them: what the shell reads
+/// each pass.
 #[derive(Default)]
 pub(crate) struct Numbers {
-    /// The cards the shell shows now, as the bar reads them.
+    /// The cards the shell shows now.
     ask: Rc<RefCell<Option<Ask>>>,
     /// The request answered last, so one press of Identify shows the cards once.
     answered: Option<u64>,
@@ -30,11 +32,6 @@ pub(crate) struct Numbers {
 }
 
 impl Numbers {
-    /// What the bar reads: the cards the shell shows, if any.
-    pub(crate) fn ask(&self) -> Rc<RefCell<Option<Ask>>> {
-        Rc::clone(&self.ask)
-    }
-
     /// Answer Settings' Identify request, if one came since the last pass: each display's number
     /// and name, keyed by the monitor the shell follows it by. A request older than the shell
     /// answers — a restarted session seeing one written minutes ago — is left alone.

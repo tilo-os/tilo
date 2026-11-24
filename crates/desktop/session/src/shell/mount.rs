@@ -1,11 +1,13 @@
-//! The panels the session stands up beside the shell: the setup a person goes through once, and the
-//! keys that answer wherever the keyboard is.
+//! What the session stands up beside the shell: the setup a person goes through once, the keys
+//! that answer wherever the keyboard is, and the reader that closes what the session placed over
+//! the shell when a press lands outside it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use tilo_compositor::Compositor;
 use tilo_session_core::desktop::overlays::Overlays;
+use tilo_session_core::surface::{ShellSurface, SurfaceLayer};
 
 use crate::controls::ControlsReading;
 use tilo_sheets::shortcut_guide::State as GuideState;
@@ -88,7 +90,9 @@ pub(crate) fn mount_controls(
     let triggered = PressedChords::default();
     // The press that falls outside a surface the session placed closes it,
     // which only the input path knows the place of.
-    crate::press_outside::mount(compositor, &overlays);
+    compositor.add_surface(Rc::new(RefCell::new(PressesOutside {
+        overlays: overlays.clone(),
+    })));
     compositor.add_surface(Rc::new(RefCell::new(NativeKeys::new(
         SessionKeys::new(
             shortcuts,
@@ -110,4 +114,47 @@ pub(crate) fn mount_controls(
         Rc::clone(&commands),
     ))));
     (commands, controls_reading, invocations, triggered)
+}
+
+/// The session's reader of presses outside the overlays: where the session's input path consults
+/// the desktop's overlay stack ([`Overlays`], published as `desktop:overlays`). A popover under the
+/// bar closes on a press anywhere else, and only the compositor knows where that press landed.
+/// It shows nothing and takes nothing: it exists so the compositor's press reaches the stack with
+/// the point it landed on. A press on the display a window's menu covers is that menu's view's to
+/// judge.
+struct PressesOutside {
+    overlays: Overlays,
+}
+
+impl ShellSurface for PressesOutside {
+    fn layers(&self) -> Vec<SurfaceLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    /// A press outside the surface it landed in: the topmost popup the session placed
+    /// where the press is not, goes down — and stays down for that press, so it does not reopen
+    /// under it.
+    fn pressed_elsewhere(&mut self, x: f64, y: f64) {
+        if let Some(part) = self.overlays.press_outside(x, y) {
+            self.overlays.dismiss(part);
+        }
+    }
+
+    /// The button came up: the press is over. What it closed stays down until what the press asked
+    /// is carried out, which a quick click delivers after its release.
+    fn press_ended(&mut self, _x: f64, _y: f64) {
+        self.overlays.press_ended();
+    }
+
+    fn prepare_frame(&mut self) -> bool {
+        false
+    }
 }
