@@ -69,6 +69,8 @@ nearby-send-stop = Stop a transfer
 nearby-send-stop-detail = Stops a transfer going out or coming in.
 nearby-send-again = Offer a file again
 nearby-send-again-detail = Offers a transfer that failed again.
+nearby-send-piece = Read a piece of an offered file
+nearby-send-piece-detail = Reads one piece of a file this device offered, for the device taking it.
 nearby-send-keep-question = Keep “{ $name }” from { $device }?
 
 ## The actions of this device's server settings

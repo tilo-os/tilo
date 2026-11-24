@@ -59,6 +59,15 @@ impl ActionProvider for Sender {
         provider == nearby::PROVIDER
     }
 
+    /// A piece of the content is a read, as a sending daemon's Nearby Send describes it.
+    fn invocation(
+        &self,
+        address: &ActionAddress,
+        _argument: Option<&str>,
+    ) -> Option<tilo_actions::api::ActionDescriptor> {
+        (address.action == nearby::CONTENT).then(nearby::piece)
+    }
+
     fn query(
         &self,
         _caller: &Caller,

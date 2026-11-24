@@ -127,7 +127,8 @@ pub const CHANGE_WAIT_MS: u32 = 10_000;
 pub const FOLLOW_DEADLINE: Duration = Duration::from_secs(120);
 
 /// How many changing requests one person may send per window, and how many
-/// at once. Reading (a catalogue, an observation) spends none: a caller that
+/// at once. Reading (a catalogue, an observation, an action its provider
+/// describes as a read) spends none: a caller that
 /// is following work must keep being able to look at it.
 #[derive(Clone, Copy, Debug)]
 pub struct Bounds {
@@ -1208,9 +1209,12 @@ impl ActionService {
         invoke: &tilo_actions::remote::InvokeRequest,
     ) -> InvocationReceipt {
         let alone = self.alone(dispatcher);
+        let only_reads = alone.is_none()
+            && Self::only_reads(&self.provider_for(&invoke.target.provider), invoke);
         // The ticket admitted for a computer with no certificate yet answers its one
-        // call as before; every other visitor is counted by its network.
-        let spent = if alone.is_some() {
+        // call as before; every other visitor is counted by its network. A read changes
+        // nothing, so it spends none of the caller's changes.
+        let spent = if alone.is_some() || only_reads {
             Ok(())
         } else {
             self.spend(caller, client)
@@ -1373,6 +1377,21 @@ impl ActionService {
             }
             state = next;
         }
+    }
+
+    /// Whether `invoke` only reads, as the provider answering it here describes the action it
+    /// names: never as anything the caller sends says, so a caller cannot pass a change off as
+    /// a read.
+    fn only_reads(
+        provider: &Arc<dyn ActionProvider + Send + Sync>,
+        invoke: &tilo_actions::remote::InvokeRequest,
+    ) -> bool {
+        let argument = invoke.argument.to_slot();
+        provider
+            .invocation(&invoke.target.address, argument.as_deref())
+            .is_some_and(|described| {
+                described.contract.settled_kind() == tilo_actions::contract::ActionKind::Read
+            })
     }
 
     /// Spend one of `caller`'s changes, or say the caller has none left. A visitor spends one

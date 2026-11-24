@@ -1117,7 +1117,23 @@ fn descriptor(action: &str, label: &str, detail: &str) -> ActionDescriptor {
     }
 }
 
+/// A piece of an offered file's content ([`CONTENT`]): a read of what the offering device holds,
+/// which changes nothing there.
+pub fn piece() -> ActionDescriptor {
+    let mut piece = descriptor(CONTENT, "nearby-send-piece", "nearby-send-piece-detail");
+    piece.contract.kind = ActionKind::Read;
+    piece
+}
+
 impl ActionProvider for Nearby {
+    fn invocation(
+        &self,
+        address: &ActionAddress,
+        _argument: Option<&str>,
+    ) -> Option<ActionDescriptor> {
+        (address.resource == RESOURCE && address.action == CONTENT).then(piece)
+    }
+
     fn query(
         &self,
         _caller: &Caller,
