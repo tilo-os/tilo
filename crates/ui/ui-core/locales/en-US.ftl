@@ -1089,6 +1089,7 @@ signal-meter-strong = Strong signal
 level-meter-name = Microphone level
 level-meter-no-microphone = No microphone
 level-meter-no-output = No audio output
+level-meter-idle = Not listening
 
 # Reactions: the pills under a message or on a page, one per emoji. $emoji is
 # the emoji itself, or a workspace emoji written as :name:.
@@ -1280,6 +1281,20 @@ widget-preview-named = { $label } preview
 widget-type-to-confirm = Type { $phrase } to confirm
 widget-color-name = Colour
 widget-color-hex = Hex colour
+widget-colour-hue = Hue
+widget-colour-red = Red
+widget-colour-orange = Orange
+widget-colour-yellow = Yellow
+widget-colour-green = Green
+widget-colour-teal = Teal
+widget-colour-blue = Blue
+widget-colour-violet = Violet
+widget-colour-magenta = Magenta
+widget-colour-pink = Pink
+widget-colour-brown = Brown
+widget-colour-grey = Grey
+widget-colour-black = Black
+widget-colour-white = White
 widget-crop-name = Crop page
 widget-crop-hint = From { $left }% across and { $top }% down to { $right }% across and { $bottom }% down
 widget-document-switch-blocked = Document switch blocked

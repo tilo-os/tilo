@@ -130,6 +130,7 @@ view controls(g: Gallery) {
             }
         }
         ui.Section("Meters") {
+            ui.BarGauge(0.36, label: "Storage", readout: "91 of 256 GB", neutral: true)
             ui.LevelMeter(source: "alsa_input.example", label: "Microphone level")
         }
         ui.Section("Days and times") {
@@ -158,6 +159,7 @@ view controls(g: Gallery) {
                     columns: 3,
                 )
             }
+            ui.Text("Accent", role: .caption, secondary: true)
             ui.ColorSwatchPicker(
                 swatches: ["#3a7bd5", "#d55a3a", "#3ad57b", "#d5c23a"],
                 columns: 4,

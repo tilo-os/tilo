@@ -160,6 +160,11 @@ impl LevelMeterFace {
                 &RoundedRect::from_rect(filled, radius),
             );
         }
+        // A meter that has read nothing has no peak to mark: a mark at zero
+        // would read as a level the device never gave.
+        if self.state.peak() <= 0.0 {
+            return;
+        }
         let peak_x =
             (rect.x0 + f64::from(self.state.peak()) * rect.width()).clamp(rect.x0, rect.x1);
         let half = 1.0;
@@ -199,6 +204,11 @@ pub struct LevelMeter {
     last: Option<Instant>,
     rect: Rect,
     dirty: bool,
+    /// What the meter says it measures and what it reads now, above the bar: their style, the
+    /// gap under the words and the track's height, from the theme the meter was laid out in.
+    caption_style: Option<crate::text_render::TextStyle>,
+    caption_gap: f64,
+    track_h: f64,
 }
 
 impl LevelMeter {
@@ -218,6 +228,9 @@ impl LevelMeter {
             last: None,
             rect: Rect::ZERO,
             dirty: true,
+            caption_style: None,
+            caption_gap: 0.0,
+            track_h: 0.0,
         };
         meter.set_running(running);
         meter
@@ -379,6 +392,11 @@ impl LevelMeter {
         if let Some(problem) = &self.problem {
             return problem.clone();
         }
+        if !self.running {
+            // A meter that is not reading has no level: saying "0%" would
+            // claim it measured silence.
+            return widget_text("level-meter-idle");
+        }
         let percent = (self.state.level() * 100.0).round();
         #[allow(
             clippy::cast_possible_truncation,
@@ -386,6 +404,13 @@ impl LevelMeter {
         )]
         let percent = percent as i64;
         format!("{percent}%")
+    }
+
+    /// Where the track stands in the meter's rect: along its foot, under the
+    /// words that name it and say what it reads.
+    fn track_rect(&self) -> Rect {
+        let h = self.track_h.min(self.rect.height());
+        Rect::new(self.rect.x0, self.rect.y1 - h, self.rect.x1, self.rect.y1)
     }
 }
 
@@ -404,11 +429,27 @@ impl Widget for LevelMeter {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let height = f64::from(theme.tokens.spacing.s2) * 2.0;
+        self.caption_style = Some(theme.text(crate::tokens::TextRole::Label));
+        self.caption_gap = f64::from(theme.tokens.spacing.rhythm.tight);
+        self.track_h = f64::from(theme.tokens.spacing.s2) * 2.0;
+        // A named meter says its name and its reading above the bar; a bare
+        // one is the bar alone, as it always was. The caption's line is the
+        // role's own line box, so the height is settled without shaping words.
+        let height = if self.label.is_some() {
+            let line = self
+                .caption_style
+                .as_ref()
+                .map_or(0.0, |style| f64::from(style.line_height_px()));
+            Dimension::length(crate::num::f32_of_f64(
+                (line + self.caption_gap + self.track_h).ceil(),
+            ))
+        } else {
+            Dimension::length(crate::num::f32_of_f64(self.track_h))
+        };
         let style = Style {
             size: Size {
                 width: Dimension::auto(),
-                height: Dimension::length(crate::num::f32_of_f64(height)),
+                height,
             },
             flex_grow: 1.0,
             flex_shrink: 1.0,
@@ -427,22 +468,50 @@ impl Widget for LevelMeter {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.advance();
+        let track = self.track_rect();
         LevelMeterFace::new(self.state, self.problem.is_some())
-            .paint(scene, transform, theme, self.rect);
-        if let Some(problem) = &self.problem {
-            let style = theme.text(crate::tokens::TextRole::Caption);
-            let width = crate::num::f32_of_f64(self.rect.width().max(1.0));
-            let words = text_renderer.elide_to_width_style(problem, width, &style);
-            let inset = f64::from(theme.tokens.spacing.s1);
-            text_renderer.draw_style(
-                scene,
-                &words,
-                theme.text_dim,
-                transform.pre_translate(Vec2::new(self.rect.x0 + inset, self.rect.y0)),
-                None,
-                &style,
-            );
+            .paint(scene, transform, theme, track);
+        if self.label.is_none() {
+            return;
         }
+        // What it measures at the leading edge, what it reads at the trailing
+        // one: a bar with neither is unreadable.
+        let style = self
+            .caption_style
+            .clone()
+            .unwrap_or_else(|| theme.text(crate::tokens::TextRole::Label));
+        let row = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            (track.y0 - self.caption_gap).max(self.rect.y0),
+        );
+        let (_, line) = text_renderer.measure_style("Ag", None, &style);
+        let y = row.y0 + f64::from(row.height() - f64::from(line)).max(0.0) / 2.0;
+        let value = self.value_text();
+        let value_style = style.clone().numeric();
+        let (value_width, _) = text_renderer.measure_style(&value, None, &value_style);
+        let value_x = (row.x1 - f64::from(value_width)).max(row.x0);
+        text_renderer.draw_style(
+            scene,
+            &value,
+            theme.text_primary,
+            transform.pre_translate(Vec2::new(value_x, y)),
+            None,
+            &value_style,
+        );
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let room = (value_x - row.x0 - gap).max(0.0);
+        let name = self.name_text();
+        let words = text_renderer.elide_to_width_style(&name, crate::num::f32_of_f64(room), &style);
+        text_renderer.draw_style(
+            scene,
+            &words,
+            theme.text_dim,
+            transform.pre_translate(Vec2::new(row.x0, y)),
+            None,
+            &style,
+        );
     }
 
     crate::redraw_flag!();
@@ -616,8 +685,82 @@ mod tests {
     fn the_meter_is_named_and_valued_for_a_reader() {
         let mut meter = LevelMeter::new("alsa_input.mic", false);
         meter.set_label(Some("Built-in microphone".to_owned()));
+        meter.running = true;
         let node = meter.accessibility().expect("the meter is announced");
         assert_eq!(node.name.as_deref(), Some("Built-in microphone"));
         assert_eq!(node.value.as_deref(), Some("0%"));
+    }
+
+    #[test]
+    fn a_meter_that_is_not_reading_says_so_instead_of_zero() {
+        let mut meter = LevelMeter::new("alsa_input.mic", false);
+        meter.set_label(Some("Microphone level".to_owned()));
+        let node = meter.accessibility().expect("the meter is announced");
+        assert_eq!(node.value.as_deref(), Some("Not listening"));
+        meter.running = true;
+        let node = meter.accessibility().expect("the meter is announced");
+        assert_eq!(node.value.as_deref(), Some("0%"), "silence, once it reads");
+    }
+
+    #[test]
+    fn the_meter_paints_its_name_and_its_reading_above_the_bar() {
+        use vello::Scene;
+        use vello::kurbo::Affine;
+
+        let mut meter = LevelMeter::new("alsa_input.mic", false);
+        meter.set_label(Some("Microphone level".to_owned()));
+        meter.state = MeterState {
+            level: 0.5,
+            peak: 0.5,
+            since_peak: 0.0,
+        };
+        meter.running = true;
+        meter.rect = Rect::new(0.0, 0.0, 200.0, 32.0);
+        meter.track_h = 8.0;
+        meter.caption_gap = 4.0;
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut text = crate::text_render::TextRenderer::new();
+        Widget::draw(
+            &mut meter,
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                crate::presence::PresenceCtx::default().draw_env(),
+            ),
+        );
+        assert!(
+            !scene.encoding().resources.glyph_runs.is_empty(),
+            "what it measures and what it reads are painted"
+        );
+        // The bar stands under the words, not through them.
+        assert_eq!(meter.track_rect(), Rect::new(0.0, 24.0, 200.0, 32.0));
+    }
+
+    #[test]
+    fn a_silent_meter_marks_no_peak() {
+        use vello::Scene;
+        use vello::kurbo::Affine;
+        use vello_encoding::DrawTag;
+
+        let mut scene = Scene::new();
+        LevelMeterFace::new(MeterState::default(), false).paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &Theme::dark(),
+            Rect::new(0.0, 0.0, 200.0, 8.0),
+        );
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|tag| **tag == DrawTag::COLOR)
+            .count();
+        assert_eq!(
+            fills, 1,
+            "the track alone: no peak stands where nothing was read"
+        );
     }
 }

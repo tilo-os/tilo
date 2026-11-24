@@ -38,10 +38,45 @@ impl ColorSwatch {
         }
     }
 
+    /// What a reader hears for it: its name, or the colour it is in words ("Blue"): a hex
+    /// string is a value, not a name.
     pub fn spoken_name(&self) -> String {
-        self.name
-            .clone()
-            .unwrap_or_else(|| crate::color::to_hex(self.color))
+        self.name.clone().unwrap_or_else(|| colour_name(self.color))
+    }
+}
+
+/// The colour in words: the family a person names it by, or black, white or grey.
+fn colour_name(color: Color) -> String {
+    let (hue, saturation, value) = crate::color::rgb_to_hsv(color);
+    crate::i18n::widget_text(colour_name_key(hue, saturation, value))
+}
+
+/// The word for a colour with this hue (degrees), saturation and value.
+fn colour_name_key(hue: f32, saturation: f32, value: f32) -> &'static str {
+    if value <= 0.10 {
+        return "widget-colour-black";
+    }
+    if saturation <= 0.12 {
+        return if value >= 0.92 {
+            "widget-colour-white"
+        } else {
+            "widget-colour-grey"
+        };
+    }
+    if value <= 0.50 && (15.0..55.0).contains(&hue) {
+        return "widget-colour-brown";
+    }
+    match hue {
+        h if h < 15.0 => "widget-colour-red",
+        h if h < 45.0 => "widget-colour-orange",
+        h if h < 70.0 => "widget-colour-yellow",
+        h if h < 165.0 => "widget-colour-green",
+        h if h < 195.0 => "widget-colour-teal",
+        h if h < 255.0 => "widget-colour-blue",
+        h if h < 290.0 => "widget-colour-violet",
+        h if h < 330.0 => "widget-colour-magenta",
+        h if h < 345.0 => "widget-colour-pink",
+        _ => "widget-colour-red",
     }
 }
 
@@ -1075,15 +1110,21 @@ mod tests {
                 names,
                 [
                     Some("Ink".to_owned()),
-                    Some("#445566".to_owned()),
+                    Some("Blue".to_owned()),
                     Some("Slate".to_owned())
                 ],
-                "a nameless swatch is spoken as its hex"
+                "a nameless swatch is spoken as the colour it is"
             );
             let centre = picker.swatch_rects[2].center();
             assert_eq!(
                 Widget::tooltip_target_at(&picker, centre).map(|(_, name)| name),
                 Some("Slate".to_owned())
+            );
+            let unnamed = picker.swatch_rects[1].center();
+            assert_eq!(
+                Widget::tooltip_target_at(&picker, unnamed).map(|(_, name)| name),
+                Some("Blue".to_owned()),
+                "a nameless swatch names itself on hover too"
             );
 
             dispatch(
