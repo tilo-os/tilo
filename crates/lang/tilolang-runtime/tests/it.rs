@@ -193,6 +193,8 @@ mod text_math;
 mod time;
 #[path = "time_reads.rs"]
 mod time_reads;
+#[path = "view_arguments.rs"]
+mod view_arguments;
 #[path = "view_state_seed.rs"]
 mod view_state_seed;
 #[path = "wall_clock.rs"]

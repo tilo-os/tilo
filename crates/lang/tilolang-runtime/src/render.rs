@@ -22,7 +22,7 @@ use crate::view_state::StateKey;
 const MAX_VIEW_DEPTH: usize = 32;
 
 /// The prefix of the kind of a node that applies another package's view.
-const FOREIGN_VIEW: &str = "view:";
+pub(crate) const FOREIGN_VIEW: &str = "view:";
 /// The kind of a node that renders a block's source (`embed(source, author: who)`).
 pub(crate) const EMBED: &str = "embed";
 /// The kind of a node that draws a resource through its type's default view (`show(r)`): a
@@ -37,11 +37,11 @@ const SHOWN_AS: &str = "view";
 /// row its type declares.
 const SHOWN_AS_ROW: &str = "row";
 /// The prefix of the properties of such a node that carry the view's arguments.
-const ARG_PREFIX: &str = "arg.";
+pub(crate) const ARG_PREFIX: &str = "arg.";
 /// The prefix of the kind of the node a UI loop lowers to (`for:<app>:<row view id>`): one row
 /// per item of its `items`, each the row view called with the item and the node's `arg.<name>`
 /// properties, and a boundary of its own.
-const FOR_EACH: &str = "for:";
+pub(crate) const FOR_EACH: &str = "for:";
 /// The property of a loop's node that holds its items.
 pub const ITEMS: &str = "items";
 /// The property of a `ui.VirtualList` naming the item where the person looking has seen

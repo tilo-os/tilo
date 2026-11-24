@@ -7,6 +7,7 @@ use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_f64, ret_i32, ret_i64, ret_void, trap};
 use crate::engine::Wasm;
 use crate::handles::{FrameKind, ViewState};
+use crate::render;
 use crate::space::Space;
 use crate::value::{ActionRef, Value};
 use crate::view::{BindTarget, Binding, NodeBuild, UiNode};
@@ -140,7 +141,17 @@ impl Core {
 
     fn set_prop(&self, node: i32, name: i32, v: Value) -> HResult<Option<Wasm>> {
         let (at, name) = (self.node_index(node)?, self.text(name)?);
-        if matches!(v, Value::Node(_) | Value::Rec(_)) {
+        // A view's call keeps its arguments as `arg.<name>` properties, which the runtime reads
+        // and hands the view itself, so a record travels there: it never reaches the window. Any
+        // other property is the window's, and a node or a record has no form on the wire.
+        let call = self.with_view(|vs| {
+            Ok(vs.nodes.get(at).is_some_and(|node| {
+                node.kind.starts_with(render::FOR_EACH)
+                    || node.kind.starts_with(render::FOREIGN_VIEW)
+            }))
+        })?;
+        let argument = call && name.starts_with(render::ARG_PREFIX);
+        if matches!(v, Value::Node(_)) || matches!(v, Value::Rec(_)) && !argument {
             return trap("a ui node or record cannot be a property; use ui_child");
         }
         self.with_view(|vs| {
