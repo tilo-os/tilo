@@ -2176,7 +2176,7 @@ fn types_of(host: &Host, app: &str) -> Option<(Types, String)> {
     };
     // An account type with no collection to hold it is no account the package publishes, and
     // the origin says nothing of an account there.
-    let accounts_field = account.as_ref().and_then(|ty| collection(ty));
+    let accounts_field = account.as_ref().and_then(collection);
     let account = accounts_field.as_ref().and(account);
     Some((
         Types {
