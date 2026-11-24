@@ -136,6 +136,22 @@ pub fn draft_local_write(
             crate::admission::MissingPrerequisite::CausalDependencies,
         ));
     }
+    // Every change names who made it: a change that names no one is refused by every holder, so
+    // it is never signed. The device cannot name it here: the name is part of the change's hash,
+    // and the writer builds its next change on the hash it made.
+    if !snapshot {
+        let changes = collab_types::claim::parse_changes(changes)
+            .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
+        if let Some(nameless) = changes.iter().find(|change| {
+            collab_types::claim::maker_of(change) == collab_types::claim::Maker::Nobody
+        }) {
+            return Err(WriteRefusal::Refused(format!(
+                "a change to {document} of {app} names no one who made it: commit it with its \
+                 history entry, or as a framework change such as a native edit ({})",
+                nameless.hash()
+            )));
+        }
+    }
     let author = peer.permissions(*device, now)?;
     let artifact = document_artifact_id(app, workspace, document);
     let mutation = if snapshot {

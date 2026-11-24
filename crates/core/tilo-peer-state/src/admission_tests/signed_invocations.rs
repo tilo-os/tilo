@@ -794,3 +794,128 @@ fn an_imported_historys_nameless_changes_are_the_persons_and_a_later_one_is_refu
         "a step changed after it was signed is not one"
     );
 }
+
+/// The change of the record's value to `value`, committed with `message` (none when `None`), as
+/// the bytes a device's own writer is handed.
+fn edit_of(copy: &StatePeer, message: Option<&str>, value: &str) -> Vec<u8> {
+    let mut doc = AutoCommit::load(&copy.document(APP, RECORD).unwrap()).unwrap();
+    let heads = doc.get_heads();
+    doc.put(ROOT, "value", value).unwrap();
+    let options = CommitOptions::default();
+    doc.commit_with(match message {
+        Some(message) => options.with_message(message),
+        None => options,
+    });
+    doc.save_after(&heads)
+}
+
+/// `changes` as the device `cert` writes them through its own writer, signed by its key.
+fn upkeep(
+    copy: &StatePeer,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    changes: &[u8],
+    now: SystemTime,
+) -> Result<NeighbourMsg, crate::owner::WriteRefusal> {
+    let (envelopes, _) = crate::owner::draft_local_write(
+        copy,
+        WORKSPACE,
+        &cert.device_public_key,
+        crate::owner::LocalWrite {
+            app: APP,
+            document: RECORD,
+            readers: None,
+            changes,
+            founding: false,
+            snapshot: false,
+            sealed: None,
+            commit: None,
+            now,
+        },
+    )?;
+    let [mut envelope] = <[_; 1]>::try_from(envelopes).expect("one frame");
+    collab_types::sign_op(&mut envelope, key).unwrap();
+    Ok(document_message(envelope))
+}
+
+/// A server keeping a workspace writes its upkeep as the person whose device it is, signed by the
+/// device's key: its own writer never signs a change that names no one, what it signs is decided
+/// with that person's role, and a change that names the bare device key as who made it is refused,
+/// for a device is no member.
+#[test]
+fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
+    let (mut receiver, a, _ac, _b, _bc, now) = seeded_with(RevocationList::new());
+    let (server_key, server_cert, person) = add_member_with(&mut receiver, &a, now, 51, 52);
+
+    let refused = upkeep(
+        &receiver,
+        &server_key,
+        &server_cert,
+        &edit_of(&receiver, None, "bare"),
+        now,
+    )
+    .err()
+    .expect("the writer signs no change that names no one");
+    assert!(
+        matches!(&refused, crate::owner::WriteRefusal::Refused(why) if why.contains("names no one")),
+        "{refused:?}"
+    );
+
+    let native = tilo_actions::FrameworkChange::Native.change_message();
+    let kept = upkeep(
+        &receiver,
+        &server_key,
+        &server_cert,
+        &edit_of(&receiver, Some(&native), "kept"),
+        now,
+    )
+    .expect("the server's upkeep is drafted");
+    take(&mut receiver, kept, now).expect("the upkeep is its person's, an editor");
+    assert_eq!(value(&receiver), "\"kept\"");
+
+    // Named as the bare device key, the change names no member at all.
+    let as_device = ActionContext {
+        invoker: Some(tilo_actions::ActionInvoker::person(hex::encode(
+            server_cert.device_public_key,
+        ))),
+        ..ActionContext::for_resource(RECORD, KIND, "Test")
+    };
+    let named_device = upkeep(
+        &receiver,
+        &server_key,
+        &server_cert,
+        &edit_of(
+            &receiver,
+            Some(&as_device.change_message().unwrap()),
+            "as the device",
+        ),
+        now,
+    )
+    .expect("the change is drafted");
+    assert!(
+        take(&mut receiver, named_device, now).is_err(),
+        "a device is no member"
+    );
+    assert_eq!(value(&receiver), "\"kept\"", "never applied");
+
+    // The person reads only now: the same upkeep is decided with the person's role.
+    assert!(
+        receiver
+            .governance_mut()
+            .set_member_role(person, crate::join::Role::Viewer, &a, now)
+            .unwrap()
+    );
+    let read_only = upkeep(
+        &receiver,
+        &server_key,
+        &server_cert,
+        &edit_of(&receiver, Some(&native), "after"),
+        now,
+    );
+    let refused = match read_only {
+        Ok(message) => take(&mut receiver, message, now).unwrap_err().reason,
+        Err(refusal) => format!("{refusal:?}"),
+    };
+    assert!(refused.contains("not granted"), "{refused}");
+    assert_eq!(value(&receiver), "\"kept\"", "never applied");
+}

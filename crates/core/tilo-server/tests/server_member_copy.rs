@@ -122,6 +122,11 @@ async fn write_front(workspaces: &Workspaces, what: &str, want: &str) {
     let heads = document.get_heads();
     automerge::transaction::Transactable::put(&mut document, automerge::ROOT, "front", want)
         .unwrap();
+    // Committed as the desktop commits its own edits: a native change, its signer's.
+    document.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+    );
     let changes = if founding {
         document.save()
     } else {
@@ -334,6 +339,11 @@ async fn write_note(workspaces: &Workspaces, note: &str, title: &str) {
         let heads = document.get_heads();
         automerge::transaction::Transactable::put(&mut document, automerge::ROOT, "title", typed)
             .unwrap();
+        // Committed as a note's editor commits its own edits: a native change, its signer's.
+        document.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        );
         let changes = if founding {
             document.save()
         } else {

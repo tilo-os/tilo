@@ -191,6 +191,11 @@ mod tests {
             .expect("a declared kind founds the record");
         let heads = note.get_heads();
         note.put(automerge::ROOT, "title", "Plan B").unwrap();
+        // Committed as an app's editor commits its own edits: a native change, its signer's.
+        note.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        );
         workspaces
             .opened_record_change(
                 &workspace,
@@ -221,6 +226,10 @@ mod tests {
         for (field, len, seed) in [("draft", 1_400_000, 1), ("revision", 4_500_000, 2)] {
             let heads = note.get_heads();
             note.put(automerge::ROOT, field, noise(len, seed)).unwrap();
+            note.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            );
             changes.push(note.save_after(&heads));
         }
         for change in &changes {

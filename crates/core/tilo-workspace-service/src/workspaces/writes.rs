@@ -251,6 +251,11 @@ mod tests {
         document
             .put(automerge::ROOT, "front", "Elsewhere")
             .expect("the layout's front moves");
+        // Committed as the desktop commits its own edits: a native change, its signer's.
+        document.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        );
         workspaces
             .own_write(
                 &workspace,
