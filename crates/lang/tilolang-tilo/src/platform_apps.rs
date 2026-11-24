@@ -44,6 +44,9 @@ pub const MODELS_APP: &str = "tilo.models";
 /// them as `accounts.accounts`, each with the address it signs in at and how its last sync went,
 /// and connects, signs in again and removes them through the resource's verbs.
 pub const ACCOUNTS_APP: &str = "tilo.accounts";
+/// The app the workspace's vault is published as to Passwords' own window: `use tilo.vault`. The
+/// device's daemon answers it for Passwords alone, and every other app is refused.
+pub const VAULT_APP: &str = "tilo.vault";
 
 /// The app the workspace's activity is published as: `use so.tilo.history`. The app whose window
 /// shows it is `so.tilo.activity`, and it reads this package (`history.history`, and the range a
@@ -210,6 +213,8 @@ const MCP_SERVER_ROOTS: &[(&str, &str, &str)] = &[("server", "Server", "mcp.serv
 const MODELS_ROOTS: &[(&str, &str, &str)] = &[("models", "Models", "models")];
 /// The accounts' root, the one resource every account and every verb of them is on.
 const ACCOUNTS_ROOTS: &[(&str, &str, &str)] = &[("accounts", "Accounts", "accounts")];
+/// The vault's root, the one resource its entries are read from and its verbs are asked of.
+const VAULT_ROOTS: &[(&str, &str, &str)] = &[("vault", "Vault", "vault")];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
     ("image_model", "ImageModel", "vision:vision.image-model"),
     ("analysis", "Analysis", "vision:vision.analysis"),
@@ -382,6 +387,18 @@ const PUBLISHED: &[Published] = &[
         // What a workspace's accounts read as, written beside the service that keeps them.
         files: &[include_str!(
             "../../../core/tilo-workspace-service/accounts-surface.json"
+        )],
+        described: false,
+        listed: &[],
+    },
+    Published {
+        app: VAULT_APP,
+        title: "Vault",
+        kinds: &[],
+        roots: VAULT_ROOTS,
+        // What the vault reads as to Passwords, written beside the service that keeps it.
+        files: &[include_str!(
+            "../../../core/tilo-workspace-service/vault-surface.json"
         )],
         described: false,
         listed: &[],
@@ -598,8 +615,11 @@ pub fn platform_packages_of<'a>(
 /// # Errors
 /// A named surface does not read.
 pub fn named_platform_packages(source: &str) -> Result<Vec<PackageMeta>, String> {
-    let named: Vec<String> = tilolang::parser::parse_module(source)
-        .0
+    let parsed = tilo_failure::ignored!(
+        "a source that does not parse names no package here; its compile, which runs next, says why",
+        tilolang::parser::parse_module(source).0
+    );
+    let named: Vec<String> = parsed
         .map(|module| {
             module
                 .items

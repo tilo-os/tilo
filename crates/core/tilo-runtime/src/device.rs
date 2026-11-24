@@ -61,6 +61,8 @@ pub mod packages;
 mod page_media;
 #[cfg(test)]
 mod page_ticket_tests;
+/// The workspace's vault, read and changed by Passwords' window here as `vault`.
+mod passwords_vault;
 pub mod peer;
 pub(crate) mod presence;
 pub mod processes;

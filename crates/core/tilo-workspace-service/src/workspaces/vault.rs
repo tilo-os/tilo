@@ -328,6 +328,10 @@ impl Workspaces {
                 },
             ))
             .await
+            .map(|written| {
+                self.vault_changed();
+                written
+            })
             .map_err(|error| error.to_string());
         }
         let founding = opened.document.is_none();
@@ -343,7 +347,7 @@ impl Workspaces {
             Some(keys),
         ))
         .await
-        .map(drop)
+        .map(|_| self.vault_changed())
         .map_err(|refusal| refusal.to_string())
     }
 

@@ -158,6 +158,9 @@ pub mod vault_release;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod vault;
 mod vault_entries;
+// That vault as Passwords' own window reads and changes it.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod passwords_vault;
 // The accounts of the workspace, signed in with entries of that vault.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod account_logins;
@@ -1216,6 +1219,9 @@ struct WorkspacesInner {
     /// accounts — changed, so a window following them reads them again
     /// ([`person_settings`]).
     person_settings_moved: tokio::sync::watch::Sender<u64>,
+    /// Moves whenever an entry of a vault this device holds changed here, so Passwords' window
+    /// reads it again ([`passwords_vault`]).
+    vault_moved: tokio::sync::watch::Sender<u64>,
     /// What answers people's model calls, each with that person's own
     /// provider, model and key ([`model_answers`]).
     #[cfg(not(target_arch = "wasm32"))]
@@ -1609,6 +1615,7 @@ impl Workspaces {
                 web_ui: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
                 person_settings_moved: tokio::sync::watch::channel(0).0,
+                vault_moved: tokio::sync::watch::channel(0).0,
                 #[cfg(not(target_arch = "wasm32"))]
                 models: Arc::clone(&models),
                 #[cfg(not(target_arch = "wasm32"))]
