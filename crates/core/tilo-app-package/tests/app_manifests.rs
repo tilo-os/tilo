@@ -23,23 +23,54 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Every app the packaging scripts pack and install: the same
-/// `apps/*/tilo-app.toml` glob `os/scripts/pack-apps.sh` and `os/image/compile.sh`
-/// read. A directory without one is an app's library, not an app.
+/// The app packages the default collection ships: `dist/apps/app-collections.toml`, which
+/// `os/scripts/pack-apps.sh`, `os/image/compile.sh` and the release read. `*` is every native
+/// app's manifest under `apps/`; a `tl-<name>` is the tilolang package in `apps/tl/<name>` that
+/// replaced the native app it retired. The list is the source, never a count: an app that leaves
+/// the tree leaves the collection in the same change, and one the collection names must exist.
 fn app_dirs() -> Vec<PathBuf> {
     let apps = repo_root().join("apps");
-    let mut out: Vec<PathBuf> = std::fs::read_dir(&apps)
-        .unwrap_or_else(|e| panic!("read {}: {e}", apps.display()))
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.join("tilo-app.toml").is_file())
+    let collection = std::fs::read_to_string(repo_root().join("dist/apps/app-collections.toml"))
+        .expect("the app collections read");
+    let include = collection
+        .lines()
+        .skip_while(|line| line.trim() != "[collections.default]")
+        .skip(1)
+        .find_map(|line| line.trim().strip_prefix("include = "))
+        .unwrap_or_else(|| panic!("dist/apps/app-collections.toml names no default include"));
+    let entries: Vec<&str> = include
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|entry| entry.trim().trim_matches('"'))
+        .filter(|entry| !entry.is_empty())
         .collect();
+    let mut out: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        if entry == "*" {
+            let native: Vec<PathBuf> = std::fs::read_dir(&apps)
+                .unwrap_or_else(|e| panic!("read {}: {e}", apps.display()))
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.join("tilo-app.toml").is_file())
+                .collect();
+            assert!(!native.is_empty(), "`*` packs no app under apps/");
+            out.extend(native);
+            continue;
+        }
+        let Some(name) = entry.strip_prefix("tl-") else {
+            continue;
+        };
+        let package = apps.join("tl").join(name);
+        let source = std::fs::read_to_string(package.join("app.tl"))
+            .unwrap_or_else(|e| panic!("{entry} is shipped but {}: {e}", package.join("app.tl").display()));
+        assert!(
+            source.lines().any(|line| line.starts_with("app so.tilo.")),
+            "{entry} names no `so.tilo.` app id"
+        );
+    }
     out.sort();
-    assert!(
-        out.len() >= 40,
-        "expected the full app fleet under apps/, found {}",
-        out.len()
-    );
+    out.dedup();
     out
 }
 
@@ -171,7 +202,7 @@ tilo_test_env::scenario! {
             );
             checked += 1;
         }
-        assert!(checked >= 40, "only {checked} apps checked");
+        assert_eq!(checked, app_dirs().len(), "every shipped app is checked");
     }
 
     phase windows_that_run_on_one_device_say_so_in_their_entrypoint;
