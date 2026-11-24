@@ -97,7 +97,7 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                 Affine::IDENTITY,
                 &mut ui::TextRenderer::new(),
                 theme,
-                &PresenceCtx::default().draw_env(),
+                &ui::draw::DrawEnv::default(),
             );
             let runs = &scene.encoding().resources.glyph_runs;
             assert!(!runs.is_empty(), "the heading must paint real glyphs");
@@ -378,7 +378,7 @@ fn inspect_password_validation(preview: &InstallerPreview, field: &str, error: &
 pub(super) fn body_scroll_geometry(root: &mut dyn Widget) -> Option<(vello::kurbo::Rect, bool)> {
     if let Some(scroll) = root
         .as_any_mut()
-        .and_then(|widget| widget.downcast_mut::<Scrollable>())
+        .and_then(|widget| widget.downcast_mut::<ui::widget::Scrollable>())
     {
         return Some((scroll.content_viewport_rect(), scroll.vertical_overflows()));
     }

@@ -173,7 +173,7 @@ fn layout_with_theme(
         )
         .expect("viewport node");
     let measure_map = node_map.clone();
-    let mut text_renderer = TextRenderer::new();
+    let mut text_renderer = ui::text_render::TextRenderer::new();
     taffy
         .compute_layout_with_measure(
             viewport,
@@ -194,15 +194,6 @@ fn layout_with_theme(
         .expect("compute compact installer layout");
     app.apply_layout(&taffy, app_node, Point::ORIGIN);
     node_map
-}
-
-fn invoke_provider(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str) {
-    assert!(
-        ui::framework::press_control(app, id, doc, &automerge::ROOT),
-        "provider control must run its press"
-    );
-    app.sync(doc, &automerge::ROOT);
-    assert_eq!(doc.length(automerge::ROOT), 0);
 }
 
 tilo_test_env::scenario! {

@@ -10,8 +10,7 @@ use ui::widget::{AppModel, ModelPath};
 
 use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::i18n::ArgValue;
@@ -19,7 +18,7 @@ use ui::icons::Icon;
 use ui::local_state::LocalState;
 use ui::portal::{FileFilter, PickRequest};
 
-use ui::text_render::{ParagraphAlign, TextRenderer};
+use ui::text_render::ParagraphAlign;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{

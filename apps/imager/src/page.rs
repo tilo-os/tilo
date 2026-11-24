@@ -60,7 +60,6 @@ pub(crate) struct Frame {
     offset: Option<Rc<Cell<(f32, f32)>>>,
     notice: Option<Box<dyn Widget>>,
     actions: Option<Box<dyn Widget>>,
-    actions_in_body: bool,
     center_short_body: bool,
     cursor: Option<ui::kurbo::Point>,
 }
@@ -73,7 +72,6 @@ impl Frame {
             offset: None,
             notice: None,
             actions: None,
-            actions_in_body: false,
             center_short_body: false,
             cursor: None,
         }
@@ -110,12 +108,6 @@ impl Frame {
         self
     }
 
-    #[must_use]
-    pub(crate) fn with_content_actions(mut self) -> Self {
-        self.actions_in_body = true;
-        self
-    }
-
     #[cfg(feature = "installation")]
     #[must_use]
     pub(crate) fn center_short_body(mut self) -> Self {
@@ -123,15 +115,7 @@ impl Frame {
         self
     }
 
-    pub(crate) fn build(mut self) -> Box<dyn Widget> {
-        if self.actions_in_body {
-            if let Some(notice) = self.notice.take() {
-                self.body = self.body.push(notice);
-            }
-            if let Some(actions) = self.actions.take() {
-                self.body = self.body.push(actions);
-            }
-        }
+    pub(crate) fn build(self) -> Box<dyn Widget> {
         let mut scroll = Scrollable::new_vertical()
             .always_visible()
             .fill_parent_height()

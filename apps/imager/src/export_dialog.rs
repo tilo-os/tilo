@@ -8,12 +8,10 @@ use automerge::ObjId;
 use taffy::TaffyTree;
 #[cfg(test)]
 use ui::a11y::AccessNode;
-use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{ModalDialog, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 const TITLE: &str = "Embedded setup profile";
@@ -110,10 +108,19 @@ impl ExportDialog {
     }
 
     pub(crate) fn draw_detached(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.dialog
-            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.dialog.draw_overlay(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     pub(crate) fn handle_detached(
@@ -248,9 +255,15 @@ mod tests {
                 Rect::new(20.0, 40.0, 410.0, 884.0),
             ] {
                 dialog.layout_in(viewport, &theme, &mut text);
-                let presence = PresenceCtx::default();
+                let presence = ui::presence::PresenceCtx::default();
                 let previous = presence.push_viewport(viewport);
-                dialog.draw_detached(&mut ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+                dialog.draw_detached(&mut ui::DrawCtx::new(
+                    &mut vello::Scene::new(),
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    presence.draw_env(),
+                ));
                 presence.pop_viewport(previous);
                 dialog.layout_in(viewport, &theme, &mut text);
                 assert_eq!(

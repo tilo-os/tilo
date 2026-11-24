@@ -13,8 +13,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{AlignItems, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
@@ -22,7 +21,6 @@ use zeroize::{Zeroize, Zeroizing};
 use ui::a11y::Politeness;
 use ui::i18n::ArgValue;
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::Rhythm;
 use ui::tokens::typography::TextRole;

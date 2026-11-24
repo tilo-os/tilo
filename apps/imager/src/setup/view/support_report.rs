@@ -358,10 +358,208 @@ fn source_label(source: ReportSource, placement: Placement) -> String {
     })
 }
 
-// The report the tests show is the main story's, whose fixtures are Linux's.
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    /// A computer whose report has a working, a limited and an unsupported part.
+    fn fixture_support_report() -> imager_backend::support_report::SupportReport {
+        use imager_backend::support_report::{
+            Applicability, ComponentKind, ComponentSupport, DestinationIdentity, DeviceBinding,
+            Evidence, EvidenceFact, EvidenceScope, REPORT_SCHEMA, Remedy, ReportSource,
+            SupportReason, SupportReport, SupportState,
+        };
+        let device = |name: &str, driver: Option<&str>, scope| Evidence {
+            scope,
+            fact: EvidenceFact::Device {
+                name: name.into(),
+                driver: driver.map(str::to_string),
+                firmware: None,
+                vendor: None,
+                product: None,
+                reported_problem: false,
+            },
+        };
+        let component = |kind,
+                         name: &str,
+                         present,
+                         state,
+                         applicability,
+                         reason,
+                         evidence: Vec<Evidence>,
+                         remedy: Option<Remedy>| {
+            ComponentSupport {
+                kind,
+                name: name.into(),
+                present,
+                state,
+                applicability,
+                reason,
+                evidence,
+                remedy,
+            }
+        };
+        SupportReport {
+            schema: REPORT_SCHEMA.into(),
+            identity: DestinationIdentity {
+                source: ReportSource::LocalScan,
+                manufacturer: Some("Test Vendor".into()),
+                model: Some("Test Laptop 15".into()),
+                variant: Some("TESTBOARD".into()),
+                board: Some("TESTBOARD".into()),
+                sku: Some("SKU-1".into()),
+                firmware: Some("Test Firmware 1.2.3".into()),
+            },
+            kernel: Some("7.2.7-test".into()),
+            architecture: Some("aarch64".into()),
+            components: vec![
+                component(
+                    ComponentKind::Graphics,
+                    "AMD graphics, NVIDIA graphics",
+                    true,
+                    SupportState::Supported,
+                    Applicability::ReleaseVerified,
+                    SupportReason::HybridGraphics {
+                        primary: DeviceBinding {
+                            device: "AMD graphics".into(),
+                            driver: Some("amdgpu".into()),
+                        },
+                        additional: vec![DeviceBinding {
+                            device: "NVIDIA graphics".into(),
+                            driver: Some("nvidia".into()),
+                        }],
+                    },
+                    vec![
+                        device(
+                            "AMD graphics",
+                            Some("amdgpu"),
+                            EvidenceScope::SelectedRelease,
+                        ),
+                        device(
+                            "NVIDIA graphics",
+                            Some("nvidia"),
+                            EvidenceScope::SelectedRelease,
+                        ),
+                    ],
+                    None,
+                ),
+                component(
+                    ComponentKind::Display,
+                    "eDP-1, DP-1",
+                    true,
+                    SupportState::Supported,
+                    Applicability::ReleaseVerified,
+                    SupportReason::DisplaysActive {
+                        internal: 1,
+                        external: 1,
+                        devices: vec!["eDP-1".into(), "DP-1".into()],
+                    },
+                    vec![
+                        Evidence {
+                            scope: EvidenceScope::SelectedRelease,
+                            fact: EvidenceFact::Display {
+                                name: "eDP-1".into(),
+                                connected: true,
+                                active: true,
+                            },
+                        },
+                        Evidence {
+                            scope: EvidenceScope::SelectedRelease,
+                            fact: EvidenceFact::Display {
+                                name: "DP-1".into(),
+                                connected: true,
+                                active: true,
+                            },
+                        },
+                    ],
+                    None,
+                ),
+                component(
+                    ComponentKind::Wifi,
+                    "wlp4s0",
+                    true,
+                    SupportState::Supported,
+                    Applicability::ReleaseVerified,
+                    SupportReason::DriverBound {
+                        bindings: vec![DeviceBinding {
+                            device: "wlp4s0".into(),
+                            driver: Some("iwlwifi".into()),
+                        }],
+                    },
+                    vec![device(
+                        "wlp4s0",
+                        Some("iwlwifi"),
+                        EvidenceScope::SelectedRelease,
+                    )],
+                    None,
+                ),
+                component(
+                    ComponentKind::Fingerprint,
+                    "Fingerprint Sensor",
+                    true,
+                    SupportState::Limited,
+                    Applicability::ObservationOnly,
+                    SupportReason::FingerprintUnverified {
+                        device: "Fingerprint Sensor".into(),
+                    },
+                    vec![Evidence {
+                        scope: EvidenceScope::Observation,
+                        fact: EvidenceFact::Device {
+                            name: "Fingerprint Sensor".into(),
+                            driver: None,
+                            firmware: None,
+                            vendor: Some("1234".into()),
+                            product: Some("5678".into()),
+                            reported_problem: false,
+                        },
+                    }],
+                    Some(Remedy::PasswordSignIn),
+                ),
+                component(
+                    ComponentKind::Camera,
+                    "",
+                    false,
+                    SupportState::Unverified,
+                    Applicability::Unknown,
+                    SupportReason::NotDetected,
+                    Vec::new(),
+                    Some(Remedy::ExternalCamera),
+                ),
+                component(
+                    ComponentKind::Boot,
+                    "",
+                    true,
+                    SupportState::Unverified,
+                    Applicability::ObservationOnly,
+                    SupportReason::Uefi {
+                        secure_boot: Some(true),
+                        tpm: Some("TPM 2.0".into()),
+                    },
+                    vec![device("UEFI", None, EvidenceScope::Observation)],
+                    None,
+                ),
+                component(
+                    ComponentKind::Storage,
+                    "Test NVMe",
+                    true,
+                    SupportState::Supported,
+                    Applicability::ReleaseVerified,
+                    SupportReason::DriverBound {
+                        bindings: vec![DeviceBinding {
+                            device: "Test NVMe".into(),
+                            driver: Some("nvme".into()),
+                        }],
+                    },
+                    vec![device(
+                        "Test NVMe",
+                        Some("nvme"),
+                        EvidenceScope::SelectedRelease,
+                    )],
+                    None,
+                ),
+            ],
+        }
+    }
 
     fn has_id(widget: &dyn Widget, id: &str) -> bool {
         widget.test_id() == Some(id) || widget.children().into_iter().any(|child| has_id(child, id))
@@ -373,7 +571,7 @@ mod tests {
         phase report_sections_expand_limitations_and_keep_working_rows_compact;
         {
             let report =
-                super::super::super::journey::main_story_tests::fixture_support_report().unwrap();
+                fixture_support_report();
             let mut app = SetupApp::for_full_os_check(ui::LocalState::new(None));
             app.support_report = Some(report);
             let sections = app.hardware_report_sections();
@@ -407,7 +605,7 @@ mod tests {
         phase semantic_projection_carries_the_identity_statuses_and_evidence;
         {
             let report =
-                super::super::super::journey::main_story_tests::fixture_support_report().unwrap();
+                fixture_support_report();
             let mut app = SetupApp::for_full_os_check(ui::LocalState::new(None));
             app.support_report = Some(report);
             let hardware = app.setup_projection().hardware.unwrap();
@@ -451,7 +649,7 @@ mod tests {
         phase another_computer_sections_expand_limitations_and_keep_working_rows_compact;
         {
             let report =
-                super::super::super::journey::main_story_tests::fixture_support_report().unwrap();
+                fixture_support_report();
             let sections = sections(&report, Placement::AnotherComputer);
             assert!(
                 sections

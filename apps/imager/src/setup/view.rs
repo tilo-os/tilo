@@ -1911,10 +1911,6 @@ const fn download_phase_key(phase: super::internal_cache::coordinator::Phase) ->
 }
 
 fn probe_support_report() -> SupportReport {
-    #[cfg(all(test, target_os = "linux"))]
-    if let Some(report) = super::journey::main_story_tests::fixture_support_report() {
-        return report;
-    }
     imager_backend::support_report::SupportReport::probe()
 }
 
@@ -2034,17 +2030,16 @@ impl Widget for SetupApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.desktop_flow.has_pending_operation()
-            || {
-                {
-                    self.internal_download_flow
-                        .as_ref()
-                        .is_some_and(InternalDownloadFlow::has_pending_operation)
-                        || self.internal_install.is_probing()
-                        || self.internal_install.is_running()
-                        || self.host_command_pending.is_some()
-                }
+        self.desktop_flow.has_pending_operation() || {
+            {
+                self.internal_download_flow
+                    .as_ref()
+                    .is_some_and(InternalDownloadFlow::has_pending_operation)
+                    || self.internal_install.is_probing()
+                    || self.internal_install.is_running()
+                    || self.host_command_pending.is_some()
             }
+        }
     }
 }
 

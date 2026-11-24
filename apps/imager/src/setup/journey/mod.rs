@@ -49,8 +49,8 @@ use ui::tilo_resource::{self, AbsolutePath, ActionRef, Binds, Effect};
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
     AppModel, Button, ButtonRole, Card, Container, DrawChild as _, Field, IconWidget,
-    LabelPlacement, ListRow, ModelPath, NumberInput, Row, Scrollable, Spacer, Text, TextInput,
-    TextInputKind, Widget,
+    LabelPlacement, ListRow, ModelPath, NumberInput, Row, Spacer, Text, TextInput, TextInputKind,
+    Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

@@ -363,17 +363,6 @@ impl Journey {
             })
     }
 
-    pub fn keep_edit(&mut self) {
-        self.editing = None;
-    }
-
-    pub fn destination_edit_changed(&self) -> bool {
-        self.editing.as_ref().is_some_and(|edit| {
-            edit.section == ReviewSection::Destination
-                && self.destination != edit.original.destination
-        })
-    }
-
     pub fn saving_edit(&self) -> bool {
         self.editing.as_ref().is_some_and(|edit| {
             matches!(

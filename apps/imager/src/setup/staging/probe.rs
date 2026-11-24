@@ -11,10 +11,6 @@ pub use imager_backend::model::{Blocker, HostFacts};
 /// [`add_shared_blockers`] are added here for both; `InsufficientSpace`
 /// needs bundle sizes and comes from [`space_blocker`].
 pub fn probe() -> HostFacts {
-    #[cfg(all(test, target_os = "linux", feature = "installation"))]
-    if let Some(facts) = super::super::journey::main_story_tests::fixture_host_facts() {
-        return facts;
-    }
     let mut facts = imager_backend::staging::probe_host();
     add_shared_blockers(&mut facts);
     facts

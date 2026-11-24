@@ -40,6 +40,7 @@ fn next_operation(counter: &AtomicU64) -> Result<u64, String> {
 )]
 pub(in crate::setup) struct Cancellation<'a>(&'a AtomicBool);
 impl Cancellation<'_> {
+    #[cfg(test)]
     pub(in crate::setup) fn signal(&self) -> &AtomicBool {
         self.0
     }

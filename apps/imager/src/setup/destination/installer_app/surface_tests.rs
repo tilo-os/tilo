@@ -216,27 +216,6 @@ fn state(app: &mut InstallerApp, _doc: &mut AutoCommit) -> Value {
     exchange(app, r#"{"op":"state_dump"}"#)["state"].clone()
 }
 
-fn input_value(widget: &dyn Widget, id: &str) -> Option<String> {
-    if widget.test_id() == Some(id) {
-        return widget.accessibility()?.value;
-    }
-    widget
-        .children()
-        .into_iter()
-        .find_map(|child| input_value(child, id))
-}
-
-fn local_labels(widget: &dyn Widget) -> Vec<String> {
-    let mut labels = Vec::new();
-    if let Some(node) = widget.accessibility() {
-        labels.extend(node.name);
-    }
-    for child in widget.children() {
-        labels.extend(local_labels(child));
-    }
-    labels
-}
-
 tilo_test_env::scenario! {
     fn the_published_surface_refuses_what_was_not_reviewed;
 

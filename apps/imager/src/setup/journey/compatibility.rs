@@ -10,14 +10,6 @@ pub(super) struct Compatibility {
     result: Option<ui::LocalState<Option<FullOsCheck>>>,
 }
 
-impl Compatibility {
-    #[cfg(test)]
-    pub(super) fn accept_read_only_check_for_test(&mut self, check: FullOsCheck) {
-        self.pending = false;
-        self.result = Some(ui::LocalState::new(Some(check)));
-    }
-}
-
 impl InstallerPreview {
     pub(super) fn drain_compatibility(&mut self) -> bool {
         if std::mem::take(&mut self.compatibility.pending) {
