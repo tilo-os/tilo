@@ -19,7 +19,6 @@ pub(crate) mod live;
 mod page;
 mod page_errors;
 mod profiles;
-#[cfg(feature = "agents")]
 mod stand_in;
 #[cfg(test)]
 mod tests;
@@ -359,7 +358,6 @@ pub(crate) fn keep_stand_in(
 
 /// The stand-in certificate and key this host keeps for `user`, when it keeps
 /// a live one.
-#[cfg(feature = "agents")]
 pub(crate) fn stand_in_for(
     state_root: &std::path::Path,
     user: &[u8; 32],
