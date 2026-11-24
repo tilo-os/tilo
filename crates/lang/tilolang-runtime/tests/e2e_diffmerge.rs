@@ -362,6 +362,44 @@ mod cases {
         }
     }
 
+    /// The key a control of the window declares.
+    fn key_of(node: &UiNode) -> String {
+        match node.props.get("key") {
+            Some(Value::Text(key)) => key.clone(),
+            other => panic!("{} declares no key: {other:?}", node.kind),
+        }
+    }
+
+    /// The menu the window calls `label` (File, View).
+    fn menu<'a>(tree: &'a UiNode, label: &str) -> &'a UiNode {
+        of_kind(tree, "ui.MenuButton")
+            .into_iter()
+            .find(|menu| text_prop(menu, "label") == label)
+            .unwrap_or_else(|| panic!("no {label} menu in the window"))
+    }
+
+    /// The item `label` of `menu`.
+    fn item<'a>(menu: &'a UiNode, label: &str) -> &'a UiNode {
+        of_kind(menu, "ui.MenuItem")
+            .into_iter()
+            .find(|item| text_prop(item, "label") == label)
+            .unwrap_or_else(|| panic!("no {label} item in {}", text_prop(menu, "label")))
+    }
+
+    /// The keys a row answers to.
+    fn keys_of(node: &UiNode) -> Vec<String> {
+        match node.props.get("keys") {
+            Some(Value::List(keys)) => keys
+                .iter()
+                .map(|key| match key {
+                    Value::Text(key) => key.clone(),
+                    other => panic!("a key is text, not {other:?}"),
+                })
+                .collect(),
+            other => panic!("{} carries no keys: {other:?}", node.kind),
+        }
+    }
+
     tilo_test_env::scenario! {
         fn two_texts_compare_three_merge_and_both_folders_read;
 
@@ -638,6 +676,236 @@ mod cases {
             );
             let card = find(&window.tree(), "ui.Card");
             assert!(card.is_some(), "each change stands in a card the person decides on");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn every_decision_answers_its_key_and_every_file_its_colours;
+
+        phase the_save_action_publishes_the_windows_save_key;
+        {
+            let s = Desk::new();
+            let save = s
+                .app
+                .meta()
+                .action_named("save_merged")
+                .expect("save_merged is published");
+            assert_eq!(
+                save.key.as_deref(),
+                Some("Ctrl+s"),
+                "the window answers the command modifier and S"
+            );
+        }
+
+        phase the_merge_window_binds_open_save_as_and_taking_a_side;
+        {
+            let s = Desk::new();
+            let d = s.merge(
+                "a\nb\nc\nd\ne\n",
+                "a\nOURS\nc\nOURS2\ne\n",
+                "a\nTHEIRS\nc\nTHEIRS2\ne\n",
+            );
+            let mut window = s.window(&d);
+            {
+                let tree = window.tree();
+                let file = menu(tree, "File");
+                assert_eq!(key_of(item(file, "Compare files…")), "Ctrl+O");
+                assert_eq!(key_of(item(file, "Save as…")), "Ctrl+Shift+S");
+                let save = of_kind(tree, "ui.Button")
+                    .into_iter()
+                    .find(|button| {
+                        text_prop(button, "label") == "Save…" && button.props.contains_key("key")
+                    })
+                    .expect("the bar saves the merged result");
+                assert_eq!(key_of(save), "Ctrl+S");
+                // The change the window is at answers its keys; the other changes do not, so one
+                // press decides one change.
+                let keyed = |tree: &UiNode, label: &str| -> String {
+                    of_kind(tree, "ui.Button")
+                        .into_iter()
+                        .find(|button| {
+                            text_prop(button, "label") == label
+                                && matches!(
+                                    button.props.get("key"),
+                                    Some(Value::Text(key)) if !key.is_empty()
+                                )
+                        })
+                        .map(key_of)
+                        .unwrap_or_default()
+                };
+                let said: Vec<(String, String)> = of_kind(tree, "ui.Button")
+                    .into_iter()
+                    .map(|button| {
+                        let key = match button.props.get("key") {
+                            Some(Value::Text(key)) => key.clone(),
+                            other => format!("{other:?}"),
+                        };
+                        (text_prop(button, "label"), key)
+                    })
+                    .filter(|(label, _)| label.starts_with("Take"))
+                    .collect();
+                assert_eq!(keyed(tree, "Take ours"), "o", "{said:?}");
+                assert_eq!(keyed(tree, "Take theirs"), "t", "{said:?}");
+                assert_eq!(keyed(tree, "Take both"), "b", "{said:?}");
+                let ours = of_kind(tree, "ui.Button")
+                    .into_iter()
+                    .find(|button| {
+                        text_prop(button, "label") == "Take ours"
+                            && button.props.get("key") == Some(&Value::text("o"))
+                    })
+                    .expect("the change at answers ours");
+                window
+                    .fire(&ours.key, "press")
+                    .expect("the key's press runs");
+                assert_eq!(s.text(&s.hunks(&d)[0], "resolution"), "ours");
+                assert_eq!(s.text(&s.hunks(&d)[1], "resolution"), "conflict");
+            }
+            // The person moves to the next change with the key the View menu names; its keys are
+            // the ones that answer now.
+            let next = {
+                let tree = window.tree();
+                let view = menu(tree, "View");
+                let next = item(view, "Next change");
+                assert_eq!(key_of(next), "n");
+                next.key.clone()
+            };
+            window.fire(&next, "choose").expect("the next change is chosen");
+            window.poll_patches().unwrap();
+            assert_eq!(of_kind(window.tree(), "ui.Card").len(), 2);
+            let theirs = of_kind(window.tree(), "ui.Button")
+                .into_iter()
+                .find(|button| {
+                    text_prop(button, "label") == "Take theirs"
+                        && button.props.get("key") == Some(&Value::text("t"))
+                })
+                .expect("the second change answers theirs");
+            window
+                .fire(&theirs.key, "press")
+                .expect("the key's press runs");
+            assert_eq!(s.text(&s.hunks(&d)[1], "resolution"), "theirs");
+            assert_eq!(s.text(&s.hunks(&d)[0], "resolution"), "ours");
+        }
+
+        phase the_comparison_window_binds_its_modes_and_navigation;
+        {
+            let s = Desk::new();
+            let d = s.compare("a\nb\nc\n", "a\nB\nC\n");
+            let window = s.window(&d);
+            let tree = window.tree();
+            let view = menu(tree, "View");
+            assert_eq!(key_of(item(view, "Diff")), "1");
+            assert_eq!(key_of(item(view, "Merge")), "2");
+            assert_eq!(key_of(item(view, "Folders")), "f");
+            assert_eq!(key_of(item(view, "Previous change")), "p");
+            assert_eq!(key_of(item(view, "Next change")), "n");
+            let buttons = of_kind(tree, "ui.Button");
+            assert!(
+                buttons
+                    .iter()
+                    .any(|button| button.props.get("key") == Some(&Value::text("F7"))),
+                "F7 steps back"
+            );
+            assert!(
+                buttons
+                    .iter()
+                    .any(|button| button.props.get("key") == Some(&Value::text("F8"))),
+                "F8 steps on"
+            );
+        }
+
+        phase a_folder_rows_enter_opens_its_file;
+        {
+            let s = Desk::new();
+            let left = s.folder("keys-left", &[("a.txt", "one\n")]);
+            let right = s.folder("keys-right", &[("a.txt", "two\n")]);
+            let d = s.compare("x\n", "y\n");
+            s.call(
+                "compare_folders",
+                vec![
+                    Value::resource(&d),
+                    Value::text(left.as_str()),
+                    Value::text(right.as_str()),
+                ],
+            );
+            let window = s.window(&d);
+            let rows = of_kind(window.tree(), "ui.ListItem");
+            assert!(!rows.is_empty(), "the differing files stand as rows");
+            for row in rows {
+                assert_eq!(keys_of(row), ["Enter"]);
+            }
+        }
+
+        phase a_file_is_coloured_as_the_language_its_name_names;
+        {
+            let s = Desk::new();
+            let cases = [
+                ("holiday.py", "python"),
+                ("app.go", "go"),
+                ("notes.md", "markdown"),
+                ("config.yaml", "yaml"),
+                ("Dockerfile", "dockerfile"),
+                ("main.rs", "rust"),
+                ("index.html", "html"),
+                ("page.css", "css"),
+                ("data.json", "json"),
+                ("query.sql", "sql"),
+                ("paper.typ", "typst"),
+                ("script.sh", "shell"),
+                ("settings.toml", "toml"),
+                ("main.c", "c"),
+                ("engine.cpp", "cpp"),
+                ("counter.v", "verilog"),
+                ("top.sv", "system_verilog"),
+                ("app.tl", "tilolang"),
+                (".gitignore", "git"),
+                ("Main.java", "plain_text"),
+            ];
+            for (name, language) in cases {
+                let session = s.session();
+                let d = returned_ref(s.call(
+                    "open_comparison",
+                    vec![
+                        Value::resource(&session),
+                        Value::text(name),
+                        Value::text("one\n"),
+                        Value::text(name),
+                        Value::text("two\n"),
+                    ],
+                ));
+                let window = s.window(&d);
+                let grid = find(window.tree(), "ui.DiffGrid").expect("the comparison grid stands");
+                assert_eq!(text_prop(grid, "language"), language, "{name}");
+            }
+        }
+
+        phase a_merge_colours_every_side_as_the_file_it_is;
+        {
+            let s = Desk::new();
+            for (name, language) in [
+                ("holiday.py", "python"),
+                ("app.go", "go"),
+                ("Dockerfile", "dockerfile"),
+            ] {
+                let session = s.session();
+                let m = returned_ref(s.call(
+                    "open_merge",
+                    vec![
+                        Value::resource(&session),
+                        Value::text(format!("{name} (base)")),
+                        Value::text("one\n"),
+                        Value::text(format!("{name} (ours)")),
+                        Value::text("two\n"),
+                        Value::text(format!("{name} (theirs)")),
+                        Value::text("three\n"),
+                    ],
+                ));
+                let window = s.window(&m);
+                let editors = of_kind(window.tree(), "ui.CodeEditor");
+                assert!(!editors.is_empty(), "{name} shows its sides");
+                for editor in editors {
+                    assert_eq!(text_prop(editor, "language"), language, "{name}");
+                }
+            }
         }
     }
 }

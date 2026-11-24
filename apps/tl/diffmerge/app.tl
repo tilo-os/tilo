@@ -667,6 +667,11 @@ action open_folder_entry(s: Session, entry: FolderEntry) -> Session (
     }
 }
 
+/// Opens the file of the row the person pressed, for the key that asked: Enter opens it.
+action open_on_key(s: Session, entry: FolderEntry, key: Text) -> Session {
+    if key == "Enter" { open_folder_entry(s, entry) } else { s }
+}
+
 fn join(root: Text, path: Text) -> Text {
     if root.ends_with("/") { "{root}{path}" } else { "{root}/{path}" }
 }
@@ -851,18 +856,82 @@ fn change_for_row(s: Session, row: Int) -> Int {
     } else { 0 }
 }
 
-/// The language a side's file name gives it, as the grid colours it.
+/// The change of the merge `step` after the one at `at`, among the changes it lists: a change's
+/// index counts the runs the sides already agree on, so the next place is read from the list.
+fn hunk_step(s: Session, at: Int, step: Int) -> Int {
+    let place = match s.hunks.find(h -> h.index == at) {
+        .some(found) => s.hunks.index_of(found) ?? 0,
+        .none => 0,
+    }
+    match s.hunks.at((place + step).clamp(0, s.hunks.len() - 1)) {
+        .some(there) => there.index,
+        .none => at,
+    }
+}
+
+/// The language a side's file name gives it, as the toolkit names it: every language the shared
+/// highlighter knows, by extension, and a `Dockerfile` by its name.
 fn language_word(label: Text) -> Text {
-    let lower = label.lower()
-    if lower.ends_with(".rs") {
+    let lower = file_name(label).lower()
+    let name = lower.split("/").last() ?? lower
+    if name == "dockerfile" or name.starts_with("dockerfile.") {
+        "dockerfile"
+    } else if lower.ends_with(".rs") {
         "rust"
-    } else if lower.ends_with(".json") {
-        "json"
+    } else if lower.ends_with(".typ") {
+        "typst"
     } else if lower.ends_with(".sql") {
         "sql"
-    } else if lower.ends_with(".tl") {
-        "tilolang"
-    } else if lower.ends_with(".typ") { "typst" } else { "text" }
+    } else if lower.ends_with(".json") {
+        "json"
+    } else if lower.ends_with(".sh")
+        or lower.ends_with(".bash")
+        or lower.ends_with(".zsh")
+        or lower.ends_with(".fish") {
+        "shell"
+    } else if name == ".gitignore"
+        or name == ".gitattributes"
+        or name == ".gitmodules"
+        or name == ".gitconfig" {
+        "git"
+    } else if lower.ends_with(".py") {
+        "python"
+    } else if lower.ends_with(".js")
+        or lower.ends_with(".mjs")
+        or lower.ends_with(".cjs")
+        or lower.ends_with(".jsx") {
+        "javascript"
+    } else if lower.ends_with(".ts")
+        or lower.ends_with(".tsx")
+        or lower.ends_with(".mts")
+        or lower.ends_with(".cts") {
+        "typescript"
+    } else if lower.ends_with(".yaml") or lower.ends_with(".yml") {
+        "yaml"
+    } else if lower.ends_with(".md") or lower.ends_with(".markdown") {
+        "markdown"
+    } else if lower.ends_with(".html") or lower.ends_with(".htm") {
+        "html"
+    } else if lower.ends_with(".css") {
+        "css"
+    } else if lower.ends_with(".toml") {
+        "toml"
+    } else if lower.ends_with(".c") or lower.ends_with(".h") {
+        "c"
+    } else if lower.ends_with(".cpp")
+        or lower.ends_with(".cc")
+        or lower.ends_with(".cxx")
+        or lower.ends_with(".hpp")
+        or lower.ends_with(".hxx")
+        or lower.ends_with(".hh") {
+        "cpp"
+    } else if lower.ends_with(".go") {
+        "go"
+    } else if lower.ends_with(".v") or lower.ends_with(".vh") {
+        "verilog"
+    } else if lower.ends_with(".sv") or lower.ends_with(".svh") {
+        "system_verilog"
+    } else if lower.ends_with(".tl") { "tilolang" } else { "plain_text" }
 }
 
 fn block_first(s: Session, at: Int) -> Int {
@@ -954,6 +1023,8 @@ view session_window(s: Session) {
     // window it reads.
     state mode: Text = if s.merging { "merge" } else if s.folding { "folders" } else { "diff" }
     state at: Int = 0
+    // The change of the merge the person is at: what taking a side decides.
+    state at_hunk: Int = s.hunks.first()?.index ?? 0
     state side: Text = "ours"
     // The change whose own text is being written, and what was typed.
     state writing: Int = -1
@@ -963,7 +1034,7 @@ view session_window(s: Session) {
         title: if s.name == "" { "Untitled comparison" } else { s.name },
     ) {
         actions: {
-            toolbar(s, mode, at)
+            toolbar(s, mode, at, at_hunk)
         }
         content: {
             stack(gap: .related, fill: 1.0) {
@@ -984,7 +1055,7 @@ view session_window(s: Session) {
                 if mode == "folders" {
                     folders_page(s)
                 } else if mode == "merge" {
-                    merge_page(s, side, writing, typed)
+                    merge_page(s, side, writing, typed, at_hunk)
                 } else {
                     comparison_page(s, at, side)
                 }
@@ -1000,7 +1071,7 @@ action clear_notice(s: Session) {
     s.notice = ""
 }
 
-view toolbar(s: Session, mode: State<Text>, at: State<Int>) {
+view toolbar(s: Session, mode: State<Text>, at: State<Int>, at_hunk: State<Int>) {
     row(gap: .related, align: .center) {
         ui.ToggleGroup(
             selected: if mode == "merge" { 1 } else if mode == "folders" { 2 } else { 0 },
@@ -1021,8 +1092,8 @@ view toolbar(s: Session, mode: State<Text>, at: State<Int>) {
                 on press: set(at, (at + 1).clamp(0, s.blocks.len() - 1))
             }
         }
-        ui.MenuButton("Open", icon: .folder_open) {
-            ui.MenuItem("Compare files…", icon: .file_plus) {
+        ui.MenuButton("File", icon: .folder_open) {
+            ui.MenuItem("Compare files…", icon: .file_plus, key: "Ctrl+O") {
                 on choose: file.choose(chosen_left(s))
             }
             ui.MenuItem("Choose the right file…", icon: .file_plus) {
@@ -1031,19 +1102,55 @@ view toolbar(s: Session, mode: State<Text>, at: State<Int>) {
             ui.MenuItem("Compare folders…", icon: .folder) {
                 on choose: file.choose_folder(chosen_folder_left(s))
             }
+            if mode == "merge" {
+                ui.MenuSeparator()
+                ui.MenuItem("Save as…", icon: .hard_drive, key: "Ctrl+Shift+S") {
+                    on choose: file.save(save_bytes(s), name: save_name(s))
+                }
+            }
             ui.MenuSeparator()
             ui.MenuItem("Load sample", icon: .sparkles) {
                 on choose: load_sample(library)
             }
         }
-        if mode == "merge" {
-            ui.Button("Save…", icon: .save, role: .primary, key: "Ctrl+S") {
-                on press: file.save(save_bytes(s), name: save_name(s))
+        ui.MenuButton("View", icon: .eye) {
+            ui.MenuItem("Diff", icon: .columns_2, key: "1") {
+                on choose: set(mode, "diff")
             }
-            if s.saved_path != "" {
-                ui.Button("Save to {s.saved_name}", icon: .hard_drive) {
-                    on press: save_merged(s, s.saved_path)
+            ui.MenuItem("Merge", icon: .arrow_up_down, key: "2") {
+                on choose: set(mode, "merge")
+            }
+            ui.MenuItem("Folders", icon: .folder, key: "f") {
+                on choose: set(mode, if mode == "folders" { "diff" } else { "folders" })
+            }
+            if mode == "merge" and not s.hunks.is_empty() {
+                ui.MenuSeparator()
+                ui.MenuItem("Previous change", icon: .arrow_up, key: "p") {
+                    on choose: set(at_hunk, hunk_step(s, at_hunk, -1))
                 }
+                ui.MenuItem("Next change", icon: .arrow_down, key: "n") {
+                    on choose: set(at_hunk, hunk_step(s, at_hunk, 1))
+                }
+            } else if not s.blocks.is_empty() {
+                ui.MenuSeparator()
+                ui.MenuItem("Previous change", icon: .arrow_up, key: "p") {
+                    on choose: set(at, (at - 1).clamp(0, s.blocks.len() - 1))
+                }
+                ui.MenuItem("Next change", icon: .arrow_down, key: "n") {
+                    on choose: set(at, (at + 1).clamp(0, s.blocks.len() - 1))
+                }
+            }
+        }
+        if mode == "merge" {
+            ui.Button(
+                if s.saved_path == "" { "Save…" } else { "Save to {s.saved_name}" },
+                icon: .save,
+                role: .primary,
+                key: "Ctrl+S",
+            ) {
+                on press: if s.saved_path == "" {
+                    file.save(save_bytes(s), name: save_name(s))
+                } else { save_merged(s, s.saved_path) }
             }
         }
     }
@@ -1122,13 +1229,45 @@ view comparison_grid(s: Session, at: State<Int>, side: Text, language: Text) {
         side: if side == "left" { .left } else if side == "right" { .right } else { .both },
         language: if language == "rust" {
             .rust
-        } else if language == "json" {
-            .json
+        } else if language == "typst" {
+            .typst
         } else if language == "sql" {
             .sql
-        } else if language == "tilolang" {
-            .tilolang
-        } else if language == "typst" { .typst } else { .plain_text },
+        } else if language == "json" {
+            .json
+        } else if language == "shell" {
+            .shell
+        } else if language == "git" {
+            .git
+        } else if language == "python" {
+            .python
+        } else if language == "javascript" {
+            .javascript
+        } else if language == "typescript" {
+            .typescript
+        } else if language == "yaml" {
+            .yaml
+        } else if language == "markdown" {
+            .markdown
+        } else if language == "html" {
+            .html
+        } else if language == "css" {
+            .css
+        } else if language == "toml" {
+            .toml
+        } else if language == "dockerfile" {
+            .dockerfile
+        } else if language == "c" {
+            .c
+        } else if language == "cpp" {
+            .cpp
+        } else if language == "go" {
+            .go
+        } else if language == "verilog" {
+            .verilog
+        } else if language == "system_verilog" {
+            .system_verilog
+        } else if language == "tilolang" { .tilolang } else { .plain_text },
         label: "{s.left_label} and {s.right_label}",
         fill,
     ) {
@@ -1164,7 +1303,13 @@ view changes_rail(s: Session, at: State<Int>) {
 }
 
 /// The three-way merge: the sides, the changes to decide about, and the merged result.
-view merge_page(s: Session, side: State<Text>, writing: State<Int>, typed: State<Text>) {
+view merge_page(
+    s: Session,
+    side: State<Text>,
+    writing: State<Int>,
+    typed: State<Text>,
+    at_hunk: State<Int>,
+) {
     if not s.merging {
         ui.EmptyState(
             "No merge open",
@@ -1190,83 +1335,17 @@ view merge_page(s: Session, side: State<Text>, writing: State<Int>, typed: State
                     )
                 }
                 if side == "base" {
-                    stack(gap: .tight, fill: 1.0) {
-                        source_head("Base", s.base_label)
-                        ui.Scroll(fill: 1.0) {
-                            ui.CodeEditor(
-                                bind: s.base,
-                                read_only: true,
-                                gutter: true,
-                                max_lines: 16,
-                                language: .plain_text,
-                            )
-                        }
-                    }
+                    merge_source(s, "base", "Base", s.base_label)
                 } else if side == "theirs" {
-                    stack(gap: .tight, fill: 1.0) {
-                        source_head("Theirs", s.theirs_label)
-                        ui.Scroll(fill: 1.0) {
-                            ui.CodeEditor(
-                                bind: s.theirs,
-                                read_only: true,
-                                gutter: true,
-                                max_lines: 16,
-                                language: .plain_text,
-                            )
-                        }
-                    }
+                    merge_source(s, "theirs", "Theirs", s.theirs_label)
                 } else {
-                    stack(gap: .tight, fill: 1.0) {
-                        source_head("Ours", s.ours_label)
-                        ui.Scroll(fill: 1.0) {
-                            ui.CodeEditor(
-                                bind: s.ours,
-                                read_only: true,
-                                gutter: true,
-                                max_lines: 16,
-                                language: .plain_text,
-                            )
-                        }
-                    }
+                    merge_source(s, "ours", "Ours", s.ours_label)
                 }
             } else {
                 row(gap: .related, fill) {
-                    stack(gap: .tight, fill: 1.0, min: 16rem) {
-                        source_head("Base", s.base_label)
-                        ui.Scroll(fill: 1.0) {
-                            ui.CodeEditor(
-                                bind: s.base,
-                                read_only: true,
-                                gutter: true,
-                                max_lines: 16,
-                                language: .plain_text,
-                            )
-                        }
-                    }
-                    stack(gap: .tight, fill: 1.0, min: 16rem) {
-                        source_head("Ours", s.ours_label)
-                        ui.Scroll(fill: 1.0) {
-                            ui.CodeEditor(
-                                bind: s.ours,
-                                read_only: true,
-                                gutter: true,
-                                max_lines: 16,
-                                language: .plain_text,
-                            )
-                        }
-                    }
-                    stack(gap: .tight, fill: 1.0, min: 16rem) {
-                        source_head("Theirs", s.theirs_label)
-                        ui.Scroll(fill: 1.0) {
-                            ui.CodeEditor(
-                                bind: s.theirs,
-                                read_only: true,
-                                gutter: true,
-                                max_lines: 16,
-                                language: .plain_text,
-                            )
-                        }
-                    }
+                    merge_source(s, "base", "Base", s.base_label)
+                    merge_source(s, "ours", "Ours", s.ours_label)
+                    merge_source(s, "theirs", "Theirs", s.theirs_label)
                 }
             }
             ui.Section("Changes", collapsible: false) {
@@ -1275,12 +1354,167 @@ view merge_page(s: Session, side: State<Text>, writing: State<Int>, typed: State
                 } else {
                     stack(gap: .sibling) {
                         for h in s.hunks {
-                            hunk_card(s, h, writing, typed)
+                            hunk_card(s, h, writing, typed, at_hunk)
                         }
                     }
                 }
             }
             merged_section(s)
+        }
+    }
+}
+
+/// One side of a merge's code, coloured as its file is written.
+view merge_source(s: Session, which: Text, name: Text, label: Text) {
+    let word = language_word(label)
+    stack(gap: .tight, fill: 1.0, min: 16rem) {
+        source_head(name, label)
+        ui.Scroll(fill: 1.0) {
+            if which == "base" {
+                ui.CodeEditor(
+                    bind: s.base,
+                    read_only: true,
+                    gutter: true,
+                    max_lines: 16,
+                    language: if word == "rust" {
+                        .rust
+                    } else if word == "typst" {
+                        .typst
+                    } else if word == "sql" {
+                        .sql
+                    } else if word == "json" {
+                        .json
+                    } else if word == "shell" {
+                        .shell
+                    } else if word == "git" {
+                        .git
+                    } else if word == "python" {
+                        .python
+                    } else if word == "javascript" {
+                        .javascript
+                    } else if word == "typescript" {
+                        .typescript
+                    } else if word == "yaml" {
+                        .yaml
+                    } else if word == "markdown" {
+                        .markdown
+                    } else if word == "html" {
+                        .html
+                    } else if word == "css" {
+                        .css
+                    } else if word == "toml" {
+                        .toml
+                    } else if word == "dockerfile" {
+                        .dockerfile
+                    } else if word == "c" {
+                        .c
+                    } else if word == "cpp" {
+                        .cpp
+                    } else if word == "go" {
+                        .go
+                    } else if word == "verilog" {
+                        .verilog
+                    } else if word == "system_verilog" {
+                        .system_verilog
+                    } else if word == "tilolang" { .tilolang } else { .plain_text },
+                )
+            } else if which == "theirs" {
+                ui.CodeEditor(
+                    bind: s.theirs,
+                    read_only: true,
+                    gutter: true,
+                    max_lines: 16,
+                    language: if word == "rust" {
+                        .rust
+                    } else if word == "typst" {
+                        .typst
+                    } else if word == "sql" {
+                        .sql
+                    } else if word == "json" {
+                        .json
+                    } else if word == "shell" {
+                        .shell
+                    } else if word == "git" {
+                        .git
+                    } else if word == "python" {
+                        .python
+                    } else if word == "javascript" {
+                        .javascript
+                    } else if word == "typescript" {
+                        .typescript
+                    } else if word == "yaml" {
+                        .yaml
+                    } else if word == "markdown" {
+                        .markdown
+                    } else if word == "html" {
+                        .html
+                    } else if word == "css" {
+                        .css
+                    } else if word == "toml" {
+                        .toml
+                    } else if word == "dockerfile" {
+                        .dockerfile
+                    } else if word == "c" {
+                        .c
+                    } else if word == "cpp" {
+                        .cpp
+                    } else if word == "go" {
+                        .go
+                    } else if word == "verilog" {
+                        .verilog
+                    } else if word == "system_verilog" {
+                        .system_verilog
+                    } else if word == "tilolang" { .tilolang } else { .plain_text },
+                )
+            } else {
+                ui.CodeEditor(
+                    bind: s.ours,
+                    read_only: true,
+                    gutter: true,
+                    max_lines: 16,
+                    language: if word == "rust" {
+                        .rust
+                    } else if word == "typst" {
+                        .typst
+                    } else if word == "sql" {
+                        .sql
+                    } else if word == "json" {
+                        .json
+                    } else if word == "shell" {
+                        .shell
+                    } else if word == "git" {
+                        .git
+                    } else if word == "python" {
+                        .python
+                    } else if word == "javascript" {
+                        .javascript
+                    } else if word == "typescript" {
+                        .typescript
+                    } else if word == "yaml" {
+                        .yaml
+                    } else if word == "markdown" {
+                        .markdown
+                    } else if word == "html" {
+                        .html
+                    } else if word == "css" {
+                        .css
+                    } else if word == "toml" {
+                        .toml
+                    } else if word == "dockerfile" {
+                        .dockerfile
+                    } else if word == "c" {
+                        .c
+                    } else if word == "cpp" {
+                        .cpp
+                    } else if word == "go" {
+                        .go
+                    } else if word == "verilog" {
+                        .verilog
+                    } else if word == "system_verilog" {
+                        .system_verilog
+                    } else if word == "tilolang" { .tilolang } else { .plain_text },
+                )
+            }
         }
     }
 }
@@ -1296,46 +1530,179 @@ view source_head(name: Text, label: Text) {
     )
 }
 
-/// One change to decide about: what the sides give it, and the ways they can be taken.
-view hunk_card(s: Session, h: Hunk, writing: State<Int>, typed: State<Text>) {
-    ui.Card(title: "Change {h.index + 1}", item: s) {
+/// One side of a change, coloured as the merged file is written.
+view hunk_source(s: Session, h: Hunk, which: Text, name: Text) {
+    let word = language_word(s.ours_label)
+    ui.Text(name, role: .caption, secondary: true)
+    if which == "base" {
+        ui.CodeEditor(
+            bind: h.base,
+            read_only: true,
+            gutter: false,
+            max_lines: 6,
+            language: if word == "rust" {
+                .rust
+            } else if word == "typst" {
+                .typst
+            } else if word == "sql" {
+                .sql
+            } else if word == "json" {
+                .json
+            } else if word == "shell" {
+                .shell
+            } else if word == "git" {
+                .git
+            } else if word == "python" {
+                .python
+            } else if word == "javascript" {
+                .javascript
+            } else if word == "typescript" {
+                .typescript
+            } else if word == "yaml" {
+                .yaml
+            } else if word == "markdown" {
+                .markdown
+            } else if word == "html" {
+                .html
+            } else if word == "css" {
+                .css
+            } else if word == "toml" {
+                .toml
+            } else if word == "dockerfile" {
+                .dockerfile
+            } else if word == "c" {
+                .c
+            } else if word == "cpp" {
+                .cpp
+            } else if word == "go" {
+                .go
+            } else if word == "verilog" {
+                .verilog
+            } else if word == "system_verilog" {
+                .system_verilog
+            } else if word == "tilolang" { .tilolang } else { .plain_text },
+        )
+    } else if which == "ours" {
+        ui.CodeEditor(
+            bind: h.ours,
+            read_only: true,
+            gutter: false,
+            max_lines: 6,
+            language: if word == "rust" {
+                .rust
+            } else if word == "typst" {
+                .typst
+            } else if word == "sql" {
+                .sql
+            } else if word == "json" {
+                .json
+            } else if word == "shell" {
+                .shell
+            } else if word == "git" {
+                .git
+            } else if word == "python" {
+                .python
+            } else if word == "javascript" {
+                .javascript
+            } else if word == "typescript" {
+                .typescript
+            } else if word == "yaml" {
+                .yaml
+            } else if word == "markdown" {
+                .markdown
+            } else if word == "html" {
+                .html
+            } else if word == "css" {
+                .css
+            } else if word == "toml" {
+                .toml
+            } else if word == "dockerfile" {
+                .dockerfile
+            } else if word == "c" {
+                .c
+            } else if word == "cpp" {
+                .cpp
+            } else if word == "go" {
+                .go
+            } else if word == "verilog" {
+                .verilog
+            } else if word == "system_verilog" {
+                .system_verilog
+            } else if word == "tilolang" { .tilolang } else { .plain_text },
+        )
+    } else {
+        ui.CodeEditor(
+            bind: h.theirs,
+            read_only: true,
+            gutter: false,
+            max_lines: 6,
+            language: if word == "rust" {
+                .rust
+            } else if word == "typst" {
+                .typst
+            } else if word == "sql" {
+                .sql
+            } else if word == "json" {
+                .json
+            } else if word == "shell" {
+                .shell
+            } else if word == "git" {
+                .git
+            } else if word == "python" {
+                .python
+            } else if word == "javascript" {
+                .javascript
+            } else if word == "typescript" {
+                .typescript
+            } else if word == "yaml" {
+                .yaml
+            } else if word == "markdown" {
+                .markdown
+            } else if word == "html" {
+                .html
+            } else if word == "css" {
+                .css
+            } else if word == "toml" {
+                .toml
+            } else if word == "dockerfile" {
+                .dockerfile
+            } else if word == "c" {
+                .c
+            } else if word == "cpp" {
+                .cpp
+            } else if word == "go" {
+                .go
+            } else if word == "verilog" {
+                .verilog
+            } else if word == "system_verilog" {
+                .system_verilog
+            } else if word == "tilolang" { .tilolang } else { .plain_text },
+        )
+    }
+}
+
+/// One change to decide about: what the sides give it, and the ways they can be taken. The change
+/// the person is at answers `o`, `t` and `b`, one press each.
+view hunk_card(s: Session, h: Hunk, writing: State<Int>, typed: State<Text>, at_hunk: State<Int>) {
+    ui.Card(title: "Change {h.index + 1}", item: s, selected: at_hunk == h.index) {
+        on activate: set(at_hunk, h.index)
         ui.Badge(
             resolution_word(h.resolution),
             tone: if h.resolution == "conflict" { .warning } else { .success },
         )
         stack(gap: .tight, fill) {
             if h.base != "" {
-                ui.Text("Base", role: .caption, secondary: true)
-                ui.CodeEditor(
-                    bind: h.base,
-                    read_only: true,
-                    gutter: false,
-                    max_lines: 6,
-                    language: .plain_text,
-                )
+                hunk_source(s, h, "base", "Base")
             }
-            ui.Text("Ours", role: .caption, secondary: true)
-            ui.CodeEditor(
-                bind: h.ours,
-                read_only: true,
-                gutter: false,
-                max_lines: 6,
-                language: .plain_text,
-            )
-            ui.Text("Theirs", role: .caption, secondary: true)
-            ui.CodeEditor(
-                bind: h.theirs,
-                read_only: true,
-                gutter: false,
-                max_lines: 6,
-                language: .plain_text,
-            )
+            hunk_source(s, h, "ours", "Ours")
+            hunk_source(s, h, "theirs", "Theirs")
         }
         row(gap: .related, align: .center) {
             ui.Button(
                 "Take ours",
                 icon: .arrow_left,
                 role: if h.resolution == "ours" { .primary } else { .secondary },
+                key: if at_hunk == h.index { "o" } else { "" },
             ) {
                 on press: take_ours(s, h.index)
             }
@@ -1343,6 +1710,7 @@ view hunk_card(s: Session, h: Hunk, writing: State<Int>, typed: State<Text>) {
                 "Take theirs",
                 icon: .arrow_right,
                 role: if h.resolution == "theirs" { .primary } else { .secondary },
+                key: if at_hunk == h.index { "t" } else { "" },
             ) {
                 on press: take_theirs(s, h.index)
             }
@@ -1350,6 +1718,7 @@ view hunk_card(s: Session, h: Hunk, writing: State<Int>, typed: State<Text>) {
                 "Take both",
                 icon: .arrow_up_down,
                 role: if h.resolution == "both" { .primary } else { .secondary },
+                key: if at_hunk == h.index { "b" } else { "" },
             ) {
                 on press: take_both(s, h.index)
             }
@@ -1378,6 +1747,7 @@ view hunk_card(s: Session, h: Hunk, writing: State<Int>, typed: State<Text>) {
 
 /// The merged result everyone edits, and how much of the merge still asks something.
 view merged_section(s: Session) {
+    let word = language_word(s.ours_label)
     ui.Section(
         if s.conflicts == 0 {
             "Merged result"
@@ -1398,7 +1768,47 @@ view merged_section(s: Session) {
             gutter: true,
             min_lines: 8,
             max_lines: 24,
-            language: .plain_text,
+            language: if word == "rust" {
+                .rust
+            } else if word == "typst" {
+                .typst
+            } else if word == "sql" {
+                .sql
+            } else if word == "json" {
+                .json
+            } else if word == "shell" {
+                .shell
+            } else if word == "git" {
+                .git
+            } else if word == "python" {
+                .python
+            } else if word == "javascript" {
+                .javascript
+            } else if word == "typescript" {
+                .typescript
+            } else if word == "yaml" {
+                .yaml
+            } else if word == "markdown" {
+                .markdown
+            } else if word == "html" {
+                .html
+            } else if word == "css" {
+                .css
+            } else if word == "toml" {
+                .toml
+            } else if word == "dockerfile" {
+                .dockerfile
+            } else if word == "c" {
+                .c
+            } else if word == "cpp" {
+                .cpp
+            } else if word == "go" {
+                .go
+            } else if word == "verilog" {
+                .verilog
+            } else if word == "system_verilog" {
+                .system_verilog
+            } else if word == "tilolang" { .tilolang } else { .plain_text },
         )
         row(gap: .related, align: .center) {
             ui.Button("Save…", icon: .save, role: .primary) {
@@ -1457,7 +1867,8 @@ view folders_page(s: Session) {
             ui.VirtualList(name: "Files that differ", in_column: true) {
                 on activate(e: FolderEntry): open_folder_entry(s, e)
                 for e in s.folder_entries {
-                    ui.ListItem(item: e) {
+                    ui.ListItem(item: e, keys: ["Enter"]) {
+                        on shortcut(k): open_on_key(s, e, k)
                         row: {
                             ui.ListRow(
                                 title: e.path,
