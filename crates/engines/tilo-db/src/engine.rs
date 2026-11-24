@@ -278,11 +278,15 @@ impl SqliteEngine {
 
         if col_count == 0 {
             let affected = self.conn.execute(trimmed, []).map_err(|e| e.to_string())?;
+            // A statement cannot change more rows than a count of them can name, and the number
+            // the window shows is the driver's: one that does not fit is refused, never wrapped.
+            let changed = i64::try_from(affected)
+                .map_err(|_| format!("a statement changed {affected} rows, more than a count names"))?;
             return Ok(QueryResult {
                 columns: Vec::new(),
                 rows: Vec::new(),
                 elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
-                rows_affected: Some(affected as i64),
+                rows_affected: Some(changed),
                 is_select: false,
                 truncation: None,
             });

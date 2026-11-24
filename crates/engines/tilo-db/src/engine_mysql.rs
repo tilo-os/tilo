@@ -217,7 +217,9 @@ impl MySqlEngine {
         let columns: Vec<String> = col_meta.iter().map(|(n, _)| n.clone()).collect();
 
         if columns.is_empty() {
-            let affected = result.affected_rows() as i64;
+            let affected = i64::try_from(result.affected_rows()).map_err(|rows| {
+                format!("a statement changed {rows} rows, more than a count names")
+            })?;
             drop(result);
             return Ok(QueryResult {
                 columns: Vec::new(),
@@ -318,10 +320,9 @@ pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
         Value::NULL => Cell::Null,
         Value::Int(i) => Cell::Integer(i),
         Value::UInt(u) => {
-            if i64::try_from(u).is_ok() {
-                Cell::Integer(u as i64)
-            } else {
-                Cell::bounded_text(u.to_string())
+            match i64::try_from(u) {
+                Ok(n) => Cell::Integer(n),
+                Err(_) => Cell::bounded_text(u.to_string()),
             }
         }
         Value::Float(f) => Cell::Real(f64::from(f)),

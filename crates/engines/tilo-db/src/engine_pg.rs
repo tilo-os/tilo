@@ -643,7 +643,9 @@ impl PostgresEngine {
                     columns: Vec::new(),
                     rows: Vec::new(),
                     elapsed_ms: elapsed_ms(start),
-                    rows_affected: Some(affected as i64),
+                    rows_affected: Some(i64::try_from(affected).map_err(|rows| {
+                        format!("a statement changed {rows} rows, more than a count names")
+                    })?),
                     is_select: false,
                     truncation: None,
                 })
@@ -703,7 +705,8 @@ mod tests {
 
     fn numeric(weight: i16, sign: u16, scale: u16, digits: &[u16]) -> Vec<u8> {
         let mut out = Vec::new();
-        out.extend_from_slice(&(digits.len() as i16).to_be_bytes());
+        let held = i16::try_from(digits.len()).expect("a fixture's digit count fits a header");
+        out.extend_from_slice(&held.to_be_bytes());
         out.extend_from_slice(&weight.to_be_bytes());
         out.extend_from_slice(&sign.to_be_bytes());
         out.extend_from_slice(&scale.to_be_bytes());
@@ -867,12 +870,14 @@ mod tests {
         raw.extend_from_slice(&1i32.to_be_bytes());
         raw.extend_from_slice(&i32::from(values.iter().any(Option::is_none)).to_be_bytes());
         raw.extend_from_slice(&element_oid.to_be_bytes());
-        raw.extend_from_slice(&(values.len() as i32).to_be_bytes());
+        let count = i32::try_from(values.len()).expect("a fixture's array length fits");
+        raw.extend_from_slice(&count.to_be_bytes());
         raw.extend_from_slice(&1i32.to_be_bytes());
         for value in values {
             match value {
                 Some(value) => {
-                    raw.extend_from_slice(&(value.len() as i32).to_be_bytes());
+                    let held = i32::try_from(value.len()).expect("a fixture's value length fits");
+                    raw.extend_from_slice(&held.to_be_bytes());
                     raw.extend_from_slice(value);
                 }
                 None => raw.extend_from_slice(&(-1i32).to_be_bytes()),

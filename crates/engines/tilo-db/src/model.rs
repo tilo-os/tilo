@@ -7,7 +7,7 @@
 
 use serde::Serialize;
 
-/// Which engine a connection targets. `SQLite` is a file on this device; PostgreSQL and `MySQL`
+/// Which engine a connection targets. `SQLite` is a file on this device; `PostgreSQL` and `MySQL`
 /// are network engines.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -200,9 +200,10 @@ impl Cell {
         }
         let mut end = Self::MAX_RETAINED_TEXT_BYTES;
         while !value.is_char_boundary(end) {
-            end -= 1;
+            end = end.saturating_sub(1);
         }
-        Self::Text(format!("{}… [truncated]", &value[..end]))
+        let held = value.get(..end).unwrap_or_default();
+        Self::Text(format!("{held}… [truncated]"))
     }
 
     /// The payload this cell retains. A binary value keeps its size only.
@@ -337,6 +338,10 @@ pub struct ResultAnswer {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unreachable,
+    reason = "in a test a pattern that cannot fail is the assertion"
+)]
 mod tests {
     use super::*;
 
@@ -389,6 +394,7 @@ mod tests {
                 schemas: vec![SchemaInfo {
                     name: "main".into(),
                     tables: vec![TableInfo {
+                        schema: "main".into(),
                         name: "tracks".into(),
                         kind: RelationKind::Table,
                         columns: vec![],

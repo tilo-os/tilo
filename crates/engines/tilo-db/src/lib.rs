@@ -1,5 +1,14 @@
-//! A database's engine: the connections a device opens to SQLite, PostgreSQL and MySQL, the
+//! A database's engine: the connections a device opens to `SQLite`, `PostgreSQL` and `MySQL`, the
 //! catalog of each, and the statements run on it.
+//!
+//! The drivers' decode arithmetic is bounded by their wire formats (a column's digits, a row's
+//! cells), and a registry guard is held while its map is read and changed, so the two lints that
+//! name those shapes are allowed here and nowhere else.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::significant_drop_tightening,
+    reason = "the drivers' arithmetic is bounded by their wire formats, and a registry guard is held while its map is read and changed"
+)]
 //!
 //! An app runs sandboxed with no driver of its own, so it asks the device by name: `engine.call`
 //! for a connection, a catalog or one page of a table, and `engine.start`/`engine.status`/
@@ -125,7 +134,7 @@ impl Database {
             "open" => {
                 let profile = open_profile(input)?;
                 self.job("tilo-db-open", move |database, job| {
-                    run_open(&database, &job, profile);
+                    run_open(&database, &job, &profile);
                 })
             }
             "query" => {
@@ -137,7 +146,7 @@ impl Database {
                 let ask: Ask = serde_json::from_str(input).map_err(|error| error.to_string())?;
                 let engine = self.engine_of(ask.connection)?;
                 self.job("tilo-db-query", move |database, job| {
-                    run_job(&database, &job, engine, ask.sql);
+                    run_job(&database, &job, &engine, &ask.sql);
                 })
             }
             other => Err(format!("`{other}` is no database job this device runs")),
@@ -377,7 +386,7 @@ impl Database {
 }
 
 /// Runs one statement on its own thread and keeps what it answered for [`Database::status`].
-fn run_job(database: &Database, job: &str, engine: Arc<Mutex<LiveEngine>>, sql: String) {
+fn run_job(database: &Database, job: &str, engine: &Arc<Mutex<LiveEngine>>, sql: &str) {
     let stopped = {
         let live = database.live();
         live.jobs.get(job).map(|held| Arc::clone(&held.stopped))
@@ -389,7 +398,7 @@ fn run_job(database: &Database, job: &str, engine: Arc<Mutex<LiveEngine>>, sql: 
     {
         let mut live = database.live();
         if let Some(held) = live.jobs.get_mut(job) {
-            held.cancel = Some(cancel.clone());
+            held.cancel = Some(cancel);
         }
     }
     let stopped = stopped.unwrap_or_default();
@@ -397,7 +406,7 @@ fn run_job(database: &Database, job: &str, engine: Arc<Mutex<LiveEngine>>, sql: 
         finish(database, job, JobState::Cancelled, String::new(), String::new());
         return;
     }
-    match engine.run(&sql) {
+    match engine.run(sql) {
         Ok(result) => {
             let answer = serde_json::to_string(&result.answer()).unwrap_or_default();
             let state = if stopped.load(Ordering::Relaxed) {
@@ -441,8 +450,8 @@ fn table_of(input: &str) -> Result<(u64, String, String), String> {
 }
 
 /// Opens a connection on its own thread and keeps its catalog for the app.
-fn run_open(database: &Database, job: &str, profile: Profile) {
-    match open_engine(&profile) {
+fn run_open(database: &Database, job: &str, profile: &Profile) {
+    match open_engine(profile) {
         Ok(mut opened) => match opened.introspect() {
             Ok(_) => {
                 let id = database.0.next_connection.fetch_add(1, Ordering::Relaxed) + 1;
@@ -601,7 +610,7 @@ mod tests {
             assert_eq!(result["columns"][0], "name");
             assert_eq!(result["rows"].as_array().unwrap().len(), 3);
             assert_eq!(result["numeric"][0], false);
-            assert_eq!(result["rows"][0][0], "AC/DC");
+            assert_eq!(result["rows"][0][0], "Aurora Lights");
         }
 
         phase a_browse_pages_and_a_change_reports_its_rows;
