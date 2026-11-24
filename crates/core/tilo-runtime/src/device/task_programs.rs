@@ -255,10 +255,22 @@ mod tests {
 
     /// Task hosts as the device's processes start them: each keeps the `let`s its programs made
     /// (here, every program it ran) and answers with them, and ends when the API lets go of its
-    /// program connection, saying so on `ended`.
+    /// program connection, saying so on `ended`. A program that deletes previews as two deletes
+    /// for its person to be asked about, keeping nothing; any other changes nothing, and its
+    /// preview has answered, kept as a run is.
     struct Hosts {
         started: std::sync::Mutex<Vec<String>>,
         ended: std::sync::mpsc::Sender<String>,
+        /// Each program a host runs for real, as it runs it.
+        runs: std::sync::Mutex<Option<std::sync::mpsc::Sender<String>>>,
+    }
+
+    /// What a host answers for `kept`, every program it ran.
+    fn ran(kept: &[String]) -> serde_json::Value {
+        serde_json::json!({"answer": {
+            "state": "done",
+            "output": [format!("ran {}", kept.join(", "))],
+        }})
     }
 
     impl tilo_mcp::TaskHosts for Hosts {
@@ -267,6 +279,7 @@ mod tests {
             self.started.lock_recover().push(task.to_owned());
             let (api, host) = std::os::unix::net::UnixStream::pair()?;
             let (task, ended) = (task.to_owned(), self.ended.clone());
+            let runs = self.runs.lock_recover().clone();
             std::thread::spawn(move || {
                 let mut writer = host.try_clone().expect("the host's own end");
                 let mut kept: Vec<String> = Vec::new();
@@ -277,11 +290,31 @@ mod tests {
                         break;
                     };
                     let answer = if let Some(run) = asked.get("run") {
-                        kept.push(run["source"].as_str().unwrap_or_default().to_owned());
-                        serde_json::json!({"answer": {
-                            "state": "done",
-                            "output": [format!("ran {}", kept.join(", "))],
-                        }})
+                        let source = run["source"].as_str().unwrap_or_default().to_owned();
+                        if let Some(runs) = &runs {
+                            let _ = runs.send(source.clone());
+                        }
+                        kept.push(source);
+                        ran(&kept)
+                    } else if let Some(preview) = asked.get("preview") {
+                        let source = preview["source"].as_str().unwrap_or_default();
+                        if source.contains("delete") {
+                            let delete = serde_json::json!({
+                                "action": "notes.delete",
+                                "destructive": true,
+                                "resources": ["n1"],
+                            });
+                            serde_json::json!({"answer": {
+                                "state": "preview",
+                                "asks": true,
+                                "complete": true,
+                                "output": [],
+                                "steps": [delete, delete],
+                            }})
+                        } else {
+                            kept.push(source.to_owned());
+                            ran(&kept)
+                        }
                     } else {
                         serde_json::json!({"catalogue": {}})
                     };
@@ -309,6 +342,106 @@ mod tests {
         let start: StartHosts =
             Box::new(move |_, _, _| Some(Arc::clone(&started) as Arc<dyn tilo_mcp::TaskHosts>));
         TaskPrograms::new(Arc::new(DaemonPrograms::new(person_api, start)), || None)
+    }
+
+    /// The step as the device's dispatch takes a call of a provider registered on it: a call
+    /// nobody approved is asked about first ([`ActionProvider::asks_first`]), and its own calls
+    /// go through `through`, its session's API.
+    struct Taken {
+        programs: TaskPrograms,
+        through: Provider,
+    }
+
+    impl ActionProvider for Taken {
+        fn query(
+            &self,
+            caller: &Caller,
+            query: tilo_actions::remote::CatalogueQuery,
+        ) -> Pending<
+            Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
+        > {
+            ActionProvider::query(&self.programs, caller, query)
+        }
+
+        fn invoke(
+            &self,
+            caller: &Caller,
+            request: tilo_actions::remote::InvokeRequest,
+        ) -> Pending<
+            Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+        > {
+            let admitted = || tilo_actions::remote::Admitted {
+                through: Some(Arc::clone(&self.through)),
+                ..tilo_actions::remote::Admitted::default()
+            };
+            if request.approval().is_none()
+                && let Some(asking) =
+                    ActionProvider::asks_first(&self.programs, caller, &request, &admitted())
+            {
+                match asking.wait_timeout(std::time::Duration::from_secs(20)) {
+                    Ok(Some(Ok(()))) => {}
+                    Ok(Some(Err(waits))) => return Pending::ready(Err(waits)),
+                    _ => {
+                        return Pending::ready(Err(
+                            tilo_actions::remote::ActionCallError::Unanswered,
+                        ));
+                    }
+                }
+            }
+            ActionProvider::run(&self.programs, caller, request, admitted())
+        }
+
+        fn observe(
+            &self,
+            _: &Caller,
+            _: &tilo_actions::InvocationId,
+        ) -> Option<tilo_actions::remote::InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _: &Caller,
+            _: &tilo_actions::InvocationId,
+        ) -> Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+            Pending::ready(Ok(()))
+        }
+    }
+
+    /// One program of an agent session, as its call names the step.
+    fn step_call(program: &str) -> tilo_actions::remote::InvokeRequest {
+        tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: wire::target(),
+            argument: InvokeArgument::from_slot(Some(&format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "program": program })
+            ))),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+
+    /// What `answered`, a receipt of the step, says the program answered.
+    fn answered(
+        answered: Option<
+            Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+        >,
+    ) -> wire::ProgramAnswer {
+        let receipt = answered
+            .expect("the program answers")
+            .expect("the step takes the program");
+        let tilo_actions::remote::ReceiptStatus::Completed { output } = receipt.status else {
+            panic!("the program has answered: {:?}", receipt.status);
+        };
+        serde_json::from_value(output.value.expect("an answer"))
+            .expect("the step answers what the program made")
     }
 
     /// Run `program` as `caller`, in the program session `session` when it names one: what the
@@ -363,6 +496,7 @@ mod tests {
         let hosts = Arc::new(Hosts {
             started: std::sync::Mutex::default(),
             ended,
+            runs: std::sync::Mutex::default(),
         });
         let programs = programs(&hosts);
         let line = person();
@@ -413,55 +547,171 @@ mod tests {
         let hosts = Arc::new(Hosts {
             started: std::sync::Mutex::default(),
             ended,
+            runs: std::sync::Mutex::default(),
         });
-        let programs = programs(&hosts);
+        let taken = Taken {
+            programs: programs(&hosts),
+            through: Arc::new(Workspace),
+        };
         let agent = Caller::local_agent("agent-laptop-1a2b")
             .in_workspace(WORKSPACE)
             .in_agent_session("agent-session:1")
             .in_new_execution();
-        let through = tilo_actions::remote::Admitted {
-            through: Some(Arc::new(Workspace)),
-            ..tilo_actions::remote::Admitted::default()
-        };
         let step = |program: &str| {
-            let request = tilo_actions::remote::InvokeRequest {
-                invocation: tilo_actions::InvocationId::new(),
-                target: wire::target(),
-                argument: InvokeArgument::from_slot(Some(&format!(
-                    "{}{}",
-                    tilo_actions::ARGUMENTS_JSON_PREFIX,
-                    serde_json::json!({ "program": program })
-                ))),
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-                appearance: None,
-                signed: None,
-            };
-            let answered = programs
-                .start(&agent, &request, &through)
-                .expect("the step starts")
-                .wait_timeout(std::time::Duration::from_secs(20))
-                .ok()
-                .flatten()
-                .expect("the program answers")
-                .expect("the program ran");
-            serde_json::from_value::<wire::ProgramAnswer>(answered.value.expect("an answer"))
-                .expect("the step answers what the program made")
+            answered(
+                taken
+                    .invoke(&agent, step_call(program))
+                    .wait_timeout(std::time::Duration::from_secs(20))
+                    .ok()
+                    .flatten(),
+            )
         };
         assert!(step("ls notes").text.contains("ran ls notes"));
         assert!(step("ls chat").text.contains("ran ls notes, ls chat"));
         assert_eq!(*hosts.started.lock_recover(), ["agent-session:1"]);
 
         agent.retire_execution();
-        run(&programs, &person(), "notes", Some("client-1"));
+        run(&taken.programs, &person(), "notes", Some("client-1"));
         assert_eq!(
             host_ended
                 .recv_timeout(std::time::Duration::from_secs(20))
                 .expect("the host ended with the forwarded run"),
             "agent-session:1"
+        );
+    }
+
+    /// An agent's program on this device that deletes waits for its person's yes as its asked
+    /// record, made through the device's dispatch: the record shows the program and what it
+    /// would do, and nothing of it ran. The agent cannot answer it. The person's approve runs it
+    /// in the same session, which still has the `let`s made before it; a decline runs nothing.
+    #[test]
+    fn an_agents_program_that_deletes_waits_for_its_persons_yes_here() {
+        use super::super::asked::{Admits, DeviceAsked, Run};
+        use tilo_actions::remote::asked::{self, AskedStore, Fact, Offer, Resolve};
+
+        const ADA: [u8; 32] = [1; 32];
+        let wait = std::time::Duration::from_secs(20);
+        let (ended, _host_ended) = std::sync::mpsc::channel();
+        let (runs, ran_for_real) = std::sync::mpsc::channel();
+        let hosts = Arc::new(Hosts {
+            started: std::sync::Mutex::default(),
+            ended,
+            runs: std::sync::Mutex::new(Some(runs)),
+        });
+        let dispatch: Provider = Arc::new(Taken {
+            programs: programs(&hosts),
+            through: Arc::new(Workspace),
+        });
+        let scout = Caller::delegated_agent("scout", ADA, [9; 32])
+            .in_workspace(WORKSPACE)
+            .in_agent_session("agent-session:1")
+            .in_new_execution();
+        let ada = Caller::authenticated(ADA, [3; 32]).in_workspace(WORKSPACE);
+        let store = AskedStore::opened(None, None, Vec::new()).expect("the store opens");
+        let (again, runs_as) = (Arc::clone(&dispatch), scout.clone());
+        let admits: Admits = Box::new(move |_| Ok((Arc::clone(&again), runs_as.clone())));
+        let device = DeviceAsked::new(Arc::clone(&store), Arc::default(), admits);
+        let run = Run::Agent {
+            workspace: WORKSPACE.into(),
+            agent: "scout".into(),
+            name: "Scout".into(),
+        };
+        let send = |call: &tilo_actions::remote::InvokeRequest| {
+            device
+                .send(
+                    run.clone(),
+                    &scout,
+                    (Arc::clone(&dispatch), scout.clone()),
+                    call.clone(),
+                )
+                .wait_timeout(wait)
+                .ok()
+                .flatten()
+        };
+        let resolve = |call: &tilo_actions::remote::InvokeRequest, by: &Caller, resolution| {
+            let at = store
+                .record(&call.invocation.0.to_string())
+                .expect("the call is kept as its record");
+            store
+                .resolve(
+                    &at,
+                    by,
+                    &Resolve {
+                        resolution,
+                        ..Resolve::default()
+                    },
+                )
+                .wait_timeout(wait)
+                .ok()
+                .flatten()
+                .expect("the answer is admitted or refused at once")
+        };
+        // What the session's host has run so far, as a program that only reads shows it.
+        let so_far = || answered(send(&step_call("n"))).text;
+
+        let first = answered(send(&step_call("let n = notes")));
+        assert!(first.text.contains("ran let n = notes"), "{}", first.text);
+
+        let delete = "for x in n { x.delete() }";
+        let deleting = step_call(delete);
+        let receipt = send(&deleting)
+            .expect("the dispatch answers")
+            .expect("kept, not refused");
+        assert!(
+            matches!(
+                receipt.status,
+                tilo_actions::remote::ReceiptStatus::Accepted
+            ),
+            "it waits under way: {receipt:?}"
+        );
+        let questions = store.asked_of(&ADA);
+        assert_eq!(questions.len(), 1, "Ada is asked");
+        let facts = &questions[0].facts;
+        assert!(facts.destructive);
+        assert_eq!(
+            facts.facts,
+            [Fact::new("Program", delete), Fact::new("notes.delete", "×2")],
+            "she sees the program and what it would do"
+        );
+        assert!(
+            !Offer::of(facts).contains(&Offer::ApproveAndGrant),
+            "a program's question grants nothing"
+        );
+        assert!(!so_far().contains(delete), "nothing of it ran");
+
+        let Err(tilo_actions::remote::ActionCallError::Refused { reason }) =
+            resolve(&deleting, &scout, Offer::Approve)
+        else {
+            panic!("the agent that asked answers nothing");
+        };
+        assert_eq!(reason, asked::NOT_YOURS);
+        assert!(!so_far().contains(delete), "nothing of it ran");
+
+        resolve(&deleting, &ada, Offer::Approve).expect("her approve is taken");
+        assert_eq!(
+            ran_for_real.recv_timeout(wait).expect("her approve runs it"),
+            delete
+        );
+        let after = so_far();
+        assert!(
+            after.contains(&format!("ran let n = notes, n, n, {delete}, n")),
+            "it ran once, in the session that kept its earlier lets: {after}"
+        );
+
+        let again = step_call("for x in notes { x.delete() }");
+        send(&again)
+            .expect("the dispatch answers")
+            .expect("kept, not refused");
+        resolve(&again, &ada, Offer::Decline).expect("her decline is taken");
+        let declined = so_far();
+        assert!(
+            !declined.contains("for x in notes"),
+            "a declined program runs nothing: {declined}"
+        );
+        assert!(store.asked_of(&ADA).is_empty(), "Ada is asked no more");
+        assert!(
+            ran_for_real.try_recv().is_err(),
+            "only her approved program ran for real"
         );
     }
 }
