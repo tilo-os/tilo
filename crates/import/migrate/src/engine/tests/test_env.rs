@@ -57,33 +57,9 @@ impl Workspace for Recorded {
         self.actions
             .push((run.id.clone(), action.to_owned(), args.clone()));
         if action == "workspace/mail-accounts#add" {
-            // The call is kept as the asked record its person answers: the fake answers it as
-            // their terminal, their shell or an agent's caller would.
-            self.added.push(args.clone());
-            match self.answer {
-                Answered::Yes => {}
-                Answered::No | Answered::Nobody => {
-                    return Err(Refused::coded(
-                        super::super::mcp::UNANSWERED,
-                        format!("{} waits for your yes", args["address"]),
-                    )
-                    .into());
-                }
-            }
-            if let Some(why) = &self.refuses {
-                return Err(Refused::coded("refused", why.clone()).into());
-            }
-            let account = serde_json::json!({
-                "id": args["address"], "address": args["address"],
-                "displayName": args["displayName"],
-                "incomingHost": args["incomingHost"], "incomingPort": args["incomingPort"],
-                "outgoingHost": args["outgoingHost"], "outgoingPort": args["outgoingPort"],
-                "hasSecret": args.get("password").is_some(),
-            });
-            if !self.forgets {
-                self.kept.push(account.clone());
-            }
-            return Ok(Answer::of(Some(account)));
+            return self
+                .add_account(args)
+                .map(|account| Answer::of(Some(account)));
         }
         Ok(Answer::of(None))
     }
@@ -93,10 +69,11 @@ impl Workspace for Recorded {
         Ok(Answer::of(None))
     }
 
-    fn person(&mut self, path: &str, action: &str, _args: Value) -> Result<Value> {
+    fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
         anyhow::ensure!(path == thunderbird::MAIL_ACCOUNTS, "asked {path}");
         match action {
             "list" => Ok(serde_json::json!({"accounts": self.kept})),
+            "add" => self.add_account(args),
             other => anyhow::bail!("no workspace/mail-accounts#{other}"),
         }
     }
@@ -108,6 +85,37 @@ impl Workspace for Recorded {
 }
 
 impl Recorded {
+    /// `workspace/mail-accounts#add`, whether a run asks it as a step or the person asks it
+    /// themselves: kept as the asked record its person answers, which the fake answers as their
+    /// terminal, their shell or an agent's caller would.
+    fn add_account(&mut self, args: Value) -> Result<Value> {
+        self.added.push(args.clone());
+        match self.answer {
+            Answered::Yes => {}
+            Answered::No | Answered::Nobody => {
+                return Err(Refused::coded(
+                    super::super::mcp::UNANSWERED,
+                    format!("{} waits for your yes", args["address"]),
+                )
+                .into());
+            }
+        }
+        if let Some(why) = &self.refuses {
+            return Err(Refused::coded("refused", why.clone()).into());
+        }
+        let account = serde_json::json!({
+            "id": args["address"], "address": args["address"],
+            "displayName": args["displayName"],
+            "incomingHost": args["incomingHost"], "incomingPort": args["incomingPort"],
+            "outgoingHost": args["outgoingHost"], "outgoingPort": args["outgoingPort"],
+            "hasSecret": args.get("password").is_some(),
+        });
+        if !self.forgets {
+            self.kept.push(account.clone());
+        }
+        Ok(account)
+    }
+
     /// The arguments of every call of `action`.
     pub fn of(&self, action: &str) -> Vec<&Value> {
         self.actions
