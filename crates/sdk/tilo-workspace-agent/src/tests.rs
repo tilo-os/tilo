@@ -435,6 +435,35 @@ fn a_record_of_before_instructions_reads_without_one() {
     assert!(read.valid().is_ok());
 }
 
+/// An agent record as a build before `avatar` wrote it, verbatim from that
+/// build's kept bytes: it carried the workspace's bound in the record itself,
+/// which this build no longer reads, and named neither a picture nor the
+/// devices its agent runs on.
+const BEFORE_AVATAR: &str = include_str!("fixtures/agent-before-avatar.json");
+
+/// An agent record a workspace already keeps, written before `avatar`, reads
+/// here: the field it lacks takes its missing value and the bound it still
+/// holds is ignored, never refused.
+#[test]
+fn an_agent_record_written_before_avatars_reads() {
+    let value: serde_json::Value =
+        serde_json::from_str(BEFORE_AVATAR).expect("the kept bytes are JSON");
+    let read = WorkspaceAgents::from_json(&value).expect("a record written before avatars reads");
+    read.valid().expect("its agents are valid");
+    let agent = only(&read);
+    assert_eq!(agent.name, "Claude");
+    assert_eq!(agent.acts_for, "ada");
+    assert_eq!(agent.model.as_deref(), Some("anthropic/sonnet"));
+    assert_eq!(agent.created_at, 1_700_000_000_000);
+    assert_eq!(agent.avatar, None);
+    assert!(agent.runs_on.is_empty());
+    // What this build writes says nothing of the bound, and reads back.
+    let written = read.to_json();
+    assert!(written["agents"][0].get("bound").is_none());
+    assert!(written["agents"][0]["avatar"].is_null());
+    assert_eq!(WorkspaceAgents::from_json(&written).unwrap(), read);
+}
+
 /// The record's layout as the bytes devices keep it in: the field order,
 /// the names and the enums are the format, and this build must write them
 /// back exactly.
@@ -442,7 +471,7 @@ fn a_record_of_before_instructions_reads_without_one() {
 fn the_record_layout_is_the_bytes_devices_keep() {
     let state = golden_state();
     tilo_files::native::migration::assert_golden_bytes(
-        "chat.agent v1",
+        "tilo.workspace.agent record",
         GOLDEN.as_bytes(),
         |bytes| {
             let value: serde_json::Value =
@@ -454,25 +483,18 @@ fn the_record_layout_is_the_bytes_devices_keep() {
     );
 }
 
-/// The bytes `chat.agent` v1 was published with.
+/// The bytes this record keeps: read by field name, so a record written before
+/// `avatar` or `runs_on`, or with a `bound` this build no longer has, still
+/// reads, and this build writes these bytes for it.
 const GOLDEN: &str = r#"{
   "agents": [
     {
       "id": "claude",
       "name": "Claude",
+      "avatar": null,
       "acts_for": "ada",
       "model": "anthropic/sonnet",
       "mcp_client": null,
-      "bound": [
-        {
-          "node": "workspace:ws/app:so.tilo.notes",
-          "kinds": [
-            "read",
-            "undoable"
-          ],
-          "answer": "allow"
-        }
-      ],
       "spend_limit_micros": null,
       "spent": null,
       "state": "active",
@@ -480,12 +502,13 @@ const GOLDEN: &str = r#"{
       "instruction": null,
       "sub": null,
       "sub_depth": null,
-      "sub_at_once": null
+      "sub_at_once": null,
+      "runs_on": []
     }
   ]
 }"#;
 
-/// One agent as the format keeps it: a model choice and a bound.
+/// One agent as the record keeps it: a model choice and no picture.
 fn golden_state() -> WorkspaceAgents {
     let mut record = as_person(ADA);
     record.set_now_ms(1_700_000_000_000);

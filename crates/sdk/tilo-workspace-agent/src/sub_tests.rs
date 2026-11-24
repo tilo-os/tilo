@@ -752,6 +752,40 @@ fn the_oldest_that_ended_makes_room_once_the_record_is_full() {
     assert!(refused.to_string().contains("sub-agents"), "{refused}");
 }
 
+/// A record holding Ada's own agent and a sub-agent it started, as a build
+/// before `avatar` wrote it: both carried the bound this build no longer
+/// reads, and neither named a picture. The sub-agent's item is verbatim from
+/// that build's kept bytes.
+const BEFORE_AVATAR_SUB: &str = include_str!("fixtures/sub-agent-before-avatar.json");
+
+/// A record a workspace already keeps, with a sub-agent, and written before
+/// `avatar`, reads here: the sub-agent keeps its job, how it stands and its
+/// notes, and the fields it lacks take their missing value.
+#[test]
+fn a_sub_agent_record_written_before_avatars_reads() {
+    let value: serde_json::Value =
+        serde_json::from_str(BEFORE_AVATAR_SUB).expect("the kept bytes are JSON");
+    let read = WorkspaceAgents::from_json(&value).expect("a record written before avatars reads");
+    read.valid().expect("its agents are valid");
+    assert_eq!(read.get(&id(MAIN)).expect("its starter").avatar, None);
+    let agent = read.get(&id("find-the-deck")).expect("the sub-agent");
+    assert_eq!(agent.avatar, None);
+    assert!(agent.runs_on.is_empty());
+    let sub = agent.sub.as_ref().expect("it is a sub-agent");
+    assert_eq!(sub.started_by, MAIN);
+    assert_eq!(sub.job, "Find the Q3 board deck.");
+    assert_eq!(sub.role, "Researcher");
+    assert_eq!(sub.stands, Stands::Working);
+    assert_eq!(sub.since, THEN);
+    assert_eq!(sub.notes.len(), 1);
+    assert_eq!(sub.notes[0].text, "It may be in Files.");
+    assert_eq!(
+        WorkspaceAgents::from_json(&read.to_json()).unwrap(),
+        read,
+        "what this build writes reads back"
+    );
+}
+
 /// What a client reads of a sub-agent: one item of the same collection, with these fields under
 /// these names. And a record written before there were sub-agents reads with none.
 #[test]
@@ -783,10 +817,10 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
         serde_json::json!({
             "id": "find-the-deck",
             "name": "Find the deck",
+            "avatar": null,
             "acts_for": ADA,
             "model": null,
             "mcp_client": null,
-            "bound": [],
             "spend_limit_micros": null,
             "spent": null,
             "state": "active",
@@ -808,6 +842,7 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
             },
             "sub_depth": null,
             "sub_at_once": null,
+            "runs_on": [],
         })
     );
     assert_eq!(

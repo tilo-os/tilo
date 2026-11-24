@@ -1,0 +1,56 @@
+{
+  "agents": [
+    {
+      "id": "assistant",
+      "name": "Assistant",
+      "acts_for": "ada",
+      "model": null,
+      "mcp_client": null,
+      "bound": [],
+      "spend_limit_micros": null,
+      "spent": null,
+      "state": "active",
+      "created_at": 1700000000000,
+      "instruction": null,
+      "sub": null,
+      "sub_depth": null,
+      "sub_at_once": null
+    },
+    {
+      "id": "find-the-deck",
+      "name": "Find the deck",
+      "acts_for": "ada",
+      "model": null,
+      "mcp_client": null,
+      "bound": [],
+      "spend_limit_micros": null,
+      "spent": null,
+      "state": "active",
+      "created_at": 1700000000000,
+      "instruction": null,
+      "sub": {
+        "started_by": "assistant",
+        "job": "Find the Q3 board deck.",
+        "role": "Researcher",
+        "kind": "subtask",
+        "depth": 1,
+        "task": null,
+        "stands": "working",
+        "since": 1700000000000,
+        "line": "",
+        "notes": [
+          {
+            "id": "note-1",
+            "by": "assistant",
+            "text": "It may be in Files.",
+            "at": 1700000000000
+          }
+        ],
+        "produced": [],
+        "coding": null
+      },
+      "sub_depth": null,
+      "sub_at_once": null
+    }
+  ]
+}
