@@ -3815,40 +3815,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "disk-usage"
-version = "0.1.0"
-dependencies = [
- "disk-usage-model",
- "runtime-dylib",
- "serde",
- "serde_json",
- "settings-model",
- "tilo-app",
- "tilo-paths",
- "tilo-test-env",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
-name = "disk-usage-model"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "disk-usage-model-wasm"
-version = "0.1.0"
-dependencies = [
- "disk-usage-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "dispatch"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15098,7 +15064,6 @@ dependencies = [
  "tilo-paths",
  "tilo-rt",
  "tilolang-tilo",
- "workspace-hack",
 ]
 
 [[package]]
@@ -17850,6 +17815,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-disk-usage"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-files",
+ "tilo-test-env",
+ "tilolang-tilo",
+]
+
+[[package]]
 name = "tilo-doc"
 version = "0.1.0"
 dependencies = [
@@ -19050,7 +19026,6 @@ dependencies = [
  "console-model-wasm",
  "db-client-model-wasm",
  "diffmerge-model-wasm",
- "disk-usage-model-wasm",
  "firewall-model-wasm",
  "hex-editor-model-wasm",
  "logs-model-wasm",
@@ -20769,6 +20744,7 @@ dependencies = [
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-dictation",
+ "tilo-disk-usage",
  "tilo-documents",
  "tilo-endpoint-reachability",
  "tilo-failure",
@@ -22607,6 +22583,7 @@ dependencies = [
  "tilo-content-device",
  "tilo-desktop-search",
  "tilo-dialogs",
+ "tilo-disk-usage",
  "tilo-doc-pdf",
  "tilo-failure",
  "tilo-feeds",
@@ -22680,6 +22657,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-wasm-host",
  "tilolang",
+ "tilolang-tilo",
  "tracing",
  "wasmi",
  "wasmtime",
@@ -26900,9 +26878,6 @@ dependencies = [
  "discord",
  "discord-wire",
  "discord-worker",
- "disk-usage",
- "disk-usage-model",
- "disk-usage-model-wasm",
  "displaydoc",
  "dlib",
  "document-features",

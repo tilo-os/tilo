@@ -1,0 +1,47 @@
+{
+  "app": "disk-usage",
+  "said": "Disk Usage Analyzer",
+  "family": "apps",
+  "live": "tl",
+  "tl": { "id": "so.tilo.disk-usage", "package": "disk-usage" },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Disk Usage Analyzer on the places",
+      "ops": [
+        { "theme": false },
+        { "launch": true },
+        { "wait_for": "window" },
+        { "wait_for": "actions" },
+        { "targets": true },
+        { "must": { "see": ["Places", "Home", "File system"] } }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "measure",
+      "said": "Measure the home folder from the places",
+      "ops": [
+        { "press": "Home" },
+        { "wait_for": { "shown": "Folders" } },
+        { "must": { "see": ["Folders"] } }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "choose",
+      "said": "Ask for another folder, turn back, then go back from the folder measured to the places",
+      "ops": [
+        { "press": "Choose a folder" },
+        { "wait_for": { "shown": "Analyze this folder" } },
+        { "must": { "see": ["Choose a folder", "Cancel"] } },
+        { "press": "Cancel" },
+        { "press": "Go back" },
+        { "wait_for": { "shown": "Places" } },
+        { "must": { "see": ["Places", "Recent"] } }
+      ],
+      "budget_ms": 30000
+    }
+  ]
+}

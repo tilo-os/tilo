@@ -28,33 +28,6 @@
       "tests": 28,
       "wall_seconds": 72.808991135
     },
-    "disk-usage": {
-      "slowest": [
-        {
-          "seconds": 13.622434848,
-          "test": "disk_usage$resource::reach_tests::a_drive_of_every_scenario_reaches_every_published_action"
-        },
-        {
-          "seconds": 0.361094951,
-          "test": "disk_usage$resource::tests::folder_controls_are_certified_and_analyze_through_the_resource"
-        },
-        {
-          "seconds": 0.315297991,
-          "test": "disk_usage$resource::tests::captures_stage_through_fixtures"
-        },
-        {
-          "seconds": 0.266561079,
-          "test": "disk_usage$resource::tests::a_chosen_folder_is_analyzed"
-        },
-        {
-          "seconds": 0.247095727,
-          "test": "disk_usage$app::navigation_tests::narrow_home_keeps_common_places_visible"
-        }
-      ],
-      "test_seconds": 15.155895909999998,
-      "tests": 11,
-      "wall_seconds": 15.155895909999998
-    },
     "imager-backend": {
       "slowest": [
         {

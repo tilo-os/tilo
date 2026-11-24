@@ -1,0 +1,249 @@
+# tilolang messages: generated from the package's source, commit it. Translate in
+# locales/<language>.ftl beside it; edit the words in the source, not here.
+
+d-so-tilo-disk-usage = Festplattenbelegung
+
+d-so-tilo-disk-usage-keywords = Speicherplatz, Speicher, Platz, große Dateien, Aufräumen, freier Platz, was Platz braucht, Festplattenbelegung, baobab, filelight, speicherplatz, festplattenplatz, platz, belegt, aufräumen, aufraeumen, große dateien, grosse dateien, speicherbelegung
+
+d-du3nmvgr = Messung
+    .doc = Ein Ordner im gemessenen Ordner: was er enthält, bis ganz nach unten.
+    .noun = { $count ->
+        [one] Messung
+       *[other] Messungen
+    }
+
+d-dgpcdvfo = Name
+
+d-hr7pdtyh = Pfad
+
+d-5ejkceq4 = Bytes
+
+d-h6ycnyru = Dateien
+
+d-du3nmvgr-filter-bytes = Bytes
+
+d-du3nmvgr-filter-files = Dateien
+
+d-hpkr5rmb = Zuletzt gemessen
+    .doc = Ein zuletzt gemessener Ordner, erneut angeboten.
+    .noun = { $count ->
+        [one] zuletzt gemessener Ordner
+       *[other] zuletzt gemessene Ordner
+    }
+
+d-mks7bf3q = Pfad
+
+d-w6urofdz = Bezeichnung
+
+d-rrwtdebb = Gesehen
+    .doc = Wann er zuletzt gemessen wurde, neueste zuerst.
+
+d-hpkr5rmb-filter-seen = Gesehen
+
+d-5hwszxkf = Analyse
+    .doc = Die Analyse: der jetzt oder zuletzt gemessene Ordner, was seine Ordner belegen, und die zuletzt gemessenen Ordner.
+    .untitled = Festplattenbelegung
+    .noun = { $count ->
+        [one] Analyse
+       *[other] Analysen
+    }
+
+d-myw6qh3s = Ordner
+    .doc = Der jetzt oder gerade gemessene Ordner; leer, während die Ortsseite zu sehen ist.
+
+d-thlese6a = Bezeichnung
+    .doc = Wie der Ordner heißt: ein Ort nach seinem Namen, jeder andere Ordner nach seinem eigenen.
+
+d-w37l5txv = Einträge
+    .doc = Die Ordner direkt darin, jeder mit allem, was er bis nach unten enthält.
+
+d-of6rtqrq = Gesamt
+    .doc = Was die gemessenen Ordner zusammen enthalten, und wie viele Dateien sie enthalten.
+
+d-h7sbqkay = Dateien
+
+d-qgfvwvqs = Unlesbar
+    .doc = Wie viele Einträge des Ordners nicht gelesen werden konnten.
+
+d-ciznalbq = Problem
+    .doc = Warum der Ordner nicht gelesen werden konnte; leer, solange er es kann.
+
+d-qirhun4g = Hinweis
+    .doc = Was das Fenster unter den Ordnern sagt: dass eine Messung gestoppt wurde, und wann.
+
+d-xpqqxnzx = Auftrag
+    .doc = Die laufende Messung, nach dem Auftrag, den das Gerät dafür gegeben hat; leer, wenn nichts läuft.
+
+d-bborqgwr = Gesehene Bytes
+    .doc = Wie viel die Messung bisher gesehen hat.
+
+d-jycgqaau = Gesehene Dateien
+
+d-tby3fdb6 = Wurzel
+    .doc = Der Ordner, an dem eine Analyse begann: von ihm aus führt Zurück wieder zur Ortsseite.
+
+d-neoxlbvt = Zuletzt gemessen
+    .doc = Die zuletzt gemessenen Ordner, neueste zuerst.
+
+d-jwzq6fuq = Auswahl
+    .doc = Ob das Fenster nach dem zu messenden Ordner fragt.
+
+d-eynuk6dc = Ordnerwahl
+    .doc = Der Ordner, den man beim Auswählen durchwandert, und die Ordner darin.
+
+d-o5hekdfu = Auswahl
+
+d-5hwszxkf-filter-total = Gesamt
+
+d-5hwszxkf-filter-files = Dateien
+
+d-5hwszxkf-filter-unreadable = Unlesbar
+
+d-5hwszxkf-filter-seen_bytes = Gesehene Bytes
+
+d-5hwszxkf-filter-seen_files = Gesehene Dateien
+
+d-5hwszxkf-filter-choosing = Auswahl
+
+d-nzngtwys = Messauftrag
+    .noun = { $count ->
+        [one] Messauftrag
+       *[other] Messaufträge
+    }
+
+d-fzzlfxy7 = Pfad
+
+d-md3xb3ih = Auftragsantwort
+    .noun = { $count ->
+        [one] Auftragsantwort
+       *[other] Auftragsantworten
+    }
+
+d-42vybryr = Auftrag
+
+d-qv3bkujz = Gemessen
+    .noun = { $count ->
+        [one] Messung
+       *[other] Messungen
+    }
+
+d-5asfkn6k = Name
+
+d-7xc3ifdt = Pfad
+
+d-elhtrr33 = Bytes
+
+d-ktl6erww = Dateien
+
+d-qv3bkujz-filter-bytes = Bytes
+
+d-qv3bkujz-filter-files = Dateien
+
+d-26wmp7vw = Messstand
+    .noun = { $count ->
+        [one] Messstand
+       *[other] Messstände
+    }
+
+d-qaev2xl3 = Status
+
+d-dmlnkvla = Pfad
+
+d-k2iebb3k = Bytes
+
+d-zzb64yrs = Dateien
+
+d-7gwl2int = Gesamt
+
+d-uvlehuak = Unlesbar
+
+d-f7hqirco = Fehler
+
+d-26wmp7vw-filter-bytes = Bytes
+
+d-26wmp7vw-filter-files = Dateien
+
+d-26wmp7vw-filter-total = Gesamt
+
+d-26wmp7vw-filter-unreadable = Unlesbar
+
+d-lipx2inw = Analysieren
+    .doc = Der gewählte Ordner wird der jetzt gemessene Ordner und der Anfang seiner eigenen Reihe.
+
+d-lipx2inw-path = Pfad
+
+d-lipx2inw-label = Bezeichnung
+
+d-2czhqmad = Hineinmessen
+    .doc = Misst einen Ordner im gemessenen, und behält den Weg zurück.
+
+d-2czhqmad-m = Ordner
+
+d-rir4gbmc = Ort messen
+    .doc = Misst einen auf der Ortsseite angebotenen Ordner und beginnt damit eine eigene Reihe.
+
+d-rir4gbmc-path = Pfad
+
+d-wtz34tlf = Messung stoppen
+    .doc = Stoppt die laufende Messung.
+
+d-nunfy2n7 = Zurück
+    .doc = Geht einen Ordner zurück, und vom Ordner am Anfang der Reihe zur Ortsseite.
+
+d-3xbntjv4 = Orte anzeigen
+    .doc = Zeigt die Orte und die zuletzt gemessenen Ordner.
+
+d-dqco66zt = Ordner wählen
+    .doc = Fragt nach dem zu messenden Ordner und zeigt dabei dessen Ordner.
+
+d-mebmi2mx = Öffnen
+    .doc = Führt die Ordnerwahl zu `path` und zeigt die Ordner darin.
+
+d-mebmi2mx-path = Pfad
+
+d-bfl27bkl = Diesen Ordner analysieren
+    .doc = Misst den Ordner, den die Ordnerwahl zeigt.
+
+d-pyftqwif = Abbrechen
+    .doc = Verlässt die Auswahl, ohne etwas zu messen.
+
+d-j7osqmlp = Ordnerwahl lesen
+    .doc = Liest die Ordner des Ordners, den die Ordnerwahl zeigt.
+
+d-awmspafp = Datenträger öffnen
+    .doc = Öffnet die App Datenträger, wo die Laufwerke des Geräts und ihre Belegung stehen.
+
+d-okrhw5uy = Abfragen
+    .doc = Fragt, wie weit die Messung ist: mit der Uhr des Fensters, einmal pro Sekunde, solange sie läuft.
+
+d-bmoxtaea = Analyse
+
+d-atuiqpvv = Ortsseite
+    .w-places = Orte
+    .w-var-workspace = /var/workspace
+    .w-recent = Zuletzt gemessen
+
+d-5lotm23o = Ortszeile
+
+d-5ffhl3w4 = Messseite
+    .w-measuring = Messe { $label }
+    .w-in-so-far = { $size } in { $files_text } bisher
+    .w-reading-the-folders = Ordner werden gelesen…
+    .w-stop = Stopp
+
+d-ujlptksj = Problemseite
+    .w-can-t-read-this-folder = Dieser Ordner lässt sich nicht lesen
+    .w-choose-another-folder = Anderen Ordner wählen
+
+d-j7nmhek2 = Messseite
+    .w-folders = Ordner
+    .w-this-folder-is-empty = Dieser Ordner ist leer
+    .w-it-holds-no-files-and-no = Er enthält keine Dateien und keine Ordner.
+
+d-egkyccty = Messzeile
+
+d-tp6qomzh = Ordnerwahl
+    .w-choose-a-folder = Ordner wählen
+    .w-up = Nach oben
+    .w-analyze-this-folder = Diesen Ordner analysieren
+    .w-cancel = Abbrechen

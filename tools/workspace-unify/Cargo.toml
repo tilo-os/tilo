@@ -269,9 +269,6 @@ doc = false
 "discord" = { path = "../../apps/discord", default-features = false, features = ["samples"] }
 "discord-wire" = { path = "../../apps/discord-model", default-features = false, features = ["resource"] }
 "discord-worker" = { path = "../../apps/discord/worker", default-features = false, features = [] }
-"disk-usage" = { path = "../../apps/disk-usage", default-features = false, features = [] }
-"disk-usage-model" = { path = "../../apps/disk-usage-model", default-features = false, features = [] }
-"disk-usage-model-wasm" = { path = "../../apps/disk-usage-model-wasm", default-features = false, features = [] }
 "dlib-0_5_3" = { package = "dlib", version = "^0.5.3", default-features = false, features = [] }
 "downcast-rs-1_2_1" = { package = "downcast-rs", version = "^1.2.1", default-features = false, features = ["default", "std"] }
 "downcast-rs-2_0_2" = { package = "downcast-rs", version = "^2.0.2", default-features = false, features = ["default", "std", "sync"] }
@@ -3067,9 +3064,6 @@ doc = false
 "discord" = { path = "../../apps/discord", default-features = false, features = ["samples"] }
 "discord-wire" = { path = "../../apps/discord-model", default-features = false, features = ["resource"] }
 "discord-worker" = { path = "../../apps/discord/worker", default-features = false, features = [] }
-"disk-usage" = { path = "../../apps/disk-usage", default-features = false, features = [] }
-"disk-usage-model" = { path = "../../apps/disk-usage-model", default-features = false, features = [] }
-"disk-usage-model-wasm" = { path = "../../apps/disk-usage-model-wasm", default-features = false, features = [] }
 "dlib-0_5_3" = { package = "dlib", version = "^0.5.3", default-features = false, features = [] }
 "downcast-rs-1_2_1" = { package = "downcast-rs", version = "^1.2.1", default-features = false, features = ["default", "std"] }
 "downcast-rs-2_0_2" = { package = "downcast-rs", version = "^2.0.2", default-features = false, features = ["default", "std", "sync"] }

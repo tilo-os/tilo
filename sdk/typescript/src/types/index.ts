@@ -30,7 +30,6 @@ export * as containers from "./containers.ts";
 export * as dbClient from "./db_client.ts";
 export * as diffmerge from "./diffmerge.ts";
 export * as discord from "./discord.ts";
-export * as diskUsage from "./disk_usage.ts";
 export * as disks from "./disks.ts";
 export * as feeds from "./feeds.ts";
 export * as fileExplorer from "./file_explorer.ts";

@@ -24,6 +24,8 @@ mod host;
 
 #[cfg(unix)]
 fn main() -> std::process::ExitCode {
+    // The engines this bundle answers its apps with, registered before any of them asks.
+    tilo_disk_usage::register();
     #[cfg(feature = "app-launch")]
     if std::env::var_os(runtime_portal::process_link::FD_ENV).is_none() {
         return launched();

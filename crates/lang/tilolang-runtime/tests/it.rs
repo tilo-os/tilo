@@ -44,6 +44,8 @@ mod e2e_cleanup;
 mod e2e_clocks;
 #[path = "e2e_counter.rs"]
 mod e2e_counter;
+#[path = "e2e_disk_usage.rs"]
+mod e2e_disk_usage;
 #[path = "e2e_ebook.rs"]
 mod e2e_ebook;
 #[path = "e2e_feeds.rs"]

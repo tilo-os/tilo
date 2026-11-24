@@ -107,6 +107,8 @@ wasmtime = ["dep:wasmtime", "tilo-wasm-host/wasmtime"]
 [dev-dependencies]
 # A scenario's cases are the phases of one test (`scenario!`).
 tilo-test-env = { path = "../../../tools/test-env" }
+# The platform's packages (the device, the session) an app compiles against in its test.
+tilolang-tilo = { path = "../tilolang-tilo" }
 wat = "1"
 
 [lints]

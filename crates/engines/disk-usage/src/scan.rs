@@ -18,7 +18,7 @@ impl ScanCancellation {
         self.0.store(true, Ordering::Relaxed);
     }
 
-    pub(crate) fn is_cancelled(&self) -> bool {
+    pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
 }
@@ -90,7 +90,7 @@ struct Linked(Mutex<HashSet<(u64, u64)>>);
 impl Linked {
     /// Whether `meta` is a further name of a file already counted.
     fn seen_before(&self, meta: &fs::Metadata) -> bool {
-        let Some(identity) = ui::files::native::linked_identity(meta) else {
+        let Some(identity) = tilo_files::native::linked_identity(meta) else {
             return false;
         };
         let mut seen = self
@@ -147,12 +147,12 @@ fn measure(
         if linked.seen_before(&meta) {
             return (0, 0, 0);
         }
-        let bytes = ui::files::native::on_disk(&meta);
+        let bytes = tilo_files::native::on_disk(&meta);
         seen.add_file(bytes, report);
         return (bytes, 1, 0);
     }
     if !meta.is_dir() {
-        return (ui::files::native::on_disk(&meta), 0, 0);
+        return (tilo_files::native::on_disk(&meta), 0, 0);
     }
     let Ok(read) = fs::read_dir(path) else {
         return (0, 0, 1);

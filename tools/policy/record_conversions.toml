@@ -3,13 +3,12 @@
 # person kept with it; an entry here says how it was carried over, or what the
 # person loses.
 #
-# [[change]]
+[[change]]
 kind = "canvas.artwork"
 app = "canvas"
 change = "removed"
 lost = "The Rust Canvas app's artworks, which its own surface held. The tilolang Canvas keeps the same artwork records in the workspace; an artwork the old app saved opens from its .artwork file, and one it never saved is not carried."
 
-[[change]]
 # kind = "<the resource kind>"
 # app = "<the app whose surface changed>"
 # change = "moved" | "removed"
@@ -74,7 +73,7 @@ lost = "What a person told the native Chat's agents to remember about them. Only
 kind = "disk-usage.recent-folders"
 app = "disk-usage"
 change = "removed"
-conversion = "apps/disk-usage/src/view.rs:new"
+lost = "The folders each device analyzed lately, which the native app kept in its device settings. The tilolang app keeps the folders measured lately in its own workspace record, so an earlier list is not carried."
 
 [[change]]
 kind = "files.recent"

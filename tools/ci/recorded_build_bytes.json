@@ -49,7 +49,6 @@
   "discord": {"libraries": 38668709, "tests": 1561266984},
   "discord-wire": {"libraries": 5307509, "tests": 31956672},
   "discord-worker": {"libraries": 19785599, "tests": 2188831256},
-  "disk-usage": {"libraries": 9735833, "tests": 297150024},
   "disks": {"libraries": 10779316, "tests": 321502632},
   "durable-store": {"libraries": 3401466, "tests": 3837480},
   "ebook": {"libraries": 44074822, "tests": 369978448},

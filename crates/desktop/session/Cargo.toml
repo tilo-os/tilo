@@ -200,6 +200,8 @@ tilo-vision-service = { path = "../../services/vision" }
 code-engine = { path = "../../engines/code-engine" }
 # The speed test's device work: its one run measuring latency, download and upload.
 speed-engine = { path = "../../engines/speed-engine" }
+# The disk usage analyzer's device work, for the hosts this process runs itself.
+tilo-disk-usage = { path = "../../engines/disk-usage" }
 # The apps the session runs itself keep their resources in the workspace's store, whose
 # commands are answered by this device's own workspace service.
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }

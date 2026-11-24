@@ -49,10 +49,6 @@ x86_64 = 131072
 [apps."so.tilo.diffmerge"]
 x86_64 = 131072
 
-# model 41,105 bytes; 951,808 bytes in all, 917,504 budgeted.
-[apps."so.tilo.disk-usage"]
-x86_64 = 65536
-
 # model 98,535 bytes; 1,433,600 bytes in all, 1,376,256 budgeted.
 [apps."so.tilo.firewall"]
 x86_64 = 131072

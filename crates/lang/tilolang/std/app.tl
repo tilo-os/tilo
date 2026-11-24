@@ -1760,6 +1760,36 @@ fn picker_place_icon(path: Text, home: Text) -> Text {
 }
 
 /// A file's size, as a person reads it.
+/// A size in bytes as a person reads it, in the decimal units disks are sold by: `999 B`,
+/// `1.5 kB`, `84.2 GB`. A whole unit keeps no decimal (`1 kB`), and a tenth rounds towards the
+/// nearest: what a file takes, what a folder holds, what a disk has left.
+fn size(bytes: Int) -> Text {
+    let n = if bytes < 0 { 0 } else { bytes }
+    if n < 1000 {
+        "{n} B"
+    } else if n < 1000000 {
+        tenths(n, 1000, "kB")
+    } else if n < 1000000000 {
+        tenths(n, 1000000, "MB")
+    } else if n < 1000000000000 {
+        tenths(n, 1000000000, "GB")
+    } else {
+        tenths(n, 1000000000000, "TB")
+    }
+}
+
+/// `n` in units of `unit`, to a tenth when it is not whole: `1.5 kB`, `1 kB`.
+fn tenths(n: Int, unit: Int, said: Text) -> Text {
+    let parts = (n * 10 + unit / 2) / unit
+    let whole = parts / 10
+    let rest = parts - whole * 10
+    if rest == 0 {
+        "{whole} {said}"
+    } else {
+        "{whole}.{rest} {said}"
+    }
+}
+
 fn picker_size(bytes: Int) -> Text {
     if bytes < 1000 {
         "{bytes} bytes"

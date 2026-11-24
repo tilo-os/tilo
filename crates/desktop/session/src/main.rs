@@ -64,6 +64,8 @@ fn main() -> std::process::ExitCode {
     code_engine::register();
     // The speed test's device work: its one run measuring latency, download and upload.
     speed_engine::register();
+    // The disk usage analyzer's device work, for the hosts this process runs itself.
+    tilo_disk_usage::register();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it opens no display and
