@@ -158,7 +158,7 @@ ask whether the larger thing could be done a better way; if it could, say so bef
   integration branch. The pre-commit hook is fast and reads only what the
   commit stages; the pre-push hook lints the packages the push changes through
   t's per-package clippy checks, and compiles the packages that build directly
-  on them through its check families (only a compile error there refuses),
+  on them in one `t cargo check` (only a compile error there refuses),
   answered from t's cache when a rebase changed nothing they read (or `$CARGO`,
   any cargo drop-in, when set). Neither covers the policy suite or a package's
   tests: those are t's, above.

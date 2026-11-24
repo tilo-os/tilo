@@ -114,6 +114,11 @@ case "$1 $2" in
   "cargo metadata") printf '%s\\n' "$STUB_METADATA"; exit 0 ;;
 esac
 case "$1" in
+  cargo)
+    shift
+    printf 'start %s t cargo %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
+    [ -n "${STUB_T_EXCERPT:-}" ] && printf '%s\\n' "$STUB_T_EXCERPT" >&2
+    [ "${STUB_T_OUTCOME:-pass}" = pass ]; exit $? ;;
   test)
     shift
     printf 'start %s t test %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
@@ -134,7 +139,7 @@ exit 2
 # t's families as t.toml declares them: the workspace's clippy over every member but the page
 # crate, which a per-architecture family lints, the page's own wasm32 lint, which builds without
 # workspace-unify's features and is no lint a push gets, and the compile-only families over the
-# same members, which a dependant gets.
+# same members, which a push never asks: its dependants compile in one `t cargo check`.
 T_TOML = """[[cargo]]
 name = "clippy"
 tool = "clippy"
@@ -158,13 +163,6 @@ name = "check"
 tool = "check"
 unify = "workspace-unify"
 exclude = ["fixture-web", "wasm-bindgen"]
-
-[[cargo]]
-name = "check-{arch}"
-tool = "check"
-unify = "workspace-unify"
-packages = ["fixture-web"]
-matrix = { arch = ["x86_64", "aarch64"] }
 
 [[cargo]]
 name = "test"
@@ -664,16 +662,19 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), ["t test clippy/fixture-native --json"])
 
-    def test_with_t_a_dependant_is_compiled_through_its_check(self):
-        # t keys each per-package check by what that package's build reads, so a dependant's
-        # compile is answered from t's cache when nothing it reads moved; it is no clippy check.
+    def test_with_t_the_dependants_compile_in_one_cargo_check(self):
+        # One build of every dependant shares the crates they build on; a check of each was a
+        # job of its own building them again. Only a compile error there refuses.
         self.with_t()
         self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
+        self.add_dependent("other", "pub fn uses() -> u32 { fixture_native::answer() + 1 }\n")
         self.write("native/src/lib.rs", LIB.format(answer=24))
         self.commit("feat: answer 24")
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), ["t test clippy/fixture-native check/user --json"])
+        self.assertEqual(sorted(self.calls()), [
+            "t cargo check --locked -p other -p user --all-targets --keep-going",
+            "t test clippy/fixture-native --json"])
 
     def test_a_dependant_that_no_longer_compiles_refuses_the_push(self):
         self.with_t()
@@ -682,8 +683,8 @@ class PrePushLintTests(unittest.TestCase):
         self.commit("refactor: the answer is the solution")
         result = self.push(t_outcome="fail", t_excerpt="error[E0425]: cannot find function `answer`")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("pre-push: clippy and dependants' compile (t) failed", result.stderr)
-        self.assertIn("check/user: fail", result.stderr)
+        self.assertIn("pre-push: dependants' compile (t) failed", result.stderr)
+        self.assertIn("cannot find function `answer`", result.stderr)
         self.assertIn("refusing the push", result.stderr)
 
     def test_a_dependant_the_page_family_names_is_compiled_without_the_page_lint(self):
@@ -695,8 +696,9 @@ class PrePushLintTests(unittest.TestCase):
         self.commit("feat: answer 25")
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), [
-            "t test clippy/fixture-native check/page-user --json"])
+        self.assertEqual(sorted(self.calls()), [
+            "t cargo check --locked -p page-user --all-targets --keep-going",
+            "t test clippy/fixture-native --json"])
 
     def test_a_change_to_the_hack_crate_lints_no_dependants(self):
         # workspace-hack only unifies third-party features: its dependants build on it without
@@ -772,7 +774,7 @@ class PrePushLintTests(unittest.TestCase):
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("no clippy family of t's lints wasm-bindgen", result.stderr)
-        self.assertEqual(self.calls(), [f"t test check-{ARCH}/fixture-web --json"])
+        self.assertEqual(self.calls(), ["t cargo check --locked -p fixture-web --all-targets --keep-going"])
 
     def test_a_cargo_named_in_cargo_lints_instead_of_t(self):
         self.with_t()
@@ -940,7 +942,7 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), [
             "native: fixture-native user",
             "dependants: user",
-            "t: clippy/fixture-native check/user",
+            "t: clippy/fixture-native",
             f"catalogue: --range {self.base[:12]}..{self.head()[:12]}",
         ])
 

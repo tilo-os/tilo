@@ -394,29 +394,6 @@ exclude = [
 ]
 default = false
 
-# `check`'s compile of what it leaves out, on each architecture: the packages `clippy-{arch}` and
-# `clippy-idle` lint. The push check compiles a changed package's direct dependants through these
-# two families, so a dependant among them is compiled like any other, never linted. Named, never
-# planned: main lints these packages through the clippy families.
-[[cargo]]
-name = "check-{arch}"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-tool = "check"
-env = { CARGO_PROFILE_DEV_STRIP = "symbols" }
-requires = ["arch={arch}"]
-args = ["--locked", "--all-targets"]
-unify = "workspace-unify"
-packages = [
-    "app-catalogue", "app-cli", "compat-service", "env-tools", "imager", "imager-backend",
-    "install", "launcher", "launcher-macos", "local-model-service", "tilo-agent-session",
-    "tilo-app-builder", "tilo-device-steps", "tilo-environment", "tilo-fs-native", "tilo-liveness",
-    "tilo-messaging-protocol", "tilo-oci-images", "tilo-runtime-bundle", "tilo-sandbox",
-    "tilo-sandbox-core", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
-]
-matrix = { arch = ["x86_64", "aarch64"] }
-default = false
-on = ["dispatch"]
-
 # The visual goldens: tilo-ui's baselines are pixels, under the filter
 # `.config/nextest-filters.toml` keeps (`golden`), on the project's builder image. That is the
 # image the repository's own visual-goldens runs render and verify on, and a renderer that moves
