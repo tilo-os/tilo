@@ -451,10 +451,7 @@ pub fn named(dotted: &[&str]) -> Option<Ty> {
 /// holds.
 #[must_use]
 pub fn is_transient(ty: &Ty) -> bool {
-    matches!(
-        ty,
-        Ty::Action | Ty::View | Ty::Bytes | Ty::Response | Ty::Json
-    )
+    matches!(ty, Ty::Action | Ty::View | Ty::Bytes | Ty::Response)
 }
 
 /// Whether `key` is the host's `Resource`: the type that stands for any resource, of whichever app.

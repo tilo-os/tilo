@@ -1104,7 +1104,7 @@ impl Resolver<'_> {
     fn field(&mut self, owner: &str, f: &ast::FieldDecl, lock: &IdsLock) -> FieldInfo {
         let ty = self.resolve_type(&f.ty, true);
         if crate::types::is_transient(&ty) {
-            self.err("E023", f.ty.span, format!("a field cannot hold `{ty}`: it is not stored state; fields hold scalars, Text, records, enums, List, Option, Set, Map and Collection"));
+            self.err("E023", f.ty.span, format!("a field cannot hold `{ty}`: it is not stored state; fields hold scalars, Text, Json, records, enums, List, Option, Set, Map and Collection"));
         } else if ty == Ty::Duration {
             self.err("E023", f.ty.span, "a field cannot hold a `Duration`: a stored length of time keeps the number the app measures it in (`Int`), and `Duration(n)` reads it as one where a moment moves by it".to_string());
         }

@@ -72,6 +72,8 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => Value::text(""),
         Ty::RichText => Value::Rich(crate::rich::RichValue::default()),
         Ty::Option(_) => Value::none(),
+        // A document nothing wrote yet reads as JSON null, which every `json.Value` match takes.
+        Ty::Json => Value::Json(Box::new(Json::Null)),
         // A map reads as the map it is, here as where a field's store gives one.
         Ty::Map(_) => Value::Map(Vec::new()),
         Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => Value::List(Vec::new()),
@@ -91,7 +93,6 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Result(..)
         | Ty::Bytes
         | Ty::Response
-        | Ty::Json
         | Ty::File
         | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());
@@ -379,12 +380,20 @@ impl Core {
         items.into_iter().map(|x| self.adopt(x, author)).collect()
     }
 
-    fn scalar_value(&self, s: Scalar, author: Option<&ModuleHash>) -> Result<Value, String> {
+    fn scalar_value(
+        &self,
+        s: Scalar,
+        ty: &Ty,
+        author: Option<&ModuleHash>,
+    ) -> Result<Value, String> {
         Ok(match s {
             Scalar::Bool(b) => Value::Bool(b),
             Scalar::Int(i) => Value::Int(i),
             Scalar::Float(f) => Value::Float(f),
             Scalar::Text(t) => Value::Text(t),
+            // A JSON value stays the document it is; every other composite travels as the
+            // runtime value the store encoded it as.
+            Scalar::Json(j) if ty == &Ty::Json => Value::Json(Box::new(j)),
             Scalar::Json(j) => self.adopt(from_json(&j)?, author)?,
         })
     }
@@ -471,7 +480,7 @@ impl Core {
                 declared_default(&field.ty, field.default.as_ref())
                     .map_err(|why| format!("`{}` of `{}`: {why}", field.name, target.id_string()))
             }
-            (FieldKind::Register, FieldValue::Scalar(s)) => self.scalar_value(s, author),
+            (FieldKind::Register, FieldValue::Scalar(s)) => self.scalar_value(s, &field.ty, author),
             (FieldKind::Counter, FieldValue::Counter(c)) => Ok(if field.ty == Ty::Float {
                 Value::Float(counter_to_float(c))
             } else {
@@ -522,16 +531,19 @@ impl Core {
                     .collect::<Result<Vec<_>, String>>()
                     .map(Value::List)
             }
-            (FieldKind::Map, FieldValue::Entries(entries)) => entries
-                .into_iter()
-                .map(|(k, v)| {
-                    Ok(Value::Tuple(vec![
-                        Value::Text(k),
-                        self.scalar_value(v, author)?,
-                    ]))
-                })
-                .collect::<Result<Vec<_>, String>>()
-                .map(Value::List),
+            (FieldKind::Map, FieldValue::Entries(entries)) => {
+                let item = inner_ty(&field.ty).unwrap_or(&field.ty);
+                entries
+                    .into_iter()
+                    .map(|(k, v)| {
+                        Ok(Value::Tuple(vec![
+                            Value::Text(k),
+                            self.scalar_value(v, item, author)?,
+                        ]))
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+                    .map(Value::List)
+            }
             // A map or a set the resource was made without holds nothing, as its type's fields
             // start that way: a record written before the field existed reads as it would start.
             (FieldKind::Set, FieldValue::Absent) => Ok(Value::List(Vec::new())),

@@ -260,6 +260,7 @@ impl Core {
             | (Ty::Enum(_) | Ty::Result(..), Value::Enum(_))
             | (Ty::Tuple(_) | Ty::Filter(_) | Ty::Sort(_), Value::Tuple(_))
             | (Ty::Action, Value::Action(_))
+            | (Ty::Json, Value::Json(_))
             | (Ty::File, Value::File(_))
             | (Ty::Actor, Value::Actor(_))
             | (Ty::View, _) => true,
