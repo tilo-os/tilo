@@ -955,6 +955,36 @@ async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_al
         "{none:?}"
     );
 
+    // Ada renames it and drops its note's tag: the same item, its secrets and uses as they were.
+    let changed = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::ADD,
+        json!({
+            "item": &reference,
+            "kind": "wifi",
+            "title": "Home upstairs",
+            "fields": [{"label": "network", "value": ""}],
+        }),
+    )
+    .await
+    .expect("Passwords changes the item in place");
+    assert_eq!(changed["reference"], reference);
+    assert_eq!(changed["title"], "Home upstairs");
+    assert_eq!(changed["fields"], json!(["network"]));
+    assert!(changed.get("tags").is_none(), "{changed}");
+    let still = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::REVEAL,
+        json!({"item": &reference, "part": "field:network"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(still["value"], "home-5g");
+
     // Passwords hands an item to nothing else, and no other app reaches the vault at all.
     let released = ask_at(
         &service,
@@ -1049,7 +1079,6 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
         json!({"kind": "login", "belongsTo": ["https://example.com"], "secret": [PASSWORD]}),
         json!({"kind": "login", "belongsTo": ["https://example.com"], "password": PASSWORD}),
         json!({"kind": "login", "belongsTo": ["https://example.com"], "secret": ""}),
-        json!({"kind": "login", "belongsTo": [], "secret": PASSWORD}),
         json!({"kind": "ssh-key", "belongsTo": ["https://example.com"], "secret": PASSWORD}),
         json!({"kind": "code-generator", "belongsTo": ["https://example.com"], "secret": NOT_A_SEED}),
     ] {

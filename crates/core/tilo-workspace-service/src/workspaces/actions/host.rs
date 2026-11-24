@@ -1720,8 +1720,6 @@ mod own_tests;
 mod page_login_tests;
 #[cfg(all(test, feature = "agents"))]
 mod page_use_tests;
-#[cfg(test)]
-mod passwords_window_tests;
 #[cfg(all(test, feature = "agents"))]
 mod release_tests;
 #[cfg(test)]

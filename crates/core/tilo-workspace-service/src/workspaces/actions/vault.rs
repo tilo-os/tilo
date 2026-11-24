@@ -87,6 +87,14 @@ const VAULT_VERBS: [(&Verb, &str); 7] = [
 
 fn add_params() -> Vec<ActionParam> {
     vec![
+        ActionParam::optional(
+            "item",
+            ParamType::Resource,
+            "The item this changes, by its reference (`vault.item:…`): it keeps its reference and \
+             its uses, and each of its secrets, its username, title, note and field values left \
+             out stays as it was. Left out for a new item.",
+        )
+        .of_resource_kind(person_vault::ITEM_KIND),
         ActionParam::required(
             "kind",
             ParamType::Text,
@@ -125,10 +133,18 @@ fn add_params() -> Vec<ActionParam> {
         ),
         ActionParam::optional(
             "fields",
-            ParamType::Array,
-            "Fields kept with it, each a `label` and a `value` such as a PIN, the values sealed \
-             as the secret is.",
-        ),
+            ParamType::Secret,
+            "The fields kept with it, such as a PIN, each `{label, value}`: each value sealed as \
+             its secret is, only the labels ever answered back.",
+        )
+        .with_schema(serde_json::json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"label": {"type": "string"}, "value": {"type": "string"}},
+                "required": ["label", "value"],
+            },
+        })),
         ActionParam::optional(
             "tags",
             ParamType::Array,

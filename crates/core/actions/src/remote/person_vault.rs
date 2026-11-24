@@ -96,9 +96,9 @@ pub const KEEP_USES: &str = "keep-uses";
 #[must_use]
 pub fn effects(action: &str) -> Vec<crate::ActionEffect> {
     match action {
-        ADD | KEEP_ENTRY | ASK => vec![vault_step(KEEP_SEALED)],
-        REMOVE | FORGET_ENTRY => vec![vault_step(REMOVE_SEALED)],
-        FILL_PAGE | WEB_CALL | SIGN | RELEASE => vec![vault_step(KEEP_USES)],
+        ADD | ASK => vec![vault_step(KEEP_SEALED)],
+        REMOVE => vec![vault_step(REMOVE_SEALED)],
+        COPY | REVEAL | FILL_PAGE | WEB_CALL | SIGN | RELEASE => vec![vault_step(KEEP_USES)],
         _ => Vec::new(),
     }
 }
@@ -411,9 +411,16 @@ pub struct KeptItems {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AddItem {
+    /// The item this changes in place, keeping its reference and its uses: each of its
+    /// secrets, its username, title, note and field values left empty here stays as it was.
+    /// `None` for a new item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<ItemRef>,
     pub kind: ItemKind,
     /// Where it belongs, each a web address or a server; see
-    /// [`ItemView::belongs_to`]. A page's address names its site.
+    /// [`ItemView::belongs_to`]. A page's address names its site. A login a person keeps before
+    /// they know where it signs in belongs nowhere yet.
+    #[serde(default)]
     pub belongs_to: Vec<String>,
     /// The name it signs in with, when it has one.
     #[serde(default, skip_serializing_if = "String::is_empty")]

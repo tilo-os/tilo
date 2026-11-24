@@ -206,7 +206,7 @@ impl Workspaces {
                     allowed: None,
                 };
                 let shown = self
-                    .changing_vault(&workspace, Some(&reach.acting), |items| {
+                    .changing_vault(&workspace, (Some(&reach.acting), Some(request)), |items| {
                         show(items, &showing, &by, purpose)
                     })
                     .await
@@ -581,6 +581,7 @@ pub(super) fn add(
     adding: AddItem,
 ) -> Result<ItemView, vault_items::ItemError> {
     let AddItem {
+        item: changing,
         kind,
         belongs_to,
         username,
@@ -654,7 +655,14 @@ pub(super) fn add(
     } else {
         Some(vault_items::KeyIn::parse(&sent_in)?)
     };
-    view(items.add_with(item, sent_in.as_ref(), &extras)?)
+    match changing {
+        Some(changing) => {
+            let id = vault_items::ItemId::parse(changing.id())
+                .ok_or(vault_items::ItemError::NotFound)?;
+            view(items.change(&id, item, sent_in.as_ref(), &extras)?)
+        }
+        None => view(items.add_with(item, sent_in.as_ref(), &extras)?),
+    }
 }
 
 /// A strong password drawn here for `asked`: never sent, never typed.

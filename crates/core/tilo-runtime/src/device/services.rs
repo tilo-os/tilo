@@ -2651,10 +2651,6 @@ fn broker_services(
     // and connecting, signing in again and removing stay the action API's.
     let accounts: Arc<dyn PublishedResources> =
         Arc::new(super::accounts::published(parts.workspaces));
-    // The workspace's vault, for Passwords' own window alone: its entries as this device opens
-    // them, and the calls that keep and forget them here, none of which records a secret.
-    let vault: Arc<dyn PublishedResources> =
-        Arc::new(super::passwords_vault::Published::new(parts.workspaces));
     // Nearby Send's offers and transfers, read by the person's shell over the shell link.
     let nearby: Arc<dyn PublishedResources> = Arc::new(parts.nearby.published());
     // What is live in the workspaces this device keeps, which the desktop shows.
@@ -2697,10 +2693,6 @@ fn broker_services(
             .serving(
                 &[tilo_actions::remote::person_accounts::RESOURCE],
                 Arc::clone(&accounts),
-            )
-            .serving(
-                &[tilo_workspace_service::workspaces::passwords_vault::RESOURCE],
-                Arc::clone(&vault),
             )
     };
     // What the person's shell reads and changes over its link: what the daemon keeps, never what

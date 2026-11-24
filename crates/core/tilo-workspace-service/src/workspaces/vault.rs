@@ -366,10 +366,6 @@ impl Workspaces {
                 },
             ))
             .await
-            .map(|written| {
-                self.vault_changed();
-                written
-            })
             .map_err(|error| error.to_string());
         }
         // A member's device writes its own person's change: it keeps no record for anyone else,
@@ -388,7 +384,7 @@ impl Workspaces {
             Some(keys),
         ))
         .await
-        .map(|_| self.vault_changed())
+        .map(|_| ())
         .map_err(|refusal| refusal.to_string())
     }
 

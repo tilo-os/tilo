@@ -1125,6 +1125,84 @@ impl VaultItems {
         Ok(self.written(&id, &sealed))
     }
 
+    /// Change the item `id` names to `item`, with what a person keeps beside it ([`Extras`]),
+    /// keeping its id, when it was added and its uses: what Passwords writes as a person edits
+    /// an item. Each secret part left empty stays as it was: its secret, the name it signs in
+    /// with, its title, its note and the value of each field it names again. Where it belongs,
+    /// its tags and which fields it has are `item`'s and `extras`'.
+    ///
+    /// # Errors
+    /// No such item; an account's own sign-in, which changes with its account; or a change that
+    /// is not one to keep, checked whole before anything is kept.
+    pub fn change(
+        &mut self,
+        id: &ItemId,
+        mut item: NewItem,
+        sent_in: Option<&KeyIn>,
+        extras: &Extras,
+    ) -> Result<ItemFacts, ItemError> {
+        extras.checked()?;
+        let was = self.sealed(id)?;
+        if !was.account.is_empty() {
+            return Err(ItemError::Invalid(
+                "An account's own sign-in changes with its account",
+            ));
+        }
+        if item.secret.is_empty() {
+            item.secret = Zeroizing::new(was.secret.clone());
+        }
+        if item.username.trim().is_empty() {
+            item.username.clone_from(&was.username);
+        }
+        let mut sealed = Sealed::checked(item)?;
+        sealed.added_unix = was.added_unix;
+        sealed.uses.clone_from(&was.uses);
+        sealed.last_used_unix = was.last_used_unix;
+        match sent_in {
+            Some(_) if sealed.kind != ItemKind::Key => {
+                return Err(ItemError::Invalid(
+                    "Only a key says how it is sent with a request",
+                ));
+            }
+            Some(sent_in) => sealed.sent_in = sent_in.kept(),
+            None if sealed.kind == ItemKind::Key => sealed.sent_in.clone_from(&was.sent_in),
+            None => {}
+        }
+        let (kept, _) = self.entries.get(id).ok_or(ItemError::NotFound)?;
+        let mut entry = sealed.entry(id);
+        entry.title = if extras.title.trim().is_empty() {
+            kept.title.clone()
+        } else {
+            extras.title.trim().to_owned()
+        };
+        entry.notes = if extras.notes.is_empty() {
+            kept.notes.clone()
+        } else {
+            extras.notes.as_str().to_owned()
+        };
+        for (label, value) in &extras.fields {
+            let label = label.trim();
+            let value = if value.is_empty() {
+                kept.fields.get(label).cloned().unwrap_or_default()
+            } else {
+                value.as_str().to_owned()
+            };
+            if !value.is_empty() {
+                entry.fields.insert(label.to_owned(), value);
+            }
+        }
+        entry.tags = extras
+            .tags
+            .iter()
+            .map(|tag| tag.trim().to_owned())
+            .filter(|tag| !tag.is_empty())
+            .collect();
+        self.changes.push(VaultChange::Keep(entry.clone()));
+        self.entries
+            .insert(id.clone(), (entry, sealed.uses.clone()));
+        Ok(self.written(id, &sealed))
+    }
+
     /// Change how the code generator `id` names makes its codes, and the name it signs in as,
     /// keeping its seed and the uses it remembers.
     ///
@@ -1969,6 +2047,104 @@ mod tests {
             items.uses(&kept.id).unwrap().len(),
             3,
             "a refusal is no use"
+        );
+    }
+
+    /// A person's edit changes an item in place: what they wrote anew is kept, each secret part
+    /// they left empty stays, and the item keeps its id, when it was added and its uses.
+    #[test]
+    fn an_edit_keeps_what_it_leaves_empty_and_the_items_uses() {
+        let mut items = VaultItems::default();
+        let mut login = item(
+            ItemKind::Login,
+            &["https://bank.example"],
+            "Old-Bank-Pass-2024",
+        );
+        login.username = "ada".into();
+        let kept = items
+            .add_with(
+                login,
+                None,
+                &Extras {
+                    title: "Bank".into(),
+                    notes: Zeroizing::new("branch 12".into()),
+                    fields: vec![
+                        ("PIN".into(), Zeroizing::new("4711".into())),
+                        ("TAN list".into(), Zeroizing::new("A1".into())),
+                    ],
+                    tags: vec!["money".into()],
+                },
+            )
+            .unwrap();
+        let showing = UsedFor {
+            using: "show",
+            what: "Shown in Passwords",
+            allowed: None,
+        };
+        items
+            .show(&kept.id, Part::Secret, "Passwords", showing)
+            .unwrap();
+
+        let changed = items
+            .change(
+                &kept.id,
+                item(
+                    ItemKind::Login,
+                    &["https://bank.example", "https://app.bank.example"],
+                    "",
+                ),
+                None,
+                &Extras {
+                    title: "My bank".into(),
+                    notes: Zeroizing::new(String::new()),
+                    fields: vec![("PIN".into(), Zeroizing::new(String::new()))],
+                    tags: Vec::new(),
+                },
+            )
+            .unwrap();
+        assert_eq!(changed.id, kept.id);
+        assert_eq!(changed.places.len(), 2);
+        assert_eq!(
+            changed.field_labels,
+            ["PIN"],
+            "a field not named again goes"
+        );
+        assert!(changed.tags.is_empty());
+        for (part, said) in [
+            (Part::Secret, "Old-Bank-Pass-2024"),
+            (Part::Username, "ada"),
+            (Part::Notes, "branch 12"),
+            (Part::Field("PIN"), "4711"),
+        ] {
+            let shown = items.show(&kept.id, part, "Passwords", showing).unwrap();
+            assert_eq!(shown.as_str(), said, "{part:?} stays as it was");
+        }
+        assert_eq!(items.uses(&kept.id).unwrap().len(), 5, "its uses stay");
+
+        let mut renewed = item(ItemKind::Login, &[], "New-Bank-Pass-2025");
+        renewed.username = "ada.l".into();
+        items
+            .change(&kept.id, renewed, None, &Extras::default())
+            .unwrap();
+        // A note left out stays, as a title or a field would.
+        for (part, said) in [
+            (Part::Secret, "New-Bank-Pass-2025"),
+            (Part::Username, "ada.l"),
+            (Part::Notes, "branch 12"),
+        ] {
+            let shown = items.show(&kept.id, part, "Passwords", showing).unwrap();
+            assert_eq!(shown.as_str(), said, "{part:?}");
+        }
+        assert_eq!(
+            items
+                .change(
+                    &ItemId::new(),
+                    item(ItemKind::Login, &[], ""),
+                    None,
+                    &Extras::default()
+                )
+                .err(),
+            Some(ItemError::NotFound)
         );
     }
 

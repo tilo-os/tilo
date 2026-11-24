@@ -3399,7 +3399,7 @@ impl Hosted {
         let answer = match &receipt.status {
             ReceiptStatus::Completed { output } => {
                 let mut output = serde_json::to_value(output).unwrap_or_default();
-                tilolang_tilo::page::hold_answer(&call, &mut output);
+                tilolang_tilo::page::keep_answer(&call, &mut output, tilo_clock::unix_now_i64());
                 self.answered_value(invocation.as_ref(), output)
             }
             ReceiptStatus::Failed { error } => Invoked::Failed(error.message.clone()),
@@ -4294,8 +4294,8 @@ impl Invoker for Apis {
         // A secret the call names by where it is (what the person typed for this run, what the
         // host holds for the app) is filled in here, on its way out, and never was the code's.
         let mut arguments = field("arguments");
-        let holds = match tilolang_tilo::page::fill_secrets(&mut arguments) {
-            Ok(holds) => holds,
+        let keep = match tilolang_tilo::page::fill_secrets(&mut arguments) {
+            Ok(keep) => keep,
             Err(why) => return Invoked::Refused(why),
         };
         let invocation_id = tilo_actions::InvocationId::new();
@@ -4357,9 +4357,7 @@ impl Invoker for Apis {
             return Invoked::Failed(format!("the call did not reach {app}: {error}"));
         }
         let call_id = invocation_id.0.to_string();
-        if holds {
-            tilolang_tilo::page::holding(&call_id);
-        }
+        tilolang_tilo::page::keeping(&call_id, keep);
         self.calls
             .borrow_mut()
             .insert(call_id.clone(), invocation.clone());

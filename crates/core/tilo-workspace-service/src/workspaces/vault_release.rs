@@ -345,6 +345,7 @@ impl Workspaces {
             return Ok(kept);
         }
         let adding = person_vault::AddItem {
+            item: None,
             kind: person_vault::ItemKind::Value,
             belongs_to: vec![format!("https://{app}")],
             username: String::new(),

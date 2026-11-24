@@ -14,8 +14,11 @@
 //! rather than what it is ([`fill_secrets`]): `{"$typed": n}`, the nth thing the person typed on
 //! the card for the call being run, or `{"$held": "<token>"}`, one the host read for the app from
 //! what the person chose (a file they import) and holds under a token ([`hold`]). A call that
-//! says `"$hold": true` has the text of its answer held the same way ([`hold_answer`]), so the
-//! secret it answers reaches only what the host does with it next.
+//! says `"$hold": true` has the text of its answer held the same way ([`keep_answer`]), so the
+//! secret it answers reaches only what the host does with it next. One that says `"$show": true`
+//! has it kept for the window instead: a view that leaves a capture out (`protect capture`) shows
+//! it in the token's place ([`shown_in`]), for [`SHOWN_SECS`] at most, and every other view, the
+//! run's journal and history read only the token.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -32,9 +35,30 @@ thread_local! {
     /// engine takes it: each is taken once.
     static HELD: RefCell<std::collections::HashMap<String, String>> =
         RefCell::new(std::collections::HashMap::new());
-    /// The calls whose answers are held as they arrive, by the id each went out under.
-    static HOLDING: RefCell<std::collections::HashSet<String>> =
-        RefCell::new(std::collections::HashSet::new());
+    /// The calls whose answers are kept as they arrive, by the id each went out under, with how.
+    static HOLDING: RefCell<std::collections::HashMap<String, Keep>> =
+        RefCell::new(std::collections::HashMap::new());
+    /// The secrets a view that leaves a capture out shows, each under its token, with the second
+    /// it lapses at.
+    static SHOWN: RefCell<std::collections::HashMap<String, (String, i64)>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// How long a secret answered for the window shows, in seconds: then it is hidden again.
+pub const SHOWN_SECS: i64 = 30;
+
+/// What stands in a protected view for a secret no longer shown.
+const HIDDEN: &str = "••••••••••••";
+
+/// How a call's answer is kept as it arrives ([`fill_secrets`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keep {
+    /// As it is: it holds no secret.
+    AsIs,
+    /// Held for the host ([`hold`]), its code reading tokens.
+    Held,
+    /// Kept for a view that leaves a capture out ([`shown_in`]), its code reading tokens.
+    Shown,
 }
 
 /// The most secrets the host holds for one app at once: a file of logins brought in at once.
@@ -65,20 +89,38 @@ pub fn take_held(token: &str) -> Option<String> {
 
 /// Fill in the secrets `value` names, wherever it names one: `{"$typed": n}` with the nth thing
 /// the person typed for the call being run, `{"$held": token}` with what the host holds under
-/// it. A top-level `"$hold": true` is taken out and answered `true`: the call's answer is to be
-/// held ([`hold_answer`]).
+/// it. A top-level `"$hold": true` or `"$show": true` is taken out, and answers how the call's
+/// answer is kept ([`keep_answer`]).
 ///
 /// # Errors
 /// A secret named that is not there to fill: nothing typed in that place, or no such token.
-pub fn fill_secrets(value: &mut serde_json::Value) -> Result<bool, String> {
-    let holds = match value {
-        serde_json::Value::Object(fields) => {
-            fields.remove("$hold") == Some(serde_json::Value::Bool(true))
-        }
-        _ => false,
-    };
+pub fn fill_secrets(value: &mut serde_json::Value) -> Result<Keep, String> {
+    let mut keep = kept_as(value)?;
+    // A call by address through the action registry carries the arguments of the action it
+    // calls as its own `arguments`.
+    if keep == Keep::AsIs
+        && let Some(called) = value.get_mut("arguments")
+    {
+        keep = kept_as(called)?;
+    }
     filled_in(value)?;
-    Ok(holds)
+    Ok(keep)
+}
+
+/// How the answer to a call with the arguments `value` is kept, taking out what says so.
+fn kept_as(value: &mut serde_json::Value) -> Result<Keep, String> {
+    let serde_json::Value::Object(fields) = value else {
+        return Ok(Keep::AsIs);
+    };
+    let yes = Some(serde_json::Value::Bool(true));
+    let holds = fields.remove("$hold") == yes;
+    let shows = fields.remove("$show") == yes;
+    match (holds, shows) {
+        (true, true) => Err("a call's answer is held or shown, not both".to_owned()),
+        (true, false) => Ok(Keep::Held),
+        (false, true) => Ok(Keep::Shown),
+        (false, false) => Ok(Keep::AsIs),
+    }
 }
 
 fn filled_in(value: &mut serde_json::Value) -> Result<(), String> {
@@ -117,18 +159,22 @@ fn filled_in(value: &mut serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Hold the answer of the call that went out as `call` as it arrives ([`hold_answer`]).
-pub fn holding(call: &str) {
-    HOLDING.with(|holding| holding.borrow_mut().insert(call.to_owned()));
+/// Keep the answer of the call that went out as `call` as `keep` says, as it arrives
+/// ([`keep_answer`]).
+pub fn keeping(call: &str, keep: Keep) {
+    if keep != Keep::AsIs {
+        HOLDING.with(|holding| holding.borrow_mut().insert(call.to_owned(), keep));
+    }
 }
 
-/// `answer`, the answer of the call that went out as `call`, with each text in what it
-/// answered held and named by its token ([`hold`]), when that call asked so: the code that made
-/// it reads tokens, which it hands to the host.
-pub fn hold_answer(call: &str, answer: &mut serde_json::Value) {
-    if !HOLDING.with(|holding| holding.borrow_mut().remove(call)) {
+/// `answer`, the answer of the call that went out as `call` and arrived at `now` (seconds since
+/// the epoch), with each text in what it answered kept as that call asked ([`keeping`]) and
+/// named by its token: held for the host ([`hold`]), or shown in a protected view until
+/// [`SHOWN_SECS`] pass ([`shown_in`]). The code that made it reads only tokens.
+pub fn keep_answer(call: &str, answer: &mut serde_json::Value, now: i64) {
+    let Some(keep) = HOLDING.with(|holding| holding.borrow_mut().remove(call)) else {
         return;
-    }
+    };
     // An action's output (`{value, resources}`); through the action registry, its value is the
     // invocation record, whose `output` is what the action answered.
     let Some(value) = answer.get_mut("value") else {
@@ -138,22 +184,73 @@ pub fn hold_answer(call: &str, answer: &mut serde_json::Value) {
         Some(output) => output,
         None => value,
     };
-    held_texts(answered);
+    kept_texts(answered, &|text| match keep {
+        Keep::Held => hold(text).ok(),
+        Keep::Shown => Some(show(text, now.saturating_add(SHOWN_SECS))),
+        Keep::AsIs => Some(text),
+    });
 }
 
-fn held_texts(value: &mut serde_json::Value) {
+fn kept_texts(value: &mut serde_json::Value, keep: &dyn Fn(String) -> Option<String>) {
     match value {
         serde_json::Value::String(text) => {
-            match hold(std::mem::take(text)) {
-                Ok(token) => *text = token,
-                // Nothing held is nothing answered.
-                Err(_) => text.clear(),
-            }
+            // Nothing kept is nothing answered.
+            *text = keep(std::mem::take(text)).unwrap_or_default();
         }
-        serde_json::Value::Object(fields) => fields.values_mut().for_each(held_texts),
-        serde_json::Value::Array(items) => items.iter_mut().for_each(held_texts),
+        serde_json::Value::Object(fields) => fields.values_mut().for_each(|v| kept_texts(v, keep)),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(|v| kept_texts(v, keep)),
         _ => {}
     }
+}
+
+/// Keep `secret` for a protected view until `until`, answering the token the view shows it by.
+fn show(secret: String, until: i64) -> String {
+    let token = format!("shown:{}", uuid::Uuid::new_v4().simple());
+    SHOWN.with(|shown| {
+        let mut shown = shown.borrow_mut();
+        if shown.len() < MOST_HELD {
+            shown.insert(token.clone(), (secret, until));
+        }
+    });
+    token
+}
+
+/// Forget each secret shown whose time is up at `now`, answering whether one was: the windows
+/// showing it are drawn again, hiding it.
+pub fn lapse_shown(now: i64) -> bool {
+    SHOWN.with(|shown| {
+        let mut shown = shown.borrow_mut();
+        let before = shown.len();
+        shown.retain(|_, (_, until)| *until > now);
+        shown.len() != before
+    })
+}
+
+/// The second the first secret shown lapses at, if one is shown.
+#[must_use]
+pub fn next_lapse() -> Option<i64> {
+    SHOWN.with(|shown| shown.borrow().values().map(|(_, until)| *until).min())
+}
+
+/// `tree`, the tree of a view that leaves a capture out, with each secret it names by its
+/// token in the token's place, and each one no longer shown hidden: the one place a secret
+/// answered for the window ([`Keep::Shown`]) is read.
+pub fn shown_in(tree: &mut tilo_render_protocol::patch::Node) {
+    for value in tree.props.values_mut() {
+        if let tilo_render_protocol::patch::Value::Text(text) = value
+            && text.starts_with("shown:")
+        {
+            *text = SHOWN
+                .with(|shown| {
+                    shown
+                        .borrow()
+                        .get(text.as_str())
+                        .map(|(secret, _)| secret.clone())
+                })
+                .unwrap_or_else(|| HIDDEN.to_owned());
+        }
+    }
+    tree.children.iter_mut().for_each(shown_in);
 }
 
 /// Run `run` as the call the person approved with `approval`: a page call it makes that answers
@@ -361,7 +458,7 @@ mod tests {
             fill_secrets(&mut asked)
         })
         .unwrap();
-        assert!(holds);
+        assert_eq!(holds, Keep::Held);
         assert_eq!(
             asked,
             serde_json::json!({
@@ -379,10 +476,10 @@ mod tests {
         let mut untyped = serde_json::json!({"secret": {"$typed": 0}});
         assert!(fill_secrets(&mut untyped).is_err());
 
-        holding("call-1");
+        keeping("call-1", holds);
         let mut answer =
             serde_json::json!({"value": {"status": "ended", "output": {"value": PASSWORD}}});
-        hold_answer("call-1", &mut answer);
+        keep_answer("call-1", &mut answer, 0);
         let held = answer["value"]["output"]["value"]
             .as_str()
             .unwrap()
@@ -394,10 +491,73 @@ mod tests {
         );
         assert_eq!(take_held(&held).as_deref(), Some(PASSWORD));
         let mut later = serde_json::json!({"value": {"output": {"value": PASSWORD}}});
-        hold_answer("call-1", &mut later);
+        keep_answer("call-1", &mut later, 0);
         assert_eq!(
             later["value"]["output"]["value"], PASSWORD,
             "a call's answer is held once"
+        );
+    }
+
+    /// A secret answered for the window shows only in a protected view's tree, in its token's
+    /// place, and is hidden once its time is up.
+    #[test]
+    fn a_shown_secret_reaches_only_a_protected_tree_and_lapses() {
+        // Called by its address through the action registry, which carries its arguments.
+        let mut asked = serde_json::json!({
+            "address": "tilo.vault/vault#reveal",
+            "arguments": {"$show": true, "item": "vault.item:1"},
+        });
+        let keep = fill_secrets(&mut asked).unwrap();
+        assert_eq!(keep, Keep::Shown);
+        assert_eq!(
+            asked,
+            serde_json::json!({
+                "address": "tilo.vault/vault#reveal",
+                "arguments": {"item": "vault.item:1"},
+            })
+        );
+        keeping("call-2", keep);
+        let mut answer = serde_json::json!({"value": {"output": {"value": PASSWORD}}});
+        keep_answer("call-2", &mut answer, 100);
+        let token = answer["value"]["output"]["value"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(token.starts_with("shown:"), "{token}");
+        assert_eq!(
+            take_held(&token),
+            None,
+            "a shown secret is no host's to take"
+        );
+
+        let tree = |text: &str| {
+            let mut row = tilo_render_protocol::patch::Node::empty("text", "secret");
+            row.props.insert(
+                "text".to_owned(),
+                tilo_render_protocol::patch::Value::Text(text.to_owned()),
+            );
+            let mut root = tilo_render_protocol::patch::Node::empty("stack", "root");
+            root.children.push(row);
+            root
+        };
+        let text_of =
+            |root: &tilo_render_protocol::patch::Node| root.children[0].props["text"].clone();
+        let mut drawn = tree(&token);
+        shown_in(&mut drawn);
+        assert_eq!(
+            text_of(&drawn),
+            tilo_render_protocol::patch::Value::Text(PASSWORD.to_owned())
+        );
+        assert!(
+            !lapse_shown(100 + SHOWN_SECS - 1),
+            "it shows until its time is up"
+        );
+        assert!(lapse_shown(100 + SHOWN_SECS));
+        let mut drawn = tree(&token);
+        shown_in(&mut drawn);
+        assert_eq!(
+            text_of(&drawn),
+            tilo_render_protocol::patch::Value::Text(HIDDEN.to_owned())
         );
     }
 

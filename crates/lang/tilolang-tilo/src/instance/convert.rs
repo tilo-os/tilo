@@ -19,16 +19,22 @@ use crate::runtime::{Actor, Binding, NameHost, ResourceRef, UiNode, Value, ViewI
 
 /// The window's tree of `view`, converted over `host`: what the window is sent, and what
 /// converting it read of the workspace beside what the view read — the documents the cards in its
-/// text show — which the view then runs again on, so the host converts again.
+/// text show — which the view then runs again on, so the host converts again. A view that leaves
+/// a capture out shows each secret answered for it in its token's place
+/// ([`crate::page::shown_in`]); every other view, and the view's own values, hold the token.
 #[must_use]
 pub fn window_tree(
     host: &Host,
     names: &dyn NameHost,
     view: &Rc<RefCell<ViewInstance>>,
 ) -> tilo_render_protocol::patch::Node {
-    convert_with(host, names, view, |convert, instance| {
+    let mut tree = convert_with(host, names, view, |convert, instance| {
         convert.node(instance.tree())
-    })
+    });
+    if view.borrow().capture_protected() {
+        crate::page::shown_in(&mut tree);
+    }
+    tree
 }
 
 /// Run `run` with the converter of `view`'s trees over `host`, naming people by `names`, and

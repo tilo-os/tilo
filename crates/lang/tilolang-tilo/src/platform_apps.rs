@@ -55,9 +55,6 @@ pub const HOST_ACCOUNT_APP: &str = "tilo.host-account";
 /// them as `crashes.reports`, each with what happened and when, and one report's text as
 /// `resource("crash-report:<id>", of: crashes.CrashReportText)`. Nothing changes a report.
 pub const CRASH_REPORTS_APP: &str = "tilo.crash-reports";
-/// The app the workspace's vault is published as to Passwords' own window: `use tilo.vault`. The
-/// device's daemon answers it for Passwords alone, and every other app is refused.
-pub const VAULT_APP: &str = "tilo.vault";
 
 /// The app the workspace's activity is published as: `use so.tilo.history`. The app whose window
 /// shows it is `so.tilo.activity`, and it reads this package (`history.history`, and the range a
@@ -253,8 +250,6 @@ const ACCOUNTS_ROOTS: &[(&str, &str, &str)] = &[("accounts", "Accounts", "accoun
 const HOST_ACCOUNT_ROOTS: &[(&str, &str, &str)] = &[("account", "HostAccount", "host-account")];
 /// The reports' root, every report this computer recorded.
 const CRASH_REPORT_ROOTS: &[(&str, &str, &str)] = &[("reports", "CrashReports", "crash-reports")];
-/// The vault's root, the one resource its entries are read from and its verbs are asked of.
-const VAULT_ROOTS: &[(&str, &str, &str)] = &[("vault", "Vault", "vault")];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
     ("image_model", "ImageModel", "vision:vision.image-model"),
     ("analysis", "Analysis", "vision:vision.analysis"),
@@ -452,18 +447,6 @@ const PUBLISHED: &[Published] = &[
         // What this computer's reports read as, written beside the service that keeps them.
         files: &[include_str!(
             "../../../services/crash-reports/crash-reports-surface.json"
-        )],
-        described: false,
-        listed: &[],
-    },
-    Published {
-        app: VAULT_APP,
-        title: "Vault",
-        kinds: &[],
-        roots: VAULT_ROOTS,
-        // What the vault reads as to Passwords, written beside the service that keeps it.
-        files: &[include_str!(
-            "../../../core/tilo-workspace-service/vault-surface.json"
         )],
         described: false,
         listed: &[],
