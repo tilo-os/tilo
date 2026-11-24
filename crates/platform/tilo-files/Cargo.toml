@@ -54,8 +54,7 @@ rustix = { workspace = true, features = ["fs", "process", "std"] }
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# `native::socket` re-exports it here too: its Windows arm answers Unsupported
-# until the local services speak named pipes.
+# `native::socket` re-exports it here too: named pipes kept to one account.
 tilo-socket = { version = "0.1.0", path = "../tilo-socket" }
 # `path_identity`'s file URLs.
 url.workspace = true

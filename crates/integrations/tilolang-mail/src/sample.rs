@@ -52,7 +52,9 @@ pub fn take_in(host: &Host, app: &str, now: &str) -> Result<(), String> {
         origin.poll(&cx);
     }
     if origin.due() {
-        return Err(format!("the mail was still being taken in after {POLLS} polls"));
+        return Err(format!(
+            "the mail was still being taken in after {POLLS} polls"
+        ));
     }
     match origin.not_taken_in() {
         Some(why) => Err(why),

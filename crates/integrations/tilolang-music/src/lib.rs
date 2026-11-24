@@ -24,7 +24,7 @@ pub mod connector;
 mod files;
 pub mod lyrics;
 pub mod origin;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod remote;
 pub mod service;
 #[cfg(feature = "live")]
@@ -32,7 +32,7 @@ pub mod spotify;
 pub mod wire;
 
 pub use origin::MusicOrigin;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use remote::RemoteService;
 pub use service::{
     AlbumItem, AlbumPage, ArtistItem, ArtistPage, HomePage, HomeSection, Item, Live, LyricLine,
@@ -42,9 +42,9 @@ pub use service::{
 
 /// The origin kept in step with YouTube over the connector at the far end of `stream`, waking
 /// the instance with `wake` when an answer is ready.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn remote_origin(
-    stream: std::os::unix::net::UnixStream,
+    stream: tilo_socket::Stream,
     wake: std::sync::Arc<dyn Fn() + Send + Sync>,
 ) -> Result<std::rc::Rc<std::cell::RefCell<MusicOrigin>>, String> {
     let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -58,22 +58,22 @@ pub fn remote_origin(
 /// Register the music origin's client of the music connector with the platform, so a crate
 /// that keeps a package's records reaches the connector without naming this one
 /// (`tilolang_tilo::origin::remote`).
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn register() {
     tilolang_tilo::origin::register_remote("music", CONNECTOR_CLIENT);
 }
 
 /// The client [`register`] hands the platform: a `const` item, so its own type never has to be
 /// named where it is registered.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const CONNECTOR_CLIENT: &Remote = &|stream, wake| {
     remote_origin(stream, wake).map(|origin| origin as tilolang_tilo::origin::SharedOrigin)
 };
 
 /// The client [`register`] hands the platform.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 type Remote = dyn Fn(
-        std::os::unix::net::UnixStream,
+        tilo_socket::Stream,
         std::sync::Arc<dyn Fn() + Send + Sync>,
     ) -> Result<tilolang_tilo::origin::SharedOrigin, String>
     + Send

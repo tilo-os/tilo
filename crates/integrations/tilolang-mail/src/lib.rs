@@ -14,7 +14,7 @@ pub mod connector;
 pub mod engine;
 pub mod html;
 pub mod origin;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod remote;
 pub mod sample;
 #[cfg(feature = "engine")]
@@ -34,9 +34,9 @@ use origin::ImapOrigin;
 
 /// The origin of an instance in a tilolang host, over the mail connector process at the far end
 /// of `stream`, waking the instance with `wake` when it says something.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn remote_origin(
-    stream: std::os::unix::net::UnixStream,
+    stream: tilo_socket::Stream,
     wake: tilolang_tilo::background::Waker,
 ) -> std::io::Result<Rc<RefCell<ImapOrigin>>> {
     let woken = Arc::new(AtomicBool::new(true));
@@ -51,13 +51,13 @@ pub fn remote_origin(
 /// Register the mail origin's client of the mail connector with the platform, so a crate that
 /// keeps a package's records reaches the connector without naming this one
 /// (`tilolang_tilo::origin::remote`).
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn register() {
     tilolang_tilo::origin::register_remote("imap", CONNECTOR_CLIENT);
 }
 
 /// The client [`register`] hands the platform.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const CONNECTOR_CLIENT: &Remote = &|stream, wake| {
     remote_origin(stream, wake)
         .map(|origin| origin as tilolang_tilo::origin::SharedOrigin)
@@ -65,9 +65,9 @@ const CONNECTOR_CLIENT: &Remote = &|stream, wake| {
 };
 
 /// The client [`register`] hands the platform.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 type Remote = dyn Fn(
-        std::os::unix::net::UnixStream,
+        tilo_socket::Stream,
         tilolang_tilo::background::Waker,
     ) -> Result<tilolang_tilo::origin::SharedOrigin, String>
     + Send
@@ -118,7 +118,7 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
         .ok_or_else(|| "the launcher handed the connector no socket".to_owned())?;
     // The session hands its account sign-ins before any reader.
     let sign_ins = match origin_connector::receive(&socket) {
-        Ok(Some(Handed::SignIns(sign_ins))) => std::os::unix::net::UnixStream::from(sign_ins),
+        Ok(Some(Handed::SignIns(sign_ins))) => origin_connector::stream(sign_ins),
         Ok(Some(Handed::Reader(_))) => {
             return Err("the session handed the mail connector no account sign-ins".to_owned());
         }

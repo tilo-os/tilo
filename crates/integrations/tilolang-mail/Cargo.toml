@@ -55,3 +55,5 @@ workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
+# The connector's connections: Unix sockets, and pipes on Windows.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }

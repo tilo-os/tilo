@@ -41,7 +41,7 @@ pub mod private;
 pub(crate) mod rename;
 pub use rename::{FileRename, rename_file_noreplace};
 // The browser's origin-private file system has no path-named socket; every
-// other host has the module, and Windows answers Unsupported in it.
+// other host has the module: Unix-domain sockets, and named pipes on Windows.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use tilo_socket as socket;
 pub mod tree;

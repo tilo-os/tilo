@@ -98,5 +98,7 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+# An origin's connection to its connector (`origin::remote`): Unix sockets, and pipes on Windows.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 # The compiled tier, on every device that can run it.
 tilolang-runtime = { path = "../tilolang-runtime", features = ["wasmtime"] }

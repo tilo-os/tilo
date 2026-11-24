@@ -3,9 +3,9 @@
 //! instance. The instance's process holds no network; it asks, and takes in what YouTube
 //! answered.
 
-use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tilo_socket::Stream;
 
 use crate::service::{
     Branding, ChannelPage, CommentsPage, PlaylistPage, SearchFilter, SearchPage, SegmentPage,
@@ -15,7 +15,7 @@ use crate::wire::{self, Ask, FromConnector};
 
 /// [`Service`] over the socket to the YouTube connector process.
 pub struct RemoteService {
-    stream: Mutex<UnixStream>,
+    stream: Mutex<Stream>,
     /// The id the next question is asked under.
     next: AtomicU64,
 }
@@ -23,7 +23,7 @@ pub struct RemoteService {
 impl RemoteService {
     /// The service at the far end of `stream`.
     #[must_use]
-    pub fn new(stream: UnixStream) -> Self {
+    pub fn new(stream: Stream) -> Self {
         Self {
             stream: Mutex::new(stream),
             next: AtomicU64::new(1),

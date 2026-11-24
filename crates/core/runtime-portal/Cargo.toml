@@ -43,6 +43,8 @@ serde_bytes.workspace = true
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 
 [target.'cfg(unix)'.dependencies]
+# An origin connector's connections (`origin_connector`), as on Windows.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 # Caller-private atomic publication through the existing canonical file API.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 libc.workspace = true

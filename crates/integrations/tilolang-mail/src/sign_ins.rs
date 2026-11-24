@@ -16,8 +16,8 @@
 //! workspace's rules ask the person first, the session refuses: no password leaves the vault on
 //! a question. A password released stays in this process's memory.
 
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
+use tilo_socket::Stream;
 
 use accounts::sign_ins::{Answer, Ask, Client, NOT_ANSWERED};
 
@@ -26,7 +26,7 @@ use crate::engine::{AccountSource, MailAccount};
 /// The accounts the session's account sign-ins `link` tell, followed on a thread of its own that
 /// calls `changed` each time they change.
 #[must_use]
-pub fn follow(link: UnixStream, changed: impl Fn() + Send + 'static) -> AccountSource {
+pub fn follow(link: Stream, changed: impl Fn() + Send + 'static) -> AccountSource {
     let signed: Arc<Mutex<Vec<MailAccount>>> = Arc::default();
     let followed = Arc::clone(&signed);
     let spawned = std::thread::Builder::new()
@@ -191,7 +191,7 @@ mod tests {
     /// The session's end of the account sign-ins, as `account_sign_ins` answers: an ask for
     /// accounts waits for the next accounts the test tells on the sender returned, or for its
     /// wait to run out. Each sign-in asked is sent on the receiver returned.
-    fn session(link: UnixStream, release: Release) -> (Sender<In>, Receiver<String>) {
+    fn session(link: Stream, release: Release) -> (Sender<In>, Receiver<String>) {
         let (each_ask, asks) = channel();
         let (inbox, taken) = channel();
         let reading = inbox.clone();
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn an_enabled_account_signs_in_with_its_entry_and_a_refusal_is_said_in_the_sessions_words() {
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (ours, theirs) = tilo_socket::pair().unwrap();
         // Sam's entry is released; Robin's is refused as a person's without the grant on
         // Passwords.
         let (tell, asks) = session(theirs, |item, _| {
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn a_refusal_is_asked_again_with_the_next_answer_and_a_release_then_signs_in() {
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (ours, theirs) = tilo_socket::pair().unwrap();
         // The device had not caught up with the workspace's rules the first time it was asked.
         let (tell, asks) = session(theirs, |_, times| {
             if times == 0 {

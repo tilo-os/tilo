@@ -22,9 +22,9 @@
 //! One request and one answer per line, as JSON.
 
 use std::io::{BufRead, BufReader, Read as _, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tilo_files::native::socket::Stream;
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -141,7 +141,7 @@ pub fn revision_of(accounts: &[Held]) -> String {
 
 /// A connection to the session's socket.
 pub struct Client {
-    reader: BufReader<UnixStream>,
+    reader: BufReader<Stream>,
 }
 
 impl Client {
@@ -158,7 +158,7 @@ impl Client {
     ///
     /// # Errors
     /// The connection's timeouts cannot be set.
-    pub fn over(stream: UnixStream) -> std::io::Result<Self> {
+    pub fn over(stream: Stream) -> std::io::Result<Self> {
         stream.set_read_timeout(Some(LONGEST_WAIT.saturating_add(Duration::from_secs(20))))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
         Ok(Self {
@@ -377,7 +377,7 @@ pub mod fixture {
             .collect()
     }
 
-    fn answer(stream: std::os::unix::net::UnixStream, kept: &Mutex<Kept>, stop: &AtomicBool) {
+    fn answer(stream: super::Stream, kept: &Mutex<Kept>, stop: &AtomicBool) {
         let Ok(mut write) = stream.try_clone() else {
             return;
         };

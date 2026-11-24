@@ -2,10 +2,10 @@
 //! window reads them as. A calendar's password is the workspace's vault's, not
 //! this device's: the app asks the session for it when it signs in.
 
-use crate::person::AccountList;
+use crate::Account as StoredAccount;
 #[cfg(test)]
 use crate::AccountId;
-use crate::Account as StoredAccount;
+use crate::person::AccountList;
 use serde::{Deserialize, Serialize};
 
 use super::{CalDavConfig, CalendarAccount, CalendarAccounts, RemoteCalendar, TYPE_ID};

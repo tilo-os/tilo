@@ -21,11 +21,11 @@
 //! never reached its server (unreachable) is sent again when asked.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
+use tilo_socket::Stream;
 
 use mail_engine::engine::{EngineEvent, EngineRequest};
 
@@ -36,7 +36,7 @@ use crate::wire::{self, FromConnector, ToConnector};
 /// What wakes the connector's loop.
 pub enum Wakeup {
     /// An instance attached, over this socket.
-    Attach(UnixStream),
+    Attach(Stream),
     /// The attached instance `session` asked something.
     Asked(u64, Box<ToConnector>),
     /// The attached instance `session` is gone.
@@ -79,7 +79,7 @@ struct Sending {
 
 /// One attached instance.
 struct Session {
-    stream: UnixStream,
+    stream: Stream,
     connector: EngineConnector,
     /// The instance's id of each request this connector made for it, by the engine's id.
     asked: HashMap<Request, Request>,
@@ -190,7 +190,7 @@ impl Connector {
             .saturating_add(answered)
     }
 
-    fn attach(&mut self, stream: UnixStream, woken: &Sender<Wakeup>) {
+    fn attach(&mut self, stream: Stream, woken: &Sender<Wakeup>) {
         let session = self.next_session;
         self.next_session = self.next_session.saturating_add(1);
         let mut reading = match stream.try_clone() {
@@ -576,7 +576,7 @@ impl Connector {
 
 /// Run the connector for the accounts its account sign-ins `sign_ins` tell it, taking each
 /// attaching instance's socket from `attachments`, until that ends.
-pub fn serve(sign_ins: UnixStream, attachments: impl Iterator<Item = UnixStream> + Send + 'static) {
+pub fn serve(sign_ins: Stream, attachments: impl Iterator<Item = Stream> + Send + 'static) {
     let (woken, wakeups) = std::sync::mpsc::channel::<Wakeup>();
     let engine_woken = woken.clone();
     let wake: mail_engine::engine::Wake = Arc::new(move || {
@@ -665,8 +665,8 @@ mod tests {
 
     impl Rig {
         /// An instance attaching: its end of the socket, reading with a deadline.
-        fn attach(&mut self) -> UnixStream {
-            let (ours, theirs) = UnixStream::pair().unwrap();
+        fn attach(&mut self) -> Stream {
+            let (ours, theirs) = tilo_socket::pair().unwrap();
             ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             self.connector.handle(Wakeup::Attach(theirs), &self.woken);
             ours
@@ -691,13 +691,13 @@ mod tests {
         }
     }
 
-    fn heard(stream: &mut UnixStream) -> FromConnector {
+    fn heard(stream: &mut Stream) -> FromConnector {
         wire::read(stream)
             .unwrap()
             .expect("the connector said something")
     }
 
-    fn ask(stream: &mut UnixStream, asked: &ToConnector) {
+    fn ask(stream: &mut Stream, asked: &ToConnector) {
         wire::write(stream, asked).unwrap();
     }
 

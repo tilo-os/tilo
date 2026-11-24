@@ -15,8 +15,8 @@
 //! refusal made before this device caught up with the workspace is not kept. A password released
 //! stays in this process's memory.
 
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
+use tilo_socket::Stream;
 
 use accounts::sign_ins::{Answer, Ask, Client, NOT_ANSWERED};
 
@@ -28,7 +28,7 @@ const TYPE_ID: &str = "caldav";
 /// The accounts the session's account sign-ins `link` tell, followed on a thread of its own that
 /// calls `changed` each time they change.
 #[must_use]
-pub fn follow(link: UnixStream, changed: impl Fn() + Send + 'static) -> AccountSource {
+pub fn follow(link: Stream, changed: impl Fn() + Send + 'static) -> AccountSource {
     let signed: Arc<Mutex<Vec<CalendarAccount>>> = Arc::default();
     let followed = Arc::clone(&signed);
     let spawned = std::thread::Builder::new()

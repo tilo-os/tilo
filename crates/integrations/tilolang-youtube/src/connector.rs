@@ -8,8 +8,8 @@
 //! the other, in the order it asked, on a thread of its own; nothing is kept between them,
 //! since the origin writes what YouTube answered into the package's records.
 
-use std::os::unix::net::UnixStream;
 use std::sync::Arc;
+use tilo_socket::Stream;
 
 use crate::service::Service;
 use crate::wire::{self, Ask, FromConnector};
@@ -35,7 +35,7 @@ pub fn run(service: &Arc<dyn Service>) -> Result<(), String> {
 
 /// Run the connector over `service` until `attachments` ends (the session closed its socket):
 /// every instance that attaches has its questions answered.
-pub fn serve(service: &Arc<dyn Service>, attachments: impl Iterator<Item = UnixStream>) {
+pub fn serve(service: &Arc<dyn Service>, attachments: impl Iterator<Item = Stream>) {
     for stream in attachments {
         let service = Arc::clone(service);
         let spawned = std::thread::Builder::new()
@@ -50,7 +50,7 @@ pub fn serve(service: &Arc<dyn Service>, attachments: impl Iterator<Item = UnixS
 
 /// Answer each question the instance at `stream` asks, in the order it asks them, until it goes.
 /// The instance asks one at a time: it waits for an answer before it asks the next.
-fn answer_each(mut stream: UnixStream, service: &dyn Service) {
+fn answer_each(mut stream: Stream, service: &dyn Service) {
     loop {
         let ask = match wire::read::<Ask>(&mut stream) {
             Ok(Some(ask)) => ask,

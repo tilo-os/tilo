@@ -12,10 +12,10 @@
 //! attaches and asks again, so the queue cannot grow.
 
 use std::collections::BTreeMap;
-use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
+use tilo_socket::Stream;
 
 use crate::connector::{AccountRef, CalDavConnector, Event};
 use crate::engine::{AccountSource, EngineConnector, EngineEvent};
@@ -24,7 +24,7 @@ use crate::wire::{self, FromConnector, ToConnector};
 /// What wakes the connector's loop.
 pub enum Wakeup {
     /// An instance attached, over this socket.
-    Attach(UnixStream),
+    Attach(Stream),
     /// The attached instance `session` asked something.
     Asked(u64, Box<ToConnector>),
     /// The attached instance `session` is gone.
@@ -35,7 +35,7 @@ pub enum Wakeup {
 
 /// One attached instance.
 struct Session {
-    stream: UnixStream,
+    stream: Stream,
     connector: EngineConnector,
 }
 
@@ -134,7 +134,7 @@ impl Connector {
         self.unreachable.len()
     }
 
-    fn attach(&mut self, stream: UnixStream, woken: &Sender<Wakeup>) {
+    fn attach(&mut self, stream: Stream, woken: &Sender<Wakeup>) {
         let session = self.next_session;
         self.next_session = self.next_session.saturating_add(1);
         let mut reading = match stream.try_clone() {
@@ -417,7 +417,7 @@ impl Reason for crate::connector::Unmade {
 
 /// Run the connector for the accounts its account sign-ins `sign_ins` tell it, taking each
 /// attaching instance's socket from `attachments`, until that ends.
-pub fn serve(sign_ins: UnixStream, attachments: impl Iterator<Item = UnixStream> + Send + 'static) {
+pub fn serve(sign_ins: Stream, attachments: impl Iterator<Item = Stream> + Send + 'static) {
     let (woken, wakeups) = std::sync::mpsc::channel::<Wakeup>();
     let engine_woken = woken.clone();
     let wake: crate::engine::Wake = Arc::new(move || {

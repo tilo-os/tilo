@@ -3,10 +3,10 @@
 //! The instance's process holds no network and no credential; it asks, and takes in what the
 //! servers answered.
 
-use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use tilo_socket::Stream;
 
 use crate::connector::{AccountRef, CalDavConnector, CalendarKnown, Entry, Event, Request, Unmade};
 use crate::wire::{self, FromConnector, ToConnector};
@@ -19,7 +19,7 @@ enum Heard {
 
 /// [`CalDavConnector`] over the socket to the calendar connector process.
 pub struct RemoteConnector {
-    stream: UnixStream,
+    stream: Stream,
     heard: Receiver<Heard>,
     accounts: Vec<AccountRef>,
     /// Set when the connector says the device came online again.
@@ -33,7 +33,7 @@ impl RemoteConnector {
     /// calls `wake` whenever it said something, and sets `reconnected` when the device is online
     /// again.
     pub fn new(
-        stream: UnixStream,
+        stream: Stream,
         woken: Arc<AtomicBool>,
         wake: tilolang_tilo::background::Waker,
         reconnected: Arc<AtomicBool>,

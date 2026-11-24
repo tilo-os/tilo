@@ -299,7 +299,7 @@ impl ResourceService {
         connection: std::os::fd::OwnedFd,
     ) -> Result<(), String> {
         let wake = self.origin_waker.clone().unwrap_or_else(|| Arc::new(|| {}));
-        let stream = std::os::unix::net::UnixStream::from(connection);
+        let stream = tilo_socket::Stream::from(connection);
         let shared = crate::origin::remote(origin, stream, wake)?;
         self.origins.borrow_mut().push(shared);
         // What an effect of a package's action hands an origin goes to that origin; anything

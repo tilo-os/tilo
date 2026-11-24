@@ -83,6 +83,30 @@ pub fn connect(path: &Path) -> io::Result<Stream> {
     }
 }
 
+/// Two connected ends, both in this process: one is handed to another process or thread, as a
+/// connection made without a listener. A Unix stream pair; on Windows a pipe only this process
+/// joined ([`link::pair`]), which reads as a byte stream as a socket does.
+///
+/// # Errors
+/// The system's error making the pair.
+pub fn pair() -> io::Result<(Stream, Stream)> {
+    #[cfg(unix)]
+    {
+        UnixStream::pair()
+    }
+    #[cfg(windows)]
+    {
+        link::pair()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a page has no local socket",
+        ))
+    }
+}
+
 /// Whether something is bound at `path` now, without connecting to it: a
 /// socket file on Unix, a pipe with an instance on Windows. One a run left
 /// behind on Unix still reads as bound; [`connect`] says whether it answers.

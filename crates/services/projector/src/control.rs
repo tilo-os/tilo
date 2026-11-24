@@ -10,7 +10,6 @@ use zeroize::Zeroizing;
 
 use crate::{CaptureProfile, ProjectionDevice, ProjectionOptions};
 
-#[cfg(unix)]
 pub mod client;
 
 /// Framing of the control socket. Requests and events are small; the largest

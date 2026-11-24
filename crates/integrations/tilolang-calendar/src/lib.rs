@@ -48,7 +48,7 @@ pub const ORIGIN: &str = "caldav";
 /// The origin of an instance in a tilolang host, over the calendar connector process at the far
 /// end of `stream`, waking the instance with `wake` when it says something.
 pub fn remote_origin(
-    stream: std::os::unix::net::UnixStream,
+    stream: tilo_socket::Stream,
     wake: tilolang_tilo::background::Waker,
 ) -> std::io::Result<Rc<RefCell<CalDavOrigin>>> {
     let woken = Arc::new(AtomicBool::new(true));
@@ -76,7 +76,7 @@ const CONNECTOR_CLIENT: &Remote = &|stream, wake| {
 
 /// The client [`register`] hands the platform.
 type Remote = dyn Fn(
-        std::os::unix::net::UnixStream,
+        tilo_socket::Stream,
         tilolang_tilo::background::Waker,
     ) -> Result<tilolang_tilo::origin::SharedOrigin, String>
     + Send
@@ -127,7 +127,7 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
         .ok_or_else(|| "the launcher handed the connector no socket".to_owned())?;
     // The session hands its account sign-ins before any reader.
     let sign_ins = match origin_connector::receive(&socket) {
-        Ok(Some(Handed::SignIns(sign_ins))) => std::os::unix::net::UnixStream::from(sign_ins),
+        Ok(Some(Handed::SignIns(sign_ins))) => origin_connector::stream(sign_ins),
         Ok(Some(Handed::Reader(_))) => {
             return Err("the session handed the calendar connector no account sign-ins".to_owned());
         }

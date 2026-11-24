@@ -7,12 +7,12 @@
 //! being asked is reported through the notice sink instead of waiting for the next request.
 
 use std::fmt;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
+use tilo_files::native::socket::Stream;
 
 use crate::control::{self, ConnectStage, Credential, ProjectorEvent, ProjectorRequest};
 use crate::{ProjectionDevice, ProjectionOptions};
@@ -64,7 +64,7 @@ impl fmt::Display for ControlError {
 impl std::error::Error for ControlError {}
 
 struct Link {
-    writer: UnixStream,
+    writer: Stream,
     events: Receiver<ProjectorEvent>,
     /// Whether the connection is still the one the caller wants. A link the caller replaced is
     /// shut down here and its reader stays quiet: its end is not the service's.
