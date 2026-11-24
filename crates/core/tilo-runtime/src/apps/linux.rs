@@ -43,6 +43,9 @@ pub(super) fn launch(
             ui::process::NO_WINDOW_IDLE_ENV,
             crate::IDLE.as_secs().to_string(),
         );
+    } else if shows == super::Shows::Connection {
+        // No display and no idle end: it keeps the app's connection until the device stops it.
+        command.env(ui::process::NO_WINDOW_ENV, "1");
     } else {
         command.arg("--wayland-socket").arg(wayland_socket()?);
     }

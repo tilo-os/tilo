@@ -639,6 +639,85 @@ tilo_test_env::scenario! {
     }
 }
 
+// An app that keeps a long-lived connection says so in its signed manifest: the daemon offers its
+// turn with the capabilities it requires, starts it with no window and no idle end when this
+// device holds the lease, recognises the process by its launch record, and ends exactly that
+// process when the device lets the turn go.
+#[cfg(target_os = "linux")]
+tilo_test_env::scenario! {
+    fn an_apps_connection_runs_with_no_window_until_the_device_stops_it;
+
+    phase the_connection_starts_runs_and_stops;
+    {
+        // `Apps` has a launch of its own called `start`, and its installed list: the
+        // connection host's are named through the trait.
+        use tilo_workspace_service::work::HostConnections;
+        let start = |apps: &Apps| HostConnections::start(apps, WORKSPACE, BRIDGE);
+
+        const BRIDGE: &str = "so.tilo.bridge";
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        store.install(
+            BRIDGE,
+            &manifest(
+                BRIDGE,
+                "gui",
+                "connection = true\n\n[capabilities]\nrequired = [\"network.http\", \"secrets\"]\n",
+            ),
+            &[("probe", b"binary")],
+        );
+        store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
+        let said = root.join("said");
+        let launcher = tilo_test_env::stand_in(
+            root.join("tilo-launcher"),
+            &format!("env > '{said}.env'\nhold\n", said = said.display()),
+        )
+        .unwrap();
+        let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+
+        assert_eq!(
+            apps.connections(),
+            [(
+                BRIDGE.to_owned(),
+                vec!["network.http".to_owned(), "secrets".to_owned()]
+            )],
+            "only the app that says it keeps a connection has a connection turn"
+        );
+        assert!(apps.gives(WORKSPACE, BRIDGE, "secrets"));
+        assert!(!apps.gives(WORKSPACE, BRIDGE, "camera"), "nothing it does not declare");
+        assert!(
+            HostConnections::installed(&apps, BRIDGE)
+                && !HostConnections::installed(&apps, "so.tilo.unknown")
+        );
+        assert!(!apps.runs(WORKSPACE, BRIDGE), "nothing runs before the device holds it");
+
+        start(&apps).expect("the connection's process starts");
+        assert!(apps.runs(WORKSPACE, BRIDGE), "it runs, recognised by its launch record");
+        let env = wait_for(&format!("{}.env", said.display()));
+        assert!(
+            env.lines().any(|line| line == "TILO_NO_WINDOW=1"),
+            "it draws nothing: {env}"
+        );
+        assert!(
+            !env.contains("TILO_NO_WINDOW_IDLE"),
+            "it has no idle end, unlike a process started for a call: {env}"
+        );
+        start(&apps).expect("starting it again is no second process");
+        assert_eq!(apps.launched.0.lock().unwrap().len(), 1, "one process keeps it");
+
+        apps.stop(WORKSPACE, BRIDGE);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while apps.runs(WORKSPACE, BRIDGE) {
+            assert!(std::time::Instant::now() < until, "the stopped process ends");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            apps.launched.0.lock().unwrap().is_empty(),
+            "its reaper forgets it once it ended"
+        );
+    }
+}
+
 /// What a stand-in wrote to `path`, once it wrote it: a launch's own arguments and environment
 /// are the launcher's to record, and the process runs on until the test ends.
 #[cfg(target_os = "linux")]

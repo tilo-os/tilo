@@ -141,6 +141,37 @@ impl Connectors {
     }
 }
 
+impl Connectors {
+    /// Whether a connector of `app` runs in `workspace` now.
+    pub(crate) fn runs(&self, app: &str, workspace: &str) -> bool {
+        let mut running = self.running.lock_recover();
+        running.retain(|(of, _, inside), connector| {
+            !(of == app && inside == workspace) || alive(&mut connector.child)
+        });
+        running
+            .keys()
+            .any(|(of, _, inside)| of == app && inside == workspace)
+    }
+
+    /// Stop every connector of `app` in `workspace`.
+    pub(crate) fn stop(&self, app: &str, workspace: &str) {
+        let stopped: Vec<Running> = {
+            let mut running = self.running.lock_recover();
+            let keys: Vec<Key> = running
+                .keys()
+                .filter(|(of, _, inside)| of == app && inside == workspace)
+                .cloned()
+                .collect();
+            keys.iter().filter_map(|key| running.remove(key)).collect()
+        };
+        for mut connector in stopped {
+            tracing::info!(app, workspace, "an origin connector stopped");
+            let _ = connector.child.kill();
+            reap(connector.child);
+        }
+    }
+}
+
 impl Drop for Connectors {
     fn drop(&mut self) {
         let started = std::mem::take(&mut *self.running.lock_recover());
@@ -148,6 +179,19 @@ impl Drop for Connectors {
             let _ = running.child.kill();
             reap(running.child);
         }
+    }
+}
+
+/// Whether `process` still runs.
+fn alive(process: &mut Process) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        matches!(process.try_wait(), Ok(None))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: signal 0 only asks whether the process exists; it sends nothing.
+        unsafe { libc::kill(process.pid(), 0) == 0 }
     }
 }
 

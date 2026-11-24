@@ -131,6 +131,12 @@ pub(super) fn launch(
             OsString::from(ui::process::NO_WINDOW_IDLE_ENV),
             OsString::from(crate::IDLE.as_secs().to_string()),
         ));
+    } else if shows == super::Shows::Connection {
+        // It keeps the app's connection, with no idle end, until the device stops it.
+        env.push((
+            OsString::from(ui::process::NO_WINDOW_ENV),
+            OsString::from("1"),
+        ));
     }
     let (capabilities, egress) = apps.launch_capabilities(app, workspace, &manifest);
     let request = launcher_macos::LaunchRequest {

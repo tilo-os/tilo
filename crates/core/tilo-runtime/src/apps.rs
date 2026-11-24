@@ -34,6 +34,8 @@ use tilo_workspace_service::apps::{
 };
 
 #[cfg(unix)]
+mod connection;
+#[cfg(unix)]
 mod connectors;
 #[cfg(unix)]
 mod instances;
@@ -62,7 +64,10 @@ pub(crate) struct OpenedView {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shows {
     Window,
+    /// No window, for a call: it ends once it takes no call for a while.
     Nothing,
+    /// No window, for the app's long-lived connection: it runs until the device stops it.
+    Connection,
 }
 
 /// A start that has already happened: the answer a call gets when the process that takes it
@@ -1156,7 +1161,7 @@ impl Launched {
                 workspace: workspace.to_owned(),
                 record: record.map(str::to_owned),
                 ticket,
-                no_window: shows == Shows::Nothing,
+                no_window: shows != Shows::Window,
             },
         );
         true

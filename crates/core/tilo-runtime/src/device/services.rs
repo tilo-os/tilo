@@ -1580,6 +1580,12 @@ impl Daemon {
         Arc::new(super::window_follow::WindowFollow::new(Arc::clone(&fanout)))
             .register(&workspaces.copies().providers());
         start_agents(&broker, &workspaces, &tickets, initiative);
+        // The apps installed here that keep a long-lived connection: the trigger runner takes
+        // each one's turn where this device has what it needs, and runs it while it holds it.
+        #[cfg(unix)]
+        workspaces
+            .copies()
+            .run_connections(Arc::clone(&apps) as Arc<dyn tilo_workspace_service::work::HostConnections>);
         start_triggers(&broker, &workspaces, &invocations);
         let replicas = take_work_files(
             &TakenFiles {
