@@ -3370,7 +3370,7 @@ isolation = "vm"
 requires = ["arch=x86_64"]
 git = true
 outputs = ["dist/ci-output/**"]
-timeout_secs = 21600
+timeout_secs = 28800
 on = ["dispatch"]
 heavy = true
 
@@ -3384,7 +3384,7 @@ isolation = "vm"
 requires = ["arch=x86_64"]
 git = true
 outputs = ["dist/ci-output/**"]
-timeout_secs = 21600
+timeout_secs = 28800
 on = ["dispatch"]
 heavy = true
 
