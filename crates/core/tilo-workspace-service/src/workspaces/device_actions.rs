@@ -1455,14 +1455,18 @@ async fn serves_live(
     }
     // The record is read where the call came from, the way a call to the app's connection
     // reaches that device.
+    // Without the apps this device runs no app connection, so it reaches no device for one.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
     let link = work
         .providers
         .invocations()
         .and_then(|apps| apps.upgrade())
-        .and_then(|apps| apps.hosted_workspaces()?.reach(workspace, forwarder))
-        .ok_or_else(|| {
-            unavailable("this device cannot reach the device that runs the app".into())
-        })?;
+        .and_then(|apps| apps.hosted_workspaces()?.reach(workspace, forwarder));
+    #[cfg(not(all(feature = "apps", not(target_arch = "wasm32"))))]
+    let link: Option<tilo_peer_state::actions::RemoteDevice> = None;
+    let link = link.ok_or_else(|| {
+        unavailable("this device cannot reach the device that runs the app".into())
+    })?;
     let read = tilo_actions::remote::ResourceReadRequest {
         workspace: workspace.to_owned(),
         app: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
@@ -1484,15 +1488,20 @@ async fn serves_live(
         Some(tilo_actions::remote::RemoteActionMessage::ResourceReading {
             result: Ok(text),
             ..
-        }) => serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|read| read.pointer("/records/0/value/status").cloned())
-            .and_then(|status| {
+        }) => tilo_failure::ignored!(
+            "a reading that holds no status proves nothing, and is refused below",
+            serde_json::from_str::<serde_json::Value>(&text).ok()
+        )
+        .and_then(|read| read.pointer("/records/0/value/status").cloned())
+        .and_then(|status| {
+            tilo_failure::ignored!(
+                "a status this device does not know proves nothing, and is refused below",
                 serde_json::from_value::<
                     tilo_actions::remote::workspace_invocations::InvocationStatus,
                 >(status)
                 .ok()
-            }),
+            )
+        }),
         Some(tilo_actions::remote::RemoteActionMessage::ResourceReading {
             result: Err(error),
             ..
