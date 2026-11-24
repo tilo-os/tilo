@@ -24,7 +24,7 @@ mod cases {
         let store = AmStore::new();
         let auth = TestAuthority::new();
         let rt = Runtime::new(store, auth.clone()).unwrap();
-        let imports = TasksImports::load(&rt, |loaded| auth.trust(loaded));
+        let imports = Uses::load(&rt, "tasks", |loaded| auth.trust(loaded));
         let app = App::compile(source, &imports.metas());
         // Installed packages are code the platform trusts, as it does every installed app.
         auth.trust(&app.load(&rt));

@@ -21,7 +21,7 @@ mod cases {
         let store = AmStore::new();
         let auth = TestAuthority::new();
         let rt = Runtime::new(store, auth.clone()).unwrap();
-        let imports = TasksImports::load(&rt, |loaded| auth.trust(loaded));
+        let imports = Uses::load(&rt, "tasks", |loaded| auth.trust(loaded));
         let app = App::compile(TASKS, &imports.metas());
         auth.trust(&app.load(&rt));
         Installed {

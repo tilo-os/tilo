@@ -42,6 +42,8 @@ mod cases {
     fn build((dir, src, ids): (&str, &str, &str), imports: &[&App]) -> App {
         let lock = IdsLock::parse(ids).unwrap_or_else(|e| panic!("{dir}/app.ids: {e}"));
         let metas: Vec<tilolang::PackageMeta> = imports.iter().map(|a| a.meta().clone()).collect();
+        let platform = platform_named(src, &metas);
+        let metas = [metas, platform.clone()].concat();
         let compiled = tilolang::compile_package(src, &lock, &metas)
             .unwrap_or_else(|d| panic!("{dir}: {d:#?}"));
         assert_eq!(
@@ -49,12 +51,14 @@ mod cases {
             ids,
             "{dir}/app.ids is out of date: run `tilolang build {dir}`"
         );
-        App { compiled }
+        App { compiled, platform }
     }
 
     struct Apps {
         discussion: App,
         notes: App,
+        /// The address book Tasks hands a task to.
+        contacts: App,
         todo: App,
         /// The chat of messages with blocks, a fixture.
         chat: App,
@@ -71,7 +75,8 @@ mod cases {
     fn apps() -> Apps {
         let discussion = build(app_source!("discussion"), &[]);
         let notes = build(app_source!("notes"), &[&discussion]);
-        let todo = build(tasks_source!(), &[&discussion]);
+        let contacts = app("contacts");
+        let todo = build(tasks_source!(), &[&discussion, &notes, &contacts]);
         let chat = build(
             (
                 "crates/lang/tilolang-runtime/tests/block_chat",
@@ -99,6 +104,7 @@ mod cases {
         Apps {
             discussion,
             notes,
+            contacts,
             todo,
             chat,
             letters,
@@ -130,6 +136,7 @@ mod cases {
         let ids = [
             &apps.discussion,
             &apps.notes,
+            &apps.contacts,
             &apps.todo,
             &apps.chat,
             &apps.letters,
@@ -418,10 +425,11 @@ mod cases {
     fn every_app_compiles_with_its_committed_ids_and_loads_together() {
         let a = apps();
         let w = world(&a, &AmStore::new());
-        assert_eq!(w.ids.len(), 10);
+        assert_eq!(w.ids.len(), 11);
         for app in [
             &a.discussion,
             &a.notes,
+            &a.contacts,
             &a.todo,
             &a.chat,
             &a.letters,

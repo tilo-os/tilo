@@ -25,10 +25,10 @@ mod cases {
     fn world() -> World {
         let auth = SimpleAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
-        let imports = TasksImports::load(&rt, |_| {});
+        let imports = Uses::load(&rt, "tasks", |_| {});
         let todo = App::compile(TODO, &imports.metas());
         todo.load(&rt);
-        let notes_app = imports.notes;
+        let notes_app = imports.app("so.tilo.notes");
         let list = rt.create("Tasks").unwrap();
         let nb = rt.create("Notebook").unwrap();
         let mut notes = Vec::new();

@@ -717,68 +717,149 @@ pub fn mail_meta() -> Meta {
     }))
 }
 
-/// The packages Tasks imports, each compiled from its app and loaded into a runtime: Discussion,
-/// Notes and Contacts, and the workspace's own package the platform publishes.
-pub struct TasksImports {
-    pub discussion: App,
-    pub notes: App,
-    pub contacts: App,
-    pub workspace: tilolang::PackageMeta,
+/// The directory of the app `apps/tl/<name>`.
+fn app_dir(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../apps/tl")
+        .join(name)
 }
 
-impl TasksImports {
-    /// Compile and load each into `rt`, handing `trust` what was loaded (an installed package
-    /// is code the platform trusts).
-    pub fn load(rt: &Runtime, trust: impl Fn(&PackageId)) -> Self {
-        let workspace = tilolang_tilo::platform_apps::platform_package(
-            tilolang_tilo::platform_apps::WORKSPACE_APP,
-        )
-        .expect("the workspace's package");
-        let discussion = App::compile(
-            include_str!("../../../../../apps/tl/discussion/app.tl"),
-            std::slice::from_ref(&workspace),
-        );
-        trust(&discussion.load(rt));
-        let notes = App::compile(
-            include_str!("../../../../../apps/tl/notes/app.tl"),
-            &[discussion.meta().clone()],
-        );
-        trust(&notes.load(rt));
-        let contacts = App::compile(include_str!("../../../../../apps/tl/contacts/app.tl"), &[]);
-        trust(&contacts.load(rt));
-        Self {
-            discussion,
-            notes,
-            contacts,
-            workspace,
+/// The app `apps/tl/<name>` and the packages it uses, built the way a real build builds them:
+/// each from every file of its directory with its committed ids, in dependency order, against
+/// the platform's packages. The packages it uses come first and the app last. Each directory is
+/// compiled once in a test process.
+pub fn built(name: &str) -> Vec<App> {
+    static BUILT: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, App>>,
+    > = std::sync::OnceLock::new();
+    let platform =
+        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+    let dirs = tilolang::source::dependency_order_with(
+        &app_dir(name),
+        &[],
+        &tilolang::source::apps_of(&platform),
+    )
+    .unwrap_or_else(|e| panic!("apps/tl/{name}: {e}"));
+    let mut cache = BUILT.get_or_init(Default::default).lock().unwrap();
+    let mut out: Vec<App> = Vec::new();
+    for dir in dirs {
+        let dir = dir.canonicalize().unwrap_or(dir);
+        let app = match cache.get(&dir) {
+            Some(app) => app.clone(),
+            None => {
+                let source = tilolang::PackageSource::read_dir(&dir).unwrap();
+                let ids = tilolang::source::read_ids(&dir).unwrap();
+                let mut imports = platform.clone();
+                imports.extend(out.iter().map(|used| used.meta().clone()));
+                let compiled = tilolang::compile_package_source_with(
+                    &source,
+                    &ids,
+                    &imports,
+                    &mut tilolang::SeededEntropy(0),
+                )
+                .unwrap_or_else(|d| panic!("{}: {d:#?}", dir.display()));
+                assert_eq!(
+                    compiled.ids.to_text(),
+                    ids.to_text(),
+                    "{}/app.ids is out of date: run `tilolang build` on it",
+                    dir.display()
+                );
+                let (_, uses) = source.header();
+                let app = App {
+                    compiled,
+                    platform: tilolang_tilo::platform_apps::platform_packages_of(
+                        uses.iter().map(String::as_str),
+                    )
+                    .expect("the platform's packages read"),
+                };
+                cache.insert(dir, app.clone());
+                app
+            }
+        };
+        out.push(app);
+    }
+    out
+}
+
+/// The app `apps/tl/<name>` as [`built`] builds it.
+pub fn app(name: &str) -> App {
+    built(name).pop().expect("the app is built last")
+}
+
+/// The packages the app `apps/tl/<name>` uses, built as [`built`] builds them and loaded into a
+/// runtime: what a package compiled beside that app compiles against.
+pub struct Uses {
+    pub apps: Vec<App>,
+}
+
+impl Uses {
+    /// Build and load each into `rt`, handing `trust` what was loaded (an installed package is
+    /// code the platform trusts).
+    pub fn load(rt: &Runtime, name: &str, trust: impl Fn(&PackageId)) -> Self {
+        let mut apps = built(name);
+        apps.pop();
+        for used in &apps {
+            trust(&used.load(rt));
         }
+        Self { apps }
     }
 
-    /// What Tasks compiles against.
+    /// What a package beside the app compiles against.
     pub fn metas(&self) -> Vec<tilolang::PackageMeta> {
-        vec![
-            self.discussion.meta().clone(),
-            self.notes.meta().clone(),
-            self.contacts.meta().clone(),
-            self.workspace.clone(),
-        ]
+        self.apps.iter().map(|used| used.meta().clone()).collect()
     }
+
+    /// The used package whose app id is `app`.
+    pub fn app(&self, app: &str) -> &App {
+        self.apps
+            .iter()
+            .find(|used| used.meta().app == app)
+            .unwrap_or_else(|| panic!("no package {app} is used"))
+    }
+}
+
+/// The platform's packages `src` names with `use` that `imports` leaves out: what a real build
+/// compiles a package against besides the packages it is given.
+pub fn platform_named(src: &str, imports: &[tilolang::PackageMeta]) -> Vec<tilolang::PackageMeta> {
+    tilolang_tilo::platform_apps::named_platform_packages(src)
+        .expect("the platform's packages read")
+        .into_iter()
+        .filter(|package| !imports.iter().any(|given| given.app == package.app))
+        .collect()
 }
 
 /// A package compiled from tilolang source and loaded into a runtime.
+#[derive(Clone)]
 pub struct App {
     pub compiled: tilolang::Compiled,
+    /// The platform's packages it was compiled against, which loading it describes beside it.
+    pub platform: Vec<tilolang::PackageMeta>,
 }
 
 impl App {
+    /// `src` compiled against `imports` and the platform's packages it names.
     pub fn compile(src: &str, imports: &[tilolang::PackageMeta]) -> Self {
-        let compiled = tilolang::compile_package(src, &tilolang::IdsLock::new(), imports)
+        let platform = platform_named(src, imports);
+        let mut all = imports.to_vec();
+        all.extend(platform.iter().cloned());
+        let compiled = tilolang::compile_package(src, &tilolang::IdsLock::new(), &all)
             .unwrap_or_else(|d| panic!("{d:#?}"));
-        Self { compiled }
+        Self { compiled, platform }
     }
 
+    /// Load it into `rt` as a host loads a package: its module, then the description of each
+    /// platform package it names, the workspace's members root served from the runtime's
+    /// members.
     pub fn load(&self, rt: &Runtime) -> PackageId {
-        rt.load_compiled(&self.compiled).unwrap()
+        let id = rt.load_compiled(&self.compiled).unwrap();
+        for meta in &self.platform {
+            rt.load_foreign(meta.clone())
+                .unwrap_or_else(|e| panic!("{}: {e}", meta.app));
+            if meta.app == tilolang_tilo::platform_apps::WORKSPACE_APP {
+                rt.serve_members(&tilolang_tilo::platform_apps::workspace_members());
+            }
+        }
+        id
     }
 
     pub fn meta(&self) -> &tilolang::PackageMeta {

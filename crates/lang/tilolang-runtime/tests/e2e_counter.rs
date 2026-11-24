@@ -176,6 +176,7 @@ mod cases {
         let v2 = App {
             compiled: tilolang::compile_package(&counter_v2(), &v1.compiled.ids, &[])
                 .unwrap_or_else(|d| panic!("{d:#?}")),
+            platform: Vec::new(),
         };
         assert_eq!(
             v1.action("increment"),

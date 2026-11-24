@@ -19,11 +19,9 @@ mod cases {
         fn on(store: &AmStore, board: Option<&ResourceRef>) -> Self {
             // Every replica runs the same compiled package, as every device does.
             thread_local! {
-                static COMPILED: tilolang::Compiled = App::compile(SOURCE, &[]).compiled;
+                static COMPILED: App = App::compile(SOURCE, &[]);
             }
-            let app = App {
-                compiled: COMPILED.with(Clone::clone),
-            };
+            let app = COMPILED.with(Clone::clone);
             let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
             app.load(&rt);
             let board = board

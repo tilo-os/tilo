@@ -11,8 +11,6 @@ mod cases {
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
 
-    const SOURCE: &str = include_str!("../../../../apps/tl/mail/app.tl");
-
     /// The address a content store names `bytes` by: the same bytes are one file, whatever name
     /// they came in as.
     fn digest_of(bytes: &[u8]) -> String {
@@ -113,7 +111,11 @@ mod cases {
             let device = Device::default();
             rt.set_blobs(device.clone());
             rt.set_clock(|| "2026-06-30T09:00:00Z".to_owned());
-            let app = App::compile(SOURCE, &[]);
+            let mut packages = built("mail");
+            let app = packages.pop().expect("Mail is built last");
+            for used in &packages {
+                used.load(&rt);
+            }
             app.load(&rt);
             let root = rt.create_root("Mail").unwrap();
             Self {
