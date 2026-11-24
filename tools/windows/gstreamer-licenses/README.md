@@ -29,7 +29,7 @@ The GStreamer `tilolang-process` plays video with on Windows comes from GStreame
 own MSVC build, not from MSYS2 (`tools/ci/windows/gstreamer_runtime.py`, run by
 the `build/windows-gstreamer-x86_64` check). Its closure holds nothing under the
 GPL and no encoder library, and ships the notices it names from this directory:
-the LGPL text, and the upstream notices of libffi, PCRE2, zlib, bzip2, ORC,
+the LGPL and MPL texts, and the upstream notices of libffi, PCRE2, zlib, bzip2, ORC,
 libogg, Opus, FLAC, dav1d, libvpx (with its patent grant), lewton and the
 gstreamer-rs and gtk-rs bindings, each at the version GStreamer 1.28's cerbero
 recipes build. `sources.json` records where each came from.

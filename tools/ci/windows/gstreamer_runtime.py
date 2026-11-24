@@ -9,6 +9,8 @@ installer. The wheels are fetched at the digests pinned here, and the closure is
     <out>/gstreamer-runtime-x86_64.tar.zst    bin/, lib/gstreamer-1.0/, libexec/ and licenses/,
                                               the tree that goes beside bin/tilolang-process.exe
     <out>/gstreamer-runtime-x86_64.json       every staged file's digest, licence and notice
+    <out>/gstreamer-sdk-x86_64.tar.zst        import libraries and pkg-config files for the
+                                              libraries gstreamer-rs links, for a cross-build
 
 each with a SHA-256 sidecar.
 
@@ -33,6 +35,7 @@ import struct
 import subprocess
 import sys
 import tarfile
+import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -98,7 +101,26 @@ LIBRARIES = {
 LINKED = {
     'vpx': ['libvpx-1.14.1-LICENSE', 'libvpx-1.14.1-PATENTS'],
     'lewton': ['lewton-0.10.2-LICENSE', 'gstreamer-rs-0.24-LICENSE-MIT', 'gtk-rs-core-0.21-LICENSE'],
-    'reqwest': ['gstreamer-rs-0.24-LICENSE-MIT', 'gtk-rs-core-0.21-LICENSE'],
+    # The plugin is under the MPL; reqwest, hyper and rustls under Apache 2.0 (or MIT), ring
+    # under Apache 2.0 and ISC.
+    'reqwest': ['MPL-2.0.txt', 'Apache-2.0.txt', 'ISC.txt', 'gstreamer-rs-0.24-LICENSE-MIT',
+                'gtk-rs-core-0.21-LICENSE'],
+}
+# What gstreamer-rs and glib-rs link, by their pkg-config names: an import library generated
+# from each DLL's exports, and a pkg-config file naming it at the version the DLL is.
+GLIB_VERSION = '2.82.4'
+PKGCONFIG = {
+    'glib-2.0': ('glib-2.0-0.dll', GLIB_VERSION),
+    'gobject-2.0': ('gobject-2.0-0.dll', GLIB_VERSION),
+    'gmodule-2.0': ('gmodule-2.0-0.dll', GLIB_VERSION),
+    'gio-2.0': ('gio-2.0-0.dll', GLIB_VERSION),
+    'gstreamer-1.0': ('gstreamer-1.0-0.dll', VERSION),
+    'gstreamer-base-1.0': ('gstbase-1.0-0.dll', VERSION),
+    'gstreamer-app-1.0': ('gstapp-1.0-0.dll', VERSION),
+    'gstreamer-video-1.0': ('gstvideo-1.0-0.dll', VERSION),
+    'gstreamer-audio-1.0': ('gstaudio-1.0-0.dll', VERSION),
+    'gstreamer-pbutils-1.0': ('gstpbutils-1.0-0.dll', VERSION),
+    'gstreamer-tag-1.0': ('gsttag-1.0-0.dll', VERSION),
 }
 NOTICES = Path(__file__).resolve().parents[3] / 'tools/windows/gstreamer-licenses'
 SCANNER = 'libexec/gstreamer-1.0/gst-plugin-scanner.exe'
@@ -115,44 +137,81 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def imports(data):
-    """The PE machine and the DLLs a Windows executable imports, delay-loaded ones included."""
-    if data[:2] != b'MZ':
-        raise ValueError('not a Windows executable')
-    header = struct.unpack_from('<I', data, 0x3c)[0]
-    if data[header:header + 4] != b'PE\0\0':
-        raise ValueError('not a Windows executable')
-    machine, sections = struct.unpack_from('<HH', data, header + 4)
-    optional_size = struct.unpack_from('<H', data, header + 20)[0]
-    optional = header + 24
-    directories = optional + (112 if struct.unpack_from('<H', data, optional)[0] == 0x20b else 96)
-    table = []
-    for index in range(sections):
-        entry = optional + optional_size + 40 * index
-        virtual_size, address, raw_size, raw = struct.unpack_from('<IIII', data, entry + 8)
-        table.append((address, max(virtual_size, raw_size), raw))
+class Executable:
+    """A Windows executable's headers: its machine, and the tables its data directories point at."""
 
-    def offset(rva):
-        for address, size, raw in table:
+    def __init__(self, data):
+        if data[:2] != b'MZ':
+            raise ValueError('not a Windows executable')
+        header = struct.unpack_from('<I', data, 0x3c)[0]
+        if data[header:header + 4] != b'PE\0\0':
+            raise ValueError('not a Windows executable')
+        self.data = data
+        self.machine, sections = struct.unpack_from('<HH', data, header + 4)
+        optional_size = struct.unpack_from('<H', data, header + 20)[0]
+        optional = header + 24
+        plus = struct.unpack_from('<H', data, optional)[0] == 0x20b
+        self.directories = optional + (112 if plus else 96)
+        self.sections = []
+        for index in range(sections):
+            entry = optional + optional_size + 40 * index
+            virtual_size, address, raw_size, raw = struct.unpack_from('<IIII', data, entry + 8)
+            characteristics = struct.unpack_from('<I', data, entry + 36)[0]
+            self.sections.append((address, max(virtual_size, raw_size), raw,
+                                  bool(characteristics & 0x20000000)))
+
+    def offset(self, rva):
+        for address, size, raw, _ in self.sections:
             if address <= rva < address + size:
                 return rva - address + raw
         raise ValueError(f'address {rva:#x} is in no section')
 
-    def name(rva):
-        start = offset(rva)
-        return data[start:data.index(b'\0', start)].decode('ascii')
+    def code(self, rva):
+        return any(address <= rva < address + size and executable
+                   for address, size, _, executable in self.sections)
 
-    names = []
-    for directory, size, field in ((1, 20, 3), (13, 32, 1)):
-        rva = struct.unpack_from('<I', data, directories + 8 * directory)[0]
-        cursor = offset(rva) if rva else None
-        while cursor is not None:
-            entry = struct.unpack_from(f'<{size // 4}I', data, cursor)
-            if not any(entry):
-                break
-            names.append(name(entry[field]))
-            cursor += size
-    return machine, names
+    def string(self, rva):
+        start = self.offset(rva)
+        return self.data[start:self.data.index(b'\0', start)].decode('ascii')
+
+    def directory(self, index):
+        rva = struct.unpack_from('<I', self.data, self.directories + 8 * index)[0]
+        return self.offset(rva) if rva else None
+
+    def imports(self):
+        """The DLLs it imports, delay-loaded ones included."""
+        names = []
+        for index, size, field in ((1, 20, 3), (13, 32, 1)):
+            cursor = self.directory(index)
+            while cursor is not None:
+                entry = struct.unpack_from(f'<{size // 4}I', self.data, cursor)
+                if not any(entry):
+                    break
+                names.append(self.string(entry[field]))
+                cursor += size
+        return names
+
+    def exports(self):
+        """The names it exports, each with whether it names code (a function) or data."""
+        cursor = self.directory(0)
+        if cursor is None:
+            return []
+        functions, names, ordinals = struct.unpack_from('<III', self.data, cursor + 28)
+        count = struct.unpack_from('<I', self.data, cursor + 24)[0]
+        functions, names, ordinals = (self.offset(rva) for rva in (functions, names, ordinals))
+        exported = []
+        for index in range(count):
+            name = self.string(struct.unpack_from('<I', self.data, names + 4 * index)[0])
+            ordinal = struct.unpack_from('<H', self.data, ordinals + 2 * index)[0]
+            rva = struct.unpack_from('<I', self.data, functions + 4 * ordinal)[0]
+            exported.append((name, self.code(rva)))
+        return exported
+
+
+def imports(data):
+    """The PE machine and the DLLs a Windows executable imports, delay-loaded ones included."""
+    executable = Executable(data)
+    return executable.machine, executable.imports()
 
 
 def merge(wheels):
@@ -247,6 +306,37 @@ def notices():
     return texts
 
 
+def sdk(files):
+    """The import libraries and pkg-config files a cross-build links the staged DLLs through."""
+    out = {}
+    with tempfile.TemporaryDirectory() as scratch:
+        for name, (dll, version) in PKGCONFIG.items():
+            exports = Executable(files[f'bin/{dll}']).exports()
+            definition = Path(scratch, f'{name}.def')
+            definition.write_text(f'LIBRARY {dll}\nEXPORTS\n' + ''.join(
+                f'    {symbol}{"" if code else " DATA"}\n' for symbol, code in exports))
+            library = Path(scratch, f'{name}.lib')
+            subprocess.run(['llvm-dlltool', '-m', 'i386:x86-64', '-D', dll, '-d', str(definition),
+                            '-l', str(library)], check=True)
+            out[f'lib/{name}.lib'] = library.read_bytes()
+            out[f'lib/pkgconfig/{name}.pc'] = (
+                'prefix=${pcfiledir}/../..\nlibdir=${prefix}/lib\n\n'
+                f'Name: {name}\nDescription: {dll} of GStreamer {VERSION}\'s MSVC build\n'
+                f'Version: {version}\nLibs: -L${{libdir}} -l{name}\nCflags:\n').encode()
+    return out
+
+
+def pack(path, files):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode='w') as archive:
+        for name in sorted(files):
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(files[name]), 0o644
+            archive.addfile(info, io.BytesIO(files[name]))
+    subprocess.run(['zstd', '-T4', '-19', '--quiet', '-f', '-o', str(path)],
+                   input=buffer.getvalue(), check=True)
+
+
 def fetch():
     wheels = {}
     for package, (url, sha256) in WHEELS.items():
@@ -266,14 +356,8 @@ def stage(out, wheels):
     files.update(notices())
     out.mkdir(parents=True, exist_ok=True)
     name = 'gstreamer-runtime-x86_64'
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode='w') as archive:
-        for path in sorted(files):
-            info = tarfile.TarInfo(path)
-            info.size, info.mode = len(files[path]), 0o644
-            archive.addfile(info, io.BytesIO(files[path]))
-    subprocess.run(['zstd', '-T4', '-19', '--quiet', '-f', '-o', str(out / f'{name}.tar.zst')],
-                   input=buffer.getvalue(), check=True)
+    pack(out / f'{name}.tar.zst', files)
+    pack(out / 'gstreamer-sdk-x86_64.tar.zst', sdk(files))
     by_name = {key.lower(): value for key, value in LIBRARIES.items()}
     manifest = {
         'version': VERSION,
@@ -287,7 +371,7 @@ def stage(out, wheels):
         'system_imports': sorted(system),
     }
     (out / f'{name}.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    for path in (out / f'{name}.tar.zst', out / f'{name}.json'):
+    for path in (out / f'{name}.tar.zst', out / f'{name}.json', out / 'gstreamer-sdk-x86_64.tar.zst'):
         Path(f'{path}.sha256').write_text(f'{digest(path.read_bytes())}  {path.name}\n')
     return len(staged)
 

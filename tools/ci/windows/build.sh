@@ -8,6 +8,9 @@
 #   build.sh tests <arch> <sdk> <out>    the imager's unit-test executable, for Wine or a Windows host
 #   build.sh runtime <arch> <sdk> <out>  the device daemon and the tilolang runtime programs
 #
+# On x86_64 the runtime links GStreamer's MSVC build, through the import libraries
+# build/windows-gstreamer-x86_64 staged (gstreamer_runtime.py).
+#
 # <sdk> is the archive `build.sh sdk` made. Every output has a SHA-256 sidecar.
 set -euo pipefail
 
@@ -99,6 +102,17 @@ print(paths[0])' "${TMPDIR:-/tmp}/imager-tests.json")"
     sdk="${3:?SDK archive}" out="${4:?output directory}"
     windows_platform_tests="tilo-socket runtime-portal tilo-fs-client tilo-identity"
     use_windows_sdk "$arch" "$sdk"
+    if [ "$arch" = x86_64 ]; then
+      gstreamer="${TMPDIR:-/tmp}/gstreamer-sdk-$arch"
+      archive=/target/windows/x86_64/gstreamer/gstreamer-sdk-x86_64.tar.zst
+      (cd "$(dirname -- "$archive")" && sha256sum --check --strict --quiet "$(basename -- "$archive").sha256")
+      rm -rf -- "$gstreamer" && mkdir -p "$gstreamer"
+      zstd -dc --quiet "$archive" | tar -xf - -C "$gstreamer"
+      # For the Windows target alone: the host's build scripts keep the host's pkg-config.
+      export PKG_CONFIG_ALLOW_CROSS_x86_64_pc_windows_msvc=1 \
+        PKG_CONFIG_LIBDIR_x86_64_pc_windows_msvc="$gstreamer/lib/pkgconfig" \
+        PKG_CONFIG_PATH_x86_64_pc_windows_msvc=
+    fi
     # The unit tests of the platform layer the daemon stands on, for Wine to run:
     # one executable per crate, named by it. First, so a layer that stops compiling
     # is named even while something above it does too.

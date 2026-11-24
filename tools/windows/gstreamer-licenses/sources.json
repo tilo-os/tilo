@@ -143,5 +143,10 @@
     "File": "gtk-rs-core-0.21-LICENSE",
     "URL": "https://raw.githubusercontent.com/gtk-rs/gtk-rs-core/0.21/LICENSE",
     "SHA256": "8cf56d10131ce201cf69ab74b111d3ebac1acca3833d7efb39ae357224b70edb"
+  },
+  {
+    "File": "MPL-2.0.txt",
+    "URL": "https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/MPL-2.0.txt",
+    "SHA256": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
   }
 ]
