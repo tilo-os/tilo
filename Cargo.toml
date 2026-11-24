@@ -106,7 +106,6 @@ members = [
     "apps/remote",
     "apps/remote-model",
     "apps/remote-model-wasm",
-    "apps/slides",
     "apps/staging-handoff-model",
     "apps/terminal",
 
@@ -207,6 +206,7 @@ members = [
     "crates/sdk/tilo-document",
     "crates/engines/tilo-sheet",
     "crates/engines/tilo-db",
+    "crates/engines/tilo-deck",
     "tools/tilo-docs",
     "crates/engines/tilo-doc-pdf",
     "crates/core/tilo-automerge",

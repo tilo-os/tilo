@@ -3695,6 +3695,23 @@ impl Checker<'_> {
             let format = self.expr_as(&format.value, &Ty::Text);
             return Ex::host(Imp::FileOfDocument, vec![named, markdown, format], Ty::File);
         }
+        if name.name == "of_presentation" {
+            let [named, deck, format] = args else {
+                self.err(
+                    "E022",
+                    span,
+                    "`File.of_presentation` takes the file's name, the deck as text and the format: `File.of_presentation(\"Deck.odp\", deck, \"odp\")`",
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            };
+            let named = self.expr_as(&named.value, &Ty::Text);
+            let deck = self.expr_as(&deck.value, &Ty::Text);
+            let format = self.expr_as(&format.value, &Ty::Text);
+            return Ex::host(Imp::PresentationOfFile, vec![named, deck, format], Ty::File);
+        }
         if name.name == "of_sheets" {
             let [named, workbook, format] = args else {
                 self.err(
@@ -3759,7 +3776,7 @@ impl Checker<'_> {
                     "E027",
                     name.span,
                     format!(
-                        "`File` has `of_text`, `of_bytes`, `of_sheets`, `of_document`, `at`, `zip`, `open`, `compress` and `extract`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
+                        "`File` has `of_text`, `of_bytes`, `of_sheets`, `of_presentation`, `of_document`, `at`, `zip`, `open`, `compress` and `extract`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
                     ),
                 );
                 for a in args {
@@ -4202,6 +4219,13 @@ impl Checker<'_> {
             // format and bold each held.
             (Ty::File, "sheets") if args.is_empty() => Ex::host(
                 Imp::SheetFile,
+                vec![r],
+                Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+            ),
+            // A presentation file's deck, as the text `json.decode<T>` reads: its title,
+            // palette, look and each slide's layout, background, notes and elements.
+            (Ty::File, "presentation") if args.is_empty() => Ex::host(
+                Imp::PresentationFile,
                 vec![r],
                 Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
             ),

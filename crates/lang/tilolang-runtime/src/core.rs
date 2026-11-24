@@ -704,8 +704,10 @@ impl Core {
             }
             PageCall => self.page_import(a),
             FilePart | FileSize | FileText | FileData | FileFiles | FileBook | FileBookInfo
-            | FileBookCover | SheetFile => self.file_import(imp, a),
-            FileOfText | FileOfBytes | FileAt | FileZip | SheetOfFile => self.file_make(imp, a),
+            | FileBookCover | SheetFile | Imp::PresentationFile => self.file_import(imp, a),
+            FileOfText | FileOfBytes | FileAt | FileZip | SheetOfFile | Imp::PresentationOfFile => {
+                self.file_make(imp, a)
+            }
             FileMarkdown | FileOfDocument => self.document_import(imp, a),
             FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {
                 self.image_import(imp, a)

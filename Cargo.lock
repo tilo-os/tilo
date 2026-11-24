@@ -13687,38 +13687,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
-name = "slides"
-version = "0.1.0"
-dependencies = [
- "image",
- "quick-xml 0.41.0",
- "runtime-dylib",
- "serde",
- "serde_json",
- "slides",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-automerge-fork",
- "tilo-bounded-zip",
- "tilo-content",
- "tilo-doc",
- "tilo-doc-codecs",
- "tilo-document",
- "tilo-files",
- "tilo-rich-text",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "uuid",
- "workspace-hack",
- "zip",
-]
-
-[[package]]
 name = "slotmap"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16699,6 +16667,21 @@ dependencies = [
  "tilo-test-env",
  "uuid",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-deck"
+version = "0.1.0"
+dependencies = [
+ "quick-xml 0.41.0",
+ "serde",
+ "serde_json",
+ "tilo-bounded-zip",
+ "tilo-content-types",
+ "tilo-doc-codecs",
+ "tilo-test-env",
+ "workspace-hack",
+ "zip",
 ]
 
 [[package]]
@@ -22292,6 +22275,7 @@ dependencies = [
  "tilo-content",
  "tilo-content-types",
  "tilo-db",
+ "tilo-deck",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-doc-pdf",
@@ -26456,6 +26440,7 @@ dependencies = [
  "derive_utils",
  "des",
  "diatomic-waker",
+ "diffmerge-engine",
  "digest 0.10.7",
  "digest 0.11.3",
  "dirs",
@@ -27234,7 +27219,6 @@ dependencies = [
  "skrifa 0.42.1",
  "skrifa 0.44.0",
  "slab",
- "slides",
  "slotmap",
  "smallvec",
  "smithay",
@@ -27372,6 +27356,7 @@ dependencies = [
  "tilo-caps",
  "tilo-capture",
  "tilo-capture-studio",
+ "tilo-chip-design-engine",
  "tilo-chromium-blocker",
  "tilo-cli-kit",
  "tilo-clipboard",
@@ -27405,6 +27390,7 @@ dependencies = [
  "tilo-daemon",
  "tilo-dav",
  "tilo-db",
+ "tilo-deck",
  "tilo-default-apps",
  "tilo-delivery-protocol",
  "tilo-deployment-status",
