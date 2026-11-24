@@ -147,6 +147,59 @@ impl Keeping {
         .map_err(|error| io::Error::other(format!("this server's revocations: {error:#}")))
     }
 
+    /// The certificate a node's page installs, waited for before anything is kept: a machine
+    /// the unit points at an install token ([`INSTALL_TOKEN_ENV`]) that holds no certificate
+    /// yet creates its device key and serves only `/peer/v1/install` on its web listener until
+    /// a root-signed certificate arrives with that token's secret. The session beside it,
+    /// whose key the unit names ([`SESSION_DEVICE_ENV`]), is certified as one of the person's
+    /// devices in the same install, and the person's user key is written into its identity
+    /// tree.
+    ///
+    /// # Errors
+    /// The token or a setting cannot be read, or the listener fails.
+    pub(crate) fn enroll(&self) -> io::Result<()> {
+        let Some(token_file) = std::env::var_os(INSTALL_TOKEN_ENV) else {
+            return Ok(());
+        };
+        let Some(listen) = self.cfg.web_listen else {
+            return Ok(());
+        };
+        let paths = tilo_device_identity::IdentityPaths::under(&self.cfg.identity_root);
+        if paths.device_cert.is_file() {
+            return Ok(());
+        }
+        let token_file = PathBuf::from(token_file);
+        let token = std::fs::read_to_string(&token_file).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("read {}: {error}", token_file.display()),
+            )
+        })?;
+        let (device, _) =
+            tilo_device_identity::load_or_create_device_key(&paths).map_err(io::Error::other)?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "awaiting_certificate",
+                "devicePublicKey": hex::encode(device.verifying_key().to_bytes()),
+            })
+        );
+        let session = match std::env::var(SESSION_DEVICE_ENV) {
+            Ok(key) => Some(beside_session(&key)?),
+            Err(_) => None,
+        };
+        let config = web_config(&self.cfg, listen);
+        self.runtime
+            .block_on(tilo_server::web::install::await_certificate(
+                &config, paths, &token, session,
+            ))
+            .map_err(|error| {
+                io::Error::other(format!("wait for the device certificate: {error}"))
+            })?;
+        tracing::info!("device certificate installed");
+        Ok(())
+    }
+
     /// Keep on `on.service`, kept below `on.dir`: what the server keeps, the protocols the
     /// device's router answers for it, and its own web UI where its configuration places one.
     ///
@@ -185,6 +238,18 @@ impl Keeping {
                 .map_err(|error| io::Error::other(format!("this server's web UI: {error}")))?,
             None => None,
         };
+        // The session beside a node learns where this server's endpoint is from its environment
+        // file, so nobody copies the address: the line systemd hands it as TILO_COLLAB_HOST.
+        if let Some(path) = std::env::var_os(SESSION_ENV_OUT_ENV) {
+            let endpoint = serde_json::to_string(&server.node_addr()).map_err(|error| {
+                io::Error::other(format!("encode this server's endpoint: {error}"))
+            })?;
+            let path = PathBuf::from(path);
+            let line = format!("TILO_COLLAB_HOST='{endpoint}'\n");
+            tilo_files::native::atomic::write_with_mode(&path, line.as_bytes(), 0o644).map_err(
+                |error| io::Error::new(error.kind(), format!("write {}: {error}", path.display())),
+            )?;
+        }
         tracing::info!("this device keeps the workspaces placed on it, as a server");
         Ok((
             Kept {
@@ -197,6 +262,49 @@ impl Keeping {
             protocols,
         ))
     }
+}
+
+/// Names the token a node's page installs its certificate with: a machine with this set, and
+/// no certificate yet, serves only the install route until one arrives.
+const INSTALL_TOKEN_ENV: &str = "TILO_SERVER_INSTALL_TOKEN_FILE";
+/// Names the session device key a node certifies beside itself, as its unit's session
+/// environment file ([`TILO_NODE_SESSION_DEVICE`]) does.
+const SESSION_DEVICE_ENV: &str = "TILO_NODE_SESSION_DEVICE";
+/// Names the session's identity tree, where the install writes its certificate and the
+/// person's user key.
+const SESSION_IDENTITY_ROOT_ENV: &str = "TILO_SERVER_SESSION_IDENTITY_ROOT";
+/// Names the environment file the session beside this node reads the server's endpoint from.
+const SESSION_ENV_OUT_ENV: &str = "TILO_SERVER_SESSION_ENV_OUT";
+
+/// The session beside a node, as its install certifies it: the device key `key` (hex), and
+/// where its certificate and the person's user key are written.
+fn beside_session(key: &str) -> io::Result<tilo_server::web::install::SessionDevice> {
+    let public_key: [u8; 32] = hex::decode(key.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{SESSION_DEVICE_ENV} is not a device key: {key}"),
+            )
+        })?;
+    let root = std::env::var_os(SESSION_IDENTITY_ROOT_ENV)
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "{SESSION_IDENTITY_ROOT_ENV} names no identity tree for the session beside \
+                     this node"
+                ),
+            )
+        })?;
+    let paths = tilo_device_identity::IdentityPaths::under(&root);
+    Ok(tilo_server::web::install::SessionDevice {
+        public_key,
+        cert_out: paths.device_cert,
+        user_key_out: Some(paths.user_pubkey),
+    })
 }
 
 /// The browser listener a server serves its own web UI at `listen` with: the certificate
@@ -217,7 +325,18 @@ fn web_config(cfg: &ServerConfig, listen: SocketAddr) -> tilo_server::web::WebCo
     WebConfig {
         listen,
         tls,
-        allowed_origins: Vec::new(),
+        // A deployment's browser origins: a page served from another origin calls the host
+        // cross-origin, and names the origins it allows there.
+        allowed_origins: std::env::var("TILO_SERVER_ALLOWED_ORIGINS")
+            .map(|origins| {
+                origins
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|origin| !origin.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
         plain_listen: None,
         public_origin: None,
         fetch_proxy: None,

@@ -1,7 +1,8 @@
 # A node session's device key for account %i, created by that account before
-# the node is installed: the server names it to the installing page
-# (--session-device), and the page's root certifies it as one of the
-# person's devices. The server never reads the private half.
+# the node is installed: the node's server names it to the installing page
+# (the session environment file's TILO_NODE_SESSION_DEVICE), and the page's
+# root certifies it as one of the person's devices. The server never reads the
+# private half.
 [Unit]
 Description=Device key of %i's Tilo node session
 ConditionPathExists=/etc/tilo/node/install-token

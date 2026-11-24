@@ -714,9 +714,14 @@ impl Daemon {
         serving: Serving,
         (locked, entered): (Option<[u8; 32]>, Option<Device>),
     ) -> io::Result<Self> {
-        let identity = Identity::here()?;
-        // A server keeps the workspaces placed on it: it takes no other server's work.
+        // A server keeps the workspaces placed on it: it takes no other server's work. A node
+        // whose unit points at an install token waits for its page to install its certificate
+        // before anything else is read: until then, this machine is nobody's device.
         let mut keeping = super::keep::Keeping::configured()?;
+        if let Some(keeping) = keeping.as_ref() {
+            keeping.enroll()?;
+        }
+        let identity = Identity::here()?;
         tilo_files::native::private::directory(identity.place.dir())?;
         let place = tilo_api::daemon::this_computer().map_err(io::Error::other)?;
         let lock = match locked {

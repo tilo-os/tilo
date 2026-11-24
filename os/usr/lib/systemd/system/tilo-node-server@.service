@@ -21,6 +21,13 @@ Environment=TILO_IDENTITY_ROOT=/var/lib/tilo-node/server/identity
 Environment=XDG_STATE_HOME=/var/lib/tilo-node/server/state
 Environment=HOME=/var/lib/tilo-node/server TILO_RUNTIME_PROFILE=/var/lib/tilo-node/server
 Environment=TILO_SERVER_CONFIG=/usr/lib/tilo/node-server.toml
+# The person's page installs this node's certificate with the token below; its session's
+# device key (from the session environment file) is certified beside it, into the session's
+# own identity tree, and the node writes the session's environment file where it names the
+# server's endpoint. A deployment's browser origins come as TILO_SERVER_ALLOWED_ORIGINS.
+Environment=TILO_SERVER_INSTALL_TOKEN_FILE=/etc/tilo/node/install-token
+Environment=TILO_SERVER_SESSION_IDENTITY_ROOT=/var/lib/tilo-node/%i/session
+Environment=TILO_SERVER_SESSION_ENV_OUT=/run/tilo-node/%i/session-host.env
 StateDirectory=tilo-node/server
 StateDirectoryMode=0700
 RuntimeDirectory=tilo-node/%i
