@@ -321,8 +321,12 @@ mod tests {
         let server = test_host(dir.path(), &key, &cert).await;
         let workspaces = server.workspaces();
         let created = workspaces.create("Plans").await.unwrap();
+        // The person's root, whose key the governor's certificate names: a revocation is the
+        // root's to sign, not a device's.
+        let root = SigningKey::from_bytes(&[1; 32]);
+        assert_eq!(root.verifying_key().to_bytes(), cert.user_public_key);
         let device = SigningKey::from_bytes(&[9; 32]);
-        let mut forged = revocation(&key, device.verifying_key().to_bytes());
+        let mut forged = revocation(&root, device.verifying_key().to_bytes());
         forged.signature = [0; 64];
         let epoch = crate::authority_epoch::current();
         workspaces
@@ -348,7 +352,7 @@ mod tests {
         );
 
         // The same entry the root signs is taken, and reaches the workspace.
-        let signed = revocation(&key, device.verifying_key().to_bytes());
+        let signed = revocation(&root, device.verifying_key().to_bytes());
         workspaces
             .take_refusal(tilo_server_protocol::refusal::Refusal::Revoked(Box::new(
                 signed.clone(),
