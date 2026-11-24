@@ -1349,6 +1349,9 @@ vm_host() {
 # A ticket lets a computer in, so no failure prints it.
 host_ticket() {
   local issued
+  # The person is made first, outside the ticket's subshell, so a refused founding stops the
+  # stack, naming why, and their tickets are there to take.
+  stack_person >/dev/null
   issued=$(take_ticket server || true)
   [[ -n $issued ]] || [[ -s $state/vm-host-started ]] \
     || die "the stack's person has no first ticket for the VM host left: one stack.sh up --fresh makes its person again, with a new Lounge"
@@ -1983,6 +1986,7 @@ start_native_server() {
   # login.
   if [[ ! -s $state/server/identity/device/cert.bin ]]; then
     local made
+    stack_person >/dev/null
     made=$(take_ticket server) \
       || die "the stack's person has no first ticket for the Lounge left: one stack.sh up --fresh makes its person again, with a new Lounge"
     ticket=("TILO_TICKET=$made")
