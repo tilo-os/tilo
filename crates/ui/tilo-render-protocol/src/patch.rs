@@ -619,6 +619,11 @@ pub enum ToUi {
         len: u32,
         changes: Vec<RowChange>,
     },
+    /// The view calls of a level that read the space layout gives them, by the keys of their
+    /// `fragment`s: what the window measures, so each runs again with the size it was given,
+    /// live, and no view that reads none costs a measure. The root view's own is the level's,
+    /// which the window tells anyway. Sent when the set changes.
+    Spaces { level: Level, keys: Vec<String> },
     Notice {
         words: Words,
         kind: NoticeKind,
@@ -722,7 +727,6 @@ pub const MAX_CALL_PICTURES: usize = 64;
 /// The largest a [`CallPicture`]'s object is: one coded picture of a call
 /// (`runtime_collab::native_media::MAX_PICTURE_BYTES`).
 pub const MAX_CALL_PICTURE_BYTES: usize = 512 * 1024;
-
 
 /// The modifier keys held while the person pressed: what a tilolang press reads as
 /// `host.Press`. `command` is Ctrl, or ⌘ on a Mac.
@@ -846,12 +850,14 @@ pub enum ToApp {
     /// The modifier keys held with the pointer now, sent before the event they came with when
     /// they changed: a press with Shift adds to a selection, one with the command key toggles.
     Held(Held),
-    /// The view of `level` has `width` by `height` of the window, in `rem` (the body text size
-    /// after the person's setting): what its `space` reads (layout.md, "Responding to space").
-    /// `rem` is that body text size in logical pixels, which a view computes a place in pixels
-    /// from (a card it keeps where the person dropped it).
+    /// Layout gave a view of `level` the space `width` by `height` of the window, in `rem` (the
+    /// body text size after the person's setting): what its `space` reads (layout.md, "Responding
+    /// to space"). `key` is the view call's `fragment`, as [`ToUi::Spaces`] named it, or empty for
+    /// the level's own root. `rem` is that body text size in logical pixels, which a view computes
+    /// a place in pixels from (a card it keeps where the person dropped it).
     Space {
         level: Level,
+        key: String,
         width: f32,
         height: f32,
         rem: f32,

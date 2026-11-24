@@ -307,6 +307,9 @@ struct Shown {
     bound: HashMap<String, ui::Value>,
     /// The last splice of each bound control taken, by key.
     acked: HashMap<String, u64>,
+    /// The view calls that read the space layout gives them, as last sent: the window measures
+    /// these and no others.
+    spaces: Option<Vec<String>>,
 }
 
 impl Shown {
@@ -321,6 +324,7 @@ impl Shown {
             lists: BTreeMap::new(),
             bound: HashMap::new(),
             acked: HashMap::new(),
+            spaces: None,
         }
     }
 }
@@ -368,10 +372,11 @@ pub struct Instance {
     window_history: Option<history::Before>,
     /// What the facts page says changed since it was drawn.
     facts_stale: bool,
-    /// The space the window last said each level's view has (`ToApp::Space`): a view opened in
-    /// the level later starts from it.
-    root_space: Option<crate::runtime::space::Space>,
-    detail_space: Option<crate::runtime::space::Space>,
+    /// The space the window last said each view of a level has (`ToApp::Space`), by the view
+    /// call's key (`""` for the level's own root): a view opened in the level later starts from
+    /// it, and a class follows a boundary only past its hysteresis.
+    root_space: HashMap<String, crate::runtime::space::Space>,
+    detail_space: HashMap<String, crate::runtime::space::Space>,
     transport: Rc<RefCell<Box<dyn Transport>>>,
     /// The page this app's window shows, when one is asked: its calls go to the window.
     page: Option<Rc<crate::page::PageStation>>,
@@ -521,8 +526,8 @@ impl Instance {
             facts: None,
             window_history: None,
             facts_stale: false,
-            root_space: None,
-            detail_space: None,
+            root_space: HashMap::new(),
+            detail_space: HashMap::new(),
             transport: Rc::new(RefCell::new(transport)),
             page: None,
             out: Vec::new(),
@@ -1701,29 +1706,30 @@ impl Instance {
         changed
     }
 
-    /// The view of `level` has `width` by `height` rem of the window now: its `space` follows,
-    /// with a class changing only past its boundary by the hysteresis, and the view runs again
-    /// only when something it read of it changed.
-    fn offer_space(&mut self, level: Level, width: f64, height: f64, rem: f64) {
-        let slot = match level {
+    /// Layout gave the view of `level` at `key` — the level's own root, or a view call by its
+    /// `fragment`'s key — `width` by `height` rem of the window: its `space` follows, with a
+    /// class changing only past its boundary by the hysteresis, and the boundary runs again only
+    /// when something it read of it changed.
+    fn offer_space(&mut self, level: Level, key: String, width: f64, height: f64, rem: f64) {
+        let spaces = match level {
             Level::Root => &mut self.root_space,
             Level::Detail => &mut self.detail_space,
         };
-        let space = slot.map_or_else(
+        let space = spaces.get(&key).map_or_else(
             || crate::runtime::space::Space::from_rem(width, height).with_rem(rem),
             |before| before.followed(width, height).with_rem(rem),
         );
-        *slot = Some(space);
+        spaces.insert(key.clone(), space);
         if let Some(view) = self.view(level) {
-            view.borrow_mut().set_space("", space);
+            view.borrow_mut().set_space(&key, space);
         }
     }
 
-    /// `view`, about to be shown in `level`, offered the space the level has.
+    /// `view`, about to be shown in `level`, offered the space the level's root has.
     fn spaced(&self, level: Level, mut view: ViewInstance) -> ViewInstance {
         let space = match level {
-            Level::Root => self.root_space,
-            Level::Detail => self.detail_space,
+            Level::Root => self.root_space.get("").copied(),
+            Level::Detail => self.detail_space.get("").copied(),
         };
         if let Some(space) = space {
             view.set_space("", space);
@@ -1780,10 +1786,17 @@ impl Instance {
             }
             ToApp::Space {
                 level,
+                key,
                 width,
                 height,
                 rem,
-            } => self.offer_space(level, f64::from(width), f64::from(height), f64::from(rem)),
+            } => self.offer_space(
+                level,
+                key,
+                f64::from(width),
+                f64::from(height),
+                f64::from(rem),
+            ),
             other => tracing::error!(?other, "the window told of something it does not"),
         }
     }
@@ -2010,6 +2023,7 @@ impl Instance {
         // The rows rendered can hold lists of their own, and those scrolled away took theirs.
         let _phase = tilo_resource::profiling::Phase::start("instance.rows.track");
         self.track_lists(level);
+        self.tell_spaces(level);
         self.send_bound(level);
     }
 

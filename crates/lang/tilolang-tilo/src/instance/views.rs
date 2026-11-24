@@ -323,6 +323,7 @@ impl Instance {
         };
         view.lists.clear();
         view.bound.clear();
+        view.spaces = None;
         let tree = window_tree(&host, &*names, &view.view);
         view.sent = Some(tree.clone());
         // The item the window draws its page for, when its view lists it there.
@@ -337,6 +338,7 @@ impl Instance {
             capture_protected,
         });
         self.track_lists(level);
+        self.tell_spaces(level);
         self.send_bound(level);
     }
 
@@ -371,6 +373,27 @@ impl Instance {
             view.lists.insert(list, rows);
         }
         self.out.extend(sent);
+    }
+
+    /// Tell the window which view calls of `level` read the space layout gives them, when that
+    /// set changed: it measures those and tells each the size it was given (`ToApp::Space`), so
+    /// a view that adapts to its own slot follows a resize and no view that reads no space costs
+    /// a measure.
+    pub(super) fn tell_spaces(&mut self, level: Level) {
+        let Some(now) = self
+            .level(level)
+            .map(|shown| shown.view.borrow().space_readers())
+        else {
+            return;
+        };
+        let Some(shown) = self.level_mut(level) else {
+            return;
+        };
+        if shown.spaces.as_ref() == Some(&now) {
+            return;
+        }
+        shown.spaces = Some(now.clone());
+        self.out.push(ToUi::Spaces { level, keys: now });
     }
 
     /// Whether the view of `level` has nothing to run over: a resource the document does not
@@ -501,6 +524,7 @@ impl Instance {
             };
             if patches.is_empty() {
                 changed |= stale;
+                self.tell_spaces(level);
                 continue;
             }
             changed = true;
@@ -571,6 +595,7 @@ impl Instance {
             // A row that changed can hold a list it did not (the document of a row that opened),
             // and the content one.
             self.track_lists(level);
+            self.tell_spaces(level);
         }
         if changed {
             let _phase = tilo_resource::profiling::Phase::start("instance.views.bound");

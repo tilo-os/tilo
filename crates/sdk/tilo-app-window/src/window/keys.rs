@@ -63,16 +63,6 @@ pub(super) enum Press {
     RunAction(tilo_actions::ActionAddress),
 }
 
-pub(super) fn keyed<'a>(widget: &'a dyn Widget, key: &str) -> Option<&'a dyn Widget> {
-    if widget.test_id() == Some(key) {
-        return Some(widget);
-    }
-    widget
-        .children()
-        .into_iter()
-        .find_map(|child| keyed(child, key))
-}
-
 /// The node key and event to fire for the control that answers a press, matched the way the toolkit
 /// matches every shortcut ([`ui::platform::Shortcut::same_press`]): one key, in one spelling, with
 /// the modifiers it names, and a command modifier that is the platform's own. So an app's `key:

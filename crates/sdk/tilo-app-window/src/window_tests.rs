@@ -119,16 +119,17 @@ fn titled_page() -> Vec<ToUi> {
     ]
 }
 
-fn spaces(app: &mut local::End) -> Vec<(Level, f32, f32)> {
+fn spaces(app: &mut local::End) -> Vec<(Level, String, f32, f32)> {
     sent(app)
         .into_iter()
         .filter_map(|message| match message {
             ToApp::Space {
                 level,
+                key,
                 width,
                 height,
                 ..
-            } => Some((level, width, height)),
+            } => Some((level, key, width, height)),
             _ => None,
         })
         .collect()
@@ -152,7 +153,7 @@ fn a_view_is_told_the_space_layout_gave_it_when_it_changes_by_more_than_a_step()
     flush(&mut harness);
     let rem = f64::from(ui::widget::arrange::rem_of(harness.theme()));
     let told = spaces(&mut app);
-    let [(Level::Root, width, height)] = told[..] else {
+    let [(Level::Root, _, width, height)] = told[..] else {
         panic!("the root view is told its space once: {told:?}");
     };
     assert!(
@@ -168,8 +169,113 @@ fn a_view_is_told_the_space_layout_gave_it_when_it_changes_by_more_than_a_step()
     flush(&mut harness);
     let told = spaces(&mut app);
     assert!(
-        matches!(told[..], [(Level::Root, width, _)] if (f64::from(width) * rem - 1280.0).abs() < 1.0),
+        matches!(told[..], [(Level::Root, _, width, _)] if (f64::from(width) * rem - 1280.0).abs() < 1.0),
         "{told:?}"
+    );
+}
+
+/// A call of another view, placed by layout: the `fragment` a view call stands at, filled with the
+/// view's body.
+fn view_call(key: &str, fill: i64) -> UiNode {
+    let mut call = UiNode::empty("fragment", key);
+    call.props.insert("fill".to_owned(), Value::Int(fill));
+    call.children = vec![UiNode::empty("stack", &format!("{key}~body"))];
+    call
+}
+
+#[test]
+fn a_view_call_that_reads_its_space_is_told_the_size_layout_gave_it() {
+    let (mut app, mut window) = window();
+    let mut bar = UiNode::empty("row", "bar");
+    bar.children = vec![view_call("left", 1), view_call("right", 1)];
+    send(
+        &mut app,
+        &[
+            ToUi::Open {
+                level: Level::Root,
+                target: doc(),
+                tree: bar,
+                front: None,
+                capture_protected: false,
+            },
+            // The app says which of its view calls read the space they are given.
+            ToUi::Spaces {
+                level: Level::Root,
+                keys: vec!["left".to_owned(), "right".to_owned()],
+            },
+        ],
+    );
+    window.receive();
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (800, 600));
+    let flush = |harness: &mut ui::headless::FrameHarness| {
+        harness
+            .root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<AppWindow>())
+            .expect("the window")
+            .flush();
+    };
+    flush(&mut harness);
+    let rem = f64::from(ui::widget::arrange::rem_of(harness.theme()));
+    let told = spaces(&mut app);
+    let row = told
+        .iter()
+        .find(|(_, key, _, _)| key.is_empty())
+        .map(|(_, _, width, _)| f64::from(*width) * rem)
+        .expect("the level's root is told its space");
+    // Each half of the row, as layout placed it, beside the level's own root.
+    for key in ["left", "right"] {
+        let found = told
+            .iter()
+            .find(|(_, told, _, _)| told == key)
+            .unwrap_or_else(|| panic!("{key} is told its space: {told:?}"));
+        assert!(
+            (f64::from(found.2) * rem - row / 2.0).abs() < 8.0,
+            "{key} has half the row of {row} px: {found:?} at {rem} px"
+        );
+    }
+    // A wider window is a new size for each of them, and for the root.
+    harness.resize((1000, 600)).expect("lays out");
+    flush(&mut harness);
+    let told = spaces(&mut app);
+    let row = told
+        .iter()
+        .find(|(_, key, _, _)| key.is_empty())
+        .map(|(_, _, width, _)| f64::from(*width) * rem)
+        .expect("the level's root follows the resize");
+    let left = told
+        .iter()
+        .find(|(_, told, _, _)| told == "left")
+        .unwrap_or_else(|| panic!("left follows the resize: {told:?}"));
+    assert!(
+        (f64::from(left.2) * rem - row / 2.0).abs() < 8.0,
+        "left has half the wider row of {row} px: {left:?} at {rem} px"
+    );
+    // A call the app says reads no space is not measured: nothing more is said of it.
+    send(
+        &mut app,
+        &[ToUi::Spaces {
+            level: Level::Root,
+            keys: vec!["left".to_owned()],
+        }],
+    );
+    harness
+        .root_widget_mut()
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<AppWindow>())
+        .expect("the window")
+        .receive();
+    harness.resize((900, 600)).expect("lays out");
+    flush(&mut harness);
+    let told = spaces(&mut app);
+    assert!(
+        told.iter().any(|(_, key, _, _)| key == "left"),
+        "left follows: {told:?}"
+    );
+    assert!(
+        !told.iter().any(|(_, key, _, _)| key == "right"),
+        "right reads no space now: {told:?}"
     );
 }
 
@@ -2167,6 +2273,108 @@ fn listed_rows(items: &[(&str, &str)]) -> Vec<ToUi> {
         keys,
         rows,
     }]
+}
+
+/// A call inside a list's row is a boundary of its own: the app names it, and the window measures
+/// the slot the list gave the row.
+#[test]
+fn a_row_that_reads_its_space_is_told_the_slot_the_list_gave_it() {
+    let (mut app, mut window) = window();
+    let mut list = list_node("list");
+    list.props.insert("fill".to_owned(), Value::Float(1.0));
+    let mut page = UiNode::empty("stack", "page");
+    page.children = vec![list];
+    let row = |key: &str| {
+        let mut body = UiNode::empty("stack", &format!("{key}~body"));
+        let mut said = UiNode::empty("ui.Text", &format!("{key}~line"));
+        said.props.insert("value".to_owned(), Value::text("a page"));
+        body.children = vec![said];
+        let mut call = view_call(key, 1);
+        call.children = vec![body];
+        let mut item = UiNode::empty(&kind("ListItem"), key);
+        item.props.insert(
+            "item".to_owned(),
+            Value::Ref(ResourceRef {
+                id: key.to_owned(),
+                ty: "tasks.Task".to_owned(),
+            }),
+        );
+        item.children = vec![call];
+        item
+    };
+    send(
+        &mut app,
+        &[
+            ToUi::Open {
+                level: Level::Root,
+                target: doc(),
+                tree: page,
+                front: None,
+                capture_protected: false,
+            },
+            ToUi::Spaces {
+                level: Level::Root,
+                keys: vec!["rows/a".to_owned(), "rows/b".to_owned()],
+            },
+        ],
+    );
+    window.receive();
+    // The list's rows are the app's answer once the window has asked for them.
+    send(
+        &mut app,
+        &[ToUi::Rows {
+            level: Level::Root,
+            list: "list".to_owned(),
+            len: 2,
+            start: 0,
+            keys: vec!["rows/a".to_owned(), "rows/b".to_owned()],
+            rows: vec![row("rows/a"), row("rows/b")],
+        }],
+    );
+    window.receive();
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (800, 600));
+    let flush = |harness: &mut ui::headless::FrameHarness| {
+        harness
+            .root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<AppWindow>())
+            .expect("the window")
+            .flush();
+    };
+    flush(&mut harness);
+    let rem = f64::from(ui::widget::arrange::rem_of(harness.theme()));
+    assert!(
+        harness
+            .root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<AppWindow>())
+            .expect("the window")
+            .failed()
+            .is_none(),
+        "the window took the page: {:?}",
+        harness
+            .root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<AppWindow>())
+            .expect("the window")
+            .failed()
+    );
+    let told = spaces(&mut app);
+    for key in ["rows/a", "rows/b"] {
+        let found = told
+            .iter()
+            .find(|(_, told, _, _)| told == key)
+            .unwrap_or_else(|| panic!("{key} is told the slot it has: {told:?}"));
+        assert!(
+            f64::from(found.2) * rem > 100.0,
+            "{key} stands in the list's width: {found:?} at {rem} px"
+        );
+        assert!(
+            f64::from(found.3) > 0.0,
+            "{key} has the room its row takes: {found:?}"
+        );
+    }
 }
 
 /// A window whose own list shows an item as its page is named by the item, as its row names it (a

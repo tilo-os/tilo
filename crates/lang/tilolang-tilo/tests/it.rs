@@ -85,6 +85,7 @@ mod removed;
 mod resource_store;
 mod rich_text;
 mod scenarios;
+mod spaces;
 mod settings_panes;
 mod shell_media;
 mod suggest;

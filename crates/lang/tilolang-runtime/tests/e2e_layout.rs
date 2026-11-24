@@ -12,7 +12,10 @@ action add(l: Library, title: Text, artist: Text) {\n    l.albums.insert(Album(t
 view album_card(a: Album) {\n    layers {\n        image(a.title, alt: \"The cover\", aspect: 16/9)\n        text(a.artist, at: .bottom_trailing)\n    }\n    text(a.title, lines: 1, truncate)\n    if not space.compact {\n        text(a.artist)\n    }\n}\n\
 view library(l: Library) {\n    page {\n        text(\"Albums\", role: .title)\n        grid(min: 11rem) {\n            for a in l.albums {\n                album_card(a, fill(2))\n            }\n        }\n    }\n}\n\
 view detail(a: Album) {\n    page(full) {\n        split(side: .leading, collapse: .drawer) {\n            primary(min: 18rem) {\n                text(a.title)\n            }\n            secondary(min: 22rem) {\n                scroll {\n                    text(a.artist, min: 4dp, max: 1.5rem)\n                }\n            }\n        }\n    }\n}\n\
-view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) { text(a.title); spacer }\n    } else {\n        row(gap: .section) {\n            text(a.title)\n            spacer\n            text(a.artist, fill)\n        }\n    }\n}";
+view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) { text(a.title); spacer }\n    } else {\n        row(gap: .section) {\n            text(a.title)\n            spacer\n            text(a.artist, fill)\n        }\n    }\n}\n\
+view shelf(a: Album) {\n    stack {\n        shelf_line(a)\n        text(a.title)\n    }\n}\n\
+view shelf_line(a: Album) {\n    if space.height < 30.0 {\n        text(\"short cover\")\n    } else {\n        text(\"tall cover\")\n    }\n}\n\
+view paged(a: Album) {\n    std.page(a, canvas: true, fill: true) {\n        shelf_line(a)\n    }\n}";
 
     fn setup() -> (Runtime, App, tilolang_runtime::ResourceRef) {
         let app = App::compile(SOURCE, &[]);
@@ -142,6 +145,58 @@ view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) 
                 of_kind(view.tree(), "ui.Text").len(),
                 wide.saturating_sub(1)
             );
+        }
+
+        phase a_view_call_reads_the_space_layout_gives_it_and_follows_a_resize;
+        {
+            let (rt, app, lib) = setup();
+            let Value::List(albums) = rt.read(&lib, "albums").unwrap() else {
+                panic!("albums");
+            };
+            let Value::Ref(album) = &albums[0] else {
+                panic!("ref")
+            };
+            let mut view = rt
+                .open_view(&me(), &app.view("shelf"), vec![Value::resource(&album.target)])
+                .unwrap();
+            // The one boundary that reads its own size: the shelf line, not the shelf.
+            let readers = view.space_readers();
+            assert_eq!(readers.len(), 1, "{readers:?}");
+            let root_runs = view.stats().root_runs;
+            let said = |view: &tilolang_runtime::ViewInstance| text_prop(first(view.tree(), "ui.Text"), "value");
+            assert_eq!(said(&view), "short cover", "{}", dump(view.tree()));
+
+            // The space it was given is its own: the shelf's is untouched.
+            assert!(view.set_space(&readers[0], Space::from_rem(40.0, 60.0)));
+            let patches = view.poll_patches().unwrap();
+            assert!(!patches.is_empty());
+            assert_eq!(said(&view), "tall cover", "{}", dump(view.tree()));
+            assert_eq!(view.stats().root_runs, root_runs, "the shelf did not run");
+
+            // The same size again is no change; below the height it reads, it says so again.
+            assert!(!view.set_space(&readers[0], Space::from_rem(40.0, 60.0)));
+            assert!(view.set_space(&readers[0], Space::from_rem(40.0, 20.0)));
+            view.poll_patches().unwrap();
+            assert_eq!(said(&view), "short cover", "{}", dump(view.tree()));
+            // The root's space is the root's: the shelf reads none, so nothing runs.
+            assert!(!view.set_space("", Space::from_rem(10.0, 20.0)));
+            assert_eq!(said(&view), "short cover");
+        }
+
+        phase a_view_call_in_a_page_is_a_boundary_of_its_own;
+        {
+            let (rt, app, lib) = setup();
+            let Value::List(albums) = rt.read(&lib, "albums").unwrap() else {
+                panic!("albums");
+            };
+            let Value::Ref(album) = &albums[0] else {
+                panic!("ref")
+            };
+            let view = rt
+                .open_view(&me(), &app.view("paged"), vec![Value::resource(&album.target)])
+                .unwrap();
+            let readers = view.space_readers();
+            assert_eq!(readers.len(), 1, "the line reads its space in a page: {readers:?}");
         }
     }
 

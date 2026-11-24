@@ -14,13 +14,13 @@ use std::cell::RefCell;
 mod keys;
 mod page;
 use keys::{
-    Press, declares, field_after_enter, field_takes_a_press, focus_field, keyed, level_of, node_at,
+    Press, declares, field_after_enter, field_takes_a_press, focus_field, level_of, node_at,
     rect_of, shortcut_action_where, shortcut_declared, takes_typing, text_field,
 };
 mod moved;
 pub(crate) mod rebind;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use page::{chosen_item, content_nodes, node_of_key};
@@ -341,9 +341,13 @@ pub struct AppWindow {
     opened: Option<u64>,
     /// One `rem` in logical pixels under the theme the window was last laid out in.
     rem: f32,
-    /// The space last told the app each level's view has, in rem.
-    root_space: Option<(f32, f32)>,
-    detail_space: Option<(f32, f32)>,
+    /// The space last told the app each level's view has, in rem. The level's own root is the key
+    /// `""`; the view calls that read their space are the keys the app declared (`ToUi::Spaces`).
+    root_space: HashMap<String, (f32, f32, f32)>,
+    detail_space: HashMap<String, (f32, f32, f32)>,
+    /// The view calls of each level that read the space layout gives them, by key in that level's
+    /// tree, as the app declared them: what the window measures after every layout.
+    space_readers: [Vec<String>; 2],
     /// The column a narrow window keeps in front: what a person's tap or the app's open brought
     /// forward, held while the shell is built anew. A shell built from the views starts on the
     /// screen a new window opens on; the window remembers where the person is, so a patch that
@@ -503,8 +507,9 @@ impl AppWindow {
             shows_by_press: BTreeMap::new(),
             opened: None,
             rem: 16.0,
-            root_space: None,
-            detail_space: None,
+            root_space: HashMap::new(),
+            detail_space: HashMap::new(),
+            space_readers: [Vec::new(), Vec::new()],
             front: None,
             front_chooser: None,
             standing: SidebarPlacement::None,
@@ -918,6 +923,7 @@ impl AppWindow {
                     self.track_rows();
                     arrived = true;
                 }
+                ToUi::Spaces { level, keys } => self.take_spaces(level, keys),
                 ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
                 ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
                 ToUi::Form(form) => self.show_form(form.as_deref()),
@@ -3016,43 +3022,159 @@ impl AppWindow {
     /// Tell the app the space each view has where layout placed it, when it changed: a view reads
     /// `space` from its own container (layout.md, "Responding to space"). The app decides the
     /// classes, with their hysteresis, and runs a view again only when what it read of it changed.
+    /// A level's own view is measured every layout; each view call the app declared as reading
+    /// its space ([`ToUi::Spaces`]) is measured too, by the space it takes in the window.
     fn follow_spaces(&mut self) {
-        let keys = [
-            self.root.as_ref().map(|view| view.tree.key.clone()),
-            self.detail
-                .as_ref()
-                .map(|view| composed_key(Level::Detail, &view.tree.key)),
-        ];
-        for (level, key) in [Level::Root, Level::Detail].into_iter().zip(keys) {
-            let Some(rect) = key
-                .and_then(|key| keyed(self.body.as_ref(), &key).map(Widget::get_rect))
-                .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
-            else {
-                continue;
+        if self.rem <= 0.0 {
+            return;
+        }
+        let mut wanted: [Vec<(String, String)>; 2] = [Vec::new(), Vec::new()];
+        for (at, level) in [Level::Root, Level::Detail].into_iter().enumerate() {
+            let root = match level {
+                Level::Root => self.root.as_ref().map(|view| view.tree.key.clone()),
+                Level::Detail => self
+                    .detail
+                    .as_ref()
+                    .map(|view| composed_key(Level::Detail, &view.tree.key)),
             };
-            let space = (
-                rect.width() as f32 / self.rem,
-                rect.height() as f32 / self.rem,
-            );
-            let told = match level {
+            if let Some(key) = root {
+                wanted[at].push((String::new(), key));
+            }
+            for key in &self.space_readers[at] {
+                wanted[at].push((key.clone(), composed_key(level, key)));
+            }
+        }
+        if wanted.iter().all(Vec::is_empty) {
+            return;
+        }
+        let rects = widget_rects(self.body.as_ref());
+        let covered = self.call_nodes(&wanted);
+        let mut told: Vec<(Level, String, (f32, f32, f32))> = Vec::new();
+        for (at, level) in [Level::Root, Level::Detail].into_iter().enumerate() {
+            let spaces = match level {
                 Level::Root => &mut self.root_space,
                 Level::Detail => &mut self.detail_space,
             };
-            let moved = told.is_none_or(|(width, height)| {
-                (width - space.0).abs() >= SPACE_STEP_REM
-                    || (height - space.1).abs() >= SPACE_STEP_REM
-            });
-            if moved {
-                *told = Some(space);
-                self.out.push(ToApp::Space {
-                    level,
-                    width: space.0,
-                    height: space.1,
-                    rem: self.rem,
+            for (key, in_tree) in &wanted[at] {
+                // The box layout gave the call, or, where a row or a part takes the call's
+                // nodes for its own, the room they take together.
+                let placed =
+                    |rect: &ui::vello::kurbo::Rect| rect.width() > 0.0 && rect.height() > 0.0;
+                let rect = rects.get(in_tree).copied().filter(placed).or_else(|| {
+                    covered
+                        .get(in_tree)?
+                        .iter()
+                        .filter_map(|node| rects.get(node).copied())
+                        .filter(placed)
+                        .reduce(|a, b| a.union(b))
                 });
+                let Some(rect) = rect else {
+                    // A view call layout has not placed yet: measured again after the next one.
+                    continue;
+                };
+                let space = (
+                    rect.width() as f32 / self.rem,
+                    rect.height() as f32 / self.rem,
+                    self.rem,
+                );
+                let moved = spaces.get(key).is_none_or(|before| {
+                    (before.0 - space.0).abs() >= SPACE_STEP_REM
+                        || (before.1 - space.1).abs() >= SPACE_STEP_REM
+                        || before.2 != space.2
+                });
+                if moved {
+                    spaces.insert(key.clone(), space);
+                    told.push((level, key.clone(), space));
+                }
+            }
+            spaces.retain(|key, _| wanted[at].iter().any(|(wanted, _)| wanted == key));
+        }
+        self.out.extend(
+            told.into_iter()
+                .map(|(level, key, (width, height, rem))| ToApp::Space {
+                    level,
+                    key,
+                    width,
+                    height,
+                    rem,
+                }),
+        );
+    }
+
+    /// The nodes each declared view call drew, by the call's key in the window's tree: what to
+    /// measure where layout kept no box for the call itself. A row or a grid takes a call's nodes
+    /// as its items, and a component takes them as a part of its own, so the call's room there is
+    /// the room of what it drew.
+    fn call_nodes(&self, wanted: &[Vec<(String, String)>; 2]) -> HashMap<String, Vec<String>> {
+        let calls: HashSet<String> = wanted
+            .iter()
+            .flatten()
+            .map(|(_, in_tree)| in_tree.clone())
+            .collect();
+        fn walk(
+            node: &UiNode,
+            current: Option<&str>,
+            calls: &HashSet<String>,
+            out: &mut HashMap<String, Vec<String>>,
+        ) {
+            let mut current = current;
+            if node.kind == "fragment" && calls.contains(&node.key) {
+                out.entry(node.key.clone()).or_default();
+                current = Some(node.key.as_str());
+            }
+            if let Some(call) = current
+                && let Some(nodes) = out.get_mut(call)
+            {
+                nodes.push(node.key.clone());
+            }
+            for child in &node.children {
+                walk(child, current, calls, out);
             }
         }
+        let mut out = HashMap::new();
+        for tree in self.built.as_slice() {
+            walk(tree, None, &calls, &mut out);
+        }
+        for rows in self.rows.borrow().values() {
+            let rows = rows.borrow();
+            for key in rows.rendered() {
+                if let Some(row) = rows.row(&key) {
+                    walk(row, None, &calls, &mut out);
+                }
+            }
+        }
+        out
     }
+
+    /// The app says which view calls of `level` read the space layout gives them: what the window
+    /// measures after every layout, and no others.
+    fn take_spaces(&mut self, level: Level, keys: Vec<String>) {
+        let at = match level {
+            Level::Root => 0,
+            Level::Detail => 1,
+        };
+        if self.space_readers[at] == keys {
+            return;
+        }
+        self.space_readers[at] = keys;
+        self.structure_dirty = true;
+    }
+}
+
+/// Every widget of `window` that answers to a key, with the rect layout gave it: what a view call's
+/// size is, read from the layout that placed it.
+fn widget_rects(window: &dyn Widget) -> HashMap<String, ui::vello::kurbo::Rect> {
+    fn walk(widget: &dyn Widget, out: &mut HashMap<String, ui::vello::kurbo::Rect>) {
+        if let Some(id) = widget.test_id() {
+            out.insert(id.to_owned(), widget.get_rect());
+        }
+        for child in widget.children() {
+            walk(child, out);
+        }
+    }
+    let mut out = HashMap::new();
+    walk(window, &mut out);
+    out
 }
 
 /// The event a view's window frame declares where its search writes: what is typed in the window's

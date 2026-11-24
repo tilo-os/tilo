@@ -282,23 +282,25 @@ impl ViewInstance {
         &self.live.tree
     }
 
-    /// Set the space offered at a boundary: the root (key `""` or the root node's key), or a
-    /// nested view call by its node key. Every boundary is offered the root's space; other keys
-    /// are kept for the host's layout pass. Returns whether the view now needs to re-run: a
-    /// boundary read a `space` value that differs from the one it saw. Crossing no class
-    /// boundary it read leaves the view untouched.
+    /// Set the space layout gave the boundary `key`: the root (key `""` or the root node's key),
+    /// or a view call by its `fragment`'s key. Returns whether the view now needs to re-run: the
+    /// boundary read a `space` value that differs from the one it saw, or one inside it did.
+    /// A view re-runs only when what it read changed, and no other boundary does.
     pub fn set_space(&mut self, boundary: &str, space: Space) -> bool {
         self.spaces.insert(boundary.to_owned(), space);
-        if !boundary.is_empty() && boundary != self.live.tree.key {
-            return false;
-        }
-        self.live.check_space(space);
+        self.live.set_space(boundary, space);
         self.is_stale()
     }
 
     /// The space last set for a boundary.
     pub fn space(&self, boundary: &str) -> Option<Space> {
         self.spaces.get(boundary).copied()
+    }
+
+    /// The boundaries that read the space layout gives them, by key, in the order they stand:
+    /// what the window measures for the view (`ToUi::Spaces`).
+    pub fn space_readers(&self) -> Vec<String> {
+        self.live.space_readers()
     }
 
     /// Take `(resource, field)` reads the host took converting what the view shows, beside what
@@ -376,15 +378,15 @@ impl ViewInstance {
         let ended: Vec<(bool, ActionRef, Option<String>)> = {
             let mut waiting = self.then_waiting.borrow_mut();
             let mut ended = Vec::new();
-            waiting.retain(|(invocation, next, gesture)| {
-                match self.core.awaited_end(invocation) {
+            waiting.retain(
+                |(invocation, next, gesture)| match self.core.awaited_end(invocation) {
                     Some(done) => {
                         ended.push((done, next.clone(), gesture.clone()));
                         false
                     }
                     None => true,
-                }
-            });
+                },
+            );
             ended
         };
         for (done, next, gesture) in ended {
