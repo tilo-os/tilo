@@ -415,6 +415,19 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
         }
         "link_status" => value["url"].as_str().is_some_and(|url| url.len() <= 8192),
         "extension_download_open" => valid_id(value) && value["reveal"].is_boolean(),
+        "print_result" => {
+            value["request_id"]
+                .as_u64()
+                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
+                && value["ok"].is_boolean()
+                && value["path"]
+                    .as_str()
+                    .is_some_and(|path| path.len() <= 8192)
+                && value["name"].as_str().is_some_and(|name| name.len() <= 512)
+                && value["message"]
+                    .as_str()
+                    .is_some_and(|message| message.len() <= 4096)
+        }
         "find_selection" => {
             valid_id(value)
                 && ["x", "y", "width", "height"].iter().all(|key| {

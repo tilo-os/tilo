@@ -296,6 +296,9 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "private" => Ask::Private,
         // The engine's own developer tools, opened beside the page.
         "developer_tools" => Ask::Command(WebViewCommand::ShowDeveloperTools),
+        // The page written as a PDF the person can print: where the engine wrote it reaches
+        // the app as the window's note, once the engine has finished writing it.
+        "print" => Ask::Command(WebViewCommand::PrintToPdf { request_id: 1 }),
         // The page's sound, and where it can go back or forward to: the engine answers the
         // history through `asks` once it has read it.
         "mute" => Ask::Command(WebViewCommand::SetAudioMuted(flag(&value, "muted"))),
@@ -778,6 +781,20 @@ pub fn extension_updates_note(
         "checked": checked,
         "updated": serde_json::Value::Array(updated).to_string(),
         "failed": failed.join("; "),
+    })
+    .to_string()
+}
+
+/// The page written as a PDF, for the window to hand the app as its call: whether it was,
+/// where the file is, what it is called, and why not in the engine's own words.
+#[must_use]
+pub fn print_note(ok: bool, path: &str, name: &str, message: &str) -> String {
+    serde_json::json!({
+        "note": "print",
+        "ok": ok,
+        "path": path,
+        "name": name,
+        "message": message,
     })
     .to_string()
 }

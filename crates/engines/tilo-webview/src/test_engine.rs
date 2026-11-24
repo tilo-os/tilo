@@ -32,6 +32,7 @@ struct Inner {
     /// answered whenever no queued reply answers that read first.
     page_data: std::collections::HashMap<&'static str, serde_json::Value>,
     next_download: u64,
+    next_print: u64,
     downloads: std::collections::HashMap<String, String>,
     visibility: Vec<bool>,
     paint_snapshot: Option<String>,
@@ -1058,6 +1059,17 @@ impl WebViewEngine for TestEngine {
                         cancelled: true,
                     });
                 }
+            }
+            WebViewCommand::PrintToPdf { request_id } => {
+                inner.next_print = inner.next_print.saturating_add(1);
+                let path = format!("/tmp/tilo-test-print-{}.pdf", inner.next_print);
+                inner.events.push(WebViewEvent::PrintResult {
+                    request_id,
+                    ok: true,
+                    path,
+                    name: "page.pdf".into(),
+                    message: String::new(),
+                });
             }
         }
         drop(inner);

@@ -304,6 +304,17 @@ d-evzstlhr = Dokument übernehmen
 
 d-evzstlhr-file = Datei
 
+d-juk2pzrk = Anzeige
+    .doc = Der Ort, den eine andere App dieses Fenster anzeigen lässt: ein übergebenes Dokument ist bereit zum Drucken.
+
+d-4bljtzpr = Datei drucken
+    .doc = Nimmt ein von einer anderen App übergebenes Dokument als das, was dieses Fenster druckt, und zeigt das Druckformular, damit man den Drucker und die Art des Drucks wählt: die eine Aktion, die eine App für eine Datei aufruft, die sie erzeugt hat.
+
+d-4bljtzpr-file = Datei
+
+d-afraogqy = Anzeige aufheben
+    .doc = Verlässt den Ort, den eine andere App dieses Fenster anzeigen ließ, damit die eigene Wahl gilt.
+
 d-khrlaoyo = An den Drucker senden
     .doc = Druckt das gewählte Dokument auf dem gewählten Drucker mit den Einstellungen des Formulars.
     .w-choose-a-printer = Wähle einen Drucker

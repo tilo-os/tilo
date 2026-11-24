@@ -95,6 +95,8 @@ fn note(
         // follows the page.
         "media" => "refresh_page",
         "extension_updates" => "note_extension_updates",
+
+        "print" => "note_print",
         _ => {
             tracing::warn!(kind, "a note the app has no page action for");
             return false;

@@ -8,6 +8,7 @@ app so.tilo.browser "Browser" (
 )
 
 use so.tilo.file-explorer as files
+use so.tilo.print-centre as printing
 
 /// A site someone saved: where it is and what it is called.
 type Bookmark (title: title) {
@@ -145,6 +146,9 @@ type Page (title: title) {
     capture: Text = ""
     /// What the engine's credential store answered last, in its own words.
     login_notice: Text = ""
+    /// Why the page could not be printed, in the person's words; empty once one is on its way
+    /// to Print Centre or was before.
+    print_notice: Text = ""
     /// The toolbar buttons this page's extensions show, as the engine last reported them.
     buttons: Collection<PageButton>
     /// The notifications this page's extensions showed and have not taken back.
@@ -1196,6 +1200,47 @@ action cancel_all_downloads(p: Page) -> Answer uses page (
 /// Opens the engine's developer tools for this page: its console, its elements and its network.
 action developer_tools(p: Page) -> Answer uses page (icon: .code, label: "Developer tools") {
     ask_page(p, json.encode(Ask(op: "developer_tools")))
+}
+
+/// Writes the page as a PDF and hands it to Print Centre, where the person chooses the printer
+/// and how it prints. The engine answers with the file once it has written it; a page with
+/// nothing open has nothing to print.
+action print_page(p: Page) -> Answer uses page (
+    icon: .printer,
+    label: "Print",
+    key: "Ctrl+P",
+) {
+    require p.url != "" "Open a page to print"
+    ask_page(p, json.encode(Ask(op: "print")))
+}
+
+/// Hands the PDF the engine wrote to Print Centre, through its own action, so the person
+/// chooses the printer and how it prints there; the copy the engine wrote goes. The window
+/// raises it once the engine is done; a person, agent or script never does.
+action note_print(p: Page, ok: Bool, path: Text, name: Text, message: Text) uses files {
+    if not ok {
+        p.print_notice = if message == "" { std.say("The page could not be printed") } else { message }
+        return
+    }
+    let bytes = match File.read(path) {
+        .ok(bytes) => bytes
+        .err(why) => {
+            p.print_notice = std.say("The page could not be printed: {why}")
+            return
+        }
+    }
+    // A file an action keeps holds at most a megabyte, as a file a person picks does; a page
+    // larger than that is told so rather than failing on the way to Print Centre.
+    if bytes.len() > 1048576 {
+        let _ = File.remove(path)
+        p.print_notice = std.say("The page is too large to print")
+        return
+    }
+    let called = if name.ends_with(".pdf") { name } else { std.say("{name}.pdf") }
+    let file = File.of_bytes(if name == "" { "page.pdf" } else { called }, bytes)
+    p.print_notice = ""
+    let _ = File.remove(path)
+    printing.print_file(printing.print_centre, file)
 }
 
 /// Opens a saved download in the app that opens its kind, through the system's one open.
@@ -2729,6 +2774,9 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
         ui.MenuItem("Bookmarks", icon: .star) {
             on choose: open(b, view: library)
         }
+        ui.MenuItem("Print", icon: .printer, key: "Ctrl+P") {
+            on choose: print_page(p)
+        }
         ui.MenuItem("Browser settings", icon: .settings) {
             on choose: open(b, view: browser_settings)
         }
@@ -3013,6 +3061,9 @@ view page_view(p: Page) {
                     }
                     if p.login_notice != "" {
                         ui.Banner("Logins", message: p.login_notice, kind: .info)
+                    }
+                    if p.print_notice != "" {
+                        ui.Banner("Printing", message: p.print_notice, kind: .warning)
                     }
                     stack(padding: .related) {
                         ui.Button("Find this page’s logins", icon: .key, role: .plain) {

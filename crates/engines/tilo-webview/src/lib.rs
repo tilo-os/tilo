@@ -1014,6 +1014,11 @@ pub enum WebViewCommand {
         request_id: u32,
         id: String,
     },
+    /// Write the page as a PDF, for a person to print: where it went and what it is called
+    /// come as [`WebViewEvent::PrintResult`].
+    PrintToPdf {
+        request_id: u32,
+    },
     /// Save the download `id` the page offered, or discard it.
     AnswerDownload {
         id: u32,
@@ -1132,6 +1137,15 @@ pub enum WebViewEvent {
         checked: u32,
         updated: Vec<ExtensionUpdate>,
         failed: Vec<String>,
+    },
+    /// The page written as a PDF, as [`WebViewCommand::PrintToPdf`] asked: whether it was,
+    /// where the file is and what it is called, and why not in the engine's own words.
+    PrintResult {
+        request_id: u32,
+        ok: bool,
+        path: String,
+        name: String,
+        message: String,
     },
     SiteStatus(SiteStatus),
     SiteResult {

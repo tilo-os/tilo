@@ -337,6 +337,9 @@ bool service_session_consumed=false;
 int devtools_write=-1,devtools_read=-1;
 tilo::DevToolsPending devtools_pending;
 std::string downloads_directory;
+// Where this host's profile stands: a page printed as a PDF is written in its `print` folder,
+// which the page's app reads and removes once it has the page.
+std::string profile_directory;
 // Where extensions' context menu items are kept (extension_menus.h).
 std::string extension_menus_file;
 std::shared_ptr<tilo::CredentialWorker> credential_worker;
@@ -366,6 +369,45 @@ CefRefPtr<tilo::Downloads> downloads;
 // (departures.h): answered by the app, by the id each was held under.
 std::shared_ptr<tilo::Departures> departures;
 tilo::DownloadOwnerReservations download_owners;
+
+/// A page's title as a file name: letters, digits, spaces and the punctuation a name keeps;
+/// everything else becomes a space, runs of spaces one, and at most 120 characters are kept.
+std::string PrintFileName(const std::string& title) {
+  std::string name;
+  bool spaced=false;
+  for(unsigned char c:title) {
+    const bool kept=(c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c==' '||c=='-'||c=='_'||c=='.';
+    if(kept) { if(c==' ' && spaced) continue; spaced=c==' '; name.push_back(static_cast<char>(c)); }
+    else if(!spaced) { name.push_back(' '); spaced=true; }
+    if(name.size()>=120) break;
+  }
+  while(!name.empty() && (name.back()==' ' || name.back()=='.')) name.pop_back();
+  while(!name.empty() && name.front()==' ') name.erase(name.begin());
+  return name;
+}
+
+/// The answer to a page printed as a PDF: whether it was written, where, what it is called,
+/// and why not.
+void PrintAnswer(int tab,int request_id,bool ok,const std::string& path,const std::string& name,const std::string& message) {
+  auto d=CefDictionaryValue::Create();d->SetInt("tab",tab);d->SetInt("request_id",request_id);
+  d->SetBool("ok",ok);d->SetString("path",path);d->SetString("name",name);d->SetString("message",message);
+  Event("print_result",d);
+}
+
+/// Chromium writes the page in its own time and calls back with the outcome; the callback
+/// carries what the answer names, since the client may be gone by then.
+class PrintCallback final : public CefPdfPrintCallback {
+ public:
+  PrintCallback(int tab,int request_id,std::string path,std::string name)
+    :tab_(tab),request_id_(request_id),path_(std::move(path)),name_(std::move(name)) {}
+  void OnPdfPrintFinished(const CefString&,bool ok) override {
+    if(ok) PrintAnswer(tab_,request_id_,true,path_,name_,"");
+    else PrintAnswer(tab_,request_id_,false,"","","The page could not be written as a PDF");
+  }
+ private:
+  int tab_,request_id_;std::string path_,name_;
+  IMPLEMENT_REFCOUNTING(PrintCallback);
+};
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
                      public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler, public CefJSDialogHandler, public CefAudioHandler, public CefDragHandler {
@@ -1426,6 +1468,28 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     std::erase_if(pending_navigation_,[request](const auto& command){return command->GetString("op")=="scoped_navigation" && command->GetInt("request_id")==request;});
     if(navigation_owner_==request) {navigation_owner_.reset();AbortNavigation();}
   }
+  /// The page as a PDF in the profile's `print` folder, named after the page: the app that
+  /// prints it reads the file and removes it, so a print leaves nothing behind.
+  void PrintPdf(int request_id) {
+    if(!browser_) { PrintAnswer(id_,request_id,false,"","","The page is no longer open");return; }
+    std::error_code error;
+    const auto folder=std::filesystem::path(profile_directory)/"print";
+    std::filesystem::create_directories(folder,error);
+    if(error) { PrintAnswer(id_,request_id,false,"","","The print folder could not be made: "+error.message());return; }
+    std::string base=PrintFileName(title_);
+    if(base.empty()) base="page";
+    auto path=folder/(base+".pdf");
+    for(int n=2;n<1000 && std::filesystem::exists(path,error);++n) path=folder/(base+" ("+std::to_string(n)+").pdf");
+    CefPdfPrintSettings settings;
+    // The page as the person sees it, background included; the printer's own paper and
+    // margins are the print's, chosen in Print Centre.
+    settings.print_background=true;
+    settings.landscape=false;
+    settings.prefer_css_page_size=false;
+    const CefString where(path.string());
+    if(!browser_->GetHost()->PrintToPDF(where,settings,new PrintCallback(id_,request_id,where.ToString(),path.filename().string())))
+      PrintAnswer(id_,request_id,false,"","","The page could not be printed");
+  }
   void Command(CefRefPtr<CefDictionaryValue> d) {
     CEF_REQUIRE_UI_THREAD();
     std::string op=d->GetString("op");
@@ -1681,6 +1745,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
     else if(op=="devtools") { CefWindowInfo window;
       host->ShowDevTools(window,new DevToolsClient,CefBrowserSettings(),CefPoint());
+    } else if(op=="print_pdf") {
+      PrintPdf(d->GetInt("request_id"));
     } else if(op=="clear_data") {
       host->GetRequestContext()->GetCookieManager(nullptr)->DeleteCookies("","",nullptr);
       host->GetRequestContext()->ClearHttpCache(nullptr);host->GetRequestContext()->ClearHttpAuthCredentials(nullptr);auth_answer_.Forget();
@@ -3227,6 +3293,11 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return true;
   }
   if(op=="filter_rules") return type("rules",VTYPE_STRING) && (type("enabled",VTYPE_BOOL) || type("enabled",VTYPE_NULL));
+  if(op=="print_pdf") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id")return false;
+    return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0;
+  }
   return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="download_cancel_all" || op=="shutdown";
 }
 void DevToolsReply(int tab,int request_id,bool ok,const std::string& body) {
@@ -3370,6 +3441,7 @@ int RunHost(int argc,char** argv) {
   if(profile.empty() || profile[0]!='/') {std::cerr<<"--profile requires an absolute directory\n";return 2;}
   std::filesystem::create_directories(profile);
   profile=std::filesystem::canonical(profile).string();
+  profile_directory=profile;
   if(downloads_directory.empty()) downloads_directory=profile+"/downloads";
   extension_menus_file=profile+"/Extension Menus.json";
   Output writer(std::move(frame_memory));output=&writer;

@@ -2157,6 +2157,10 @@ impl WebViewEngine for ChromiumEngine {
             WebViewCommand::Page { request_id, .. } => Some(*request_id),
             _ => None,
         };
+        let print_request = match &command {
+            WebViewCommand::PrintToPdf { request_id } => Some(*request_id),
+            _ => None,
+        };
         if let Some(mut command) = encode_command(command) {
             let Some(fields) = command.as_object_mut() else {
                 self.shared.fail("Invalid internal Chromium command".into());
@@ -2171,6 +2175,16 @@ impl WebViewEngine for ChromiumEngine {
                             "unavailable",
                             format!("The page request was not queued: {error}"),
                         )),
+                    });
+                    return;
+                }
+                if let Some(request_id) = print_request {
+                    self.shared.event(WebViewEvent::PrintResult {
+                        request_id,
+                        ok: false,
+                        path: String::new(),
+                        name: String::new(),
+                        message: format!("The page could not be printed: {error}"),
                     });
                     return;
                 }
@@ -2939,6 +2953,13 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "permission_closed" => WebViewEvent::PermissionClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
+        "print_result" => WebViewEvent::PrintResult {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            ok: value["ok"].as_bool()?,
+            path: value["path"].as_str()?.into(),
+            name: value["name"].as_str()?.into(),
+            message: value["message"].as_str()?.into(),
+        },
         "download_prompt" => WebViewEvent::NativeDownloadRequested {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
             url: value["url"].as_str()?.into(),
@@ -3353,6 +3374,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             "faces": families,
         }),
         WebViewCommand::StartDownload { uri } => json!({"op":"download_start","url":uri}),
+        WebViewCommand::PrintToPdf { request_id } => {
+            json!({"op":"print_pdf","request_id":request_id})
+        }
     })
 }
 

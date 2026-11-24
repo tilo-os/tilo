@@ -386,6 +386,7 @@ d-vsaswu4a = Seitenansicht
     .w-page = Seite
     .w-history = Verlauf
     .w-bookmarks = Lesezeichen
+    .w-print = Drucken
     .w-browser-settings = Browsereinstellungen
     .w-reader-view = Leseansicht
     .w-zoom-in = Vergrößern
@@ -418,6 +419,7 @@ d-vsaswu4a = Seitenansicht
     .w-block-what-this-site-asks-for = Blockieren, wonach diese Website fragt
     .w-let-the-site-ask-again = Website darf erneut fragen
     .w-developer-tools = Entwicklerwerkzeuge
+    .w-printing = Drucken
     .w-logins = Anmeldungen
     .w-find-this-page-s-logins = Anmeldungen dieser Seite finden
     .w-saved-logins = Gespeicherte Anmeldungen
@@ -1577,6 +1579,30 @@ d-hh7ptqf4 = Erweiterungen merken
 d-hh7ptqf4-installed = Installiert
 
 d-hh7ptqf4-message = Meldung
+
+d-ylu3tat4 = Druckhinweis
+    .doc = Warum die Seite nicht gedruckt werden konnte, in den Worten der Person; leer, sobald eine auf dem Weg zum Druckzentrum ist oder war.
+
+d-h46exzv2 = Drucken
+    .doc = Schreibt die Seite als PDF und übergibt sie dem Druckzentrum, wo man den Drucker und die Art des Drucks wählt.
+    .w-open-a-page-to-print = Öffne eine Seite zum Drucken
+
+d-cyex2shm = Druck vermerken
+    .doc = Übergibt das vom Motor geschriebene PDF über ihre eigene Aktion dem Druckzentrum, damit man dort den Drucker und die Art des Drucks wählt; die vom Motor geschriebene Kopie wird entfernt.
+    .w-the-page-could-not-be-printed = Die Seite konnte nicht gedruckt werden
+    .w-the-page-could-not-be-printed-2 = Die Seite konnte nicht gedruckt werden: { $why }
+    .w-the-page-is-too-large-to = Die Seite ist zu groß zum Drucken
+    .w-pdf = { $name }.pdf
+
+d-cyex2shm-ok = Erfolg
+
+d-cyex2shm-path = Pfad
+
+d-cyex2shm-name = Name
+
+d-cyex2shm-message = Meldung
+
+d-f2c637xq = Seite drucken~present
 
 d-4gc5tpck = Erweiterung vermerken
     .doc = Schreibt, was Installieren, Ein- oder Ausschalten einer Erweiterung ergeben hat, in den Eintrag des Browsers.

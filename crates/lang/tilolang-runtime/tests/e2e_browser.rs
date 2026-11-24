@@ -19,6 +19,11 @@ mod cases {
     /// Files' published place to show: its own action, which the Browser calls rather than
     /// reaching the device's files itself.
     const FILES_SOURCE: &str = include_str!("../../tilolang/tests/fixtures/file_explorer.tl");
+    /// Print Centre's published print: its own action, which the Browser calls with the PDF it
+    /// has rather than printing it itself.
+    const PRINT_CENTRE_SOURCE: &str = include_str!("../../tilolang/tests/fixtures/print_centre.tl");
+    /// What the engine wrote for a page it printed.
+    const PRINTED_PDF: &[u8] = b"%PDF-1.7\n% a page printed from the Browser\n";
 
     /// The page a window holds, as the test plays it: every ask it was given, and what it last
     /// reported of itself.
@@ -47,6 +52,11 @@ mod cases {
 
         fn answer_asks(&self, asks: Json) {
             *self.asks.borrow_mut() = asks;
+        }
+
+        /// Forget what was asked so far, so what a step asks is the whole of what it did.
+        fn forget(&self) {
+            self.asked.borrow_mut().clear();
         }
     }
 
@@ -88,8 +98,17 @@ mod cases {
             Ok(None)
         }
 
-        fn read(&self, _path: &str) -> Result<Vec<u8>, String> {
-            Err("the test keeps no files".to_owned())
+        /// The PDF the engine wrote for a page it printed, and nothing else.
+        fn read(&self, path: &str) -> Result<Vec<u8>, String> {
+            if path.ends_with(".pdf") {
+                Ok(PRINTED_PDF.to_vec())
+            } else {
+                Err("the test keeps no files".to_owned())
+            }
+        }
+
+        fn remove(&self, _path: &str) -> Result<bool, String> {
+            Ok(true)
         }
 
         fn watch(&self, _path: &str, _run: &str) -> Result<String, String> {
@@ -104,15 +123,17 @@ mod cases {
         }
     }
 
-    /// What the person picks when a control asks them for a file: the package an install takes.
+    /// The device's content store, and the file the person picks when a control asks: the
+    /// package an extension install takes, and the bytes a file the Browser hands on holds.
     #[derive(Clone, Default)]
-    struct Chosen {
+    struct Device {
+        content: Rc<RefCell<std::collections::HashMap<String, Vec<u8>>>>,
         file: Rc<RefCell<Option<FileValue>>>,
     }
 
-    impl BlobHost for Chosen {
-        fn read(&self, _hash: &str) -> Option<Vec<u8>> {
-            None
+    impl BlobHost for Device {
+        fn read(&self, hash: &str) -> Option<Vec<u8>> {
+            self.content.borrow().get(hash).cloned()
         }
 
         fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
@@ -120,7 +141,22 @@ mod cases {
         }
 
         fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Err("the test saves nothing".to_owned())
+            Err("this test writes no files out".to_owned())
+        }
+
+        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+            // The content's own address: the same bytes are one file, as a content store keeps
+            // them.
+            let hash = format!("h{}", bytes.len());
+            self.content
+                .borrow_mut()
+                .insert(hash.clone(), bytes.to_vec());
+            Ok(FileValue::new(
+                name,
+                media,
+                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+                hash,
+            ))
         }
     }
 
@@ -130,27 +166,47 @@ mod cases {
         root: ResourceRef,
         page: Page,
         files: Files,
-        chosen: Chosen,
+        device: Device,
+        print_centre: App,
         opened: ResourceRef,
     }
 
     impl Browser {
         fn new() -> Self {
+            Self::built(true)
+        }
+
+        /// A Browser nobody vouched for: a call it makes into another app's action asks the
+        /// person first, as one from an app the workspace has not trusted does.
+        fn untrusted() -> Self {
+            Self::built(false)
+        }
+
+        fn built(trusted: bool) -> Self {
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let page = Page::default();
             rt.set_page(page.clone());
             let files = Files::default();
             rt.set_device_files(files.clone());
-            let chosen = Chosen::default();
-            rt.set_blobs(chosen.clone());
+            let device = Device::default();
+            rt.set_blobs(device.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             // The Browser shows where a download stands by asking Files, whose own action knows
-            // the device's files.
+            // the device's files, and prints a page by asking Print Centre, which has the
+            // printers.
             let files_app = App::compile(FILES_SOURCE, &[]);
             files_app.load(&rt);
-            let app = App::compile(SOURCE, &[files_app.meta().clone()]);
-            authority.trust(&app.load(&rt));
+            let print_centre = App::compile(PRINT_CENTRE_SOURCE, &[]);
+            print_centre.load(&rt);
+            let app = App::compile(
+                SOURCE,
+                &[files_app.meta().clone(), print_centre.meta().clone()],
+            );
+            let loaded = app.load(&rt);
+            if trusted {
+                authority.trust(&loaded);
+            }
             let root = rt.create_root("Browser").unwrap();
             let made = Browser::call(&app, &rt, "new_page", &[("b", Value::resource(&root))])
                 .expect("the browser opens a page");
@@ -161,7 +217,8 @@ mod cases {
                 root,
                 page,
                 files,
-                chosen,
+                device,
+                print_centre,
                 opened,
             }
         }
@@ -169,7 +226,7 @@ mod cases {
         /// The file the person picks when a control asks: `name`'s bytes, in this device's
         /// content store under `hash`.
         fn chooses(&self, name: &str, hash: &str) {
-            *self.chosen.file.borrow_mut() =
+            *self.device.file.borrow_mut() =
                 Some(FileValue::new(name, "application/octet-stream", 2048, hash));
         }
 
@@ -920,6 +977,121 @@ mod cases {
         // Nothing to show for a download that was never saved.
         let refused = Browser::call(&app, &rt, "reveal_download", &[("path", Value::text(""))]);
         assert!(refused.is_err(), "a download with no path shows nothing");
+    }
+
+    /// A page is written as a PDF and handed to Print Centre through Print Centre's own action,
+    /// as a file the workspace's content store holds; a print that failed says why in the
+    /// person's words.
+    #[test]
+    fn a_printed_page_is_handed_to_print_centre_through_its_own_action() {
+        let b = Browser::untrusted();
+        let dispatch = Dispatch::new();
+        b.rt.set_foreign_invoker(dispatch.clone());
+        let print_root =
+            b.rt.create_root("PrintCentre")
+                .expect("the Print Centre root");
+
+        // A page with an address of its own is what there is to print.
+        b.run(
+            "navigate",
+            &[
+                ("p", Value::resource(&b.opened)),
+                ("url", Value::text("https://example.org/report")),
+            ],
+        );
+        b.page.forget();
+
+        // The page's own menu offers Print, which asks the engine for the page as a PDF.
+        let view = b.page_view();
+        let row = of_kind(view.tree(), "ui.MenuItem")
+            .into_iter()
+            .find(|row| row.props.get("label") == Some(&Value::text("Print")))
+            .unwrap_or_else(|| panic!("the page's menu offers Print: {}", dump(view.tree())));
+        view.fire(&row.key, "choose").expect("Print is chosen");
+        assert_eq!(b.page.ops(), ["print"]);
+
+        // The action itself asks for the same.
+        let out = b.run("print_page", &[("p", Value::resource(&b.opened))]);
+        assert!(
+            matches!(out, InvokeOutcome::Done(_)),
+            "the page is asked for its PDF: {out:?}"
+        );
+        assert_eq!(b.page.ops(), ["print", "print"]);
+
+        // The engine wrote the PDF; the window hands it on to Print Centre, which is not an app
+        // the Browser is trusted with the actions of, so its call asks.
+        let out = Browser::call(
+            &b.app,
+            &b.rt,
+            "note_print",
+            &[
+                ("p", Value::resource(&b.opened)),
+                ("ok", Value::Bool(true)),
+                (
+                    "path",
+                    Value::text("/home/ada/.local/share/tilo/chromium/print/Example page.pdf"),
+                ),
+                ("name", Value::text("Example page.pdf")),
+                ("message", Value::text("")),
+            ],
+        )
+        .expect("the PDF is handed over");
+        let InvokeOutcome::Waits { run, .. } = out else {
+            panic!("the call to Print Centre asks first: {out:?}");
+        };
+        let (action, args) = dispatch.asked();
+        assert_eq!(
+            action,
+            b.print_centre.action("print_file"),
+            "Print Centre's own action, by name, not a second path of its own"
+        );
+        let printed = args
+            .iter()
+            .find_map(|value| match value {
+                Value::File(file) => Some(file.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the call hands Print Centre a file: {args:?}"));
+        assert_eq!(printed.name, "Example page.pdf");
+        assert_eq!(printed.media, "application/pdf");
+        assert_eq!(
+            b.device.read(&printed.hash).as_deref(),
+            Some(PRINTED_PDF),
+            "Print Centre is handed the PDF's own bytes"
+        );
+
+        let RunOutcome::Done(_) = dispatch.allow(&b.rt, &run) else {
+            panic!("Print Centre takes the document");
+        };
+        assert_eq!(
+            b.rt.read(&print_root, "printed").unwrap().as_text(),
+            Some("Example page.pdf"),
+            "Print Centre has the page as its document"
+        );
+
+        // A print the engine could not write says what happened, in the person's words.
+        b.run(
+            "note_print",
+            &[
+                ("p", Value::resource(&b.opened)),
+                ("ok", Value::Bool(false)),
+                ("path", Value::text("")),
+                ("name", Value::text("")),
+                (
+                    "message",
+                    Value::text("The page could not be written as a PDF"),
+                ),
+            ],
+        );
+        let view = b.page_view();
+        assert!(
+            of_kind(view.tree(), "ui.Banner")
+                .iter()
+                .any(|banner| banner.props.get("message")
+                    == Some(&Value::text("The page could not be written as a PDF"))),
+            "the failure shows: {}",
+            dump(view.tree())
+        );
     }
 
     /// The extensions this device keeps are read into the Browser's record, installed from the

@@ -229,6 +229,17 @@ impl PageSession {
                 } => {
                     self.notes
                         .push(codec::extension_updates_note(*checked, updated, failed));
+                }
+                // The page written as a PDF: where it went is the app's to hand on, never the
+                // page's own event.
+                WebViewEvent::PrintResult {
+                    ok,
+                    path,
+                    name,
+                    message,
+                    ..
+                } => {
+                    self.notes.push(codec::print_note(*ok, path, name, message));
                     continue;
                 }
                 // How the engine's credential store answered: the forms and accounts it lists,
@@ -673,6 +684,31 @@ mod tests {
     #[test]
     fn an_ordinary_page_is_not_private() {
         assert!(!PageSession::new(TestEngine::new()).is_private());
+    }
+
+    /// The page written as a PDF is the app's note, naming the file the engine wrote and what
+    /// it is called.
+    #[test]
+    fn a_printed_page_is_a_note_naming_the_pdf() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        test.push_event(WebViewEvent::PrintResult {
+            request_id: 1,
+            ok: true,
+            path: "/home/ada/.local/share/tilo/chromium/print/Example page.pdf".into(),
+            name: "Example page.pdf".into(),
+            message: String::new(),
+        });
+        session.poll();
+        let note: serde_json::Value =
+            serde_json::from_str(&session.notes()[0]).expect("the note is JSON");
+        assert_eq!(note["note"], "print");
+        assert_eq!(note["ok"], true);
+        assert_eq!(
+            note["path"],
+            "/home/ada/.local/share/tilo/chromium/print/Example page.pdf"
+        );
+        assert_eq!(note["name"], "Example page.pdf");
     }
 
     /// An extension's toolbar button is what the engine last said of it, and a reset takes them

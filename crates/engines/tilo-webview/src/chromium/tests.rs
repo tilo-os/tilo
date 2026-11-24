@@ -409,6 +409,43 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_printed_page_is_encoded_and_its_answer_is_bounded;
+    {
+        assert_eq!(
+            encode_command(WebViewCommand::PrintToPdf { request_id: 1 }),
+            Some(json!({"op":"print_pdf","request_id":1}))
+        );
+        let printed = json!({
+            "event":"print_result","request_id":1,"ok":true,
+            "path":"/home/ada/.local/share/tilo/chromium/print/Example page.pdf",
+            "name":"Example page.pdf","message":""
+        });
+        assert!(validate_event(&printed).is_ok());
+        assert_eq!(
+            decode_event(&printed),
+            Some(WebViewEvent::PrintResult {
+                request_id: 1,
+                ok: true,
+                path: "/home/ada/.local/share/tilo/chromium/print/Example page.pdf".into(),
+                name: "Example page.pdf".into(),
+                message: String::new(),
+            })
+        );
+        let failed = json!({
+            "event":"print_result","request_id":2,"ok":false,"path":"","name":"",
+            "message":"The page could not be written as a PDF"
+        });
+        assert!(validate_event(&failed).is_ok());
+        for malformed in [
+            json!({"event":"print_result","request_id":0,"ok":true,"path":"","name":"","message":""}),
+            json!({"event":"print_result","request_id":1,"ok":"true","path":"","name":"","message":""}),
+            json!({"event":"print_result","request_id":1,"ok":true,"name":"","message":""}),
+            json!({"event":"print_result","request_id":1,"ok":true,"path":"","name":"","message":"x".repeat(4097)}),
+        ] {
+            assert!(validate_event(&malformed).is_err(), "{malformed}");
+        }
+    }
+
     phase runtime_download_queue_coalesces_progress_and_is_bounded;
     {
         let queue = Mutex::new(VecDeque::new());

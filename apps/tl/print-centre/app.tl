@@ -84,6 +84,9 @@ type PrintCentre {
     documents: Collection<PrintDocument>
     scans: Collection<ScanSession>
     options: PrinterOptions
+    /// The place another app asked this window to show: a document it handed over is ready to
+    /// print. The person's own choice of place takes the window back.
+    showing: Text = ""
 }
 
 root print_centre: PrintCentre
@@ -270,6 +273,20 @@ action absorb_document(p: PrintCentre, file: File) {
         }
     }
     ask_options(p)
+}
+
+/// Takes a document another app hands over as what this window prints, and shows the print
+/// form so the person chooses the printer and how it prints: the one action an app calls to
+/// print a file it made. The file's bytes are the workspace's content, so the app that hands
+/// it over never needs this window's own files.
+action print_file(p: PrintCentre, file: File) {
+    absorb_document(p, file)
+    p.showing = "print"
+}
+
+/// Leaves the place another app asked this window to show, so the person's own choice stands.
+action clear_showing(p: PrintCentre) {
+    p.showing = ""
 }
 
 /// Prints the chosen document on the chosen printer, with the form's settings.
@@ -558,13 +575,16 @@ view window(p: PrintCentre) {
     state cropping: Bool = false
     let printers = device.printers
     let scanners = device.scanners
+    // A document another app handed over opens the print form, so the person chooses the
+    // printer and how it prints; any place they pick takes the window back.
+    let here = if p.showing != "" { p.showing } else { place }
     ui.NavShell(content_kind: .page, title: "Print Centre", sidebar_title: "Print Centre") {
         sidebar: {
             stack {
-                ui.NavList(selected: place) {
+                ui.NavList(selected: here) {
                     ui.NavSection("Printing") {
                         ui.NavItem("dashboard", "Overview", icon: .gauge) {
-                            on select: set(place, "dashboard")
+                            on select: set(place, "dashboard").then(clear_showing(p))
                         }
                         ui.NavItem(
                             "queue",
@@ -572,24 +592,24 @@ view window(p: PrintCentre) {
                             icon: .list,
                             count: printers.jobs.count(job -> job_active(job)),
                         ) {
-                            on select: set(place, "queue")
+                            on select: set(place, "queue").then(clear_showing(p))
                         }
                         ui.NavItem("history", "History", icon: .clock) {
-                            on select: set(place, "history")
+                            on select: set(place, "history").then(clear_showing(p))
                         }
                         ui.NavItem("print", "Print a document", icon: .printer) {
-                            on select: set(place, "print")
+                            on select: set(place, "print").then(clear_showing(p))
                         }
                     }
                     ui.NavSection("The machine") {
                         ui.NavItem("diagnostics", "Diagnostics", icon: .activity) {
-                            on select: set(place, "diagnostics")
+                            on select: set(place, "diagnostics").then(clear_showing(p))
                         }
                         ui.NavItem("discover", "Find printers", icon: .search) {
-                            on select: set(place, "discover")
+                            on select: set(place, "discover").then(clear_showing(p))
                         }
                         ui.NavItem("scan", "Scan", icon: .scan_line, count: scan_page_count(p)) {
-                            on select: set(place, "scan")
+                            on select: set(place, "scan").then(clear_showing(p))
                         }
                     }
                 }
@@ -602,17 +622,17 @@ view window(p: PrintCentre) {
             }
         }
         actions: {
-            if place == "print" {
+            if here == "print" {
                 ui.Button("Print", icon: .printer, role: .primary) {
                     on press: send_to_printer(p)
                 }
             }
-            if place == "scan" {
+            if here == "scan" {
                 ui.Button("Scan a page", icon: .scan_line, role: .primary) {
                     on press: scan_page(p)
                 }
             }
-            if place == "discover" {
+            if here == "discover" {
                 ui.Button("Look for printers", icon: .search) {
                     on press: device.find(device.printers)
                 }
@@ -624,17 +644,17 @@ view window(p: PrintCentre) {
                 message: "This computer cannot print: no printer service is answering.",
                 icon: .printer,
             )
-        } else if place == "dashboard" {
+        } else if here == "dashboard" {
             dashboard(p, printers, scanners)
-        } else if place == "queue" {
+        } else if here == "queue" {
             queue_pane(printers)
-        } else if place == "history" {
+        } else if here == "history" {
             history_pane(printers)
-        } else if place == "diagnostics" {
+        } else if here == "diagnostics" {
             diagnostics_pane(printers, scanners)
-        } else if place == "discover" {
+        } else if here == "discover" {
             discover_pane(printers)
-        } else if place == "print" {
+        } else if here == "print" {
             if let doc = p.documents.first() {
                 print_pane(p, doc, printers)
             } else {
