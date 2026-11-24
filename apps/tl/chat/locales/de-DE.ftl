@@ -244,6 +244,7 @@ d-5rkfnkg4 = Seitenleiste
 
 d-ymtess4x = Kanal
     .w-replay = { $name } erneut abspielen
+    .w-about = Über { $name }
     .w-pinned-messages = Angeheftete Nachrichten
     .w-members = Mitglieder
     .w-channel = Kanal
@@ -281,6 +282,7 @@ d-27cntb22 = Mitglieder des Kanals
 
 d-jbezqvlc = Direkt
     .w-replay = { $name } erneut abspielen
+    .w-about = Über { $name }
     .w-message = Nachricht an { $name }
     .w-attach = Anhängen
     .w-send = Senden
@@ -309,6 +311,7 @@ d-hrbsxhor = Fähigkeitszeile
 
 d-enkgjyn7 = Thread
     .w-replay = { $name } erneut abspielen
+    .w-about = Über { $name }
     .w-message = Nachricht an { $name }
     .w-attach = Anhängen
     .w-send = Senden
@@ -665,6 +668,8 @@ d-yqispavu = Problem melden
 d-yqispavu-body = Text
 
 d-yqispavu-recording = Aufnahme
+
+d-yqispavu-attachments = Anhänge
 
 d-4cfw6ty2 = Nachricht
     .doc = Eine Nachricht.
@@ -1184,4 +1189,6 @@ d-z5deq3xd = Jemanden für mich stummschalten
 
 d-v4cscgro = Über die Person
     .w-about = Über { $name }
+
+d-c2oflalz = Karte der Person
     .w-message = Nachricht

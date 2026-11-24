@@ -43,6 +43,10 @@ pub struct ReactionsProps {
     /// An emoji was pressed or picked: carries it.
     #[component(event(value = String))]
     pub toggle: Event,
+    /// The face of someone who reacted was chosen: carries who they are, for the view to say
+    /// more of them (their card).
+    #[component(event(value = Person))]
+    pub person: Event,
 }
 
 impl ReactionsProps {
@@ -71,9 +75,11 @@ impl Described for ReactionStripWidget {
     type Props = ReactionsProps;
 
     fn from_props(key: &str, props: ReactionsProps) -> Self {
+        let chosen = props.person.clone();
         let (groups, people, relayed, can_react, toggle) = said(props);
         Self::new(groups, None)
             .with_names(named_by(&people))
+            .on_person(choosing(&people, chosen))
             .with_people(people)
             .with_relayed(relayed)
             .can_react(can_react)
@@ -82,7 +88,9 @@ impl Described for ReactionStripWidget {
     }
 
     fn set_props(&mut self, props: ReactionsProps) -> bool {
+        let chosen = props.person.clone();
         let (groups, people, relayed, can_react, toggle) = said(props);
+        self.set_on_person(choosing(&people, chosen));
         self.set_groups(groups);
         self.set_relayed(relayed);
         self.set_can_react(can_react);
@@ -92,6 +100,25 @@ impl Described for ReactionStripWidget {
             toggle.fire(Some(Value::Text(picked.emoji)));
         });
         true
+    }
+}
+
+/// What choosing the face of a member among `people` reports to `chosen`: who they are, as the
+/// view gave them. A face the view named nobody for reports nothing.
+fn choosing(
+    people: &std::collections::HashMap<tilo_resource::MemberId, Person>,
+    chosen: Event,
+) -> impl FnMut(&tilo_resource::MemberId) + 'static {
+    let people = people.clone();
+    move |who: &tilo_resource::MemberId| {
+        if let Some(person) = people.get(who) {
+            chosen.fire(Some(Value::Actor {
+                identity: person.identity.clone(),
+                name: person.name.clone(),
+                hue: None,
+                picture: person.picture.clone(),
+            }));
+        }
     }
 }
 
@@ -129,6 +156,7 @@ fn said(
         relayed,
         can_react,
         toggle,
+        person: _,
     } = props;
     let mut known = std::collections::HashMap::new();
     let groups = ReactionsProps::groups(reactions, emoji, by)

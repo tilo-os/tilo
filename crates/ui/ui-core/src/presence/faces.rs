@@ -259,6 +259,24 @@ impl FaceStack {
         (rects, badge)
     }
 
+    /// Where the first `shown` faces of a stack ending at `right` and centred on `center_y` stand,
+    /// with a badge counting `more` after them, as [`Self::layout`] stands faces of their full size:
+    /// what a host hit-tests a face by.
+    #[must_use]
+    pub fn slots(&self, (right, center_y): (f64, f64), shown: usize, more: usize) -> Vec<Rect> {
+        let outer = self.side + 2.0 * (RING + GAP);
+        let step = self.step();
+        let left = right - self.width_of(shown, more);
+        (0..shown)
+            .map(|slot| {
+                Rect::from_center_size(
+                    Point::new(left + outer / 2.0 + slot as f64 * step, center_y),
+                    (self.side, self.side),
+                )
+            })
+            .collect()
+    }
+
     /// Where [`Self::paint`] stands each of `faces` and the badge counting
     /// `more`, ending at `right` and centred on `center_y`, without painting:
     /// what a host places its targets by before anything is painted.

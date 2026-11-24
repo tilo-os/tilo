@@ -1476,6 +1476,11 @@
           "name": "toggle",
           "doc": "An emoji was pressed or picked: carries it.",
           "value": "text"
+        },
+        {
+          "name": "person",
+          "doc": "The face of someone who reacted was chosen: carries who they are, for the view to say more of them (their card).",
+          "value": "actor"
         }
       ],
       "semantics": {
