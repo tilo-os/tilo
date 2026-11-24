@@ -44,6 +44,9 @@ fn settings_with(access: Option<MemberAccess>) -> (Host, tilolang::Compiled) {
     .expect("a host");
     host.load_compiled(&compiled)
         .expect("the package loads");
+    // The platform's packages it uses, as a window's process loads them: what a pane reads of the
+    // workspace or the device is a resource their readings and actions come from.
+    tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
     (host, compiled)
 }
 
@@ -219,10 +222,6 @@ fn an_owner_sets_the_limits_the_pane_shows() {
     let owner = MemberAccess::person(WorkspacePolicy::new("team", "ada"), "ada");
     let (host, _) = settings_with(Some(owner));
     limits(&host);
-    tilolang_tilo::platform_apps::load(
-        &host,
-        &[tilolang_tilo::platform_apps::WORKSPACE_APP.to_owned()],
-    );
     invoke(&host, "open_pane", vec![Value::text("content")]);
     let mut view = open_content_pane(&host);
 
