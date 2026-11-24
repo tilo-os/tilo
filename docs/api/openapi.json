@@ -9848,6 +9848,57 @@
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
+      "tl.so.tilo.browser.Suggestion.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.Suggestion.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title",
+              "url",
+              "secondary"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.Suggestion.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.Suggestion.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
       "tl.so.tilo.browser.RememberedForm.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -10599,7 +10650,7 @@
         "required": [
           "url"
         ],
-        "description": "Open an address in the page's own window."
+        "description": "Open an address in the page's own window: a site named without its scheme opens as one\n(`example.org`), and words that name no address open the search engine's answer to them."
       },
       "tl.so.tilo.browser.Page.submit_address.Arguments": {
         "type": "object",
@@ -11003,13 +11054,13 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Reads the login forms this page asks for, through the engine's own credential store."
+        "description": "Reads the login forms this page asks for."
       },
       "tl.so.tilo.browser.Page.list_saved_logins.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Lists the logins the engine keeps for this site."
+        "description": "Lists the logins the workspace's vault keeps for this site, by name."
       },
       "tl.so.tilo.browser.Page.capture_login.Arguments": {
         "type": "object",
@@ -11050,13 +11101,13 @@
         "required": [
           "f"
         ],
-        "description": "Takes what the person typed into a login form, so it can be saved for this site. The password\nstays in the engine's credential store and never crosses to the app."
+        "description": "Takes what the person typed into a login form, so it can be saved for this site. The password\nstays in the engine until saving hands it to the vault, and never crosses to the app."
       },
       "tl.so.tilo.browser.Page.save_login.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Saves the capture the engine took for this site."
+        "description": "Saves the capture the engine took in the workspace's vault, as a login of this site the Browser\nkeeps."
       },
       "tl.so.tilo.browser.Page.fill_saved_login.Arguments": {
         "type": "object",
@@ -11130,7 +11181,7 @@
           "f",
           "a"
         ],
-        "description": "Fills a form of this page with a login the engine keeps."
+        "description": "Fills a form of this page with a login the vault keeps for this site. A login the Browser saved\nitself fills at once; any other is filled once its person allowed the Browser that one login."
       },
       "tl.so.tilo.browser.Page.update_saved_login.Arguments": {
         "type": "object",
@@ -11204,7 +11255,7 @@
           "f",
           "a"
         ],
-        "description": "Replaces a saved login with the capture the engine took."
+        "description": "Replaces a login the vault keeps with the capture the engine took."
       },
       "tl.so.tilo.browser.Page.delete_saved_login.Arguments": {
         "type": "object",
@@ -11245,7 +11296,7 @@
         "required": [
           "a"
         ],
-        "description": "Forgets a login the engine keeps for this site."
+        "description": "Forgets a login of this site from the vault: one the Browser saved, or one it may fill."
       },
       "tl.so.tilo.browser.Page.cancel_login.Arguments": {
         "type": "object",
@@ -11806,7 +11857,7 @@
           "username",
           "late"
         ],
-        "description": "Writes what the engine's credential store answered into the page's record: the forms and\naccounts it listed, the capture it took, and its own words. The window raises it; a person,\nagent or script never does."
+        "description": "Writes what a login action came to into the page's record: the forms the engine found, the\nvault's logins for the site, the capture the engine took, and their own words. The window\nraises it; a person, agent or script never does."
       },
       "tl.so.tilo.browser.Page.sync_site_exceptions.Arguments": {
         "type": "object",
@@ -12848,7 +12899,8 @@
             "description": "The name of the field to set.",
             "enum": [
               "account",
-              "username"
+              "username",
+              "title"
             ],
             "type": "string"
           },
@@ -12866,7 +12918,9 @@
         "properties": {
           "field": {
             "description": "The name of the field to set.",
-            "enum": [],
+            "enum": [
+              "own"
+            ],
             "type": "string"
           },
           "value": {
@@ -66030,6 +66084,101 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.settings.move_shared_screen.Arguments": {
+        "type": "object",
+        "properties": {
+          "night": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.settings.sections.DisplayPerson",
+            "type": "object"
+          },
+          "screens": {
+            "items": {
+              "pick": "resource",
+              "properties": {
+                "app": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "record": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "app",
+                "kind",
+                "id",
+                "label"
+              ],
+              "resource_kind": "tl.so.tilo.device.SharedScreen",
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "picked": {
+            "type": "integer"
+          },
+          "start": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "let_go": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "night",
+          "screens",
+          "picked",
+          "start",
+          "let_go"
+        ],
+        "description": "Move the device whose screen was dragged so that screen stands where the pointer was let go,\nin the shared space's own pixels, snapped to a small grid. Every screen of that device moves\nwith it; a drag too small to mean anything is not a change."
+      },
       "tl.so.tilo.settings.move_screen.Arguments": {
         "type": "object",
         "properties": {
@@ -71371,11 +71520,11 @@
             },
             "type": "array"
           },
-          "across": {
-            "type": "number"
-          },
-          "down": {
-            "type": "number"
+          "room": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
           },
           "display": {
             "type": "integer"
@@ -71384,8 +71533,7 @@
         "required": [
           "kind",
           "at",
-          "across",
-          "down",
+          "room",
           "display"
         ],
         "description": "Puts the widget `kind` where a drag let go, at `at` on this display: the place the person\nleft it at, as fractions of the room it can move in there."
@@ -90969,6 +91117,19 @@
         ],
         "description": ""
       },
+      "settings.appearance.choose-language.Arguments": {
+        "type": "object",
+        "properties": {
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "description": ""
+      },
       "settings.appearance.use-theme.Arguments": {
         "type": "object",
         "properties": {
@@ -91685,6 +91846,19 @@
         "required": [
           "on"
         ],
+        "description": ""
+      },
+      "settings.audio.set-system-sound-theme.Arguments": {
+        "type": "object",
+        "properties": {
+          "theme": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [],
         "description": ""
       },
       "settings.audio-device.remember-output-device.Arguments": {
@@ -94597,6 +94771,30 @@
       "resource": "tl.so.tilo.browser.ImportedVisit",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.browser.ImportedVisit.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Suggestion",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Suggestion.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Suggestion",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Suggestion.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Suggestion",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Suggestion.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Suggestion",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Suggestion.$scenario.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -116093,6 +116291,12 @@
     {
       "app": "so.tilo.settings",
       "resource": "tl.so.tilo.settings",
+      "action": "move_shared_screen",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.move_shared_screen.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings",
       "action": "move_screen",
       "arguments": "#/components/schemas/tl.so.tilo.settings.move_screen.Arguments"
     },
@@ -124565,6 +124769,12 @@
     {
       "app": "so.tilo.settings.sections",
       "resource": "settings.appearance",
+      "action": "choose-language",
+      "arguments": "#/components/schemas/settings.appearance.choose-language.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.appearance",
       "action": "use-theme",
       "arguments": "#/components/schemas/settings.appearance.use-theme.Arguments"
     },
@@ -124825,6 +125035,12 @@
       "resource": "settings.audio",
       "action": "set-echo-cancellation",
       "arguments": "#/components/schemas/settings.audio.set-echo-cancellation.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.audio",
+      "action": "set-system-sound-theme",
+      "arguments": "#/components/schemas/settings.audio.set-system-sound-theme.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",
