@@ -124,7 +124,8 @@ async fn follow(
             );
             // What the daemon publishes beside the standing is followed as long as it does.
             for part in Part::ALL {
-                let (standing, view, wake) = (standing.clone(), Arc::clone(view), Arc::clone(wake));
+                let (standing, view, wake) =
+                    (standing.clone(), Arc::clone(&view), Arc::clone(&wake));
                 let named = part_resource(&workspace.id, part);
                 tokio::spawn(async move {
                     if let Err(error) = follow_one(&standing, &named, &view, &wake).await {

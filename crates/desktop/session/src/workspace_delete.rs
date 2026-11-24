@@ -80,7 +80,7 @@ impl Shared {
 
     /// The shell took the workspace `workspace` , called `name` , off as deleted: this device's
     /// daemon deletes it where it is kept (`account/workspaces#delete`, the workspace service's
-    /// `workspace.delete`), and what is left of it in this device's record goes with it. The shell
+    /// `workspace.delete`), and its own copy with it. The shell
     /// asks this of whoever deleted it — the menu, the settings, an agent invoking the action — so
     /// a workspace deleted anywhere is deleted everywhere it was this device's.
     pub(crate) fn deleted_workspace(&self, workspace: WorkspaceId, name: &str) {
@@ -89,7 +89,6 @@ impl Shared {
             state.presentation().gone();
         }
         self.delete_workspace_ask.borrow_mut().take();
-        self.forget_deleted(workspace);
         let asked = self.view.as_ref().map(|view| {
             view.ask_account(
                 "account/workspaces",
@@ -157,7 +156,7 @@ impl Shared {
                     .map(|held| held.name.clone())
             });
             // Told once: a word the host repeats finds nothing left to take away.
-            let gone = self.take_off_shell(workspace) | self.forget_deleted(workspace);
+            let gone = self.take_off_shell(workspace);
             if gone && let Some(name) = name {
                 crate::directory::workspace_notice(
                     &*self.telling(),
@@ -169,18 +168,6 @@ impl Shared {
                 );
             }
         }
-    }
-
-    /// What is left of the deleted workspace `workspace` in this device's record goes; whether the
-    /// record held it.
-    fn forget_deleted(&self, workspace: WorkspaceId) -> bool {
-        let Some(engine) = &self.engine else {
-            return false;
-        };
-        engine.delete(workspace).unwrap_or_else(|error| {
-            tracing::warn!(%error, %workspace, "a deleted workspace stays in this device's record");
-            false
-        })
     }
 
     /// Take `workspace`, which is gone already, off the shell; whether it was taken. Nobody is asked

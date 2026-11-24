@@ -38,6 +38,12 @@ pub const DELETE: &str = "delete";
 /// workspace's admission decides it, as it decides every member's change.
 pub const MEMBERSHIP: &str = "membership";
 
+/// [`LIST`]'s action that has this device hold a workspace of its person's as a member copy, at
+/// the device keeping it: `{id, host}`, `host` the [`crate::join::TransportHint`] that device
+/// signed, postcard in hex. A device certified by a member's root is that member's device, so
+/// nothing has to be invited.
+pub const ENTER: &str = "enter";
+
 /// The resource of `workspace`'s standing, a [`WorkspaceReading`].
 #[must_use]
 pub fn resource(workspace: &str) -> String {

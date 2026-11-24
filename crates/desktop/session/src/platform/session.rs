@@ -662,6 +662,7 @@ impl Session {
         // A write the daemon takes to a layout or a view has it read again off the loop.
         desktops.follow_writes(daemon_writes.clone());
         let view = crate::options::open_view(&daemon_link, &options);
+        let service_root = crate::options::service_root(&options);
         if let Some(view) = &view {
             activity.attach_workspaces(
                 std::sync::Arc::clone(view),
@@ -1678,7 +1679,7 @@ impl Session {
             crate::program_asks::ProgramNotices::new(program_asks.clone(), Rc::clone(&services));
         let workspace_tabs = crate::workspace_settings::WorkspaceTabs::new(
             &daemon,
-            crate::options::service_root(&options),
+            service_root,
             options.wake.handle(),
         );
         let directory_store = Rc::new(crate::directory::Store::default());

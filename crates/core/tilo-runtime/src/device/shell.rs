@@ -28,7 +28,7 @@ use tilo_actions::remote::{
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::workspace_view::{
-    BRANCH, CREATE, DELETE, JOIN, LIST, Listed, MEMBERSHIP, Part, part as part_resource,
+    BRANCH, CREATE, DELETE, ENTER, JOIN, LIST, Listed, MEMBERSHIP, Part, part as part_resource,
     resource,
 };
 use tilo_workspace_service::apps::services::{PublishedResources, Reading, ResourceWatch};
@@ -533,6 +533,20 @@ async fn listed(
                 .await
                 .map_err(|error| error.to_string())?;
             Ok(Value::Null)
+        }
+        ENTER => {
+            let workspace = WorkspaceId::parse(text("id")?).ok_or("that is not a workspace")?;
+            let host = hex::decode(text("host")?)
+                .ok()
+                .and_then(|bytes| postcard::from_bytes(&bytes).ok())
+                .ok_or("`enter` names no host a device signed")?;
+            Ok(Value::String(
+                workspaces
+                    .copies()
+                    .hold_as_member(workspace, &host)
+                    .await?
+                    .to_string(),
+            ))
         }
         _ => Err(format!("the person's workspaces have no action `{action}`")),
     }

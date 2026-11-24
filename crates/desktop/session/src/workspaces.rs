@@ -719,14 +719,14 @@ impl Personal {
     /// Read where each workspace this device holds is hosted, as the workspaces themselves say: the
     /// list names the device that hosts a workspace, so a device of the person's that opens one
     /// from the list enters it there rather than at the device that happened to join it.
-    fn refresh_hosts(&mut self, engine: Option<&crate::engine::Engine>) {
-        let Some(engine) = engine else {
+    fn refresh_hosts(&mut self, view: Option<&crate::workspace_view::WorkspaceView>) {
+        let Some(view) = view else {
             return;
         };
-        self.hosts = engine
+        self.hosts = view
             .workspaces()
             .into_iter()
-            .filter_map(|workspace| Some((workspace, engine.holder_of(workspace)?)))
+            .filter_map(|workspace| Some((workspace, view.holder_of(workspace)?)))
             .collect();
     }
 
@@ -1202,8 +1202,8 @@ impl crate::Shared {
     /// API, or one the person's list names that this device is entering, which may be someone
     /// else's they were let in to: whose it is waits for its governance.
     fn owner_of(&self, workspace: WorkspaceId, borrowed: &BTreeSet<WorkspaceId>) -> Option<String> {
-        if let Some(engine) = &self.engine
-            && let Ok(owner) = engine.owner_of(&workspace.to_string())
+        if let Some(view) = &self.view
+            && let Ok(owner) = view.owner_of(&workspace.to_string())
         {
             return Some(if self.earlier.contains(&owner) {
                 self.person.clone()
@@ -1253,7 +1253,7 @@ impl crate::Shared {
             ));
         };
         if matches!(joined.granted.way, tilo_workspace_directory::Way::Native(_)) {
-            if self.sync.is_none() || self.engine.is_none() {
+            if self.view.is_none() {
                 return Err("This session cannot reach the invitation's workspace holder.".into());
             }
             if self.holds(workspace) {
@@ -1346,9 +1346,9 @@ impl crate::Shared {
     /// this device in: until then the workspace's apps take part in nothing here.
     fn tell_awaited(&self, workspace: WorkspaceId, name: &str) {
         let host = self
-            .engine
+            .view
             .as_ref()
-            .and_then(|engine| engine.awaited_host(workspace));
+            .and_then(|view| view.awaited_host(workspace));
         if let (Some(host), Some(personal)) = (host, &self.personal)
             && personal.borrow_mut().told_awaiting.insert(workspace)
         {
@@ -1366,13 +1366,7 @@ impl crate::Shared {
     /// name every device and list of it reads, which the shell shows as its own. `None` while this
     /// device holds none of it, or it names none.
     pub(crate) fn governing_name(&self, workspace: WorkspaceId) -> Option<String> {
-        let engine = self.engine.as_ref()?;
-        let name = engine
-            .owner()
-            .with_current(workspace, |view| {
-                Ok(view.peer().governance().workspace_name())
-            })
-            .ok()??;
+        let name = self.view.as_ref()?.workspace_name(workspace)?;
         let name = name.trim();
         if name.is_empty() {
             None
@@ -1493,9 +1487,6 @@ impl crate::Shared {
                         outcome = "removed",
                         "join: the host refused the enrollment, so no workspace was joined and the person stays where they were"
                     );
-                    if let Some(engine) = &self.engine {
-                        engine.unbind(enrolled.workspace_id);
-                    }
                     // Only a session that already held the workspace has it to take away: a join the
                     // host refused never put one there.
                     if self.holds(enrolled.workspace_id) {
@@ -1598,35 +1589,25 @@ impl crate::Shared {
             // Where this device holds each of its workspaces, as the workspaces themselves say: the
             // list names the device hosting a workspace, never the one that happens to hold it
             // here.
-            personal.refresh_hosts(self.engine.as_deref());
+            personal.refresh_hosts(view);
             let mut writes = Vec::new();
             if let Some(view) = view {
-                let held: BTreeSet<WorkspaceId> = self
-                    .engine
-                    .as_ref()
-                    .map(|engine| engine.workspaces().into_iter().collect())
-                    .unwrap_or_default();
+                let held: BTreeSet<WorkspaceId> = view.workspaces().into_iter().collect();
                 let listed = on_hosts(view, &personal.device, &held);
                 writes.extend(Personal::take_hosted(&list, listed));
             }
-            if let Some(engine) = &self.engine {
-                writes.extend(personal.say_hints(&list, &engine.host_hints()));
+            if let Some(view) = view {
+                writes.extend(personal.say_hints(&list, &view.host_hints()));
             }
             // A workspace whose governance holds no certificate of this device's is held as the
             // device this machine was copied from.
             let device = personal.device;
             let unknown_here = |workspace: WorkspaceId| {
-                self.engine.as_ref().is_some_and(|engine| {
-                    engine
-                        .owner()
-                        .with_current(workspace, |view| {
-                            Ok(!view
-                                .peer()
-                                .certificates()
-                                .iter()
-                                .any(|cert| cert.device_public_key == device))
-                        })
-                        .unwrap_or(false)
+                view.is_some_and(|view| {
+                    view.holds(workspace)
+                        && !view
+                            .device_labels(&workspace.to_string())
+                            .contains_key(&device)
                 })
             };
             let Some((list, adoption)) =
@@ -1648,22 +1629,20 @@ impl crate::Shared {
             // A workspace on this session the person's list does not carry (one
             // joined at someone's site) is entered as this device at the host
             // its own state names, as a listed one is.
-            if let Some(engine) = &self.engine {
-                for workspace in engine.workspaces() {
+            if let Some(view) = view {
+                for workspace in view.workspaces() {
                     if enter.iter().any(|opened| opened.workspace == workspace)
                         || !unknown_here(workspace)
                     {
                         continue;
                     }
-                    let Ok(hint) = engine
-                        .owner()
-                        .with_current(workspace, |view| view.transport_hint().cloned())
+                    let Some(hint) = view
+                        .keeping(workspace)
+                        .into_iter()
+                        .find(|hint| !hint.host.is_of_device(&device))
                     else {
                         continue;
                     };
-                    if hint.host.is_of_device(&device) {
-                        continue;
-                    }
                     let name = self.held_name(workspace);
                     enter.push(ToEnter {
                         workspace,
@@ -1719,11 +1698,7 @@ impl crate::Shared {
         if personal.seed().is_none() {
             return;
         }
-        let held = self
-            .engine
-            .as_ref()
-            .map(|engine| engine.workspaces())
-            .unwrap_or_default();
+        let held = view.map(|view| view.workspaces()).unwrap_or_default();
         let joining = self.directory_store.joining().is_some() || self.directory_store.settling();
         let listed = if joining {
             None
@@ -1734,17 +1709,15 @@ impl crate::Shared {
         // this device: a computer restored from their words that joins their own workspace — their
         // site's — has a workspace already, and the shell's own is taken off rather than founded
         // beside it.
-        let owned: BTreeSet<WorkspaceId> =
-            self.engine.as_ref().map_or_else(BTreeSet::new, |engine| {
-                held.iter()
-                    .copied()
-                    .filter(|workspace| {
-                        engine.owner_of(&workspace.to_string()).is_ok_and(|owner| {
-                            owner == self.person || self.earlier.contains(&owner)
-                        })
-                    })
-                    .collect()
-            });
+        let owned: BTreeSet<WorkspaceId> = view.map_or_else(BTreeSet::new, |view| {
+            held.iter()
+                .copied()
+                .filter(|workspace| {
+                    view.owner_of(&workspace.to_string())
+                        .is_ok_and(|owner| owner == self.person || self.earlier.contains(&owner))
+                })
+                .collect()
+        });
         personal.settle_seed(&self.handle, list, &held, listed.as_ref(), &owned);
     }
 
@@ -1755,7 +1728,7 @@ impl crate::Shared {
     /// leaves the session as it found it.
     fn enter_listed(&self, personal: &mut Personal, list: &WorkspaceList, opened: &ToEnter) {
         let workspace = opened.workspace.to_string();
-        let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
+        let Some(view) = &self.view else {
             // Nothing here can take a workspace in: the session shows it as this computer keeps it.
             if let Err(error) = self.add_workspace(&workspace, &opened.name, Arrival::Listed) {
                 tracing::warn!(%error, %workspace, "a workspace of the person's was not opened here");
@@ -1768,13 +1741,9 @@ impl crate::Shared {
             opened
                 .held
                 .then(|| {
-                    tilo_failure::ignored!(
-                        "a held workspace whose state cannot be read has no hint, and the person's devices say one",
-                        engine
-                            .owner()
-                            .with_current(opened.workspace, |view| view.transport_hint().cloned())
-                            .ok()
-                    )
+                    view.keeping(opened.workspace)
+                        .into_iter()
+                        .find(|hint| !hint.host.is_of_device(&personal.device))
                 })
                 .flatten()
         });
@@ -1784,25 +1753,20 @@ impl crate::Shared {
         personal
             .asked
             .insert(opened.workspace, entering.host.clone());
-        if !opened.held {
-            engine.bind(entering.workspace_id);
-        }
         tracing::info!(
             target: JOIN_FLOW_TARGET,
             %workspace,
             host = %hex::encode(entering.host.host.device_public_key),
             "the person's workspace is asked to take this device in"
         );
-        match sync.enter(entering) {
-            Ok(()) => {}
-            Err(error) => {
-                // A workspace this session held stays on it as it was.
-                if !opened.held {
-                    engine.unbind(opened.workspace);
-                }
+        // The device's daemon holds it; its standing says when it did, and the session shows it
+        // from then on.
+        let answer = view.enter(entering.workspace_id, &entering.host);
+        tilo_rt::app().spawn(async move {
+            if let Err(error) = answer.await {
                 tracing::warn!(%error, %workspace, "the person's workspace was not entered");
             }
-        }
+        });
     }
 
     /// What to ask a workspace's host for, from what this device was told:

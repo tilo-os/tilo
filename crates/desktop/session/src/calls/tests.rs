@@ -128,7 +128,6 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
             lan: None,
         },
         None,
-        None,
         Vec::new(),
     )
     .expect("a loopback endpoint binds")

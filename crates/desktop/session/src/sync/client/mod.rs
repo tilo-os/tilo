@@ -1172,11 +1172,12 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub fn start(
         entry: Entry,
-        engine: Option<Arc<Engine>>,
         questions: Option<tilo_service::AskSender>,
         beside: tilo_network_actor::own_service::Protocols,
     ) -> std::io::Result<Self> {
         let (identity, wake) = (entry.identity, entry.wake);
+        // Until the live call moves to the daemon, what read the session's own copy reads none.
+        let engine: Option<Arc<Engine>> = None;
         let live_rows = tilo_workspace_service::live::LiveRows::default();
         let (commands, host_commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();

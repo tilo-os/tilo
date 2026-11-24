@@ -518,6 +518,44 @@ impl WorkspaceView {
         ))
     }
 
+    /// Have the device's daemon hold `workspace` as a member copy, at the device keeping it that
+    /// signed `host`: a workspace of the person's this device holds nothing of yet.
+    #[must_use]
+    pub fn enter(
+        &self,
+        workspace: WorkspaceId,
+        host: &tilo_peer_state::join::TransportHint,
+    ) -> ServiceAnswer {
+        let host = match postcard::to_stdvec(host) {
+            Ok(host) => hex::encode(host),
+            Err(error) => {
+                let error = format!("the host's address does not encode: {error}");
+                return Box::pin(async move { Err(error) });
+            }
+        };
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("id".to_owned(), workspace.to_string().into());
+        arguments.insert("host".to_owned(), host.into());
+        self.asks
+            .account(LIST, tilo_peer_state::workspace_view::ENTER, arguments)
+    }
+
+    /// Where the devices keeping each workspace the daemon holds are reached, one entry per
+    /// device, by workspace id, postcard encoded: what the person's other devices need to enter a
+    /// workspace listed here at any of the devices that keep it.
+    #[must_use]
+    pub fn host_hints(&self) -> Vec<(String, Vec<u8>)> {
+        self.workspaces()
+            .into_iter()
+            .flat_map(|workspace| {
+                let named = workspace.to_string();
+                self.keeping(workspace)
+                    .into_iter()
+                    .filter_map(move |hint| Some((named.clone(), postcard::to_stdvec(&hint).ok()?)))
+            })
+            .collect()
+    }
+
     /// Change `workspace`'s people or settings by `command`, as this device: the daemon signs it
     /// with the device's key and the workspace's admission decides it as any member's change.
     #[must_use]
