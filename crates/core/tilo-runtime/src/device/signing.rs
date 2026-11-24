@@ -364,7 +364,7 @@ pub fn answer_sign_in(
         .ok_or_else(|| io::Error::other("the challenge is 32 bytes in hex"))?;
     let grant = args.get("grant").and_then(Value::as_object);
     let grant_ask = grant
-        .map(|grant| -> io::Result<GrantAsk<'_>> {
+        .map(|grant| -> io::Result<GrantAsk> {
             let key: [u8; 32] = grant
                 .get("key")
                 .and_then(Value::as_str)
@@ -376,7 +376,7 @@ pub fn answer_sign_in(
                 scope: AgentScope::parse(
                     grant.get("scope").and_then(Value::as_str).unwrap_or("all"),
                 )
-                .map_err(|error| io::Error::other(error.to_string()))?,
+                .ok_or_else(|| io::Error::other("the grant names no scope"))?,
                 expires_at_ns: grant.get("expires_at_ns").and_then(Value::as_u64),
                 server_key: grant
                     .get("server_key")
@@ -485,7 +485,3 @@ impl tilo_workspace_service::agents::agent_keys::AgentGrants for GrantsOf {
             .cloned())
     }
 }
-
-/// The device actions this daemon answers that read or sign with the person's root: their names,
-/// as the session, the CLI and the login tools call them.
-pub use tilo_device_identity::login::{ANSWER_SIGN_IN, ENROL_BOOT_KEY, RELEASE_HALF};
