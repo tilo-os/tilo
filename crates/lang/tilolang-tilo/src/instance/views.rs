@@ -79,6 +79,7 @@ impl Instance {
             }
             Err(error) => {
                 tracing::warn!(app = self.app, %error, "the app did not open");
+                self.open_failed = Some(error.to_string());
                 self.notice(Words::phrase("tilolang-open-failed"), ui::NoticeKind::Error);
             }
         }

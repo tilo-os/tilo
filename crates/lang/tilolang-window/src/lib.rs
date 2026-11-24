@@ -76,9 +76,23 @@ impl Window {
     /// The app `app` of `packages` (the app last), opened as `opening` says.
     ///
     /// # Errors
-    /// A root the package declares could not be made, the workspace could not be seeded, a view
-    /// state names nothing, the scenario failed, or the window refused what the app sent.
+    /// The app declares no root to open a window on, a root the package declares could not be
+    /// made, the workspace could not be seeded, a view state names nothing, the scenario failed,
+    /// or the window refused what the app sent.
     pub fn open(app: &str, packages: &Rc<Packages>, opening: Opening<'_>) -> Result<Self, String> {
+        // A window opens on an app's root resource. A package with none publishes views a host
+        // draws itself (a player's card in the shell) and has no window to open.
+        if packages
+            .compiled
+            .iter()
+            .map(|package| &package.meta)
+            .find(|meta| meta.app == app)
+            .is_some_and(|meta| meta.roots.is_empty())
+        {
+            return Err(format!(
+                "{app} declares no root, so it opens no window: its views are drawn where a host shows them"
+            ));
+        }
         let Opening {
             root,
             scenario,
@@ -119,6 +133,11 @@ impl Window {
         // No frame comes to take in the indexes its load builds off the frame, so they are waited
         // for, as a host without frames waits for them.
         instance.settle_pending();
+        // A window opens on the app's root view: one that did not run leaves the window empty, so
+        // the host that laid it out is told why rather than showing nothing.
+        if let Some(why) = instance.take_open_failure() {
+            return Err(format!("the app's window did not open: {why}"));
+        }
         // Counted from the first frame: a workspace's opening is what it costs to open.
         if costs && let Some(host) = instance.host() {
             host.runtime().record_costs(true);

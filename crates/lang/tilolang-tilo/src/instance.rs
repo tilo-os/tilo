@@ -434,6 +434,9 @@ pub struct Instance {
     /// Why the scenario a capture staged did not run whole, until the capture takes it: a
     /// capture of a half-run scenario is no picture of it.
     stage_failed: Option<String>,
+    /// Why the app's root did not open, until the host that opened it takes it: a window with no
+    /// root view stands empty, and shows why it does instead.
+    open_failed: Option<String>,
     started: bool,
     /// The package has no root of its own to open: everything it shows is opened by its
     /// embedder ([`Instance::without_root`]).
@@ -549,6 +552,7 @@ impl Instance {
             staged: None,
             story: false,
             stage_failed: None,
+            open_failed: None,
             started: false,
             rootless: false,
             loading: false,
@@ -1066,6 +1070,12 @@ impl Instance {
     /// first scenario, once the host ran it: a capture refuses to picture a half-staged workspace.
     pub fn take_stage_failure(&mut self) -> Option<String> {
         self.stage_failed.take()
+    }
+
+    /// Why the app's root did not open, once the host ran it: a window opens on it, so a host
+    /// that took no root shows why rather than an empty window.
+    pub fn take_open_failure(&mut self) -> Option<String> {
+        self.open_failed.take()
     }
 
     /// The person's environment changed — the language their window speaks, their formats, or
