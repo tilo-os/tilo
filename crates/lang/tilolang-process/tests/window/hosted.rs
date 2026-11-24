@@ -57,6 +57,9 @@ mod typing;
 #[path = "hosted/controls.rs"]
 mod controls;
 
+#[path = "hosted/chat.rs"]
+mod chat;
+
 #[path = "hosted/api.rs"]
 mod api;
 #[path = "hosted/counter.rs"]

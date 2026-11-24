@@ -1286,6 +1286,15 @@ impl Core {
         let Value::Ref(target) = aref.args.first()? else {
             return None;
         };
+        // A host action on an invocation record is the record's own: the app the workspace
+        // publishes answers it (its invocations provider), whether or not this window
+        // published the verb. What a person answers an ask with, and stops or runs a turn
+        // again with, reaches the dispatch from the app whose view draws the ask.
+        if declared.as_deref() == Some(tilolang::HOST_APP)
+            && target.target.ty == tilolang::INVOCATION_TYPE
+        {
+            return Some(self.invocation_of(aref));
+        }
         let id = target.target.id_string();
         let published = self.published.borrow();
         // A record addressed with the workspace it is in is published under its id there.

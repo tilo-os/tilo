@@ -1190,6 +1190,9 @@ view example_row(s: Skill, e: Example) {
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
 view sidebar(all: Conversations) {
     state shown: Text = ""
+    // Choosing a person makes their conversation and shows it here: the window opens what the
+    // action made as a conversation of its own.
+    on show(d: Direct): open(d)
     ui.NavShell(content_kind: .page, sidebar_title: "Channels") {
         sidebar: {
             // A workspace with no channel and no one else to talk to says so where its places
@@ -1795,6 +1798,10 @@ view said(m: Message) {
         text(p.body)
     }
     if m.sent_view != "" {
+        // The view the message sends, drawn where the message stands, as its author wrote it.
+        if let made = created(m) {
+            embed(m.sent_view, author: made.who, invocation: .none)
+        }
         ui.Text("A view, to add to your own views", role: .caption, secondary: true)
     }
     if history(m).any(v -> v.is(edit)) {
