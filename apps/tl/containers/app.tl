@@ -428,9 +428,7 @@ view containers_page(
     confirm: State<Text>,
 ) {
     for pull in c.pulls {
-        if not pull.done {
-            pull_banner(c, pull)
-        }
+        pull_banner(c, pull)
     }
     split(side: .leading, collapse: .stack) {
         primary(min: 16rem) {
