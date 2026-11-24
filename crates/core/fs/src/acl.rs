@@ -140,6 +140,19 @@ fn namespace_capabilities(caps: &[CapOverride]) -> Vec<CapOverride> {
         .collect()
 }
 
+/// Whether `path` is absolute and names each folder it passes through: no empty, `.` or `..`
+/// segment (a trailing `/` aside). Grants are matched by prefix, so `/granted/../elsewhere` would
+/// read as inside `/granted`; a path that is not plain is refused, whoever asks.
+fn plain(path: &str) -> bool {
+    path.strip_prefix('/').is_some_and(|rest| {
+        let rest = rest.strip_suffix('/').unwrap_or(rest);
+        rest.is_empty()
+            || rest
+                .split('/')
+                .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+    })
+}
+
 /// Who a remote identity is evaluated as: its own person and nothing else. The members a mount
 /// proves for itself are statements about this machine, and lending them to a dialer would let any
 /// peer inherit the mount's authority.
@@ -294,6 +307,9 @@ impl WorkspaceAcl {
     /// prefix covers `path` grants it, or a bound capability decides `Allow`. Both routes use
     /// [`collab_types::path_covers`], the function the capability model matches `FsPath` with.
     pub fn permits(&self, identity: &IdentityKey, path: &str, access: Access) -> bool {
+        if !plain(path) {
+            return false;
+        }
         let direct = self.entries.iter().any(|e| {
             &e.identity == identity
                 && path_covers(&e.path_prefix, path)
@@ -313,6 +329,9 @@ impl WorkspaceAcl {
     /// [`Self::permits`], which is `false` for every peer. Same list, same `decide_capability`, same
     /// deny-bias; only who acts differs.
     pub fn permits_peer(&self, peer: &IdentityKey, path: &str, access: Access) -> bool {
+        if !plain(path) {
+            return false;
+        }
         let direct = self.entries.iter().any(|e| {
             &e.identity == peer
                 && path_covers(&e.path_prefix, path)
@@ -363,6 +382,9 @@ impl WorkspaceAcl {
     pub fn visible(&self, identity: &IdentityKey, path: &str) -> bool {
         if path == "/" {
             return true;
+        }
+        if !plain(path) {
+            return false;
         }
         if self.permits(identity, path, Access::Read) {
             return true;

@@ -141,8 +141,9 @@ impl RecordReads {
     }
 
     /// What answers `address` when it is a resource this device publishes of its own
-    /// ([`Workspaces::publish_own`]): read by this device's own person, acting as themselves on
-    /// this device, and refused to every other caller.
+    /// ([`Workspaces::publish_own`]): read in the person's own workspace by this device's own
+    /// person, acting as themselves on this device, and refused to every other caller and in
+    /// every other workspace.
     fn own(
         &self,
         caller: &Caller,
@@ -151,7 +152,9 @@ impl RecordReads {
         let workspaces = self.workspaces.as_ref()?.upgrade()?;
         let reads = workspaces.own_reading(&address.app)?;
         let device = workspaces.device_cert();
-        let mine = caller.user_public_key() == Some(&device.user_public_key)
+        let mine = address.workspace
+            == tilo_server_protocol::servers::person_workspace_id(&device.user_public_key)
+            && caller.user_public_key() == Some(&device.user_public_key)
             && caller.device_public_key() == Some(&device.device_public_key)
             && *caller.acting()
                 == tilo_action_policy::Acting::person(hex::encode(device.user_public_key));

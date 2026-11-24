@@ -1933,8 +1933,8 @@ impl Workspaces {
     }
 
     /// Answer the reads of `app` with `reads` from now on: a resource of this device's own (where
-    /// its folders stand), read by this device's own person on this device alone, whichever
-    /// workspace the read names ([`record_reads::RecordReads`]).
+    /// its folders stand), read in the person's own workspace by this device's own person on this
+    /// device alone ([`record_reads::RecordReads`]).
     pub fn publish_own(
         &self,
         app: &'static str,

@@ -449,9 +449,15 @@ impl Session {
         let agent_sessions = crate::agent_sessions::AgentSessions::new();
         // Where each workspace's folder on this computer stands, as the device's daemon publishes
         // it: what the shell shows, so a person knows what reached the server.
+        // The device's own resources are read in the person's own workspace.
+        let own_workspace = hex::decode(&options.person)
+            .ok()
+            .and_then(|key| <[u8; 32]>::try_from(key).ok())
+            .map(|key| tilo_server_protocol::servers::person_workspace_id(&key))
+            .unwrap_or_default();
         let folders = crate::followed_resource::FollowedReading::follow(
             &daemon,
-            tilo_workspace_service::files::FOLDERS_APP,
+            (&own_workspace, tilo_workspace_service::files::FOLDERS_APP),
             options.wake.handle(),
         );
         // The agents each workspace keeps, followed where the workspace keeps them.

@@ -362,19 +362,24 @@ impl<T> FollowedReading<T>
 where
     T: serde::de::DeserializeOwned + Default + Clone + Send + 'static,
 {
-    /// Follow the daemon's own resource `app` from now on, calling `wake` each time it moved.
+    /// Follow the daemon's own resource `app` of `workspace` from now on, calling `wake` each
+    /// time it moved.
     pub(crate) fn follow(
         daemon: &DaemonShell,
-        app: &'static str,
+        (workspace, app): (&str, &'static str),
         wake: tilo_service::Wake,
     ) -> Self {
         let latest = Arc::new(Mutex::new((0, T::default())));
         let follow = {
             let (daemon, latest) = (daemon.clone(), Arc::clone(&latest));
+            let workspace = workspace.to_owned();
             daemon.runtime().clone().spawn(async move {
                 let mut after = None;
                 loop {
-                    match daemon.read(reading_of(app, after.clone())).await {
+                    match daemon
+                        .read(reading_of(&workspace, app, after.clone()))
+                        .await
+                    {
                         Ok(readings) => {
                             after = readings["revision"].as_str().map(str::to_owned);
                             if let Some(now) = reading_value::<T>(&readings) {
@@ -412,11 +417,10 @@ where
     }
 }
 
-/// A read of the daemon's own resource `app`, once it moved past `after`. The daemon answers its
-/// own resources whichever workspace a read names, so it names none.
-fn reading_of(app: &str, after: Option<String>) -> ResourceReadRequest {
+/// A read of the daemon's own resource `app` of `workspace`, once it moved past `after`.
+fn reading_of(workspace: &str, app: &str, after: Option<String>) -> ResourceReadRequest {
     ResourceReadRequest {
-        workspace: String::new(),
+        workspace: workspace.to_owned(),
         app: app.to_owned(),
         record: String::new(),
         joined: false,

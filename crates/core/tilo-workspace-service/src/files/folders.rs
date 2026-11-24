@@ -13,8 +13,9 @@ use tilo_actions::remote::{
 use tilo_fs::tree_sync::Status;
 use tilo_lock::MutexRecover as _;
 
-/// The resource this device's folders are read at (`record` empty): a reading of
-/// [`FolderList`], answered to this device's own person on this device alone.
+/// The resource this device's folders are read at, in the person's own workspace (`record`
+/// empty): a reading of [`FolderList`], answered to this device's own person on this device
+/// alone.
 pub const FOLDERS_APP: &str = "tilo.folders";
 
 /// One folder as it is shown: where its sync stands, and the names a person knows its workspace
