@@ -68,7 +68,6 @@ view writer(d: Document) {
                                     on headings(words, levels): set(heading_lines, words).then(
                                         set(heading_levels, levels),
                                     )
-                                    on image(picture): keep_image(d, picture)
                                     on slash_image: file.choose(
                                         place_image(d),
                                         accept: ["image/png", "image/jpeg", "image/webp"],

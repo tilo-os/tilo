@@ -155,12 +155,6 @@ d-c3edrhdp = Bild einfügen
 
 d-c3edrhdp-image = Bild
 
-d-5c7skuin = Bild behalten
-    .doc = Behält ein Bild, das der Editor ins Dokument geschrieben hat, wo die Person es eingefügt oder abgelegt hat: `picture` ist das Wort des Editors dafür — sein Name, dann die Adresse seines Inhalts.
-    .did = hat ein Bild hinzugefügt
-
-d-5c7skuin-picture = Bild
-
 d-hi6fm3p5 = Bild teilen
     .doc = Das erste Bild, das das Dokument zeigt, als Inhalt, den eine andere App nehmen kann.
     .w-the-document-shows-no-picture = Das Dokument zeigt kein Bild

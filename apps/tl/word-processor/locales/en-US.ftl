@@ -156,12 +156,6 @@ d-c3edrhdp = Insert image
 
 d-c3edrhdp-image = Image
 
-d-5c7skuin = Keep image
-    .doc = Keeps a picture the editor wrote into the document where the person pasted or dropped it: `picture` is the editor's word of it — its name, then the address of its content.
-    .did = added an image
-
-d-5c7skuin-picture = Picture
-
 d-hi6fm3p5 = Share image
     .doc = The first picture the document shows, as content another app can take.
     .w-the-document-shows-no-picture = The document shows no picture

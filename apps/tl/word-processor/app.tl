@@ -308,15 +308,6 @@ action place_image(d: Document, image: File) (icon: .image, label: "Insert image
     d.body = RichText(d.body, "\n![]({image.url})\n")
 }
 
-/// Keeps a picture the editor wrote into the document where the person pasted or dropped it:
-/// `picture` is the editor's word of it — its name, then the address of its content.
-action keep_image(d: Document, picture: List<Text>) (did: "added an image") {
-    let address = picture.at(1) ?? ""
-    if address != "" {
-        d.body = RichText(d.body, "\n![]({address})\n")
-    }
-}
-
 /// The first picture the document shows, as content another app can take.
 action share_image(d: Document) -> File (label: "Share image") {
     require first_picture(markdown_of(d)) != "" "The document shows no picture"
