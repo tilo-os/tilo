@@ -697,12 +697,6 @@ impl Server {
                         ServerError::Identity(format!("Servers workspace: {error}"))
                     })?;
             }
-            // Its OS updates wait their turn among the person's servers.
-            let rollout = crate::rollout::serve(crate::rollout::ServerMachine::new(
-                governed.clone(),
-                cfg.state_root.clone(),
-            ))?;
-            push_background_task(&background_tasks, rollout);
         }
         // What this device is, and what the person's servers are told to
         // be, is its record in the Servers workspace's document: from the
@@ -1714,87 +1708,14 @@ mod tests {
                 .await
                 .unwrap();
             let governed = server.workspaces().unwrap();
-            // Its OS update waits its turn in that admin workspace: the
-            // update service asks on the server's socket, the server takes
-            // the update lease and drains before it answers that the machine
-            // may restart, and lets the lease go once the update booted.
-            let state_root = temp.path().join("server");
-            let ask = |request| {
-                let state_root = state_root.clone();
-                tokio::task::spawn_blocking(move || crate::rollout::ask(&state_root, &request))
-            };
-            assert_eq!(
-                ask(crate::rollout::Request::Prepare {
-                    target: "sha256:next".into()
-                })
-                .await
-                .unwrap()
-                .unwrap(),
-                crate::rollout::Answer::Restart
-            );
-            let admin = crate::servers::person_workspace_id(&user.public_key);
-            let lease = |state: tilo_peer_state::StatePeer| {
-                state
-                    .workspace()
-                    .lease(crate::rollout::UPDATE_LEASE, std::time::SystemTime::now())
-                    .holder
-                    .map(|holder| holder.device)
-            };
-            assert_eq!(
-                lease(governed.state(&admin).await.unwrap()),
-                Some(governed.serving_certificate().device_public_key)
-            );
-            assert!(
-                governed.draining(),
-                "it takes no work under leases any more"
-            );
-            assert_eq!(
-                ask(crate::rollout::Request::Booted {
-                    image: "sha256:next".into()
-                })
-                .await
-                .unwrap()
-                .unwrap(),
-                crate::rollout::Answer::Released
-            );
-            assert_eq!(lease(governed.state(&admin).await.unwrap()), None);
-            // After the healthy boot its rollback floor may move: it asks the
-            // person's other devices in the admin workspace, says which key its
-            // floor takes, and never answers its request itself.
+            // Its rollback floor says which key it takes, and it never answers
+            // its own request: that is its person's other devices' to sign.
             let secret_sync = tilo_seal::SecretKey::from_bytes([3; 32]);
             let made =
                 crate::servers::floor::make_key(&root, &secret_sync.public_key().unwrap()).unwrap();
             crate::servers::floor::apply(governed, made.action)
                 .await
                 .unwrap();
-            let floor_request = tilo_rollback::approval::build_request(
-                0x01D9_1100,
-                &[0, 11, 1],
-                tilo_rollback::counter::FloorState {
-                    counter: 9,
-                    base: 4,
-                },
-                &[5, 6],
-                3,
-            )
-            .unwrap();
-            let asked = ask(crate::rollout::Request::Floor(
-                crate::servers::floor::Asked {
-                    generation: 6,
-                    image: "sha256:next".into(),
-                    updates: "stable".into(),
-                    authority: made.public.clone(),
-                    request: serde_json::to_string(&floor_request).unwrap(),
-                },
-            ))
-            .await
-            .unwrap()
-            .unwrap();
-            assert!(
-                matches!(&asked, crate::rollout::Answer::Floor { approvals, why }
-                    if approvals.is_empty() && why.contains("waiting")),
-                "{asked:?}"
-            );
             assert_eq!(
                 crate::servers::read(governed)
                     .await

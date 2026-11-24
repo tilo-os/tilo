@@ -45,14 +45,10 @@ pub const UPDATE_LEASE: &str = "tilo.servers.update";
 /// lease outlives the restart of the server holding it.
 pub const UPDATE_LEASE_TTL: Duration = Duration::from_secs(2 * 60 * 60);
 /// How often a server holding [`UPDATE_LEASE`] pushes its deadline out.
-pub const RENEW_EVERY: Duration = Duration::from_secs(10 * 60);
 /// The socket in the state root the update service asks on.
-pub const SOCKET: &str = "rollout.sock";
 /// The file in the state root naming the image a server restarted into while
 /// it held [`UPDATE_LEASE`].
-const PENDING: &str = "update-pending";
 /// How long a request on [`SOCKET`] may be.
-const MAX_REQUEST: u64 = 4096;
 
 /// What the update service asks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,7 +102,6 @@ pub trait Machine {
     /// take no more wakes; done once every one is suspended.
     fn suspend_machines(&self) -> impl Future<Output = Result<(), String>> + Send;
     /// The image this server restarted into under the lease, if it did.
-    fn pending(&self) -> Option<String>;
     /// Keep (`Some`) or forget (`None`) the image restarted into.
     ///
     /// # Errors
@@ -227,19 +222,6 @@ pub fn store_approvals(
     tilo_rollback::approval::store(dir, approvals).map_err(|error| format!("{error:#}"))
 }
 
-/// Push the lease's deadline out while an update is pending, so it outlives
-/// the server's own wait for its health verdict, and a halted rollout stays
-/// halted.
-///
-/// # Errors
-/// The lease could not be written.
-pub async fn renew(machine: &(impl Machine + Sync)) -> Result<(), String> {
-    if machine.pending().is_some() && !machine.hold_update_lease().await? {
-        tracing::warn!("another server took the update lease while this one's update was pending");
-    }
-    Ok(())
-}
-
 /// Why `workspace` (whose copies stand at `status`) may not lose `own` for
 /// a restart: a holder still lacks something another has, or its owners
 /// chose how many copies it keeps and `own` is one of too few current copies
@@ -345,23 +327,6 @@ impl ServerMachine {
         servers::person_workspace_id(&self.device().user_public_key)
     }
 
-    fn pending_path(&self) -> PathBuf {
-        self.state_root.join(PENDING)
-    }
-
-    async fn release(&self, workspace: &str, lease: &str) -> Result<(), String> {
-        let device = self.device().clone();
-        self.workspaces
-            .author_own_workspace_state(workspace, &device, |peer| {
-                peer.workspace_mut().release_lease(&device, lease, now())
-            })
-            .await
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
-}
-
-impl Machine for ServerMachine {
     async fn hold_update_lease(&self) -> Result<bool, String> {
         let device = self.device().clone();
         self.workspaces
@@ -425,13 +390,6 @@ impl Machine for ServerMachine {
         self.workspaces.drain_machines().await
     }
 
-    fn pending(&self) -> Option<String> {
-        std::fs::read_to_string(self.pending_path())
-            .ok()
-            .map(|target| target.trim().to_owned())
-            .filter(|target| !target.is_empty())
-    }
-
     fn set_pending(&self, target: Option<&str>) -> Result<(), String> {
         let path = self.pending_path();
         match target {
@@ -449,101 +407,6 @@ impl Machine for ServerMachine {
             },
         }
     }
-}
-
-/// Answer the update service on `<state_root>/`[`SOCKET`] for as long as
-/// the daemon lives, and push the lease's deadline out while an update is
-/// pending.
-///
-/// # Errors
-/// The socket could not be bound.
-pub fn serve(machine: ServerMachine) -> std::io::Result<tokio::task::JoinHandle<()>> {
-    let path = machine.state_root.join(SOCKET);
-    match std::fs::remove_file(&path) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
-        _ => {}
-    }
-    let bound = tilo_files::native::socket::bind(&path)?;
-    bound.set_nonblocking(true)?;
-    let listener = tokio::net::UnixListener::from_std(bound)?;
-    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-    Ok(tokio::spawn(async move {
-        let mut renewal = tokio::time::interval(RENEW_EVERY);
-        loop {
-            tokio::select! {
-                _ = renewal.tick() => {
-                    if let Err(error) = renew(&machine).await {
-                        tracing::warn!(%error, "the update lease was not renewed");
-                    }
-                }
-                accepted = listener.accept() => match accepted {
-                    Ok((stream, _)) => {
-                        if let Err(error) = answer(&machine, stream).await {
-                            tracing::warn!(%error, "an update request was not answered");
-                        }
-                    }
-                    Err(error) => tracing::warn!(%error, "the update socket did not accept"),
-                },
-            }
-        }
-    }))
-}
-
-async fn answer(machine: &ServerMachine, stream: tokio::net::UnixStream) -> Result<(), String> {
-    use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
-    let (read, mut write) = stream.into_split();
-    let mut line = String::new();
-    tokio::io::BufReader::new(read.take(MAX_REQUEST))
-        .read_line(&mut line)
-        .await
-        .map_err(|error| error.to_string())?;
-    let request: Request = serde_json::from_str(&line).map_err(|error| error.to_string())?;
-    let answered = match request {
-        Request::Prepare { target } => prepare(machine, &target).await,
-        Request::Booted { image } => booted(machine, &image).await,
-        Request::Floor(asked) => crate::servers::floor::ask(&machine.workspaces, asked)
-            .await
-            .map(|answered| match answered {
-                Ok(approvals) => Answer::Floor {
-                    approvals,
-                    why: String::new(),
-                },
-                Err(why) => Answer::Floor {
-                    approvals: Vec::new(),
-                    why,
-                },
-            }),
-    }
-    .unwrap_or_else(|why| Answer::Wait { why });
-    tracing::info!(?answered, "answered the update service");
-    let mut reply = serde_json::to_vec(&answered).map_err(|error| error.to_string())?;
-    reply.push(b'\n');
-    write
-        .write_all(&reply)
-        .await
-        .map_err(|error| error.to_string())
-}
-
-/// Ask the daemon whose state root is `state_root`, as
-/// `tilo-server rollout` does.
-///
-/// # Errors
-/// The daemon could not be reached or answered nothing readable.
-pub fn ask(state_root: &Path, request: &Request) -> Result<Answer, String> {
-    use std::io::{BufRead as _, Write as _};
-    let mut stream = tilo_files::native::socket::connect(&state_root.join(SOCKET))
-        .map_err(|error| format!("the server daemon does not answer: {error}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(300)))
-        .map_err(|error| error.to_string())?;
-    let mut line = serde_json::to_vec(request).map_err(|error| error.to_string())?;
-    line.push(b'\n');
-    stream.write_all(&line).map_err(|error| error.to_string())?;
-    let mut reply = String::new();
-    std::io::BufReader::new(stream)
-        .read_line(&mut reply)
-        .map_err(|error| error.to_string())?;
-    serde_json::from_str(&reply).map_err(|error| format!("unreadable answer: {error}"))
 }
 
 #[cfg(test)]
