@@ -771,7 +771,7 @@ d-3ncicl2v-on = On
 d-ab4v7pl5 = Stop waiting
     .doc = Ends every wait a task is on: what it waited for came, which `cause` says in a few words, and whoever is doing it goes on with it.
     .did = went on with
-    .w-it-waits-for-nothing = It waits for nothing
+    .w-it-waits-for-nothing-and-none = It waits for nothing, and none of its sessions was lost
 
 d-ab4v7pl5-cause = Cause
 

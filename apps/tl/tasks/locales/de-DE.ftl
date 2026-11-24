@@ -722,7 +722,7 @@ d-3ncicl2v-on = An
 d-ab4v7pl5 = Nicht mehr warten
     .doc = Beendet jedes Warten einer Aufgabe: das Erwartete kam, was `cause` in wenigen Worten sagt, und wer sie macht, macht weiter.
     .did = weitergearbeitet
-    .w-it-waits-for-nothing = Sie wartet auf nichts
+    .w-it-waits-for-nothing-and-none = Sie wartet auf nichts, und keine ihrer Sitzungen ging verloren
 
 d-ab4v7pl5-cause = Ursache
 
