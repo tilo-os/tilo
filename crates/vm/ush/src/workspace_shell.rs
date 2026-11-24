@@ -131,6 +131,50 @@ pub(crate) type Secrets = Arc<Mutex<Vec<VmSecret>>>;
 /// and committer, and nobody between runs.
 pub(crate) type Identity = Arc<Mutex<Option<Person>>>;
 
+/// `env` with the run's secrets over it: a secret's variable replaces one of the same name.
+pub(crate) fn with_secrets(
+    env: &[(String, String)],
+    secrets: Option<&Secrets>,
+) -> Vec<(String, String)> {
+    let Some(kept) = secrets else {
+        return env.to_vec();
+    };
+    let secrets = kept.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut started: Vec<(String, String)> = env
+        .iter()
+        .filter(|(name, _)| !secrets.iter().any(|secret| secret.variable == *name))
+        .cloned()
+        .collect();
+    started.extend(
+        secrets
+            .iter()
+            .map(|secret| (secret.variable.clone(), secret.value.clone())),
+    );
+    started
+}
+
+/// git's author and committer for whoever the run in progress is for, by the name and address
+/// the workspace gives them: what a program sets over any identity its machine configures.
+pub(crate) fn git_identity(identity: Option<&Identity>) -> Vec<(&'static str, String)> {
+    let person =
+        identity.and_then(|kept| kept.lock().unwrap_or_else(PoisonError::into_inner).clone());
+    let Some(person) = person else {
+        return Vec::new();
+    };
+    let (name, address) = (person.name.trim(), person.address.trim());
+    if name.is_empty() || address.is_empty() {
+        return Vec::new();
+    }
+    let mut identity = Vec::with_capacity(4);
+    for key in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
+        identity.push((key, name.to_owned()));
+    }
+    for key in ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"] {
+        identity.push((key, address.to_owned()));
+    }
+    identity
+}
+
 const SEEN_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 const STOP_EVERY: std::time::Duration = std::time::Duration::from_millis(25);
@@ -459,7 +503,11 @@ impl WorkspaceShells {
                     None => programs,
                 })
             }
-            None if programs_here => Arc::new(MachinePrograms),
+            None if programs_here => Arc::new(
+                MachinePrograms::default()
+                    .carrying_secrets(Arc::clone(&secrets))
+                    .carrying_identity(Arc::clone(&identity)),
+            ),
             None => Arc::new(NoPrograms),
         };
         let (notices_out, notices) = Output::buffer();

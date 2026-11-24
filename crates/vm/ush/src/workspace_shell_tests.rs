@@ -124,6 +124,53 @@ fn a_server_on_its_own_machine_starts_programs_in_the_workspace_files() {
     assert!(String::from_utf8_lossy(&ended.output).contains(&*files.to_string_lossy()));
 }
 
+/// On a server that is its operator's own machine, an agent's commit is the agent's, not the
+/// identity the machine's own git configuration names, and the run's secrets reach its programs
+/// there as they would in a VM, and are gone for the next run.
+#[test]
+fn an_agents_commit_on_its_servers_own_machine_is_its_own() {
+    let state = tempfile::tempdir().unwrap();
+    let shells = WorkspaceShells::new(state.path(), None).on_machine(true);
+    let scout = Person {
+        name: "Scout".into(),
+        address: "scout@home.tilo".into(),
+    };
+    let secret = VmSecret {
+        variable: "T_TOKEN".into(),
+        value: "the-workspaces-own-token".into(), // placeholder, not a credential
+    };
+    let with = RunWith {
+        person: Some(&scout),
+        secrets: std::slice::from_ref(&secret),
+        ..RunWith::default()
+    };
+    let committed = shells
+        .run_for(
+            "w1",
+            "s1",
+            "git init -q && git -c user.name=Operator -c user.email=operator@machine \
+             commit -q --allow-empty -m fix && git log -1 --format='%an <%ae> %cn <%ce>' \
+             && sh -c 'echo \"[$T_TOKEN]\"'",
+            true,
+            with,
+        )
+        .unwrap();
+    assert_eq!(committed.exit, 0, "{}", text(&committed));
+    assert_eq!(
+        text(&committed),
+        "Scout <scout@home.tilo> Scout <scout@home.tilo>\n[the-workspaces-own-token]\n",
+    );
+    let next = shells
+        .run(
+            "w1",
+            "s1",
+            "sh -c 'echo \"[${T_TOKEN-}] ${GIT_AUTHOR_NAME-unset}\"'",
+            true,
+        )
+        .unwrap();
+    assert_eq!(text(&next), "[] unset\n", "the next run carries neither");
+}
+
 #[test]
 fn a_shell_on_its_own_machine_reaches_its_files_outside_the_workspace() {
     let state = tempfile::tempdir().unwrap();

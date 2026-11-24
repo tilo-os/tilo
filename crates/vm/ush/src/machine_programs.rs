@@ -6,7 +6,10 @@
 //! `git` and every other program on the machine's `PATH`, with the machine's network and every
 //! file its user may touch. The operator turns this on with [`MACHINE_ENV`]; nothing confines
 //! the programs, so it is for a machine whose every workspace member may already do anything
-//! there.
+//! there. Its programs are still signed by whoever the run is for: git's author and committer
+//! are the person or agent that asked, by the name the workspace gives them, never the
+//! machine's own configured identity, and the workspace's secrets for the run reach them as
+//! they would in a VM.
 //!
 //! A program's output reaches the shell as it prints it, its input is the shell's (a pipe, or
 //! nothing), and a stop ends the program and every process it started: it is started in a
@@ -45,8 +48,39 @@ pub fn on_machine_from_env() -> bool {
 }
 
 /// Starts each program as a child process of the server.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct MachinePrograms;
+#[derive(Clone, Default)]
+pub struct MachinePrograms {
+    secrets: Option<crate::workspace_shell::Secrets>,
+    identity: Option<crate::workspace_shell::Identity>,
+}
+
+impl MachinePrograms {
+    /// Give each program the secrets `secrets` holds for the run it starts in.
+    #[must_use]
+    pub(crate) fn carrying_secrets(mut self, secrets: crate::workspace_shell::Secrets) -> Self {
+        self.secrets = Some(secrets);
+        self
+    }
+
+    /// Start each program as whoever `identity` holds when it starts, which it records as
+    /// git's author and committer.
+    #[must_use]
+    pub(crate) fn carrying_identity(mut self, identity: crate::workspace_shell::Identity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// The environment a program starts with: the shell's `env`, the run's secrets over it, and
+    /// the run's git identity over both.
+    fn environment(&self, env: &[(String, String)]) -> Vec<(String, String)> {
+        let mut started = crate::workspace_shell::with_secrets(env, self.secrets.as_ref());
+        for (name, value) in crate::workspace_shell::git_identity(self.identity.as_ref()) {
+            started.retain(|(existing, _)| existing != name);
+            started.push((name.to_owned(), value));
+        }
+        started
+    }
+}
 
 impl Programs for MachinePrograms {
     fn run(
@@ -64,7 +98,7 @@ impl Programs for MachinePrograms {
         command
             .args(argv.iter().skip(1))
             .env_clear()
-            .envs(env.iter().map(|(key, value)| (key, value)))
+            .envs(self.environment(env))
             .current_dir(cwd)
             .stdin(Pipes::piped())
             .stdout(Pipes::piped())
@@ -197,7 +231,7 @@ mod tests {
         };
         let argv: Vec<String> = argv.iter().map(|arg| (*arg).to_owned()).collect();
         let env = vec![("PATH".to_owned(), "/usr/bin:/bin".to_owned())];
-        let ended = MachinePrograms.run(&argv, &env, Path::new("/"), &io, stop);
+        let ended = MachinePrograms::default().run(&argv, &env, Path::new("/"), &io, stop);
         (
             ended,
             String::from_utf8_lossy(&captured.take()).into_owned(),

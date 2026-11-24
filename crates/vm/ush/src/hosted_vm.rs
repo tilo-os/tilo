@@ -230,26 +230,7 @@ impl HostedPrograms {
     /// The environment a program starts with: the shell's `env`, the run's secrets over it, and
     /// the machine's own variables over both ([`Self::machine_environment`]).
     fn environment(&self, env: &[(String, String)]) -> Vec<(String, String)> {
-        let mut started: Vec<(String, String)> = match &self.secrets {
-            None => env.to_vec(),
-            Some(kept) => {
-                let secrets = kept
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let mut started: Vec<(String, String)> = env
-                    .iter()
-                    .filter(|(name, _)| !secrets.iter().any(|secret| secret.variable == *name))
-                    .cloned()
-                    .collect();
-                started.extend(
-                    secrets
-                        .iter()
-                        .map(|secret| (secret.variable.clone(), secret.value.clone())),
-                );
-                drop(secrets);
-                started
-            }
-        };
+        let mut started = crate::workspace_shell::with_secrets(env, self.secrets.as_ref());
         for (name, value) in self.machine_environment() {
             started.retain(|(existing, _)| *existing != name);
             started.push((name.to_owned(), value));
@@ -303,23 +284,7 @@ impl HostedPrograms {
         ];
         // One VM and one shell serve the workspace's people and agents in turn, so git's
         // identity is the run's own: the actor this command line is asked for.
-        let person = self.identity.as_ref().and_then(|kept| {
-            kept.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-        });
-        if let Some(person) = person.as_ref() {
-            let name = person.name.trim();
-            let address = person.address.trim();
-            if !name.is_empty() && !address.is_empty() {
-                for key in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
-                    machine.push((key, name.to_owned()));
-                }
-                for key in ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"] {
-                    machine.push((key, address.to_owned()));
-                }
-            }
-        }
+        machine.extend(crate::workspace_shell::git_identity(self.identity.as_ref()));
         machine
     }
 
