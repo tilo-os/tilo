@@ -950,30 +950,6 @@ fn use_node(
         .action(&target.address.action)
 }
 
-/// Whether `grant` is a leave its person gave for one use of a vault item ([`use_node`]): the
-/// use's word stands where a kind does, and names the very app and action it stands under.
-pub(super) fn is_use_leave(grant: &tilo_action_policy::Grant) -> bool {
-    use tilo_action_policy::{Level, Segment};
-    let named = |level: Level| {
-        grant
-            .node
-            .segments()
-            .iter()
-            .find_map(|segment| match segment {
-                Segment::Name(at, name) if *at == level => Some(name.as_str()),
-                _ => None,
-            })
-    };
-    let (Some(app), Some(kind), Some(action)) =
-        (named(Level::App), named(Level::Kind), named(Level::Action))
-    else {
-        return false;
-    };
-    kind.strip_prefix(app)
-        .and_then(|rest| rest.strip_prefix('/'))
-        .is_some_and(|rest| rest == action)
-}
-
 /// [`use_node`] in the workspace of the turn `using`.
 fn vault_use_node(
     using: &AskedTurn,

@@ -14,6 +14,7 @@
     reason = "in a test these are the assertion, and the server handle a test binds is kept until the test ends"
 )]
 
+use crate::workspaces::actions::host::turn_use_tests::narrowing;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -36,30 +37,10 @@ use super::{Refused, Served, admit, caller, governed, governor, start_serving};
 use crate::connections::DEFINED_ANEW;
 use crate::connections::stand_in::StandIn;
 use crate::workspaces::Workspaces;
+use crate::workspaces::fixtures::{TestGroupKeys, test_host_holding};
 use crate::workspaces::hosted_use::HostedTurn;
 
 const SCOUT: &str = "scout";
-
-/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
-fn narrowing(
-    workspace: &str,
-    caller: &Caller,
-    rules: &[Rule],
-) -> tilo_action_policy::WorkspacePolicy {
-    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
-    let agent = caller.acting().agent_id().unwrap_or_default();
-    for (index, rule) in rules.iter().enumerate() {
-        policy.grants.push(Grant::new(
-            format!("test-narrowing:{index}"),
-            Grantee::agent(agent.to_owned()),
-            rule.node.clone(),
-            rule.kinds,
-            rule.answer,
-            Grantee::person("owner"),
-        ));
-    }
-    policy
-}
 
 fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
     let argument = match argument {
@@ -616,8 +597,10 @@ async fn a_command_that_changes_something_asks_and_only_its_persons_answer_calls
 async fn a_question_about_a_command_outlives_a_restart_and_its_answer_is_carried_out_once() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
+    // The device keeps its channel keys across the restart, as a device's key service does.
+    let keys = Arc::new(TestGroupKeys::default());
     let service = StandIn::start("plain");
-    let started = start_serving(dir.path(), &key, &owner).await;
+    let started = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let team = Team::on(started.workspaces(), &owner).await;
     let id = team.connects(&service).await;
     let apple = calling(&id, "plant_tree", json!({"kind": "apple", "row": 3}));
@@ -629,7 +612,7 @@ async fn a_question_about_a_command_outlives_a_restart_and_its_answer_is_carried
     );
     started.shutdown().await;
 
-    let started = start_serving(dir.path(), &key, &owner).await;
+    let started = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let team = Team::back(started.workspaces(), members);
     team.approve(&team.turn(), &apple)
         .await
@@ -683,7 +666,9 @@ async fn always_lets_it_go_ahead_unasked(
 async fn always_covers_one_command_of_one_connection_until_its_person_takes_it_back() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let started = start_serving(dir.path(), &key, &owner).await;
+    // The device keeps its channel keys across the restart, as a device's key service does.
+    let keys = Arc::new(TestGroupKeys::default());
+    let started = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let team = Team::on(started.workspaces(), &owner).await;
     let (service, another) = (StandIn::start("plain"), StandIn::start("plain"));
     let id = team.connects(&service).await;
@@ -692,7 +677,7 @@ async fn always_covers_one_command_of_one_connection_until_its_person_takes_it_b
 
     let members = team.members();
     started.shutdown().await;
-    let started = start_serving(dir.path(), &key, &owner).await;
+    let started = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
     let team = Team::back(started.workspaces(), members);
     let turn = team.turn();
     let planting = calling(&id, "plant_tree", json!({"kind": "peach"}));

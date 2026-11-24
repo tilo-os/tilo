@@ -404,9 +404,19 @@ impl Workspaces {
     /// reaches outside, without its person's yes each time: a grant decides it, never a
     /// default.
     pub async fn granted(&self, workspace: &str, agent: &str, node: &TreePath) -> bool {
-        let Some(policy) = self.policy_of(workspace).await else {
-            return false;
-        };
+        self.granted_answer(workspace, agent, node).await == Some(Answer::Allow)
+    }
+
+    /// What a grant in `workspace`'s policy answers `agent` taking `node`, an action that
+    /// reaches outside: `None` where no grant decides it. One a grant denies is refused, never
+    /// put to its person.
+    pub async fn granted_answer(
+        &self,
+        workspace: &str,
+        agent: &str,
+        node: &TreePath,
+    ) -> Option<Answer> {
+        let policy = self.policy_of(workspace).await?;
         let decision = decide(
             policy.grants.iter(),
             &[Grantee::agent(agent)],
@@ -414,7 +424,7 @@ impl Workspaces {
             ActionKind::Outside,
             &Context::at(tilo_clock::unix_now_ms()),
         );
-        decision.answer == Answer::Allow && decision.grant().is_some()
+        decision.grant().is_some().then_some(decision.answer)
     }
 }
 

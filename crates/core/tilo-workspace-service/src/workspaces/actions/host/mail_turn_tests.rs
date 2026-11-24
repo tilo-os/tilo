@@ -13,6 +13,7 @@
     reason = "in a test these are the assertion, and the server handle a test binds is kept until the test ends"
 )]
 
+use crate::workspaces::actions::host::turn_use_tests::narrowing;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -651,25 +652,4 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
     assert!(twice.is_err(), "{twice:?}");
     assert_eq!(servers.asked(), [LUNCH_LEFT], "nothing leaves twice");
     server.shutdown().await;
-}
-
-/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
-fn narrowing(
-    workspace: &str,
-    caller: &Caller,
-    rules: &[Rule],
-) -> tilo_action_policy::WorkspacePolicy {
-    let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
-    let agent = caller.acting().agent_id().unwrap_or_default();
-    for (index, rule) in rules.iter().enumerate() {
-        policy.grants.push(tilo_action_policy::Grant::new(
-            format!("test-narrowing:{index}"),
-            tilo_action_policy::Grantee::agent(agent.to_owned()),
-            rule.node.clone(),
-            rule.kinds,
-            rule.answer,
-            tilo_action_policy::Grantee::person("owner"),
-        ));
-    }
-    policy
 }
