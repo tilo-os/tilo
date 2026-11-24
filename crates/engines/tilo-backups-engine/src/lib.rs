@@ -222,104 +222,129 @@ pub fn start(op: &str, input: &str) -> Result<String, String> {
         progress: Mutex::new(String::new()),
         cancelled: AtomicBool::new(false),
     });
-    let kind = op.to_owned();
-    let work = Arc::clone(&job);
-    let run = move |progress: &Progress| {
-        if let Ok(mut line) = work.progress.lock() {
-            *line = saying(progress);
-        }
-    };
-    let worker = match op {
-        "backup" => {
-            let source = folder(&ask.source, "a folder to protect")?;
-            let destination = folder(&ask.destination, "a backup destination")?;
-            ask.policy().valid()?;
-            let policy = ask.policy();
-            let work = Arc::clone(&job);
-            std::thread::Builder::new()
-                .name("backups-engine backup".to_owned())
-                .spawn(move || {
-                    let cancel = Arc::clone(&work.cancel);
-                    let asked = || cancel.load(Ordering::Acquire);
-                    let stop = Stop::on(&asked);
-                    let answer = create_snapshot(&source, &destination, stop, run)
-                        .and_then(|_| prune_snapshots(&destination, &policy))
-                        .and_then(|_| {
-                            let manifests = list_snapshots(&destination)?;
-                            Ok(catalog_from_local(&source, &destination, &manifests))
-                        })
-                        .map_err(|error| error.to_string())
-                        .and_then(|catalog| {
-                            serde_json::to_value(catalog)
-                                .map_err(|error| format!("the catalog does not write: {error}"))
-                        });
-                    finish(&work, answer);
-                })
-                .map_err(|error| format!("this device could not start the backup: {error}"))?
-        }
-        "verify" => {
-            let destination = folder(&ask.destination, "a backup destination")?;
-            if ask.snapshot.trim().is_empty() {
-                return Err("Choose a snapshot to verify".to_owned());
-            }
-            let id = ask.snapshot;
-            let work = Arc::clone(&job);
-            std::thread::Builder::new()
-                .name("backups-engine verify".to_owned())
-                .spawn(move || {
-                    let cancel = Arc::clone(&work.cancel);
-                    let asked = || cancel.load(Ordering::Acquire);
-                    let stop = Stop::on(&asked);
-                    let answer = verify_snapshot(&destination, &id, stop, run)
-                        .map_err(|error| error.to_string())
-                        .and_then(|checked| {
-                            serde_json::to_value(Checked {
-                                files: checked.files,
-                                bytes: checked.bytes,
-                            })
-                            .map_err(|error| format!("the answer does not write: {error}"))
-                        });
-                    finish(&work, answer);
-                })
-                .map_err(|error| format!("this device could not start the check: {error}"))?
-        }
-        "restore" => {
-            let destination = folder(&ask.destination, "a backup destination")?;
-            if ask.snapshot.trim().is_empty() {
-                return Err("Choose a snapshot to restore".to_owned());
-            }
-            let target = folder(&ask.target, "a folder to restore into")?;
-            let id = ask.snapshot;
-            let overwrite = ask.overwrite;
-            let work = Arc::clone(&job);
-            std::thread::Builder::new()
-                .name("backups-engine restore".to_owned())
-                .spawn(move || {
-                    let cancel = Arc::clone(&work.cancel);
-                    let asked = || cancel.load(Ordering::Acquire);
-                    let stop = Stop::on(&asked);
-                    let answer = restore_snapshot(&destination, &id, &target, overwrite, stop, run)
-                        .map_err(|error| error.to_string())
-                        .and_then(|restored| {
-                            serde_json::to_value(Checked {
-                                files: restored.files,
-                                bytes: restored.bytes,
-                            })
-                            .map_err(|error| format!("the answer does not write: {error}"))
-                        });
-                    finish(&work, answer);
-                })
-                .map_err(|error| format!("this device could not start the restore: {error}"))?
-        }
+    let run = progress_writer(&job);
+    match op {
+        "backup" => start_backup(&job, &ask, run)?,
+        "verify" => start_verify(&job, ask, run)?,
+        "restore" => start_restore(&job, ask, run)?,
         other => return Err(format!("`{other}` is no op this device runs for {APP}")),
     };
-    let _ = worker;
     let id = fresh(job_counter());
     jobs()
         .lock()
         .map_err(|_| "the job table is unreadable".to_owned())?
         .insert(id.clone(), job);
     Ok(id)
+}
+
+/// A job's progress line, written where the job reports it.
+fn progress_writer(job: &Arc<Job>) -> impl Fn(&Progress) + Send + 'static {
+    let work = Arc::clone(job);
+    move |progress: &Progress| {
+        if let Ok(mut line) = work.progress.lock() {
+            *line = saying(progress);
+        }
+    }
+}
+
+/// Start the backup's thread: the snapshot, the prune under the ask's policy, and the catalog
+/// the destination then holds.
+fn start_backup(
+    job: &Arc<Job>,
+    ask: &Ask,
+    run: impl Fn(&Progress) + Send + 'static,
+) -> Result<std::thread::JoinHandle<()>, String> {
+    let source = folder(&ask.source, "a folder to protect")?;
+    let destination = folder(&ask.destination, "a backup destination")?;
+    ask.policy().valid()?;
+    let policy = ask.policy();
+    let work = Arc::clone(job);
+    std::thread::Builder::new()
+        .name("backups-engine backup".to_owned())
+        .spawn(move || {
+            let cancel = Arc::clone(&work.cancel);
+            let asked = || cancel.load(Ordering::Acquire);
+            let stop = Stop::on(&asked);
+            let answer = create_snapshot(&source, &destination, stop, run)
+                .and_then(|_| prune_snapshots(&destination, &policy))
+                .and_then(|_| {
+                    let manifests = list_snapshots(&destination)?;
+                    Ok(catalog_from_local(&source, &destination, &manifests))
+                })
+                .map_err(|error| error.to_string())
+                .and_then(|catalog| {
+                    serde_json::to_value(catalog)
+                        .map_err(|error| format!("the catalog does not write: {error}"))
+                });
+            finish(&work, answer);
+        })
+        .map_err(|error| format!("this device could not start the backup: {error}"))
+}
+
+/// Start the verification's thread: every file the snapshot holds, read and checked.
+fn start_verify(
+    job: &Arc<Job>,
+    ask: Ask,
+    run: impl Fn(&Progress) + Send + 'static,
+) -> Result<std::thread::JoinHandle<()>, String> {
+    let destination = folder(&ask.destination, "a backup destination")?;
+    if ask.snapshot.trim().is_empty() {
+        return Err("Choose a snapshot to verify".to_owned());
+    }
+    let id = ask.snapshot;
+    let work = Arc::clone(job);
+    std::thread::Builder::new()
+        .name("backups-engine verify".to_owned())
+        .spawn(move || {
+            let cancel = Arc::clone(&work.cancel);
+            let asked = || cancel.load(Ordering::Acquire);
+            let stop = Stop::on(&asked);
+            let answer = verify_snapshot(&destination, &id, stop, run)
+                .map_err(|error| error.to_string())
+                .and_then(|checked| {
+                    serde_json::to_value(Checked {
+                        files: checked.files,
+                        bytes: checked.bytes,
+                    })
+                    .map_err(|error| format!("the answer does not write: {error}"))
+                });
+            finish(&work, answer);
+        })
+        .map_err(|error| format!("this device could not start the check: {error}"))
+}
+
+/// Start the restore's thread: the snapshot's files, written into the folder it names.
+fn start_restore(
+    job: &Arc<Job>,
+    ask: Ask,
+    run: impl Fn(&Progress) + Send + 'static,
+) -> Result<std::thread::JoinHandle<()>, String> {
+    let destination = folder(&ask.destination, "a backup destination")?;
+    if ask.snapshot.trim().is_empty() {
+        return Err("Choose a snapshot to restore".to_owned());
+    }
+    let target = folder(&ask.target, "a folder to restore into")?;
+    let id = ask.snapshot;
+    let overwrite = ask.overwrite;
+    let work = Arc::clone(job);
+    std::thread::Builder::new()
+        .name("backups-engine restore".to_owned())
+        .spawn(move || {
+            let cancel = Arc::clone(&work.cancel);
+            let asked = || cancel.load(Ordering::Acquire);
+            let stop = Stop::on(&asked);
+            let answer = restore_snapshot(&destination, &id, &target, overwrite, stop, run)
+                .map_err(|error| error.to_string())
+                .and_then(|restored| {
+                    serde_json::to_value(Checked {
+                        files: restored.files,
+                        bytes: restored.bytes,
+                    })
+                    .map_err(|error| format!("the answer does not write: {error}"))
+                });
+            finish(&work, answer);
+        })
+        .map_err(|error| format!("this device could not start the restore: {error}"))
 }
 
 /// What a verification or a restore checked.

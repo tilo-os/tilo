@@ -345,6 +345,12 @@ pub fn list_snapshots(destination: &Path) -> Result<Vec<BackupManifest>> {
 /// The bucket of one retention class a snapshot time falls in.
 type Period = fn(u64) -> i64;
 
+/// A count of periods as the bucket it names: past what an i64 holds, every count is the last
+/// bucket, never one before 1970.
+fn bucket(count: u64) -> i64 {
+    i64::try_from(count).unwrap_or(i64::MAX)
+}
+
 /// The snapshots `policy` keeps, by id: for each of the last `hourly` hours, `daily` days,
 /// `weekly` weeks (Monday to Sunday) and `monthly` months that hold a snapshot, the newest
 /// one in it (UTC), and always the newest snapshot of all, so a policy of zeros never
@@ -368,10 +374,10 @@ pub fn retained_of(stored: &[(String, u64)], policy: &RetentionPolicy) -> BTreeS
         keep.insert(newest.clone());
     }
     let periods: [(u32, Period); 4] = [
-        (policy.hourly, |secs| (secs / 3_600) as i64),
-        (policy.daily, |secs| (secs / 86_400) as i64),
+        (policy.hourly, |secs| bucket(secs / 3_600)),
+        (policy.daily, |secs| bucket(secs / 86_400)),
         // 1970-01-01 was a Thursday: shifting by three days starts each week on a Monday.
-        (policy.weekly, |secs| ((secs / 86_400 + 3) / 7) as i64),
+        (policy.weekly, |secs| bucket((secs / 86_400).saturating_add(3) / 7)),
         (policy.monthly, |secs| month_of(secs / 86_400)),
     ];
     for (count, period) in periods {
@@ -388,22 +394,33 @@ pub fn retained_of(stored: &[(String, u64)], policy: &RetentionPolicy) -> BTreeS
     keep
 }
 
-/// The month (`year * 12 + month`) of a day counted from 1970-01-01.
+/// The month (`year * 12 + month`) of a day counted from 1970-01-01, Howard Hinnant's civil
+/// calendar. A day past what an i64 counts buckets with the last month it can name.
 fn month_of(days: u64) -> i64 {
-    let z = days as i64 + 719_468;
+    let z = bucket(days).saturating_add(719_468);
     let era = z.div_euclid(146_097);
-    let day_of_era = z - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day_of_era = z.saturating_sub(era.saturating_mul(146_097));
+    let year_of_era = day_of_era
+        .saturating_sub(day_of_era / 1_460)
+        .saturating_add(day_of_era / 36_524)
+        .saturating_sub(day_of_era / 146_096)
+        / 365;
+    let day_of_year = day_of_era.saturating_sub(
+        year_of_era
+            .saturating_mul(365)
+            .saturating_add(year_of_era / 4)
+            .saturating_sub(year_of_era / 100),
+    );
+    let shifted_month = day_of_year.saturating_mul(5).saturating_add(2) / 153;
     let month = if shifted_month < 10 {
-        shifted_month + 3
+        shifted_month.saturating_add(3)
     } else {
-        shifted_month - 9
+        shifted_month.saturating_sub(9)
     };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
-    year * 12 + month
+    let year = year_of_era
+        .saturating_add(era.saturating_mul(400))
+        .saturating_add(i64::from(month <= 2));
+    year.saturating_mul(12).saturating_add(month)
 }
 
 /// Delete the stored snapshots `policy` no longer keeps ([`retained`]) and answer their
@@ -911,7 +928,7 @@ pub fn catalog_from_local(
             retention: Retention::Unknown,
             size_bytes: manifest.bytes,
             delta_bytes: manifest.bytes,
-            files_changed: manifest.files.min(u64::from(u32::MAX)) as u32,
+            files_changed: u32::try_from(manifest.files).unwrap_or(u32::MAX),
             status: SnapStatus::Complete,
             failure: String::new(),
             files: manifest
