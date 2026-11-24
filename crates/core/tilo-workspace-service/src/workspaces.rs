@@ -1170,7 +1170,7 @@ struct WorkspacesInner {
     /// ([`Workspaces::branch_content`]).
     branch_content: std::sync::RwLock<Option<Arc<dyn BranchContent>>>,
     /// Where calls that wait for a person's yes are kept as their asked records
-    /// ([`Workspaces::keep_asked_in`]).
+    /// ([`Workspaces::asked_store`]).
     asked_records: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedRecords>>,
     /// The store those records are kept in, which admits a person's answer to one.
     asked_store: std::sync::OnceLock<Arc<tilo_actions::remote::asked::AskedStore>>,

@@ -167,8 +167,9 @@ async fn a_call_that_waits_is_its_persons_alone_and_their_approve_carries_it_out
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let store = Arc::new(AskedStore::default());
-    workspaces.keep_asked_in(&store);
+    let store = workspaces
+        .asked_store()
+        .expect("the host keeps one store of the calls that wait");
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -273,8 +274,9 @@ async fn a_call_whose_action_offers_no_form_runs_only_as_it_was_asked() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let store = Arc::new(AskedStore::default());
-    workspaces.keep_asked_in(&store);
+    let store = workspaces
+        .asked_store()
+        .expect("the host keeps one store of the calls that wait");
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let as_ada = caller(&ada);

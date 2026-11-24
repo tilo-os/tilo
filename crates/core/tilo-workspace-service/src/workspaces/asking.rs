@@ -255,8 +255,11 @@ impl Workspaces {
     /// Keep every call that waits for a person's yes as its asked record in `store`, which the
     /// host hands this once and hands every dispatch of its own: a person's answer to one comes
     /// back to the dispatch that keeps it.
-    pub fn keep_asked_in(&self, store: &Arc<AskedStore>) {
-        let _ = self.inner.asked_store.set(Arc::clone(store));
+    fn keep_asked_in(&self, store: &Arc<AskedStore>) {
+        assert!(
+            self.inner.asked_store.set(Arc::clone(store)).is_ok(),
+            "a host keeps one store of the calls that wait"
+        );
         self.action_service()
             .admit_approvals_from(Arc::clone(store));
         self.link_asked();
