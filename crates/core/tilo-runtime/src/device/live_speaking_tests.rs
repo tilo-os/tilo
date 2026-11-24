@@ -102,4 +102,49 @@ fn an_app_with_no_window_reaches_the_daemons_call_and_is_refused_what_it_is_not_
     for line in lines.lock().unwrap().iter() {
         assert!(!line.contains("key"), "{line}");
     }
+
+    // The same over the app's own connection, as the daemon serves the process it started and
+    // the app's SDK reaches it: the carry is refused with the reason, and the device joins
+    // nothing.
+    let app = app_connection(&daemon, &at);
+    assert_eq!(
+        app.carry_call(Some(BridgedCall {
+            outside: OUTSIDE.into(),
+            tilo: CALL.into(),
+        })),
+        Err(tilo_actions::remote::ActionCallError::Refused {
+            reason: "the caller may not invoke this action".into()
+        })
+    );
+    app.report_call(tilo_actions::remote::call::CallReport::default())
+        .expect("a report is taken from an app the device carries no call for");
+    assert!(app.said_call().is_empty());
+    assert_eq!(app.asked_call(), None);
+    assert_eq!(
+        session.speaker().call(),
+        None,
+        "a refused app joins nothing"
+    );
+}
+
+/// The connection the daemon serves an app it started at `at`, as the line wire's client the
+/// app's SDK holds.
+fn app_connection(
+    daemon: &Arc<Daemon>,
+    at: &crate::seats::AppAt,
+) -> tilo_actions::remote::LineClient {
+    use std::io::{BufRead as _, Read as _};
+    let (served, held) = std::os::unix::net::UnixStream::pair().unwrap();
+    let frames = crate::device::local::Frames::of_an_app(daemon, at);
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(served.try_clone().unwrap());
+        let mut first = Vec::new();
+        (&mut reader)
+            .take(64 * 1024)
+            .read_until(b'\n', &mut first)
+            .unwrap();
+        let line = first.strip_suffix(b"\n").unwrap_or(&first).to_vec();
+        frames.serve(served, &line, reader);
+    });
+    tilo_actions::remote::LineClient::of_stream(held).unwrap()
 }

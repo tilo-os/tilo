@@ -515,7 +515,9 @@ impl AppLane {
         let Some(pair) = pair else {
             if let Some((carried, _)) = running.take() {
                 carried.abort();
-                // The app left: the device is in its call no longer, and nothing of it is said.
+                // The app left: the device is in its call no longer, and neither is anyone it
+                // carried.
+                setup.speaker.set_bridged(Vec::new());
                 (setup.join)(None).map_err(|reason| ActionCallError::Refused { reason })?;
             }
             let _ = self.calls.send(CallsReport::default());
@@ -661,6 +663,7 @@ impl Drop for AppLane {
         let carried = lock(&self.carried).take();
         if let (Some((carried, _)), Ok(setup)) = (carried, &self.granted) {
             carried.abort();
+            setup.speaker.set_bridged(Vec::new());
             let _ = (setup.join)(None);
         }
     }

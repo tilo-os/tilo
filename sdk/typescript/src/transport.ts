@@ -69,6 +69,73 @@ export interface Transport {
    * without it a find is refused.
    */
   find?(workspace: string | null, app: string, purpose: string): Promise<string | null>;
+  /**
+   * The call lane of an app's held connection: carry an outside call into a workspace call (or
+   * none), say who is in it, hand over what its people say, and take what the workspace's call
+   * says. Only the daemon's transport carries one, on a connection the daemon handed an app.
+   */
+  carryCall?(pair: CarriedCall | null): Promise<void>;
+  reportCall?(report: CallReport): Promise<void>;
+  hearCall?(frame: CallFrame): void;
+  takeCall?(): Promise<CallTaken>;
+}
+
+/** An outside service's call and the workspace call it is carried into, as one call. */
+export interface CarriedCall {
+  /** The service's id of its call (a voice channel there). */
+  outside: string;
+  /** The workspace's voice channel it is one call with. */
+  tilo: string;
+}
+
+/** One person in an outside call, as the service shows them. */
+export interface CallPerson {
+  /** Their account on the service. */
+  account: string;
+  /** The name the service shows for them. */
+  name: string;
+  /** Where the service serves their picture. */
+  avatar_url?: string | null;
+  /** BLAKE3 hex of their picture, once it is kept in the workspace's content. */
+  avatar?: string | null;
+  muted?: boolean;
+  deafened?: boolean;
+}
+
+/** Where the app stands in the outside call it carries. */
+export type CallLink =
+  | { link: "idle" }
+  | { link: "joining"; call: string }
+  | { link: "joined"; call: string }
+  | { link: "refused"; call: string; reason: string };
+
+/** Who is in each outside call, and where the app stands in them. */
+export interface CallReport {
+  calls: { call: string; people: CallPerson[] }[];
+  link: CallLink;
+  /** The service's own line about its call; empty leaves it as it was. */
+  status?: string;
+}
+
+/** One 20 ms Opus frame of a call (48 kHz), untouched, and the account that said it. */
+export interface CallFrame {
+  speaker: string;
+  opus: Uint8Array;
+}
+
+/**
+ * Where the device asks the app to be in the outside call: in `call`, showing `status` to its
+ * people about who is on the workspace's side, or in none (`call: null`).
+ */
+export interface CallAsk {
+  call: string | null;
+  status: string | null;
+}
+
+/** What a carried call said since the app last looked, and a new ask, if there is one. */
+export interface CallTaken {
+  frames: CallFrame[];
+  asked: CallAsk | null;
 }
 
 /** `fetch`, unless you bring your own. */
@@ -86,6 +153,13 @@ interface NativeDaemon {
   release(workspace: string | null, item: string): Promise<unknown>;
   webCall(workspace: string | null, args: Record<string, unknown>): Promise<unknown>;
   find(workspace: string | null, app: string, purpose: string): Promise<unknown>;
+  carryCall(pair: CarriedCall | null): Promise<unknown>;
+  reportCall(report: CallReport): Promise<unknown>;
+  hearCall(speaker: string, opus: Uint8Array): unknown;
+  saidCall(): {
+    frames: { speaker: string; opus: Uint8Array }[];
+    asked?: { call?: string | null; status?: string | null } | null;
+  };
 }
 
 interface NativeModule {
@@ -115,6 +189,8 @@ export class DaemonTransport implements Transport {
   readonly socket: string | null;
   readonly named: string | null;
   #daemon: Promise<NativeDaemon> | null = null;
+  /** The daemon once connected, for what a live call hands it without waiting. */
+  #ready: NativeDaemon | null = null;
 
   constructor(socket: string | null = null, workspace: string | null = null) {
     this.socket = socket;
@@ -126,8 +202,13 @@ export class DaemonTransport implements Transport {
     if (this.#daemon === null) {
       this.#daemon = nativeAddon()
         .then((module) => module.connect(this.socket, this.named))
+        .then((daemon) => {
+          this.#ready = daemon;
+          return daemon;
+        })
         .catch((error: unknown) => {
           this.#daemon = null;
+          this.#ready = null;
           throw error;
         });
     }
@@ -242,6 +323,85 @@ export class DaemonTransport implements Transport {
       throw new ProtocolError("the vault answered a find with no reference");
     }
     return reference;
+  }
+
+  /** Carry `pair` on this app's connection, or let go of the call carried (`null`). */
+  async carryCall(pair: CarriedCall | null): Promise<void> {
+    const daemon = await this.#opened();
+    let answer: unknown;
+    try {
+      answer = await daemon.carryCall(pair);
+    } catch (error) {
+      throw new Unreachable(error instanceof Error ? error.message : String(error));
+    }
+    laneAnswered(answer, "a carried call");
+  }
+
+  /** Say who is in the outside calls this app's connection carries, and where it stands. */
+  async reportCall(report: CallReport): Promise<void> {
+    const daemon = await this.#opened();
+    let answer: unknown;
+    try {
+      answer = await daemon.reportCall(report);
+    } catch (error) {
+      throw new Unreachable(error instanceof Error ? error.message : String(error));
+    }
+    laneAnswered(answer, "a call report");
+  }
+
+  /**
+   * Hand the workspace's call one frame an outside person said. Nothing answers it: a frame the
+   * call does not take is dropped there, as live audio is, and so is one said before the
+   * connection is open.
+   */
+  hearCall(frame: CallFrame): void {
+    const daemon = this.#ready;
+    if (daemon === null) {
+      void this.#opened().catch(() => {});
+      return;
+    }
+    const answer = daemon.hearCall(frame.speaker, frame.opus);
+    if (answer !== null && answer !== undefined) {
+      const fields = recordOf(answer);
+      if ("refused" in fields) {
+        throw refusalOf(fields.refused);
+      }
+    }
+  }
+
+  /** What the workspace's call said since the last time, and a new ask, if there is one. */
+  async takeCall(): Promise<CallTaken> {
+    const daemon = await this.#opened();
+    let said: ReturnType<NativeDaemon["saidCall"]>;
+    try {
+      said = daemon.saidCall();
+    } catch (error) {
+      // The addon throws a refusal's body as its message.
+      const message = error instanceof Error ? error.message : String(error);
+      let body: unknown;
+      try {
+        body = { error: JSON.parse(message).error ?? JSON.parse(message) };
+      } catch {
+        throw new Unreachable(message);
+      }
+      throw refusalOf(body);
+    }
+    const asked = said.asked ?? null;
+    return {
+      frames: said.frames.map((frame) => ({ speaker: frame.speaker, opus: frame.opus })),
+      asked: asked === null ? null : { call: asked.call ?? null, status: asked.status ?? null },
+    };
+  }
+}
+
+/** A lane call's answer: nothing, or its refusal raised. */
+function laneAnswered(answer: unknown, what: string): void {
+  const fields = recordOf(answer);
+  if ("refused" in fields) {
+    throw refusalOf(fields.refused);
+  }
+  if (!("answer" in fields)) {
+    throw new ProtocolError(`the daemon answered ${what} in a shape the SDK does not know`);
   }
 }
 
