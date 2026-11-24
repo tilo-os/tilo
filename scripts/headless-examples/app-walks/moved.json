@@ -140,16 +140,16 @@
     "test": "crates/desktop/session/src/live_list.rs:526"
   },
   "so.tilo.session activities.layer#close": {
-    "to": "so.tilo.session session.live#end-live",
-    "test": "crates/desktop/session/src/live_list.rs:526"
+    "to": "so.tilo.session session.live#end-live, the end in a card's header",
+    "test": "crates/desktop/session/tests/session/activities.rs:233"
   },
   "so.tilo.session activities.layer#collapse": {
-    "to": "so.tilo.session session.live#keep-off-bar",
-    "test": "crates/desktop/session/src/live_list.rs:526"
+    "to": "so.tilo.session session.live#fold-live, a card folded back into the bar's pill",
+    "test": "crates/desktop/session/tests/session/activities.rs:265"
   },
   "so.tilo.session activities.layer#control": {
-    "to": "so.tilo.session session.live#press-live",
-    "test": "crates/desktop/session/src/live_list.rs:526"
+    "to": "so.tilo.session session.live#press-live, a control on a card",
+    "test": "crates/desktop/session/tests/session/activities.rs:287"
   },
   "so.tilo.session activities.layer#field-edit": {
     "to": "the live rows keep no fields of their own to edit: what the person decides of one (kept off the bar) is so.tilo.session session.live#keep-off-bar, and a live resource's own fields change by its type's actions",
@@ -164,12 +164,12 @@
     "test": "crates/desktop/session/tests/live_activities.rs:144"
   },
   "so.tilo.session activities.layer#outline": {
-    "to": "each live row is drawn by its resource's own `view live` in the tilolang shell's bar, quick settings and lock screen, read and rendered as the shell is",
-    "test": "crates/desktop/session/tests/live_activities.rs:144"
+    "to": "each card stands over the windows in the tilolang shell's corner column, at most three, in the corner the person chose (tl.so.tilo.shell.Shell#dock_cards)",
+    "test": "crates/desktop/session/tests/session/activities.rs:308"
   },
   "so.tilo.session activities.layer#render": {
-    "to": "each live row is drawn by its resource's own `view live` in the tilolang shell's bar, quick settings and lock screen, read and rendered as the shell is",
-    "test": "crates/desktop/session/tests/live_activities.rs:144"
+    "to": "the tilolang shell draws each card from its live row, or holds the block an app draws its own card in",
+    "test": "crates/desktop/session/tests/hosted_windows.rs:311"
   },
   "so.tilo.session activities.layer#share-link": {
     "to": "a live row is its resource (`tl:<app>:<id>`): its link is that resource's own",
