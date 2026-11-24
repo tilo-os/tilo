@@ -137,16 +137,10 @@ mod external_moderation_rpc_tests {
                 .unwrap()
                 .clone();
             let (actor, origin) = self.caller();
-            let surface = self.state.publishers.surfaces.lock().unwrap()[&peer].clone();
-            let binding = self.state.offered_approval_binding(
-                actor.member(),
-                &(surface, offered.clone()),
-                Some(argument),
-                tilo_actions::InvocationId::new(),
-            );
+            let invocation = tilo_actions::InvocationId::new();
             let approval = crate::apps::collab_app_broker::person_approved(
                 &self.route.cluster_id,
-                binding.invocation,
+                invocation,
             );
             let token = self
                 .state
@@ -156,8 +150,7 @@ mod external_moderation_rpc_tests {
                     &offered,
                     Some(argument),
                     &actor,
-                    Some(&approval),
-                    &binding,
+                    (Some(&approval), true),
                 )
                 .unwrap();
             let job = self
@@ -168,7 +161,7 @@ mod external_moderation_rpc_tests {
                     action,
                     InvocationInputs {
                         original_request: None,
-                        requested: Some(binding.invocation),
+                        requested: Some(invocation),
                         caller: None,
                         execution: None,
                         argument: Some(argument),
@@ -342,13 +335,7 @@ mod external_moderation_rpc_tests {
                     let (actor, origin) = workspace.caller();
                     let operation = operation(action == "appeal");
                     let exact = argument(&operation);
-                    let surface = workspace.state.publishers.surfaces.lock().unwrap()[&980].clone();
-                    let binding = workspace.state.offered_approval_binding(
-                        actor.member(),
-                        &(surface, offered.clone()),
-                        Some(&exact),
-                        tilo_actions::InvocationId::new(),
-                    );
+                    let invocation = tilo_actions::InvocationId::new();
                     assert!(matches!(
                         workspace.state.confirmation_token(
                             980,
@@ -356,8 +343,7 @@ mod external_moderation_rpc_tests {
                             &offered,
                             Some(&exact),
                             &actor,
-                            None,
-                            &binding,
+                            (None, false),
                         ),
                         // No token: its admission asks the person.
                         Ok(None)
@@ -370,8 +356,7 @@ mod external_moderation_rpc_tests {
                             &offered,
                             Some(&exact),
                             &actor,
-                            Some(&tilo_actions::remote::Confirmation::Confirmed),
-                            &binding,
+                            (Some(&tilo_actions::remote::Confirmation::Confirmed), false),
                         ),
                         // No token: its admission asks the person.
                         Ok(None)
@@ -379,7 +364,7 @@ mod external_moderation_rpc_tests {
                     for altered in ["missing", "payload", "destination"] {
                         let approval = crate::apps::collab_app_broker::person_approved(
                             &workspace.route.cluster_id,
-                            binding.invocation,
+                            invocation,
                         );
                         let token = workspace
                             .state
@@ -389,8 +374,7 @@ mod external_moderation_rpc_tests {
                                 &offered,
                                 Some(&exact),
                                 &actor,
-                                Some(&approval),
-                                &binding,
+                                (Some(&approval), true),
                             )
                             .unwrap()
                             .unwrap();
@@ -416,7 +400,7 @@ mod external_moderation_rpc_tests {
                             action,
                             InvocationInputs {
                                 original_request: None,
-                                requested: Some(binding.invocation),
+                                requested: Some(invocation),
                                 caller: None,
                                 execution: None,
                                 argument: Some(&changed),
@@ -463,13 +447,7 @@ mod external_moderation_rpc_tests {
                     let (actor, _) = workspace.caller();
                     assert!(actor.direct());
                     let exact = argument(&operation(action == "appeal"));
-                    let surface = workspace.state.publishers.surfaces.lock().unwrap()[&980].clone();
-                    let binding = workspace.state.offered_approval_binding(
-                        actor.member(),
-                        &(surface, offered.clone()),
-                        Some(&exact),
-                        tilo_actions::InvocationId::new(),
-                    );
+                    let invocation = tilo_actions::InvocationId::new();
                     assert!(matches!(
                         workspace.state.confirmation_token(
                             980,
@@ -477,8 +455,7 @@ mod external_moderation_rpc_tests {
                             &offered,
                             Some(&exact),
                             &actor,
-                            Some(&tilo_actions::remote::Confirmation::Confirmed),
-                            &binding,
+                            (Some(&tilo_actions::remote::Confirmation::Confirmed), false),
                         ),
                         // No token: its admission asks the person.
                         Ok(None)

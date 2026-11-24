@@ -38,7 +38,6 @@
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
 //! - [`CERTIFICATION_REQUEST_TAG`] — `tilo-device-certification-request-v1\0`
-//! - [`HOST_APPROVAL_PREIMAGE_TAG`] — `tilo-host-approval-v1\0`
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -82,7 +81,6 @@ pub mod revocation;
 pub mod root_statement;
 pub mod sign;
 pub mod sign_in;
-pub mod signed_approval;
 pub mod workspace_list;
 
 pub use approval::{
@@ -136,9 +134,6 @@ pub use revocation::{
 };
 pub use sign::{CallbackSigner, SignError, StatementSigner};
 pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, agent_endpoint_audience, sign_in_digest};
-pub use signed_approval::{
-    Answered, HOST_APPROVAL_PREIMAGE_TAG, HostApproval, HostApprovalError, Parties,
-};
 pub use workspace_list::{ListedWorkspace, WorkspaceList};
 
 use serde::{Deserialize, Serialize};

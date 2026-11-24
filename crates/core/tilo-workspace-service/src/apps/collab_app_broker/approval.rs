@@ -85,85 +85,22 @@ pub(crate) fn person_approved(
 }
 
 impl AppBrokerState {
-    /// Resolve only this provider's live publication. Host-owned providers
-    /// have no application publication; unrelated discovery cannot change them.
-    pub(super) fn approval_publication(&self, provider: &str) -> (u64, u64) {
-        let peer = if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
-            self.canonical_token_directory(provider)
-                .ok()
-                .map(|root| root.peer_id)
-        } else if super::launchable::is_launchable_provider(provider) {
-            self.launchable.surface_for(provider).and_then(|retained| {
-                self.publishers
-                    .surfaces
-                    .lock()
-                    .ok()?
-                    .values()
-                    .find_map(|surface| {
-                        (surface.live
-                            && surface.app_id == retained.app_id
-                            && surface.route == retained.route)
-                            .then_some(surface.peer_id)
-                    })
-            })
-        } else {
-            tilo_failure::ignored!(
-                "a provider that is not a peer number names a canonical, launchable or provider one",
-                provider.parse::<u64>().ok()
-            )
-        };
-        peer.and_then(|peer| {
-            self.approval_publications
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&peer)
-                .copied()
-        })
-        .unwrap_or_default()
-    }
-
-    /// Capture before asking, and reconstruct from the original request at
-    /// admission. Republishing this provider invalidates the pending answer.
-    pub(crate) fn approval_binding(
+    /// Whether `evidence`, which `caller` carries, is the person's own answer for the call: their
+    /// approve of the asked record it was kept as, which only the dispatch sets, or the word of the
+    /// host that placed this device's window, carried over that host's link
+    /// ([`tilo_actions::remote::browser::host_answered`]).
+    ///
+    /// # Errors
+    /// A confirmation another device carried here, which answers for nobody.
+    pub(super) fn answered_for_person(
         &self,
-        actor: &tilo_action_policy::MemberId,
-        workspace: &str,
-        request: &InvokeRequest,
-    ) -> super::ApprovalBinding {
-        super::ApprovalBinding {
-            actor: actor.clone(),
-            provider: request.target.provider.clone(),
-            workspace: workspace.into(),
-            revision: request.revision.clone(),
-            publication: self.approval_publication(&request.target.provider),
-            invocation: request.invocation,
-            resource: request.target.address.resource.clone(),
-            action: request.target.address.action.clone(),
-            argument_digest: super::argument_digest(request.argument.to_slot().as_deref()),
+        caller: &Caller,
+        evidence: Option<&tilo_actions::remote::Confirmation>,
+    ) -> Result<bool, ActionCallError> {
+        if approved_by_person(evidence) {
+            return Ok(true);
         }
-    }
-
-    /// The binding a confirmation of `offered`, invoked by `actor` with `argument` as
-    /// `invocation`, is held to.
-    #[cfg(test)]
-    pub(super) fn offered_approval_binding(
-        &self,
-        actor: &tilo_action_policy::MemberId,
-        offered: &(super::PublishedSurface, super::PublishedAction),
-        argument: Option<&str>,
-        invocation: tilo_actions::InvocationId,
-    ) -> super::ApprovalBinding {
-        super::ApprovalBinding {
-            actor: actor.clone(),
-            provider: offered.0.peer_id.to_string(),
-            workspace: offered.0.route.cluster_id.clone(),
-            revision: None,
-            publication: self.approval_publication(&offered.0.peer_id.to_string()),
-            invocation,
-            resource: offered.1.resource.clone(),
-            action: offered.1.action.clone(),
-            argument_digest: super::argument_digest(argument),
-        }
+        tilo_actions::remote::browser::host_answered(self.placement.get(), caller, evidence)
     }
 
     /// Resolve a directory's original identity and selected content revision.

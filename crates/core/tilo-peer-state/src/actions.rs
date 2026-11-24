@@ -979,6 +979,15 @@ impl ActionService {
                 reason: "this device does not hold that workspace".into(),
             })??;
         let (acting, authority, certificate, opened) = decided;
+        // The device whose link carried another's signed request: the window a host placed reads
+        // whether its host's word stands for the person by it.
+        let carried = |caller: Caller| {
+            if acting == source {
+                caller
+            } else {
+                caller.carried_by(source)
+            }
+        };
         // A request addressed to another device this one reaches: pass it on there, which decides
         // and answers it, and hand its answer back to the caller.
         if action.target != self.device() {
@@ -1005,7 +1014,9 @@ impl ActionService {
                 ));
             }
             return Ok(Decided::Serve(Box::new(Admitted {
-                caller: carrying(Caller::visitor(acting).in_workspace(action.workspace.clone())),
+                caller: carried(carrying(
+                    Caller::visitor(acting).in_workspace(action.workspace.clone()),
+                )),
                 dispatcher: Arc::clone(&self.0.dispatcher),
             })));
         };
@@ -1030,7 +1041,7 @@ impl ActionService {
             _ => Caller::authenticated(certificate.user_public_key, acting),
         };
         Ok(Decided::Serve(Box::new(Admitted {
-            caller: carrying(caller)
+            caller: carried(carrying(caller))
                 .in_workspace(action.workspace.clone())
                 .from_foreign_device(authority.acting.foreign_device),
             dispatcher: Arc::clone(&self.0.dispatcher),

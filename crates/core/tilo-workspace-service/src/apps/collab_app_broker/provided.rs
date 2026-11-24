@@ -466,7 +466,6 @@ impl AppBrokerState {
                 app_id,
                 &descriptor,
                 (argument.as_deref(), request.confirmation.as_ref()),
-                approved,
             )?;
             Ok(())
         })?;

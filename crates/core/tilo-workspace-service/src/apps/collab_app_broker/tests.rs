@@ -567,22 +567,6 @@ impl LocalDirectoryFixture {
 }
 
 #[cfg(test)]
-async fn approval_publish(
-    fixture: &LocalDirectoryFixture,
-    channel: &runtime_collab::ChannelHandle,
-    directory: bool,
-) {
-    if directory {
-        channel
-            .publish_action_directory(wire_answerer(Rc::clone(&fixture.directory)))
-            .await
-            .unwrap();
-    } else {
-        channel.publish_actions(&[]).await.unwrap();
-    }
-}
-
-#[cfg(test)]
 fn local_directory_fixture() -> LocalDirectoryFixture {
     let mut tree = crate::apps::test_support::WorkspaceTree::default();
     let mut workspace = crate::apps::test_support::Workspace::new(
@@ -994,8 +978,6 @@ mod durable_admission_tests;
 
 #[cfg(test)]
 mod authority;
-#[cfg(test)]
-mod consent;
 #[cfg(test)]
 mod directory;
 #[cfg(test)]

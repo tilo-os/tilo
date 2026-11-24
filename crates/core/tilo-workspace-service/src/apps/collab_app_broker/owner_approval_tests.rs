@@ -143,14 +143,13 @@ fn approval(request: &InvokeRequest) -> Confirmation {
 tilo_test_env::scenario! {
     fn an_owners_approve_confirms_only_its_own_call;
 
-    phase an_owner_action_takes_no_token_a_caller_brings;
+    phase an_owner_action_waits_for_their_approve;
     {
         let (state, service, owner, mut request) = broker(true);
-        request.confirmation = Some(Confirmation::Approved("unregistered".into()));
         assert_eq!(
             invoke(&state, &owner, &request),
             Err(ActionCallError::confirmation_required()),
-            "a token is no answer of the person's"
+            "nothing answered for them yet"
         );
         assert!(service.calls.lock().unwrap().is_empty());
         request.confirmation = Some(approval(&request));

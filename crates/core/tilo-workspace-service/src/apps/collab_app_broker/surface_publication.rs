@@ -4,7 +4,6 @@
 //! each move is traced with its cause.
 
 #[cfg(any(test, feature = "test-support"))]
-use super::ApprovalPublicationKind;
 use super::{AppBrokerState, PublishedSurface};
 use std::sync::{Arc, OnceLock, Weak, mpsc};
 
@@ -135,7 +134,6 @@ impl AppBrokerState {
         let republished = surface.clone();
         let previous = published.insert(peer, surface);
         drop(published);
-        self.advance_approval_publication(peer, ApprovalPublicationKind::Surface);
         self.surface_republished(peer, &republished, previous.as_ref());
     }
 }

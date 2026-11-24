@@ -338,8 +338,10 @@ impl AppBrokerState {
             &offered,
             argument,
             &actor,
-            request.confirmation.as_ref(),
-            &self.approval_binding(actor.member(), &root.cluster_id, request),
+            (
+                request.confirmation.as_ref(),
+                self.answered_for_person(caller, request.confirmation.as_ref())?,
+            ),
         )?;
         let surface = PublishedSurface {
             peer_id: root.peer_id,

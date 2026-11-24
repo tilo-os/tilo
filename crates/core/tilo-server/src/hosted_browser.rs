@@ -87,7 +87,7 @@ use tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refus
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
     CataloguePage, CatalogueProvider, CatalogueQuery, Completer, Confirmation, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, argument_digest,
+    InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
     pending, provider_workspace, workspace_provider,
 };
 use tilo_actions::{
@@ -95,9 +95,7 @@ use tilo_actions::{
     OperationKind, ResourceSpec,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_user_identity::{
-    Answered, DeviceCapabilities, DeviceCert, HostApproval, Parties, sign_device_cert,
-};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use tilo_workspace_service::agents::windows::{
     Ends, Releasing, TurnFill, Windows, opened_resource, opens_browser_at, page_action,
 };
@@ -199,9 +197,6 @@ pub const DEVICE_LIFETIME: Duration = Duration::from_secs(2 * 60 * 60);
 /// gone; one whose connection dropped is back in a moment, and its window
 /// lives on.
 pub const RECONNECT: Duration = Duration::from_secs(30);
-/// How long the person's answer to one page action stays good for running
-/// it: their confirmation of that invocation, not a lasting grant.
-pub const APPROVAL_LIFETIME: u64 = 5 * 60 * 1_000_000_000;
 /// The waits before a host asks again for a workspace it could not name yet
 /// ([`HostedBrowsers::ready_workspace_name`]).
 const NOT_READY_WAITS: [Duration; 4] = [
@@ -754,9 +749,6 @@ impl HostedBrowsers {
         }
         let permitted = match &request.confirmation {
             None => true,
-            Some(Confirmation::Approved(token)) => {
-                self.approved(token, workspace_id, device, request)
-            }
             // The person approved the asked record this call was kept as: the
             // dispatch admitted the same call again carrying their answer, and
             // the window runs it with it. Admission drops an answer from
@@ -768,23 +760,17 @@ impl HostedBrowsers {
             return answered_with(message, ActionCallError::NotPermitted);
         }
         // A key whose person let it operate web pages needs no question about
-        // one: this host answers for them with the same approval their answer
-        // would have made, so the window runs it once and answers the caller
-        // itself.
-        let mut operated = None;
-        if request.confirmation.is_none()
-            && certificate.is_some_and(|certificate| operates(certificate, request))
-            && let (Some(&person), Some(key)) = (caller.user_public_key(), self.signing_key())
-        {
-            match host_approval(person, &key, device, window, request) {
-                Ok(approval) => {
-                    let mut run = request.clone();
-                    run.confirmation = Some(approval);
-                    operated = Some(run);
-                }
-                Err(error) => return answered_with(message, error),
-            }
-        }
+        // one: this host answers for them, handing the key's own call to the
+        // window it placed carrying the confirmation their answer would have
+        // made. The window takes that word from this host's link alone
+        // ([`tilo_actions::remote::browser::host_answered`]), so it runs the call
+        // once and answers the caller itself.
+        let operated = (request.confirmation.is_none()
+            && certificate.is_some_and(|certificate| operates(certificate, request)))
+        .then(|| InvokeRequest {
+            confirmation: Some(Confirmation::Confirmed),
+            ..request.clone()
+        });
         // A page action handed to the window without this host's answer is one
         // the window holds for the person: what the server says here is why it
         // could not answer for them, which a key that may operate web pages is
@@ -1139,40 +1125,6 @@ impl HostedBrowsers {
     fn hand(&self) -> Option<crate::app_serving::Hand> {
         let authority = self.authority.lock_recover();
         Some(authority.as_ref()?.hand.clone())
-    }
-
-    /// The key this host answers for its person with, once it runs: the
-    /// stand-in's own.
-    fn signing_key(&self) -> Option<SigningKey> {
-        let authority = self.authority.lock_recover();
-        Some(authority.as_ref()?.key.clone())
-    }
-
-    /// Whether `token` is this host's answer for exactly this page action:
-    /// the answer of the host that certified `workspace_id`'s window, for the
-    /// person it serves, naming this caller, this invocation, this action and
-    /// these arguments, and still good.
-    fn approved(
-        &self,
-        token: &str,
-        workspace_id: WorkspaceId,
-        caller: [u8; 32],
-        request: &InvokeRequest,
-    ) -> bool {
-        let Some(approval) = HostApproval::decode(token) else {
-            return false;
-        };
-        let open = self.open.lock_recover();
-        let Some(up) = open.get(&workspace_id) else {
-            return false;
-        };
-        approval.stands_for(&up.device, tilo_clock::unix_now_ns())
-            && approval.caller_device_public_key == caller
-            && approval.invocation == *request.invocation.0.as_bytes()
-            && approval.provider == request.target.provider
-            && approval.resource == request.target.address.resource
-            && approval.action == request.target.address.action
-            && approval.argument == argument_digest(request.argument.to_slot().as_deref())
     }
 
     /// Whether what device `from` sends `to` in `workspace_id` is the
@@ -2006,40 +1958,6 @@ fn note_unanswered_handover(
         browser_pages,
         "a page action is handed to the window with nobody's answer, so its person is asked"
     );
-}
-
-/// The approval this host gives the window for `request`: signed with `key` for the person it
-/// serves, for exactly this invocation, naming the caller and the window it runs on.
-fn host_approval(
-    person: [u8; 32],
-    key: &SigningKey,
-    caller: [u8; 32],
-    window: [u8; 32],
-    request: &InvokeRequest,
-) -> Result<Confirmation, ActionCallError> {
-    let now = tilo_clock::unix_now_ns();
-    let mut approval = HostApproval::unsigned(
-        Parties {
-            person,
-            host: key.verifying_key().to_bytes(),
-            caller,
-            target: window,
-        },
-        Answered {
-            invocation: *request.invocation.0.as_bytes(),
-            provider: request.target.provider.clone(),
-            resource: request.target.address.resource.clone(),
-            action: request.target.address.action.clone(),
-            argument: argument_digest(request.argument.to_slot().as_deref()),
-        },
-        (now, now.saturating_add(APPROVAL_LIFETIME)),
-    );
-    approval
-        .sign(key)
-        .map(|()| Confirmation::Approved(approval.encode()))
-        .map_err(|error| ActionCallError::Unavailable {
-            reason: format!("the host could not answer for the person: {error}"),
-        })
 }
 
 /// Whether `certificate` is a key its person let operate web pages in

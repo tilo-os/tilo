@@ -1341,12 +1341,20 @@ mod tests {
                 "an exact retry never dispatches twice"
             );
             request.invocation = tilo_actions::InvocationId::new();
-            // A token no store handed back is no answer of the person's.
-            request.confirmation = Some(Confirmation::Approved("from-the-caller".into()));
+            // A confirmation another device carried here answers for nobody: no host placed a
+            // window on this device to answer for its person.
+            request.confirmation = Some(Confirmation::Confirmed);
             assert_eq!(
-                call(&request).err(),
-                Some(ActionCallError::confirmation_required())
+                state
+                    .action_invoke(&agent.clone().carried_by([9; 32]), None, None, &request)
+                    .wait_timeout(tilo_test_env::hang_bound())
+                    .ok()
+                    .flatten()
+                    .unwrap()
+                    .err(),
+                Some(ActionCallError::NotPermitted)
             );
+            assert!(app.try_recv().is_err(), "nothing ran");
         }
 
         phase an_agents_step_on_an_item_names_the_item;

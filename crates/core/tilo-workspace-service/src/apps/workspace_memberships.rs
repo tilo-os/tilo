@@ -256,8 +256,10 @@ impl AppBrokerState {
             &action,
             argument,
             &actor,
-            request.confirmation.as_ref(),
-            &self.approval_binding(actor.member(), workspace, original_request),
+            (
+                request.confirmation.as_ref(),
+                self.answered_for_person(caller, request.confirmation.as_ref())?,
+            ),
         )?;
         self.start_invocation_confirmed_for_origin(
             surface.peer_id,

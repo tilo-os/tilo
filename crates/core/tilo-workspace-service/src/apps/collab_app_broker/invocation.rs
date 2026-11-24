@@ -876,10 +876,6 @@ impl AppBrokerState {
     /// and worked as there, and fail what was still pending on it.
     pub(super) fn withdraw_route_hold(&self, peer_id: u64) {
         self.release_route_hold(peer_id);
-        self.approval_publications
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&peer_id);
         if let Ok(mut directories) = self.canonical_directories.lock() {
             directories.remove(peer_id);
         }

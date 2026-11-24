@@ -14,11 +14,6 @@ pub enum Confirmation {
     Confirmed,
     /// The caller typed the phrase the contract asks for.
     Phrase(String),
-    /// The person the caller acts for confirmed this very invocation on
-    /// their own device: the provider hands the caller this token, which names
-    /// that answer. Only a person acting themselves confirms by their own
-    /// word; anyone acting for them carries the person's answer.
-    Approved(String),
     /// The person approved the asked invocation record this call was kept as
     /// ([`super::asked`]). Only the dispatch sets it, when it admits the call
     /// again on their answer; admission drops it from anything a caller sent.

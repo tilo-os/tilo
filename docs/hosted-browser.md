@@ -249,9 +249,8 @@ the question to the person's approving devices itself
 (`CertificationProtocol::confirm`, five minutes for this one invocation)
 while the caller waits: a caller needs nothing beyond asking and following
 what it asked for. Allowed, the server hands the same invocation to the
-window again with the person's answer signed by its own device key; the
-session accepts an answer from the host that certified it, for its own
-person, and runs the action once. Denied or unanswered, the invocation ends
+window again carrying the person's approve of the asked record it was kept
+as, and the session runs the action once. Denied or unanswered, the invocation ends
 refused and nothing runs. That is the approval before `submit-page`.
 
 **Every departure is that same approval, however it was triggered.** In a
@@ -288,8 +287,8 @@ from, what it sends and where (`send the form to https://visa.example
 (POST)`), and the filled page as a picture the window kept in the workspace's
 content store, which the person's device draws before they allow it. The server
 puts it to the person as it puts any page action, and their answer comes back
-to the session as the confirmation their allow runs it with: the same approval
-the server signs for a page action, for that one request. Denied or unanswered,
+to the session as the confirmation their allow runs it with: the same answer
+a page action carries, for that one request. Denied or unanswered,
 the session runs `keep-held-request` instead and the page stays as it was
 filled. A person's own window holds none of this: what they click leaves as
 they click it.
@@ -306,8 +305,11 @@ minted from a key keeps its answer), and the key's certificate carries it.
 Holding it, the server answers for the person on the page actions that
 operating a page is — `navigate`, `fill-page`, `select-page`, `click-page`,
 `press-page`, `scroll-page`, `drag-page` and `pointer-path`/`pointer-page` —
-signing the same approval a person's own answer would, so the window runs one
-at once, as that key's agent, and counts it. A hold is untouched by it: the
+handing the key's own signed call to the window over the link the window holds
+to it, carrying a confirmation. The session takes that word from the host that
+placed it alone — the server it was handed, over that server's link, for the
+workspace it was placed in — and refuses it from any other device, so the
+window runs the action at once, as that key's agent, and the server counts it. A hold is untouched by it: the
 engine still stops the page where it was about to send something, answers
 that invocation that it needs the person, and only their own answer releases
 that one request, so a key that clicks a submit button still waits for them.

@@ -113,10 +113,6 @@ pub(super) struct Asking<'a> {
     pub(super) argument: Option<&'a str>,
     pub(super) actor: &'a BrokerActor,
     pub(super) token: Option<&'a str>,
-    /// The invocation as the caller or its owner names it.
-    pub(super) invocation: Option<tilo_actions::InvocationId>,
-    /// The directory revision it was admitted at.
-    pub(super) revision: Option<&'a str>,
 }
 
 impl AppBrokerState {
@@ -207,31 +203,13 @@ impl AppBrokerState {
             .remove(token)
             .ok_or("the confirmation token is unknown or already used")?;
         let mismatched = (requires_store_approval(&surface.app_id, &action.action)
-            && grant.host_approved.is_none())
+            && !grant.person_approved)
             || grant.expires < tilo_clock::now()
             || grant.peer_id != peer_id
             || grant.resource != action.resource
             || grant.action != action.action
             || grant.argument_digest != argument_digest(inputs.argument)
-            || grant.actor != *inputs.actor.member()
-            || grant.host_approved.as_ref().is_some_and(|binding| {
-                binding.workspace != surface.route.cluster_id
-                    || Some(binding.invocation) != inputs.invocation
-                    || binding.publication != self.approval_publication(&binding.provider)
-                    || match inputs.request {
-                        Some(request) => {
-                            binding.provider != request.target.provider
-                                || binding.revision != request.revision
-                        }
-                        None => {
-                            binding.provider != peer_id.to_string()
-                                || binding
-                                    .revision
-                                    .as_deref()
-                                    .is_some_and(|bound| Some(bound) != inputs.revision)
-                        }
-                    }
-            });
+            || grant.actor != *inputs.actor.member();
         if mismatched {
             return Err(
                 "the confirmation token is expired or does not match this invocation".into(),

@@ -49,6 +49,14 @@ impl AppBrokerState {
         let _ = self.asked_reads.set(asked);
     }
 
+    /// Take `placement` as the host that placed this device's window: the device whose link
+    /// alone carries the person's word for the page actions it hands the window
+    /// ([`tilo_actions::remote::browser::host_answered`]). Set once, by the session the host
+    /// started for that window.
+    pub fn placed_by(&self, placement: tilo_actions::remote::browser::Placement) {
+        let _ = self.placement.set(placement);
+    }
+
     /// Where a read the person is asked about waits for them, once its embedder served it.
     pub(crate) fn asked_reads(&self) -> Option<Arc<dyn tilo_actions::remote::asked::AskedReads>> {
         self.asked_reads.get().cloned()

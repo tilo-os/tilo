@@ -2734,8 +2734,10 @@ impl AppBrokerState {
             &offered,
             argument.as_deref(),
             &actor,
-            request.confirmation.as_ref(),
-            &self.approval_binding(actor.member(), &workspace, original_request),
+            (
+                request.confirmation.as_ref(),
+                self.answered_for_person(caller, request.confirmation.as_ref())?,
+            ),
         )?;
         self.start_invocation_confirmed_for_origin(
             peer_id,
@@ -2851,7 +2853,6 @@ impl AppBrokerState {
         app: &str,
         descriptor: &ActionDescriptor,
         (_argument, confirmation): (Option<&str>, Option<&Confirmation>),
-        approved: bool,
     ) -> Result<(), ActionCallError> {
         let (answer, spent) = policy.action_verdict_in(
             workspace,
@@ -2877,7 +2878,6 @@ impl AppBrokerState {
                 return Err(ActionCallError::NotPermitted);
             }
             tilo_action_policy::Answer::Ask => match confirmation {
-                Some(Confirmation::Approved(_)) => approved,
                 // Their approve of the asked record this call was kept as: the dispatch admitted
                 // it again with it.
                 Some(Confirmation::Asked(_)) => true,

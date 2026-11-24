@@ -274,7 +274,6 @@ mod invocation_update;
 mod launchable;
 mod live_views;
 mod local_action_provider;
-mod person_answer;
 mod person_ask;
 mod provided;
 mod remaining_workspace_actions;
@@ -407,9 +406,6 @@ pub struct AppBrokerState {
     /// What each live connection publishes, and the invocation stream of each that takes
     /// invocations.
     publishers: tilo_broker_core::delivery::Publishers<InvocationEnvelope>,
-    /// Per-connection incarnations, independent of unrelated discovery churn.
-    approval_publications: Mutex<HashMap<u64, (u64, u64)>>,
-    next_approval_publication: AtomicU64,
     /// Each connection's surface as `publishActionSurface` deltas built it:
     /// the shapes and bindings the next delta applies to.
     surface_tables: Mutex<HashMap<u64, runtime_collab::SurfaceTable>>,
@@ -487,6 +483,9 @@ pub struct AppBrokerState {
     /// Where a read the person is asked about waits for them, where its embedder serves it: the
     /// device's dispatch, which keeps it as its asked record ([`Self::serve_asked_reads`]).
     asked_reads: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedReads>>,
+    /// The host that placed this device's window, where a host placed it: the only device whose
+    /// word answers for the person at it ([`Self::placed_by`]).
+    placement: std::sync::OnceLock<tilo_actions::remote::browser::Placement>,
     invocation_id: AtomicU64,
     services: ProcessServices,
     workers: Mutex<Vec<PendingWorker>>,

@@ -2180,7 +2180,6 @@ mod tests {
             None,
             Some(Confirmation::Phrase("/dev/vda".into())),
             Some(Confirmation::Confirmed),
-            Some(Confirmation::Approved("token".into())),
         ] {
             assert!(matches!(erase(wrong), Err(ApiError::ConfirmationRequired)));
         }

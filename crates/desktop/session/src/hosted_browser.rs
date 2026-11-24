@@ -614,6 +614,12 @@ impl HostedBrowser {
         let Some(broker) = broker.cloned() else {
             return;
         };
+        // The host that placed this window is the server it was handed: its device answers for the
+        // person at the window, over the link it hands page actions on, and nobody else does.
+        broker.placed_by(tilo_actions::remote::browser::Placement {
+            host: *self.material.server.id.as_bytes(),
+            workspace: self.material.workspace.clone(),
+        });
         let Ok(runtime) = tilo_rt::try_app() else {
             tracing::warn!("a hosted Browser's page is not watched: no task to watch it on");
             return;

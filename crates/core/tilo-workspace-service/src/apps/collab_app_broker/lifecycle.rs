@@ -427,7 +427,6 @@ impl AppBrokerState {
         clear!(self.route_holders);
         clear!(self.channels);
         clear!(self.publishers.surfaces);
-        clear!(self.approval_publications);
         clear!(self.surface_tables);
         clear!(self.action_directory_roots);
         clear!(self.native_checkouts);
@@ -735,8 +734,6 @@ impl AppBrokerState {
                     .or_else(|| services.native_certificates.clone())
                     .map_or_else(std::sync::OnceLock::new, std::sync::OnceLock::from),
                 publishers: tilo_broker_core::delivery::Publishers::default(),
-                approval_publications: Mutex::new(HashMap::new()),
-                next_approval_publication: AtomicU64::new(1),
                 surface_tables: Mutex::new(HashMap::new()),
                 launchable: launchable::LaunchableCatalogue::new(),
                 workspace_opens: workspace_open::WorkspaceOpens::default(),
@@ -780,6 +777,7 @@ impl AppBrokerState {
                 invocations: std::sync::OnceLock::new(),
                 records: std::sync::OnceLock::new(),
                 asked_reads: std::sync::OnceLock::new(),
+                placement: std::sync::OnceLock::new(),
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),
@@ -955,13 +953,6 @@ impl AppBrokerState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn replace_action_directory_roots_for_test(&self, roots: Vec<ActionDirectoryRoot>) {
         if let Ok(mut registered) = self.action_directory_roots.lock() {
-            for peer in registered
-                .keys()
-                .copied()
-                .chain(roots.iter().map(|root| root.peer_id))
-            {
-                self.advance_approval_publication(peer, ApprovalPublicationKind::Directory);
-            }
             registered.clear();
             registered.extend(roots.into_iter().map(|root| (root.peer_id, root)));
         }
@@ -970,13 +961,6 @@ impl AppBrokerState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn replace_published_surfaces_for_test(&self, surfaces: Vec<PublishedSurface>) {
         if let Ok(mut published) = self.publishers.surfaces.lock() {
-            for peer in published
-                .keys()
-                .copied()
-                .chain(surfaces.iter().map(|surface| surface.peer_id))
-            {
-                self.advance_approval_publication(peer, ApprovalPublicationKind::Surface);
-            }
             published.clear();
             published.extend(
                 surfaces

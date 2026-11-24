@@ -28,7 +28,7 @@ use tilo_server::hosted_browser::{
 };
 use tilo_server::{Server, WorkspaceId};
 use tilo_user_identity::{
-    AgentScope, DeviceCapabilities, DeviceCert, HostApproval, RevocationList,
+    AgentScope, DeviceCapabilities, DeviceCert, RevocationList,
     prepare_stand_in_cert, sign_device_cert,
 };
 
@@ -412,9 +412,9 @@ impl Asks {
 struct WindowActions {
     seen: Arc<Mutex<Vec<Handed>>>,
     asks: Asks,
-    /// The host that certified this window's device: the only device whose
-    /// answer for the person a page action of this window carries.
-    certifier: [u8; 32],
+    /// The host that placed this window: the only device whose word for the
+    /// person a page action of this window carries.
+    placement: tilo_actions::remote::browser::Placement,
 }
 
 impl ActionProvider for WindowActions {
@@ -435,22 +435,19 @@ impl ActionProvider for WindowActions {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        // Only the host that certified this window, for this very
-        // invocation and action, answers for the person.
-        let approved = match &request.confirmation {
-            Some(Confirmation::Approved(token)) => {
-                HostApproval::decode(token).is_some_and(|approval| {
-                    approval.host_device_public_key == self.certifier
-                        && approval.invocation == *request.invocation.0.as_bytes()
-                        && approval.provider == request.target.provider
-                        && approval.action == request.target.address.action
-                        && approval.verify(tilo_clock::unix_now_ns()).is_ok()
-                })
+        // Only the host that placed this window, over its own link, for the
+        // workspace it placed it in, answers for the person; the dispatch that
+        // admitted the same call again on the person's approve of its asked
+        // record hands the window their own answer.
+        let approved = match tilo_actions::remote::browser::host_answered(
+            Some(&self.placement),
+            caller,
+            request.confirmation.as_ref(),
+        ) {
+            Ok(answered) => {
+                answered || matches!(request.confirmation, Some(Confirmation::Asked(_)))
             }
-            // The dispatch admitted the same call again on the person's approve of its asked
-            // record: the answer that reaches the window is theirs.
-            Some(Confirmation::Asked(_)) => true,
-            _ => false,
+            Err(refused) => return Pending::ready(Err(refused)),
         };
         self.seen.lock().unwrap().push(Handed {
             from: *caller
@@ -508,20 +505,32 @@ async fn window_actions(
     material: &Material,
     asks: Asks,
 ) -> Arc<Mutex<Vec<Handed>>> {
+    window_served(server, material, asks).await.0
+}
+
+/// [`window_actions`], and the window's own action service, which serves any
+/// other link a device holds open to it.
+async fn window_served(
+    server: &Server,
+    material: &Material,
+    asks: Asks,
+) -> (Arc<Mutex<Vec<Handed>>>, ActionService) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let device = DeviceIdentity::of(material);
-    let certifier = material
-        .device
-        .issuer
-        .as_ref()
-        .expect("the server certified the environment's device")
-        .device_public_key;
+    let host = server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .action_service()
+        .device();
     let actions = ActionService::new(
         device.sk.clone(),
         Arc::new(WindowActions {
             seen: Arc::clone(&seen),
             asks,
-            certifier,
+            placement: tilo_actions::remote::browser::Placement {
+                host,
+                workspace: material.workspace.clone(),
+            },
         }),
     );
     // What a window holds of the workspace, as the host holds it: who asks a
@@ -542,7 +551,7 @@ async fn window_actions(
         .expect("the server holds workspaces")
         .action_service()
         .reach_device_at(device.device_pubkey(), host_end);
-    seen
+    (seen, actions)
 }
 
 /// The test device a material names: what the session in the environment
@@ -1486,58 +1495,126 @@ async fn a_question_nobody_answers_waits_in_its_record() {
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 0, "nothing ran");
 }
 
-/// An answer of any other kind is no answer: a word that is not this host's,
-/// for this invocation, runs nothing.
+/// The key's own word is no answer for its person: the host refuses a page
+/// action that carries one, and it reaches no window.
 #[tokio::test]
-async fn only_this_hosts_answer_for_this_invocation_runs_a_page_action() {
+async fn a_confirmation_the_caller_brings_runs_no_page_action() {
     let fixture = fixture(Arc::new(Counting::default())).await;
+    let key = fixture.key(true);
+    fixture.list_environment_and(&key).await;
     let material = fixture.environments.material();
-    let seen = window_actions(&fixture.server.server, &material, Asks::Submit).await;
-    let linked = member_link(&fixture.server.server, &fixture.agent).await;
+    let seen = window_actions(&fixture.server.server, &material, Asks::Acting).await;
+    let linked = member_link(&fixture.server.server, &key).await;
     let remote = asking(&linked, WS_NAME).await;
     let caller = linked.caller(fixture.user.user_pk);
 
-    let id = InvocationId::new();
-    let elsewhere = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
-    let mut approval = HostApproval::unsigned(
-        tilo_user_identity::Parties {
-            person: fixture.user.user_pk,
-            host: elsewhere.verifying_key().to_bytes(),
-            caller: fixture.agent.device_pubkey(),
-            target: material.device.device_public_key,
-        },
-        tilo_user_identity::Answered {
-            invocation: *id.0.as_bytes(),
-            provider: WINDOW.to_owned(),
-            resource: PAGE_RESOURCE.to_owned(),
-            action: "submit-page".to_owned(),
-            argument: tilo_actions::remote::argument_digest(None),
-        },
-        (
-            tilo_clock::unix_now_ns(),
-            tilo_clock::unix_now_ns().saturating_add(60_000_000_000),
-        ),
-    );
-    approval.sign(&elsewhere).expect("the other host signs it");
-    let fixed = ActionProvider::invoke(
+    let forged = ActionProvider::invoke(
         &remote,
         &caller,
         page_with(
-            &fixture.agent,
-            id,
-            "submit-page",
-            Some(Confirmation::Approved(approval.encode())),
+            &key,
+            InvocationId::new(),
+            "click-page",
+            Some(Confirmation::Confirmed),
         ),
     )
     .await
     .expect("the host answers");
     assert_eq!(
-        fixed.expect_err("another host's word is no answer here"),
-        ActionCallError::NotPermitted,
-        "another host's word is no answer here"
+        forged.expect_err("a caller's own word is no answer here"),
+        ActionCallError::NotPermitted
     );
     assert!(seen.lock().unwrap().is_empty(), "it reached no window");
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 0, "nothing ran");
+}
+
+/// The frame the placing host hands its window, carrying its word for the
+/// person, runs only over that host's link and for the workspace it placed
+/// the window in: the same frame from another of the workspace's devices,
+/// from another host, or for another workspace, is refused, and the window
+/// runs nothing.
+#[tokio::test]
+async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let key = fixture.key(true);
+    fixture.list_environment_and(&key).await;
+    let material = fixture.environments.material();
+    let (seen, window) = window_served(&fixture.server.server, &material, Asks::Acting).await;
+    let window_device = material.device.device_public_key;
+    let confirmed = || {
+        RemoteActionMessage::Invoke(page_with(
+            &key,
+            InvocationId::new(),
+            "click-page",
+            Some(Confirmation::Confirmed),
+        ))
+    };
+
+    let other_host = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
+    for carrier in [fixture.agent.sk.clone(), other_host] {
+        let carrying = ActionService::new(
+            carrier,
+            Arc::new(WindowActions {
+                seen: Arc::new(Mutex::new(Vec::new())),
+                asks: Asks::Never,
+                placement: tilo_actions::remote::browser::Placement {
+                    host: [0; 32],
+                    workspace: String::new(),
+                },
+            }),
+        );
+        let (carrier_end, window_end) = duplex(Some(window_device), None);
+        window.serve_link(window_end);
+        carrying.reach_device_at(window_device, carrier_end);
+        let answer = carrying
+            .remote_held(window_device, WS_NAME)
+            .expect("a link reaches the window")
+            .ask_message(confirmed())
+            .await;
+        assert!(
+            matches!(
+                receipt_of(answer).status,
+                ReceiptStatus::Rejected {
+                    error: ActionCallError::NotPermitted
+                }
+            ),
+            "another device's word is no answer at the window"
+        );
+    }
+
+    let host = fixture
+        .server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .action_service();
+    let elsewhere = host
+        .remote_held(window_device, &OTHER_WS.to_string())
+        .expect("the host's link reaches the window")
+        .ask_message(confirmed())
+        .await;
+    assert!(
+        matches!(
+            receipt_of(elsewhere).status,
+            ReceiptStatus::Rejected { .. }
+        ),
+        "the host's word for another workspace is no answer at this window"
+    );
+    assert!(seen.lock().unwrap().is_empty(), "the window ran nothing");
+
+    let ran = host
+        .remote_held(window_device, WS_NAME)
+        .expect("the host's link reaches the window")
+        .ask_message(confirmed())
+        .await;
+    assert!(
+        matches!(receipt_of(ran).status, ReceiptStatus::Completed { .. }),
+        "the placing host's word runs it"
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].from, key.device_pubkey(), "it ran as the key's own");
+    assert!(seen[0].approved, "as the person's answer");
 }
 
 /// The record a customer wrote before Browser opened: another app's.

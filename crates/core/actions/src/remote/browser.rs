@@ -200,9 +200,101 @@ pub struct OpenedBrowser {
     pub provider: String,
 }
 
+/// The host that placed a window, as the window's own session was handed it: the device that
+/// certified the window's device and holds the link page actions reach it over, and the
+/// workspace it placed the window in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placement {
+    /// The placing host's device key.
+    pub host: [u8; 32],
+    /// The workspace the window was placed in.
+    pub workspace: String,
+}
+
+/// Whether `confirmation`, carried by `caller` to a window `placed` by its host, is the person's
+/// answer for the call. A key its person let operate web pages is answered for by the host that
+/// placed the window: that host hands the key's own signed call over its link carrying
+/// [`Confirmation::Confirmed`](super::Confirmation::Confirmed), and only that host, for only
+/// the workspace it placed the window in, answers so. `Ok(false)` where the caller carries its
+/// own word, which the action's policy decides on.
+///
+/// # Errors
+/// [`ActionCallError::NotPermitted`](super::ActionCallError::NotPermitted) for a confirmation
+/// another device carried, one carried for another workspace, or one reaching a window no host
+/// placed: nobody else answers for the person here.
+pub fn host_answered(
+    placed: Option<&Placement>,
+    caller: &super::Caller,
+    confirmation: Option<&super::Confirmation>,
+) -> Result<bool, super::ActionCallError> {
+    let (Some(super::Confirmation::Confirmed), Some(carrier)) = (confirmation, caller.carrier())
+    else {
+        return Ok(false);
+    };
+    let Some(placed) = placed else {
+        tracing::warn!(
+            carrier = %hex::encode(carrier),
+            "a confirmation another device carried reached a device no host placed, so it is refused"
+        );
+        return Err(super::ActionCallError::NotPermitted);
+    };
+    let by_host = *carrier == placed.host;
+    let in_workspace = caller.workspace() == Some(placed.workspace.as_str());
+    if !(by_host && in_workspace) {
+        tracing::warn!(
+            carrier = %hex::encode(carrier),
+            by_host,
+            in_workspace,
+            "a page action's confirmation came from another device than the host that placed this window, or for another workspace, so it is refused"
+        );
+        return Err(super::ActionCallError::NotPermitted);
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The placing host's word, for the workspace it placed the window in, answers for the
+    /// person; the same word from any other device, for any other workspace, or reaching a
+    /// window no host placed, is refused. A caller's own word is its policy's to decide.
+    #[test]
+    fn only_the_placing_host_answers_for_the_person_at_its_window() {
+        use super::super::{ActionCallError, Caller, Confirmation};
+        let host = [1; 32];
+        let placed = Placement {
+            host,
+            workspace: "ws".into(),
+        };
+        let agent = Caller::authenticated([7; 32], [8; 32]).in_workspace("ws");
+        let confirmed = Some(&Confirmation::Confirmed);
+        assert_eq!(
+            host_answered(Some(&placed), &agent.clone().carried_by(host), confirmed),
+            Ok(true)
+        );
+        for (caller, placed) in [
+            (agent.clone().carried_by([2; 32]), Some(&placed)),
+            (
+                Caller::authenticated([7; 32], [8; 32])
+                    .in_workspace("other")
+                    .carried_by(host),
+                Some(&placed),
+            ),
+            (agent.clone().carried_by(host), None),
+        ] {
+            assert_eq!(
+                host_answered(placed, &caller, confirmed),
+                Err(ActionCallError::NotPermitted),
+                "{caller:?}"
+            );
+        }
+        assert_eq!(host_answered(Some(&placed), &agent, confirmed), Ok(false));
+        assert_eq!(
+            host_answered(Some(&placed), &agent.carried_by(host), None),
+            Ok(false)
+        );
+    }
 
     tilo_test_env::scenario! {
         fn a_browser_environment_names_its_actions_and_windows;

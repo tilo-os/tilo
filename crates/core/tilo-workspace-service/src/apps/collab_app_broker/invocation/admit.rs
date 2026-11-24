@@ -312,8 +312,6 @@ impl AppBrokerState {
                 argument,
                 actor,
                 token: confirmation_token,
-                invocation: requested.or(authoritative),
-                revision,
             },
             asks,
         )?;

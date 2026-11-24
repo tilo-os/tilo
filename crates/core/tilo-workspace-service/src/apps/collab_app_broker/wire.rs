@@ -1222,8 +1222,6 @@ impl JoinedChannel {
             .map_err(|_| unavailable())?
             .insert(peer_id, surface.clone());
         self.state
-            .advance_approval_publication(peer_id, ApprovalPublicationKind::Surface);
-        self.state
             .surface_republished(peer_id, &surface, previous.as_ref());
         // A catalogue offering its record is what an `open` of it waits for:
         // a directory alone is offered before the app is ready.
@@ -1393,8 +1391,6 @@ impl JoinedChannel {
                 },
             );
         }
-        self.state
-            .advance_approval_publication(self.peer_id, ApprovalPublicationKind::Directory);
         self.retain_native_checkout(&route);
         self.state.refresh_action_directory_root_snapshot();
         // The directory can alter remote discoverability without an eager

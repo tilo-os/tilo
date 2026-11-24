@@ -136,7 +136,7 @@ mod https_completion {
     }
 
     /// `request`, carrying the person's approve of exactly it, as the host hands it back.
-    fn host_approved(
+    fn with_their_approve(
         workspace: &Workspace,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::InvokeRequest {
@@ -174,9 +174,7 @@ mod https_completion {
             },
             argument: tilo_actions::remote::InvokeArgument::Json(argument),
             context: None,
-            confirmation: Some(tilo_actions::remote::Confirmation::Approved(
-                "caller-supplied".into(),
-            )),
+            confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
             revision: revision.map(Into::into),
             on_behalf_of: None,
             wait_ms: None,
@@ -608,7 +606,7 @@ mod https_completion {
                             "durable admission after consent",
                             store_invoke(
                                 target.handle.clone(),
-                                host_approved(&workspace, &request(invocation)),
+                                with_their_approve(&workspace, &request(invocation)),
                             ),
                         )
                         .await
@@ -720,7 +718,7 @@ mod https_completion {
                     );
                     bounded(
                         "native admission after consent",
-                        store_invoke(target.handle.clone(), host_approved(&workspace, &asking)),
+                        store_invoke(target.handle.clone(), with_their_approve(&workspace, &asking)),
                     )
                     .await
                     .unwrap();
