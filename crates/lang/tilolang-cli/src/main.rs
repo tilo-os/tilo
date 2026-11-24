@@ -535,9 +535,10 @@ fn build(args: &[String]) -> Result<(), String> {
             dir => common.dir = dir.into(),
         }
     }
-    let identity_path =
-        identity.unwrap_or_else(|| tilolang_cli::state_dir().join("publisher.json"));
-    let identity = tilolang_cli::identity_at(&identity_path)?;
+    let identity = match identity {
+        Some(path) => tilolang_cli::identity_at(&path)?,
+        None => tilolang_cli::publisher_identity()?,
+    };
     let options = BuildOptions {
         out: out.unwrap_or_else(|| common.dir.join("target")),
         dir: common.dir,

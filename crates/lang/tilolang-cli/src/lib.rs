@@ -49,6 +49,19 @@ pub fn identity_at(path: &Path) -> Result<SigningIdentity, String> {
     }
 }
 
+/// The publisher identity a command signs with when it names no key file: this machine's
+/// publisher key (`$TILO_PUBLISHER_KEY`, else the secret store), the one `tilolang keys` creates
+/// and `tilolang publish` signs entries with, so a package and its registry entry name one
+/// publisher. Only where there is no store, as on a build machine without a secret service, is it
+/// the development key in [`state_dir`].
+pub fn publisher_identity() -> Result<SigningIdentity, String> {
+    use app_registry::publisher::key;
+    match key::discover(&key::machine_store()).map_err(|error| format!("{error:#}"))? {
+        Some(key) => Ok(SigningIdentity::from_seed(&key.to_bytes())),
+        None => identity_at(&state_dir().join("publisher.json")),
+    }
+}
+
 /// Where the tool keeps its state: the development key and the nested sessions' state.
 #[must_use]
 pub fn state_dir() -> PathBuf {

@@ -1731,7 +1731,7 @@ fn build_local_runtime_binary(repo: &Path) -> Result<PathBuf, String> {
 /// until interrupted.
 pub fn dev(options: &DevOptions) -> Result<(), String> {
     let repo = session::repo_root(options.repo.as_deref(), &options.dir)?;
-    let identity = crate::identity_at(&crate::state_dir().join("publisher.json"))?;
+    let identity = crate::publisher_identity()?;
     let (sender, wakes) = mpsc::channel();
     match &options.session {
         Some(session) => dev_in_session(options, &repo, session, identity, &sender, &wakes),

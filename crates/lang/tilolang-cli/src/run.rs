@@ -181,7 +181,7 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         tilolang_runtime,
         version: "0.1.0".to_owned(),
     };
-    let identity = crate::identity_at(&crate::state_dir().join("publisher.json"))?;
+    let identity = crate::publisher_identity()?;
     let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"), &repo);
     let apps = dev.build_for_start()?;
 

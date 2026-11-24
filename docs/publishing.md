@@ -31,8 +31,10 @@ prints it as a key file, `{"secret_key_hex": ...}`: the key is your identity as
 a publisher, and an update signed by any other key is refused.
 
 The same key signs your packages and the registry requests `tilolang publish`
-sends: `tilolang package` uses it whenever it can find it, and a throwaway key
-otherwise (`--identity FILE` picks another). `tilolang keys show` prints the
+sends: `tilolang package`, `build`, `run` and `dev` use it whenever they can
+find it (`--identity FILE` picks another). Without one, a Rust app's package is
+signed with a throwaway key, and a tilolang package with a development key kept
+in `$XDG_STATE_HOME/tilolang`; the registry accepts neither. `tilolang keys show` prints the
 public key and the proof line described below. Every command that needs the
 key reads `--key FILE` (a key file), then `$TILO_PUBLISHER_KEY` (the key
 file's contents, which is how CI passes it), then the secret store. A key file
