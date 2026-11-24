@@ -9,16 +9,12 @@ view themes_pane() {
     state base: Text = "tilo-dark"
     let a = settings.appearance
     ui.Section("Shown") {
-        setting(
-            "In dark mode",
-            "A look's dark side, or one of your themes",
-            ui.Text(theme_title(a.dark_theme), role: .body),
-        )
-        setting(
-            "In light mode",
-            "A look's light side, or one of your themes",
-            ui.Text(theme_title(a.light_theme), role: .body),
-        )
+        setting("In dark mode", "A look's dark side, or one of your themes") {
+            ui.Text(theme_title(a.dark_theme), role: .body)
+        }
+        setting("In light mode", "A look's light side, or one of your themes") {
+            ui.Text(theme_title(a.light_theme), role: .body)
+        }
     }
     ui.Section("Looks") {
         for look in ["Tilo", "Paper", "Moss", "Dusk", "Mono"] {
@@ -48,7 +44,13 @@ view themes_pane() {
                         ui.Button("Use", size: .small) {
                             on press: settings.use_theme(a, theme: t.id)
                         }
-                        ui.Button("Delete", icon: .trash, icon_only: true, role: .plain, size: .small) {
+                        ui.Button(
+                            "Delete",
+                            icon: .trash,
+                            icon_only: true,
+                            role: .plain,
+                            size: .small,
+                        ) {
                             on press: settings.delete_theme(a, theme: t.id)
                         }
                     }
@@ -77,47 +79,49 @@ view themes_pane() {
 /// One theme's roles, each control bound to its field.
 template view theme_editor(t: settings.ThemeRecord) {
     ui.Section("Name and polarity") {
-        setting("Name", "What the theme is called", ui.TextInput(bind: t.name))
-        setting(
-            "Dark",
-            "Light ink on dark surfaces; turning it keeps the hue",
-            ui.Toggle(
-                on: t.dark,
-                label: "Dark",
-            ) {
-                on change(on): settings.switch_polarity(settings.appearance, theme: t.id, dark: on)
-            },
-        )
-        setting(
-            "High contrast",
-            "The theme's own high-contrast palette",
-            ui.Toggle(bind: t.high_contrast),
-        )
+        setting("Name", "What the theme is called") {
+            ui.TextInput(bind: t.name)
+        }
+        setting("Dark", "Light ink on dark surfaces; turning it keeps the hue") {
+            ui.Toggle(shown: t.dark, label: "Dark") {
+                on check(on): settings.switch_polarity(settings.appearance, theme: t.id, dark: on)
+            }
+        }
+        setting("High contrast", "The theme's own high-contrast palette") {
+            ui.Toggle(bind: t.high_contrast)
+        }
     }
     ui.Section("Colour") {
-        setting(
-            "Hue",
-            "The temperature every surface leans to; empty is grey",
-            ui.Slider(bind: t.hue, label: "Hue", min: 0.0, max: 360.0, step: 1.0, shows_value: true),
-        )
-        setting(
-            "Chroma",
-            "How much of the hue the surfaces carry",
-            ui.Slider(bind: t.chroma, label: "Chroma", min: 0.0, max: 0.05, step: 0.001, shows_value: true),
-        )
+        setting("Hue", "The temperature every surface leans to; empty is grey") {
+            ui.Slider(bind: t.hue, label: "Hue", min: 0.0, max: 360.0, step: 1.0, shows_value: true)
+        }
+        setting("Chroma", "How much of the hue the surfaces carry") {
+            ui.Slider(
+                bind: t.chroma,
+                label: "Chroma",
+                min: 0.0,
+                max: 0.05,
+                step: 0.001,
+                shows_value: true,
+            )
+        }
         setting(
             "Accent hue",
             "Presses and selections take this hue; empty takes each person's colour",
-            ui.Slider(bind: t.tint, label: "Accent hue", min: 0.0, max: 360.0, step: 1.0, shows_value: true),
-        )
-        setting(
-            "Inverted accent",
-            "Presses and selections in ink, with no hue",
-            ui.Toggle(bind: t.monochrome),
-        )
-        setting(
-            "Presence lightness",
-            "How light people's colours are drawn",
+        ) {
+            ui.Slider(
+                bind: t.tint,
+                label: "Accent hue",
+                min: 0.0,
+                max: 360.0,
+                step: 1.0,
+                shows_value: true,
+            )
+        }
+        setting("Inverted accent", "Presses and selections in ink, with no hue") {
+            ui.Toggle(bind: t.monochrome)
+        }
+        setting("Presence lightness", "How light people's colours are drawn") {
             ui.Slider(
                 bind: t.presence.lightness,
                 label: "Presence lightness",
@@ -125,11 +129,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 0.9,
                 step: 0.01,
                 shows_value: true,
-            ),
-        )
-        setting(
-            "Presence chroma",
-            "How vivid people's colours are drawn",
+            )
+        }
+        setting("Presence chroma", "How vivid people's colours are drawn") {
             ui.Slider(
                 bind: t.presence.chroma,
                 label: "Presence chroma",
@@ -137,71 +139,192 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 0.2,
                 step: 0.005,
                 shows_value: true,
-            ),
-        )
+            )
+        }
     }
     ui.Section("Surfaces") {
-        lightness("Desktop", t.surfaces.base)
-        lightness("Window", t.surfaces.content)
-        lightness("Sidebar", t.surfaces.sidebar)
-        lightness("Inspector", t.surfaces.inspector)
-        lightness("Raised", t.surfaces.raised)
-        lightness("Floating chrome", t.surfaces.overlay)
+        setting("Desktop", "Lightness, from black to white") {
+            ui.Slider(
+                bind: t.surfaces.base,
+                label: "Desktop",
+                min: 0.0,
+                max: 1.0,
+                step: 0.005,
+                shows_value: true,
+            )
+        }
+        setting("Window", "Lightness, from black to white") {
+            ui.Slider(
+                bind: t.surfaces.content,
+                label: "Window",
+                min: 0.0,
+                max: 1.0,
+                step: 0.005,
+                shows_value: true,
+            )
+        }
+        setting("Sidebar", "Lightness, from black to white") {
+            ui.Slider(
+                bind: t.surfaces.sidebar,
+                label: "Sidebar",
+                min: 0.0,
+                max: 1.0,
+                step: 0.005,
+                shows_value: true,
+            )
+        }
+        setting("Inspector", "Lightness, from black to white") {
+            ui.Slider(
+                bind: t.surfaces.inspector,
+                label: "Inspector",
+                min: 0.0,
+                max: 1.0,
+                step: 0.005,
+                shows_value: true,
+            )
+        }
+        setting("Raised", "Lightness, from black to white") {
+            ui.Slider(
+                bind: t.surfaces.raised,
+                label: "Raised",
+                min: 0.0,
+                max: 1.0,
+                step: 0.005,
+                shows_value: true,
+            )
+        }
+        setting("Floating chrome", "Lightness, from black to white") {
+            ui.Slider(
+                bind: t.surfaces.overlay,
+                label: "Floating chrome",
+                min: 0.0,
+                max: 1.0,
+                step: 0.005,
+                shows_value: true,
+            )
+        }
     }
     ui.Section("Ink") {
-        lightness("Primary ink", t.ink.primary)
-        lightness("Secondary ink", t.ink.secondary)
-        lightness("Tertiary ink", t.ink.tertiary)
+        setting("Primary ink", "Lightness, from black to white") {
+            ui.Slider(
+                bind: t.ink.primary,
+                label: "Primary ink",
+                min: 0.0,
+                max: 1.0,
+                step: 0.005,
+                shows_value: true,
+            )
+        }
+        setting("Secondary ink", "Lightness, from black to white") {
+            ui.Slider(
+                bind: t.ink.secondary,
+                label: "Secondary ink",
+                min: 0.0,
+                max: 1.0,
+                step: 0.005,
+                shows_value: true,
+            )
+        }
+        setting("Tertiary ink", "Lightness, from black to white") {
+            ui.Slider(
+                bind: t.ink.tertiary,
+                label: "Tertiary ink",
+                min: 0.0,
+                max: 1.0,
+                step: 0.005,
+                shows_value: true,
+            )
+        }
     }
     ui.Section("Shape and type") {
-        setting(
-            "Window corners",
-            "How round windows and panels are",
-            ui.Slider(bind: t.window_radius, label: "Window corners", min: 0.0, max: 28.0, step: 1.0, shows_value: true),
-        )
-        setting(
-            "Density",
-            "How much room there is around everything",
-            ui.Slider(bind: t.density, label: "Density", min: 0.75, max: 1.5, step: 0.05, shows_value: true),
-        )
-        setting("Interface face", "The typeface the desktop is drawn in", ui.TextInput(bind: t.face))
-        setting(
-            "Text size",
-            "The body text's size, in points",
-            ui.Slider(bind: t.base_size, label: "Text size", min: 12.0, max: 18.0, step: 0.5, shows_value: true),
-        )
-        setting(
-            "Motion",
-            "How lively the movement is; none lands every change at once",
-            ui.Slider(bind: t.motion, label: "Motion", min: 0.0, max: 2.0, step: 0.05, shows_value: true),
-        )
+        setting("Window corners", "How round windows and panels are") {
+            ui.Slider(
+                bind: t.window_radius,
+                label: "Window corners",
+                min: 0.0,
+                max: 28.0,
+                step: 1.0,
+                shows_value: true,
+            )
+        }
+        setting("Density", "How much room there is around everything") {
+            ui.Slider(
+                bind: t.density,
+                label: "Density",
+                min: 0.75,
+                max: 1.5,
+                step: 0.05,
+                shows_value: true,
+            )
+        }
+        setting("Interface face", "The typeface the desktop is drawn in") {
+            ui.TextInput(bind: t.face)
+        }
+        setting("Text size", "The body text's size, in points") {
+            ui.Slider(
+                bind: t.base_size,
+                label: "Text size",
+                min: 12.0,
+                max: 18.0,
+                step: 0.5,
+                shows_value: true,
+            )
+        }
+        setting("Motion", "How lively the movement is; none lands every change at once") {
+            ui.Slider(
+                bind: t.motion,
+                label: "Motion",
+                min: 0.0,
+                max: 2.0,
+                step: 0.05,
+                shows_value: true,
+            )
+        }
     }
     ui.Section("Material") {
-        setting(
-            "Blur",
-            "How much what lies behind floating chrome is blurred",
-            ui.Slider(bind: t.blur, label: "Blur", min: 0.0, max: 48.0, step: 1.0, shows_value: true),
-        )
-        setting(
-            "Refraction",
-            "How far glass bends what lies behind it at its edge",
-            ui.Slider(bind: t.refraction, label: "Refraction", min: 0.0, max: 32.0, step: 0.5, shows_value: true),
-        )
-        setting(
-            "Tint",
-            "How much of the panel's own colour covers what shows through",
-            ui.Slider(bind: t.tint_opacity, label: "Tint", min: 0.0, max: 1.0, step: 0.01, shows_value: true),
-        )
-        setting(
-            "Frosted tab strip",
-            "The tab strip takes the floating material",
-            ui.Toggle(bind: t.frosted_strip),
-        )
-        setting(
-            "Rim light",
-            "How far round a selected tab its rim light reaches",
-            ui.Slider(bind: t.rim_span, label: "Rim light", min: 0.0, max: 1.0, step: 0.05, shows_value: true),
-        )
+        setting("Blur", "How much what lies behind floating chrome is blurred") {
+            ui.Slider(
+                bind: t.blur,
+                label: "Blur",
+                min: 0.0,
+                max: 48.0,
+                step: 1.0,
+                shows_value: true,
+            )
+        }
+        setting("Refraction", "How far glass bends what lies behind it at its edge") {
+            ui.Slider(
+                bind: t.refraction,
+                label: "Refraction",
+                min: 0.0,
+                max: 32.0,
+                step: 0.5,
+                shows_value: true,
+            )
+        }
+        setting("Tint", "How much of the panel's own colour covers what shows through") {
+            ui.Slider(
+                bind: t.tint_opacity,
+                label: "Tint",
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+        }
+        setting("Frosted tab strip", "The tab strip takes the floating material") {
+            ui.Toggle(bind: t.frosted_strip)
+        }
+        setting("Rim light", "How far round a selected tab its rim light reaches") {
+            ui.Slider(
+                bind: t.rim_span,
+                label: "Rim light",
+                min: 0.0,
+                max: 1.0,
+                step: 0.05,
+                shows_value: true,
+            )
+        }
     }
     row(gap: .related, align: .center, wrap: true) {
         ui.Button("Duplicate", icon: .copy) {
@@ -210,7 +333,7 @@ template view theme_editor(t: settings.ThemeRecord) {
         // Saved where the person chooses, through the system's save path: the file is the theme
         // itself, which importing it on another workspace reads back role by role.
         ui.Button("Export", icon: .download) {
-            on press: file.save(File.of_text("{t.name}.theme.json", json.encode(t)), name: "{t.name}.theme.json")
+            on press: file.save(export_theme(t), name: "{t.name}.theme.json")
         }
         ui.Button("Start over from where it came from", icon: .rotate_ccw) {
             on press: settings.reset_theme(settings.appearance, theme: t.id)
@@ -218,36 +341,26 @@ template view theme_editor(t: settings.ThemeRecord) {
     }
 }
 
-/// One lightness of the surface or ink ladder.
-template view lightness(title: Text, value: Float) {
-    setting(
-        title,
-        "Lightness, from black to white",
-        ui.Slider(bind: value, label: title, min: 0.0, max: 1.0, step: 0.005, shows_value: true),
-    )
+/// The theme as a file: what exporting it saves, and importing it on another workspace reads.
+action export_theme(t: settings.ThemeRecord) -> File (label: "Export a theme") {
+    File.of_text("{t.name}.theme.json", json.encode(t))
 }
 
 /// What a mode shows, as a person reads it.
 fn theme_title(reference: Text) -> Text {
     if reference.starts_with("custom:") {
-        reference.strip_prefix("custom:")
-    } else {
-        reference
-    }
+        reference.split(":").at(1) ?? reference
+    } else { reference }
 }
 
 /// Which mode shows a theme of the person's, if one does.
-fn shown_as(a: settings.AppearancePrefs, id: Text, dark: Bool) -> Text {
+fn shown_as(a: settings.Appearance, id: Text, dark: Bool) -> Text {
     let reference = "custom:" + id
     if dark and a.dark_theme == reference {
         "Shown in dark mode"
     } else if not dark and a.light_theme == reference {
         "Shown in light mode"
-    } else if dark {
-        "Dark"
-    } else {
-        "Light"
-    }
+    } else if dark { "Dark" } else { "Light" }
 }
 
 /// The presets a new theme can start from: each look's two sides.

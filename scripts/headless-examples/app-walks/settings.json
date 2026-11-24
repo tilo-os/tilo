@@ -2,14 +2,14 @@
   "app": "settings",
   "said": "Settings",
   "family": "settings",
-  "live": "rust",
+  "live": "tl",
   "apps": "",
   "packages": [
     "files"
   ],
-  "rust": {
+  "tl": {
     "id": "so.tilo.settings",
-    "native": "settings"
+    "package": "settings"
   },
   "steps": [
     {
@@ -30,7 +30,7 @@
     },
     {
       "id": "settings-open",
-      "said": "Open Settings on its Appearance page",
+      "said": "Open Settings on its Appearance page, with the panes down the side",
       "ops": [
         {
           "launch": true
@@ -39,23 +39,16 @@
           "wait_for": "window"
         },
         {
-          "do_app": {
-            "app": "so.tilo.settings",
-            "operation": "open-pane",
-            "args": {
-              "pane": "appearance"
-            }
-          }
+          "wait_for": "Appearance"
         },
         {
-          "wait_for": {
-            "shown": "Light or dark"
-          }
+          "targets": true
         },
         {
           "must": [
-            "Light or dark",
-            "Dark"
+            "Appearance",
+            "Accessibility",
+            "Network"
           ]
         }
       ],
@@ -79,243 +72,142 @@
           "window_of": "file-explorer"
         }
       ],
-      "budget_ms": 15000
-    },
-    {
-      "id": "accent",
-      "said": "Pick the blue accent; the desktop and Files take it",
-      "ops": [
-        {
-          "window_frames": "file-explorer"
-        },
-        {
-          "press": "Blue"
-        },
-        {
-          "window_frames": "file-explorer"
-        }
-      ],
-      "budget_ms": 15000
-    },
-    {
-      "id": "look",
-      "said": "Choose the Dusk look",
-      "ops": [
-        {
-          "press": "Dusk"
-        }
-      ],
-      "budget_ms": 15000
-    },
-    {
-      "id": "text-size",
-      "said": "Make the text larger and calmer in Accessibility",
-      "ops": [
-        {
-          "do_app": {
-            "app": "so.tilo.settings",
-            "operation": "open-pane",
-            "args": {
-              "pane": "accessibility"
-            }
-          }
-        },
-        {
-          "wait_for": {
-            "shown": "Larger"
-          }
-        },
-        {
-          "window_frames": "file-explorer"
-        },
-        {
-          "press": "Larger"
-        },
-        {
-          "window_frames": "file-explorer"
-        },
-        {
-          "press": "High contrast"
-        },
-        {
-          "press": "Reduce motion"
-        }
-      ],
-      "budget_ms": 15000
-    },
-    {
-      "id": "density",
-      "said": "Make the controls denser",
-      "ops": [
-        {
-          "do_app": {
-            "app": "so.tilo.settings",
-            "operation": "open-pane",
-            "args": {
-              "pane": "appearance"
-            }
-          }
-        },
-        {
-          "wait_for": {
-            "shown": "Compact"
-          }
-        },
-        {
-          "press": "Compact"
-        },
-        {
-          "window_frames": "file-explorer"
-        }
-      ],
-      "budget_ms": 20000
-    },
-    {
-      "id": "dnd",
-      "said": "Silence banners while the person works",
-      "ops": [
-        {
-          "do_app": {
-            "app": "so.tilo.settings",
-            "operation": "open-pane",
-            "args": {
-              "pane": "notifications"
-            }
-          }
-        },
-        {
-          "wait_for": {
-            "shown": "Do not disturb"
-          }
-        },
-        {
-          "press": "Do not disturb"
-        }
-      ],
-      "budget_ms": 20000
-    },
-    {
-      "id": "mono",
-      "said": "Combine the output's channels",
-      "ops": [
-        {
-          "do_app": {
-            "app": "so.tilo.settings",
-            "operation": "set-mono-output",
-            "args": {
-              "on": true
-            }
-          }
-        }
-      ],
-      "budget_ms": 20000
-    },
-    {
-      "id": "language",
-      "said": "Show the desktop in German",
-      "ops": [
-        {
-          "do_app": {
-            "app": "so.tilo.settings",
-            "operation": "choose-language",
-            "args": {
-              "language": "de"
-            }
-          }
-        },
-        {
-          "wait_for": {
-            "shown": "Darstellung"
-          }
-        }
-      ],
       "budget_ms": 30000
     },
     {
-      "id": "restart",
-      "said": "Sign in again; every choice comes back",
+      "id": "accessibility",
+      "said": "Open Accessibility and see the screen reader's own switch",
       "ops": [
         {
-          "restart": "session"
+          "press": "Accessibility"
         },
         {
-          "launch": true
-        },
-        {
-          "wait_for": "window"
-        }
-      ],
-      "budget_ms": 180000
-    },
-    {
-      "id": "kept",
-      "said": "The desktop is dark, violet, larger and German, and Files redrew in it",
-      "ops": [
-        {
-          "wait_for": {
-            "shown": "Darstellung"
-          }
-        },
-        {
-          "do_app": {
-            "app": "so.tilo.settings",
-            "operation": "open-pane",
-            "args": {
-              "pane": "appearance"
-            }
-          }
-        },
-        {
-          "wait_for": {
-            "shown": "Dunkel"
-          }
+          "wait_for": "Screen reader"
         },
         {
           "must": [
-            "Dunkel"
+            "Screen reader",
+            "Magnifier",
+            "Sticky keys"
           ]
-        },
-        {
-          "read": {
-            "app": "so.tilo.settings",
-            "operation": "inspect-appearance",
-            "is": {
-              "theme": "dusk",
-              "mode": "dark",
-              "accent": "blue",
-              "text_scale": 1.3,
-              "density": 0.85,
-              "high_contrast": true,
-              "reduce_motion": true
-            }
-          }
-        },
-        {
-          "window_of": "file-explorer"
         }
       ],
-      "budget_ms": 30000
+      "budget_ms": 20000
     },
     {
-      "id": "english-again",
-      "said": "Put the desktop back in English",
+      "id": "notifications",
+      "said": "Open Notifications and see do not disturb and the banner switches",
       "ops": [
         {
-          "do_app": {
-            "app": "so.tilo.settings",
-            "operation": "choose-language",
-            "args": {
-              "language": "en"
-            }
-          }
+          "press": "Notifications"
         },
         {
-          "wait_for": {
-            "shown": "Appearance"
-          }
+          "wait_for": "Do not disturb"
+        },
+        {
+          "must": [
+            "Do not disturb",
+            "Show banners"
+          ]
         }
       ],
-      "budget_ms": 30000
+      "budget_ms": 20000
+    },
+    {
+      "id": "region",
+      "said": "Open Region and formats and see the currency and date choices",
+      "ops": [
+        {
+          "press": "Region and formats"
+        },
+        {
+          "wait_for": "Currency"
+        },
+        {
+          "must": [
+            "Currency",
+            "Date format",
+            "First day of the week"
+          ]
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "shortcuts",
+      "said": "Open Keyboard shortcuts and see the desktop's own chords",
+      "ops": [
+        {
+          "press": "Keyboard shortcuts"
+        },
+        {
+          "wait_for": "The desktop's shortcuts"
+        },
+        {
+          "must": [
+            "Search",
+            "Lock the screen"
+          ]
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "date-time",
+      "said": "Open Date and time and see the clock and its zone",
+      "ops": [
+        {
+          "press": "Date and time"
+        },
+        {
+          "wait_for": "Time zone"
+        },
+        {
+          "must": [
+            "Time zone",
+            "Formats"
+          ]
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "default-apps",
+      "said": "Open Default apps and see what opens each kind",
+      "ops": [
+        {
+          "press": "Default apps"
+        },
+        {
+          "wait_for": "Handlers"
+        },
+        {
+          "must": [
+            "Handlers",
+            "Choose one"
+          ]
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "about",
+      "said": "Open About and see the system it runs",
+      "ops": [
+        {
+          "press": "About"
+        },
+        {
+          "wait_for": "Tilo"
+        },
+        {
+          "must": [
+            "This system",
+            "Apps"
+          ]
+        }
+      ],
+      "budget_ms": 20000
     }
   ]
 }

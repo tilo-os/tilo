@@ -36,7 +36,7 @@ view disk_unlock_pane() {
             }
         }
         ui.Section("Networks early boot may join") {
-            network_rows(volume, disk.saved_networks)
+            unlock_network_rows(volume, disk.saved_networks)
         }
     }
     if let problem = disk.problem {
@@ -46,7 +46,7 @@ view disk_unlock_pane() {
 
 /// The Wi-Fi connections a volume may use at boot: the chosen ones and the ones saved here, each
 /// with the control that adds or removes it from the volume's list.
-view network_rows(volume: device.UnlockVolume, saved: List<Text>) {
+view unlock_network_rows(volume: device.UnlockVolume, saved: List<Text>) {
     let offered = volume.networks + saved.filter(n -> not volume.networks.any(x -> x == n))
     if offered.is_empty() {
         ui.Text(
@@ -61,9 +61,7 @@ view network_rows(volume: device.UnlockVolume, saved: List<Text>) {
             network,
             secondary: if chosen {
                 "Early boot may join it to reach your devices"
-            } else {
-                "Not used to unlock this volume"
-            },
+            } else { "Not used to unlock this volume" },
             selected: chosen,
             icon: .wifi,
         ) {
@@ -78,9 +76,7 @@ view network_rows(volume: device.UnlockVolume, saved: List<Text>) {
                         volume: volume.volume,
                         networks: if chosen {
                             volume.networks.filter(x -> x != network)
-                        } else {
-                            volume.networks + [network]
-                        },
+                        } else { volume.networks + [network] },
                     )
                 }
             }
@@ -92,16 +88,10 @@ view network_rows(volume: device.UnlockVolume, saved: List<Text>) {
 fn sealing_words(sealing: device.Sealing) -> Text {
     if sealing == .tpm2 {
         "Sealed to this machine's chip"
-    } else {
-        "Kept in the clear on this disk"
-    }
+    } else { "Kept in the clear on this disk" }
 }
 
 /// The person's devices that may release the half, or that none does yet.
 fn sibling_words(volume: device.UnlockVolume) -> Text {
-    if volume.siblings.is_empty() {
-        "None yet"
-    } else {
-        volume.siblings.join(", ")
-    }
+    if volume.siblings.is_empty() { "None yet" } else { volume.siblings.join(", ") }
 }

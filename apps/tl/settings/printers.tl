@@ -21,7 +21,10 @@ view printers_pane() {
                         row(gap: .tight, align: .center, wrap: true) {
                             if not queue.default {
                                 ui.Button("Use first", size: .small) {
-                                    on press: device.set_default(device.printers, printer: queue.name)
+                                    on press: device.set_default(
+                                        device.printers,
+                                        printer: queue.name,
+                                    )
                                 }
                             }
                             ui.Button(
@@ -68,7 +71,11 @@ view printers_pane() {
                     if let level = supply.level {
                         ui.ListRow(supply.name, secondary: "{level}% left", icon: .droplet)
                     } else {
-                        ui.ListRow(supply.name, secondary: "Its level is not reported", icon: .droplet)
+                        ui.ListRow(
+                            supply.name,
+                            secondary: "Its level is not reported",
+                            icon: .droplet,
+                        )
                     }
                 }
             }
@@ -83,11 +90,7 @@ view printers_pane() {
                 ) {
                     trailing: {
                         ui.Button("Add", size: .small, role: .primary) {
-                            on press: device.add(
-                                device.printers,
-                                uri: found.uri,
-                                name: found.name,
-                            )
+                            on press: device.add(device.printers, uri: found.uri, name: found.name)
                         }
                     }
                 }
@@ -137,11 +140,7 @@ view printers_pane() {
                 ui.EmptyState("No scanner found", icon: .scan_line, inline: true)
             }
             for scanner in scanner_service.found {
-                ui.ListRow(
-                    scanner.description,
-                    secondary: scanner.device,
-                    icon: .scan_line,
-                )
+                ui.ListRow(scanner.description, secondary: scanner.device, icon: .scan_line)
             }
             ui.Button("Look for scanners", icon: .search) {
                 on press: device.find_scanners(device.scanners)
@@ -161,11 +160,7 @@ fn queue_words(queue: device.PrinterQueue) -> Text {
         if let why = queue.reason { "Paused: {why}" } else { "Paused" }
     } else if queue.state == .offline {
         "Offline"
-    } else if queue.default {
-        "Ready; the one used first"
-    } else {
-        "Ready"
-    }
+    } else if queue.default { "Ready; the one used first" } else { "Ready" }
 }
 
 /// How a job stands, in a word.
@@ -180,9 +175,5 @@ fn job_words(job: device.PrintJob) -> Text {
         "Cancelled"
     } else if job.state == .failed {
         "Failed"
-    } else if job.state == .printed {
-        "Printed"
-    } else {
-        "Waiting"
-    }
+    } else if job.state == .printed { "Printed" } else { "Waiting" }
 }

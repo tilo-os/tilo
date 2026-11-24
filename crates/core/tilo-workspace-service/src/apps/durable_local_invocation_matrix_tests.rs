@@ -425,5 +425,4 @@ mod durable_local_matrix {
     include!("observed_launch_tests.rs");
     include!("app_open_api_tests.rs");
     include!("app_child_request_tests.rs");
-    include!("keyboard_map_read_authority_tests.rs");
 }

@@ -75,6 +75,10 @@ terse views make agent answers cheaper and more reliable.
 10. **An item block names the values it draws with:** `std.list(items) { (x, at) -> row(x,
    at) }` for a parameter typed `(T, Option<Actor>) -> View`. The item and who else is at
    it reach the row; the item it stands under the row says itself, as the list item's `parent:`.
+11. **A platform's case or field names may carry a hyphen after `.`:** the surfaces name
+   several cases that way (`p == .waiting-for-microphones`, `match role { .surround-left => … }`,
+   `.own-devices`). The hyphen belongs to the name where it follows it with no space, so `a.b -
+   c` stays a subtraction.
 
 Values present themselves: a `Time`, a person or an amount passed to a component renders in the
 platform's format (relative times, avatar and name, localized money), never formatted by hand.

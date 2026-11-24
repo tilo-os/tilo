@@ -210,6 +210,22 @@ fn a_view_sets_the_persons_appearance_and_this_devices_lock_through_their_setter
     looks.poll_patches().unwrap();
     assert_eq!(looks.bound_value(&anchor("calm")), Some(Value::Bool(true)));
 
+    // The setter's change is the person's step, as any action's is: undo takes it back, and the
+    // switch shows the field as it stands again.
+    services
+        .borrow_mut()
+        .invoke(&published, "undo", &serde_json::Map::new())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        services.borrow().read(&published).unwrap()["reduce_motion"],
+        false,
+        "undo reverts the bound edit's setter"
+    );
+    publish(&host, &services, &appearance, &published);
+    looks.poll_patches().unwrap();
+    assert_eq!(looks.bound_value(&anchor("calm")), Some(Value::Bool(false)));
+
     // This device's power, at `devices/<device>/settings/power`, locked sooner through
     // `set-lock-minutes`.
     let (power, published) = root("so.tilo.settings.sections#Power");

@@ -2,7 +2,7 @@
 # beside it: `*` is every native app, and a package joins the collection in the
 # change that retires the native app it replaces.
 [collections.default]
-include = ["*", "tl-activity", "tl-api-tester", "tl-backups", "tl-browser", "tl-calculator", "tl-calendar", "tl-canvas", "tl-chat", "tl-clocks", "tl-code-editor", "tl-contacts", "tl-containers", "tl-db-client", "tl-disk-usage", "tl-disks", "tl-ebook", "tl-feeds", "tl-files", "tl-git-client", "tl-hex-editor", "tl-mail", "tl-maps", "tl-monitor", "tl-music", "tl-notes", "tl-passwords", "tl-pdf", "tl-photos", "tl-print-centre", "tl-scratchpad", "tl-sheets", "tl-snippets", "tl-speed-test", "tl-store", "tl-tasks", "tl-tube", "tl-video", "tl-video-editor", "tl-weather", "tl-word-processor"]
+include = ["*", "tl-activity", "tl-api-tester", "tl-backups", "tl-browser", "tl-calculator", "tl-calendar", "tl-canvas", "tl-chat", "tl-clocks", "tl-code-editor", "tl-contacts", "tl-containers", "tl-db-client", "tl-disk-usage", "tl-disks", "tl-ebook", "tl-feeds", "tl-files", "tl-git-client", "tl-hex-editor", "tl-mail", "tl-maps", "tl-monitor", "tl-music", "tl-notes", "tl-passwords", "tl-pdf", "tl-photos", "tl-print-centre", "tl-settings", "tl-scratchpad", "tl-sheets", "tl-snippets", "tl-speed-test", "tl-store", "tl-tasks", "tl-tube", "tl-video", "tl-video-editor", "tl-weather", "tl-word-processor"]
 
 [collections.desktop]
 extends = ["default"]
@@ -17,15 +17,12 @@ extends = ["default"]
 extends = ["default"]
 
 [collections.recovery]
-include = ["tl-files", "settings", "terminal"]
+include = ["tl-files", "tl-settings", "terminal"]
 
 [features]
 camera = ["live-capture"]
 # Typst from its engine library beside the runtime.
 typst-editor = ["runtime-engine"]
-# Account credentials, the IMAP and the WebDAV client from their engine library
-# beside the runtime.
-settings = ["runtime-engine"]
 # The provider panel from the Settings engine library, which holds it for
 # Settings.
 model-providers = ["runtime-engine"]

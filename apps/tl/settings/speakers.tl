@@ -1,5 +1,3 @@
-use so.tilo.device as device
-
 /// The person's speakers: sets that play across their devices, each set up here, placed in the
 /// room and measured against where the person sits.
 ///
@@ -36,9 +34,25 @@ view speakers_page() {
             )
         }
     } else if step == "overview" {
-        speakers_overview(sp, step, group, listening, mic_on, mic_off, confirming)
+        speakers_overview(
+            sp,
+            step,
+            group,
+            listening,
+            mic_on,
+            mic_off,
+            confirming,
+            placement,
+            chosen,
+            roles,
+            xs,
+            ys,
+            name,
+            at,
+            played,
+        )
     } else if step == "choose" {
-        speakers_choose(sp, placement, chosen, roles, xs, ys, step)
+        speakers_choose(sp, placement, chosen, roles, xs, ys, step, at, played)
     } else if step == "identify" {
         speakers_identify(placement, chosen, roles, at, played, step)
     } else if step == "layout" {
@@ -59,6 +73,14 @@ template view speakers_overview(
     mic_on: State<List<Text>>,
     mic_off: State<List<Text>>,
     confirming: State<Text>,
+    placement: State<Text>,
+    chosen: State<List<Text>>,
+    roles: State<List<Text>>,
+    xs: State<List<Int>>,
+    ys: State<List<Int>>,
+    name: State<Text>,
+    at: State<Int>,
+    played: State<Bool>,
 ) {
     section("Speakers across your devices") {
         if sp.groups.is_empty() {
@@ -91,7 +113,9 @@ template view speakers_overview(
                         ) {
                             on press: if g.output_here {
                                 device.stop_using_as_output(device.speakers)
-                            } else { device.use_as_output(device.speakers, group: g.id) }
+                            } else {
+                                device.use_as_output(device.speakers, group: g.id)
+                            }
                         }
                         if g.led_here {
                             ui.Button("Calibrate", size: .small) {
@@ -99,7 +123,9 @@ template view speakers_overview(
                                     .then(set(listening, ""))
                                     .then(set(mic_on, []))
                                     .then(set(mic_off, []))
-                                    .then(set(step, "calibrate"))
+                                    .then(
+                                        set(step, "calibrate"),
+                                    )
                             }
                             ui.MenuButton(
                                 "More for {g.name}",
@@ -137,7 +163,8 @@ template view speakers_overview(
             primary: "Remove",
             destructive: true,
         ) {
-            on act_primary: device.delete_group(device.speakers, group: doomed.id)
+            on act_primary: device
+                .delete_group(device.speakers, group: doomed.id)
                 .then(set(confirming, ""))
             on dismiss: set(confirming, "")
         }
@@ -154,6 +181,8 @@ template view speakers_choose(
     xs: State<List<Int>>,
     ys: State<List<Int>>,
     step: State<Text>,
+    at: State<Int>,
+    played: State<Bool>,
 ) {
     section("Choose speakers") {
         ui.ToggleGroup(caption: "Placement", fill: true) {
@@ -179,7 +208,9 @@ template view speakers_choose(
                         "{d.label} ({o.label})",
                         secondary: if d.local {
                             "This device"
-                        } else { "Asks for approval on that device when you save" },
+                        } else {
+                            "Asks for approval on that device when you save"
+                        },
                         icon: .speaker,
                         selected: chosen.contains(key),
                     ) {
@@ -191,8 +222,7 @@ template view speakers_choose(
                                 toggled: chosen.contains(key),
                                 role: .plain,
                             ) {
-                                on press: set(chosen, toggled(chosen, key))
-                                    .then(set(roles, []))
+                                on press: set(chosen, toggled(chosen, key)).then(set(roles, []))
                             }
                         }
                     }
@@ -207,8 +237,10 @@ template view speakers_choose(
             ui.Button("Back") {
                 on press: set(step, "overview")
             }
-            ui.Button("Continue", role: .primary, enabled: problem == "") {
-                on press: confirm_outputs(placement, chosen, roles, xs, ys)
+            ui.Button("Continue", role: .primary, enabled: problem == "", description: problem) {
+                on press: set(roles, outputs_roles(placement, chosen))
+                    .then(set(xs, outputs_xs(placement, chosen, xs)))
+                    .then(set(ys, outputs_ys(placement, chosen, ys)))
                     .then(set(step, "identify"))
                     .then(set(at, 0))
                     .then(set(played, false))
@@ -235,11 +267,13 @@ template view speakers_identify(
         )
         if let key = chosen.at(at) {
             ui.Button("Play sound", icon: .volume_2) {
-                on press: device.identify(
-                    device.speakers,
-                    device: speaker_device(key),
-                    output: speaker_output(key),
-                ).then(set(played, true))
+                on press: device
+                    .identify(
+                        device.speakers,
+                        device: speaker_device(key),
+                        output: speaker_output(key),
+                    )
+                    .then(set(played, true))
             }
         }
         if placement == "room" {
@@ -252,19 +286,33 @@ template view speakers_identify(
             text(if played { "Which one just played?" } else { "Play the sound first." })
             row(gap: .related, wrap: true) {
                 for each in free_roles(placement, roles, at) {
-                    ui.Button(role_answer(each), enabled: played) {
-                        on press: answer(each, at, roles, placement, step)
+                    ui.Button(
+                        role_answer(each),
+                        enabled: played,
+                        description: "Play a sound first.",
+                    ) {
+                        on press: set(roles, answered_roles(each, at, roles, placement))
+                            .then(
+                                if let next = answered_roles(each, at, roles, placement)
+                                        .index_of("") {
+                                    set(at, next)
+                                } else { set(step, "name") },
+                            )
                     }
                 }
             }
         }
         row(fill, distribute: .end) {
             ui.Button("Back") {
-                on press: back_identify(at, step).then(set(played, false))
+                on press: if at == 0 {
+                    set(step, "choose").then(set(played, false))
+                } else { set(at, at - 1).then(set(played, false)) }
             }
             if placement == "room" {
                 ui.Button("Next speaker", role: .primary) {
-                    on press: advance_room(at, chosen.len(), step)
+                    on press: if at + 1 < chosen.len() {
+                        set(at, at + 1)
+                    } else { set(step, "layout") }
                 }
             }
         }
@@ -305,7 +353,10 @@ template view speakers_layout(
                 icon: .map_pin,
             ) {
                 trailing: {
-                    ui.Button("Play a sound on {speaker_name(sp, chosen, selected)}", icon: .volume_2) {
+                    ui.Button(
+                        "Play a sound on {speaker_name(sp, chosen, selected)}",
+                        icon: .volume_2,
+                    ) {
                         on press: device.identify(
                             device.speakers,
                             device: speaker_device(picked),
@@ -323,7 +374,7 @@ template view speakers_layout(
             ui.Button("Back") {
                 on press: set(at, (chosen.len() - 1).max(0)).then(set(step, "identify"))
             }
-            ui.Button("Continue", role: .primary, enabled: problem == "") {
+            ui.Button("Continue", role: .primary, enabled: problem == "", description: problem) {
                 on press: set(step, "name")
             }
         }
@@ -343,11 +394,7 @@ template view speakers_name(
 ) {
     section("Name your speakers") {
         ui.TextInput(bind: name, placeholder: "Living room")
-        text(
-            "Shown wherever you can play to these speakers.",
-            role: .caption,
-            secondary: true,
-        )
+        text("Shown wherever you can play to these speakers.", role: .caption, secondary: true)
         for each in chosen {
             ui.ListRow(
                 speaker_name(sp, chosen, chosen.index_of(each) ?? 0),
@@ -370,18 +417,24 @@ template view speakers_name(
                     set(step, "layout")
                 } else { set(step, "identify") }
             }
-            ui.Button("Save", role: .primary, enabled: problem == "") {
-                on press: device.create_group(
-                    device.speakers,
-                    name: name.trim(),
-                    members: chosen.map(
-                        (key, i) -> device.SpeakerMemberChoice(
-                            device: speaker_device(key),
-                            output: speaker_output(key),
-                            role: role_choice(roles.at(i) ?? "", xs.at(i) ?? 0, ys.at(i) ?? 0),
+            ui.Button("Save", role: .primary, enabled: problem == "", description: problem) {
+                on press: device
+                    .create_group(
+                        device.speakers,
+                        name: name.trim(),
+                        members: chosen.map(
+                            (key, i) -> device.SpeakerMemberChoice(
+                                device: speaker_device(key),
+                                output: speaker_output(key),
+                                role: role_choice(
+                                    roles.at(i) ?? "",
+                                    xs.at(i) ?? 0,
+                                    ys.at(i) ?? 0,
+                                ),
+                            ),
                         ),
-                    ),
-                ).then(set(step, "overview"))
+                    )
+                    .then(set(step, "overview"))
             }
         }
     }
@@ -410,7 +463,7 @@ template view speakers_calibrate(
                 )
             }
             let settling = if let r = run {
-                r.phase == .measuring or r.phase == .waiting_for_microphones or r.phase == .proposed
+                r.phase == .measuring or r.phase == .waiting-for-microphones or r.phase == .proposed
             } else { false }
             if not settling {
                 text("Where you sit", role: .caption, secondary: true)
@@ -445,14 +498,20 @@ template view speakers_calibrate(
                                 icon_only: true,
                                 toggled: also_listens(m, known, mic_on, mic_off),
                                 enabled: usable(m),
+                                description: "This device cannot listen for this set.",
                                 role: .plain,
                             ) {
-                                on press: switch_microphone(
-                                    m,
-                                    known,
-                                    mic_on,
-                                    mic_off,
-                                )
+                                on press: if also_listens(m, known, mic_on, mic_off) {
+                                    set(mic_on, mic_on.filter(d -> d != m.device))
+                                        .then(
+                                            set(mic_off, [mic_off, [m.device]].flat_map(s -> s)),
+                                        )
+                                } else {
+                                    set(mic_off, mic_off.filter(d -> d != m.device))
+                                        .then(
+                                            set(mic_on, [mic_on, [m.device]].flat_map(s -> s)),
+                                        )
+                                }
                             }
                         }
                     }
@@ -472,7 +531,7 @@ template view speakers_calibrate(
                         icon: .mic,
                     )
                 }
-                if r.phase == .waiting_for_microphones {
+                if r.phase == .waiting-for-microphones {
                     text(
                         "Approve on each device that asks, or cancel and switch that microphone off.",
                         role: .caption,
@@ -504,12 +563,17 @@ template view speakers_calibrate(
                         ui.Button("Revert") {
                             on press: device.revert_calibration(device.speakers, group: known.id)
                         }
-                    } else if r.phase == .measuring or r.phase == .waiting_for_microphones {
+                    } else if r.phase == .measuring or r.phase == .waiting-for-microphones {
                         ui.Button("Cancel") {
                             on press: device.cancel_calibration(device.speakers, group: known.id)
                         }
                     } else {
-                        ui.Button("Try again", role: .primary, enabled: problem == "") {
+                        ui.Button(
+                            "Try again",
+                            role: .primary,
+                            enabled: problem == "",
+                            description: problem,
+                        ) {
                             on press: device.start_calibration(
                                 device.speakers,
                                 group: known.id,
@@ -519,7 +583,12 @@ template view speakers_calibrate(
                         }
                     }
                 } else {
-                    ui.Button("Calibrate", role: .primary, enabled: problem == "") {
+                    ui.Button(
+                        "Calibrate",
+                        role: .primary,
+                        enabled: problem == "",
+                        description: problem,
+                    ) {
                         on press: device.start_calibration(
                             device.speakers,
                             group: known.id,
@@ -542,15 +611,13 @@ template view speakers_calibrate(
     }
 }
 
+/// How many outputs the placement takes: the least, then the most.
 // ---------------------------------------------------------------------------------------------
 // The flow's own rules: which outputs may join, which roles are left, where a speaker stands, and
 // what a set needs before it can be made or measured. Each is a function of what the person
 // picked, so the page and its controls never disagree.
-
-/// How many outputs the placement takes: the least, then the most.
 fn placement_range(placement: Text) -> List<Int> {
-    if placement == "stereo" { [2, 2] }
-    else if placement == "surround" { [3, 6] } else { [1, 8] }
+    if placement == "stereo" { [2, 2] } else if placement == "surround" { [3, 6] } else { [1, 8] }
 }
 
 /// Why the picked outputs cannot go on yet; empty when they can.
@@ -562,27 +629,25 @@ fn placement_problem(placement: Text, count: Int) -> Text {
         "{placement_title(placement)} takes at least {least} speakers."
     } else if count > most {
         "{placement_title(placement)} takes at most {most} speakers."
-    } else {
-        ""
-    }
+    } else { "" }
 }
 
 /// Takes the picked outputs on: the roles start empty, and around the room each speaker starts on
 /// an arc in front of the person until they place it.
-fn confirm_outputs(
-    placement: Text,
-    chosen: List<Text>,
-    roles: State<List<Text>>,
-    xs: State<List<Int>>,
-    ys: State<List<Int>>,
-) {
+fn outputs_roles(placement: Text, chosen: List<Text>) -> List<Text> {
+    if placement == "room" { chosen.map((key, i) -> "room") } else { chosen.map(key -> "") }
+}
+
+fn outputs_xs(placement: Text, chosen: List<Text>, xs: List<Int>) -> List<Int> {
     if placement == "room" {
-        set(roles, chosen.map((key, i) -> "room"))
-        set(xs, chosen.map((key, i) -> arc_x(i, chosen.len())))
-        set(ys, chosen.map((key, i) -> arc_y(i, chosen.len())))
-    } else {
-        set(roles, chosen.map(key -> ""))
-    }
+        chosen.map((key, i) -> arc_x(i, chosen.len()))
+    } else { xs }
+}
+
+fn outputs_ys(placement: Text, chosen: List<Text>, ys: List<Int>) -> List<Int> {
+    if placement == "room" {
+        chosen.map((key, i) -> arc_y(i, chosen.len()))
+    } else { ys }
 }
 
 /// A speaker's place on the starting arc, across: an even spread over three quarters of a turn.
@@ -590,7 +655,7 @@ fn arc_x(index: Int, count: Int) -> Int {
     if count <= 1 {
         0
     } else {
-        ((index.to_float() / (count - 1).to_float() - 0.5) * 4712.0).round().to_int()
+        ((index.to_float() / (count - 1).to_float() - 0.5) * 4712.0).round()
     }
 }
 
@@ -600,7 +665,7 @@ fn arc_y(index: Int, count: Int) -> Int {
         2000
     } else {
         let turn = index.to_float() / (count - 1).to_float() - 0.5
-        (2000.0 * (1.0 - 2.0 * turn.abs())).round().to_int()
+        (2000.0 * (1.0 - 2.0 * turn.abs())).round()
     }
 }
 
@@ -610,9 +675,7 @@ fn free_roles(placement: Text, roles: List<Text>, at: Int) -> List<Text> {
         ["left", "right"]
     } else if placement == "surround" {
         ["left", "right", "center", "lfe", "surround-left", "surround-right"]
-    } else {
-        []
-    }
+    } else { [] }
     all.filter(role -> not taken_elsewhere(roles, role, at))
 }
 
@@ -623,44 +686,50 @@ fn taken_elsewhere(roles: List<Text>, role: Text, at: Int) -> Bool {
 
 /// Gives the speaker `at` a role and moves on: to the next speaker with no role, or to naming
 /// the set. A stereo pair implies the other side, so answering one speaker answers both.
-fn answer(role: Text, at: Int, roles: State<List<Text>>, placement: State<Text>, step: State<Text>) {
-    let given = if placement == "stereo" {
+/// The roles after `role` answers the speaker `at`: a stereo pair answers both sides at once.
+fn answered_roles(role: Text, at: Int, roles: List<Text>, placement: Text) -> List<Text> {
+    if placement == "stereo" {
         let other = if role == "left" { "right" } else { "left" }
         roles.map((taken, i) -> if i == at { role } else { other })
     } else {
         roles.map((taken, i) -> if i == at { role } else { taken })
     }
-    set(roles, given)
-    if let next = given.index_of("") {
-        set(at, next)
-    } else {
-        set(step, "name")
-    }
 }
 
-/// Around the room: the next speaker, or the layout once each one has played.
-fn advance_room(at: State<Int>, count: Int, step: State<Text>) {
-    if at + 1 < count {
-        set(at, at + 1)
-    } else {
-        set(step, "layout")
-    }
-}
-
-/// Back one speaker, or back to choosing the outputs.
-fn back_identify(at: State<Int>, step: State<Text>) {
-    if at == 0 {
-        set(step, "choose")
-    } else {
-        set(at, at - 1)
-    }
+/// The marker and the name of the speaker `at` on the room's plan.
+fn placed_shapes(
+    sp: device.Speakers,
+    chosen: List<Text>,
+    xs: List<Int>,
+    ys: List<Int>,
+    selected: Int,
+    at: Int,
+) -> List<ui.Shape> {
+    let cx = 0.5 + (xs.at(at) ?? 0).to_float() / 10000.0
+    let cy = 0.5 - (ys.at(at) ?? 0).to_float() / 10000.0
+    [
+        ui.Shape.ellipse(
+            cx: cx,
+            cy: cy,
+            rx: 0.012,
+            ry: 0.012,
+            fill: if at == selected { .accent } else { .ink },
+        ),
+        ui.Shape.text(
+            x: cx + 0.02,
+            y: cy,
+            text: speaker_name(sp, chosen, at),
+            role: .caption,
+            ink: if at == selected { .ink } else { .muted },
+        ),
+    ]
 }
 
 /// Where a speaker stands, in millimetres from the person: the plan's point, snapped to the
 /// centre line and to any line another speaker stands on, and kept inside the room.
-fn placed(axis: State<List<Int>>, selected: Int, at: List<Float>, across: Bool) -> List<Int> {
+fn placed(axis: List<Int>, selected: Int, at: List<Float>, across: Bool) -> List<Int> {
     let fraction = at.at(if across { 0 } else { 1 }) ?? 0.5
-    let value = ((if across { fraction - 0.5 } else { 0.5 - fraction }) * 10000.0).round().to_int()
+    let value = (if across { fraction - 0.5 } else { 0.5 - fraction } * 10000.0).round()
     // A speaker snaps to the centre line and to the lines the other speakers stand on, never to
     // its own: its own value is set aside so it cannot catch itself.
     let others = axis.map((v, j) -> if j == selected { 100000 } else { v })
@@ -668,24 +737,20 @@ fn placed(axis: State<List<Int>>, selected: Int, at: List<Float>, across: Bool) 
         0
     } else if let line = others.find(v -> v >= value - 150 and v <= value + 150) {
         line
-    } else {
-        value
-    }
+    } else { value }
     axis.map((v, i) -> if i == selected { snapped.clamp(-5000, 5000) } else { v })
 }
 
 /// Why the layout cannot go on: two speakers on exactly one spot; empty when it can.
 fn crowded(chosen: List<Text>, xs: List<Int>, ys: List<Int>) -> Text {
-    let doubled = xs.filter(
-        (x, i) -> xs.filter(
-            (o, j) -> j > i and o == x and ys.at(j) == ys.at(i),
-        ).any(o -> true),
-    )
-    if doubled.is_empty() {
-        ""
-    } else {
+    let doubled = xs
+        .map(
+            (x, i) -> xs.map((o, j) -> j > i and o == x and ys.at(j) == ys.at(i)).any(same -> same),
+        )
+        .any(dupe -> dupe)
+    if doubled {
         "Two speakers cannot stand in exactly the same spot."
-    }
+    } else { "" }
 }
 
 /// What a set needs before it can be made: a name, and a role or place for each speaker.
@@ -694,11 +759,7 @@ fn name_problem(name: Text, roles: List<Text>) -> Text {
         "Give the speakers a name."
     } else if name.trim().split("").len() > 64 {
         "Keep the name to 64 characters."
-    } else if roles.any(role -> role == "") {
-        "Say which speaker each one is first."
-    } else {
-        ""
-    }
+    } else if roles.any(role -> role == "") { "Say which speaker each one is first." } else { "" }
 }
 
 /// Why a set cannot be measured yet; empty when it can.
@@ -713,19 +774,18 @@ fn calibration_problem(known: device.SpeakerGroup, run: Option<device.SpeakerCal
         return "No microphone of your devices can listen for this set."
     }
     if let r = run {
-        if r.phase == .measuring or r.phase == .waiting_for_microphones {
+        if r.phase == .measuring or r.phase == .waiting-for-microphones {
             return "A measurement is already going."
         }
     }
     ""
 }
 
+/// Whether a microphone can take part at all.
 // ---------------------------------------------------------------------------------------------
 // The microphones a measurement listens with.
-
-/// Whether a microphone can take part at all.
 fn usable(m: device.SpeakerMicrophone) -> Bool {
-    m.state == .ready or m.state == .not_asked or m.state == .asked
+    m.state == .ready or m.state == .not-asked or m.state == .asked
 }
 
 /// The microphone at the person's seat: the one picked while it can listen, else this device's,
@@ -788,21 +848,6 @@ fn plays_here(m: device.SpeakerMicrophone, g: device.SpeakerGroup) -> Bool {
 }
 
 /// Switches a microphone on or off for the measurement.
-fn switch_microphone(
-    m: device.SpeakerMicrophone,
-    g: device.SpeakerGroup,
-    mic_on: State<List<Text>>,
-    mic_off: State<List<Text>>,
-) {
-    if also_listens(m, g, mic_on, mic_off) {
-        set(mic_on, mic_on.filter(d -> d != m.device))
-        set(mic_off, [mic_off, [m.device]].flat_map(s -> s))
-    } else {
-        set(mic_off, mic_off.filter(d -> d != m.device))
-        set(mic_on, [mic_on, [m.device]].flat_map(s -> s))
-    }
-}
-
 /// The devices whose microphone sits a measurement out: every other usable one not switched on.
 fn excluded_microphones(
     g: device.SpeakerGroup,
@@ -841,10 +886,9 @@ fn microphone_role_text(m: device.SpeakerMicrophone) -> Text {
     }
 }
 
+/// What a set's members say under its name: each device and the place it takes.
 // ---------------------------------------------------------------------------------------------
 // What each piece of the page says.
-
-/// What a set's members say under its name: each device and the place it takes.
 fn member_summary(g: device.SpeakerGroup) -> Text {
     g.members.map(m -> "{m.device_label} ({role_text(member_role(m))})").join(", ")
 }
@@ -916,8 +960,8 @@ fn member_role(m: device.SpeakerMember) -> Text {
         .right => "right",
         .center => "center",
         .lfe => "lfe",
-        .surround_left => "surround-left",
-        .surround_right => "surround-right",
+        .surround-left => "surround-left",
+        .surround-right => "surround-right",
         .room(x, y, z) => "room",
     }
 }
@@ -933,12 +977,8 @@ fn role_choice(role: Text, x: Int, y: Int) -> device.SpeakerRole {
     } else if role == "lfe" {
         .lfe
     } else if role == "surround-left" {
-        .surround_left
-    } else if role == "surround-right" {
-        .surround_right
-    } else {
-        .room(x_mm: x, y_mm: y, z_mm: 0)
-    }
+        .surround-left
+    } else if role == "surround-right" { .surround-right } else { .room(x_mm: x, y_mm: y, z_mm: 0) }
 }
 
 /// What a measurement leaves on a speaker: its delay and gain.
@@ -949,22 +989,22 @@ fn trim_text(trim: device.SpeakerTrim) -> Text {
 /// A speaker's state in a saved set.
 fn member_state_text(m: device.SpeakerMember) -> Text {
     match m.state {
-        .ready => "Ready"
-        .awaiting_consent => "Waiting for approval on that device"
-        .offline => "Offline"
-        .output_missing => "Output unplugged"
-        .unavailable => "Media sharing is off there"
-        .not_certified => "Not one of your devices",
+        .ready => "Ready",
+        .awaiting-consent => "Waiting for approval on that device",
+        .offline => "Offline",
+        .output-missing => "Output unplugged",
+        .unavailable => "Media sharing is off there",
+        .not-certified => "Not one of your devices",
     }
 }
 
 /// What plays on a set now.
 fn playback_text(playback: device.SpeakerPlayback) -> Text {
     match playback {
-        .playing => "Playing"
-        .connecting => "Connecting…"
-        .syncing_clocks => "Syncing clocks…"
-        .clock_failed(reason) => "Can't play in time",
+        .playing => "Playing",
+        .connecting => "Connecting…",
+        .syncing-clocks => "Syncing clocks…",
+        .clock-failed(reason) => "Can't play in time",
     }
 }
 
@@ -974,9 +1014,9 @@ fn calibration_member_text(m: device.CalibrationMember) -> Text {
         return "Before {trim_text(m.before)}, after {trim_text(after)}"
     }
     match m.state {
-        .waiting => "Waiting"
-        .measuring => "Listening…"
-        .measured(delay, level, latency, acoustic) => measured_text(delay, latency, acoustic)
+        .waiting => "Waiting",
+        .measuring => "Listening…",
+        .measured(delay, level, latency, acoustic) => measured_text(delay, latency, acoustic),
         .failed(reason) => reason,
     }
 }
@@ -987,30 +1027,29 @@ fn measured_text(delay: Float, latency: Option<Float>, acoustic: Option<Float>) 
         "Arrives after {one_decimal(delay)} ms at your seat",
         if let l = latency { "its output takes {one_decimal(l)} ms" } else { "" },
         if let a = acoustic { "about {one_decimal(a * 0.343)} m away" } else { "" },
-    ].filter(line -> line != "").join("\n")
+    ]
+        .filter(line -> line != "")
+        .join("\n")
 }
 
 /// What one microphone of a measurement heard.
 fn calibration_microphone_text(m: device.CalibrationMicrophone) -> Text {
     match m.state {
-        .awaiting_consent => "Waiting for approval on that device",
+        .awaiting-consent => "Waiting for approval on that device",
         .declined => "Declined on that device",
         .listening => "Listening…",
         .used(heard, rejected) => if rejected > 0 {
             "Heard {heard} speakers, {rejected} readings set aside as inconsistent"
-        } else {
-            "Heard {heard} speakers"
-        },
-        .not_heard => "Heard nothing: too far away",
+        } else { "Heard {heard} speakers" },
+        .not-heard => "Heard nothing: too far away",
         .failed(reason) => "Could not listen: {reason}",
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The room plan.
-
 /// The plan of the room: its rings, the seat, and every speaker where it stands, the selected one
 /// filled.
+// ---------------------------------------------------------------------------------------------
+// The room plan.
 fn room_shapes(
     sp: device.Speakers,
     chosen: List<Text>,
@@ -1018,16 +1057,17 @@ fn room_shapes(
     ys: List<Int>,
     selected: Int,
 ) -> List<ui.Shape> {
-    let rings = [1, 2, 3, 4, 5].map(
-        ring -> ui.Shape.ellipse(
-            cx: 0.5,
-            cy: 0.5,
-            rx: ring.to_float() / 10.0,
-            ry: ring.to_float() / 10.0,
-            stroke: .track,
-            weight: .hairline,
-        ),
-    )
+    let rings = [1, 2, 3, 4, 5]
+        .map(
+            ring -> ui.Shape.ellipse(
+                cx: 0.5,
+                cy: 0.5,
+                rx: ring.to_float() / 10.0,
+                ry: ring.to_float() / 10.0,
+                stroke: .track,
+                weight: .hairline,
+            ),
+        )
     let centre = ui.Shape.line(
         x1: 0.5,
         y1: 0.0,
@@ -1045,28 +1085,7 @@ fn room_shapes(
         ink: .muted,
         anchor: .middle,
     )
-    let speakers = chosen.flat_map(
-        (key, i) -> {
-            let cx = 0.5 + (xs.at(i) ?? 0).to_float() / 10000.0
-            let cy = 0.5 - (ys.at(i) ?? 0).to_float() / 10000.0
-            [
-                ui.Shape.ellipse(
-                    cx: cx,
-                    cy: cy,
-                    rx: 0.012,
-                    ry: 0.012,
-                    fill: if i == selected { .accent } else { .ink },
-                ),
-                ui.Shape.text(
-                    x: cx + 0.02,
-                    y: cy,
-                    text: speaker_name(sp, chosen, i),
-                    role: .caption,
-                    ink: if i == selected { .ink } else { .muted },
-                ),
-            ]
-        },
-    )
+    let speakers = chosen.flat_map((key, i) -> placed_shapes(sp, chosen, xs, ys, selected, i))
     [rings, [centre, seat, you], speakers].flat_map(s -> s)
 }
 
@@ -1097,7 +1116,7 @@ fn metres(mm: Int) -> Text {
 
 /// A number to one decimal, as a person reads it.
 fn one_decimal(value: Float) -> Text {
-    let tenths = (value * 10.0).round().to_int()
+    let tenths = (value * 10.0).round()
     let whole = tenths / 10
     let part = (tenths - whole * 10).abs()
     "{whole}.{part}"
@@ -1115,12 +1134,10 @@ fn speaker_name(sp: device.Speakers, chosen: List<Text>, index: Int) -> Text {
     }
     let key = chosen.at(index) ?? ""
     let name = speaker_device(key)
-    let shared = chosen.filter((k, i) -> speaker_device(k) == name).len() > 1
+    let shared = chosen.map(k -> speaker_device(k)).filter(device -> device == name).len() > 1
     if shared {
         "{device_label(sp, name)} ({speaker_output_label(sp, key)})"
-    } else {
-        device_label(sp, name)
-    }
+    } else { device_label(sp, name) }
 }
 
 /// What the device with id `name` is called.
@@ -1161,7 +1178,5 @@ fn speaker_output_label(sp: device.Speakers, key: Text) -> Text {
 fn toggled(chosen: List<Text>, key: Text) -> List<Text> {
     if chosen.contains(key) {
         chosen.filter(k -> k != key)
-    } else {
-        [chosen, [key]].flat_map(s -> s)
-    }
+    } else { [chosen, [key]].flat_map(s -> s) }
 }

@@ -1,6 +1,6 @@
-//! Settings itself and the libraries only Settings uses, as its own library in the
-//! runtime bundle (`libtilo_settings_engine.so`). Model Providers, the
-//! administration panel as a window of its own, starts from it too.
+//! The model-provider administration panel and the libraries it shows, as an
+//! engine library in the runtime bundle (`libtilo_settings_engine.so`). Model
+//! Providers, the administration panel as a window of its own, starts from it.
 //!
 //! Like `runtime-dylib` it re-exports what it provides, which records it
 //! as provided by this library for the apps' `-C prefer-dynamic` link.
@@ -18,8 +18,6 @@ pub use pc_keyboard_geometry;
 #[cfg(feature = "thin")]
 pub use provider_settings_ui;
 #[cfg(feature = "thin")]
-pub use settings;
-#[cfg(feature = "thin")]
 pub use settings_sections;
 #[cfg(feature = "thin")]
 pub use tilo_accessibility_settings;
@@ -27,12 +25,6 @@ pub use tilo_accessibility_settings;
 pub use tilo_wallpapers;
 #[cfg(feature = "thin")]
 pub use zone_globe;
-
-#[cfg(feature = "thin")]
-ui::engine_main!(
-    settings::SettingsShell,
-    init = settings::enable_provider_administration
-);
 
 #[cfg(feature = "thin")]
 ui::engine_main!(

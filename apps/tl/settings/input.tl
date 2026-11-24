@@ -4,9 +4,7 @@ view input_pane() {
     let i = settings.input
     let d = settings.input_device
     ui.Section("Pointing") {
-        setting(
-            "Pointer speed",
-            "How far the pointer travels for a movement of the device",
+        setting("Pointer speed", "How far the pointer travels for a movement of the device") {
             ui.Slider(
                 bind: i.pointer_speed,
                 label: "Pointer speed",
@@ -14,11 +12,9 @@ view input_pane() {
                 max: 1.0,
                 step: 0.05,
                 shows_value: true,
-            ),
-        )
-        setting(
-            "Scroll speed",
-            "How far a scroll travels for one notch",
+            )
+        }
+        setting("Scroll speed", "How far a scroll travels for one notch") {
             ui.Slider(
                 bind: i.scroll_speed,
                 label: "Scroll speed",
@@ -26,83 +22,62 @@ view input_pane() {
                 max: 3.0,
                 step: 0.1,
                 shows_value: true,
-            ),
-        )
-        setting(
-            "Natural scrolling",
-            "A swipe up moves the page up, as on a touch screen",
-            ui.Toggle(bind: i.touchpad_natural_scroll),
-        )
-        setting(
-            "Natural scrolling with a mouse",
-            "A turn of the wheel moves the page up",
-            ui.Toggle(bind: i.mouse_natural_scroll),
-        )
-        setting(
-            "Left-handed buttons",
-            "The outer button is the main one",
-            ui.Toggle(bind: i.left_handed),
-        )
-        setting(
-            "Acceleration",
-            "How the pointer's speed grows as it is moved faster",
-            ui.TextInput(bind: i.accel_profile, placeholder: "adaptive"),
-        )
+            )
+        }
+        setting("Natural scrolling", "A swipe up moves the page up, as on a touch screen") {
+            ui.Toggle(bind: i.touchpad_natural_scroll)
+        }
+        setting("Natural scrolling with a mouse", "A turn of the wheel moves the page up") {
+            ui.Toggle(bind: i.mouse_natural_scroll)
+        }
+        setting("Left-handed buttons", "The outer button is the main one") {
+            ui.Toggle(bind: i.left_handed)
+        }
+        setting("Acceleration", "How the pointer's speed grows as it is moved faster") {
+            ui.TextInput(bind: i.accel_profile, placeholder: "adaptive")
+        }
     }
     ui.Section("Touchpad") {
-        setting(
-            "The touchpad",
-            "Take presses and movements from it",
-            ui.Toggle(bind: d.touchpad_enabled),
-        )
-        setting(
-            "Tap to click",
-            "A tap presses as a click does",
-            ui.Toggle(bind: i.tap_to_click),
-        )
-        setting(
-            "Tap and drag",
-            "A finger put down again drags what is under it",
-            ui.Toggle(bind: i.tap_drag),
-        )
-        setting(
-            "Hold to drag",
-            "A finger kept down drags without pressing",
-            ui.Toggle(bind: i.tap_drag_lock),
-        )
+        setting("The touchpad", "Take presses and movements from it") {
+            ui.Toggle(bind: d.touchpad_enabled)
+        }
+        setting("Tap to click", "A tap presses as a click does") {
+            ui.Toggle(bind: i.tap_to_click)
+        }
+        setting("Tap and drag", "A finger put down again drags what is under it") {
+            ui.Toggle(bind: i.tap_drag)
+        }
+        setting("Hold to drag", "A finger kept down drags without pressing") {
+            ui.Toggle(bind: i.tap_drag_lock)
+        }
         setting(
             "Ignore the touchpad while typing",
             "A palm resting on it does not move the pointer",
-            ui.Toggle(bind: i.disable_while_typing),
-        )
-        setting(
-            "Middle click from both buttons",
-            "Pressing both buttons is a middle press",
-            ui.Toggle(bind: i.middle_emulation),
-        )
-        setting(
-            "Gestures",
-            "Three and four fingers swipe between what shows",
-            ui.Toggle(bind: i.touchpad_gestures),
-        )
-        setting(
-            "How a press counts",
-            "Buttons under the pad, or a press of the whole pad",
-            ui.EnumField(bind: i.touchpad_click_method, label: "Touchpad click"),
-        )
-        setting(
-            "How it scrolls",
-            "Two fingers, or an edge of the pad",
-            ui.EnumField(bind: i.touchpad_scroll_method, label: "Touchpad scroll"),
-        )
+        ) {
+            ui.Toggle(bind: i.disable_while_typing)
+        }
+        setting("Middle click from both buttons", "Pressing both buttons is a middle press") {
+            ui.Toggle(bind: i.middle_emulation)
+        }
+        setting("Gestures", "Three and four fingers swipe between what shows") {
+            ui.Toggle(bind: i.touchpad_gestures)
+        }
+        setting("How a press counts", "Buttons under the pad, or a press of the whole pad") {
+            ui.EnumField(bind: i.touchpad_click_method, label: "Touchpad click")
+        }
+        setting("How it scrolls", "Two fingers, or an edge of the pad") {
+            ui.EnumField(bind: i.touchpad_scroll_method, label: "Touchpad scroll")
+        }
         setting(
             "Not with a mouse plugged in",
             "Leave the touchpad alone while a mouse is connected",
-            ui.Toggle(bind: d.touchpad_disabled_on_external_mouse),
-        )
+        ) {
+            ui.Toggle(bind: d.touchpad_disabled_on_external_mouse)
+        }
         setting(
             "Touchpad speed",
             "Its own speed, where the device keeps one; empty follows the pointer's",
+        ) {
             ui.Slider(
                 bind: i.touchpad_pointer_speed,
                 label: "Touchpad speed",
@@ -110,13 +85,14 @@ view input_pane() {
                 max: 1.0,
                 step: 0.05,
                 shows_value: true,
-            ),
-        )
+            )
+        }
     }
     ui.Section("Mouse") {
         setting(
             "Mouse speed",
             "Its own speed, where the device keeps one; empty follows the pointer's",
+        ) {
             ui.Slider(
                 bind: i.mouse_pointer_speed,
                 label: "Mouse speed",
@@ -124,13 +100,11 @@ view input_pane() {
                 max: 1.0,
                 step: 0.05,
                 shows_value: true,
-            ),
-        )
+            )
+        }
     }
     ui.Section("Keyboard") {
-        setting(
-            "Key repeat",
-            "How fast a key held down repeats",
+        setting("Key repeat", "How fast a key held down repeats") {
             ui.Slider(
                 bind: i.key_repeat,
                 label: "Key repeat",
@@ -138,35 +112,29 @@ view input_pane() {
                 max: 3.0,
                 step: 0.1,
                 shows_value: true,
-            ),
-        )
-        setting(
-            "Before it repeats",
-            "Milliseconds a key is held before it starts repeating",
+            )
+        }
+        setting("Before it repeats", "Milliseconds a key is held before it starts repeating") {
             ui.NumberInput(
                 bind: i.key_repeat_delay_ms,
                 label: "Milliseconds",
                 min: 100.0,
                 max: 1000.0,
                 step: 25.0,
-            ),
-        )
-        setting(
-            "Repeats each second",
-            "How many times a held key repeats in a second",
+            )
+        }
+        setting("Repeats each second", "How many times a held key repeats in a second") {
             ui.NumberInput(
                 bind: i.key_repeat_rate_hz,
                 label: "Times a second",
                 min: 2.0,
                 max: 60.0,
                 step: 1.0,
-            ),
-        )
-        setting(
-            "Its model",
-            "What kind of keyboard this device has",
-            ui.TextInput(bind: d.keyboard_model, placeholder: "The device's own"),
-        )
+            )
+        }
+        setting("Its model", "What kind of keyboard this device has") {
+            ui.TextInput(bind: d.keyboard_model, placeholder: "The device's own")
+        }
     }
     ui.Section("Keyboard layout") {
         if i.keyboard_layouts.is_empty() {

@@ -172,21 +172,20 @@ bin = "bin/app"
                 );
             }
             {
-                let manifest = read_manifest(&repo().join("apps/settings/tilo-app.toml"))
-                    .expect("shipped Settings manifest parses through installed-app schema");
+                let manifest = read_manifest(&repo().join("apps/model-providers/tilo-app.toml"))
+                    .expect("shipped Model Providers manifest parses through installed-app schema");
 
-                for service in ["models", "model-gateway"] {
-                    let requirement = manifest
-                        .sandbox
-                        .services
-                        .get(service)
-                        .unwrap_or_else(|| panic!("Settings declares the {service} integration"));
+                for service in ["collab", "model-gateway"] {
+                    let requirement =
+                        manifest.sandbox.services.get(service).unwrap_or_else(|| {
+                            panic!("Model Providers declares the {service} integration")
+                        });
                     assert!(
                         !requirement.is_required()
                             && (runtime_portal::OLDEST_RUNTIME_INTERFACE_VERSION
                                 ..=runtime_portal::RUNTIME_INTERFACE_VERSION)
                                 .contains(&requirement.version),
-                        "Settings must open when {service} is not running"
+                        "Model Providers must open when {service} is not running"
                     );
                 }
             }

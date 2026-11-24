@@ -185,7 +185,6 @@ touch. Expanded neighbouring targets must not overlap.
 
 | Crate          | What it is                                                                                                                                                                                              |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `settings`     | OS settings hub; owns the shared external-accounts and region/format stores consumed by Mail/Calendar/Sheets; drives hardware via the `os-actions` crate.                                       |
 | `permissions`  | Tilo's OS-wide permission model (roles / members / contexts / registered `PermissionDef`s) — both a reusable library and a standalone role/permission editor.                                           |
 | `themes`       | Theme studio: browse presets, edit the OS token set live, duplicate/export themes.                                                                                                                      |
 | `store`        | Unified Tilo app store: verified registry packages plus Flatpak/Flathub search, details, remotes, install, update, launch, and removal.                                                                 |

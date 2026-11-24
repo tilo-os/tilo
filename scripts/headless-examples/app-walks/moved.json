@@ -556,15 +556,15 @@
     "test": "crates/desktop/session/tests/youtube_client.rs:225"
   },
   "so.tilo.settings settings.*#field-edit": {
-    "to": "each field's own setter: settings/<section>#set-<field>, devices/<id>/settings/<section>#set-<field>",
-    "test": "apps/settings/tests/published_surface.rs:241"
+    "to": "so.tilo.settings.sections settings/appearance#set-mode",
+    "test": "crates/desktop/settings-sections/src/service/tests.rs:268"
   },
   "so.tilo.settings settings.*#apply": {
-    "to": "each field's own setter: settings/<section>#set-<field>, devices/<id>/settings/<section>#set-<field>",
-    "test": "apps/settings/tests/published_surface.rs:241"
+    "to": "so.tilo.settings.sections settings/appearance#set-mode",
+    "test": "crates/desktop/settings-sections/src/service/tests.rs:268"
   },
   "so.tilo.settings settings.*#group": {
-    "to": "each field's own setter: settings/<section>#set-<field>, devices/<id>/settings/<section>#set-<field>",
-    "test": "apps/settings/tests/published_surface.rs:241"
+    "to": "so.tilo.settings.sections settings/appearance#set-mode",
+    "test": "crates/desktop/settings-sections/src/service/tests.rs:268"
   }
 }

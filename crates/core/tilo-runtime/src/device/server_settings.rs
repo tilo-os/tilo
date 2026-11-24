@@ -44,10 +44,6 @@ pub use tilo_system_resources::device_settings::SERVER;
 /// devices, so it is not any app's to read or change.
 const SETTINGS_APP: &str = tilo_app_id::apps::SETTINGS;
 
-/// Settings as its tilolang package names it: the same app, whose window shows and changes
-/// these settings.
-const SETTINGS_PACKAGE: &str = "so.tilo.lang.settings";
-
 /// This device's server settings, read from its configuration.
 pub struct Served {
     path: PathBuf,
@@ -290,7 +286,7 @@ fn refused() -> String {
 /// window is the caller: the setting decides what the machine runs for the
 /// person's other devices.
 fn granted(caller: &Caller) -> bool {
-    caller.app_id == SETTINGS_APP || caller.app_id == SETTINGS_PACKAGE
+    caller.app_id == SETTINGS_APP
 }
 
 impl Published {

@@ -4,17 +4,15 @@
 view data_usage_pane() {
     let usage = settings.network_usage
     ui.Section("This device") {
-        setting(
-            "Mobile plan's allowance",
-            "Gigabytes in the period, where the plan has one",
+        setting("Mobile plan's allowance", "Gigabytes in the period, where the plan has one") {
             ui.NumberInput(
                 bind: usage.limit_gb,
                 label: "Gigabytes",
                 min: 0.0,
                 max: 1000.0,
                 step: 1.0,
-            ),
-        )
+            )
+        }
         ui.Text(
             "The counts are this device's own: another device counts its own traffic.",
             role: .caption,
@@ -64,11 +62,7 @@ view data_usage_pane() {
 fn connection_name(usage: settings.NetworkUsage, key: Text) -> Text {
     if let connection = usage.connections.get(key) {
         connection.name
-    } else if key == "" {
-        "Every connection"
-    } else {
-        key
-    }
+    } else if key == "" { "Every connection" } else { key }
 }
 
 /// A number of bytes as a person reads it: the largest whole unit that fits.
@@ -80,9 +74,5 @@ fn readable_bytes(bytes: Int) -> Text {
         "{bytes / billion} GB"
     } else if bytes >= million {
         "{bytes / million} MB"
-    } else if bytes >= thousand {
-        "{bytes / thousand} kB"
-    } else {
-        "{bytes} B"
-    }
+    } else if bytes >= thousand { "{bytes / thousand} kB" } else { "{bytes} B" }
 }

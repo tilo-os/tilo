@@ -23,19 +23,19 @@ use ui::search::system::{ResourceKind, provider_score};
 use crate::model::{Hit, InvokeTarget, Source, Target};
 
 pub use ui::shell::SETTINGS_APP;
-/// The resource Settings' window publishes: what its `show-setting` is on,
-/// and where an anchor with no row of its own opens.
-pub const SETTINGS_ROOT: &str = "settings.root";
+/// The resource Settings' package publishes to programs (`tl:<app>`): where
+/// the actions that open one of its panes are published.
+const SETTINGS_RESOURCE: &str = "tl:so.tilo.settings";
 /// The anchor of a page of Settings, by its slug.
 const PAGE_ANCHOR: &str = "settings.section:";
 /// The anchor of one setting, by its id.
 const SETTING_ANCHOR: &str = "settings.setting:";
-/// The action a page's own row offers to show it; the row binds its pane, so
-/// it takes no arguments.
-const OPEN_PANE_ACTION: &str = "open-pane";
+/// Settings' action that shows a page, and the parameter naming its slug.
+const OPEN_PANE_ACTION: &str = "open_pane";
+const PANE_ARGUMENT: &str = "pane";
 /// The action Settings publishes to show a setting, and the parameter naming
 /// it.
-const SHOW_SETTING_ACTION: &str = "show-setting";
+const SHOW_SETTING_ACTION: &str = "show_setting";
 const SETTING_ARGUMENT: &str = "setting";
 
 /// Settings the desktop offers as quick actions under the same name
@@ -258,19 +258,25 @@ impl Settings {
 }
 
 /// The action of Settings that shows `anchor`, run in `workspace`: a page is a
-/// row of Settings' own (`settings.section:<slug>`), which its `open-pane`
-/// shows, and a setting is shown by Settings' `show-setting`, told which
-/// setting it is. An anchor neither names opens through Settings' `open`.
+/// row of Settings' own (`settings.section:<slug>`), which its `open_pane`
+/// shows, told the slug, and a setting is shown by Settings' `show_setting`,
+/// told which setting it is. An anchor neither names opens Settings at it.
 #[must_use]
 pub fn opening(workspace: &str, anchor: &str) -> InvokeTarget {
-    if anchor.starts_with(PAGE_ANCHOR) {
-        return InvokeTarget::action(SETTINGS_APP, workspace, anchor, OPEN_PANE_ACTION);
+    if let Some(slug) = anchor.strip_prefix(PAGE_ANCHOR) {
+        return InvokeTarget::action(SETTINGS_APP, workspace, SETTINGS_RESOURCE, OPEN_PANE_ACTION)
+            .with_argument(PANE_ARGUMENT, slug);
     }
     if let Some(setting) = anchor.strip_prefix(SETTING_ANCHOR) {
-        return InvokeTarget::action(SETTINGS_APP, workspace, SETTINGS_ROOT, SHOW_SETTING_ACTION)
-            .with_argument(SETTING_ARGUMENT, setting);
+        return InvokeTarget::action(
+            SETTINGS_APP,
+            workspace,
+            SETTINGS_RESOURCE,
+            SHOW_SETTING_ACTION,
+        )
+        .with_argument(SETTING_ARGUMENT, setting);
     }
-    InvokeTarget::open(SETTINGS_APP, workspace, SETTINGS_ROOT, anchor)
+    InvokeTarget::open(SETTINGS_APP, workspace, SETTINGS_RESOURCE, anchor)
 }
 
 impl Source for Settings {
@@ -383,11 +389,11 @@ mod tests {
                 assert_eq!(
                     opens(page),
                     (
-                        "settings.section:network".to_owned(),
+                        SETTINGS_RESOURCE.to_owned(),
                         OPEN_PANE_ACTION.to_owned(),
-                        None
+                        Some((PANE_ARGUMENT.to_owned(), "network".to_owned()))
                     ),
-                    "the page's own row shows it, and takes no arguments"
+                    "the page's own row shows it, told which page"
                 );
                 assert_eq!(page.icon, Some(ui::icons::Icon::Wifi));
             }
@@ -406,7 +412,7 @@ mod tests {
             assert_eq!(
                 opens(best),
                 (
-                    "settings.root".to_owned(),
+                    SETTINGS_RESOURCE.to_owned(),
                     SHOW_SETTING_ACTION.to_owned(),
                     Some((
                         SETTING_ARGUMENT.to_owned(),

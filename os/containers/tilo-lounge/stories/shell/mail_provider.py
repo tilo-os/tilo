@@ -11,10 +11,9 @@ the system's CA bundle for the story and taken out again after). It says every I
 log, with the process that made the connection, which is how a story tells whose computer signed
 in.
 
-The account's sign-in is checked before it is kept. Settings' sandbox has no network of its own
-(`apps/settings/tilo-app.toml` declares `[sandbox.net] mode = "off"`), so the session makes that
-connection for it, on the `accounts` service the launcher hands Settings alone: the story's
-provider is reached by the session, at the names the account gives.
+The account's sign-in is checked before it is kept: the session makes that connection on its
+`accounts` service, as it does for Settings' account forms, and the story's provider is reached by
+the session, at the names the account gives.
 """
 
 from __future__ import annotations

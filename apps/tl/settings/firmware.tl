@@ -13,11 +13,7 @@ view firmware_pane() {
             ui.EmptyState("No firmware update is offered", icon: .package, inline: true)
         }
         for update in fw.updates {
-            ui.ListRow(
-                update.device,
-                secondary: firmware_words(update),
-                icon: .package,
-            )
+            ui.ListRow(update.device, secondary: firmware_words(update), icon: .package)
         }
     }
     if not fw.updates.is_empty() {
@@ -26,6 +22,7 @@ view firmware_pane() {
             icon: .download,
             role: .primary,
             enabled: not fw.installing,
+            description: "Firmware is installing.",
         ) {
             on press: device.install(device.firmware)
         }
@@ -40,14 +37,14 @@ view firmware_pane() {
     }
     ui.Section("Before") {
         if fw.history.is_empty() {
-            ui.Text("No firmware was installed on this computer yet.", role: .caption, secondary: true)
+            ui.Text(
+                "No firmware was installed on this computer yet.",
+                role: .caption,
+                secondary: true,
+            )
         }
         for entry in fw.history {
-            ui.ListRow(
-                entry.device,
-                secondary: history_words(entry),
-                icon: .history,
-            )
+            ui.ListRow(entry.device, secondary: history_words(entry), icon: .history)
         }
     }
     if let problem = fw.problem {
@@ -58,18 +55,12 @@ view firmware_pane() {
 /// What an offered update changes, in a line.
 fn firmware_words(update: device.FirmwareUpdate) -> Text {
     if let from = update.current_version {
-        if let to = update.new_version {
-            "{from} to {to}"
-        } else {
-            "A new version is offered"
-        }
+        if let to = update.new_version { "{from} to {to}" } else { "A new version is offered" }
     } else if let to = update.new_version {
         "Version {to}"
     } else if let description = update.description {
         description
-    } else {
-        "A firmware update is offered"
-    }
+    } else { "A firmware update is offered" }
 }
 
 /// What one past install did, in a line.
@@ -77,12 +68,6 @@ fn history_words(entry: device.FirmwareHistoryEntry) -> Text {
     if let error = entry.error {
         "{entry.state}: {error}"
     } else if let from = entry.from_version {
-        if let to = entry.to_version {
-            "{entry.state}: {from} to {to}"
-        } else {
-            entry.state
-        }
-    } else {
-        entry.state
-    }
+        if let to = entry.to_version { "{entry.state}: {from} to {to}" } else { entry.state }
+    } else { entry.state }
 }

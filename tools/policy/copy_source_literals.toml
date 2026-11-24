@@ -66,16 +66,6 @@ file = "apps/totp/src/list.rs"
 text = "Ag"
 reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
 
-[[allow]]
-file = "apps/settings/src/panes/network/vpn.rs"
-text = "WireGuard"
-reason = "A protocol's name, spelled the same in every language."
-
-[[allow]]
-file = "apps/settings/src/panes/agent_models/hub.rs"
-text = "Hugging Face"
-reason = "A service's name, spelled the same in every language; the sentence around it is the catalogue's."
-
 # The session's capture fixtures: the words a screenshot poses, drawn for a
 # picture or a test, never in a window a person works in.
 

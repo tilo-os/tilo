@@ -28,7 +28,9 @@ view bluetooth_pane() {
                     ) {
                         on press: device.scan(device.bluetooth, on: not b.discovering)
                     }
-                    if b.discovering { ui.Spinner(label: "Looking for devices", beside: .caption) }
+                    if b.discovering {
+                        ui.Spinner(label: "Looking for devices", beside: .caption)
+                    }
                 }
                 if b.accessories.is_empty() {
                     ui.Text("No accessory is paired", role: .caption, secondary: true)
@@ -43,9 +45,7 @@ view bluetooth_pane() {
                     ) {
                         on activate: if accessory.connected {
                             accessory.disconnect()
-                        } else {
-                            accessory.connect()
-                        }
+                        } else { accessory.connect() }
                         trailing: {
                             row(gap: .tight, align: .center) {
                                 ui.Button(
@@ -54,9 +54,7 @@ view bluetooth_pane() {
                                 ) {
                                     on press: if accessory.connected {
                                         accessory.disconnect()
-                                    } else {
-                                        accessory.connect()
-                                    }
+                                    } else { accessory.connect() }
                                 }
                                 ui.Button(
                                     "Forget this device",
@@ -76,7 +74,9 @@ view bluetooth_pane() {
                     for nearby in b.nearby {
                         ui.ListRow(
                             nearby.name,
-                            secondary: if let signal = nearby.signal { "{signal} dBm" } else { "In reach" },
+                            secondary: if let signal = nearby.signal {
+                                "{signal} dBm"
+                            } else { "In reach" },
                             icon: .bluetooth,
                         ) {
                             on activate: nearby.pair()

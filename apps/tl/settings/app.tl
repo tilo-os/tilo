@@ -1,4 +1,4 @@
-app so.tilo.lang.settings "Settings" (
+app so.tilo.settings "Settings" (
     icon: .settings,
     category: .system,
     tagline: "This device, your workspace and the accounts they keep",
@@ -13,6 +13,9 @@ use so.tilo.device as device
 /// input settings, the device's sound, network, Bluetooth, displays, printers and power — so a
 /// change made here, in the shell's quick settings or by an agent is one change, with one history.
 type Settings {
+    /// The pane in front, by its own name: a search row, an agent or the sidebar's own presses
+    /// set it, and the window shows that pane.
+    pane: Text = "appearance"
 }
 
 root Settings
@@ -21,111 +24,110 @@ default view settings_window for Settings
 
 /// The window: the panes down the side under what they are for, the chosen one beside them.
 view settings_window(s: Settings) {
-    state pane: Text = "appearance"
-    ui.NavShell(content_kind: .page, title: pane_title(pane), sidebar_title: "Settings") {
+    ui.NavShell(content_kind: .page, title: pane_title(s.pane), sidebar_title: "Settings") {
         sidebar: {
-            ui.NavList(selected: pane) {
+            ui.NavList(selected: s.pane) {
                 ui.NavSection("Connectivity") {
                     ui.NavItem("network", "Network", icon: .wifi) {
-                        on select: set(pane, "network")
+                        on select: open_pane("network")
                     }
                     ui.NavItem("bluetooth", "Bluetooth", icon: .bluetooth) {
-                        on select: set(pane, "bluetooth")
+                        on select: open_pane("bluetooth")
                     }
                     ui.NavItem("usage", "Data usage", icon: .bar_chart) {
-                        on select: set(pane, "usage")
+                        on select: open_pane("usage")
                     }
                 }
                 ui.NavSection("Devices") {
                     ui.NavItem("displays", "Displays", icon: .monitor) {
-                        on select: set(pane, "displays")
+                        on select: open_pane("displays")
                     }
                     ui.NavItem("sound", "Sound", icon: .speaker) {
-                        on select: set(pane, "sound")
+                        on select: open_pane("sound")
                     }
                     ui.NavItem("speakers", "Speakers", icon: .speaker) {
-                        on select: set(pane, "speakers")
+                        on select: open_pane("speakers")
                     }
                     ui.NavItem("power", "Power", icon: .battery) {
-                        on select: set(pane, "power")
+                        on select: open_pane("power")
                     }
                     ui.NavItem("printers", "Printers", icon: .printer) {
-                        on select: set(pane, "printers")
+                        on select: open_pane("printers")
                     }
                     ui.NavItem("drives", "Drives", icon: .hard_drive) {
-                        on select: set(pane, "drives")
+                        on select: open_pane("drives")
                     }
                     ui.NavItem("server", "This device's server", icon: .server) {
-                        on select: set(pane, "server")
+                        on select: open_pane("server")
                     }
                     ui.NavItem("input", "Keyboard and pointing", icon: .keyboard) {
-                        on select: set(pane, "input")
+                        on select: open_pane("input")
                     }
                 }
                 ui.NavSection("Personal") {
                     ui.NavItem("appearance", "Appearance", icon: .palette) {
-                        on select: set(pane, "appearance")
+                        on select: open_pane("appearance")
                     }
                     ui.NavItem("themes", "Themes", icon: .palette) {
-                        on select: set(pane, "themes")
+                        on select: open_pane("themes")
                     }
                     ui.NavItem("accessibility", "Accessibility", icon: .accessibility) {
-                        on select: set(pane, "accessibility")
+                        on select: open_pane("accessibility")
                     }
                     ui.NavItem("notifications", "Notifications", icon: .bell) {
-                        on select: set(pane, "notifications")
+                        on select: open_pane("notifications")
                     }
                     ui.NavItem("shortcuts", "Keyboard shortcuts", icon: .command) {
-                        on select: set(pane, "shortcuts")
+                        on select: open_pane("shortcuts")
                     }
                     ui.NavItem("region", "Region and formats", icon: .globe) {
-                        on select: set(pane, "region")
+                        on select: open_pane("region")
                     }
                     ui.NavItem("spelling", "Spelling and text", icon: .spell_check) {
-                        on select: set(pane, "spelling")
+                        on select: open_pane("spelling")
                     }
                     ui.NavItem("default_apps", "Default apps", icon: .layout_grid) {
-                        on select: set(pane, "default_apps")
+                        on select: open_pane("default_apps")
                     }
                     ui.NavItem("time", "Date and time", icon: .clock) {
-                        on select: set(pane, "time")
+                        on select: open_pane("time")
                     }
                 }
                 ui.NavSection("Accounts and access") {
                     ui.NavItem("accounts", "Accounts", icon: .mail) {
-                        on select: set(pane, "accounts")
+                        on select: open_pane("accounts")
                     }
                     ui.NavItem("users", "Users", icon: .user) {
-                        on select: set(pane, "users")
+                        on select: open_pane("users")
                     }
                     ui.NavItem("agent_models", "Agent models", icon: .sparkles) {
-                        on select: set(pane, "agent_models")
+                        on select: open_pane("agent_models")
                     }
                     ui.NavItem("devices", "Devices and access", icon: .monitor_smartphone) {
-                        on select: set(pane, "devices")
+                        on select: open_pane("devices")
                     }
                     ui.NavItem("continuity", "Continuity", icon: .cloud) {
-                        on select: set(pane, "continuity")
+                        on select: open_pane("continuity")
                     }
                 }
                 ui.NavSection("System") {
                     ui.NavItem("firmware", "Firmware", icon: .package) {
-                        on select: set(pane, "firmware")
+                        on select: open_pane("firmware")
                     }
                     ui.NavItem("compatibility", "Compatibility", icon: .puzzle) {
-                        on select: set(pane, "compatibility")
+                        on select: open_pane("compatibility")
                     }
                     ui.NavItem("disk_unlock", "Disk unlock", icon: .lock) {
-                        on select: set(pane, "disk_unlock")
+                        on select: open_pane("disk_unlock")
                     }
                     ui.NavItem("storage", "Storage", icon: .database) {
-                        on select: set(pane, "storage")
+                        on select: open_pane("storage")
                     }
                     ui.NavItem("updates", "Updates", icon: .download) {
-                        on select: set(pane, "updates")
+                        on select: open_pane("updates")
                     }
                     ui.NavItem("about", "About", icon: .info) {
-                        on select: set(pane, "about")
+                        on select: open_pane("about")
                     }
                 }
             }
@@ -133,65 +135,65 @@ view settings_window(s: Settings) {
         content: {
             ui.Scroll {
                 stack(padding: .group, max: 64rem, gap: .section) {
-                    if pane == "network" {
+                    if s.pane == "network" {
                         network_pane()
-                    } else if pane == "bluetooth" {
+                    } else if s.pane == "bluetooth" {
                         bluetooth_pane()
-                    } else if pane == "usage" {
+                    } else if s.pane == "usage" {
                         data_usage_pane()
-                    } else if pane == "displays" {
+                    } else if s.pane == "displays" {
                         displays_pane()
-                    } else if pane == "sound" {
+                    } else if s.pane == "sound" {
                         sound_pane()
-                    } else if pane == "speakers" {
+                    } else if s.pane == "speakers" {
                         speakers_page()
-                    } else if pane == "power" {
+                    } else if s.pane == "power" {
                         power_pane()
-                    } else if pane == "printers" {
+                    } else if s.pane == "printers" {
                         printers_pane()
-                    } else if pane == "drives" {
+                    } else if s.pane == "drives" {
                         drives_pane()
-                    } else if pane == "server" {
+                    } else if s.pane == "server" {
                         device_server_pane()
-                    } else if pane == "input" {
+                    } else if s.pane == "input" {
                         input_pane()
-                    } else if pane == "accessibility" {
+                    } else if s.pane == "accessibility" {
                         accessibility_pane()
-                    } else if pane == "notifications" {
+                    } else if s.pane == "notifications" {
                         notifications_pane()
-                    } else if pane == "shortcuts" {
+                    } else if s.pane == "shortcuts" {
                         shortcuts_pane()
-                    } else if pane == "region" {
+                    } else if s.pane == "region" {
                         region_pane()
-                    } else if pane == "spelling" {
+                    } else if s.pane == "spelling" {
                         spelling_pane()
-                    } else if pane == "default_apps" {
+                    } else if s.pane == "default_apps" {
                         default_apps_pane()
-                    } else if pane == "time" {
+                    } else if s.pane == "time" {
                         date_time_pane()
-                    } else if pane == "accounts" {
+                    } else if s.pane == "accounts" {
                         accounts_pane()
-                    } else if pane == "agent_models" {
+                    } else if s.pane == "agent_models" {
                         agent_models_pane()
-                    } else if pane == "devices" {
+                    } else if s.pane == "devices" {
                         devices_pane()
-                    } else if pane == "continuity" {
+                    } else if s.pane == "continuity" {
                         continuity_pane()
-                    } else if pane == "firmware" {
+                    } else if s.pane == "firmware" {
                         firmware_pane()
-                    } else if pane == "compatibility" {
+                    } else if s.pane == "compatibility" {
                         compatibility_pane()
-                    } else if pane == "disk_unlock" {
+                    } else if s.pane == "disk_unlock" {
                         disk_unlock_pane()
-                    } else if pane == "storage" {
+                    } else if s.pane == "storage" {
                         storage_pane()
-                    } else if pane == "updates" {
+                    } else if s.pane == "updates" {
                         updates_pane()
-                    } else if pane == "themes" {
+                    } else if s.pane == "themes" {
                         themes_pane()
-                    } else if pane == "users" {
+                    } else if s.pane == "users" {
                         users_pane()
-                    } else if pane == "about" {
+                    } else if s.pane == "about" {
                         about_pane()
                     } else {
                         appearance_pane()
@@ -259,20 +261,16 @@ fn pane_title(pane: Text) -> Text {
         "Storage"
     } else if pane == "updates" {
         "Updates"
-    } else if pane == "users" {
-        "Users"
-    } else if pane == "about" {
-        "About"
-    } else {
-        "Appearance"
-    }
+    } else if pane == "users" { "Users" } else if pane == "about" { "About" } else { "Appearance" }
 }
 
 /// One setting: what it is, a line about it, and the control that changes it at the row's
 /// trailing edge.
 template view setting(title: Text, about: Text, control: View) {
     ui.ListRow(title, secondary: about) {
-        trailing: { control }
+        trailing: {
+            control
+        }
     }
 }
 
@@ -281,43 +279,29 @@ template view setting(title: Text, about: Text, control: View) {
 view appearance_pane() {
     let a = settings.appearance
     ui.Section("Look") {
-        setting(
-            "Mode",
-            "The look the whole desktop takes; automatic follows the sun",
-            ui.ToggleGroup(
-                selected: if a.mode == "dark" {
-                    1
-                } else if a.mode == "light" {
-                    2
-                } else {
-                    0
-                },
-                label: "Mode",
-            ) {
-                ui.Segment("Automatic")
-                ui.Segment("Light")
-                ui.Segment("Dark")
-                on change(i): settings.set_dark_mode(a, on: i == 2)
-            },
-        )
-        setting(
-            "High contrast",
-            "Stronger ink and surfaces for everything drawn",
-            ui.Toggle(bind: a.high_contrast),
-        )
-        setting(
-            "Reduce motion",
-            "Turn animations down, for a screen that is easier to follow",
-            ui.Toggle(bind: a.reduce_motion),
-        )
-        setting(
-            "Reduce transparency",
-            "Draw panels solid instead of seeing through them",
-            ui.Toggle(bind: a.reduce_transparency),
-        )
-        setting(
-            "Text size",
-            "The size of text everywhere, before an app's own",
+        setting("Mode", "The look the whole desktop takes; automatic follows the sun") {
+            ui.ToggleGroup(selected: mode_index(a.mode), label: "Mode") {
+                ui.Segment("Automatic") {
+                    on press: settings.set_mode(a, "automatic")
+                }
+                ui.Segment("Light") {
+                    on press: settings.set_mode(a, "light")
+                }
+                ui.Segment("Dark") {
+                    on press: settings.set_mode(a, "dark")
+                }
+            }
+        }
+        setting("High contrast", "Stronger ink and surfaces for everything drawn") {
+            ui.Toggle(bind: a.high_contrast)
+        }
+        setting("Reduce motion", "Turn animations down, for a screen that is easier to follow") {
+            ui.Toggle(bind: a.reduce_motion)
+        }
+        setting("Reduce transparency", "Draw panels solid instead of seeing through them") {
+            ui.Toggle(bind: a.reduce_transparency)
+        }
+        setting("Text size", "The size of text everywhere, before an app's own") {
             ui.Slider(
                 bind: a.text_scale,
                 label: "Text size",
@@ -325,11 +309,9 @@ view appearance_pane() {
                 max: 1.6,
                 step: 0.05,
                 shows_value: true,
-            ),
-        )
-        setting(
-            "Control size",
-            "How large buttons, switches and rows are",
+            )
+        }
+        setting("Control size", "How large buttons, switches and rows are") {
             ui.Slider(
                 bind: a.ui_scale,
                 label: "Control size",
@@ -337,33 +319,23 @@ view appearance_pane() {
                 max: 1.5,
                 step: 0.05,
                 shows_value: true,
-            ),
-        )
-        setting(
-            "Accent",
-            "The colour presses and selections take; empty follows the theme",
-            ui.TextInput(bind: a.accent, placeholder: "Follow the theme"),
-        )
-        setting(
-            "Interface face",
-            "The typeface the desktop is drawn in; empty follows the theme",
-            ui.TextInput(bind: a.ui_face, placeholder: "Follow the theme"),
-        )
+            )
+        }
+        setting("Accent", "The colour presses and selections take; empty follows the theme") {
+            ui.TextInput(bind: a.accent, placeholder: "Follow the theme")
+        }
+        setting("Interface face", "The typeface the desktop is drawn in; empty follows the theme") {
+            ui.TextInput(bind: a.ui_face, placeholder: "Follow the theme")
+        }
     }
     ui.Section("Reading") {
-        setting(
-            "Wallpaper",
-            "The picture the desktop stands on; empty follows the theme",
-            ui.TextInput(bind: a.wallpaper, placeholder: "Follow the theme"),
-        )
-        setting(
-            "Distinguish similar letters",
-            "Set I, l, 1, 0 and O apart in all text",
-            ui.Toggle(bind: a.distinct_letters),
-        )
-        setting(
-            "Windows and panels",
-            "Let the theme's translucency show; 0 draws them solid",
+        setting("Wallpaper", "The picture the desktop stands on; empty follows the theme") {
+            ui.TextInput(bind: a.wallpaper, placeholder: "Follow the theme")
+        }
+        setting("Distinguish similar letters", "Set I, l, 1, 0 and O apart in all text") {
+            ui.Toggle(bind: a.distinct_letters)
+        }
+        setting("Windows and panels", "Let the theme's translucency show; 0 draws them solid") {
             ui.Slider(
                 bind: a.translucency,
                 label: "Translucency",
@@ -371,66 +343,50 @@ view appearance_pane() {
                 max: 1.0,
                 step: 0.05,
                 shows_value: true,
-            ),
-        )
+            )
+        }
     }
     ui.Section("Desktop") {
         let desktop = settings.desktop_controls
         let on_device = settings.desktop_controls_device
-        setting(
-            "Vim keys",
-            "Move between what shows with h, j, k and l",
-            ui.Toggle(bind: desktop.vim_mode),
-        )
-        setting(
-            "Hide the top bar",
-            "Give the screen to what it shows on this device",
-            ui.Toggle(bind: on_device.hide_top_bar),
-        )
+        setting("Vim keys", "Move between what shows with h, j, k and l") {
+            ui.Toggle(bind: desktop.vim_mode)
+        }
+        setting("Hide the top bar", "Give the screen to what it shows on this device") {
+            ui.Toggle(bind: on_device.hide_top_bar)
+        }
     }
 }
 
 /// What this device says and shows when something happens: the banners, the sounds, and the
 /// hour the person wants quiet.
 view notifications_pane() {
-    state app: Text = ""
+    state chosen_app: Text = ""
     state duration: Text = "For 8 hours"
     let n = settings.notifications
     ui.Section("Do not disturb") {
-        setting(
-            "Do not disturb",
-            "Hold every banner until it is turned off",
-            ui.Toggle(bind: n.do_not_disturb),
-        )
+        setting("Do not disturb", "Hold every banner until it is turned off") {
+            ui.Toggle(bind: n.do_not_disturb)
+        }
     }
     ui.Section("Banners") {
-        setting(
-            "Show banners",
-            "Say what happened as it happens",
-            ui.Toggle(bind: n.show_banners),
-        )
-        setting(
-            "Show what it says",
-            "Let a banner carry the message it is about",
-            ui.Toggle(bind: n.show_previews),
-        )
-        setting(
-            "Show on the lock screen",
-            "Let a banner arrive while the screen is locked",
-            ui.Toggle(bind: n.show_on_lock_screen),
-        )
-        setting(
-            "Show counts",
-            "A count on an app's icon for what it holds unread",
-            ui.Toggle(bind: n.show_badges),
-        )
+        setting("Show banners", "Say what happened as it happens") {
+            ui.Toggle(bind: n.show_banners)
+        }
+        setting("Show what it says", "Let a banner carry the message it is about") {
+            ui.Toggle(bind: n.show_previews)
+        }
+        setting("Show on the lock screen", "Let a banner arrive while the screen is locked") {
+            ui.Toggle(bind: n.show_on_lock_screen)
+        }
+        setting("Show counts", "A count on an app's icon for what it holds unread") {
+            ui.Toggle(bind: n.show_badges)
+        }
     }
     ui.Section("Sounds") {
-        setting(
-            "Play sounds",
-            "A sound with what happens, in the system's own set",
-            ui.Toggle(bind: n.play_sounds),
-        )
+        setting("Play sounds", "A sound with what happens, in the system's own set") {
+            ui.Toggle(bind: n.play_sounds)
+        }
     }
     ui.Section("Apps") {
         if n.per_app.keys().is_empty() {
@@ -477,7 +433,7 @@ view notifications_pane() {
             }
         }
         row(gap: .related, align: .center, wrap: true) {
-            ui.TextInput(bind: app, placeholder: "An app's id, such as so.tilo.notes", fill)
+            ui.TextInput(bind: chosen_app, placeholder: "An app's id, such as so.tilo.notes", fill)
             ui.Dropdown(
                 bind: duration,
                 options: ["Not muted", "For 1 hour", "For 8 hours", "For 24 hours"],
@@ -486,7 +442,7 @@ view notifications_pane() {
             ui.Button("Mute it", role: .primary, size: .small) {
                 on press: settings.mute_app(
                     settings.notifications,
-                    app: app,
+                    app: chosen_app,
                     duration: duration,
                 )
             }
@@ -494,11 +450,9 @@ view notifications_pane() {
     }
     ui.Section("Quiet hours") {
         let focus = n.focus
-        setting(
-            "Quiet hours",
-            "Hold banners and sounds between the hours below",
-            ui.Toggle(bind: n.focus.enabled),
-        )
+        setting("Quiet hours", "Hold banners and sounds between the hours below") {
+            ui.Toggle(bind: n.focus.enabled)
+        }
         if focus.enabled {
             ui.Text(
                 "Quiet between {quiet_clock(focus.start_minute)} and {quiet_clock(focus.end_minute)}, {quiet_days(focus.weekdays)}.",
@@ -508,8 +462,9 @@ view notifications_pane() {
             setting(
                 "Priority apps still come through",
                 "An app or a person marked as priority reaches you anyway",
-                ui.Toggle(bind: n.focus.allow_priority),
-            )
+            ) {
+                ui.Toggle(bind: n.focus.allow_priority)
+            }
         }
     }
 }
@@ -531,28 +486,20 @@ fn quiet_days(days: Int) -> Text {
         "every day"
     } else if days == 31 {
         "on weekdays"
-    } else if days == 96 {
-        "at the weekend"
-    } else {
-        "on some days"
-    }
+    } else if days == 96 { "at the weekend" } else { "on some days" }
 }
 
 /// This device's screens: the brightness of each, whether the picture turns with it, and the
 /// warmth of the night light.
 view displays_pane() {
     let d = settings.display
-    let night = settings.night_light
+    let night = settings.display_person
     let screens = device.displays
     ui.Section("This device") {
-        setting(
-            "Automatic brightness",
-            "Follow the light in the room",
-            ui.Toggle(bind: d.auto_brightness),
-        )
-        setting(
-            "Scale",
-            "How large this screen draws what it shows",
+        setting("Automatic brightness", "Follow the light in the room") {
+            ui.Toggle(bind: d.auto_brightness)
+        }
+        setting("Scale", "How large this screen draws what it shows") {
             ui.Slider(
                 bind: d.scale,
                 label: "Scale",
@@ -560,13 +507,11 @@ view displays_pane() {
                 max: 3.0,
                 step: 0.25,
                 shows_value: true,
-            ),
-        )
-        setting(
-            "Rotation lock",
-            "Keep the picture as it is when the device turns",
-            ui.Toggle(bind: d.rotation_lock),
-        )
+            )
+        }
+        setting("Rotation lock", "Keep the picture as it is when the device turns") {
+            ui.Toggle(bind: d.rotation_lock)
+        }
         for display in screens.displays {
             if let level = display.brightness {
                 row(gap: .related, align: .center) {
@@ -583,14 +528,10 @@ view displays_pane() {
         }
     }
     ui.Section("Night light") {
-        setting(
-            "Night light",
-            "Warm the screen's colours in the evening",
-            ui.Toggle(bind: night.night_light),
-        )
-        setting(
-            "Warmth",
-            "How far toward amber the screen goes",
+        setting("Night light", "Warm the screen's colours in the evening") {
+            ui.Toggle(bind: night.night_light)
+        }
+        setting("Warmth", "How far toward amber the screen goes") {
             ui.Slider(
                 bind: night.night_light_temperature,
                 label: "Warmth",
@@ -598,13 +539,11 @@ view displays_pane() {
                 max: 6500.0,
                 step: 50.0,
                 shows_value: true,
-            ),
-        )
-        setting(
-            "Follow the evening",
-            "Turn on at sunset and off at sunrise by itself",
-            ui.Toggle(bind: night.night_light_schedule),
-        )
+            )
+        }
+        setting("Follow the evening", "Turn on at sunset and off at sunrise by itself") {
+            ui.Toggle(bind: night.night_light_schedule)
+        }
     }
 }
 
@@ -647,9 +586,7 @@ view sound_pane() {
                 ui.Button(
                     if sound.input_muted {
                         "Unmute the microphone"
-                    } else {
-                        "Mute the microphone"
-                    },
+                    } else { "Mute the microphone" },
                     icon: if sound.input_muted { .mic_off } else { .mic },
                     icon_only: true,
                     toggled: sound.input_muted,
@@ -676,12 +613,15 @@ view sound_pane() {
     ui.Section("Meters") {
         if let input = sound.inputs.find(x -> x.chosen) {
             ui.LevelMeter(
-                source: input.node,
+                source: input.name,
                 output: false,
                 running: listening,
                 label: "Microphone level",
             )
-            ui.Button(if listening { "Stop listening" } else { "Listen to the microphone" }, toggled: listening) {
+            ui.Button(
+                if listening { "Stop listening" } else { "Listen to the microphone" },
+                toggled: listening,
+            ) {
                 on press: set(listening, not listening)
             }
         } else {
@@ -689,7 +629,7 @@ view sound_pane() {
         }
         if let output = sound.outputs.find(x -> x.chosen) {
             ui.LevelMeter(
-                source: output.node,
+                source: output.name,
                 output: true,
                 running: listening,
                 label: "Output level",
@@ -697,9 +637,7 @@ view sound_pane() {
         }
     }
     ui.Section("Balance and shape") {
-        setting(
-            "Balance",
-            "Which side the sound favours; the middle is even",
+        setting("Balance", "Which side the sound favours; the middle is even") {
             ui.Slider(
                 bind: audio.balance,
                 label: "Balance",
@@ -707,29 +645,21 @@ view sound_pane() {
                 max: 1.0,
                 step: 0.05,
                 shows_value: true,
-            ),
-        )
-        setting(
-            "One channel",
-            "Play the same sound from every speaker",
-            ui.Toggle(bind: audio.mono_output),
-        )
-        setting(
-            "Echo cancellation",
-            "Take the speakers out of what the microphone hears",
-            ui.Toggle(bind: audio.echo_cancellation),
-        )
+            )
+        }
+        setting("One channel", "Play the same sound from every speaker") {
+            ui.Toggle(bind: audio.mono_output)
+        }
+        setting("Echo cancellation", "Take the speakers out of what the microphone hears") {
+            ui.Toggle(bind: audio.echo_cancellation)
+        }
     }
     ui.Section("System sounds") {
         let prefs = audio.system_sounds
-        setting(
-            "Play them",
-            "A sound for a message, a screenshot, a connection",
-            ui.Toggle(bind: prefs.enabled),
-        )
-        setting(
-            "Their volume",
-            "How loud the system's own sounds are",
+        setting("Play them", "A sound for a message, a screenshot, a connection") {
+            ui.Toggle(bind: prefs.enabled)
+        }
+        setting("Their volume", "How loud the system's own sounds are") {
             ui.Slider(
                 bind: prefs.volume,
                 label: "System sound volume",
@@ -737,8 +667,8 @@ view sound_pane() {
                 max: 1.0,
                 step: 0.05,
                 shows_value: true,
-            ),
-        )
+            )
+        }
     }
 }
 
@@ -754,9 +684,7 @@ view power_pane() {
                 "{battery.percentage}%",
                 secondary: if let left = battery.minutes_left {
                     "{left} minutes left"
-                } else {
-                    battery_words(battery.state)
-                },
+                } else { battery_words(battery.state) },
                 icon: .battery,
             )
         }
@@ -764,145 +692,186 @@ view power_pane() {
     ui.Section("Power mode") {
         ui.ToggleGroup(
             selected: if let mode = power.mode {
-                if mode == .saver {
-                    0
-                } else if mode == .performance {
-                    2
-                } else {
-                    1
-                }
-            } else {
-                1
-            },
+                if mode == .saver { 0 } else if mode == .performance { 2 } else { 1 }
+            } else { 1 },
             label: "Power mode",
         ) {
-            ui.Segment("Power saver")
-            ui.Segment("Balanced")
-            ui.Segment("Performance")
-            on change(i): device.set_power_mode(
-                device.power,
-                mode: if i == 0 {
-                    "saver"
-                } else if i == 2 {
-                    "performance"
-                } else {
-                    "balanced"
-                },
-            )
+            ui.Segment("Power saver") {
+                on press: device.set_power_mode(device.power, mode: "saver")
+            }
+            ui.Segment("Balanced") {
+                on press: device.set_power_mode(device.power, mode: "balanced")
+            }
+            ui.Segment("Performance") {
+                on press: device.set_power_mode(device.power, mode: "performance")
+            }
         }
     }
     ui.Section("Sleep") {
-        setting(
-            "Sleep by itself",
-            "Go to sleep after a while away",
-            ui.Toggle(bind: prefs.auto_suspend),
-        )
+        setting("Sleep by itself", "Go to sleep after a while away") {
+            ui.Toggle(bind: prefs.auto_suspend)
+        }
         setting(
             "Go to sleep after",
             "Minutes away before the screen goes dark and the device sleeps",
+        ) {
             ui.NumberInput(
                 bind: prefs.suspend_minutes,
                 label: "Minutes",
                 min: 1.0,
                 max: 240.0,
                 step: 1.0,
-            ),
-        )
-        setting(
-            "Turn the screen off after",
-            "Minutes away before the screen goes dark",
+            )
+        }
+        setting("Turn the screen off after", "Minutes away before the screen goes dark") {
             ui.NumberInput(
                 bind: prefs.blank_minutes,
                 label: "Minutes",
                 min: 1.0,
                 max: 240.0,
                 step: 1.0,
-            ),
-        )
-        setting(
-            "Lock after",
-            "Minutes away before the screen locks",
+            )
+        }
+        setting("Lock after", "Minutes away before the screen locks") {
             ui.NumberInput(
                 bind: prefs.lock_minutes,
                 label: "Minutes",
                 min: 0.0,
                 max: 240.0,
                 step: 1.0,
-            ),
-        )
-        setting(
-            "Sleep locks the screen",
-            "Ask for the person's key when it wakes",
-            ui.Toggle(bind: prefs.lock_on_sleep),
-        )
+            )
+        }
+        setting("Sleep locks the screen", "Ask for the person's key when it wakes") {
+            ui.Toggle(bind: prefs.lock_on_sleep)
+        }
     }
     ui.Section("What the device's buttons do") {
-        setting(
-            "Closing the lid",
-            "What happens when a laptop's lid is shut",
-            ui.EnumField(bind: prefs.lid_close_action, label: "Closing the lid"),
-        )
-        setting(
-            "The power button",
-            "What pressing it does",
-            ui.EnumField(bind: prefs.power_key_action, label: "The power button"),
-        )
-        setting(
-            "When the battery is critical",
-            "What the device does as it runs out",
-            ui.EnumField(bind: prefs.critical_action, label: "Critical battery action"),
-        )
+        setting("Closing the lid", "What happens when a laptop's lid is shut") {
+            ui.EnumField(bind: prefs.lid_close_action, label: "Closing the lid")
+        }
+        setting("The power button", "What pressing it does") {
+            ui.EnumField(bind: prefs.power_key_action, label: "The power button")
+        }
+        setting("When the battery is critical", "What the device does as it runs out") {
+            ui.EnumField(bind: prefs.critical_action, label: "Critical battery action")
+        }
     }
     ui.Section("When the battery is low") {
-        setting(
-            "Say so at",
-            "Per cent left before the device says the battery is low",
+        setting("Say so at", "Per cent left before the device says the battery is low") {
             ui.NumberInput(
                 bind: prefs.low_battery_percent,
                 label: "Low battery percent",
                 min: 1.0,
                 max: 50.0,
                 step: 1.0,
-            ),
-        )
-        setting(
-            "Act at",
-            "Per cent left before the critical action",
+            )
+        }
+        setting("Act at", "Per cent left before the critical action") {
             ui.NumberInput(
                 bind: prefs.critical_battery_percent,
                 label: "Critical battery percent",
                 min: 1.0,
                 max: 30.0,
                 step: 1.0,
-            ),
-        )
+            )
+        }
     }
 }
 
 /// How the battery stands, in a word.
-fn battery_words(state: device.BatteryState) -> Text {
-    if state == .charging {
+fn battery_words(state: Text) -> Text {
+    if state == "charging" {
         "Charging"
-    } else if state == .discharging {
+    } else if state == "discharging" {
         "On the battery"
-    } else if state == .empty {
+    } else if state == "empty" {
         "Empty"
-    } else if state == .full {
+    } else if state == "full" or state == "fully-charged" {
         "Full"
-    } else if state == .pending_charge {
+    } else if state == "pending-charge" {
         "About to charge"
-    } else if state == .pending_discharge {
-        "About to drain"
-    } else {
-        "Plugged in"
-    }
+    } else if state == "pending-discharge" { "About to drain" } else { "Plugged in" }
+}
+
+/// The segment the mode picker shows for the person's mode.
+fn mode_index(mode: Text) -> Int {
+    if mode == "dark" { 2 } else if mode == "light" { 1 } else { 0 }
 }
 
 /// What an app's own notification rule says of itself, in a word or two.
 fn rule_words(rule: settings.AppNotificationRule) -> Text {
-    if rule.muted_until != .none {
-        "Muted for now"
-    } else {
-        "Its own rules"
-    }
+    if rule.muted_until != .none { "Muted for now" } else { "Its own rules" }
+}
+
+/// The window's pane a search page names: the settings index's own slugs, which are not all the
+/// window's names ("external_accounts" is Accounts, "keyboard" is Keyboard and pointing).
+fn pane_of_page(page: Text) -> Text {
+    if page == "keyboard" or page == "pointing" {
+        "input"
+    } else if page == "keyboard_shortcuts" {
+        "shortcuts"
+    } else if page == "region_formats" {
+        "region"
+    } else if page == "time_date" {
+        "time"
+    } else if page == "default-apps" {
+        "default_apps"
+    } else if page == "external_accounts" or page == "billing" { "accounts" } else { page }
+}
+
+/// The window's pane a setting is on: the section its id begins with (`keyboard.layout` is on
+/// Keyboard and pointing, `a11y.high_contrast` on Accessibility).
+fn pane_of_setting(setting: Text) -> Text {
+    let section = setting.split(".").at(0) ?? ""
+    if section == "a11y" {
+        "accessibility"
+    } else if section == "audio" {
+        "sound"
+    } else if section == "dictionary" {
+        "spelling"
+    } else if section == "display" {
+        "displays"
+    } else if section == "keyboard" {
+        "input"
+    } else if section == "pointing" {
+        "input"
+    } else if section == "region" {
+        "region"
+    } else if section == "shortcuts" {
+        "shortcuts"
+    } else if section == "text" {
+        "spelling"
+    } else if section == "time" {
+        "time"
+    } else if section == "input" {
+        "input"
+    } else if section == "spelling" {
+        "spelling"
+    } else if section == "storage" {
+        "storage"
+    } else if section == "updates" {
+        "updates"
+    } else if section == "appearance" {
+        "appearance"
+    } else if section == "bluetooth" {
+        "bluetooth"
+    } else if section == "network" {
+        "network"
+    } else if section == "notifications" {
+        "notifications"
+    } else if section == "power" {
+        "power"
+    } else if section == "sound" { "sound" } else { "appearance" }
+}
+
+/// Show the pane a search page names, as the search's own row runs it from outside the window.
+action open_pane(page: Text) (label: "Show a settings page") {
+    let s = root Settings
+    s.pane = pane_of_page(page)
+}
+
+/// Show the pane a setting is on, as search's own row for a setting runs it.
+action show_setting(setting: Text) (label: "Show a setting") {
+    let s = root Settings
+    s.pane = pane_of_setting(setting)
 }

@@ -728,8 +728,8 @@ mod tests {
                 "build --locked --release -p tilolang-cli -p tilo-app-package-cli"
             );
             assert_eq!(
-                app_package_args("settings", Path::new("/s/settings.tapp")).join(" "),
-                "package apps/settings --output /s/settings.tapp --force"
+                app_package_args("store", Path::new("/s/store.tapp")).join(" "),
+                "package apps/store --output /s/store.tapp --force"
             );
         }
     }

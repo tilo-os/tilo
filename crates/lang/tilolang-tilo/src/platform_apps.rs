@@ -243,12 +243,10 @@ const PUBLISHED: &[Published] = &[
         app: SECTIONS_APP,
         title: "Settings",
         kinds: &[],
-        // Its roots are the sections' ([`settings_roots`]).
+        // Its roots are the sections' ([`settings_roots`]), and every resource it
+        // publishes is one of the sections'.
         roots: &[],
-        files: &[
-            include_str!("../../../../apps/settings/surface.toml"),
-            SECTIONS_SURFACE,
-        ],
+        files: &[SECTIONS_SURFACE],
         described: false,
         listed: &[],
     },

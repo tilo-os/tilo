@@ -74,7 +74,7 @@ async fn wifi_device(nm: &NmClient) -> Result<Device, NmError> {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each field is an independent, individually named radio/availability flag read \
-              across shell and apps/settings; grouping them would only relocate the same state"
+              across the shell and Settings; grouping them would only relocate the same state"
 )]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RadioState {

@@ -116,21 +116,6 @@ class AppCopyTests(unittest.TestCase):
         self.assertEqual(self.keys(source),
                          {"net-nextcloud-add", "net-other-add", "net-fresh", "net-stale"})
 
-    def test_settings_resolves_the_shared_provider_catalogue(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            self.crate(root, "crates/ui/ui-core", {"en-US": "ok = OK\n"}, "")
-            shared = "agent-cancel = Cancel\n"
-            self.crate(root, "crates/integrations/provider-settings-ui",
-                       {"en-US": shared, "de-DE": shared}, "")
-            own = "settings-x = X\n"
-            self.crate(root, "apps/settings", {"en-US": own, "de-DE": own},
-                       'fn pane() { t("agent-cancel"); t("agent-absent"); }\n')
-            self.assertEqual(copy.missing_copy(root), [
-                "apps/settings/src/view.rs:1: de-DE lacks agent-absent",
-                "apps/settings/src/view.rs:1: en-US lacks agent-absent",
-            ])
-
     def test_keys_resolved_by_another_crates_root_are_looked_up_in_its_catalogue(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

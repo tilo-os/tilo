@@ -12,22 +12,22 @@ view device_server_pane() {
             role: .caption,
             secondary: true,
         )
-        ui.ToggleGroup(
-            selected: work_index(s.work.from),
-            label: "Whose work this device takes",
-        ) {
-            ui.Segment("Nobody")
-            ui.Segment("My devices")
-            ui.Segment("Anyone whose workspace it holds")
-            on change(i): device.set_work(device.server, work_name(i))
+        ui.ToggleGroup(selected: work_index(s.work.from), label: "Whose work this device takes") {
+            ui.Segment("Nobody") {
+                on press: device.set_work(device.server, "nobody")
+            }
+            ui.Segment("My devices") {
+                on press: device.set_work(device.server, "own-devices")
+            }
+            ui.Segment("Anyone whose workspace it holds") {
+                on press: device.set_work(device.server, "anyone")
+            }
         }
         row(gap: .related, align: .center, wrap: true) {
             ui.Button(
                 if s.work.when.charging_only {
                     "Taking work only while charging"
-                } else {
-                    "Taking work while on the battery"
-                },
+                } else { "Taking work while on the battery" },
                 icon: .battery_charging,
                 toggled: s.work.when.charging_only,
             ) {
@@ -49,7 +49,7 @@ view device_server_pane() {
                 step: 5.0,
                 shows_value: true,
             ) {
-                on change(v): device.set_work_room(device.server, "processors", v.round())
+                on change(v): set_processors_room(v)
             }
         }
         row(gap: .related, align: .center) {
@@ -62,7 +62,7 @@ view device_server_pane() {
                 step: 5.0,
                 shows_value: true,
             ) {
-                on change(v): device.set_work_room(device.server, "memory", v.round())
+                on change(v): set_memory_room(v)
             }
         }
     }
@@ -103,37 +103,24 @@ view device_server_pane() {
 /// One service of this device, with what offering it means and the control that offers or
 /// withdraws it.
 view service_row(offered: Bool, title: Text, about: Text, service: Text) {
-    setting(
-        title,
-        about,
-        ui.Button(
-            if offered { "Offered" } else { "Not offered" },
-            toggled: offered,
-            role: .plain,
-        ) {
+    setting(title, about) {
+        ui.Button(if offered { "Offered" } else { "Not offered" }, toggled: offered, role: .plain) {
             on press: device.set_service(device.server, service, not offered)
-        },
-    )
+        }
+    }
 }
 
 /// Where the person's choice stands in the work chooser: nobody, their devices, or anyone.
-fn work_index(from: Text) -> Int {
-    if from == "own-devices" {
-        1
-    } else if from == "anyone" {
-        2
-    } else {
-        0
-    }
+fn work_index(from: device.WorkFrom) -> Int {
+    if from == .own-devices { 1 } else if from == .anyone { 2 } else { 0 }
 }
 
-/// The work setting the chooser's segment `index` makes.
-fn work_name(chosen: Int) -> Text {
-    if chosen == 1 {
-        "own-devices"
-    } else if chosen == 2 {
-        "anyone"
-    } else {
-        "nobody"
-    }
+/// The processors this device keeps free for the people at it: the slider's share, made whole.
+action set_processors_room(percent: Float) (label: "Keep processors free") {
+    device.set_work_room(device.server, "processors", percent.round())
+}
+
+/// The memory this device keeps free for the people at it.
+action set_memory_room(percent: Float) (label: "Keep memory free") {
+    device.set_work_room(device.server, "memory", percent.round())
 }

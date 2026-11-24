@@ -189,15 +189,19 @@ fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
     let (target, arguments) = asked.invoked.borrow()[0].clone();
     assert_eq!(
         target,
-        application_action_target(&workspace, SETTINGS_APP, "settings.root", "show-setting"),
-        "a setting is shown by the action Settings publishes for one"
+        application_action_target(
+            &workspace,
+            SETTINGS_APP,
+            format!("tl:{SETTINGS_APP}"),
+            "show_setting"
+        ),
+        "a setting is shown by the action the Settings package publishes for one"
     );
     assert_eq!(arguments["setting"], "appearance.style");
 }
 
-/// A page's row runs the action the page's own row of Settings publishes, at the page's own
-/// address: it asks nothing of an `open` on Settings' root resource, which Settings never
-/// offers, so pressing it opens Settings where a person sees the page.
+/// A page's row runs Settings' own action that shows a page, at the app's published resource:
+/// it asks nothing of an `open`, so pressing it opens Settings where a person sees the page.
 #[test]
 fn a_page_found_in_search_runs_that_pages_own_action() {
     let _settled = ui::motion::testing::settled();
@@ -232,14 +236,14 @@ fn a_page_found_in_search_runs_that_pages_own_action() {
         application_action_target(
             &workspace,
             SETTINGS_APP,
-            "settings.section:external_accounts",
-            "open-pane"
+            format!("tl:{SETTINGS_APP}"),
+            "open_pane"
         ),
         "the page's own row shows it"
     );
-    assert!(
-        arguments.is_empty(),
-        "the row binds its pane: {arguments:?}"
+    assert_eq!(
+        arguments["pane"], "external_accounts",
+        "the row names the page: {arguments:?}"
     );
 }
 
@@ -973,8 +977,13 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     let (target, arguments) = asked.invoked.borrow()[1].clone();
     assert_eq!(
         target,
-        application_action_target(&workspace, SETTINGS_APP, "settings.root", "show-setting"),
-        "the setting is shown by the action Settings publishes for one"
+        application_action_target(
+            &workspace,
+            SETTINGS_APP,
+            format!("tl:{SETTINGS_APP}"),
+            "show_setting"
+        ),
+        "the setting is shown by the action the Settings package publishes for one"
     );
     assert_eq!(arguments["setting"], "keyboard.layout");
 }
@@ -1009,6 +1018,41 @@ fn the_sessions_own_actions_are_found_and_run_on_its_published_surface() {
         before,
         "the overview shows over the shell"
     );
+}
+
+/// The workspace's grants are the workspace settings' privacy tab, so a search for them opens
+/// it: the chrome's own action, found by the words people use for what it holds.
+#[test]
+fn a_search_for_the_workspaces_grants_opens_workspace_settings() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Asked::default()));
+    session.step(Duration::from_millis(1)).unwrap();
+    for query in ["permissions", "grants"] {
+        search_for(&mut session, query);
+        let Some(hit) = row(&mut session, "Open the workspace's settings") else {
+            panic!(
+                "{query:?} finds the workspace's grants: {:?}",
+                rows(&session)
+                    .into_iter()
+                    .map(|row| row.label)
+                    .collect::<Vec<_>>()
+            );
+        };
+        invoke(
+            &mut session,
+            hit.id.as_str(),
+            "choose-search-row",
+            serde_json::json!({}),
+        );
+        until(&mut session, |session| {
+            session.workspace_settings().is_some()
+        });
+        session
+            .workspace_settings()
+            .expect("the session hosts the workspace settings")
+            .presentation()
+            .close();
+    }
 }
 
 /// A session with the settings service, over a home of its own: its search leaves out what the

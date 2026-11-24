@@ -421,6 +421,24 @@ impl<'a> Parser<'a> {
     /// by (the icon `.type`, an invocation's `.action`). A declaration still cannot be named by
     /// a keyword, so only what the platform declares is reached this way.
     fn name_after_dot(&mut self, what: &str) -> PResult<Ident> {
+        let mut out = self.name_segment(what)?;
+        // A case or field the platform names with a hyphen (`.surround-left`): the hyphen is
+        // written where a word would otherwise end, with no space after the name.
+        while self.is(&Tok::Minus)
+            && self.span().start == self.prev_end()
+            && matches!(self.peek_at(1), Tok::Ident(_) | Tok::Kw(_))
+        {
+            self.bump();
+            let next = self.name_segment(what)?;
+            out.name.push('-');
+            out.name.push_str(&next.name);
+            out.span = out.span.to(next.span);
+        }
+        Ok(out)
+    }
+
+    /// One word of a name after `.`: an identifier, or a keyword the platform names it by.
+    fn name_segment(&mut self, what: &str) -> PResult<Ident> {
         match self.peek().clone() {
             Tok::Ident(name) => {
                 let span = self.bump().span;
@@ -2657,7 +2675,7 @@ impl<'a> Parser<'a> {
         if !self.eat(&Tok::Dot) {
             return self.unexpected("a pattern such as `.some(x)`, `.none` or `t: TextChannel`");
         }
-        let variant = self.ident("a variant name")?;
+        let variant = self.name_after_dot("a variant name")?;
         let mut binds = Vec::new();
         if self.eat(&Tok::LParen) {
             while !self.is(&Tok::RParen) {

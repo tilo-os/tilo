@@ -273,7 +273,6 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-resource = { path = "../tilo-resource" }
-settings = { path = "../../../apps/settings" }
 app-framework = { package = "tilo-app", path = "../../sdk/tilo-app" }
 
 [lints]

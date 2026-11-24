@@ -57,7 +57,11 @@ view mobile_page() {
                             ui.TextInput(bind: pin, placeholder: "PIN", fill)
                             ui.Button("Unlock", role: .primary) {
                                 on press: device
-                                    .unlock_sim(device.modem, sim: active_sim_path(m), pin: pin)
+                                    .unlock_sim(
+                                        device.modem,
+                                        sim: active_sim_path(m),
+                                        pin: pin,
+                                    )
                                     .then(set(pin, ""))
                             }
                         }
@@ -110,16 +114,11 @@ view mobile_page() {
                                 selected: sim.active,
                                 icon: .sd_card,
                             ) {
-                                on activate: if not sim.active {
-                                    device.use_sim(device.modem, sim: sim.path)
-                                }
+                                on activate: device.use_sim(device.modem, sim: sim.path)
                                 trailing: {
                                     if not sim.active {
                                         ui.Button("Use it", size: .small) {
-                                            on press: device.use_sim(
-                                                device.modem,
-                                                sim: sim.path,
-                                            )
+                                            on press: device.use_sim(device.modem, sim: sim.path)
                                         }
                                     }
                                 }
@@ -173,7 +172,10 @@ view mobile_page() {
                     icon: .globe,
                 ) {
                     trailing: {
-                        ui.Button(if profile.roaming { "On" } else { "Off" }, toggled: profile.roaming) {
+                        ui.Button(
+                            if profile.roaming { "On" } else { "Off" },
+                            toggled: profile.roaming,
+                        ) {
                             on press: device.set_mobile_roaming(
                                 device.network,
                                 on: not profile.roaming,
@@ -202,10 +204,17 @@ view mobile_page() {
                 }
                 if apn_open {
                     row(gap: .related, align: .center, wrap: true) {
-                        ui.TextInput(bind: apn, placeholder: "The access point name, such as internet.telekom", fill)
+                        ui.TextInput(
+                            bind: apn,
+                            placeholder: "The access point name, such as internet.telekom",
+                            fill,
+                        )
                         ui.Button("Save", role: .primary, size: .small) {
                             on press: device
-                                .set_mobile_apn(device.network, apn: apn)
+                                .set_mobile_apn(
+                                    device.network,
+                                    apn: apn,
+                                )
                                 .then(set(apn_open, false))
                         }
                         ui.Button("From the operator", size: .small) {
@@ -227,11 +236,7 @@ view mobile_page() {
                         placeholder: m.network_type ?? "Choose",
                     )
                     ui.Button("Use these", size: .small) {
-                        on press: device.set_preferred_network(
-                            device.modem,
-                            modem: m.path,
-                            network: network_type,
-                        )
+                        on press: device.set_preferred_network(device.modem, network: network_type)
                     }
                 }
             }
@@ -248,14 +253,8 @@ fn mobile_state(net: device.Network, modem: Option<device.ModemUnit>) -> Text {
             "Connected"
         } else if m.state == .registered {
             "Registered"
-        } else if m.lock != .none {
-            "The SIM is locked"
-        } else {
-            "On"
-        }
-    } else {
-        "On"
-    }
+        } else if m.lock != .none { "The SIM is locked" } else { "On" }
+    } else { "On" }
 }
 
 /// What one SIM is, in a card of its own.
@@ -263,7 +262,9 @@ view sim_properties(sim: device.ModemSim) {
     ui.PropertyList {
         ui.Property("SIM", sim.label)
         ui.Property("Kind", sim_kind_words(sim.kind))
-        if let slot = sim.slot { ui.Property("Slot", "{slot}") }
+        if let slot = sim.slot {
+            ui.Property("Slot", "{slot}")
+        }
     }
 }
 
@@ -271,23 +272,21 @@ view sim_properties(sim: device.ModemSim) {
 fn active_sim_path(m: device.ModemUnit) -> Text {
     if let sim = m.sims.find(s -> s.active) {
         sim.path
-    } else if let first = m.sims.first() {
-        first.path
-    } else {
-        ""
-    }
+    } else if let first = m.sims.first() { first.path } else { "" }
 }
 
 /// What a locked SIM says: how many tries it has left.
 fn pin_retries(tries: Option<Int>) -> Text {
-    if let left = tries { "The SIM asks for its PIN: {left} tries left" } else { "The SIM asks for its PIN" }
+    if let left = tries {
+        "The SIM asks for its PIN: {left} tries left"
+    } else { "The SIM asks for its PIN" }
 }
 
 /// What a SIM is.
 fn sim_kind_words(kind: device.SimKind) -> Text {
     if kind == .esim {
         "eSIM"
-    } else if kind == .esim_without_profile {
+    } else if kind == .esim-without-profile {
         "eSIM with no profile"
     } else if kind == .physical { "SIM card" } else { "SIM" }
 }
@@ -302,7 +301,7 @@ fn registration_words(r: device.Registration) -> Text {
         "Looking for a network"
     } else if r == .denied {
         "Refused by the network"
-    } else if r == .emergency_only {
+    } else if r == .emergency-only {
         "Emergency calls only"
     } else if r == .idle { "Not looking" } else { "Unknown" }
 }

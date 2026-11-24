@@ -16,14 +16,10 @@ view shortcuts_pane() {
     }
     ui.Section("Chords that run an action") {
         if table.actions.is_empty() {
-            ui.Text(
-                "No action is on a chord of its own yet.",
-                role: .caption,
-                secondary: true,
-            )
+            ui.Text("No action is on a chord of its own yet.", role: .caption, secondary: true)
         }
-        for action in table.actions {
-            ui.ListRow(action.label, secondary: action.chord, icon: .zap)
+        for chorded in table.actions {
+            ui.ListRow(chorded.label, secondary: chorded.chord, icon: .zap)
         }
     }
     ui.Section("Change one") {
@@ -31,11 +27,7 @@ view shortcuts_pane() {
         ui.ShortcutRecorder(bind: chord, label: "The keys it stands on")
         row(gap: .related, align: .center, wrap: true) {
             ui.Button("Put it on these keys", role: .primary) {
-                on press: settings.rebind(
-                    settings.shortcuts,
-                    shortcut: shortcut,
-                    chord: chord,
-                )
+                on press: settings.rebind(settings.shortcuts, shortcut: shortcut, chord: chord)
             }
             ui.Button("Its usual keys", size: .small) {
                 on press: settings.reset(settings.shortcuts, shortcuts: [shortcut])
@@ -148,9 +140,5 @@ fn shortcut_label(id: Text) -> Text {
         "Finish the dictation"
     } else if id == "dictation-cancel" {
         "Leave the dictation"
-    } else if id == "toggle-float" {
-        "Float the window, or not"
-    } else {
-        id
-    }
+    } else if id == "toggle-float" { "Float the window, or not" } else { id }
 }

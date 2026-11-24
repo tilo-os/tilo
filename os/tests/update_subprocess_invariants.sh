@@ -6,12 +6,11 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-SETTINGS="$ROOT/apps/settings/src/panes/updates.rs"
 SYSTEM_UPDATE="$ROOT/crates/os/system-service/src/update.rs"
 
 fails=0
 checks=0
-for source in "$SETTINGS" "$SYSTEM_UPDATE"; do
+for source in "$SYSTEM_UPDATE"; do
     if [ ! -r "$source" ]; then
         echo "FAIL: cannot inspect $source" >&2
         exit 1
@@ -28,12 +27,11 @@ reject() {
     else checks=$((checks + 1)); fi
 }
 
-for source in "$SETTINGS" "$SYSTEM_UPDATE"; do
+for source in "$SYSTEM_UPDATE"; do
     require "$source" 'bounded_command::run\(' "update controls do not use bounded execution"
     reject "$source" 'Command::new|\.output\(\)|wait_with_output|\.spawn\(\)' \
         "update controls contain a raw subprocess path"
 done
-require "$SETTINGS" 'stderr_diagnostic\(\)' "update helper diagnostics are not sanitized"
 require "$SYSTEM_UPDATE" 'UPDATE_TIMEOUT: Duration' "network-backed image staging has no explicit deadline"
 require "$SYSTEM_UPDATE" 'UPDATE_UNIT,[[:space:]]*$|UPDATE_TIMEOUT,' \
     "the image staging unit is not started under its deadline"

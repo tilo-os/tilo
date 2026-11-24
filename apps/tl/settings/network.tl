@@ -52,14 +52,21 @@ view network_first(page: State<Text>, chosen: State<Text>) {
                 icon: .wifi,
             ) {
                 trailing: {
-                    ui.Button(if wifi.on { "On" } else { "Off" }, toggled: wifi.on, enabled: not wifi.hardware_blocked) {
+                    ui.Button(
+                        if wifi.on { "On" } else { "Off" },
+                        toggled: wifi.on,
+                        enabled: not wifi.hardware_blocked,
+                        description: "A switch on the device holds Wi-Fi off.",
+                    ) {
                         on press: device.set_wifi(device.network, not wifi.on)
                     }
                 }
             }
             if not wifi.on {
                 ui.Text(
-                    if net.airplane_mode { "Airplane mode holds the radios off" } else { "Wi-Fi is off" },
+                    if net.airplane_mode {
+                        "Airplane mode holds the radios off"
+                    } else { "Wi-Fi is off" },
                     role: .caption,
                     secondary: true,
                 )
@@ -69,7 +76,11 @@ view network_first(page: State<Text>, chosen: State<Text>) {
                 let short = wifi.networks.take(6)
                 network_rows(net, short, page, chosen, password_for, password)
                 if wifi.networks.len() > short.len() {
-                    ui.ListRow("Show all networks", secondary: "{wifi.networks.len()} in reach", icon: .list) {
+                    ui.ListRow(
+                        "Show all networks",
+                        secondary: "{wifi.networks.len()} in reach",
+                        icon: .list,
+                    ) {
                         on activate: set(page, "all")
                     }
                 }
@@ -109,7 +120,10 @@ view network_first(page: State<Text>, chosen: State<Text>) {
             ) {
                 on activate: set(page, "wired")
                 trailing: {
-                    ui.Button(if wired.connected { "On" } else { "Off" }, toggled: wired.connected) {
+                    ui.Button(
+                        if wired.connected { "On" } else { "Off" },
+                        toggled: wired.connected,
+                    ) {
                         on press: device.set_wired(device.network, not wired.connected)
                     }
                 }
@@ -125,16 +139,26 @@ view network_first(page: State<Text>, chosen: State<Text>) {
             ui.ListRow("Hotspot", secondary: hotspot_words(hotspot.hotspot), icon: .radio) {
                 on activate: set(page, "hotspot")
                 trailing: {
-                    ui.Button(if hotspot.hotspot { "On" } else { "Off" }, toggled: hotspot.hotspot) {
+                    ui.Button(
+                        if hotspot.hotspot { "On" } else { "Off" },
+                        toggled: hotspot.hotspot,
+                    ) {
                         on press: device.set_hotspot(device.tethering, not hotspot.hotspot)
                     }
                 }
             }
         }
         if wifi.available or net.mobile.available {
-            ui.ListRow("Airplane mode", secondary: if net.airplane_mode { "On" } else { "Off" }, icon: .plane) {
+            ui.ListRow(
+                "Airplane mode",
+                secondary: if net.airplane_mode { "On" } else { "Off" },
+                icon: .plane,
+            ) {
                 trailing: {
-                    ui.Button(if net.airplane_mode { "On" } else { "Off" }, toggled: net.airplane_mode) {
+                    ui.Button(
+                        if net.airplane_mode { "On" } else { "Off" },
+                        toggled: net.airplane_mode,
+                    ) {
                         on press: device.set_airplane_mode(device.network, not net.airplane_mode)
                     }
                 }
@@ -173,11 +197,7 @@ view network_rows(
         ) {
             on activate: if n.connected {
                 set(chosen, n.name).then(set(page, "net"))
-            } else if n.secure and not n.known {
-                set(password_for, n.name)
-            } else {
-                n.join()
-            }
+            } else if n.secure and not n.known { set(password_for, n.name) } else { n.join() }
             trailing: {
                 row(gap: .tight, align: .center) {
                     ui.SignalMeter(
@@ -189,7 +209,13 @@ view network_rows(
                             .fair
                         } else if n.signal == 1 { .weak } else { .unknown },
                     )
-                    ui.Button("This network", icon: .chevron_right, icon_only: true, role: .plain, size: .small) {
+                    ui.Button(
+                        "This network",
+                        icon: .chevron_right,
+                        icon_only: true,
+                        role: .plain,
+                        size: .small,
+                    ) {
                         on press: set(chosen, n.name).then(set(page, "net"))
                     }
                 }
@@ -250,9 +276,16 @@ view known_networks(page: State<Text>) {
                 mark: if s.hidden { .eye_off },
             ) {
                 trailing: {
-                    ui.MenuButton("This network", icon: .more_horizontal, icon_only: true, role: .plain) {
+                    ui.MenuButton(
+                        "This network",
+                        icon: .more_horizontal,
+                        icon_only: true,
+                        role: .plain,
+                    ) {
                         ui.MenuItem(
-                            if s.autoconnect { "Stop joining by itself" } else { "Join by itself" },
+                            if s.autoconnect {
+                                "Stop joining by itself"
+                            } else { "Join by itself" },
                             icon: .refresh,
                         ) {
                             on choose: s.set_autoconnect(not s.autoconnect)
@@ -279,9 +312,16 @@ view network_page(name: Text, page: State<Text>) {
             on activate: set(page, "")
         }
         ui.PropertyList {
-            ui.Property("State", if n?.connected ?? false { connectivity_words(net.connectivity) } else if n?.known ?? false { "Known" } else { "In reach" })
+            ui.Property(
+                "State",
+                if n?.connected ?? false {
+                    connectivity_words(net.connectivity)
+                } else if n?.known ?? false { "Known" } else { "In reach" },
+            )
             ui.Property("Security", if n?.secure ?? false { "Password" } else { "Open" })
-            if let signal = n?.signal { ui.Property("Signal", "{signal} of 4") }
+            if let signal = n?.signal {
+                ui.Property("Signal", "{signal} of 4")
+            }
         }
         if let w = n {
             if w.connected {
@@ -298,49 +338,57 @@ view network_page(name: Text, page: State<Text>) {
     let kept = net.saved.find(s -> s.name == name)
     if let saved = kept {
         ui.Section("What this device keeps") {
-                ui.ListRow("Joins by itself", secondary: if saved.autoconnect { "On" } else { "Off" }, icon: .refresh) {
-                    trailing: {
-                        ui.Button("Change", role: .plain, size: .small) {
-                            on press: saved.set_autoconnect(not saved.autoconnect)
-                        }
+            ui.ListRow(
+                "Joins by itself",
+                secondary: if saved.autoconnect { "On" } else { "Off" },
+                icon: .refresh,
+            ) {
+                trailing: {
+                    ui.Button("Change", role: .plain, size: .small) {
+                        on press: saved.set_autoconnect(not saved.autoconnect)
                     }
                 }
-                if let proxy = saved.proxy {
-                    ui.ListRow("Proxy", secondary: proxy, icon: .globe)
-                }
-                if let ipv4 = saved.ipv4 {
-                    ui.ListRow(
-                        "Addresses",
-                        secondary: if ipv4.automatic {
-                            "The network hands one out"
-                        } else {
-                            ipv4.addresses.join(", ")
-                        },
-                        icon: .globe,
-                    )
-                    ui.TextInput(bind: addresses, placeholder: "Addresses with their prefixes, comma-separated")
-                    ui.TextInput(bind: gateway, placeholder: "Router")
-                    ui.TextInput(bind: dns, placeholder: "Name servers, comma-separated")
-                    row(gap: .related, align: .center, wrap: true) {
-                        ui.Button("Take one from the network", size: .small) {
-                            on press: device.set_network_ipv4(
-                                device.network,
-                                profile: saved.id,
-                                automatic: true,
-                            )
-                        }
-                        ui.Button("Use these addresses", size: .small) {
-                            on press: device.set_network_ipv4(
-                                device.network,
-                                profile: saved.id,
-                                automatic: false,
-                                addresses: comma_list(addresses),
-                                gateway: gateway.trim(),
-                                dns: comma_list(dns),
-                            )
-                        }
+            }
+            if let proxy = saved.proxy {
+                ui.ListRow("Proxy", secondary: proxy, icon: .globe)
+            }
+            if let ipv4 = saved.ipv4 {
+                ui.ListRow(
+                    "Addresses",
+                    secondary: if ipv4.automatic {
+                        "The network hands one out"
+                    } else { ipv4.addresses.join(", ") },
+                    icon: .globe,
+                )
+                ui.TextInput(
+                    bind: addresses,
+                    placeholder: "Addresses with their prefixes, comma-separated",
+                )
+                ui.TextInput(bind: gateway, placeholder: "Router")
+                ui.TextInput(bind: dns, placeholder: "Name servers, comma-separated")
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Button("Take one from the network", size: .small) {
+                        on press: device.set_network_ipv4(
+                            device.network,
+                            profile: saved.id,
+                            automatic: true,
+                            addresses: comma_list(addresses),
+                            gateway: gateway.trim(),
+                            dns: comma_list(dns),
+                        )
+                    }
+                    ui.Button("Use these addresses", size: .small) {
+                        on press: device.set_network_ipv4(
+                            device.network,
+                            profile: saved.id,
+                            automatic: false,
+                            addresses: comma_list(addresses),
+                            gateway: gateway.trim(),
+                            dns: comma_list(dns),
+                        )
                     }
                 }
+            }
             ui.Button("Forget this network", icon: .trash, role: .destructive) {
                 on press: saved.forget()
             }
@@ -358,11 +406,20 @@ view wired_page(page: State<Text>) {
         if let wired = net.wired {
             ui.PropertyList {
                 ui.Property("State", if wired.connected { "Connected" } else { "Cable unplugged" })
-                if let device_name = wired.device { ui.Property("Interface", device_name) }
-                if let speed = wired.speed { ui.Property("Speed", speed) }
-                if let address = wired.ipv4 { ui.Property("IPv4", address) }
+                if let device_name = wired.device {
+                    ui.Property("Interface", device_name)
+                }
+                if let speed = wired.speed {
+                    ui.Property("Speed", speed)
+                }
+                if let address = wired.ipv4 {
+                    ui.Property("IPv4", address)
+                }
             }
-            ui.Button(if wired.connected { "Disconnect" } else { "Connect" }, icon: .ethernet_port) {
+            ui.Button(
+                if wired.connected { "Disconnect" } else { "Connect" },
+                icon: .ethernet_port,
+            ) {
                 on press: device.set_wired(device.network, not wired.connected)
             }
         } else {
@@ -382,9 +439,15 @@ view hotspot_page() {
     ui.Section("Hotspot") {
         ui.PropertyList {
             ui.Property("State", if t.hotspot { "On" } else { "Off" })
-            if let named = t.name { ui.Property("Name", named) }
+            if let named = t.name {
+                ui.Property("Name", named)
+            }
         }
-        ui.ListRow("Share this connection", secondary: if t.hotspot { "On" } else { "Off" }, icon: .radio) {
+        ui.ListRow(
+            "Share this connection",
+            secondary: if t.hotspot { "On" } else { "Off" },
+            icon: .radio,
+        ) {
             trailing: {
                 ui.Button(if t.hotspot { "On" } else { "Off" }, toggled: t.hotspot) {
                     on press: device.set_hotspot(device.tethering, not t.hotspot)
@@ -402,9 +465,17 @@ view hotspot_page() {
             ui.Dropdown(bind: band, options: ["Automatic", "2.4 GHz", "5 GHz"], placeholder: "Band")
             row(gap: .related, align: .center, wrap: true) {
                 ui.Button("Start the hotspot", role: .primary) {
-                    on press: device.configure_hotspot(device.tethering, name, password, band_key(band))
+                    on press: device.configure_hotspot(
+                        device.tethering,
+                        name,
+                        password,
+                        band_key(band),
+                    )
                 }
-                ui.Button(if show_code { "Hide the code" } else { "Share the code" }, icon: .qr_code) {
+                ui.Button(
+                    if show_code { "Hide the code" } else { "Share the code" },
+                    icon: .qr_code,
+                ) {
                     on press: set(show_code, not show_code)
                 }
             }
@@ -425,7 +496,9 @@ view hotspot_page() {
             for c in t.clients {
                 ui.ListRow(
                     c.address,
-                    secondary: if let signal = c.signal { "{signal} dBm" } else { "Signal unknown" },
+                    secondary: if let signal = c.signal {
+                        "{signal} dBm"
+                    } else { "Signal unknown" },
                     icon: .smartphone,
                 )
             }
@@ -455,7 +528,11 @@ view advanced_page() {
         ui.TextInput(bind: ca, placeholder: "CA certificate path")
         row(gap: .related, align: .center, wrap: true) {
             ui.Dropdown(bind: method, options: ["PEAP", "TTLS", "TLS"], placeholder: "Method")
-            ui.Dropdown(bind: inner, options: ["MSCHAPv2", "PAP", "CHAP"], placeholder: "Inner authentication")
+            ui.Dropdown(
+                bind: inner,
+                options: ["MSCHAPv2", "PAP", "CHAP"],
+                placeholder: "Inner authentication",
+            )
         }
         ui.TextInput(bind: profile, placeholder: "Profile name")
         ui.TextInput(bind: password, placeholder: "Password")
@@ -481,11 +558,7 @@ fn connectivity_words(c: device.Connectivity) -> Text {
         "Sign in to the network"
     } else if c == .limited {
         "Connected, no internet"
-    } else if c == .offline {
-        "Offline"
-    } else {
-        "Connected"
-    }
+    } else if c == .offline { "Offline" } else { "Connected" }
 }
 
 /// What mobile data says: the modem's network and how strong it is.
@@ -496,9 +569,7 @@ fn mobile_words(mobile: device.Mobile, modem: Option<device.ModemUnit>) -> Text 
         "Off"
     } else if let m = modem {
         if let technology = m.technology { technology_words(technology) } else { "On" }
-    } else {
-        "On"
-    }
+    } else { "On" }
 }
 
 /// What a modem's network is called.
@@ -507,28 +578,24 @@ fn technology_words(t: device.Technology) -> Text {
         "5G"
     } else if t == .lte {
         "LTE"
-    } else if t == .hspa_plus {
+    } else if t == .hspa-plus {
         "HSPA+"
     } else if t == .hspa {
         "HSPA"
     } else if t == .umts {
         "3G"
-    } else if t == .ev_do {
+    } else if t == .ev-do {
         "EV-DO"
     } else if t == .cdma {
         "CDMA"
     } else if t == .edge {
         "EDGE"
-    } else if t == .gprs {
-        "GPRS"
-    } else if t == .gsm { "2G" } else { "On" }
+    } else if t == .gprs { "GPRS" } else if t == .gsm { "2G" } else { "On" }
 }
 
 /// What a band is called in the dropdown.
 fn band_label(band: device.Band) -> Text {
-    if band == .two_point_four {
-        "2.4 GHz"
-    } else if band == .five { "5 GHz" } else { "Automatic" }
+    if band == .two-point-four { "2.4 GHz" } else if band == .five { "5 GHz" } else { "Automatic" }
 }
 
 /// The dropdown's band name as the action takes it.

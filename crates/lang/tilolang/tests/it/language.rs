@@ -783,3 +783,19 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// Surfaces name cases with hyphens (a speaker's `.surround-left`, a phase's
+/// `.waiting-for-microphones`): a hyphen that follows the name after `.` with no space is part of
+/// it, and one with a space around it stays a subtraction.
+#[test]
+fn a_hyphenated_name_after_a_dot_is_one_name() {
+    let src = "app t.x \"X\"\n\nfn waits(p: P) -> Bool { p == .waiting-for-microphones }\n\nfn left(role: R) -> R { .surround-left }\n";
+    let parsed = tilolang::parse(src).unwrap_or_else(|d| panic!("{d:#?}"));
+    let printed = tilolang::print_module(&parsed);
+    assert!(printed.contains(".waiting-for-microphones"), "{printed}");
+    assert!(printed.contains(".surround-left"), "{printed}");
+    assert!(tilolang::parse(&printed).is_ok(), "{printed}");
+
+    let subtracted = "app t.x \"X\"\n\nfn spend(a: A) -> Int { a.b - 1 }\n";
+    assert!(tilolang::parse(subtracted).is_ok());
+}

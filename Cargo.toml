@@ -124,7 +124,6 @@ members = [
     "apps/remote",
     "apps/remote-model",
     "apps/remote-model-wasm",
-    "apps/settings",
     "apps/slides",
     "apps/shortcuts",
     "apps/staging-handoff-model",

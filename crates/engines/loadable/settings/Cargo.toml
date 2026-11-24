@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Settings itself (the app's library: its window, effects and panes) and the libraries only Settings uses (the settings sections as resource models, the model-provider administration panel, the NTFS mount protocol, the wallpaper catalogue, the accessibility settings, the PC keyboard outlines, the time-zone globe) as an engine library beside the shared runtime: libtilo_settings_engine.so, shipped in the runtime bundle and loaded only by Settings and Model Providers."
+description = "The model-provider administration panel and the libraries it shows (the settings sections as resource models, the NTFS mount protocol, the wallpaper catalogue, the accessibility settings, the PC keyboard outlines, the time-zone globe) as an engine library beside the shared runtime: libtilo_settings_engine.so, shipped in the runtime bundle and loaded by Model Providers."
 
 # A runtime engine: code few apps need that no other app should map. It is a
 # Rust dylib chained on libruntime_dylib.so, built in the same Cargo graph as
@@ -39,7 +39,6 @@ thin = [
     "dep:tilo-pc-keyboard-geometry",
     "dep:tilo-zone-globe",
     "dep:settings-sections",
-    "dep:settings",
     "dep:model-providers",
     "dep:ui",
     "tilo-accounts-engine/thin",
@@ -48,7 +47,7 @@ thin = [
 
 [dependencies]
 runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
-# The features Settings builds them with (apps/settings/Cargo.toml): one copy
+# The features the provider panel builds them with (apps/model-providers/Cargo.toml): one copy
 # of each in the thin graph, or the app's symbols would name a crate hash this
 # library does not export.
 provider-settings-ui = { path = "../../../integrations/provider-settings-ui", optional = true }
@@ -58,11 +57,6 @@ tilo-accessibility-settings = { path = "../../../desktop/tilo-accessibility-sett
 tilo-pc-keyboard-geometry = { path = "../../../desktop/pc-keyboard-geometry", optional = true }
 tilo-zone-globe = { path = "../../../sdk/zone-globe", optional = true }
 settings-sections = { path = "../../../desktop/settings-sections", optional = true }
-# Settings' library: the window, its effects and every pane. The app's
-# binary is one call into this library (apps/settings/src/main.rs), so the
-# app's package stays far below the package size limit; Settings' code ships
-# in the runtime bundle and changes with it.
-settings = { path = "../../../../apps/settings", optional = true }
 # Model Providers, the administration panel as a window of its own: its
 # binary is one call into this library too (apps/model-providers/src/main.rs).
 model-providers = { path = "../../../../apps/model-providers", optional = true }

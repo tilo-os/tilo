@@ -20,7 +20,6 @@ pub const WEB_PAGES: &[&str] = &[
     "accessibility",
     "region_formats",
     "keyboard_shortcuts",
-    "devices_access",
     "billing",
     // The person's own accounts and model providers: the host that runs
     // their workspace keeps them, and the page reads and changes them there.
@@ -320,9 +319,6 @@ pub const PAGES: &[Page] = &[
     Page { slug: "pointing" },
     Page { slug: "printers" },
     Page { slug: "power" },
-    Page {
-        slug: "devices_access",
-    },
     Page { slug: "users" },
     Page { slug: "billing" },
     Page {
@@ -330,9 +326,6 @@ pub const PAGES: &[Page] = &[
     },
     Page {
         slug: "agent_models",
-    },
-    Page {
-        slug: "permissions",
     },
     Page { slug: "storage" },
     Page { slug: "updates" },

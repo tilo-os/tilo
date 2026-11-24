@@ -350,17 +350,11 @@ def copy_readers(root: Path, modules: dict[str, Path], crates: list[Path]) -> li
 
 TOOLKIT = "crates/ui/ui-core"
 # Crates whose copy keys also travel through conditionals and tables, by the
-# namespaces their code picks keys in (`None`: every namespace of their own
-# catalogue). Settings picks across its whole catalogue; the session's desktop
-# picks `activity-` keys in a `match` and in its word builders.
+# namespaces their code picks keys in. The session's desktop picks `activity-`
+# keys in a `match` and in its word builders.
 INDIRECT = {
-    "apps/settings": None,
     "crates/desktop/session-core": {"activity"},
 }
-# Catalogues a crate's resolver falls back to after its own: Settings' `t`
-# resolves the shared provider administration copy it embeds
-# (apps/settings/src/i18n.rs).
-FALLBACK = {"apps/settings": ["crates/integrations/provider-settings-ui"]}
 
 
 def catalogues(crate: Path) -> dict[str, set[str]]:
@@ -390,20 +384,15 @@ def missing_copy(root: Path) -> list[str]:
     for source, crate in copy_readers(root, modules, crates):
         own = catalogues(crate)
         name = source.relative_to(root).as_posix()
-        shared = [catalogues(root / fallback) for fallback in FALLBACK.get(name, [])]
         namespaces = indirect_namespaces(name, own)
         for path in sorted((source / "src").rglob("*.rs")):
-            # Settings' scenarios name capture-only states, not live panes.
-            if name == "apps/settings" and path.name == "scenarios.rs":
-                continue
             text = path.read_text()
             foreign = {module: other for module, other in modules.items() if other != crate}
             for key, line in used_keys(text, namespaces, foreign):
                 for locale, keys in own.items():
                     if key in keys or key in toolkit.get(locale, toolkit["en-US"]):
                         continue
-                    if not any(key in fallback.get(locale, ()) for fallback in shared):
-                        errors.append(f"{path.relative_to(root)}:{line}: {locale} lacks {key}")
+                    errors.append(f"{path.relative_to(root)}:{line}: {locale} lacks {key}")
             for other, key, line in foreign_keys(text, foreign):
                 for locale, keys in catalogues(other).items():
                     if key not in keys and key not in toolkit.get(locale, toolkit["en-US"]):

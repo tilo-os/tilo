@@ -253,7 +253,7 @@ newer `PROFILE_RELEASE`) or whose kill switch they turned off.
   process that aborted still up, then taken over from its kept intent with
   the server reachable and lifted only when turned off. Settings tests
   cover the switch, the `set-kill-switch` action, the blocking state and
-  the release (`apps/settings/.../tests/vpn_kill_switch.rs`).
+  the release.
 
 ## Limits
 

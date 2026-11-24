@@ -33,7 +33,9 @@ view users_pane() {
                             )
                         }
                         ui.Button(
-                            if account.automatic_login { "Signs in by itself" } else { "Asks for a password" },
+                            if account.automatic_login {
+                                "Signs in by itself"
+                            } else { "Asks for a password" },
                             size: .small,
                             toggled: account.automatic_login,
                         ) {
@@ -93,16 +95,10 @@ view users_pane() {
 /// What an account is, in a line: its login name, its role and whether it signs in by itself.
 fn account_words(account: device.LocalAccount) -> Text {
     let role = if account.admin { "administrator" } else { "standard" }
-    let start = if account.automatic_login {
-        "signs in by itself"
-    } else {
-        "asks for a password"
-    }
+    let start = if account.automatic_login { "signs in by itself" } else { "asks for a password" }
     if account.current {
         "{account.username} - {role}, this session"
     } else if let error = account.automatic_login_error {
         "{account.username} - {role}; {error}"
-    } else {
-        "{account.username} - {role}, {start}"
-    }
+    } else { "{account.username} - {role}, {start}" }
 }

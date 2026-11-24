@@ -127,7 +127,7 @@ exclude = [
 # the launcher's sandbox, built with bubblewrap in a user namespace of its own. The packages are
 # tools/ci/nested-sandboxes.toml's, an edit there moving this list with it
 # (tools/tests/test_nested_sandboxes.py fails while the two disagree).
-isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-device-steps", "settings", "tilo-sandbox-core", "thumbnails", "tilo-runtime-bundle", "tilo-session", "tilo-net"] }
+isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-device-steps", "tilo-sandbox-core", "thumbnails", "tilo-runtime-bundle", "tilo-session", "tilo-net"] }
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
 # setup in .config/nextest.toml names them for both packages:
 # built once by this family's build and kept with its test binaries,
@@ -149,7 +149,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
 # end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
-starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-runtime:tilo-runtime@fast", "model-providers:model-providers@fast", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-runtime:bin:tilo-runtime=agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher", "tilolang-process:tilolang-process", "assistant:assistant", "camera:camera", "chip-design:chip-design", "tilo-console:console", "diffmerge:diffmerge", "messages:messages", "model-providers:model-providers", "poker:poker", "shortcuts:shortcuts", "slides:slides", "terminal:terminal", "totp:totp", "typst-editor:typst-editor"] }
+starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-runtime:tilo-runtime@fast", "model-providers:model-providers@fast", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-runtime:bin:tilo-runtime=agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher", "tilolang-process:tilolang-process", "assistant:assistant", "camera:camera", "chip-design:chip-design", "tilo-console:console", "diffmerge:diffmerge", "messages:messages", "model-providers:model-providers", "poker:poker", "shortcuts:shortcuts", "slides:slides", "terminal:terminal", "totp:totp", "typst-editor:typst-editor"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -226,7 +226,7 @@ unify = "workspace-unify"
 packages = [
     "tilo-accounts", "app-cli", "tilo-key-group", "code-editor",
     "discord-worker", "imager", "launcher", "local-model-service",
-    "osk", "tilo-runtime-bundle", "tilo-runtime-portal", "settings", "store",
+    "osk", "tilo-runtime-bundle", "tilo-runtime-portal", "store",
     "tilo-agent-session", "tilo-app", "tilo-bluez",
     "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
@@ -6210,7 +6210,7 @@ default = false
 [[check]]
 name = "test-assets"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/settings/shots/artifacts.json crates/engines/doc-fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
+run = "python3 -I tools/test-assets.py --cache-root /target/test-assets crates/engines/doc-fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
 outputs = ["/target/test-assets/**"]
 default = false
 

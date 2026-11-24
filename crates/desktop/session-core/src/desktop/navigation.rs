@@ -851,7 +851,11 @@ pub enum ChromeEffect {
     },
 
     /// Open the workspace's settings
-    #[effect(view, own_device)]
+    #[effect(
+        view,
+        own_device,
+        keywords = "permissions, grants, access, roles, people, members"
+    )]
     WorkspaceSettings,
 
     /// Run a desktop shortcut

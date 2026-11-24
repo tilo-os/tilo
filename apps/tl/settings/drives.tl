@@ -9,11 +9,7 @@ view drives_pane() {
             ui.EmptyState("No drive is attached", icon: .hard_drive, inline: true)
         }
         for drive in drives.drives {
-            ui.ListRow(
-                drive.label,
-                secondary: drive_words(drive),
-                icon: .hard_drive,
-            ) {
+            ui.ListRow(drive.label, secondary: drive_words(drive), icon: .hard_drive) {
                 trailing: {
                     row(gap: .tight, align: .center, wrap: true) {
                         if let mounted = drive.mounted {
@@ -64,7 +60,9 @@ view drives_pane() {
                 trailing: {
                     row(gap: .tight, align: .center, wrap: true) {
                         ui.Button(
-                            if remembered.mode == .open_safely { "Open safely" } else { "Open fast" },
+                            if remembered.mode == .open_safely {
+                                "Open safely"
+                            } else { "Open fast" },
                             size: .small,
                             toggled: remembered.mode == .open_safely,
                         ) {
@@ -102,31 +100,23 @@ view drives_pane() {
 
 /// What a drive is, in a line: its size, where it sits, and whether it is open.
 fn drive_words(drive: device.Drive) -> Text {
-    let size = size_words(drive.size_bytes)
+    let size = drive_size_words(drive.size_bytes)
     let where_ = if drive.placement == .external { "external" } else { "inside this computer" }
     if let mounted = drive.mounted {
         let path = mounted.path
         if mounted.read_only != .none {
             "{size}, {where_} - open at {path}, read-only"
-        } else {
-            "{size}, {where_} - open at {path}"
-        }
+        } else { "{size}, {where_} - open at {path}" }
     } else if drive.needs_consent {
         "{size}, {where_} - asked about before it opens"
-    } else {
-        "{size}, {where_} - not open"
-    }
+    } else { "{size}, {where_} - not open" }
 }
 
 /// How many bytes read to a person: `4 GB`, `812 MB`.
-fn size_words(n: Int) -> Text {
+fn drive_size_words(n: Int) -> Text {
     if n < 1000 {
         "{n} B"
     } else if n < 1000000 {
         "{n / 1000} KB"
-    } else if n < 1000000000 {
-        "{n / 1000000} MB"
-    } else {
-        "{n / 1000000000} GB"
-    }
+    } else if n < 1000000000 { "{n / 1000000} MB" } else { "{n / 1000000000} GB" }
 }

@@ -904,17 +904,6 @@ mod image_interface_tests {
         }
         assert!(checked > 50, "only {checked} app manifests found");
 
-        let settings = tilo_app_package::Manifest::from_toml_str(
-            &std::fs::read_to_string(repo.join("apps/settings/tilo-app.toml")).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            settings
-                .required_interface_wire()
-                .iter()
-                .any(|requirement| requirement.starts_with("system@")),
-            "Settings names the system interface it was built against"
-        );
     }
 }
 

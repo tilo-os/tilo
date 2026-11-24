@@ -117,13 +117,7 @@ view vpn_paste_page(service: Text, page: State<Text>) {
 
 /// The kind an import names: an installed plugin's own service, or the chosen kind's key.
 fn vpn_kind_key(service: Text, kind: Text) -> Text {
-    if service != "" {
-        service
-    } else if kind == "OpenVPN" {
-        "openvpn"
-    } else {
-        "wireguard"
-    }
+    if service != "" { service } else if kind == "OpenVPN" { "openvpn" } else { "wireguard" }
 }
 
 /// One profile's page: how it stands, and the settings its own page changes. What is left out of
@@ -271,10 +265,7 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             destructive: true,
             open: confirm_delete,
         ) {
-            on act_primary: p
-                .forget()
-                .then(set(confirm_delete, false))
-                .then(set(page, "vpn"))
+            on act_primary: p.forget().then(set(confirm_delete, false)).then(set(page, "vpn"))
             on act_secondary: set(confirm_delete, false)
             on dismiss: set(confirm_delete, false)
             ui.Text("Its keys go with it.", role: .caption)
@@ -289,9 +280,7 @@ fn with_entry(entries: List<Text>, entry: Text) -> List<Text> {
     let trimmed = entry.trim()
     if trimmed == "" or entries.contains(trimmed) {
         entries
-    } else {
-        [entries, [trimmed]].flat_map(x -> x)
-    }
+    } else { [entries, [trimmed]].flat_map(x -> x) }
 }
 
 /// `entries` without `entry`.
@@ -302,13 +291,7 @@ fn without_entry(entries: List<Text>, entry: Text) -> List<Text> {
 
 /// What a VPN profile says of itself.
 fn vpn_state_words(p: device.VpnProfile) -> Text {
-    if p.connected {
-        "Connected"
-    } else if p.kind == "wireguard" {
-        "WireGuard"
-    } else {
-        "Off"
-    }
+    if p.connected { "Connected" } else if p.kind == "wireguard" { "WireGuard" } else { "Off" }
 }
 
 /// The VPNs in one word for the network page's row.
@@ -318,11 +301,7 @@ fn vpn_words() -> Text {
         "None set up"
     } else {
         let joined = vpn.profiles.find(p -> p.connected)
-        if let p = joined {
-            "Through {p.name}"
-        } else {
-            "Off"
-        }
+        if let p = joined { "Through {p.name}" } else { "Off" }
     }
 }
 
@@ -339,24 +318,17 @@ view vpn_devices_page(page: State<Text>) {
         setting(
             "Route their traffic through this device",
             "The person's other devices come out at this one",
-            ui.Toggle(bind: dv.exit),
-        )
+        ) {
+            ui.Toggle(bind: dv.exit)
+        }
         ui.Text("Route through another of your devices", role: .caption, secondary: true)
         row(gap: .related, align: .center, wrap: true) {
             ui.TextInput(bind: other, placeholder: "The device's id, as Devices lists it", fill)
             ui.Button("Through it", role: .primary, size: .small) {
-                on press: settings.route_through(
-                    settings.device_vpn,
-                    device: other,
-                    on: true,
-                )
+                on press: settings.route_through(settings.device_vpn, device: other, on: true)
             }
             ui.Button("Straight out", size: .small) {
-                on press: settings.route_through(
-                    settings.device_vpn,
-                    device: other,
-                    on: false,
-                )
+                on press: settings.route_through(settings.device_vpn, device: other, on: false)
             }
         }
         row(gap: .related, align: .center, wrap: true) {

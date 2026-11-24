@@ -918,7 +918,6 @@ doc = false
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial2-0_2_37" = { package = "serial2", version = "^0.2.37", default-features = false, features = [] }
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
-"settings" = { path = "../../apps/settings", default-features = false, features = ["default", "tilo-os"] }
 "settings-sections" = { path = "../../crates/desktop/settings-sections", default-features = false, features = [] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }
 "sfv-0_15_0" = { package = "sfv", version = "^0.15.0", default-features = false, features = ["default", "parsed-types"] }
@@ -3437,7 +3436,6 @@ doc = false
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial2-0_2_37" = { package = "serial2", version = "^0.2.37", default-features = false, features = [] }
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
-"settings" = { path = "../../apps/settings", default-features = false, features = ["default", "tilo-os"] }
 "settings-sections" = { path = "../../crates/desktop/settings-sections", default-features = false, features = [] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }
 "sfv-0_15_0" = { package = "sfv", version = "^0.15.0", default-features = false, features = ["default", "parsed-types"] }

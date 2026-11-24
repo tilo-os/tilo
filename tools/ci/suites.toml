@@ -547,7 +547,7 @@ suites = [
 [[group]]
 name = "perf-tools"
 inputs = [
-  "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
+  "scripts/perf/", "tools/perf/",
   # tools/perf/test_compare.py and test_ab.py hold the scheduled groups, their
   # benchmarks, and vm-acceptance-perf's groups equal to the
   # budgets' jobs and the A/B groups.
@@ -758,6 +758,7 @@ package = "tilolang-cli"
 inputs = [
   "crates/lang/tilolang-tilo/tests/native-chat/",
   "apps/tl/",
+  "apps/tl/settings/",
   "apps/clocks/surface.toml",
   "crates/lang/tilolang-process/tilo-runtime.toml",
   "docs/developers/tasks/",
@@ -859,11 +860,9 @@ inputs = [
   "crates/lang/tilolang-tilo/tests/native-tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
   "crates/desktop/session/device-surface.json",
-  "apps/settings/surface.toml",
   "crates/desktop/settings-sections/published.toml",
   "apps/contacts/surface.toml",
   "crates/services/vision/surface.json",
-  "crates/session/settings-service/shortcuts-surface.json",
   "crates/integrations/tilo-contact-directory/surface.json",
   "crates/core/tilo-workspace-service/workspace-surface.toml",
 ]
@@ -889,6 +888,7 @@ readers = [
   "crates/lang/tilolang-tilo/tests/native_mail.rs",
   "crates/lang/tilolang-tilo/tests/native_notes.rs",
   "crates/lang/tilolang-tilo/tests/note_import.rs",
+  "crates/lang/tilolang-tilo/tests/settings_panes.rs",
   "crates/lang/tilolang-tilo/tests/notebook_order.rs",
   "crates/lang/tilolang-tilo/tests/notes.rs",
   "crates/lang/tilolang-tilo/tests/notes_checklist.rs",
@@ -1347,22 +1347,6 @@ inputs = [
   "os/usr/lib/systemd/system/tilo-device-branch.service",
 ]
 readers = ["crates/core/tilo-device-identity/src/bin/tilo-device-key-init.rs"]
-
-[[cargo]]
-package = "settings"
-inputs = [
-  # The provider admin pane's tests run the shared provider settings fake
-  # backend and mounted tests against Settings' own mount.
-  "crates/integrations/provider-settings-ui/src/fake_backend.rs",
-  "crates/integrations/provider-settings-ui/src/mounted_tests.rs",
-  # The Updates pane's tests read this image's own Windows support offer, so
-  # the sizes they disclose are the ones the image ships.
-  "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json",
-]
-readers = [
-  "apps/settings/src/panes/agent_models/admin_tests.rs",
-  "apps/settings/src/panes/updates/tests.rs",
-]
 
 [[cargo]]
 package = "tilo-fs"

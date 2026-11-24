@@ -38,9 +38,7 @@ view storage_pane() {
             "Apps' cache",
             secondary: if storage.cache_bytes > 0 {
                 "{size_words(storage.cache_bytes)} can be freed; apps download it again when needed"
-            } else {
-                "Nothing to free"
-            },
+            } else { "Nothing to free" },
             icon: .trash,
         ) {
             trailing: {
@@ -76,9 +74,5 @@ fn size_words(n: Int) -> Text {
         "{n} B"
     } else if n < 1000000 {
         "{n / 1000} KB"
-    } else if n < 1000000000 {
-        "{n / 1000000} MB"
-    } else {
-        "{n / 1000000000} GB"
-    }
+    } else if n < 1000000000 { "{n / 1000000} MB" } else { "{n / 1000000000} GB" }
 }

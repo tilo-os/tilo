@@ -7,7 +7,6 @@ ROOT="$(cd "$TEST_DIR/../.." && pwd)"
 AUDIO="$ROOT/crates/engines/tilo-media/src/audio.rs"
 RUNTIME="$ROOT/crates/engines/tilo-media/src/audio_runtime.rs"
 OCR="$ROOT/crates/engines/ocr/src/lib.rs"
-SETTINGS_AUDIO="$ROOT/apps/settings/src/panes/audio.rs"
 DEFAULT_NODE="$ROOT/crates/engines/tilo-media/src/audio/default_node.rs"
 EVENT_SOUND="$ROOT/crates/engines/tilo-media/src/event_sound.rs"
 SHELL_CAPTURE="$ROOT/crates/engines/tilo-media/src/audio_runtime.rs"
@@ -47,8 +46,6 @@ must_contain "$DEFAULT_NODE" 'bounded_command::run\(' \
     "default audio device controls do not use bounded execution"
 must_not_contain "$DEFAULT_NODE" 'Command::new|\.output\(\)|wait_with_output' \
     "default audio device controls contain a raw subprocess path"
-must_not_contain "$SETTINGS_AUDIO" 'Command::new|\.output\(\)|wait_with_output' \
-    "Settings audio contains a raw subprocess path"
 must_contain "$EVENT_SOUND" 'bounded_command::run_prepared' \
     "event sounds do not use descendant-cleaning bounded execution"
 must_not_contain "$EVENT_SOUND" '\.spawn\(\)|child\.kill\(\)' \

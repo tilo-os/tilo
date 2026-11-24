@@ -61,19 +61,11 @@ view updates_pane() {
                 on press: device.update_now(device.update)
             }
         }
-        setting(
-            "Update by itself",
-            "Fetch and apply a new system while the machine is idle",
-            ui.Button(
-                if prefs.auto { "On" } else { "Off" },
-                toggled: prefs.auto,
-            ) {
-                on press: settings.record_automatic_updates(
-                    settings.updates,
-                    on: not prefs.auto,
-                )
-            },
-        )
+        setting("Update by itself", "Fetch and apply a new system while the machine is idle") {
+            ui.Button(if prefs.auto { "On" } else { "Off" }, toggled: prefs.auto) {
+                on press: settings.record_automatic_updates(settings.updates, on: not prefs.auto)
+            }
+        }
         if prefs.last_checked != "" {
             ui.Text("Last checked: {prefs.last_checked}", role: .caption, secondary: true)
         }
@@ -108,11 +100,7 @@ view updates_pane() {
     ui.Section("Going back") {
         if let rollback = u.rollback {
             let called = rollback.version ?? rollback.image ?? "The system before"
-            ui.ListRow(
-                called,
-                secondary: "What this machine can go back to",
-                icon: .history,
-            ) {
+            ui.ListRow(called, secondary: "What this machine can go back to", icon: .history) {
                 trailing: {
                     ui.Button("Go back and restart", role: .destructive) {
                         on press: device.rollback(device.update)
@@ -150,8 +138,9 @@ view devices_pane() {
         setting(
             "Your colour",
             "The colour your pointer, your presence and your changes show in; empty follows your name",
-            ui.TextInput(bind: me.colour, placeholder: "From your name"),
-        )
+        ) {
+            ui.TextInput(bind: me.colour, placeholder: "From your name")
+        }
     }
 }
 
@@ -161,11 +150,7 @@ fn device_words(one: device.PersonalDeviceView) -> Text {
         "This device"
     } else if one.online and one.nearby {
         "Here beside you"
-    } else if one.online {
-        "Online"
-    } else {
-        "Asleep"
-    }
+    } else if one.online { "Online" } else { "Asleep" }
 }
 
 /// What this person lets their devices hand to each other: the clipboard, what they were told,
@@ -176,55 +161,44 @@ view continuity_pane() {
         setting(
             "Let your devices work together",
             "The things below pass between the devices you are signed in on",
+        ) {
             ui.Button(if c.enabled { "On" } else { "Off" }, toggled: c.enabled) {
                 on press: settings.allow_continuity(settings.continuity, on: not c.enabled)
-            },
-        )
-        setting(
-            "The clipboard",
-            "What you copy here can be pasted there",
-            ui.Toggle(bind: c.clipboard),
-        )
-        setting(
-            "What you were told",
-            "A message or a reminder reaches the device you are at",
-            ui.Toggle(bind: c.notifications),
-        )
-        setting(
-            "What plays",
-            "Sound follows you from one device to the next",
-            ui.Toggle(bind: c.media),
-        )
-        setting(
-            "Wi-Fi settings",
-            "A network one device joined, the others know",
-            ui.Toggle(bind: c.wifi_settings),
-        )
+            }
+        }
+        setting("The clipboard", "What you copy here can be pasted there") {
+            ui.Toggle(bind: c.clipboard)
+        }
+        setting("What you were told", "A message or a reminder reaches the device you are at") {
+            ui.Toggle(bind: c.notifications)
+        }
+        setting("What plays", "Sound follows you from one device to the next") {
+            ui.Toggle(bind: c.media)
+        }
+        setting("Wi-Fi settings", "A network one device joined, the others know") {
+            ui.Toggle(bind: c.wifi_settings)
+        }
         setting(
             "The screen and input",
             "One device's screen and keyboard can be used from another",
-            ui.Toggle(bind: c.display_input),
-        )
-        setting(
-            "Files",
-            "Send a file straight to a device beside you",
-            ui.Toggle(bind: c.file_transfer),
-        )
-        setting(
-            "Live sessions",
-            "Speak, watch or share a screen with someone",
-            ui.Toggle(bind: c.realtime_sessions),
-        )
-        setting(
-            "Gamepads",
-            "A gamepad plugged in here works in a game there",
-            ui.Toggle(bind: c.typed_gamepad),
-        )
+        ) {
+            ui.Toggle(bind: c.display_input)
+        }
+        setting("Files", "Send a file straight to a device beside you") {
+            ui.Toggle(bind: c.file_transfer)
+        }
+        setting("Live sessions", "Speak, watch or share a screen with someone") {
+            ui.Toggle(bind: c.realtime_sessions)
+        }
+        setting("Gamepads", "A gamepad plugged in here works in a game there") {
+            ui.Toggle(bind: c.typed_gamepad)
+        }
         setting(
             "Windows that go on",
             "A window picked up on one device goes on where it was left on another",
-            ui.Toggle(bind: c.app_continuations),
-        )
+        ) {
+            ui.Toggle(bind: c.app_continuations)
+        }
     }
     if not c.audit.is_empty() {
         ui.Section("What changed") {
@@ -334,9 +308,5 @@ fn capability_words(capability: settings.ContinuityCapability) -> Text {
         "Live sessions"
     } else if capability == .typed_gamepad {
         "Gamepads"
-    } else if capability == .app_continuations {
-        "Windows that go on"
-    } else {
-        "A capability"
-    }
+    } else if capability == .app_continuations { "Windows that go on" } else { "A capability" }
 }
