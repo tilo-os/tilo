@@ -693,9 +693,10 @@ fn pill_faces<'a>(
     let derived = |identity: &str| palette.hue(crate::tokens::PresenceHue::of_identity(identity));
     pill.reactors
         .iter()
-        .map(|reactor| match people.get(&reactor.by) {
-            Some(person) => Face::of(person, palette.hue(person.hue)),
-            None => {
+        .map(|reactor| {
+            if let Some(person) = people.get(&reactor.by) {
+                Face::of(person, palette.hue(person.hue))
+            } else {
                 let name = reactor.name.as_deref().unwrap_or(reactor.by.id());
                 Face::member(name, &reactor.by, derived(reactor.by.id()))
             }

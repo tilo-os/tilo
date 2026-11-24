@@ -51,7 +51,7 @@ use taffy::{NodeId, TaffyTree};
 use winit::event::WindowEvent;
 
 use super::{
-    EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
+    DrawChild, EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
     PrimaryScrollResult, Widget,
 };
 use crate::text_render::TextRenderer;
@@ -285,7 +285,7 @@ macro_rules! decorator_trait {
 decorator_trait! {
     $
     trait {
-        type Inner: Widget + AsDynWidget + ?Sized;
+        type Inner: Widget + AsDynWidget + DrawChild + ?Sized;
 
         fn inner(&self) -> &Self::Inner;
 
@@ -298,10 +298,17 @@ decorator_trait! {
             false
         }
 
-        /// [`Widget::draw`], noting the paint as a secret's when
-        /// [`Self::withholds_captures`] says so.
+        /// [`Widget::draw`], drawing the inner widget under the decorator's own key.
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-            self.inner_mut().draw(ctx)
+            let (scene, transform, text_renderer, theme, env) = ctx.parts();
+            DrawChild::draw_child(
+                self.inner_mut(),
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &env,
+            );
         }
 
         #[doc(hidden)]

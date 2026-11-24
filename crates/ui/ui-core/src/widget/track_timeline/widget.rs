@@ -1823,9 +1823,7 @@ impl Widget for TrackTimeline {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && self.focus.is_some() =>
             {
-                if self.handle_key(&event.logical_key, self.modifiers) {
-                    *ctx.handled = true;
-                }
+                *ctx.handled |= self.handle_key(&event.logical_key, self.modifiers);
             }
             _ => {}
         }

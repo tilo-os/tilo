@@ -239,8 +239,7 @@ impl Decorator for Fullscreen {
             size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
-        let node = taffy.widget_node(style, &[body, control], node_map, self);
-        node
+        taffy.widget_node(style, &[body, control], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
