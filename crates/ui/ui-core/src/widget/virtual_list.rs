@@ -414,6 +414,10 @@ pub struct VirtualRows {
     /// list takes that height and the node is only inside it.
     natural: Option<NodeId>,
     fit_rows: bool,
+    /// The most room a list as tall as its rows takes, in logical pixels
+    /// ([`Self::most_height`]): past it the list scrolls what it does not show, so a place that
+    /// hugs what it holds (a panel, a picker) never grows with every row it lists.
+    most: Option<f64>,
     /// What of a list as tall as its rows ([`Self::fitting_rows`]) the scroll view around it
     /// shows, as its last layout found.
     fit_shown: FitShown,
@@ -608,6 +612,7 @@ impl VirtualRows {
             fill_height: false,
             natural: None,
             fit_rows: false,
+            most: None,
             fit_shown: FitShown::Unplaced,
             follow_end: false,
             at_end: false,
@@ -917,6 +922,25 @@ impl VirtualRows {
         self.fill_height = false;
         self.fit_rows = true;
         self
+    }
+
+    /// Be as tall as the rows come to, but no taller than `height` logical pixels: past it the
+    /// list shows that much and scrolls the rest, so a place that hugs what it holds stays as
+    /// short as the person wants it however many rows there are.
+    #[must_use]
+    pub fn most_height(mut self, height: f64) -> Self {
+        self.most = Some(height.max(0.0));
+        self
+    }
+
+    /// [`Self::most_height`] after construction.
+    pub fn set_most_height(&mut self, height: Option<f64>) {
+        let most = height.map(|height| height.max(0.0));
+        if most.map(f64::to_bits) != self.most.map(f64::to_bits) {
+            self.most = most;
+            self.box_dirty = true;
+            self.layout_dirty = true;
+        }
     }
 
     #[must_use]
@@ -1508,7 +1532,13 @@ impl VirtualRows {
                 if let Some(heading) = self.heading_keyboard() {
                     return self.toggle_heading(&heading);
                 }
-                if key == &Key::Named(NamedKey::Space) {
+                // Space keeps its page-down of a list whose rows open where they stand. A row
+                // that opens elsewhere takes Space as its activation, as it takes Enter: the
+                // keyboard reaches what the row does without a second gesture.
+                let opens_here = self
+                    .keyboard_row()
+                    .is_some_and(|index| self.opens_here(index));
+                if key == &Key::Named(NamedKey::Space) && opens_here {
                     return false;
                 }
                 self.focused_key.clone().is_some_and(|key| {
@@ -1891,6 +1921,14 @@ impl Widget for VirtualRows {
                         Dimension::auto()
                     },
                 },
+                // A list that hugs its rows keeps them all in its height, but never takes more
+                // room than the place it stands in was allowed: past that it scrolls.
+                max_size: Size {
+                    width: Dimension::auto(),
+                    height: self
+                        .most
+                        .map_or(Dimension::auto(), |most| Dimension::length(px(most))),
+                },
                 overflow: taffy::Point {
                     x: taffy::Overflow::Clip,
                     y: taffy::Overflow::Clip,
@@ -1968,7 +2006,7 @@ impl Widget for VirtualRows {
         if !self.in_place {
             self.set_open(None);
         }
-        if self.fill_height
+        if (self.fill_height || self.most.is_some())
             && self.rect.height() > 0.0
             && (self.rect.height() - self.viewport.viewport()).abs() > 0.5
         {
@@ -2046,7 +2084,13 @@ impl Widget for VirtualRows {
         remeasured |= self.keep_end();
         remeasured |= (self.end_slack() - slack).abs() > 0.5;
         let extent = self.viewport.content_extent();
-        if self.fit_rows && fit_needs_layout(self.rect.height(), extent, self.viewport.viewport()) {
+        // A list that hugs its rows inside a scroll view around it gives that view every row: it
+        // is not the scroller. One held to its own most height is the scroller, and its height is
+        // the band it shows.
+        if self.fit_rows
+            && self.most.is_none()
+            && fit_needs_layout(self.rect.height(), extent, self.viewport.viewport())
+        {
             self.viewport.set_viewport(extent);
             self.box_dirty = true;
             remeasured = true;

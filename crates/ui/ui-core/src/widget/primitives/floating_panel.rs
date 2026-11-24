@@ -1110,6 +1110,12 @@ impl Widget for FloatingPanel {
         Some(node)
     }
 
+    /// A modal panel holds the keyboard while it shows: Tab moves through what it holds, and the
+    /// focus the person had before comes back when it closes.
+    fn traps_focus(&self) -> bool {
+        self.modal
+    }
+
     fn name(&self) -> &'static str {
         "FloatingPanel"
     }

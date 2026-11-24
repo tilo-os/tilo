@@ -37,6 +37,10 @@ pub struct ListRowProps {
     /// A line of the row's own under its text: what waits on the item and is not its
     /// content, as a proposal about it reads ("Suggested: move this to the end").
     pub note: Option<String>,
+    /// What assistive technology says after the row's name, beyond the lines the row draws: what
+    /// the row shows of what it names, for a reader who cannot see it. A row that names one says
+    /// its secondary line here instead, so nothing is said twice.
+    pub description: Option<String>,
     /// When it happened or is due: the first fact of the row's facts column.
     pub meta: Option<String>,
     /// The tone the trailing fact reads in, where the item it states has one: a day gone by
@@ -99,6 +103,7 @@ impl ListRowProps {
             edits: self.edits.clone(),
             secondary: self.secondary.clone(),
             note: self.note.clone(),
+            description: self.description.clone(),
             meta: self.meta.clone(),
             meta_tone: self.meta_tone,
             value: self.value.clone(),
@@ -194,6 +199,7 @@ impl ListRow {
             edits,
             secondary,
             note,
+            description,
             meta,
             meta_tone,
             value,
@@ -226,6 +232,7 @@ impl ListRow {
         self.prefix = shown(prefix);
         self.secondary = shown(secondary);
         self.note = shown(note);
+        self.description = shown(description);
         self.meta = shown(meta);
         self.meta_spans = match shown(self.meta.clone()) {
             Some(text) if meta_tone != Tone::Neutral => vec![(text, meta_tone)],

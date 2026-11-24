@@ -4153,6 +4153,13 @@
           }
         },
         {
+          "name": "description",
+          "doc": "What assistive technology says after the row's name, beyond the lines the row draws: what the row shows of what it names, for a reader who cannot see it. A row that names one says its secondary line here instead, so nothing is said twice.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "meta",
           "doc": "When it happened or is due: the first fact of the row's facts column.",
           "type": {
@@ -8943,6 +8950,13 @@
           "doc": "How many things the view's title counts beside it (`view_title`).",
           "type": {
             "option": "int"
+          }
+        },
+        {
+          "name": "most",
+          "doc": "As tall as its rows, but no taller than this, in logical pixels, and it scrolls what it does not show: a list in a place that hugs what it holds (a roster in a panel, a picker) whose rows would otherwise make the place as tall as all of them. A list that takes its parent's height already (`in_column`) needs none.",
+          "type": {
+            "option": "float"
           }
         },
         {

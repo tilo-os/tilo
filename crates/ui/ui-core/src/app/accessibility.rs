@@ -935,6 +935,24 @@ impl App {
             self.layout.layout_dirty = true;
             self.needs_sync = true;
             self.invalidate_widget_resource_cache();
+            self.reveal_focused();
+        }
+    }
+
+    /// Bring the control that holds the keyboard into view: whatever scrolls around it moves the
+    /// least it takes, so a Tab between controls never lands on something the person cannot see.
+    fn reveal_focused(&mut self) {
+        let Some(node) = self.focused_node else {
+            return;
+        };
+        let Some(&target) = self.layout.node_map.get(&node) else {
+            return;
+        };
+        let Ok(rect) = self.inspect_node(node, |widget| widget.get_rect()) else {
+            return;
+        };
+        if rect.area() > 0.0 && self.root_widget.reveal_descendant(target, rect) {
+            self.layout.layout_dirty = true;
         }
     }
 
