@@ -188,7 +188,7 @@ pub mod hosted_use;
 #[cfg(feature = "agents")]
 pub mod machine_secrets;
 pub(crate) mod record_reads;
-pub use record_reads::RecordReads;
+pub use record_reads::{DeviceJobReads, RecordReads};
 mod personal;
 pub use personal::{PresentDevices, on_presence_change, presence_changed, present_on};
 mod weak;

@@ -15,7 +15,9 @@ use super::fixtures::entry_join_as;
 use super::servers::{self, Servers};
 use super::tests::{governor, guest_device, test_host};
 use super::*;
-use crate::work::{Actor, HostLinux, Ineligible, Job, KeepsContent, NotTaken, Turn, keep_done, takes_turn};
+use crate::work::{
+    Actor, HostLinux, Ineligible, Job, KeepsContent, NotTaken, Turn, keep_done, takes_turn,
+};
 
 /// What this device keeps of its workspaces' content, as a test sets it.
 struct Keeps(bool);
@@ -61,11 +63,8 @@ impl tilo_actions::remote::ActionProvider for Photos {
             },
         );
         action.type_mut().contract.kind = tilo_actions::ActionKind::Read;
-        let mut spec = tilo_actions::ResourceSpec::new(
-            "photos.library",
-            "photos.library",
-            "Photos",
-        );
+        let mut spec =
+            tilo_actions::ResourceSpec::new("photos.library", "photos.library", "Photos");
         spec.app_id = Some("so.tilo.photos".into());
         spec.actions = vec![action];
         vec![spec]
@@ -79,9 +78,11 @@ impl tilo_actions::remote::ActionProvider for Photos {
         Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
     > {
         let resources = self.published();
-        tilo_actions::remote::Pending::ready(Ok(
-            tilo_actions::remote::CataloguePage::published("test/photos", &resources, &query),
-        ))
+        tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::CataloguePage::published(
+            "test/photos",
+            &resources,
+            &query,
+        )))
     }
 
     fn invoke(
@@ -89,10 +90,7 @@ impl tilo_actions::remote::ActionProvider for Photos {
         caller: &tilo_actions::remote::Caller,
         request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
-        Result<
-            tilo_actions::remote::InvocationReceipt,
-            tilo_actions::remote::ActionCallError,
-        >,
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
         let invocation = request.invocation;
         let photos = match &request.argument {
@@ -118,10 +116,7 @@ impl tilo_actions::remote::ActionProvider for Photos {
         };
         let state = tilo_actions::remote::InvocationState::new(
             invocation,
-            tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output,
-            },
+            tilo_actions::InvocationUpdate::Succeeded { invocation, output },
         );
         tilo_actions::remote::Pending::ready(Ok(state.receipt()))
     }
@@ -153,12 +148,14 @@ fn job(input: [u8; 32]) -> Job {
         app: "so.tilo.photos".into(),
         resource: "photos.library".into(),
         action: "make-thumbnails".into(),
-        argument: tilo_actions::remote::InvokeArgument::Json(serde_json::json!({
-            "photos": [hex::encode(input)],
-        })
-        .as_object()
-        .unwrap()
-        .clone()),
+        argument: tilo_actions::remote::InvokeArgument::Json(
+            serde_json::json!({
+                "photos": [hex::encode(input)],
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        ),
         offload: tilo_actions::Offload {
             gpu: false,
             cpu_time_ms: 60_000,

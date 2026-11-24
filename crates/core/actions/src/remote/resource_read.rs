@@ -61,6 +61,56 @@ pub fn device_record_space(device: &[u8; 32]) -> String {
 pub const DEVICE_SETTINGS_REFUSED: &str = "Only this device's person, from any of their devices, and whoever they granted there, read \
      its settings";
 
+/// The app a device's engine jobs are read under ([`device_record_space`]): the record `job`
+/// there is the job the device runs, at `devices/<device>/jobs/<job>`. A job is the device's,
+/// never a workspace's: it lives only as long as the process that runs it.
+pub const DEVICE_JOBS: &str = "jobs";
+
+/// The address of the engine job `job` the device `device` runs, in the space
+/// [`device_record_space`] names.
+#[must_use]
+pub fn device_job_address(device: &[u8; 32], job: &str) -> ResourceAddress {
+    ResourceAddress {
+        workspace: device_record_space(device),
+        app: DEVICE_JOBS.to_owned(),
+        record: job.to_owned(),
+    }
+}
+
+/// The text form of a job's address, `devices/<device hex>/jobs/<job>`: the one form a view, a
+/// script or a link writes a job in, and [`parse_job_path`] reads back.
+#[must_use]
+pub fn device_job_path(device: &[u8; 32], job: &str) -> String {
+    format!("devices/{}/jobs/{job}", hex::encode(device))
+}
+
+/// Read the text form of a job's address ([`device_job_path`]) back: the device that runs it and
+/// the job's id there. `None` for any other text, including a path whose job is empty or names
+/// more than one part.
+#[must_use]
+pub fn parse_job_path(path: &str) -> Option<([u8; 32], String)> {
+    let (device, job) = path.strip_prefix("devices/")?.split_once("/jobs/")?;
+    if job.is_empty() || job.contains('/') || device.contains('/') {
+        return None;
+    }
+    let mut key = [0; 32];
+    hex::decode_to_slice(device, &mut key).ok()?;
+    Some((key, job.to_owned()))
+}
+
+/// The device key `space` names, when it is a device record space
+/// ([`device_record_space`]): `devices/<device hex>`.
+#[must_use]
+pub fn parse_device_record_space(space: &str) -> Option<[u8; 32]> {
+    let hex = space.strip_prefix("devices/")?;
+    if hex.len() != 64 || hex.contains('/') {
+        return None;
+    }
+    let mut key = [0; 32];
+    hex::decode_to_slice(hex, &mut key).ok()?;
+    Some(key)
+}
+
 /// The address of the device record `record` the device `device` keeps: its settings, in the
 /// space [`device_record_space`] names.
 #[must_use]

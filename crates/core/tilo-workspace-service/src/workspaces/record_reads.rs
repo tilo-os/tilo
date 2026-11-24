@@ -27,8 +27,9 @@ use std::sync::Arc;
 use collab_types::workspace_grant::WorkspaceGrant;
 use tilo_action_policy::ActionKind;
 use tilo_actions::remote::{
-    ActionCallError, Caller, KEY_GRANTS, PRESENCE, RESOURCE_READ_REFUSED, RESOURCE_WRITE_REFUSED,
-    ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake,
+    ActionCallError, Caller, DEVICE_JOBS, KEY_GRANTS, PRESENCE, Pending, RESOURCE_READ_REFUSED,
+    RESOURCE_WRITE_REFUSED, RemoteActionMessage, ResourceAddress, ResourceCopy,
+    ResourceReadRequest, ResourceReads, ResourceWake, parse_device_record_space,
 };
 use tilo_peer_state::StatePeer;
 
@@ -36,6 +37,69 @@ use super::{WeakWorkspaces, Workspaces};
 
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 type Broker = crate::apps::collab_app_broker::AppBrokerState;
+
+/// The engine jobs a device's daemon runs ([`DEVICE_JOBS`]): kept in the device's own record
+/// space, read and followed through the one record API like any record. The daemon owns them, so
+/// this is what it is handed to answers a read of them, and [`Self::decided_by`] is what the
+/// reader above it decides by: the app's own read rule, not a rule of the jobs'.
+pub trait DeviceJobReads: Send + Sync {
+    /// The device whose jobs these are.
+    fn device(&self) -> [u8; 32];
+
+    /// The app whose read rule decides who reads job `job`, and where: the app's record of the
+    /// workspace it runs in. `None` when the device runs no such job.
+    fn decided_by(&self, job: &str) -> Option<ResourceAddress>;
+
+    /// Job `address` as [`ResourceReads::read`] answers it.
+    ///
+    /// # Errors
+    ///
+    /// As [`ResourceReads::read`].
+    fn read(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> Result<ResourceCopy, ActionCallError>;
+
+    /// Whether `caller` may read job `address`, decided as [`Self::read`] is.
+    ///
+    /// # Errors
+    ///
+    /// As [`ResourceReads::read`].
+    fn may_read(&self, caller: &Caller, address: &ResourceAddress) -> Result<(), ActionCallError>;
+
+    /// The jobs of `workspace` `caller` may read.
+    ///
+    /// # Errors
+    ///
+    /// As [`ResourceReads::list`].
+    fn list(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        app: &str,
+    ) -> Result<Vec<ResourceAddress>, ActionCallError>;
+
+    /// Wake `wake` when job `address` moves.
+    ///
+    /// # Errors
+    ///
+    /// As [`ResourceReads::watch`].
+    fn watch(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+        wake: &ResourceWake,
+    ) -> Result<(), ActionCallError>;
+
+    /// Answer `read` of a job, as [`ResourceReads::answer_read`] does.
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: ResourceReadRequest,
+    ) -> Pending<RemoteActionMessage>;
+}
 
 /// The device's record reader.
 pub struct RecordReads {
@@ -52,12 +116,26 @@ pub struct RecordReads {
     /// The runtime the reader was made on, which a held read's wait for the next write runs on:
     /// a read is answered on a thread of its own, outside any runtime.
     runtime: Option<tokio::runtime::Handle>,
+    /// The engine jobs this device's daemon runs, when it published them: what reads and follows
+    /// `devices/<this device>/jobs/<job>`.
+    jobs: Option<Arc<dyn DeviceJobReads>>,
+    /// Where another device's jobs are read, by the device space it names: the one record API
+    /// carried to that device, forwarded whole so a held read waits there.
+    other_devices: Option<Arc<dyn Fn(&str) -> Option<Arc<dyn ResourceReads>> + Send + Sync>>,
 }
 
 /// Whether a caller reads the invocations of a workspace through a dispatch: the dispatch's own
 /// workspace, as the run it admitted, still valid now.
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 pub type Admitted = Arc<dyn Fn(&Caller, &str) -> Result<(), ActionCallError> + Send + Sync>;
+
+/// Who answers a read of an engine job.
+enum JobsRoute {
+    /// This device's daemon, which runs the jobs.
+    Own(Arc<dyn DeviceJobReads>),
+    /// Another device, which runs the jobs its space names.
+    Other(Arc<dyn ResourceReads>),
+}
 
 /// Who reads a record for its caller.
 enum Route {
@@ -197,6 +275,8 @@ impl RecordReads {
             #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
             admitted: None,
             runtime: tokio::runtime::Handle::try_current().ok(),
+            jobs: None,
+            other_devices: None,
         }
     }
 
@@ -207,6 +287,45 @@ impl RecordReads {
     pub(crate) fn with_invocations(mut self, apps: Option<std::sync::Weak<Broker>>) -> Self {
         self.broker = apps;
         self
+    }
+
+    /// The reader of a daemon's dispatch that also runs engine jobs (`jobs`), reads another
+    /// device's jobs through `other_devices`, and answers the apps `broker` serves.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    pub fn of_daemon(
+        workspaces: &Workspaces,
+        broker: &Arc<Broker>,
+        admitted: Option<Admitted>,
+        jobs: Arc<dyn DeviceJobReads>,
+        other_devices: Arc<dyn Fn(&str) -> Option<Arc<dyn ResourceReads>> + Send + Sync>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            workspaces: Some(WeakWorkspaces(Arc::downgrade(&workspaces.inner))),
+            broker: Some(Arc::downgrade(broker)),
+            served: None,
+            admitted,
+            runtime: tokio::runtime::Handle::try_current().ok(),
+            jobs: Some(jobs),
+            other_devices: Some(other_devices),
+        })
+    }
+
+    /// Who answers a read of engine `address`, when it names one: this device's daemon for its own
+    /// jobs space, and the device whose space it names for another's.
+    fn jobs_route(&self, address: &ResourceAddress) -> Option<Result<JobsRoute, ActionCallError>> {
+        if address.app != DEVICE_JOBS {
+            return None;
+        }
+        let device = parse_device_record_space(&address.workspace)?;
+        if let Some(jobs) = self.jobs.as_ref().filter(|jobs| jobs.device() == device) {
+            return Some(Ok(JobsRoute::Own(Arc::clone(jobs))));
+        }
+        Some(
+            self.other_devices
+                .as_ref()
+                .and_then(|other| other(&address.workspace))
+                .map_or_else(|| Err(refused()), |reads| Ok(JobsRoute::Other(reads))),
+        )
     }
 
     /// The reader of a device's dispatch: the workspaces it holds, for a caller whose
@@ -224,6 +343,8 @@ impl RecordReads {
             served: None,
             admitted,
             runtime: tokio::runtime::Handle::try_current().ok(),
+            jobs: None,
+            other_devices: None,
         })
     }
 
@@ -675,6 +796,21 @@ impl ResourceReads for RecordReads {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+        if let Some(route) = self.jobs_route(address) {
+            return Pending::ready(route.and_then(|route| {
+                match route {
+                    JobsRoute::Own(jobs) => jobs.may_read(caller, address),
+                    // The device that runs the job decides: the answer comes over its link, and a
+                    // read that goes unanswered refuses rather than holding the asker forever.
+                    JobsRoute::Other(reads) => reads
+                        .may_read(caller, address)
+                        .wait_timeout(std::time::Duration::from_secs(30))
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| Err(refused())),
+                }
+            }));
+        }
         if let Some(own) = self.own(caller, address) {
             return match own {
                 Ok(reads) => reads.may_read(caller, address),
@@ -734,6 +870,12 @@ impl ResourceReads for RecordReads {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
+        if let Some(route) = self.jobs_route(address) {
+            return match route? {
+                JobsRoute::Own(jobs) => jobs.read(caller, address),
+                JobsRoute::Other(reads) => reads.read(caller, address),
+            };
+        }
         if let Some(own) = self.own(caller, address) {
             return own?.read(caller, address);
         }
@@ -775,6 +917,18 @@ impl ResourceReads for RecordReads {
         workspace: &str,
         app: &str,
     ) -> Result<Vec<ResourceAddress>, ActionCallError> {
+        if app == DEVICE_JOBS
+            && let Some(route) = self.jobs_route(&ResourceAddress {
+                workspace: workspace.to_owned(),
+                app: DEVICE_JOBS.to_owned(),
+                record: String::new(),
+            })
+        {
+            return match route? {
+                JobsRoute::Own(jobs) => jobs.list(caller, workspace, app),
+                JobsRoute::Other(reads) => reads.list(caller, workspace, app),
+            };
+        }
         let workspaces = self
             .workspaces
             .as_ref()
@@ -821,6 +975,17 @@ impl ResourceReads for RecordReads {
             app: read.app.clone(),
             record: read.record.clone(),
         };
+        // An engine job is answered whole where it runs, its wait with it.
+        if let Some(route) = self.jobs_route(&address) {
+            return match route {
+                Ok(JobsRoute::Own(jobs)) => jobs.answer_read(caller, correlation, read),
+                Ok(JobsRoute::Other(reads)) => reads.answer_read(caller, correlation, read),
+                Err(error) => Pending::ready(RemoteActionMessage::ResourceReading {
+                    correlation,
+                    result: Err(error),
+                }),
+            };
+        }
         if self.own(caller, &address).is_some() {
             return tilo_actions::remote::answer_read(self, caller, correlation, read);
         }
@@ -857,6 +1022,12 @@ impl ResourceReads for RecordReads {
         address: &ResourceAddress,
         wake: &ResourceWake,
     ) -> Result<(), ActionCallError> {
+        if let Some(route) = self.jobs_route(address) {
+            return match route? {
+                JobsRoute::Own(jobs) => jobs.watch(caller, address, wake),
+                JobsRoute::Other(reads) => reads.watch(caller, address, wake),
+            };
+        }
         if let Some(own) = self.own(caller, address) {
             return own?.watch(caller, address, wake);
         }

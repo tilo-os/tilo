@@ -113,7 +113,10 @@ pub fn pictures_request(invocation: super::InvocationId) -> InvokeRequest {
 
 /// The invocation `invocation` that adds `description` to its picture ([`DESCRIBE`]).
 #[must_use]
-pub fn describe_request(invocation: super::InvocationId, description: &Description) -> InvokeRequest {
+pub fn describe_request(
+    invocation: super::InvocationId,
+    description: &Description,
+) -> InvokeRequest {
     request_of(invocation, DESCRIBE, serde_json::to_value(description).ok())
 }
 
@@ -253,7 +256,10 @@ fn argument<T: serde::de::DeserializeOwned>(request: &InvokeRequest) -> Result<T
     };
     serde_json::from_value(serde_json::Value::Object(fields)).map_err(|error| {
         ActionCallError::InvalidRequest {
-            reason: format!("the search's `{}` does not read: {error}", request.target.address.action),
+            reason: format!(
+                "the search's `{}` does not read: {error}",
+                request.target.address.action
+            ),
         }
     })
 }
@@ -328,7 +334,6 @@ pub struct Found {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub locked: bool,
 }
-
 
 /// How much a match in one of an entry's fields counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -519,7 +524,10 @@ pub trait ResourceSearch: Send + Sync {
     ///
     /// # Errors
     /// This search keeps no pictures, or refuses `caller`.
-    fn pictures(&self, _caller: &super::Caller) -> super::Pending<Result<Vec<Picture>, ActionCallError>> {
+    fn pictures(
+        &self,
+        _caller: &super::Caller,
+    ) -> super::Pending<Result<Vec<Picture>, ActionCallError>> {
         super::Pending::ready(Err(ActionCallError::Unavailable {
             reason: "this search keeps no pictures".into(),
         }))

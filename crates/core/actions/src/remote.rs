@@ -143,11 +143,12 @@ pub use line::{CallLanes, LineClient, LinePut, Take, serve_lines, serve_lines_wi
 pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use resource_read::{
-    DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, Decided, HeldCopies, RESOURCE_READ_REFUSED,
-    RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE, RESOURCE_WRITE_REFUSED, ResourceAddress,
-    ResourceAsk, ResourceChange, ResourceChanges, ResourceCopy, ResourceReadings, ResourceReads,
-    ResourceWake, answer_read, answered, device_record_address, device_record_space,
-    read_resources, readings_of,
+    DEVICE_JOBS, DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, Decided, HeldCopies,
+    RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE,
+    RESOURCE_WRITE_REFUSED, ResourceAddress, ResourceAsk, ResourceChange, ResourceChanges,
+    ResourceCopy, ResourceReadings, ResourceReads, ResourceWake, answer_read, answered,
+    device_job_address, device_job_path, device_record_address, device_record_space,
+    parse_device_record_space, parse_job_path, read_resources, readings_of,
 };
 pub use search::{FOUND_FILE, Found, NOT_NARROWED, ResourceSearch, Within, stem_word};
 #[cfg(any(test, feature = "test-support"))]

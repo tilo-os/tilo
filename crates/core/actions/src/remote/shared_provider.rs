@@ -153,7 +153,11 @@ mod tests {
 
     impl ActionProvider for Publishes {
         fn published(&self) -> Vec<crate::ResourceSpec> {
-            vec![crate::ResourceSpec::new("photos.library", "photos.library", "Photos")]
+            vec![crate::ResourceSpec::new(
+                "photos.library",
+                "photos.library",
+                "Photos",
+            )]
         }
 
         fn query(
@@ -189,7 +193,8 @@ mod tests {
     /// still found there, so a call naming one of its addresses reaches it.
     #[test]
     fn a_shared_provider_publishes_what_it_publishes() {
-        let shared: std::sync::Arc<dyn ActionProvider + Send + Sync> = std::sync::Arc::new(Publishes);
+        let shared: std::sync::Arc<dyn ActionProvider + Send + Sync> =
+            std::sync::Arc::new(Publishes);
         assert_eq!(shared.published().len(), 1);
         assert!(!shared.serves("photos.library"));
     }

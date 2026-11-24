@@ -227,7 +227,8 @@ pub fn host_answered(
     caller: &super::Caller,
     confirmation: Option<&super::Confirmation>,
 ) -> Result<bool, super::ActionCallError> {
-    let (Some(super::Confirmation::Confirmed), Some(forwarder)) = (confirmation, caller.forwarder())
+    let (Some(super::Confirmation::Confirmed), Some(forwarder)) =
+        (confirmation, caller.forwarder())
     else {
         return Ok(false);
     };

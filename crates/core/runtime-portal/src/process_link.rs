@@ -153,6 +153,14 @@ pub enum FromProcess {
         instance: u64,
         view: Option<MediaView>,
     },
+    /// The engine job `job` moved, as `record` says: its `{id, app, workspace, invocation, by,
+    /// op, state, detail}` and, where the app asked for them, its `done` and `progress` handlers.
+    /// The daemon keeps it as the device's job record (`devices/<device>/jobs/<job>`), naming the
+    /// app and workspace from this process's own identity rather than from what the record says.
+    Job {
+        job: String,
+        record: serde_json::Value,
+    },
 }
 
 /// What one instance plays, as the system's media controls show it: the Playback's own reading,

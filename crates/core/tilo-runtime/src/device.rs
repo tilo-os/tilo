@@ -45,6 +45,7 @@ mod founding_tests;
 pub(crate) mod home;
 mod host_runs;
 mod hosts;
+pub(crate) mod jobs;
 mod keep;
 pub(crate) mod layout;
 mod live;

@@ -1371,6 +1371,14 @@ impl Daemon {
             tilo_workspace_service::workspaces::OwnReaders::OwnRecords,
             records,
         );
+        // The engine jobs this device runs, each a record of its own device space
+        // (`devices/<device>/jobs/<job>`), reported by the process that runs the engine and read
+        // through the one record API.
+        let jobs = super::jobs::DeviceJobs::new(identity.key.verifying_key().to_bytes());
+        jobs.bind(&workspaces);
+        if let Ok(processes) = apps.processes() {
+            processes.serving_jobs(Arc::clone(&jobs));
+        }
         let home = Arc::new(super::home::Home::new(
             Arc::clone(&workspaces),
             identity.cert.clone(),
@@ -1729,10 +1737,32 @@ impl Daemon {
         // device's one reader, decided by the workspace the record is in.
         if let Some(broker) = broker.app_action_broker() {
             broker.state().serve_invocations(Arc::clone(&invocations));
-            let reads = tilo_workspace_service::workspaces::RecordReads::with_apps(
+            // Another device's jobs are read there, over the same device action service this
+            // device already serves: the read goes whole, its wait with it.
+            let other_jobs: Arc<
+                dyn Fn(&str) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> + Send + Sync,
+            > = {
+                let workspaces = Arc::clone(&workspaces);
+                let person_workspace = tilo_server_protocol::servers::person_workspace_id(
+                    &identity.cert.user_public_key,
+                );
+                Arc::new(move |space: &str| {
+                    let device = tilo_actions::remote::parse_device_record_space(space)?;
+                    let addr = iroh::EndpointAddr::new(iroh::EndpointId::from_bytes(&device).ok()?);
+                    Some(Arc::new(workspaces.copies().action_service().remote(
+                        &workspaces.endpoint(),
+                        &addr,
+                        &person_workspace,
+                    ))
+                        as Arc<dyn tilo_actions::remote::ResourceReads>)
+                })
+            };
+            let reads = tilo_workspace_service::workspaces::RecordReads::of_daemon(
                 workspaces.copies(),
                 broker.state(),
                 None,
+                Arc::clone(&jobs) as Arc<dyn tilo_workspace_service::workspaces::DeviceJobReads>,
+                other_jobs,
             );
             broker.state().serve_records(Arc::clone(&reads) as _);
             search.serve(reads);

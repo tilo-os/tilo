@@ -288,6 +288,10 @@ pub struct Processes {
     /// The daemon's launch records, once it keeps them: each process this device starts is
     /// written there, so a connection from it is admitted as the app it runs.
     attests: OnceLock<Arc<crate::apps::Launched>>,
+    /// The engine jobs its processes run, once the daemon keeps them: each move a process reports
+    /// is written there as the device's record, and a process that runs one is never closed as
+    /// idle.
+    jobs: OnceLock<Arc<super::jobs::DeviceJobs>>,
 }
 
 impl Processes {
@@ -328,6 +332,7 @@ impl Processes {
             playing: Mutex::new(Playing::default()),
             provided: OnceLock::new(),
             attests: OnceLock::new(),
+            jobs: OnceLock::new(),
         })
     }
 
@@ -336,6 +341,28 @@ impl Processes {
     pub(crate) fn attesting(self: &Arc<Self>, attests: Arc<crate::apps::Launched>) -> Arc<Self> {
         let _ = self.attests.set(attests);
         Arc::clone(self)
+    }
+
+    /// Keep the engine jobs these processes run in `jobs` from now on: each move a process
+    /// reports is written there as the device's record.
+    pub fn serving_jobs(self: &Arc<Self>, jobs: Arc<super::jobs::DeviceJobs>) -> Arc<Self> {
+        let _ = self.jobs.set(jobs);
+        Arc::clone(self)
+    }
+
+    /// The engine jobs these processes run, once the daemon keeps them.
+    fn jobs(&self) -> Option<&Arc<super::jobs::DeviceJobs>> {
+        self.jobs.get()
+    }
+
+    /// Whether a job `key`'s process runs has not ended: such a process is never idle.
+    fn holds_jobs(&self, key: &HostKey) -> bool {
+        self.jobs().is_some_and(|jobs| {
+            jobs.live(&super::jobs::ProcessKey {
+                workspace: key.workspace.clone(),
+                app: key.app.clone(),
+            }) > 0
+        })
     }
 
     /// Tell `told` what each app here plays, as its Playback moves, and stop telling the one
@@ -1062,6 +1089,20 @@ impl Processes {
                 Ok(Some(FromProcess::Media { instance, view })) => {
                     self.media(key, instance, view);
                 }
+                // The app and workspace are this process's own, never what the record says: a
+                // process reports only jobs it runs.
+                Ok(Some(FromProcess::Job { job, record })) => {
+                    if let Some(jobs) = self.jobs() {
+                        jobs.moved(
+                            &super::jobs::ProcessKey {
+                                workspace: key.workspace.clone(),
+                                app: key.app.clone(),
+                            },
+                            &job,
+                            record,
+                        );
+                    }
+                }
                 Ok(None) => break,
                 // The packet was taken: the socket carries the next one.
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
@@ -1075,9 +1116,16 @@ impl Processes {
             }
         }
         let status = wait();
-        // The process ended: nothing that connects from its pid is its app any more.
+        // The process ended: nothing that connects from its pid is its app any more, and the
+        // jobs it ran did not outlive it.
         if let Some(attests) = self.attests.get() {
             attests.forget(pid);
+        }
+        if let Some(jobs) = self.jobs() {
+            jobs.ended_process(&super::jobs::ProcessKey {
+                workspace: key.workspace.clone(),
+                app: key.app.clone(),
+            });
         }
         let clean = status.as_ref().is_ok_and(std::process::ExitStatus::success);
         // Its error output ends with it: what it said last is all read by now.
@@ -1143,8 +1191,11 @@ impl Processes {
             let mut processes = self.running();
             let idle: Vec<HostKey> = processes
                 .iter()
-                .filter(|(_, process)| {
-                    process.instances.is_empty()
+                // A process that runs a job is doing work, though it shows nothing: it is never
+                // idle while that job has not ended.
+                .filter(|(key, process)| {
+                    !self.holds_jobs(key)
+                        && process.instances.is_empty()
                         && process
                             .idle_since
                             .is_some_and(|since| now.saturating_duration_since(since) >= IDLE)
