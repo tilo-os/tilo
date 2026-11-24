@@ -15,13 +15,11 @@ use crate::wire::{
 };
 use crate::{ChannelContext, Invocation, PresenceEvent};
 use crate::{
-    ExportedAction, NearbyTransferCommand, NearbyTransferReply, PresencePayload, SpeakerCommand,
-    SpeakerReply, SurfaceDelta, WifiContinuityCommand, WifiContinuityReply, WorkspaceControlEvent,
-    WorkspaceControlInput, audio_output, committed_document, file_clipboard, native_media,
+    ExportedAction, PresencePayload, SpeakerCommand, SpeakerReply, SurfaceDelta,
+    WifiContinuityCommand, WifiContinuityReply, WorkspaceControlEvent, WorkspaceControlInput,
+    audio_output, committed_document, file_clipboard, native_media,
 };
-use crate::{
-    MAX_NEARBY_TRANSFER_WIRE_BYTES, MAX_SPEAKER_WIRE_BYTES, MAX_WIFI_CONTINUITY_WIRE_BYTES,
-};
+use crate::{MAX_SPEAKER_WIRE_BYTES, MAX_WIFI_CONTINUITY_WIRE_BYTES};
 
 /// Where a connection's calls hand the host descriptors, if it can.
 #[cfg(unix)]
@@ -677,35 +675,6 @@ impl RecordHandle {
         Ok(ActionVerdictFeed(
             self.feed(Topic::ShownActions(actions)).await?,
         ))
-    }
-
-    /// Submit one bounded Nearby Send control command. File contents stay on
-    /// the shell-owned resumable transport; this carries only
-    /// picker/status/consent control data.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the host refuses the command or answers
-    /// with an oversized or invalid reply.
-    pub async fn nearby_transfer_command(
-        &self,
-        command: &NearbyTransferCommand,
-    ) -> Result<NearbyTransferReply, NotAvailable> {
-        let command_json = encode_bounded_command(
-            "nearby transfer",
-            command,
-            command.valid(),
-            MAX_NEARBY_TRANSFER_WIRE_BYTES,
-        )?;
-        let reply = self
-            .command(Service::NearbyTransfer, command_json, &[])
-            .await?;
-        decode_bounded_reply(
-            "nearby transfer",
-            &reply,
-            MAX_NEARBY_TRANSFER_WIRE_BYTES,
-            NearbyTransferReply::valid,
-        )
     }
 
     async fn local_file(&self, bytes: Vec<u8>, parent: &[u8]) -> Result<Vec<u8>, NotAvailable> {

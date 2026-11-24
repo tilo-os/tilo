@@ -75,20 +75,6 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, DesktopEvent>> {
                 received,
             }));
         }
-        NetEvent::NearbyTransferProgress {
-            transfer_id,
-            sent_bytes,
-            total_bytes,
-            status,
-            ..
-        } => {
-            return Some(Err(DesktopEvent::NearbyTransferProgress {
-                transfer_id,
-                sent_bytes,
-                total_bytes,
-                status,
-            }));
-        }
         // Taken off this path before it gets here: what a host replays into the workspaces this
         // device holds is admitted on its own thread, and the rest is the peer network's own bookkeeping.
         NetEvent::NativeInput(_) | NetEvent::OwnReplay { .. } => {
@@ -434,20 +420,6 @@ async fn carry_host(
             };
             actor.send(command).await.is_ok()
         }
-        HostCmd::NearbySpool {
-            user_public_key,
-            target,
-            checkpoint,
-            file,
-        } => actor
-            .send(NetCmd::PublishNearbyTransfer {
-                user_public_key,
-                target,
-                transfer: checkpoint,
-                file,
-            })
-            .await
-            .is_ok(),
         HostCmd::Network(command) => carry_out(actor, command, events).await?,
     })
 }

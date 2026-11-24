@@ -131,14 +131,6 @@ pub(crate) enum HostCmd {
         target: Option<EndpointId>,
         payload: tilo_network_actor::PersonalFabricPayload,
     },
-    /// Stream one staged spool object to one of the person's devices from the checkpoint it
-    /// confirmed.
-    NearbySpool {
-        user_public_key: [u8; 32],
-        target: EndpointId,
-        checkpoint: tilo_network_actor::NearbyTransferCheckpoint,
-        file: std::fs::File,
-    },
 }
 
 /// One host's end of its transport, as the client says its own commands through it.
@@ -194,28 +186,11 @@ impl HostOutbox {
             payload,
         });
     }
-
-    /// Stream one staged spool object to one of the person's devices from the checkpoint it
-    /// confirmed.
-    pub(crate) fn nearby_spool(
-        &self,
-        user_public_key: [u8; 32],
-        target: EndpointId,
-        checkpoint: tilo_network_actor::NearbyTransferCheckpoint,
-        file: std::fs::File,
-    ) -> bool {
-        self.say(HostCmd::NearbySpool {
-            user_public_key,
-            target,
-            checkpoint,
-            file,
-        })
-    }
 }
 
 /// What the peer actor and the fabric said that only this desktop keeps: which of the person's
 /// devices proved itself on a session with this one, and the session's end, the fabric traffic they
-/// send, and how far a transfer this device is sending got.
+/// send.
 #[derive(Debug)]
 #[cfg(target_os = "linux")]
 enum DesktopEvent {
@@ -233,12 +208,6 @@ enum DesktopEvent {
         payload: tilo_network_actor::PersonalFabricPayload,
         /// When the frame reached this device, read where it was taken off the wire.
         received: std::time::Instant,
-    },
-    NearbyTransferProgress {
-        transfer_id: [u8; 16],
-        sent_bytes: u64,
-        total_bytes: u64,
-        status: tilo_network_actor::PersonalTransferStatus,
     },
     /// The host of the workspace on topic `ws` said its owner deleted it.
     WorkspaceDeleted { ws: Topic },
@@ -713,7 +682,6 @@ impl Local {
                         fabric.arrived(peer, &payload, received);
                     }
                 }
-                DesktopEvent::NearbyTransferProgress { .. } => {}
             }
         }
     }

@@ -130,6 +130,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.bytes(delta_json);
         }
         CollabRequest::NativeMediaCommand { command, .. } => serialized_bytes(command, &mut meter),
+        CollabRequest::RetiredNearbyTransferCommand { .. } => {}
         CollabRequest::ResourceCommand { command, .. } => meter.bytes(command),
         CollabRequest::DecideShownActions { actions } => serialized_bytes(actions, &mut meter),
         CollabRequest::ReportHandoff { message } => {
@@ -556,7 +557,10 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             serialized_bytes(verdicts, &mut meter);
             "ActionVerdicts"
         }
-        CollabEvent::NearbyTransferChanged => "NearbyTransferChanged",
+        CollabEvent::RetiredNearbyTransferCommandResult { .. } => {
+            "RetiredNearbyTransferCommandResult"
+        }
+        CollabEvent::RetiredNearbyTransferChanged => "RetiredNearbyTransferChanged",
         CollabEvent::SpeakersChanged => "SpeakersChanged",
         CollabEvent::DrivesChanged => "DrivesChanged",
         CollabEvent::ApplicationsChanged => "ApplicationsChanged",

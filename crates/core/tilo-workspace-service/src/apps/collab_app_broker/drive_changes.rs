@@ -5,6 +5,9 @@
 use crate::apps::BrokerError;
 use crate::apps::services::ProcessServices;
 
+/// The one application Files lists drives for.
+use tilo_app_id::apps::FILE_EXPLORER as FILES_APP_ID;
+
 /// The wait for the drive list's next change past `after` for a connection
 /// on `route_app`: only the certified Files route may wait, as only Files
 /// lists drives.
@@ -13,7 +16,7 @@ pub(super) fn drive_change(
     route_app: &str,
     after: u64,
 ) -> Result<crate::apps::services::DriveChange, BrokerError> {
-    if route_app != super::NEARBY_TRANSFER_APP_ID {
+    if route_app != FILES_APP_ID {
         return Err(BrokerError::failed(
             "drives are listed only to the certified Files application".into(),
         ));
@@ -57,8 +60,8 @@ mod tests {
             drives: Some(service.clone()),
             ..Default::default()
         };
-        let change = drive_change(&services, super::super::NEARBY_TRANSFER_APP_ID, 4)
-            .expect("Files waits on its route");
+        let change =
+            drive_change(&services, super::FILES_APP_ID, 4).expect("Files waits on its route");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("runtime");
@@ -86,7 +89,7 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            let unannounced = drive_change(&services, super::super::NEARBY_TRANSFER_APP_ID, 0)
+            let unannounced = drive_change(&services, super::FILES_APP_ID, 0)
                 .err()
                 .expect("a host that cannot announce changes says so");
             assert_eq!(

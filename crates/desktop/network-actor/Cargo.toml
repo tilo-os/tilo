@@ -39,7 +39,6 @@ tilo-endpoint-reachability = { path = "../../core/endpoint-reachability" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-identity = { path = "../../core/tilo-identity" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-tilo-nearby-service = { path = "../../session/nearby-service" }
 tilo-peer-state = { path = "../../core/tilo-peer-state" }
 tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps"] }

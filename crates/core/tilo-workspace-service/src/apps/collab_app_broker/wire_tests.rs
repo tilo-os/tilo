@@ -941,7 +941,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                 Service::NativeMedia,
                 Service::Speaker,
                 Service::Realtime,
-                Service::NearbyTransfer,
+                Service::RetiredNearbyTransfer,
                 Service::WifiContinuity,
                 Service::BrowserServiceSession,
                 Service::ApprovedCheck,
@@ -1009,7 +1009,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             for of in [
                 Changes::Speakers,
                 Changes::GroupKeys,
-                Changes::NearbyTransfers,
+                Changes::RetiredNearbyTransfers,
                 Changes::Drives,
                 Changes::Applications,
             ] {

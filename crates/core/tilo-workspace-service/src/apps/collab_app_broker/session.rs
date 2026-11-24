@@ -766,9 +766,6 @@ pub(super) fn delegate_realtime_command(
         .map_err(BrokerError::failed)
 }
 
-/// The only application that may send files to nearby devices.
-use tilo_app_id::apps::FILE_EXPLORER as NEARBY_TRANSFER_APP_ID;
-
 /// The only application that may carry Wi-Fi credentials between devices.
 use tilo_app_id::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
 
@@ -856,28 +853,6 @@ pub(super) fn delegate_browser_service_session_command(
     reply.encode().map_err(|_| refused())
 }
 
-/// The wait for Nearby Send's next change past `after` for the connection
-/// `context`: only the certified Files route in a workspace may wait, as only
-/// it may command.
-pub(super) fn nearby_transfer_change(
-    services: &ProcessServices,
-    context: &crate::apps::services::NearbyTransferRequestContext,
-    after: u64,
-) -> Result<crate::apps::services::NearbyTransferChange, BrokerError> {
-    if context.app_id() != NEARBY_TRANSFER_APP_ID || context.workspace_id().is_empty() {
-        return Err(BrokerError::failed(
-            "Nearby Send requires the certified Files application route".into(),
-        ));
-    }
-    services
-        .nearby_transfer
-        .as_ref()
-        .and_then(|service| service.changed(context, after))
-        .ok_or_else(|| {
-            BrokerError::unimplemented("this host does not say when Nearby Send changes".into())
-        })
-}
-
 /// The only application that manages the person's speaker groups.
 use tilo_app_id::apps::SETTINGS as SPEAKER_APP_ID;
 
@@ -901,57 +876,6 @@ pub(super) fn speaker_change(
         .ok_or_else(|| {
             BrokerError::unimplemented("this host does not say when speaker groups change".into())
         })
-}
-
-pub(super) fn delegate_nearby_transfer_command(
-    services: &ProcessServices,
-    context: &crate::apps::services::NearbyTransferRequestContext,
-    claimed_app: &str,
-    command: &[u8],
-) -> Result<Vec<u8>, BrokerError> {
-    if context.app_id() != NEARBY_TRANSFER_APP_ID || context.workspace_id().is_empty() {
-        return Err(BrokerError::failed(
-            "Nearby Send requires the certified Files application route".into(),
-        ));
-    }
-    if claimed_app != context.app_id() {
-        return Err(BrokerError::failed(
-            "Nearby Send app id must match the certified connection route".into(),
-        ));
-    }
-    if command.len() > runtime_collab::MAX_NEARBY_TRANSFER_WIRE_BYTES {
-        return Err(BrokerError::failed(
-            "Nearby Send command exceeds the local protocol bound".into(),
-        ));
-    }
-    let command = match serde_json::from_slice::<runtime_collab::NearbyTransferCommand>(command) {
-        Ok(command) if command.valid() => command,
-        Ok(_) => {
-            return Err(BrokerError::failed(
-                "Nearby Send command is structurally invalid".into(),
-            ));
-        }
-        Err(error) => return Err(BrokerError::failed(error.to_string())),
-    };
-    let service = services
-        .nearby_transfer
-        .as_ref()
-        .ok_or_else(|| BrokerError::failed("Nearby Send is unsupported by this host".into()))?;
-    let reply = service
-        .command(context, command)
-        .map_err(BrokerError::failed)?;
-    if !reply.valid() {
-        return Err(BrokerError::failed(
-            "Nearby Send produced an invalid bounded reply".into(),
-        ));
-    }
-    match serde_json::to_vec(&reply) {
-        Ok(bytes) if bytes.len() <= runtime_collab::MAX_NEARBY_TRANSFER_WIRE_BYTES => Ok(bytes),
-        Ok(_) => Err(BrokerError::failed(
-            "Nearby Send reply exceeds the local protocol bound".into(),
-        )),
-        Err(error) => Err(BrokerError::failed(error.to_string())),
-    }
 }
 
 impl JoinedChannel {

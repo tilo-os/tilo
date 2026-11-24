@@ -2,7 +2,7 @@
 //! the connection of the session between the two ([`super::device_sessions`]).
 //! Each frame goes on a bidirectional stream of its own
 //! ([`super::read_personal_fabric`] reads them on the other side), in the
-//! order they were sent; a file transfer streams on the same connection.
+//! order they were sent.
 use iroh::EndpointId;
 use iroh::endpoint::Connection;
 use std::time::Duration;
@@ -43,11 +43,6 @@ impl FabricLink {
         if self.frames.try_send(bytes).is_err() {
             tracing::debug!(peer = %self.connection.remote_id(), "personal fabric frames to a device are backed up; one is dropped");
         }
-    }
-
-    /// The connection, for a transfer streaming on it.
-    pub(super) fn connection(&self) -> Connection {
-        self.connection.clone()
     }
 }
 

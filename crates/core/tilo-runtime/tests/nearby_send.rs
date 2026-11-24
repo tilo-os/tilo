@@ -25,6 +25,10 @@ use crate::host::{self, Host};
 /// The file the sending device offers.
 const NAME: &str = "note.txt";
 
+/// One byte past the document-media capability's size: a file's content is a file
+/// record's, which that bound does not carry.
+const LARGE_FILE: usize = 64 * 1024 * 1024 + 1;
+
 /// The sending device, as another of the person's devices answers: it takes an offer and hands
 /// over the content it holds, and says how a transfer ended.
 struct Sender {
@@ -32,7 +36,6 @@ struct Sender {
     bytes: Vec<u8>,
     hash: String,
     asked: Mutex<Vec<String>>,
-    ended: Mutex<Vec<(String, bool)>>,
 }
 
 impl Sender {
@@ -43,16 +46,11 @@ impl Sender {
             bytes,
             hash,
             asked: Mutex::new(Vec::new()),
-            ended: Mutex::new(Vec::new()),
         })
     }
 
     fn asked(&self) -> Vec<String> {
         self.asked.lock().unwrap().clone()
-    }
-
-    fn ended(&self) -> Vec<(String, bool)> {
-        self.ended.lock().unwrap().clone()
     }
 }
 
@@ -95,16 +93,7 @@ impl ActionProvider for Sender {
                     "bytes": hex::encode(piece),
                 })
             }
-            nearby::RESULT => {
-                self.ended.lock().unwrap().push((
-                    arguments["transfer"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned(),
-                    arguments["ok"].as_bool().unwrap_or_default(),
-                ));
-                json!({})
-            }
+            nearby::RESULT => json!({}),
             _ => json!({}),
         };
         Pending::ready(Ok(InvocationReceipt {
@@ -138,6 +127,10 @@ fn shell(host: &Host) -> DaemonShell {
         .daemon()
         .shell_link()
         .expect("the daemon hands its shell a link");
+    // The shell's side of the link is the daemon's own socket, made for a thread of its own: the
+    // runtime takes it only once it is nonblocking.
+    link.set_nonblocking(true)
+        .expect("the link is made nonblocking");
     let client = ShellClient::open(tokio::net::UnixStream::from_std(link).expect("a socket")).0;
     DaemonShell::new(Ok(client), tokio::runtime::Handle::current())
 }
@@ -348,7 +341,8 @@ fn a_file_offered_by_another_device_is_turned_down() {
             nearby::DECLINE,
             json!({"transfer": sender.transfer}),
         );
-        host.dispatch()
+        let _ = host
+            .dispatch()
             .invoke(&host.caller(), decline)
             .await
             .expect("the decline is admitted");
@@ -402,7 +396,8 @@ fn a_transfer_the_person_accepted_is_stopped() {
             nearby::CANCEL,
             json!({"transfer": sender.transfer}),
         );
-        host.dispatch()
+        let _ = host
+            .dispatch()
             .invoke(&host.caller(), cancel)
             .await
             .expect("the stop is admitted");
@@ -437,6 +432,32 @@ fn an_offer_naming_another_device_than_the_one_that_asked_is_refused() {
         assert!(
             matches!(answered, Err(ActionCallError::Refused { .. })),
             "{answered:?}"
+        );
+    });
+}
+
+/// A file larger than the document-media capability's size still crosses whole: a file's
+/// content belongs in a file record, not in the media capability's bound, and its bytes
+/// wait on disk rather than in memory on the way.
+#[test]
+fn a_file_larger_than_the_media_size_is_kept() {
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let bytes = vec![0x5a_u8; LARGE_FILE];
+        let sender = Sender::new(transfer_id(), bytes);
+        let member = host
+            .member_serving("phone", &workspace, Arc::clone(&sender) as _)
+            .await;
+        offered(&host, &sender, &member)
+            .await
+            .expect("the offer is taken");
+        keep(&host, &sender.transfer).await;
+
+        let done = row(&host, &workspace, &sender.transfer).await;
+        assert_eq!(done["state"], "done", "{done}");
+        assert!(
+            installed(&host, &workspace, &sender.hash).await,
+            "the whole file is in the person's Files at the address offered"
         );
     });
 }

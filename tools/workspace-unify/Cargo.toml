@@ -1172,7 +1172,6 @@ doc = false
 "tilo-model-gateway" = { path = "../../crates/integrations/model-gateway", default-features = false, features = ["default", "host-backend", "local-models", "runtime-client", "server"] }
 "tilo-model-guest" = { path = "../../crates/sdk/tilo-model-guest", default-features = false, features = [] }
 "tilo-native-media" = { path = "../../crates/desktop/native-media", default-features = false, features = [] }
-"tilo-nearby-service" = { path = "../../crates/session/nearby-service", default-features = false, features = [] }
 "tilo-neighbour-wire" = { path = "../../crates/core/neighbour-wire", default-features = false, features = [] }
 "tilo-net" = { path = "../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-dev-server", "proxy-host", "sockets", "webtransport", "ws"] }
 "tilo-net-answers" = { path = "../../crates/integrations/net-answers", default-features = false, features = ["default", "fetch"] }
@@ -3657,7 +3656,6 @@ doc = false
 "tilo-model-gateway" = { path = "../../crates/integrations/model-gateway", default-features = false, features = ["default", "host-backend", "local-models", "runtime-client", "server"] }
 "tilo-model-guest" = { path = "../../crates/sdk/tilo-model-guest", default-features = false, features = [] }
 "tilo-native-media" = { path = "../../crates/desktop/native-media", default-features = false, features = [] }
-"tilo-nearby-service" = { path = "../../crates/session/nearby-service", default-features = false, features = [] }
 "tilo-neighbour-wire" = { path = "../../crates/core/neighbour-wire", default-features = false, features = [] }
 "tilo-net" = { path = "../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-dev-server", "proxy-host", "sockets", "webtransport", "ws"] }
 "tilo-net-answers" = { path = "../../crates/integrations/net-answers", default-features = false, features = ["default", "fetch"] }

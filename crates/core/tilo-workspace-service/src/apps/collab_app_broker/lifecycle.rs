@@ -240,8 +240,15 @@ pub(super) async fn serve_broker_thread(
                 let result = async {
                     let stream = tokio::net::UnixStream::from_std(worker.stream)
                         .map_err(BrokerError::from)?;
-                    drive_connection(stream, state, directories, peer_id, Some(worker.binding), None)
-                        .await
+                    drive_connection(
+                        stream,
+                        state,
+                        directories,
+                        peer_id,
+                        Some(worker.binding),
+                        None,
+                    )
+                    .await
                 }
                 .await;
                 if let Err(error) = result {
@@ -300,7 +307,8 @@ pub(super) async fn serve_broker_thread(
         let directories = Rc::clone(&directories);
         let peer_id = state.next_peer_id();
         tokio::task::spawn_local(async move {
-            if let Err(e) = drive_connection(stream, state, directories, peer_id, None, None).await {
+            if let Err(e) = drive_connection(stream, state, directories, peer_id, None, None).await
+            {
                 tracing::warn!("collaboration broker: peer-{peer_id} disconnected: {e}");
             }
         });

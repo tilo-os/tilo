@@ -510,7 +510,7 @@ impl Host {
         let remote = Arc::new(service.remote(&endpoint, &self.daemon().endpoint_addr(), workspace));
         Member {
             remote,
-            _service: service,
+            service,
             _endpoint: endpoint,
         }
     }
@@ -529,7 +529,7 @@ impl Host {
         let remote = Arc::new(service.remote(&endpoint, &self.daemon().endpoint_addr(), workspace));
         Member {
             remote,
-            _service: service,
+            service,
             _endpoint: endpoint,
         }
     }
@@ -706,15 +706,16 @@ impl Agent {
 /// Another device asking the daemon over the device link.
 pub struct Member {
     remote: Arc<RemoteDevice>,
-    _service: ActionService,
+    service: ActionService,
     _endpoint: iroh::Endpoint,
 }
 
 impl Member {
-    /// This device's key, as its certificate names it.
+    /// This device's key, as its certificate names it: the one its requests are signed with, never
+    /// the daemon's it asks.
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
-        self.remote.device()
+        self.service.device()
     }
 
     /// This device's endpoint, as it dials a host's terminal streams.

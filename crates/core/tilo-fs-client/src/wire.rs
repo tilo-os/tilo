@@ -189,6 +189,12 @@ pub enum FsRequest {
         bytes: Vec<u8>,
     },
     UploadFinish,
+    /// Store a file's content under its own address: streamed like an upload,
+    /// with no document-media bound, since a file's bytes belong in a file
+    /// record rather than in the media capability's size.
+    UploadFile {
+        mime: String,
+    },
 }
 
 /// A reply's content. Each request has one shape: the caller decodes the

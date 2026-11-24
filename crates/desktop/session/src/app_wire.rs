@@ -1286,9 +1286,6 @@ fn broker_services(
         // call is decided on the certificate the broker attested for the app's
         // connection in its workspace, and the vault stays on this device.
         browser_service_sessions: BrokerService::when(service_sessions),
-        // Nearby Send is the device daemon's: its offers, transfers and content reach another
-        // of the person's devices over the action service the daemon already serves.
-        nearby_transfer: BrokerService::unserved("Nearby Send is the device daemon's"),
         // A person copies and cuts in Files and pastes the copy in another
         // folder or another app: what they copied is offered here, and every
         // file of it is pasted by the same engine the desktop's own paste of

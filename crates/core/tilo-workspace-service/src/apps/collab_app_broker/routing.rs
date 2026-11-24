@@ -204,7 +204,8 @@ impl AppBrokerState {
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::ResourceCommandResult { .. }
             | CollabEvent::ActionVerdicts { .. }
-            | CollabEvent::NearbyTransferChanged
+            | CollabEvent::RetiredNearbyTransferCommandResult { .. }
+            | CollabEvent::RetiredNearbyTransferChanged
             | CollabEvent::SpeakersChanged
             | CollabEvent::DrivesChanged
             | CollabEvent::ApplicationsChanged

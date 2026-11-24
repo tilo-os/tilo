@@ -134,6 +134,65 @@ impl ContentShelf for ProfileShelf {
     fn has(&self, scope: &ContentScope, hash: &str) -> bool {
         self.on(scope, |scoped| scoped.has(hash)).unwrap_or(false)
     }
+
+    fn size(&self, scope: &ContentScope, hash: &str) -> Option<u64> {
+        if let Some(size) = self.on(scope, |scoped| scoped.size(hash)).ok().flatten() {
+            return Some(size);
+        }
+        // A mount of the workspace may keep it where the profile's store does not:
+        // content put there before this device's store was reached.
+        if scope.app == FILES_APP
+            && let Some(bytes) = self.files.read(&scope.workspace, hash)
+        {
+            return Some(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        }
+        None
+    }
+
+    fn read_range(
+        &self,
+        scope: &ContentScope,
+        hash: &str,
+        offset: u64,
+        len: usize,
+    ) -> Option<Vec<u8>> {
+        let max_len = u32::try_from(len).unwrap_or(u32::MAX);
+        match self.on(scope, |scoped| scoped.read(hash, offset, max_len)) {
+            Ok(ReadOutcome::Ready { bytes, .. }) => return Some(bytes),
+            Ok(ReadOutcome::Pending | ReadOutcome::Unavailable) | Err(_) => {}
+        }
+        if scope.app == FILES_APP {
+            let bytes = self.files.read(&scope.workspace, hash)?;
+            let start = usize::try_from(offset)
+                .unwrap_or(usize::MAX)
+                .min(bytes.len());
+            let end = start.saturating_add(len).min(bytes.len());
+            return bytes.get(start..end).map(<[u8]>::to_vec);
+        }
+        None
+    }
+
+    fn keep_file(
+        &self,
+        scope: &ContentScope,
+        hash: &str,
+        path: &std::path::Path,
+        size: u64,
+    ) -> Result<(), String> {
+        let owned = path.to_owned();
+        let kept = self
+            .on(scope, |scoped| {
+                let mut file = std::fs::File::open(&owned)
+                    .map_err(|error| BlobError::Input(error.to_string()))?;
+                scoped.put_file(&mut file)
+            })
+            .map_err(|error| error.to_string())?;
+        if kept.hash == hash && kept.len == size {
+            Ok(())
+        } else {
+            Err("the store kept other content than the file's address names".to_owned())
+        }
+    }
 }
 
 /// The profile's record-content service: its content store, served on

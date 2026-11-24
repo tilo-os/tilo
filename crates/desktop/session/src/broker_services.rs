@@ -27,9 +27,9 @@ use tilo_workspace_keys::KeyProvider;
 use tilo_workspace_service::apps::services::{
     ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
     DisplayControlServices, DriveServices, FileClipboardServices, LauncherServices,
-    NearbyTransferServices, ProcessServices, PublishedResources, RealtimeServices,
-    ShortcutLibraryServices, SpeakerServices, WifiContinuityServices, WorkspaceControlServices,
-    WorkspaceGrants, WorkspaceMemberships,
+    ProcessServices, PublishedResources, RealtimeServices, ShortcutLibraryServices,
+    SpeakerServices, WifiContinuityServices, WorkspaceControlServices, WorkspaceGrants,
+    WorkspaceMemberships,
 };
 
 /// What this session serves of one service.
@@ -140,7 +140,6 @@ broker_services! {
     live_activities: Arc<runtime_collab::LiveActivities>,
     wifi_continuity: Arc<dyn WifiContinuityServices>,
     browser_service_sessions: Arc<dyn BrowserServiceSessionServices>,
-    nearby_transfer: Arc<dyn NearbyTransferServices>,
     file_clipboard: Arc<dyn FileClipboardServices>,
     app_action_access: tilo_broker_core::access::AppActionAccessResolver,
     app_resource_kinds: tilo_broker_core::access::AppResourceKindsResolver,

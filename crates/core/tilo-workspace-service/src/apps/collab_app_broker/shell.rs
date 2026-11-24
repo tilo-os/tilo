@@ -303,11 +303,9 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
             frame,
             caller,
             pressed,
-        } => {
-            ShellReply::Action(
-                dispatch(&services, &shell.caller, workspace, caller, pressed, &frame).await?,
-            )
-        }
+        } => ShellReply::Action(
+            dispatch(&services, &shell.caller, workspace, caller, pressed, &frame).await?,
+        ),
         // The connection registers what its shell serves itself (`WireConnection::provide`).
         ShellCall::Provide { .. } => {
             return Err("a provider is served on the shell's own connection".to_owned());

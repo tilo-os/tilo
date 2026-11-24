@@ -33,6 +33,9 @@ pub const MAX_READ_CHUNK: u32 = 4 * 1024 * 1024;
 /// Largest single blob the capability accepts or reassembles. Document media
 /// is images and attachments; bigger content belongs in a file record.
 pub const MAX_BLOB_BYTES: u64 = 64 * 1024 * 1024;
+/// The media type a file's content is kept as: the one the content shelf puts
+/// workspace files under.
+pub const FILE_MIME: &str = "application/octet-stream";
 /// Largest piece of an upload held at once: an upload writes one piece per
 /// message, and the server passes it on in pieces of this size, so what waits
 /// between the app and the store is bounded by pieces, not by whole messages.
@@ -327,6 +330,12 @@ enum StoreJob {
         mime: String,
         reply: Answer<u64>,
     },
+    /// A file's content: streamed like [`Self::Begin`], with no media bound.
+    BeginFile {
+        target: u64,
+        mime: String,
+        reply: Answer<u64>,
+    },
     Write {
         upload: u64,
         bytes: Vec<u8>,
@@ -551,6 +560,83 @@ impl BlobClient {
                         Job::Store(StoreJob::Begin {
                             target,
                             mime,
+                            reply,
+                        })
+                    })?;
+                    upload = Some(OpenUpload {
+                        client: self,
+                        id,
+                        open: true,
+                    });
+                    id
+                }
+            };
+            if !chunk.is_empty() {
+                self.call(|reply| {
+                    Job::Store(StoreJob::Write {
+                        upload: id,
+                        bytes: chunk,
+                        reply,
+                    })
+                })?;
+            }
+            if last {
+                break;
+            }
+        }
+        let Some(mut open) = upload else {
+            return Err(BlobError::Refused("upload was never opened".into()));
+        };
+        open.open = false;
+        let stored = self.call(|reply| {
+            Job::Store(StoreJob::Finish {
+                upload: open.id,
+                reply,
+            })
+        })?;
+        checked_ref(stored, &hasher, total)
+    }
+
+    /// Store everything `reader` yields as a file's content, [`UPLOAD_PIECE`]
+    /// at a time: the document-media size does not bound a file, whose bytes
+    /// belong in a file record. Held in one piece, hashed as it goes, and
+    /// checked against the reference the store answers, exactly as
+    /// [`Self::put_reader`] does.
+    ///
+    /// # Errors
+    ///
+    /// [`BlobError::Input`] when `reader` fails, a refusal when the store
+    /// answers a reference for other content, or a connection error. A failed
+    /// put stores nothing.
+    pub fn put_file(&self, reader: &mut dyn io::Read) -> Result<BlobRef, BlobError> {
+        let target = self.data_target()?;
+        let mut hasher = blake3::Hasher::new();
+        let mut total: u64 = 0;
+        let mut upload: Option<OpenUpload<'_>> = None;
+        loop {
+            let chunk = next_chunk(reader)?;
+            total = total.saturating_add(chunk.len() as u64);
+            hasher.update(&chunk);
+            let last = chunk.len() < UPLOAD_PIECE;
+            let id = match upload.as_ref().map(|open| open.id) {
+                Some(id) => id,
+                None if last => {
+                    // One piece: held whole, and the file is under one message.
+                    let stored = self.call(|reply| {
+                        Job::Store(StoreJob::Put {
+                            target,
+                            bytes: chunk,
+                            mime: FILE_MIME.to_owned(),
+                            reply,
+                        })
+                    })?;
+                    return checked_ref(stored, &hasher, total);
+                }
+                None => {
+                    let id = self.call(|reply| {
+                        Job::Store(StoreJob::BeginFile {
+                            target,
+                            mime: FILE_MIME.to_owned(),
                             reply,
                         })
                     })?;
@@ -850,7 +936,7 @@ impl BlobClient {
 }
 
 /// Up to one piece of content from `reader`; shorter only at its end.
-fn next_chunk(reader: &mut impl io::Read) -> Result<Vec<u8>, BlobError> {
+fn next_chunk(reader: &mut dyn io::Read) -> Result<Vec<u8>, BlobError> {
     let mut chunk = Vec::with_capacity(UPLOAD_PIECE);
     reader
         .take(UPLOAD_PIECE as u64)
@@ -1403,6 +1489,26 @@ async fn store(job: StoreJob, session: &Session) {
             let result = async {
                 let client = session.scopes(target)?;
                 match client.call(FsRequest::Upload { mime }).await? {
+                    FsReply::Handle(handle) => {
+                        let upload = session.child(handle)?;
+                        let id = session.issue_id();
+                        session.uploads.borrow_mut().insert(id, upload);
+                        Ok(id)
+                    }
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
+                }
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        StoreJob::BeginFile {
+            target,
+            mime,
+            reply,
+        } => {
+            let result = async {
+                let client = session.scopes(target)?;
+                match client.call(FsRequest::UploadFile { mime }).await? {
                     FsReply::Handle(handle) => {
                         let upload = session.child(handle)?;
                         let id = session.issue_id();

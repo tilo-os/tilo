@@ -748,7 +748,8 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         .cluster_id
         .clone();
     let offered = |actor: &str| {
-        let caller = tilo_actions::remote::Caller::local_person(actor).in_workspace(&action_cluster);
+        let caller =
+            tilo_actions::remote::Caller::local_person(actor).in_workspace(&action_cluster);
         state
             .eager_catalogue(&caller, action_provider::RowScope::All)
             .0

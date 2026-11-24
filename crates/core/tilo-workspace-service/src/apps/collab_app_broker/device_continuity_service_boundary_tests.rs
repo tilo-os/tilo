@@ -1,8 +1,6 @@
 use super::*;
 use crate::apps::BrokerErrorKind;
-use crate::apps::services::{
-    NearbyTransferRequestContext, NearbyTransferServices, WifiContinuityServices,
-};
+use crate::apps::services::WifiContinuityServices;
 
 #[derive(Default)]
 struct RecordingWifi {
@@ -19,88 +17,12 @@ impl WifiContinuityServices for RecordingWifi {
     }
 }
 
-struct RecordingNearby {
-    reply: runtime_collab::NearbyTransferReply,
-    calls: Mutex<
-        Vec<(
-            NearbyTransferRequestContext,
-            runtime_collab::NearbyTransferCommand,
-        )>,
-    >,
-}
-
-impl RecordingNearby {
-    fn answering(reply: runtime_collab::NearbyTransferReply) -> Self {
-        Self {
-            reply,
-            calls: Mutex::new(Vec::new()),
-        }
-    }
-}
-
-impl NearbyTransferServices for RecordingNearby {
-    fn command(
-        &self,
-        context: &NearbyTransferRequestContext,
-        command: runtime_collab::NearbyTransferCommand,
-    ) -> Result<runtime_collab::NearbyTransferReply, String> {
-        self.calls
-            .lock()
-            .expect("calls")
-            .push((context.clone(), command));
-        Ok(self.reply.clone())
-    }
-
-    fn disconnect(&self, _peer_id: u64) {}
-
-    fn changed(
-        &self,
-        context: &NearbyTransferRequestContext,
-        after: u64,
-    ) -> Option<crate::apps::services::NearbyTransferChange> {
-        self.calls.lock().expect("calls").push((
-            context.clone(),
-            runtime_collab::NearbyTransferCommand::Snapshot,
-        ));
-        Some(Box::pin(std::future::ready(after.wrapping_add(1))))
-    }
-}
-
-/// A host that answers commands but cannot say when its state changes.
-struct UnannouncedNearby;
-
-impl NearbyTransferServices for UnannouncedNearby {
-    fn command(
-        &self,
-        _context: &NearbyTransferRequestContext,
-        _command: runtime_collab::NearbyTransferCommand,
-    ) -> Result<runtime_collab::NearbyTransferReply, String> {
-        Ok(runtime_collab::NearbyTransferReply::Accepted)
-    }
-
-    fn disconnect(&self, _peer_id: u64) {}
-}
-
 fn lookup() -> Vec<u8> {
     serde_json::to_vec(&runtime_collab::WifiContinuityCommand::Lookup {
         ssid: "home".into(),
         security: runtime_collab::PortableWifiSecurity::Wpa2,
     })
     .expect("encode lookup")
-}
-
-fn snapshot() -> Vec<u8> {
-    serde_json::to_vec(&runtime_collab::NearbyTransferCommand::Snapshot).expect("encode snapshot")
-}
-
-fn files_context() -> NearbyTransferRequestContext {
-    NearbyTransferRequestContext::authenticated(
-        41,
-        NEARBY_TRANSFER_APP_ID,
-        "workspace-7",
-        CrdtRoute::app(NEARBY_TRANSFER_APP_ID, "workspace-7").channel_key(),
-        Some("local-person".into()),
-    )
 }
 
 tilo_test_env::scenario! {
@@ -215,176 +137,6 @@ tilo_test_env::scenario! {
         assert!(unsupported.to_string().contains("unsupported by this host"));
     }
 
-    phase nearby_transfer_delegates_only_the_certified_files_route;
-    {
-        let service = Arc::new(RecordingNearby::answering(
-            runtime_collab::NearbyTransferReply::Accepted,
-        ));
-        let services = ProcessServices {
-            nearby_transfer: Some(service.clone()),
-            ..Default::default()
-        };
-        let context = files_context();
-        let reply =
-            delegate_nearby_transfer_command(&services, &context, NEARBY_TRANSFER_APP_ID, &snapshot())
-                .expect("certified Files delegates");
-        assert_eq!(
-            reply,
-            serde_json::to_vec(&runtime_collab::NearbyTransferReply::Accepted).expect("reply")
-        );
-        assert_eq!(
-            service.calls.lock().expect("calls").as_slice(),
-            &[(context, runtime_collab::NearbyTransferCommand::Snapshot)]
-        );
-
-        let other_app = NearbyTransferRequestContext::authenticated(
-            41,
-            "so.tilo.browser",
-            "workspace-7",
-            CrdtRoute::app("so.tilo.browser", "workspace-7").channel_key(),
-            Some("local-person".into()),
-        );
-        let refused =
-            delegate_nearby_transfer_command(&services, &other_app, "so.tilo.browser", &snapshot())
-                .expect_err("only Files sends to nearby devices");
-        assert!(refused.to_string().contains("certified Files"));
-        let spoofed = delegate_nearby_transfer_command(
-            &services,
-            &files_context(),
-            "so.tilo.browser",
-            &snapshot(),
-        )
-        .expect_err("caller claim cannot override certified route");
-        assert!(spoofed.to_string().contains("certified connection route"));
-        let invalid = delegate_nearby_transfer_command(
-            &services,
-            &files_context(),
-            NEARBY_TRANSFER_APP_ID,
-            br#"{"command":"send"}"#,
-        );
-        assert!(invalid.is_err(), "malformed command refused");
-        assert_eq!(service.calls.lock().expect("calls").len(), 1);
-    }
-
-    phase airdrop_delegation_seals_person_and_rejects_application_trust_claims;
-    {
-        use runtime_collab::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
-        let service = Arc::new(RecordingNearby::answering(Reply::Accepted));
-        let services = ProcessServices {
-            nearby_transfer: Some(service.clone()),
-            ..Default::default()
-        };
-        let context = files_context();
-        let command = Command::SendAirDrop {
-            source_path: b"/approved/report".to_vec(),
-            address: "127.0.0.1".into(),
-            port: 443,
-        };
-        let json = serde_json::to_vec(&command).unwrap();
-        delegate_nearby_transfer_command(&services, &context, NEARBY_TRANSFER_APP_ID, &json).unwrap();
-        let calls = service.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0.person(), Some("local-person"));
-        assert_eq!(calls[0].1, command);
-        drop(calls);
-        let mut spoof = serde_json::from_slice::<serde_json::Value>(&json).unwrap();
-        for key in ["person", "certificate_sha256", "verified", "remember"] {
-            spoof[key] = "app claim".into();
-            assert!(
-                delegate_nearby_transfer_command(
-                    &services,
-                    &context,
-                    NEARBY_TRANSFER_APP_ID,
-                    &serde_json::to_vec(&spoof).unwrap()
-                )
-                .is_err()
-            );
-            spoof.as_object_mut().unwrap().remove(key);
-        }
-        assert_eq!(
-            service.calls.lock().unwrap().len(),
-            1,
-            "spoofed authority never reaches the service"
-        );
-    }
-
-    phase nearby_transfer_refuses_an_unbounded_host_reply;
-    {
-        let service = Arc::new(RecordingNearby::answering(
-            runtime_collab::NearbyTransferReply::Rejected {
-                reason: String::new(),
-            },
-        ));
-        let services = ProcessServices {
-            nearby_transfer: Some(service),
-            ..Default::default()
-        };
-        let error = delegate_nearby_transfer_command(
-            &services,
-            &files_context(),
-            NEARBY_TRANSFER_APP_ID,
-            &snapshot(),
-        )
-        .expect_err("invalid reply never reaches the app");
-        assert!(error.to_string().contains("invalid bounded reply"));
-    }
-
-    phase only_the_certified_files_route_waits_for_nearby_changes;
-    {
-        let service = Arc::new(RecordingNearby::answering(
-            runtime_collab::NearbyTransferReply::Accepted,
-        ));
-        let services = ProcessServices {
-            nearby_transfer: Some(service.clone()),
-            ..Default::default()
-        };
-        let change = nearby_transfer_change(&services, &files_context(), 4)
-            .expect("Files waits on its own route");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("runtime");
-        assert_eq!(runtime.block_on(change), 5, "the host's next change");
-        assert_eq!(
-            service.calls.lock().expect("calls")[0].0,
-            files_context(),
-            "the host learns which connection waits, for its handles"
-        );
-
-        for (app, workspace) in [
-            ("so.tilo.browser", "workspace-7"),
-            (NEARBY_TRANSFER_APP_ID, ""),
-        ] {
-            let context = NearbyTransferRequestContext::authenticated(
-                41,
-                app,
-                workspace,
-                CrdtRoute::app(app, workspace).channel_key(),
-                Some("local-person".into()),
-            );
-            let refused = nearby_transfer_change(&services, &context, 0)
-                .err()
-                .expect("only the certified Files route in a workspace waits");
-            assert!(refused.to_string().contains("certified Files"));
-        }
-        assert_eq!(
-            service.calls.lock().expect("calls").len(),
-            1,
-            "a refused route never reaches the host"
-        );
-        for services in [
-            ProcessServices::default(),
-            ProcessServices {
-                nearby_transfer: Some(Arc::new(UnannouncedNearby)),
-                ..Default::default()
-            },
-        ] {
-            let unannounced = nearby_transfer_change(&services, &files_context(), 0)
-                .err()
-                .expect("a host that cannot announce changes says so");
-            assert_eq!(unannounced.kind, BrokerErrorKind::Unimplemented);
-        }
-    }
-
     phase only_the_certified_settings_route_waits_for_speaker_changes;
     {
         let service = Arc::new(WaitingSpeakers {
@@ -402,7 +154,7 @@ tilo_test_env::scenario! {
             .expect("runtime");
         assert_eq!(runtime.block_on(change), 5, "the host's next change");
 
-        for app in [NEARBY_TRANSFER_APP_ID, "so.tilo.browser", ""] {
+        for app in [tilo_app_id::apps::FILE_EXPLORER, "so.tilo.browser", ""] {
             let refused = speaker_change(&services, app, 0)
                 .err()
                 .expect("only the certified Settings route waits");
@@ -431,17 +183,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase nearby_transfer_is_unavailable_without_a_host_service;
-    {
-        let unsupported = delegate_nearby_transfer_command(
-            &ProcessServices::default(),
-            &files_context(),
-            NEARBY_TRANSFER_APP_ID,
-            &snapshot(),
-        )
-        .expect_err("host without nearby radios fails explicitly");
-        assert!(unsupported.to_string().contains("unsupported by this host"));
-    }
 }
 
 /// Speaker groups that record each wait and answer it with the next

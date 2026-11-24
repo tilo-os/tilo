@@ -313,8 +313,10 @@ pub enum Changes {
     Speakers,
     /// The record's encryption keys.
     GroupKeys,
-    /// Nearby transfers this app sees.
-    NearbyTransfers,
+    /// Retired: Nearby Send is the device daemon's resource now, which the
+    /// shell reads over its link. Kept in its place so a wait an app wrote
+    /// still reads as itself; it is answered unimplemented.
+    RetiredNearbyTransfers,
     /// The person's drives (the Files app's).
     Drives,
     /// The person's apps (the Files app's).
@@ -334,8 +336,10 @@ pub enum Service {
     Speaker,
     /// A realtime command and its reply, JSON.
     Realtime,
-    /// `NearbyTransferCommand` -> `NearbyTransferReply`, JSON.
-    NearbyTransfer,
+    /// Retired: Nearby Send is the device daemon's, invoked over its shell
+    /// link. Kept in its place so a command an app wrote still reads as
+    /// itself; it is refused.
+    RetiredNearbyTransfer,
     /// `WifiContinuityCommand` -> `WifiContinuityReply`, JSON; the Settings
     /// app's only.
     WifiContinuity,

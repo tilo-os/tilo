@@ -358,9 +358,17 @@ pub fn install_rust(root: &Path, package: &str, bin: &str) {
     std::fs::rename(&payload, store.payload(meta.id)).unwrap();
     let record = store.meta_dir(meta.id);
     std::fs::create_dir_all(&record).unwrap();
-    std::fs::write(record.join(package_store::layout::SIGNED_ROOT_FILE), meta.signed_root_bytes()).unwrap();
+    std::fs::write(
+        record.join(package_store::layout::SIGNED_ROOT_FILE),
+        meta.signed_root_bytes(),
+    )
+    .unwrap();
     std::fs::write(store.manifest(meta.id), &meta.manifest_bytes).unwrap();
-    std::fs::write(record.join(package_store::layout::COLLECTION_FILE), &meta.collection_bytes).unwrap();
+    std::fs::write(
+        record.join(package_store::layout::COLLECTION_FILE),
+        &meta.collection_bytes,
+    )
+    .unwrap();
     let mut registry = std::fs::read_to_string(store.registry()).unwrap_or_default();
     registry.push_str(&format!(
         "[[entry]]\nid = {:?}\nversion = {:?}\npackage_id_hex = {:?}\npayload_root = {:?}\n\

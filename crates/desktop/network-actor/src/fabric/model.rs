@@ -27,8 +27,6 @@ pub const MAX_CLIPBOARD_ITEMS: usize = 50;
 pub const MAX_CLIPBOARD_ITEM_BYTES: usize = 256 * 1024;
 pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
 pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
-/// Inline fast path only; larger nearby drops belong on the object stream.
-pub const MAX_NEARBY_DROP_BYTES: usize = 48 * 1024;
 /// Versioned remote-audio wire contract. Unknown versions fail closed instead
 /// of being interpreted as raw PCM with potentially incompatible framing.
 pub const REMOTE_AUDIO_PROTOCOL_VERSION: u16 = 2;
@@ -103,9 +101,10 @@ pub enum MediaSourceLocator {
     AppResource {
         uri: String,
     },
-    /// Random transfer identity resolved only inside the receiving shell's
-    /// verified cache. No host path or bearer capability crosses the wire.
-    PersonalTransfer {
+    /// Retired: a media handoff names a workspace file or a stream now, and
+    /// Nearby Send is the daemon's. Kept in its place so a frame an earlier
+    /// build wrote still reads as itself; it resolves nothing.
+    RetiredPersonalTransfer {
         transfer_id: [u8; 16],
         file_name: String,
     },
@@ -149,47 +148,41 @@ pub enum PersonalFabricAction {
         lease_nonce: [u8; 16],
         event: FabricInputEvent,
     },
-    /// Inline fast path of the one Nearby transfer protocol: a file up to
-    /// [`MAX_NEARBY_DROP_BYTES`] rides in this action instead of an offer and
-    /// a byte stream, saving a round trip. It shares the transfer's consent
-    /// queue and integrity check; it is not a second protocol.
-    NearbyDrop {
+    /// Retired: Nearby Send is the device daemon's now, carried over its action
+    /// service, so no build sends these. Kept in their places so a frame an
+    /// earlier build wrote still reads as itself; each is refused.
+    RetiredNearbyDrop {
         file_name: String,
         content_hash: [u8; 32],
         bytes: Vec<u8>,
     },
-    NearbyDropResult {
+    RetiredNearbyDropResult {
         request_id: [u8; 16],
         file_name: String,
         accepted: bool,
     },
-    /// Durable object offer. The source path never leaves its device; the ID
-    /// addresses an immutable private spool object. A played-on transfer is
-    /// admitted by the `ResumeMedia` that named its ID, never by Files.
-    NearbyTransferOffer {
+    RetiredNearbyTransferOffer {
         transfer_id: [u8; 16],
         name: String,
-        kind: tilo_nearby_service::TransferKind,
+        kind: u8,
         total_bytes: u64,
         content_hash: [u8; 32],
     },
-    /// Receiver checkpoint for an exact offer request. The source verifies
-    /// the prefix before seeking, otherwise it restarts from byte zero.
-    NearbyTransferReady {
+    RetiredNearbyTransferReady {
         request_id: [u8; 16],
         transfer_id: [u8; 16],
         committed_offset: u64,
         prefix_hash: [u8; 32],
     },
-    NearbyTransferCancel {
+    RetiredNearbyTransferCancel {
         request_id: [u8; 16],
         transfer_id: [u8; 16],
     },
-    NearbyTransferRestart {
+    RetiredNearbyTransferRestart {
         request_id: [u8; 16],
         transfer_id: [u8; 16],
     },
-    NearbyTransferResult {
+    RetiredNearbyTransferResult {
         request_id: [u8; 16],
         transfer_id: [u8; 16],
         accepted: bool,
@@ -732,72 +725,14 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::NearbyDrop {
-                file_name,
-                content_hash,
-                bytes,
-            } => {
-                if !tilo_nearby_service::valid_nearby_file_name(file_name)
-                    || bytes.is_empty()
-                    || bytes.len() > MAX_NEARBY_DROP_BYTES
-                    || blake3::hash(bytes).as_bytes() != content_hash
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::NearbyDropResult {
-                request_id,
-                file_name,
-                ..
-            } => {
-                if request_id == &[0; 16] || !tilo_nearby_service::valid_nearby_file_name(file_name)
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::NearbyTransferOffer {
-                transfer_id,
-                name,
-                total_bytes,
-                ..
-            } => {
-                if transfer_id == &[0; 16]
-                    || !tilo_nearby_service::valid_nearby_file_name(name)
-                    || *total_bytes == 0
-                    || *total_bytes > tilo_nearby_service::MAX_TRANSFER_BYTES
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::NearbyTransferReady {
-                request_id,
-                transfer_id,
-                committed_offset,
-                ..
-            } => {
-                if request_id == &[0; 16]
-                    || transfer_id == &[0; 16]
-                    || *committed_offset > tilo_nearby_service::MAX_TRANSFER_BYTES
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::NearbyTransferCancel {
-                request_id,
-                transfer_id,
-            }
-            | PersonalFabricAction::NearbyTransferRestart {
-                request_id,
-                transfer_id,
-            }
-            | PersonalFabricAction::NearbyTransferResult {
-                request_id,
-                transfer_id,
-                ..
-            } => {
-                if request_id == &[0; 16] || transfer_id == &[0; 16] {
-                    return Err(FabricError::InvalidAction);
-                }
+            PersonalFabricAction::RetiredNearbyDrop { .. }
+            | PersonalFabricAction::RetiredNearbyDropResult { .. }
+            | PersonalFabricAction::RetiredNearbyTransferOffer { .. }
+            | PersonalFabricAction::RetiredNearbyTransferReady { .. }
+            | PersonalFabricAction::RetiredNearbyTransferCancel { .. }
+            | PersonalFabricAction::RetiredNearbyTransferRestart { .. }
+            | PersonalFabricAction::RetiredNearbyTransferResult { .. } => {
+                return Err(FabricError::InvalidAction);
             }
             PersonalFabricAction::NotificationProject { notification } => {
                 if !notification.validate_at(now_unix_ms) {
@@ -1189,7 +1124,7 @@ fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
                 && uri.len() <= 8192
                 && !uri.chars().any(char::is_control)
         }
-        MediaSourceLocator::PersonalTransfer {
+        MediaSourceLocator::RetiredPersonalTransfer {
             transfer_id,
             file_name,
         } => {

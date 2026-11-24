@@ -25,7 +25,7 @@ use tilo_resource::Effect as _;
 use tilo_service::{Service, Started, Wake, reading};
 use tilo_session_client::daemon_documents::{DaemonShell, whole};
 use tilo_workspace_service::apps::nearby_send::{
-    AirDrops, HELPER_TIMEOUT, Host, Invoked, NearbySendAction, Reading, TransferState,
+    AirDrops, HELPER_TIMEOUT, Host, NearbySendAction, Reading, TransferState,
 };
 use ui::widget::ScreenshotSendDevice;
 
@@ -343,9 +343,11 @@ impl Inner {
                     .ok_or("the file has no name")?
                     .to_string_lossy()
                     .into_owned();
-                let bytes = read_for(&content, &layout, &workspace, &path)?;
-                let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                let hash = content.keep_under(&workspace, wire::APP, &bytes)?;
+                let path = read_for(&layout, &workspace, &path)?;
+                let size = std::fs::metadata(&path)
+                    .map_err(|error| error.to_string())?
+                    .len();
+                let hash = content.keep_file_under(&workspace, wire::APP, &path)?;
                 let arguments = json!({
                     "items": [{"hash": hash, "name": name, "size": size}],
                     "device": id,
@@ -472,28 +474,27 @@ fn stage(
 ) -> Result<Vec<Value>, String> {
     let mut staged = Vec::with_capacity(items.len());
     for item in items {
-        let path = Path::new(item);
-        let bytes = read_for(content, layout, workspace, path)?;
+        let path = read_for(layout, workspace, Path::new(item))?;
         let name = path
             .file_name()
             .ok_or_else(|| format!("{item} is not a file"))?
             .to_string_lossy()
             .into_owned();
-        let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let hash = content.keep_under(workspace, wire::APP, &bytes)?;
+        let size = std::fs::metadata(&path)
+            .map_err(|error| error.to_string())?
+            .len();
+        let hash = content.keep_file_under(workspace, wire::APP, &path)?;
         staged.push(json!({"hash": hash, "name": name, "size": size}));
     }
     Ok(staged)
 }
 
-/// `path`'s bytes, read only beneath a folder `workspace`'s Files grants it.
+/// `path`, canonical, once a folder `workspace`'s Files grants it: what a send stages.
 fn read_for(
-    content: &RecordContent,
     layout: &Arc<Mutex<Option<Arc<dyn WorkspaceAuthority>>>>,
     workspace: &str,
     path: &Path,
-) -> Result<Vec<u8>, String> {
-    let _ = content;
+) -> Result<PathBuf, String> {
     let grants = grants(layout, workspace);
     let requested =
         std::fs::canonicalize(path).map_err(|error| format!("{}: {error}", path.display()))?;
@@ -512,8 +513,7 @@ fn read_for(
             "that file is not one of the files this workspace shared with Files".to_owned(),
         );
     }
-    let _ = content;
-    std::fs::read(&requested).map_err(|error| format!("{}: {error}", requested.display()))
+    Ok(requested)
 }
 
 /// The folders Files may read in `workspace`, as its sandbox decides it now.

@@ -566,7 +566,7 @@ There are seven ways to add a device:
   no tokens, codes or a join to wait on.
 - **One endpoint per device, in the daemon.** The daemon holds the
   device's transport and state: the link between a person's devices,
-  presence, the media relay (`tilo-live`), the nearby spool, the speaker
+  presence, the media relay (`tilo-live`), nearby send's transfers, the speaker
   group's clock and the resources they write. What needs the seat (capture,
   encoding, input injection, a window's sound, drawing) stays in the session.
   A speaker group plays through the device's audio service, so a headless

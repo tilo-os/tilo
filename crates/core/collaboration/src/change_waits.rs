@@ -1,6 +1,6 @@
-//! The content-free change waits a route follows (Nearby Send, speaker
-//! groups, drives): each answer becomes an event naming nothing, and the app
-//! asks for a fresh view instead of asking on a timer.
+//! The content-free change waits a route follows (speaker groups, drives and
+//! apps): each answer becomes an event naming nothing, and the app asks for a
+//! fresh view instead of asking on a timer.
 
 use runtime_collab::wire::Changes;
 
@@ -14,9 +14,9 @@ use tilo_app_id::apps::SETTINGS as SPEAKER_APP_ID;
 /// certified Files route is answered, so no other app spends a call on it.
 use tilo_app_id::apps::FILE_EXPLORER as DRIVES_APP_ID;
 
-/// Start the waits `app_id`'s route on `channel` may follow. Every route
-/// follows Nearby Send (the broker answers only Files); the speaker groups
-/// and the drive list are followed only by the one app the broker answers.
+/// Start the waits `app_id`'s route on `channel` may follow. The speaker
+/// groups and the drive list are followed only by the one app the broker
+/// answers.
 pub(super) fn follow(
     app_id: &str,
     channel: &runtime_collab::RecordHandle,
@@ -25,11 +25,6 @@ pub(super) fn follow(
     let follow_one = |of, event, what| {
         follow_changes(channel.clone(), inbound_tx.clone(), of, event, what);
     };
-    follow_one(
-        Changes::NearbyTransfers,
-        CollabEvent::NearbyTransferChanged,
-        "Nearby Send",
-    );
     if app_id == SPEAKER_APP_ID {
         follow_one(
             Changes::Speakers,

@@ -98,6 +98,17 @@ pub trait BlobBackend: Send + Sync + 'static {
         chunks: BlobChunks,
         mime: String,
     ) -> BlobFuture<Result<BlobRef, BlobError>>;
+    /// Store a file's content that arrives in pieces, with no document-media
+    /// bound: a transfer carries a file, which is a file record's content and
+    /// not an app's media item. Kept as [`Self::put_stream`] does by default.
+    fn put_file_stream(
+        self: Arc<Self>,
+        scope: BlobScope,
+        chunks: BlobChunks,
+        mime: String,
+    ) -> BlobFuture<Result<BlobRef, BlobError>> {
+        self.put_stream(scope, chunks, mime)
+    }
     fn read(
         self: Arc<Self>,
         scope: BlobScope,
@@ -273,27 +284,22 @@ impl ServeObject for ScopedBlobs {
                     .map_err(|error| error.to_string())?;
                     Ok(FsReply::Blob(stored))
                 }
-                FsRequest::Upload { mime } => {
-                    // The backend consumes the upload as it is written: the store hashes and
-                    // imports it piece by piece, so nothing here holds the whole payload.
-                    let (pieces, chunks) = BlobChunks::channel(UPLOAD_PIECES_IN_FLIGHT);
-                    let stored = self.runtime.spawn(Arc::clone(&self.backend).put_stream(
-                        scope.clone(),
-                        chunks,
-                        mime,
-                    ));
-                    let (ended, writing) = tokio::sync::watch::channel(false);
-                    let upload = Arc::new(Upload {
-                        state: tokio::sync::Mutex::new(Some(Uploading {
-                            pieces,
-                            stored,
-                            len: 0,
-                            writing,
-                        })),
-                        ended,
-                    });
-                    Ok(FsReply::Handle(Some(capabilities.register(upload))))
-                }
+                FsRequest::Upload { mime } => Ok(start_upload(
+                    &self.backend,
+                    &self.runtime,
+                    &capabilities,
+                    scope.clone(),
+                    mime,
+                    false,
+                )),
+                FsRequest::UploadFile { mime } => Ok(start_upload(
+                    &self.backend,
+                    &self.runtime,
+                    &capabilities,
+                    scope.clone(),
+                    mime,
+                    true,
+                )),
                 FsRequest::Get {
                     hash,
                     offset,
@@ -395,6 +401,39 @@ struct Uploading {
     /// Bytes written so far.
     len: u64,
     writing: tokio::sync::watch::Receiver<bool>,
+    /// Whether this upload is a file's content, which the media capability's
+    /// size does not bound.
+    file: bool,
+}
+
+/// Begin an upload of `scope`'s content, media or file: the backend consumes
+/// the pieces as they are written, so nothing here holds the whole payload.
+fn start_upload(
+    backend: &Arc<dyn BlobBackend>,
+    runtime: &tokio::runtime::Handle,
+    capabilities: &Capabilities,
+    scope: BlobScope,
+    mime: String,
+    file: bool,
+) -> FsReply {
+    let (pieces, chunks) = BlobChunks::channel(UPLOAD_PIECES_IN_FLIGHT);
+    let stored = if file {
+        runtime.spawn(Arc::clone(backend).put_file_stream(scope, chunks, mime))
+    } else {
+        runtime.spawn(Arc::clone(backend).put_stream(scope, chunks, mime))
+    };
+    let (ended, writing) = tokio::sync::watch::channel(false);
+    let upload = Arc::new(Upload {
+        state: tokio::sync::Mutex::new(Some(Uploading {
+            pieces,
+            stored,
+            len: 0,
+            writing,
+            file,
+        })),
+        ended,
+    });
+    FsReply::Handle(Some(capabilities.register(upload)))
 }
 
 struct Upload {
@@ -429,7 +468,7 @@ impl ServeObject for Upload {
                         return Err(Self::busy("upload already finished"));
                     };
                     let len = upload.len.saturating_add(bytes.len() as u64);
-                    if bytes.len() > MAX_PUT_CHUNK || len > MAX_BLOB_BYTES {
+                    if bytes.len() > MAX_PUT_CHUNK || (!upload.file && len > MAX_BLOB_BYTES) {
                         *state = None;
                         return Err(BlobError::TooLarge {
                             len,

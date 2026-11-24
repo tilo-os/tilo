@@ -22,7 +22,7 @@ mod catalogue;
 mod routing;
 mod shown_actions;
 use tilo_actions::remote::argument_digest;
-use tilo_app_id::apps::FILE_EXPLORER as NEARBY_TRANSFER_APP_ID;
+use tilo_app_id::apps::FILE_EXPLORER as FILES_APP_ID;
 use tilo_app_id::apps::SETTINGS as SPEAKER_APP_ID;
 use tilo_app_id::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
 mod invocation;

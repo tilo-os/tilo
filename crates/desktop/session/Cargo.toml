@@ -420,7 +420,6 @@ tilo-polkit-agent = { path = "../../os/polkit-agent" }
 tilo-network-secret-agent = { path = "../../os/network-secret-agent" }
 # What a screenshot sent to another device is staged into: the same private
 # spool, and the same resumable transfer, Files uses.
-tilo-nearby-service = { path = "../../session/nearby-service" }
 # The speaker groups and remote audio those devices carry: the session pumps
 # them on the fabric's pass and answers Settings from them.
 tilo-speaker-service = { path = "../../session/speaker-service" }

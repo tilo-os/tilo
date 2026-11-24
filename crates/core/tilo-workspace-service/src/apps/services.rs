@@ -239,7 +239,7 @@ pub trait SpeakerServices: Send + Sync {
 
 /// A wait for the speaker groups' next change, as [`SpeakerServices::changed`]
 /// returns it.
-pub type SpeakerChange = NearbyTransferChange;
+pub type SpeakerChange = ChangeWait;
 
 /// The host's drives, as Files lists them: the broker admits only the certified Files route to
 /// wait on them.
@@ -254,7 +254,7 @@ pub trait DriveServices: Send + Sync {
 
 /// A wait for the drive list's next change, as [`DriveServices::changed`]
 /// returns it.
-pub type DriveChange = NearbyTransferChange;
+pub type DriveChange = ChangeWait;
 
 /// The person's apps, as Files lists them: the broker admits only the certified Files route to
 /// wait on them.
@@ -269,7 +269,7 @@ pub trait ApplicationServices: Send + Sync {
 
 /// A wait for the app list's next change, as
 /// [`ApplicationServices::changed`] returns it.
-pub type ApplicationChange = NearbyTransferChange;
+pub type ApplicationChange = ChangeWait;
 /// The host's Wi-Fi credential continuity across the person's devices: the broker admits only the
 /// certified Settings route. A host without radios installs none.
 pub trait WifiContinuityServices: Send + Sync {
@@ -278,114 +278,6 @@ pub trait WifiContinuityServices: Send + Sync {
         &self,
         command: runtime_collab::WifiContinuityCommand,
     ) -> runtime_collab::WifiContinuityReply;
-}
-
-/// The broker-authenticated connection a Nearby Send command came from: every handle the host
-/// issues is bound to this peer and channel, never to what the caller claims. It crosses to the
-/// seat (`crate::apps::seat`) as the broker made it, and only the broker reaches the seat.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct NearbyTransferRequestContext {
-    peer_id: u64,
-    app_id: String,
-    workspace_id: String,
-    channel: String,
-    /// Sealed admission identity, never supplied by the command JSON. An
-    /// agent is absent here: a local person must answer external trust sheets.
-    person: Option<String>,
-}
-
-impl NearbyTransferRequestContext {
-    pub(crate) fn authenticated(
-        peer_id: u64,
-        app_id: impl Into<String>,
-        workspace_id: impl Into<String>,
-        channel: impl Into<String>,
-        person: Option<String>,
-    ) -> Self {
-        Self {
-            peer_id,
-            app_id: app_id.into(),
-            workspace_id: workspace_id.into(),
-            channel: channel.into(),
-            person,
-        }
-    }
-
-    /// The context of a certified connection, for a test that drives the
-    /// service without the broker admitting a real app on it.
-    #[cfg(feature = "test-support")]
-    #[must_use]
-    pub fn for_test(
-        peer_id: u64,
-        app_id: &str,
-        workspace_id: &str,
-        channel: &str,
-        person: &str,
-    ) -> Self {
-        Self::authenticated(
-            peer_id,
-            app_id,
-            workspace_id,
-            channel,
-            Some(person.to_owned()),
-        )
-    }
-
-    #[must_use]
-    pub const fn peer_id(&self) -> u64 {
-        self.peer_id
-    }
-
-    #[must_use]
-    pub fn app_id(&self) -> &str {
-        &self.app_id
-    }
-
-    #[must_use]
-    pub fn workspace_id(&self) -> &str {
-        &self.workspace_id
-    }
-
-    /// The exact certified channel (app, workspace and record) of the
-    /// connection.
-    #[must_use]
-    pub fn channel(&self) -> &str {
-        &self.channel
-    }
-
-    #[must_use]
-    pub fn person(&self) -> Option<&str> {
-        self.person.as_deref()
-    }
-}
-
-/// The host's Nearby Send between the person's devices: the broker admits only the certified Files
-/// route and drops a connection's handles when it goes away.
-pub trait NearbyTransferServices: Send + Sync {
-    /// Runs one validated Nearby Send command for `context`.
-    fn command(
-        &self,
-        context: &NearbyTransferRequestContext,
-        command: runtime_collab::NearbyTransferCommand,
-    ) -> Result<runtime_collab::NearbyTransferReply, String>;
-
-    /// Forgets every handle issued to `peer_id`.
-    fn disconnect(&self, peer_id: u64);
-
-    /// Resolves once what a [`runtime_collab::NearbyTransferCommand::Snapshot`]
-    /// would show `context` may have changed since `after` (0 at first, then
-    /// the value the previous wait returned), with the value to wait from
-    /// next. It names nothing: the endpoint asks for a snapshot, which the
-    /// host checks as it checks every command. `None` when the host cannot
-    /// say when its state changes; the broker then answers unimplemented.
-    fn changed(
-        &self,
-        context: &NearbyTransferRequestContext,
-        after: u64,
-    ) -> Option<NearbyTransferChange> {
-        let _ = (context, after);
-        None
-    }
 }
 
 /// Original Browser connection, minted only from certified launcher ownership.
@@ -521,10 +413,8 @@ pub type ItemAnswering = std::pin::Pin<
     >,
 >;
 
-/// A wait for Nearby Send's next change, as [`NearbyTransferServices::changed`]
-/// returns it.
-pub type NearbyTransferChange =
-    std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send + 'static>>;
+/// A wait for a host service's next change, as each `changed` method returns it.
+pub type ChangeWait = std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send + 'static>>;
 
 /// A descriptor source sealed to the kernel-attested local process.
 pub(crate) type SelectedDescriptorSource =
@@ -915,7 +805,6 @@ pub struct ProcessServices {
     pub live_activities: Option<Arc<runtime_collab::LiveActivities>>,
     pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
     pub browser_service_sessions: Option<Arc<dyn BrowserServiceSessionServices>>,
-    pub nearby_transfer: Option<Arc<dyn NearbyTransferServices>>,
     pub file_clipboard: Option<Arc<dyn FileClipboardServices>>,
     /// What each application declared it may do on the API; without it none declared anything.
     pub app_action_access: Option<crate::apps::app_actions::AppActionAccessResolver>,
@@ -993,7 +882,6 @@ impl ProcessServices {
         "live_activities",
         "wifi_continuity",
         "browser_service_sessions",
-        "nearby_transfer",
         "file_clipboard",
         "app_action_access",
         "app_resource_kinds",

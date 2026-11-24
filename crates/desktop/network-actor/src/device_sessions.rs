@@ -18,7 +18,7 @@
 //! what each says of a workspace's key group (its frames, access requests
 //! and asks for frames it lacks), and a renewed hello when a certificate or a revocation changes. Every
 //! further bidirectional stream carries one personal fabric frame
-//! ([`fabric_link`]); nearby transfers stream on the same connection.
+//! ([`fabric_link`]).
 //!
 //! The other device is a sibling while the session lasts: what it sends,
 //! and what is sent to it, is bound to the membership epoch the session
@@ -419,7 +419,6 @@ impl ActorState {
     async fn sibling_gone(&mut self, peer: EndpointId, sibling: Sibling) {
         let epoch = sibling.epoch;
         drop(sibling);
-        self.cancel_personal_transfer_route(peer);
         self.tell_siblings(NetEvent::SiblingLeft {
             peer,
             membership_epoch: epoch,

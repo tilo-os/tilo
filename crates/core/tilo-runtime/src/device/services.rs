@@ -1494,7 +1494,11 @@ impl Daemon {
         // Nearby Send between the person's devices: the offers and transfers answered over the
         // action service this daemon already serves, staged and kept on the device's content
         // shelf, and read by their shell as the resource it lists.
-        let nearby = super::nearby::Nearby::new(&workspaces, personal.clone());
+        let nearby = super::nearby::Nearby::new(
+            &workspaces,
+            personal.clone(),
+            identity.place.dir().join("nearby"),
+        );
         nearby.register(&workspaces.copies().providers());
         // The interfaces this computer wakes through are kept there too, and the wakes of the
         // person's devices asked there are answered from here: the packets for a device on one
@@ -2404,7 +2408,6 @@ fn broker_services(
         drives: Some(forwarded.drives),
         applications: Some(forwarded.applications),
         speakers: Some(forwarded.speakers),
-        nearby_transfer: Some(forwarded.nearby_transfer),
         workspace_nodes: Some(forwarded.workspace_nodes),
         // The device's keyboard shortcuts, the person's account credentials and Files'
         // clipboard are the desktop session's.

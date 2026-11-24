@@ -5446,6 +5446,9 @@ async fn dispatch_sdk_request(
             let _ =
                 inbound_tx.send_reply(CollabEvent::ResourceCommandResult { request_id, result });
         }
+        // Nearby Send is the device daemon's own resource; a request from an
+        // earlier build names nothing here and is left unanswered.
+        CollabRequest::RetiredNearbyTransferCommand { .. } => {}
         CollabRequest::OpenWorkspaceControl {
             session_id,
             target_device,

@@ -35,10 +35,10 @@ use crate::apps::collab_app_broker::{
 };
 use crate::apps::services::{
     ApplicationChange, ApplicationServices, BrowserServiceSessionRequestContext,
-    BrowserServiceSessionServices, Caller, DriveChange, DriveServices, FileClipboardContext,
-    FileClipboardServices, ItemAnswering, LaunchPlace, LauncherServices, NearbyTransferChange,
-    NearbyTransferRequestContext, NearbyTransferServices, PublishedResources, Reading,
-    ResourceWatch, SpeakerChange, SpeakerServices, WifiContinuityServices,
+    BrowserServiceSessionServices, Caller, ChangeWait, DriveChange, DriveServices,
+    FileClipboardContext, FileClipboardServices, ItemAnswering, LaunchPlace, LauncherServices,
+    PublishedResources, Reading, ResourceWatch, SpeakerChange, SpeakerServices,
+    WifiContinuityServices,
 };
 use crate::workspaces::providers::Providers;
 
@@ -64,7 +64,6 @@ pub mod calls {
     pub const DRIVES: &str = "drives";
     pub const APPLICATIONS: &str = "applications";
     pub const SPEAKERS: &str = "speakers";
-    pub const NEARBY_TRANSFER: &str = "nearby_transfer";
     pub const PUBLISHED: &str = "published";
     pub const WORKSPACE_NODES: &str = "workspace_nodes";
     pub const SETTINGS: &str = "settings";
@@ -245,7 +244,7 @@ impl Seat {
     /// The next change of what `service` keeps after `after`, as the seat says it: a wait that
     /// is asked again once the seat could not be asked, so a session starting later is followed
     /// too.
-    fn changed(&self, service: &'static str, extra: Value, after: u64) -> NearbyTransferChange {
+    fn changed(&self, service: &'static str, extra: Value, after: u64) -> ChangeWait {
         let seat = self.clone();
         Box::pin(async move {
             let mut arguments = match extra {
@@ -488,44 +487,6 @@ impl SpeakerServices for SeatSpeakers {
 
     fn changed(&self, after: u64) -> Option<SpeakerChange> {
         Some(self.0.changed(calls::SPEAKERS, Value::Null, after))
-    }
-}
-
-/// Nearby Send, over the fabric and the spool the seat keeps.
-pub struct SeatNearbyTransfer(pub Seat);
-
-impl NearbyTransferServices for SeatNearbyTransfer {
-    fn command(
-        &self,
-        context: &NearbyTransferRequestContext,
-        command: runtime_collab::NearbyTransferCommand,
-    ) -> Result<runtime_collab::NearbyTransferReply, String> {
-        self.0
-            .call_blocking(
-                calls::NEARBY_TRANSFER,
-                calls::COMMAND,
-                json!({"context": context, "command": command}),
-            )
-            .and_then(read)
-    }
-
-    fn disconnect(&self, peer_id: u64) {
-        self.0.tell(
-            calls::NEARBY_TRANSFER,
-            calls::DISCONNECT,
-            json!({"peer": peer_id}),
-        );
-    }
-
-    fn changed(
-        &self,
-        context: &NearbyTransferRequestContext,
-        after: u64,
-    ) -> Option<NearbyTransferChange> {
-        Some(
-            self.0
-                .changed(calls::NEARBY_TRANSFER, json!({"context": context}), after),
-        )
     }
 }
 
@@ -1787,7 +1748,6 @@ pub struct Forwarders {
     pub drives: Arc<dyn DriveServices>,
     pub applications: Arc<dyn ApplicationServices>,
     pub speakers: Arc<dyn SpeakerServices>,
-    pub nearby_transfer: Arc<dyn NearbyTransferServices>,
     pub workspace_nodes: Arc<dyn tilo_broker_core::services::WorkspaceNodeActions>,
     pub keyboard_shortcuts: Arc<dyn tilo_broker_core::services::KeyboardShortcutServices>,
     pub browser_service_sessions: Arc<dyn BrowserServiceSessionServices>,
@@ -1810,7 +1770,6 @@ impl Seat {
             drives: Arc::new(SeatDrives(self.clone())),
             applications: Arc::new(SeatApplications(self.clone())),
             speakers: Arc::new(SeatSpeakers(self.clone())),
-            nearby_transfer: Arc::new(SeatNearbyTransfer(self.clone())),
             workspace_nodes: Arc::new(SeatWorkspaceNodes(self.clone())),
             keyboard_shortcuts: Arc::new(SeatKeyboardShortcuts::follow(self.clone())),
             browser_service_sessions: Arc::new(SeatBrowserServiceSessions(self.clone())),

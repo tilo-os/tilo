@@ -158,7 +158,7 @@ tilo-session-client = { path = "../session-client" }
 tilo-mcp = { path = "../tilo-mcp" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-user-identity = { path = "../tilo-user-identity" }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true

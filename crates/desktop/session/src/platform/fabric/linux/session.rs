@@ -19,7 +19,7 @@ use super::live::Live;
 use super::store;
 use super::{
     ClipboardEntry, ContinuityNotificationProjection, DeviceAbout, DeviceKind, FabricCapabilities,
-    FabricLink, MediaSourceLocator, NearbySpoolOffer, PersonDevices, PersonalFabricAction,
+    FabricLink, MediaSourceLocator, PersonDevices, PersonalFabricAction,
     PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink, clock,
 };
 use crate::platform::fabric::{DeviceId, FabricStamp, nonzero};
@@ -282,9 +282,9 @@ impl SessionFabric {
                     }
                 }
             }
-            // A Nearby Send's bytes are the device daemon's, carried over its action service:
-            // none arrive on the session's fabric.
-            PersonalFabricPayload::NearbyTransfer(_frame) => {
+            // A Nearby Send is the device daemon's now: a frame an earlier build wrote arrives
+            // here and is dropped.
+            PersonalFabricPayload::RetiredNearbyTransfer(_frame) => {
                 tracing::debug!(%peer, "a nearby spool frame is dropped");
             }
             // What the person's devices carry for each other of their records belongs to their
@@ -447,29 +447,6 @@ impl FabricLink for SessionFabric {
             .ok_or_else(|| "media continuity is turned off in this device's settings".to_owned())
     }
 
-    fn share_nearby_spool(
-        &self,
-        target: &DeviceId,
-        offer: NearbySpoolOffer,
-    ) -> Result<(), PersonalFabricSendError> {
-        let endpoint = self
-            .live
-            .lock_recover()
-            .endpoint_of(target)
-            .ok_or_else(|| {
-                PersonalFabricSendError::Rejected("that device has no session with this one".into())
-            })?;
-        if !self
-            .outgoing
-            .nearby_spool(self.user_public_key, endpoint, offer.checkpoint, offer.file)
-        {
-            return Err(PersonalFabricSendError::Rejected(
-                "this session's transport stopped".into(),
-            ));
-        }
-        Ok(())
-    }
-
     fn notifications_permitted(&self) -> bool {
         self.continuity.notifications_permitted()
     }
@@ -530,16 +507,15 @@ impl crate::Session {
             // part in no fabric that could carry them.
             | PersonalFabricAction::Input { .. }
             | PersonalFabricAction::DragCarried { .. }
-            | PersonalFabricAction::NearbyDrop { .. }
-            | PersonalFabricAction::NearbyDropResult { .. }
-            // A Nearby Send reaches no session here: the client that carries one hands its offer,
-            // checkpoint, withdrawal and ending to its own engine, so what is left is a session
-            // running none.
-            | PersonalFabricAction::NearbyTransferOffer { .. }
-            | PersonalFabricAction::NearbyTransferReady { .. }
-            | PersonalFabricAction::NearbyTransferCancel { .. }
-            | PersonalFabricAction::NearbyTransferRestart { .. }
-            | PersonalFabricAction::NearbyTransferResult { .. }
+            // A Nearby Send is the device daemon's, carried over its action service: these are
+            // frames an earlier build wrote, and none reaches a session.
+            | PersonalFabricAction::RetiredNearbyDrop { .. }
+            | PersonalFabricAction::RetiredNearbyDropResult { .. }
+            | PersonalFabricAction::RetiredNearbyTransferOffer { .. }
+            | PersonalFabricAction::RetiredNearbyTransferReady { .. }
+            | PersonalFabricAction::RetiredNearbyTransferCancel { .. }
+            | PersonalFabricAction::RetiredNearbyTransferRestart { .. }
+            | PersonalFabricAction::RetiredNearbyTransferResult { .. }
             | PersonalFabricAction::GamepadForwardRequest { .. }
             | PersonalFabricAction::GamepadForwardGrant { .. }
             | PersonalFabricAction::GamepadForwardEvent { .. }
@@ -635,7 +611,7 @@ impl crate::Session {
             }
             // What arrives that way is held in the receiving shell's verified transfer store, which
             // this session has none of, so there is nothing here the card could resume.
-            MediaSourceLocator::PersonalTransfer { .. } => return,
+            MediaSourceLocator::RetiredPersonalTransfer { .. } => return,
         };
         let label = fabric.devices().get(&envelope.source).map_or_else(
             || envelope.source.as_str().to_owned(),

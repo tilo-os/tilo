@@ -163,14 +163,13 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         hash: String,
         state: tilo_content::ContentState,
     },
-    /// What a Nearby Send snapshot would show this app may have changed: a
-    /// device came or went, an offer arrived, a transfer moved on. It names
-    /// nothing; the app asks for a fresh
-    /// [`NearbyTransferCommand::Snapshot`](crate::NearbyTransferCommand::Snapshot)
-    /// instead of asking on a timer. The first arrives once the route joins,
-    /// so it also starts the app's view. Only the certified Files route
-    /// receives these.
-    NearbyTransferChanged,
+    /// over its shell link. Kept in its place so an event a host wrote still
+    /// reads as itself.
+    RetiredNearbyTransferCommandResult {
+        request_id: u64,
+    },
+    /// Retired with the results above.
+    RetiredNearbyTransferChanged,
     /// What a speaker snapshot would show may have changed: a device came or
     /// went, a member answered, a calibration moved on. It names nothing;
     /// Settings asks for a fresh

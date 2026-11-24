@@ -444,7 +444,6 @@ members = [
     "crates/os/connectivity-service",
     "crates/os/system-service",
     "crates/integrations/messaging-service",
-    "crates/session/nearby-service",
     "crates/session/speaker-service",
     "crates/desktop/tray",
     "crates/desktop/wayland-ext",

@@ -13,7 +13,7 @@ pub(super) fn app_change(
     route_app: &str,
     after: u64,
 ) -> Result<crate::apps::services::ApplicationChange, BrokerError> {
-    if route_app != super::NEARBY_TRANSFER_APP_ID {
+    if route_app != super::FILES_APP_ID {
         return Err(BrokerError::failed(
             "the person's apps are listed only to the certified Files application".into(),
         ));
@@ -57,8 +57,8 @@ mod tests {
             applications: Some(service.clone()),
             ..Default::default()
         };
-        let change = app_change(&services, super::super::NEARBY_TRANSFER_APP_ID, 4)
-            .expect("Files waits on its route");
+        let change =
+            app_change(&services, super::super::FILES_APP_ID, 4).expect("Files waits on its route");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("runtime");
@@ -86,7 +86,7 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            let unannounced = app_change(&services, super::super::NEARBY_TRANSFER_APP_ID, 0)
+            let unannounced = app_change(&services, super::super::FILES_APP_ID, 0)
                 .err()
                 .expect("a host that cannot announce changes says so");
             assert_eq!(

@@ -197,6 +197,41 @@ impl DocumentMedia {
     where
         S: Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
     {
+        self.store_stream_within(scope, pieces, Some(MAX_BLOB_BYTES))
+            .await
+    }
+
+    /// Store content that arrives in pieces for `scope` with no document-media
+    /// bound: a file's bytes, which a transfer carries whole onto disk before
+    /// they are kept, and which belong in a file record rather than in the
+    /// media capability's size. Streamed and referenced exactly as
+    /// [`Self::store_stream`] does, and never counted against the media
+    /// store's bound.
+    ///
+    /// # Errors
+    ///
+    /// A refusal when a piece is an error (the upload was abandoned) or the
+    /// store fails. Nothing is stored then.
+    pub async fn store_file_stream<S>(
+        &self,
+        scope: &BlobScope,
+        pieces: S,
+    ) -> Result<(Hash, u64), BlobError>
+    where
+        S: Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
+    {
+        self.store_stream_within(scope, pieces, None).await
+    }
+
+    async fn store_stream_within<S>(
+        &self,
+        scope: &BlobScope,
+        pieces: S,
+        limit: Option<u64>,
+    ) -> Result<(Hash, u64), BlobError>
+    where
+        S: Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
+    {
         let seen = Arc::new(AtomicU64::new(0));
         let counted = Arc::clone(&seen);
         let limited = pieces.map(move |piece| {
@@ -204,7 +239,7 @@ impl DocumentMedia {
             let len = counted
                 .fetch_add(piece.len() as u64, Ordering::Relaxed)
                 .saturating_add(piece.len() as u64);
-            if len > MAX_BLOB_BYTES {
+            if limit.is_some_and(|limit| len > limit) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "document media above the size limit",
@@ -216,13 +251,9 @@ impl DocumentMedia {
             Ok(stored) => stored,
             Err(error) => {
                 let len = seen.load(Ordering::Relaxed);
-                return Err(if len > MAX_BLOB_BYTES {
-                    BlobError::TooLarge {
-                        len,
-                        limit: MAX_BLOB_BYTES,
-                    }
-                } else {
-                    BlobError::Refused(error.to_string())
+                return Err(match limit {
+                    Some(limit) if len > limit => BlobError::TooLarge { len, limit },
+                    _ => BlobError::Refused(error.to_string()),
                 });
             }
         };
@@ -303,6 +334,27 @@ impl BlobBackend for DocumentMedia {
                     .map(|piece| piece.map(|piece| piece.map(Bytes::from)))
             });
             let (hash, len) = self.store_stream(&scope, pieces).await?;
+            Ok(BlobRef {
+                hash: hash.to_hex(),
+                len,
+                mime,
+            })
+        })
+    }
+
+    fn put_file_stream(
+        self: Arc<Self>,
+        scope: BlobScope,
+        mut chunks: BlobChunks,
+        mime: String,
+    ) -> BlobFuture<Result<BlobRef, BlobError>> {
+        Box::pin(async move {
+            let pieces = futures_util::stream::poll_fn(move |cx| {
+                chunks
+                    .poll_next(cx)
+                    .map(|piece| piece.map(|piece| piece.map(Bytes::from)))
+            });
+            let (hash, len) = self.store_file_stream(&scope, pieces).await?;
             Ok(BlobRef {
                 hash: hash.to_hex(),
                 len,

@@ -260,98 +260,94 @@ impl ChannelSession {
             let reply = reply.map_err(failed)?;
             Ok(Box::pin(std::future::ready(Ok(reply))))
         };
-        let answer =
-            match service {
-                Service::AudioOutput => channel.audio_output_dispatch(body).map_err(failed).map(
-                    |snapshot| -> Answering {
+        let answer = match service {
+            Service::AudioOutput => {
+                channel
+                    .audio_output_dispatch(body)
+                    .map_err(failed)
+                    .map(|snapshot| -> Answering {
                         Box::pin(async move {
                             serde_json::to_vec(&snapshot.await?)
                                 .map_err(|_| "audio output reply encoding failed".to_owned())
                         })
-                    },
-                ),
-                Service::NativeMedia => channel.native_media_dispatch(body).map_err(failed).map(
-                    |snapshot| -> Answering {
+                    })
+            }
+            Service::NativeMedia => {
+                channel
+                    .native_media_dispatch(body)
+                    .map_err(failed)
+                    .map(|snapshot| -> Answering {
                         Box::pin(async move { snapshot.await?.encode().map_err(Into::into) })
-                    },
-                ),
-                Service::Realtime => {
-                    ready(channel.realtime_dispatch(&channel.route().app_id, body))
-                }
-                Service::NearbyTransfer => channel
-                    .nearby_transfer_dispatch(&channel.route().app_id, body)
+                    })
+            }
+            Service::Realtime => ready(channel.realtime_dispatch(&channel.route().app_id, body)),
+            Service::RetiredNearbyTransfer => Err("Nearby Send is the device daemon's".to_owned()),
+            // The secret answer moves onto the wire without a copy left
+            // behind. An item's use is waited for here, by the answer, and
+            // never by the dispatch that started it.
+            Service::BrowserServiceSession => channel
+                .browser_service_session_dispatch(body)
+                .map_err(failed)
+                .map(|reply| -> Answering {
+                    Box::pin(async move {
+                        reply
+                            .await
+                            .map(|mut reply| std::mem::take(&mut *reply))
+                            .map_err(Refusal::refusal)
+                    })
+                }),
+            Service::WifiContinuity => channel
+                .wifi_continuity_dispatch(&channel.route().app_id, body)
+                .map_err(failed)
+                .map(|reply| -> Answering {
+                    Box::pin(async move { reply.await.map_err(Refusal::refusal) })
+                }),
+            Service::Speaker => {
+                channel
+                    .speaker_dispatch(body)
                     .map_err(failed)
                     .map(|reply| -> Answering {
                         Box::pin(async move { reply.await.map_err(Refusal::refusal) })
-                    }),
-                // The secret answer moves onto the wire without a copy left
-                // behind. An item's use is waited for here, by the answer, and
-                // never by the dispatch that started it.
-                Service::BrowserServiceSession => channel
-                    .browser_service_session_dispatch(body)
+                    })
+            }
+            Service::CommittedDocument => runtime_collab::committed_document::Request::decode(body)
+                .map_err(Into::into)
+                .map(|request| -> Answering {
+                    Box::pin(async move {
+                        channel
+                            .committed_document_answer(request)
+                            .await?
+                            .encode()
+                            .map_err(Into::into)
+                    })
+                }),
+            Service::LocalFile => channel
+                .local_file_dispatch(body, on_behalf_of)
+                .map_err(failed)
+                .map(|reply| -> Answering {
+                    Box::pin(async move { reply.await.map_err(Refusal::refusal) })
+                }),
+            Service::ApprovedCheck => runtime_collab::approved_checks::Request::decode(body)
+                .and_then(|request| approved_checks::context(&channel, request))
+                .map(|context| -> Answering { Box::pin(approved_checks::execute(context)) }),
+            Service::RemoteAction => {
+                let reply = channel.remote_action_dispatch(body);
+                Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
+            }
+            Service::Resources => {
+                // Keep the continuation reference so the broker can refuse unsupported writes.
+                channel
+                    .resources_dispatch(body, on_behalf_of, &self.record_runs)
                     .map_err(failed)
                     .map(|reply| -> Answering {
                         Box::pin(async move {
-                            reply
-                                .await
-                                .map(|mut reply| std::mem::take(&mut *reply))
-                                .map_err(Refusal::refusal)
+                            let reply = reply.await?;
+                            serde_json::to_vec(&reply)
+                                .map_err(|_| "the store's answer cannot be encoded".to_owned())
                         })
-                    }),
-                Service::WifiContinuity => channel
-                    .wifi_continuity_dispatch(&channel.route().app_id, body)
-                    .map_err(failed)
-                    .map(|reply| -> Answering {
-                        Box::pin(async move { reply.await.map_err(Refusal::refusal) })
-                    }),
-                Service::Speaker => {
-                    channel
-                        .speaker_dispatch(body)
-                        .map_err(failed)
-                        .map(|reply| -> Answering {
-                            Box::pin(async move { reply.await.map_err(Refusal::refusal) })
-                        })
-                }
-                Service::CommittedDocument => {
-                    runtime_collab::committed_document::Request::decode(body)
-                        .map_err(Into::into)
-                        .map(|request| -> Answering {
-                            Box::pin(async move {
-                                channel
-                                    .committed_document_answer(request)
-                                    .await?
-                                    .encode()
-                                    .map_err(Into::into)
-                            })
-                        })
-                }
-                Service::LocalFile => channel
-                    .local_file_dispatch(body, on_behalf_of)
-                    .map_err(failed)
-                    .map(|reply| -> Answering {
-                        Box::pin(async move { reply.await.map_err(Refusal::refusal) })
-                    }),
-                Service::ApprovedCheck => runtime_collab::approved_checks::Request::decode(body)
-                    .and_then(|request| approved_checks::context(&channel, request))
-                    .map(|context| -> Answering { Box::pin(approved_checks::execute(context)) }),
-                Service::RemoteAction => {
-                    let reply = channel.remote_action_dispatch(body);
-                    Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
-                }
-                Service::Resources => {
-                    // Keep the continuation reference so the broker can refuse unsupported writes.
-                    channel
-                        .resources_dispatch(body, on_behalf_of, &self.record_runs)
-                        .map_err(failed)
-                        .map(|reply| -> Answering {
-                            Box::pin(async move {
-                                let reply = reply.await?;
-                                serde_json::to_vec(&reply)
-                                    .map_err(|_| "the store's answer cannot be encoded".to_owned())
-                            })
-                        })
-                }
-            };
+                    })
+            }
+        };
         Box::pin(async move { Ok(Reply::Answer(answer?.await?)) })
     }
 }
@@ -606,7 +602,7 @@ impl JoinedChannel {
         &self,
         of: Changes,
         after: u64,
-    ) -> Result<crate::apps::services::NearbyTransferChange, BrokerError> {
+    ) -> Result<crate::apps::services::ChangeWait, BrokerError> {
         let route = self.route();
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
@@ -615,19 +611,9 @@ impl JoinedChannel {
             Changes::Speakers => speaker_change(services, &route.app_id, after),
             Changes::Drives => drive_changes::drive_change(services, &route.app_id, after),
             Changes::Applications => app_changes::app_change(services, &route.app_id, after),
-            Changes::NearbyTransfers => {
-                let context = crate::apps::services::NearbyTransferRequestContext::authenticated(
-                    self.connection_id,
-                    route.app_id.clone(),
-                    route.cluster_id.clone(),
-                    route.channel_key(),
-                    self.verified_identity
-                        .agent_id
-                        .is_none()
-                        .then(|| self.verified_identity.actor_key.clone()),
-                );
-                nearby_transfer_change(services, &context, after)
-            }
+            Changes::RetiredNearbyTransfers => Err(BrokerError::unimplemented(
+                "nearby transfers are the device daemon's".to_owned(),
+            )),
             Changes::GroupKeys => {
                 let route = self.resource_route();
                 if route.app_id.is_empty() || route.cluster_id.is_empty() {
@@ -668,38 +654,6 @@ impl JoinedChannel {
             ));
         }
         Ok(reply)
-    }
-
-    /// Answer a nearby-transfer command `claimed_app` sent, JSON both ways.
-    pub(super) fn nearby_transfer_dispatch(
-        &self,
-        claimed_app: &str,
-        bytes: &[u8],
-    ) -> Result<impl Future<Output = Result<Vec<u8>, BrokerError>> + use<>, BrokerError> {
-        let route = self.route();
-        self.state
-            .revalidate_admission(&route, &self.verified_identity)?;
-        let context = crate::apps::services::NearbyTransferRequestContext::authenticated(
-            self.connection_id,
-            route.app_id.clone(),
-            route.cluster_id.clone(),
-            route.channel_key(),
-            self.verified_identity
-                .agent_id
-                .is_none()
-                .then(|| self.verified_identity.actor_key.clone()),
-        );
-        let services = self.state.services.clone();
-        let (claimed_app, command) = (claimed_app.to_owned(), bytes.to_vec());
-        Ok(async move {
-            // The spool and the fabric may be the seat's to ask: off the broker's event loop,
-            // which carries that ask.
-            tokio::task::spawn_blocking(move || {
-                delegate_nearby_transfer_command(&services, &context, &claimed_app, &command)
-            })
-            .await
-            .map_err(|error| BrokerError::failed(error.to_string()))?
-        })
     }
 
     /// Answer a Wi-Fi continuity command `claimed_app` sent, JSON both

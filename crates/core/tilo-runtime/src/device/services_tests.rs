@@ -1320,7 +1320,8 @@ fn the_desktop_keeps_what_its_next_session_opens_on_as_the_devices_records() {
     );
     shown.set(json!({ "active": "front" }));
     shown.set(json!({ "active": "moved" }));
-    first.record("so.tilo.session-file-paste")
+    first
+        .record("so.tilo.session-file-paste")
         .set_now(json!({ "version": 1 }))
         .expect("a receipt is kept before the paste goes on");
     first.flush();

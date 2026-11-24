@@ -519,10 +519,7 @@ impl App {
 
     /// Apply a change of the workspace index, the record of the unqualified
     /// workspace route.
-    fn apply_workspace_index_mutation(
-        &mut self,
-        mutation: collab_types::DocumentMutation,
-    ) -> bool {
+    fn apply_workspace_index_mutation(&mut self, mutation: collab_types::DocumentMutation) -> bool {
         let Some(workspace) = self.persistence.workspace_index.as_mut() else {
             return false;
         };
@@ -866,7 +863,8 @@ impl App {
     fn collab_event_updates_app_presentation(event: &CollabEvent) -> bool {
         !matches!(
             event,
-            CollabEvent::NearbyTransferChanged
+            CollabEvent::RetiredNearbyTransferCommandResult { .. }
+                | CollabEvent::RetiredNearbyTransferChanged
                 | CollabEvent::SpeakersChanged
                 | CollabEvent::DrivesChanged
                 | CollabEvent::ApplicationsChanged
@@ -960,7 +958,8 @@ impl App {
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::ResourceCommandResult { .. }
             | CollabEvent::ActionVerdicts { .. }
-            | CollabEvent::NearbyTransferChanged
+            | CollabEvent::RetiredNearbyTransferCommandResult { .. }
+            | CollabEvent::RetiredNearbyTransferChanged
             | CollabEvent::SpeakersChanged
             | CollabEvent::DrivesChanged
             | CollabEvent::ApplicationsChanged

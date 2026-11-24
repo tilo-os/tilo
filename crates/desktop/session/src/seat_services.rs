@@ -426,7 +426,6 @@ impl SeatProvider {
                     after,
                 )
             }
-            (calls::NEARBY_TRANSFER, _) => unserved("Nearby Send"),
             (calls::PUBLISHED, call) => self.published(call, &arguments),
             (calls::WORKSPACE_NODES, calls::ASK) => {
                 let Some(nodes) = parts.workspace_nodes.clone() else {

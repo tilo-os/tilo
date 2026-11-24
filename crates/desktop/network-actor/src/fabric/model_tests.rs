@@ -55,7 +55,7 @@ fn media_handoff_and_media_actions_are_capability_and_locator_checked() {
             MediaSourceLocator::AppResource {
                 uri: "1music://track/foreign".into(),
             },
-            MediaSourceLocator::PersonalTransfer {
+            MediaSourceLocator::RetiredPersonalTransfer {
                 transfer_id: [0; 16],
                 file_name: "../foreign.mp4".into(),
             },
@@ -190,7 +190,7 @@ fn window_views_are_bounded_distinct_and_sized() {
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn clipboard_and_nearby_payloads_are_bounded_and_tamper_checked() {
+fn clipboard_payloads_are_bounded_and_tamper_checked() {
     fn clipboard_is_deduplicated_and_bounded() {
         let mut history = ClipboardHistory::default();
         for n in 0..=MAX_CLIPBOARD_ITEMS {
@@ -229,80 +229,8 @@ fn clipboard_and_nearby_payloads_are_bounded_and_tamper_checked() {
         );
     }
 
-    fn nearby_transfer_actions_bind_nonzero_ids_and_bounded_manifests() {
-        let source = id("source");
-        let target = id("target");
-        let envelope = |action| PersonalFabricActionEnvelope {
-            request_id: [3; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action,
-        };
-        assert_eq!(
-            envelope(PersonalFabricAction::NearbyTransferOffer {
-                transfer_id: [4; 16],
-                name: "Photos".into(),
-                kind: tilo_nearby_service::TransferKind::FolderArchive,
-                total_bytes: 100,
-                content_hash: [5; 32],
-            })
-            .validate_at(&source, &target, 10_100),
-            Ok(())
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::NearbyTransferReady {
-                request_id: [0; 16],
-                transfer_id: [4; 16],
-                committed_offset: 0,
-                prefix_hash: *blake3::hash(&[]).as_bytes(),
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-        assert_eq!(
-            envelope(PersonalFabricAction::NearbyTransferOffer {
-                transfer_id: [4; 16],
-                name: "../escape".into(),
-                kind: tilo_nearby_service::TransferKind::File,
-                total_bytes: 100,
-                content_hash: [5; 32],
-            })
-            .validate_at(&source, &target, 10_100),
-            Err(FabricError::InvalidAction)
-        );
-    }
-
-    fn nearby_drop_rejects_paths_tampering_and_oversize_payloads() {
-        let source = id("source");
-        let target = id("target");
-        for (name, bytes, hash) in [
-            ("../secret", b"ok".to_vec(), *blake3::hash(b"ok").as_bytes()),
-            ("note.txt", b"changed".to_vec(), [0; 32]),
-            ("note.txt", vec![1; MAX_NEARBY_DROP_BYTES + 1], [0; 32]),
-        ] {
-            let envelope = PersonalFabricActionEnvelope {
-                request_id: [1; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10,
-                action: PersonalFabricAction::NearbyDrop {
-                    file_name: name.into(),
-                    content_hash: hash,
-                    bytes,
-                },
-            };
-            assert_eq!(
-                envelope.validate_at(&source, &target, 10),
-                Err(FabricError::InvalidAction)
-            );
-        }
-    }
-
     clipboard_is_deduplicated_and_bounded();
     clipboard_hash_tampering_is_rejected();
-    nearby_transfer_actions_bind_nonzero_ids_and_bounded_manifests();
-    nearby_drop_rejects_paths_tampering_and_oversize_payloads();
 }
 
 #[test]
@@ -468,7 +396,7 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
         let certify =
             postcard::to_allocvec(&PersonalFabricAction::CertifyAsk { ask: vec![1] }).unwrap();
         assert_eq!(certify.first(), Some(&41));
-        let nearby = postcard::to_allocvec(&PersonalFabricAction::NearbyDrop {
+        let nearby = postcard::to_allocvec(&PersonalFabricAction::RetiredNearbyDrop {
             file_name: "note.txt".into(),
             content_hash: *blake3::hash(b"hello").as_bytes(),
             bytes: b"hello".to_vec(),

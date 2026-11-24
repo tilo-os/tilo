@@ -18220,30 +18220,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-nearby-service"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
- "hex",
- "host-fs",
- "iroh",
- "libc",
- "serde",
- "serde_json",
- "tar",
- "tempfile",
- "tilo-files",
- "tilo-network-actor",
- "tilo-test-env",
- "tilo-ui",
- "tokio",
- "walkdir",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-neighbour-wire"
 version = "0.1.0"
 dependencies = [
@@ -18363,7 +18339,6 @@ dependencies = [
  "tilo-identity",
  "tilo-lock",
  "tilo-media",
- "tilo-nearby-service",
  "tilo-neighbour-wire",
  "tilo-peer-state",
  "tilo-rt",
@@ -20132,7 +20107,6 @@ dependencies = [
  "tilo-media-controls",
  "tilo-model-client",
  "tilo-native-media",
- "tilo-nearby-service",
  "tilo-neighbour-wire",
  "tilo-network-actor",
  "tilo-network-secret-agent",
@@ -27272,7 +27246,6 @@ dependencies = [
  "tilo-model-gateway",
  "tilo-model-guest",
  "tilo-native-media",
- "tilo-nearby-service",
  "tilo-neighbour-wire",
  "tilo-net",
  "tilo-net-answers",

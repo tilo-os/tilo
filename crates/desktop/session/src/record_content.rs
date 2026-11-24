@@ -182,6 +182,29 @@ impl RecordContent {
         .map(|kept| kept.hash)
     }
 
+    /// Keep the file at `path` under `app`'s scope in `workspace`, streamed: a
+    /// file the person hands to one of their other devices, which is not held
+    /// whole in memory and is not bounded by the media capability's size.
+    /// Answers the address the bytes are kept under.
+    ///
+    /// # Errors
+    /// The file cannot be read, the workspace and app name no store, or the
+    /// store refused the bytes.
+    pub(crate) fn keep_file_under(
+        &self,
+        workspace: &str,
+        app: &str,
+        path: &std::path::Path,
+    ) -> Result<String, String> {
+        let owned = path.to_owned();
+        self.on(workspace, app, |scoped| {
+            let mut file =
+                std::fs::File::open(&owned).map_err(|error| BlobError::Input(error.to_string()))?;
+            scoped.put_file(&mut file)
+        })
+        .map(|kept| kept.hash)
+    }
+
     pub(crate) fn keep(&self, workspace: &str, bytes: &[u8]) -> Result<String, String> {
         self.keep_in(workspace, PUT_SCOPE, bytes)
     }

@@ -76,8 +76,9 @@ pub const RESULT: &str = "result";
 
 /// The files one offer carries at most, as the shell's host already bounds a send.
 const MAX_ITEMS: usize = 32;
-/// The most of a content one piece carries.
-const PIECE_BYTES: usize = 256 * 1024;
+/// The most of a content one piece carries: the action protocol's own content bound, which hex
+/// doubles into the one reply frame that carries a piece.
+const PIECE_BYTES: usize = tilo_actions::remote::MAX_CONTENT_FRAME_BYTES;
 /// The folder a received file lands in unless the person chose another.
 const DEFAULT_FOLDER: &str = "Downloads";
 /// How many transfers a device remembers before the oldest ended one goes.
@@ -92,6 +93,9 @@ struct Inner {
     workspaces: Arc<ServiceWorkspaces>,
     /// The person's devices, as their own workspace lists them: where an offer can go.
     personal: PersonResources,
+    /// Where a transfer's bytes wait on this device until they are checked and
+    /// kept: a file far larger than one read holds.
+    scratch: std::path::PathBuf,
     state: Mutex<State>,
     /// Moves with every change of the state: what a reading follows.
     changed: tokio::sync::watch::Sender<u64>,
@@ -156,12 +160,18 @@ impl Transfer {
 
 impl Nearby {
     /// The offers and transfers of this device, moved over the content shelf `workspaces` keeps.
-    pub(crate) fn new(workspaces: &Arc<ServiceWorkspaces>, personal: PersonResources) -> Arc<Self> {
+    pub(crate) fn new(
+        workspaces: &Arc<ServiceWorkspaces>,
+        personal: PersonResources,
+        scratch: std::path::PathBuf,
+    ) -> Arc<Self> {
+        let _ = std::fs::create_dir_all(&scratch);
         let (changed, _) = tokio::sync::watch::channel(0);
         Arc::new(Self {
             inner: Arc::new(Inner {
                 workspaces: Arc::clone(workspaces),
                 personal,
+                scratch,
                 state: Mutex::new(State::default()),
                 changed,
             }),
@@ -324,14 +334,12 @@ impl Nearby {
             if !valid_hash(&item.hash) {
                 return Err("an offered file's content address is not one".to_owned());
             }
-            let Some(bytes) = shelf.read(&scope, &item.hash) else {
+            let Some(size) = shelf.size(&scope, &item.hash) else {
                 return Err("an offered file is not on this device's shelf".to_owned());
             };
-            let size = if item.size == 0 {
-                u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            } else {
-                item.size
-            };
+            if item.size != 0 && item.size != size {
+                return Err("an offered file's size is not what the shelf keeps".to_owned());
+            }
             carried.push((item, size));
         }
         for (item, size) in carried {
@@ -496,14 +504,20 @@ impl Nearby {
                     .get(&id)
                     .map_or_else(Arc::default, |found| Arc::clone(&found.stopped)),
             );
-            let kept = fetch(&nearby, id, peer, &workspace, &hash, total, &stopped).await;
-            let settled = match kept {
+            let settled = match fetch(&nearby, id, peer, &workspace, &hash, total, &stopped).await {
                 Err(reason) => {
                     tracing::warn!(%reason, "a nearby file was not received");
                     Err(())
                 }
-                Ok(bytes) => match nearby.workspaces.content_shelf() {
-                    Some(shelf) => match shelf.keep(&Nearby::scope(&workspace), &hash, &bytes) {
+                Ok(staged) => {
+                    let kept = match nearby.workspaces.content_shelf() {
+                        Some(shelf) => {
+                            shelf.keep_file(&Nearby::scope(&workspace), &hash, &staged, total)
+                        }
+                        None => Err("this device keeps no content".to_owned()),
+                    };
+                    let _ = std::fs::remove_file(&staged);
+                    match kept {
                         Err(reason) => {
                             tracing::warn!(%reason, "a received file was not kept");
                             Err(())
@@ -511,9 +525,8 @@ impl Nearby {
                         Ok(()) => {
                             Inner::install(&nearby, &workspace, &hash, &name, &chosen, total).await
                         }
-                    },
-                    None => Err(()),
-                },
+                    }
+                }
             };
             let (state, ok) = match settled {
                 Ok(()) => (TransferState::Done, true),
@@ -596,34 +609,39 @@ impl Nearby {
             .unwrap_or_else(|| DEFAULT_FOLDER.to_owned());
         tilo_rt::app().spawn(async move {
             if incoming {
-                let kept = fetch(&inner, id, peer, &workspace, &hash, total, &stopped).await;
-                let settled = match kept {
+                let settled = match fetch(&inner, id, peer, &workspace, &hash, total, &stopped)
+                    .await
+                {
                     Err(reason) => {
                         tracing::warn!(%reason, "a nearby file was not received again");
                         Err(())
                     }
-                    Ok(bytes) => match inner.workspaces.content_shelf() {
-                        Some(shelf) => {
-                            match shelf.keep(&Nearby::scope(&workspace), &hash, &bytes) {
-                                Err(reason) => {
-                                    tracing::warn!(%reason, "a received file was not kept");
-                                    Err(())
-                                }
-                                Ok(()) => {
-                                    Inner::install(
-                                        &inner,
-                                        &workspace,
-                                        &hash,
-                                        &name,
-                                        &destination,
-                                        total,
-                                    )
-                                    .await
-                                }
+                    Ok(staged) => {
+                        let kept = match inner.workspaces.content_shelf() {
+                            Some(shelf) => {
+                                shelf.keep_file(&Nearby::scope(&workspace), &hash, &staged, total)
+                            }
+                            None => Err("this device keeps no content".to_owned()),
+                        };
+                        let _ = std::fs::remove_file(&staged);
+                        match kept {
+                            Err(reason) => {
+                                tracing::warn!(%reason, "a received file was not kept");
+                                Err(())
+                            }
+                            Ok(()) => {
+                                Inner::install(
+                                    &inner,
+                                    &workspace,
+                                    &hash,
+                                    &name,
+                                    &destination,
+                                    total,
+                                )
+                                .await
                             }
                         }
-                        None => Err(()),
-                    },
+                    }
                 };
                 let state = if settled.is_ok() {
                     TransferState::Done
@@ -675,17 +693,16 @@ impl Nearby {
             .workspaces
             .content_shelf()
             .ok_or("this device keeps no content")?;
-        let bytes = shelf
-            .read(&Self::scope(&workspace), &hash)
+        let scope = Self::scope(&workspace);
+        let total = shelf
+            .size(&scope, &hash)
             .ok_or("this device does not keep that content")?;
-        let total = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let start = usize::try_from(request.offset)
-            .unwrap_or(usize::MAX)
-            .min(bytes.len());
-        let end = start
-            .saturating_add(usize::try_from(request.length).unwrap_or(0))
-            .min(bytes.len());
-        let piece = bytes.get(start..end).unwrap_or_default();
+        let start = request.offset.min(total);
+        let len = request.length.min(total.saturating_sub(start));
+        let len = usize::try_from(len).unwrap_or(usize::MAX);
+        let piece = shelf
+            .read_range(&scope, &hash, start, len)
+            .ok_or("this device does not keep that content")?;
         Ok(ActionOutput {
             value: Some(json!({
                 "size": total,
@@ -994,8 +1011,10 @@ async fn call(
     }
 }
 
-/// Ask `peer` for `hash`'s content a piece at a time, and answer it whole once it hashes to the
-/// address offered.
+/// Ask `peer` for `hash`'s content a piece at a time and write it to a file of this
+/// device's own, answering that file once it hashes to the address offered: a file far
+/// larger than one read holds never waits in memory, and its bytes land on the shelf from
+/// there.
 async fn fetch(
     inner: &Arc<Inner>,
     transfer: [u8; 16],
@@ -1004,54 +1023,72 @@ async fn fetch(
     hash: &str,
     total: u64,
     stopped: &AtomicBool,
-) -> Result<Vec<u8>, String> {
-    let mut bytes: Vec<u8> = Vec::new();
-    while u64::try_from(bytes.len()).unwrap_or(u64::MAX) < total {
-        if stopped.load(Ordering::Relaxed) {
-            return Err("stopped".to_owned());
-        }
-        let offset = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let answer = call(
-            inner,
-            peer,
-            workspace,
-            CONTENT,
-            json!({
-                "transfer": hex(&transfer),
-                "offset": offset,
-                "length": PIECE_BYTES,
-            }),
-        )
-        .await?;
-        let Some(value) = answer else {
-            return Err("the other device answered no piece".to_owned());
-        };
-        let piece = value
-            .get("bytes")
-            .and_then(Value::as_str)
-            .ok_or("the other device answered no bytes")?;
-        let piece = hex::decode(piece).map_err(|_| "a piece is not hex".to_owned())?;
-        if piece.is_empty() {
-            return Err("the other device answered an empty piece".to_owned());
-        }
-        bytes.extend_from_slice(&piece);
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > total {
-            return Err("the other device sent more than it offered".to_owned());
-        }
-        {
-            let mut state = inner.state.lock_recover();
-            if let Some(found) = state.transfers.get_mut(&transfer) {
-                found.transferred = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+) -> Result<std::path::PathBuf, String> {
+    let path = inner.scratch.join(format!("{}.part", hex(&transfer)));
+    let written: Result<(), String> = async {
+        use tokio::io::AsyncWriteExt as _;
+        let mut file = tokio::fs::File::create(&path)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut hasher = blake3::Hasher::new();
+        let mut received = 0_u64;
+        while received < total {
+            if stopped.load(Ordering::Relaxed) {
+                return Err("stopped".to_owned());
             }
+            let answer = call(
+                inner,
+                peer,
+                workspace,
+                CONTENT,
+                json!({
+                    "transfer": hex(&transfer),
+                    "offset": received,
+                    "length": PIECE_BYTES,
+                }),
+            )
+            .await?;
+            let Some(value) = answer else {
+                return Err("the other device answered no piece".to_owned());
+            };
+            let piece = value
+                .get("bytes")
+                .and_then(Value::as_str)
+                .ok_or("the other device answered no bytes")?;
+            let piece = hex::decode(piece).map_err(|_| "a piece is not hex".to_owned())?;
+            if piece.is_empty() {
+                return Err("the other device answered an empty piece".to_owned());
+            }
+            received = received.saturating_add(u64::try_from(piece.len()).unwrap_or(u64::MAX));
+            if received > total {
+                return Err("the other device sent more than it offered".to_owned());
+            }
+            file.write_all(&piece)
+                .await
+                .map_err(|error| error.to_string())?;
+            hasher.update(&piece);
+            {
+                let mut state = inner.state.lock_recover();
+                if let Some(found) = state.transfers.get_mut(&transfer) {
+                    found.transferred = received;
+                }
+            }
+            let _ = inner
+                .changed
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
         }
-        let _ = inner
-            .changed
-            .send_modify(|revision| *revision = revision.wrapping_add(1));
+        file.flush().await.map_err(|error| error.to_string())?;
+        drop(file);
+        if hasher.finalize().to_hex().as_str() != hash {
+            return Err("the bytes do not hash to the address offered".to_owned());
+        }
+        Ok(())
     }
-    if blake3::hash(&bytes).to_hex().as_str() != hash {
-        return Err("the bytes do not hash to the address offered".to_owned());
+    .await;
+    if written.is_err() {
+        let _ = std::fs::remove_file(&path);
     }
-    Ok(bytes)
+    written.map(|()| path)
 }
 
 /// One action's descriptor, as an agent's catalogue lists it.

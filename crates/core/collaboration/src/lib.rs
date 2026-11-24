@@ -261,10 +261,8 @@ pub use runtime_collab::{
     SpeakerTrimInfo,
 };
 pub use runtime_collab::{
-    NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferDestination,
-    NearbyTransferDirection, NearbyTransferHandle, NearbyTransferPhase, NearbyTransferReply,
-    NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, NetworkWakeStatus,
-    PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
+    NearbyTransferPhase, NetworkWakeStatus, PortableWifiSecurity, WifiContinuityCommand,
+    WifiContinuityReply,
 };
 pub use runtime_collab::{file_clipboard, recall};
 
@@ -521,6 +519,11 @@ pub enum CollabRequest {
     NativeMediaCommand {
         request_id: u64,
         command: runtime_collab::native_media::Request,
+    },
+    /// Kept in its place so a request an earlier build wrote still reads as
+    /// itself; nothing answers it.
+    RetiredNearbyTransferCommand {
+        request_id: u64,
     },
     OpenWorkspaceControl {
         session_id: u64,

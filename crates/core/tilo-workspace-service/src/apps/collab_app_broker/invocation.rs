@@ -1025,9 +1025,6 @@ impl AppBrokerState {
         if let Some(service) = self.services.browser_service_sessions.as_ref() {
             service.disconnect(peer_id);
         }
-        if let Some(nearby) = self.services.nearby_transfer.as_ref() {
-            nearby.disconnect(peer_id);
-        }
         if let Some(clipboard) = self.services.file_clipboard.as_ref() {
             clipboard.disconnect(peer_id);
         }

@@ -357,7 +357,7 @@ tilo_test_env::scenario! {
         fixture
             .events
             .borrow_mut()
-            .push(CollabEvent::NearbyTransferChanged);
+            .push(CollabEvent::RetiredNearbyTransferCommandResult { request_id: 1 });
         assert!(
             !fixture.app.pump_collab_presence(),
             "an unchanged Nearby snapshot must not keep requesting frames"

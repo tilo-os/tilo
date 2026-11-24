@@ -574,6 +574,37 @@ impl ContentShelf for StoreShelf {
         .flatten()
     }
 
+    fn keep_file(
+        &self,
+        scope: &ContentScope,
+        hash: &str,
+        path: &std::path::Path,
+        size: u64,
+    ) -> Result<(), String> {
+        if scope.app != FILES_APP {
+            return Err("this device keeps only the bytes of the workspaces' files".to_owned());
+        }
+        let hash: Hash = hash
+            .parse()
+            .map_err(|_| "not a content address".to_owned())?;
+        let owned = path.to_owned();
+        let kept = self
+            .on_store(move |store| {
+                Box::pin(async move {
+                    store
+                        .ingest_file(&owned)
+                        .await
+                        .map_err(|error| error.to_string())
+                })
+            })
+            .ok_or_else(|| "the content store could not be reached".to_owned())??;
+        if kept == hash && std::fs::metadata(path).is_ok_and(|file| file.len() == size) {
+            Ok(())
+        } else {
+            Err("the store kept other content than the file's address names".to_owned())
+        }
+    }
+
     fn keep(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) -> Result<(), String> {
         if scope.app != FILES_APP {
             return Err("this device keeps only the bytes of the workspaces' files".to_owned());

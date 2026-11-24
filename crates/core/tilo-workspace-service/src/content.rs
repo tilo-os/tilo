@@ -133,6 +133,50 @@ pub trait ContentShelf: Send + Sync {
     fn has(&self, scope: &ContentScope, hash: &str) -> bool {
         self.read(scope, hash).is_some()
     }
+
+    /// How long `hash` is under `scope`, when this device keeps it.
+    fn size(&self, scope: &ContentScope, hash: &str) -> Option<u64> {
+        self.read(scope, hash)
+            .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+    }
+
+    /// `len` bytes of `hash` from `offset`, when this device keeps them under
+    /// `scope`: a holder hands over a large content a piece at a time, never
+    /// the whole of it.
+    fn read_range(
+        &self,
+        scope: &ContentScope,
+        hash: &str,
+        offset: u64,
+        len: usize,
+    ) -> Option<Vec<u8>> {
+        let bytes = self.read(scope, hash)?;
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        let end = start.saturating_add(len).min(bytes.len());
+        bytes.get(start..end).map(<[u8]>::to_vec)
+    }
+
+    /// Keep the file at `path` as content `hash`, `size` bytes long, under
+    /// `scope`: a file a transfer carries whole to disk first, so the shelf
+    /// holds a content larger than one read without the bytes waiting in
+    /// memory. Refused when the file does not hash to `hash`.
+    fn keep_file(
+        &self,
+        scope: &ContentScope,
+        hash: &str,
+        path: &std::path::Path,
+        size: u64,
+    ) -> Result<(), String> {
+        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != size
+            || blake3::hash(&bytes).to_hex().as_str() != hash
+        {
+            return Err("the file is not the content its address names".to_owned());
+        }
+        self.keep(scope, hash, &bytes)
+    }
 }
 
 /// One device on a record's route, as the host's network names it.
