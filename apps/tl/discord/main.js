@@ -3,7 +3,7 @@
 // is the device's held connection that carries the gateway and the call lane a voice channel's
 // call is bridged through.
 
-import { Calls } from "./src/tilo.js";
+import { Tilo } from "tilo-sdk";
 import { startCalls } from "./src/call.js";
 import { connect as connectVoice } from "./src/voice.js";
 import {
@@ -14,6 +14,7 @@ import {
   reactToDiscord,
   mapping,
   published,
+  mappings,
   SELF,
 } from "./src/plan.js";
 import {
@@ -33,13 +34,90 @@ import {
 /// The bridge's record path: its own app's root, the accounts it bridges.
 export const ACCOUNTS = `${SELF}/accounts`;
 
+/// The id a call answered: a resource reference's id, or the id text itself.
+export function referenceId(result) {
+  if (!result) return null;
+  if (typeof result === "string") return result;
+  if (typeof result.id === "string") return result.id;
+  if (typeof result.ref === "string") return result.ref;
+  if (result.item && typeof result.item.id === "string") return result.item.id;
+  if (typeof result.value === "string") return result.value;
+  if (result.value && typeof result.value.id === "string") return result.value.id;
+  return null;
+}
+
+/// A resource's published id, from the reference a call answered.
+export function publishedOf(id) {
+  const text = String(id ?? "");
+  return text.startsWith("tl:") ? text : `tl:so.tilo.chat:${text}`;
+}
+
+/// The workspace as the bridge uses it: the SDK's one client, its calls by address, and the map
+/// joining what a call made to the Discord id it is.
+export function callsOf(ws) {
+  return {
+    ws,
+    async do(call) {
+      const made = await ws.do(`${call.app}#${call.action}`, call.args);
+      const id = referenceId(made);
+      if (call.map && id) {
+        const tilo = call.app === "so.tilo.chat" ? publishedOf(id) : id;
+        await ws.do(`${SELF}#map`, {
+          kind: call.map.kind,
+          tilo,
+          discord: call.map.discord,
+          origin: call.map.origin ?? "discord",
+          persona: call.map.persona ?? "",
+          root: call.map.root ?? "",
+        });
+      }
+      return made;
+    },
+    async state(path) {
+      const read = await ws.read(path);
+      return read?.fields ?? read;
+    },
+    watch(path) {
+      return ws.watch(path);
+    },
+    ask(question) {
+      return ws.vault.ask(question);
+    },
+    webCall(request) {
+      return ws.vault.webCall(request);
+    },
+    release(item) {
+      return ws.vault.release(item);
+    },
+    content(bytes) {
+      return ws.files?.upload ? ws.files.upload(bytes) : null;
+    },
+    /// This app's call lane, when the workspace client has one: the daemon's side of a call
+    /// carried from an outside service. `null` for a client that carries none, which is a bridge
+    /// that reads and writes but never joins a call.
+    lane() {
+      const lane = ws.callLane;
+      if (!lane) return null;
+      return {
+        carry: (pair) => lane.carry(pair),
+        report: (report) => lane.report(report),
+        heard: (frame) => lane.heard(frame),
+        said: () => lane.said(),
+      };
+    },
+  };
+}
+
 /// How long to wait before asking again for a vault item whose person is being asked whether the
 /// app may read it, and how many times.
 export const RELEASE_RETRY_MS = 2_000;
 export const RELEASE_TRIES = 90;
 
 /// A procedure the process runs once: the bridge starts, answers the setup its person asks for,
-/// and holds the gateway of the server it bridges until the connection ends.
+/// and holds the gateway of the server it bridges until the connection ends. The account record
+/// is watched: the daemon starts the program as soon as the app is installed, so the server the
+/// person connects, or a token item or origin that changes, opens the gateway then, not only at
+/// the start.
 export async function run({
   tilo,
   makeClient,
@@ -48,23 +126,77 @@ export async function run({
   wait,
   log = () => {},
 }) {
-  const calls = new Calls(tilo.workspace ? tilo.workspace() : tilo);
+  const calls = callsOf(tilo.workspace ? tilo.workspace() : tilo);
   // The setup is answered beside whatever the bridge carries: a press reaches this process
   // through the record, and nothing else does.
   const setup = serveSetup({ calls, fetch, wait, log }).catch((error) =>
     log(`the setup stopped: ${error?.message ?? error}`),
   );
-  const accounts = await calls.state(ACCOUNTS);
-  const account = accounts?.accounts?.[0] ?? accounts;
-  if (!account?.guild_id) {
-    log("no Discord server is connected");
-    return setup;
+  const holding = held({ calls, makeClient, makeVoice, wait, log }).catch((error) =>
+    log(`the gateway stopped: ${error?.message ?? error}`),
+  );
+  await Promise.all([setup, holding]);
+}
+
+/// The server a bridge's record names, as what the held connection is keyed by: the gateway is
+/// reopened when any of it changes, and closed when no server is connected.
+function connectionOf(account) {
+  if (!account?.guild_id || !account?.token_item) return null;
+  return [
+    account.guild_id,
+    account.token_item ?? "",
+    account.only_channel ?? "",
+    account.api_origin ?? "",
+    account.gateway_url ?? "",
+  ].join("|");
+}
+
+/// Holds the gateway of the account the record names, reopening it when what it is keyed by
+/// changes and closing it when no server is connected. The watch is the record's, so a person's
+/// Connect reaches this process with no window open.
+export async function held({ calls, makeClient, makeVoice, wait, log = () => {} }) {
+  let connection = null;
+  let key = null;
+  const look = async () => {
+    const accounts = await calls.state(ACCOUNTS);
+    const account = accounts?.accounts?.[0] ?? accounts;
+    const next = connectionOf(account);
+    if (next === key) return;
+    key = next;
+    if (connection) {
+      await connection.close();
+      connection = null;
+    }
+    if (!next) return;
+    try {
+      connection = await openGateway({ calls, account, makeClient, makeVoice, wait, log });
+    } catch (error) {
+      log(`the gateway did not open: ${error?.message ?? error}`);
+    }
+  };
+  await look();
+  for await (const _ of calls.watch(ACCOUNTS)) {
+    await look();
   }
+  if (connection) await connection.close();
+}
+
+/// Opens the gateway of `account` and carries each side's changes: the client, and how to close
+/// both the connection and the watch of the workspace's messages.
+export async function openGateway({
+  calls,
+  account,
+  makeClient,
+  makeVoice,
+  wait,
+  log = () => {},
+}) {
   const token = await released(calls, account.token_item, { wait });
+  const stop = { stopped: false };
   // The call lane this app's connection was granted: a client that carries none leaves the
   // bridge reading and writing, never in a call.
   const lane = calls.lane();
-  let gateway = null;
+  let client = null;
   const carried = lane
     ? startCalls({
         calls,
@@ -73,29 +205,39 @@ export async function run({
         log,
         gateway: {
           get user() {
-            return gateway?.user ?? null;
+            return client?.user ?? null;
           },
-          joinVoice: (guild, channel) => gateway.joinVoice(guild, channel),
-          leaveVoice: (guild) => gateway.leaveVoice(guild),
+          joinVoice: (guild, channel) => client.joinVoice(guild, channel),
+          leaveVoice: (guild) => client.leaveVoice(guild),
         },
       })
     : null;
   if (!carried) {
     log("this build carries no call lane: the bridge reads and writes but joins no call");
   }
-  const client = await import("./src/gateway.js").then(({ connect }) =>
+  client = await import("./src/gateway.js").then(({ connect }) =>
     connect({
       make: makeClient,
       token,
+      url: account.gateway_url || undefined,
       onEvent: (event) => carryFromDiscord({ calls, account, event, log }),
       onVoice: (event) => carried?.hear(event),
       log,
     }),
   );
-  gateway = client;
   await carried?.start();
-  await carryFromWorkspace({ calls, account, log });
-  return client;
+  const carrying = carryFromWorkspace({ calls, account, log, stop }).catch((error) =>
+    log(`the workspace's changes stopped reaching Discord: ${error?.message ?? error}`),
+  );
+  return {
+    client,
+    carrying,
+    async close() {
+      stop.stopped = true;
+      carried?.close();
+      if (typeof client?.destroy === "function") await client.destroy();
+    },
+  };
 }
 
 /// The bot's token, released from the workspace's vault into this process: the one place a
@@ -174,14 +316,14 @@ export async function answerSetup({ calls, account, fetch = globalThis.fetch, wa
     }
     const token = await released(calls, account.token_item, { wait });
     if (want === "find") {
-      const answer = await discord(fetch, token, "/users/@me/guilds");
+      const answer = await discord(fetch, token, "/users/@me/guilds", {}, account.api_origin);
       return await did("found_servers", { servers: serversOf(answer) });
     }
     if (want === "channels") {
       if (!account.setup_server) {
         return await failed("No server was chosen, so there are no channels to read.");
       }
-      const answer = await discord(fetch, token, guildChannels(account.setup_server));
+      const answer = await discord(fetch, token, guildChannels(account.setup_server), {}, account.api_origin);
       return await did("found_channels", { channels: channelsOf(answer) });
     }
     if (want === "sign-in") {
@@ -198,10 +340,10 @@ export async function answerSetup({ calls, account, fetch = globalThis.fetch, wa
 
 /// One request to Discord as the bot whose token this process holds: its answer, whose bodies
 /// only carry what a list of servers or channels needs.
-async function discord(fetch, token, path, init = {}) {
+async function discord(fetch, token, path, init = {}, origin = API) {
   let answer;
   try {
-    answer = await fetch(`${API}${path}`, {
+    answer = await fetch(`${origin || API}${path}`, {
       ...init,
       headers: {
         authorization: `Bot ${token}`,
@@ -260,14 +402,15 @@ export async function carryFromDiscord({ calls, account, event, log }) {
 /// message written here), `updated`, `deleted`, `reaction` or `unreaction`, with the emoji a
 /// reaction gave. What the bridge sent is joined to the message there by the id Discord answered,
 /// so an edit or a deletion reaches the message it is about.
-export async function carryFromWorkspace({ calls, account, log = () => {} }) {
+export async function carryFromWorkspace({ calls, account, log = () => {}, stop = { stopped: false } }) {
   const known = new Map();
-  for (const entry of Object.values(account.map ?? {})) {
+  for (const entry of mappings(account)) {
     if (entry?.kind === "message" && entry.discord && entry.tilo) {
       known.set(entry.tilo, entry.discord);
     }
   }
   for await (const event of calls.watch(`${CHAT}/conversations`)) {
+    if (stop.stopped) break;
     const message = event?.message ?? event?.value ?? event;
     if (!message || message.text === undefined) continue;
     const kind = event?.kind ?? "created";
@@ -278,7 +421,10 @@ export async function carryFromWorkspace({ calls, account, log = () => {} }) {
       if (kind === "created") {
         for (const op of toDiscord(account, conversation, message)) {
           const answer = await calls.webCall(
-            webhookSend({ webhook: op.webhook, tokenItem: account.token_item }, op),
+            webhookSend(
+              { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
+              op,
+            ),
           );
           const made = messageIdOf(answer);
           if (made) {
@@ -293,14 +439,20 @@ export async function carryFromWorkspace({ calls, account, log = () => {} }) {
       } else if (kind === "updated" && there) {
         for (const op of editToDiscord(account, conversation, message, there)) {
           await calls.webCall(
-            webhookEdit({ webhook: op.webhook, tokenItem: account.token_item }, op),
+            webhookEdit(
+              { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
+              op,
+            ),
           );
         }
       } else if (kind === "deleted" && there) {
         const hook = mapping(account, "webhook", conversation)?.discord ?? "";
         for (const op of deleteToDiscord(account, conversation, there, hook)) {
           await calls.webCall(
-            webhookDelete({ webhook: op.webhook, tokenItem: account.token_item }, op),
+            webhookDelete(
+              { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
+              op,
+            ),
           );
         }
       } else if ((kind === "reaction" || kind === "unreaction") && there) {
@@ -312,7 +464,9 @@ export async function carryFromWorkspace({ calls, account, log = () => {} }) {
           kind === "reaction",
           there,
         )) {
-          await calls.webCall(react({ tokenItem: account.token_item }, op));
+          await calls.webCall(
+            react({ tokenItem: account.token_item, origin: account.api_origin }, op),
+          );
         }
       }
     } catch (error) {
@@ -343,8 +497,7 @@ const CHAT = "so.tilo.chat";
 if (import.meta.main) {
   const log = (line) => console.error(`discord: ${line}`);
   try {
-    const { Tilo } = await import("./src/sdk.js");
-    await run({ tilo: Tilo(), log });
+    await run({ tilo: new Tilo(), log });
   } catch (error) {
     log(`the bridge stopped: ${error?.message ?? error}`);
     process.exitCode = 1;

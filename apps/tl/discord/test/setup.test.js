@@ -3,7 +3,7 @@
 // channels are read to choose the ones brought in.
 
 import { test, expect } from "bun:test";
-import { Calls } from "../src/tilo.js";
+import { callsOf } from "../main.js";
 import { answerSetup, released, sha256Hex, signInStart } from "../main.js";
 
 const TOKEN = "MTIz.GxYz.abcdefghij0123456789AB";
@@ -45,7 +45,7 @@ function fakeWorkspace({ account, ask = ITEM, release = () => TOKEN, answer } = 
       },
     };
   };
-  return { calls: new Calls(ws), done, released, asked, fetch };
+  return { calls: callsOf(ws), done, released, asked, fetch };
 }
 
 /// The account the setup writes into.

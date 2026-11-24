@@ -23,18 +23,10 @@ function account() {
     bot_user: "900",
     token_item: "vault.item:discord-token",
     channels: [{ id: "456", kind: "text", name: "design" }],
-    map: {
-      "channel:tl:so.tilo.chat:design": {
-        kind: "channel",
-        tilo: "tl:so.tilo.chat:design",
-        discord: "456",
-      },
-      "webhook:tl:so.tilo.chat:design": {
-        kind: "webhook",
-        tilo: "tl:so.tilo.chat:design",
-        discord: "555",
-      },
-    },
+    map: [
+      { kind: "channel", tilo: "tl:so.tilo.chat:design", discord: "456" },
+      { kind: "webhook", tilo: "tl:so.tilo.chat:design", discord: "555" },
+    ],
     links: [
       {
         discord_user: "3001",
@@ -52,6 +44,7 @@ function fakeWorkspace({ events }) {
   const done = [];
   const requests = [];
   const released = [];
+  const secret = "MTIz.GxYz.abcdefghij0123456789AB";
   let finish;
   const finished = new Promise((resolve) => {
     finish = resolve;
@@ -71,7 +64,7 @@ function fakeWorkspace({ events }) {
     vault: {
       async release(item) {
         released.push(item);
-        return "MTIz.GxYz.abcdefghij0123456789AB";
+        return secret;
       },
       async webCall(request) {
         requests.push(request);
@@ -217,5 +210,58 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   }
 
   workspace.finish();
+  await running;
+});
+
+test("a server connected after the program started opens the gateway then", async () => {
+  const gateways = [];
+  let connected = false;
+  let second;
+  const next = new Promise((resolve) => (second = resolve));
+  let finish;
+  const finished = new Promise((resolve) => (finish = resolve));
+  const ws = {
+    async read() {
+      return { accounts: [connected ? account() : { guild_id: "" }] };
+    },
+    async do() {
+      return { id: "made1" };
+    },
+    async *watch() {
+      yield { kind: "change" };
+      await next;
+      yield { kind: "change" };
+      await finished;
+    },
+    vault: {
+      async release() {
+        return "MTIz.GxYz.abcdefghij0123456789AB";
+      },
+      async webCall() {
+        return { status: 200, body: "{}" };
+      },
+    },
+  };
+  const running = run({
+    tilo: { workspace: () => ws },
+    makeClient: () => {
+      const gateway = fakeGateway();
+      gateways.push(gateway);
+      return gateway;
+    },
+    log: () => {},
+  });
+
+  // The daemon starts the program as the app is installed: no server is connected yet, so no
+  // gateway is opened and nothing says so as a failure.
+  await until(() => true, "the program started");
+  expect(gateways).toHaveLength(0);
+
+  // The person connects the server: the record changes, and the gateway opens then.
+  connected = true;
+  second();
+  await until(() => gateways.length === 1, "the gateway after connecting");
+
+  finish();
   await running;
 });

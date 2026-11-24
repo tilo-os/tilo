@@ -40,17 +40,23 @@ export function mapKey(kind, tilo) {
   return `${kind}:${tilo}`;
 }
 
+/// Every mapping of the bridge's record: the account's `map` as the record read answers it (a
+/// list), or an object keyed `kind:tilo` as an older answer wrote it.
+export function mappings(state) {
+  const map = state?.map ?? [];
+  if (Array.isArray(map)) return map;
+  if (map !== null && typeof map === "object") return Object.values(map);
+  return [];
+}
+
 /// The mapping of `tilo` as `kind` in the bridge's record.
 export function mapping(state, kind, tilo) {
-  return state.map?.[mapKey(kind, tilo)] ?? null;
+  return mappings(state).find((entry) => entry.kind === kind && entry.tilo === tilo) ?? null;
 }
 
 /// The mapping of the Discord `discord` id as `kind`.
 export function byDiscord(state, kind, discord) {
-  for (const entry of Object.values(state.map ?? {})) {
-    if (entry.kind === kind && entry.discord === discord) return entry;
-  }
-  return null;
+  return mappings(state).find((entry) => entry.kind === kind && entry.discord === discord) ?? null;
 }
 
 /// The Discord side a conversation is carried to: its channel, its webhook, and the thread it is.
@@ -140,6 +146,9 @@ export function fromDiscord(state, event) {
     if (blocked(state, payload.author.id)) return [];
     const channel = byDiscord(state, "channel", payload.channel_id);
     if (!channel) return [];
+    // An account linked to a member here wears that member's face and colour; one nobody linked
+    // is the account's own face alone.
+    const linked = linkOfUser(state, payload.author.id);
     const call = chat("relay", {
       to: channel.tilo,
       body: payload.content ?? "",
@@ -154,6 +163,7 @@ export function fromDiscord(state, event) {
       reply_to: payload.reference?.message_id
         ? byDiscord(state, "message", payload.reference.message_id)?.tilo ?? null
         : null,
+      member: linked?.person ? { person: linked.person } : null,
     });
     call.map = {
       kind: "message",

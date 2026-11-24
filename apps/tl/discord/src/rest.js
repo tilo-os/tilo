@@ -7,11 +7,17 @@
 
 export const API = "https://discord.com/api/v10";
 
+/// The API `origin` names, or Discord's own: a test's fake server, which the account record
+/// names so a sandbox that clears its environment can still be pointed at one.
+function at(origin) {
+  return String(origin || API);
+}
+
 /// Sends a message through a webhook, answering the message it made there.
-export function webhookSend({ webhook, tokenItem }, op) {
+export function webhookSend({ webhook, tokenItem, origin = API }, op) {
   const query = "?wait=true";
   return {
-    url: `${API}/webhooks/${webhook}${query}`,
+    url: `${at(origin)}/webhooks/${webhook}${query}`,
     key: tokenItem,
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -30,9 +36,9 @@ export function webhookSend({ webhook, tokenItem }, op) {
 }
 
 /// Edits a message the bridge sent.
-export function webhookEdit({ webhook, tokenItem }, op) {
+export function webhookEdit({ webhook, tokenItem, origin = API }, op) {
   return {
-    url: `${API}/webhooks/${webhook}/messages/${op.message}`,
+    url: `${at(origin)}/webhooks/${webhook}/messages/${op.message}`,
     key: tokenItem,
     method: "PATCH",
     headers: { "content-type": "application/json" },
@@ -42,9 +48,9 @@ export function webhookEdit({ webhook, tokenItem }, op) {
 }
 
 /// Deletes a message the bridge sent.
-export function webhookDelete({ webhook, tokenItem }, op) {
+export function webhookDelete({ webhook, tokenItem, origin = API }, op) {
   return {
-    url: `${API}/webhooks/${webhook}/messages/${op.message}`,
+    url: `${at(origin)}/webhooks/${webhook}/messages/${op.message}`,
     key: tokenItem,
     method: "DELETE",
     reason: "a deletion made in the workspace",
@@ -52,11 +58,11 @@ export function webhookDelete({ webhook, tokenItem }, op) {
 }
 
 /// Puts the bot's reaction on a message, or takes it back.
-export function react({ tokenItem }, op) {
+export function react({ tokenItem, origin = API }, op) {
   const emoji = encodeURIComponent(op.emoji);
   const suffix = op.op === "react" ? "" : "/@me";
   return {
-    url: `${API}/channels/${op.channel}/messages/${op.message}/reactions/${emoji}${suffix}`,
+    url: `${at(origin)}/channels/${op.channel}/messages/${op.message}/reactions/${emoji}${suffix}`,
     key: tokenItem,
     method: op.op === "react" ? "PUT" : "DELETE",
     reason: "a reaction made in the workspace",

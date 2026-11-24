@@ -8,8 +8,8 @@ import {
   avatarUrl,
   mapping,
 } from "../src/plan.js";
-import { Calls } from "../src/tilo.js";
-import { looksLikeToken } from "../src/rest.js";
+import { callsOf } from "../main.js";
+import { looksLikeToken, webhookSend } from "../src/rest.js";
 
 /// The bridge's record as the workspace holds it.
 function state(overrides = {}) {
@@ -72,11 +72,23 @@ test("a message written on Discord is relayed as its author, with their picture 
   expect(call.args.to).toBe("tl:so.tilo.chat:design");
   expect(call.args.by).toBe("ada");
   expect(call.args.service).toBe("Discord");
+  // The account ada linked wears her face and colour here.
+  expect(call.args.member).toEqual({ person: "ada" });
   expect(call.args.avatar).toBe("https://cdn.discordapp.com/avatars/3001/abc.png?size=128");
   expect(call.args.outside_emoji).toEqual([
     { name: "party", picture: "https://cdn.discordapp.com/emojis/22.png" },
   ]);
   expect(call.map).toEqual({ kind: "message", discord: "777", origin: "discord", persona: "3001" });
+});
+
+test("an account nobody linked carries the name Discord shows alone", () => {
+  const unlinked = state({ links: [] });
+  const [call] = fromDiscord(unlinked, {
+    source: "MESSAGE_CREATED",
+    payload: { id: "778", channel_id: "456", content: "hi", author: { id: "4001", name: "zoe" } },
+  });
+  expect(call.args.by).toBe("zoe");
+  expect(call.args.member).toBeNull();
 });
 
 test("a blocked account, a bot and its own webhook say nothing here", () => {
@@ -173,7 +185,7 @@ test("a call keeps what it made joined to the Discord id it was", async () => {
       return { id: "made1" };
     },
   };
-  const calls = new Calls(ws);
+  const calls = callsOf(ws);
   await calls.do({
     app: "so.tilo.chat",
     action: "relay",
@@ -207,7 +219,7 @@ test("the token reaches nothing but the gateway's release", async () => {
       },
     },
   };
-  const calls = new Calls(ws);
+  const calls = callsOf(ws);
   const item = "vault.item:discord-token";
   expect(await calls.release(item)).toBe(token);
   for (const call of fromDiscord(state(), {
@@ -240,6 +252,12 @@ test("the helpers cut to Discord's bounds", () => {
   expect([...fit("x".repeat(2500))].length).toBe(2000);
   expect(bareBlob("tilo-blob://ABC")).toBe("ABC");
   expect(bareBlob("plain")).toBe("plain");
+  expect(
+    webhookSend(
+      { webhook: "1", tokenItem: "v", origin: "http://discord.test/api/v10" },
+      { attachments: [], content: "hi" },
+    ).url,
+  ).toBe("http://discord.test/api/v10/webhooks/1?wait=true");
   expect(
     avatarUrl({ discord_user: "1", avatar: "h" }),
   ).toBe("https://cdn.discordapp.com/avatars/1/h.png?size=128");
