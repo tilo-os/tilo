@@ -3925,7 +3925,9 @@ fn the_composer_offers_more_headers_and_formatting_and_sends_on_the_chord() {
         "the blind recipients show once asked for: {opened:?}"
     );
 
-    // Ctrl+Enter sends from the window, without the press.
+    // Ctrl+Enter sends from the window, without the press: the bar's Send answers it while the
+    // composer holds the keyboard.
+    session.settle();
     session.window.key("ctrl+Enter");
     session.until("the message to go", |_| servers.smtp.sent().len() == 1);
     let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
@@ -3946,21 +3948,44 @@ fn a_conversations_row_offers_its_own_actions() {
         .instance_host()
         .open_resource(&account, None)
         .expect("the account's window opens");
-    let row = row_node(view.tree(), &plan.id_string())
-        .unwrap_or_else(|| panic!("the list holds the conversation's row"));
+    // The rows are the list's, built as it shows them rather than with its tree.
+    let lists: Vec<String> = view
+        .tree()
+        .of_kind("ui.VirtualList")
+        .into_iter()
+        .map(|list| list.key.clone())
+        .collect();
+    let mut conversation = None;
+    for list in lists {
+        for index in 0..view.list_len(&list).unwrap_or(0) {
+            let found = {
+                let shown = view.row(&list, index).expect("the row renders");
+                shown.and_then(|row| row_node(row, &plan.id_string()).cloned())
+            };
+            if let Some(row) = found {
+                conversation = Some(row);
+                break;
+            }
+        }
+        if conversation.is_some() {
+            break;
+        }
+    }
+    let conversation =
+        conversation.unwrap_or_else(|| panic!("the list holds the conversation's row"));
     for offered in ["Archive", "Flag", "Delete"] {
         assert!(
-            !labelled(row, offered).is_empty(),
+            !labelled(&conversation, offered).is_empty(),
             "the row offers {offered}"
         );
     }
     assert!(
-        find_kind(row, "ui.SwipeAction", "label", "Archive").is_some(),
+        find_kind(&conversation, "ui.SwipeAction", "label", "Archive").is_some(),
         "and a swipe that files it away"
     );
 
     // The row's Archive files it out of the inbox, as the conversation's window does.
-    let archive = labelled(row, "Archive")[0].key.clone();
+    let archive = labelled(&conversation, "Archive")[0].key.clone();
     view.fire(&archive, "press")
         .expect("the row's Archive acts");
     session.settle();
@@ -4000,12 +4025,33 @@ fn conversations_of_one_moment_list_in_one_order() {
             .clone();
         view.fire(&place, "select").expect("the place opens");
         view.poll_patches().expect("the window shows");
-        let mut texts = Vec::new();
-        texts_in(view.tree(), &mut texts);
-        texts
+        // The conversations are the rows of the list it shows, in the order it lists them.
+        let lists: Vec<String> = view
+            .tree()
+            .of_kind("ui.VirtualList")
             .into_iter()
-            .filter(|text| text == "Alpha" || text == "Beta")
-            .collect()
+            .map(|list| list.key.clone())
+            .collect();
+        let mut subjects = Vec::new();
+        for list in lists {
+            for index in 0..view.list_len(&list).unwrap_or(0) {
+                let mut texts = Vec::new();
+                if let Some(row) = view.row(&list, index).expect("the row renders") {
+                    texts_in(row, &mut texts);
+                }
+                if let Some(subject) = texts
+                    .iter()
+                    .find(|text| text.starts_with("Alpha") || text.starts_with("Beta"))
+                {
+                    subjects.push(if subject.starts_with("Alpha") {
+                        "Alpha".to_owned()
+                    } else {
+                        "Beta".to_owned()
+                    });
+                }
+            }
+        }
+        subjects
     };
     let one = listed("ada@analytical.example", "bo@chen.example");
     let other = listed("bo@chen.example", "ada@analytical.example");
