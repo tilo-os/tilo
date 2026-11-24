@@ -64,7 +64,7 @@ use web_time::SystemTime;
 
 /// Tell this process's authorization watchers that something they read may
 /// have changed. A page has none: it decides nothing for other processes.
-fn policy_changed() {
+pub(crate) fn policy_changed() {
     #[cfg(not(target_arch = "wasm32"))]
     tilo_identity::policy_change::announce();
 }

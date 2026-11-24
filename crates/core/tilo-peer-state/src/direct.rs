@@ -3394,6 +3394,13 @@ impl DirectSync {
         let mut landed = received
             .as_ref()
             .is_ok_and(|report| report.changed || report.metadata_changed);
+        if received.is_ok() && matches!(&message, NeighbourMsg::SyncResp { .. }) {
+            // The workspace's state came with this frame: its governance, members and grants moved
+            // with it, and everything this device decides for others reads them. A device holding
+            // the workspace as a member copy has no publication of its own to wake them, as the
+            // device keeping it has, so they are woken here.
+            crate::owner::policy_changed();
+        }
         // The verdict is this device's own, filed under its own certificate:
         // a document write the workspace refuses is filed where its author
         // reads why it is not here, and a landed one clears the verdicts it

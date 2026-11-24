@@ -447,6 +447,10 @@ fn take_governance(
         peer.receive_from(origin, message, now)
             .map_err(|error| error.to_string())?;
     }
+    // The workspace's governance came with the answer this copy is taken in from: what this
+    // device decides for others reads it, and whoever follows that is woken for it as the device
+    // keeping the workspace wakes them for its own writes.
+    tilo_identity::policy_change::announce();
     Ok(())
 }
 

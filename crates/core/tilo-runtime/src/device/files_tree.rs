@@ -6,9 +6,9 @@
 //! from the daemon's own identity service, the bytes a mount lacks are asked of the daemon's
 //! record content, and the bytes it keeps are the ones that record content hands the
 //! workspace. The access list the mount enforces is the workspaces' own: each one's policy
-//! and members, and the grants apps hold in it through portals, as its shared
-//! desktop record keeps them. It is made again on every change of what a decision reads, and at
-//! the moment a member's time-limited grant lapses.
+//! and members, and the folders it grants its apps, as its governance keeps them. It is made
+//! again on every change of what a decision reads, and at the moment a member's time-limited
+//! grant lapses.
 //!
 //! Where each mounted folder stands, as its mount says it, is this device's resource
 //! [`FOLDERS_APP`]: the person's shell follows it to show what reached the workspace.

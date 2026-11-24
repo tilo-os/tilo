@@ -63,8 +63,8 @@ pub struct Listed {
     pub refresh_at: Option<u64>,
 }
 
-/// The file access of `workspaces`, as the Files mounts of this device enforce it: the grants
-/// apps hold through portals in each workspace's sandbox, and what each member may do to the
+/// The file access of `workspaces`, as the Files mounts of this device enforce it: the folders
+/// each workspace grants its apps through its own governance, and what each member may do to the
 /// workspace's files as its policy decides it ([`decide`]). Role access is scoped to the
 /// workspace's own directory within the shared mount.
 ///
@@ -178,8 +178,8 @@ fn push_with_device(
 }
 
 impl crate::workspaces::Workspaces {
-    /// [`list`] for the workspaces this service holds: each one's policy as the service reads it,
-    /// and the grants apps hold in it as its shared desktop record keeps them.
+    /// [`list`] for the workspaces this service holds: each one's policy and the grants its apps
+    /// hold in it, both as the workspace's governance keeps them.
     pub async fn files_access(&self, person: &str, device: Option<[u8; 32]>) -> Listed {
         let mut held = Vec::new();
         for id in self.held_workspaces() {
@@ -189,42 +189,14 @@ impl crate::workspaces::Workspaces {
             let Some(policy) = self.policy_of(&id).await else {
                 continue;
             };
-            let mut workspace = self
-                .shared_layout(&id, parsed)
-                .await
-                .unwrap_or_else(|| tilo_desktop_model::Workspace::new(parsed, ""));
+            let mut workspace = tilo_desktop_model::Workspace::new(parsed, "");
             workspace.policy = policy;
+            workspace.sandbox = self.sandbox_of(&id).await;
             held.push(workspace);
         }
         list(&held, person, device)
     }
-
-    /// `workspace` as its shared desktop record lays it out, when this device reads one.
-    async fn shared_layout(
-        &self,
-        workspace: &str,
-        id: tilo_desktop_model::WorkspaceId,
-    ) -> Option<tilo_desktop_model::Workspace> {
-        use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
-        let read = self
-            .own_read(
-                workspace,
-                (DESKTOP_APP, DESKTOP_DOCUMENT),
-                &[],
-                LAYOUT_BYTES,
-            )
-            .await
-            .ok()?;
-        let crate::workspace_documents::DocumentRead::Whole { bytes, .. } = read else {
-            return None;
-        };
-        let doc = automerge::AutoCommit::load(&bytes).ok()?;
-        tilo_desktop_model::shared_resource::device::layout_of(&doc, id)
-    }
 }
-
-/// The most bytes of a workspace's shared desktop record read for its grants.
-const LAYOUT_BYTES: usize = 64 * 1024 * 1024;
 
 #[cfg(test)]
 #[allow(

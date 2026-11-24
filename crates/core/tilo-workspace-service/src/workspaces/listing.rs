@@ -437,6 +437,21 @@ impl Workspaces {
             .map(|permissions| (*permissions.policy).clone())
     }
 
+    /// The sandbox capabilities `workspace`'s governance grants its apps: the
+    /// folders they reach in the Files mounts, as every other reader of them
+    /// takes them. Empty for a workspace this service does not hold.
+    pub async fn sandbox_of(&self, workspace: &str) -> Vec<collab_types::caps::CapOverride> {
+        let Ok(state) = self.workspace(workspace).await else {
+            return Vec::new();
+        };
+        let state = state.lock().await;
+        state
+            .peer()
+            .governance()
+            .governed_sandbox()
+            .unwrap_or_default()
+    }
+
     /// The role `user` holds in `workspace` as one of its members now: `None`
     /// for someone it does not have in it, a person it removed, and one it
     /// banned.
