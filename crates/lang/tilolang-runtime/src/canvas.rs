@@ -58,6 +58,52 @@ pub trait CanvasHost {
     /// Why the picture cannot be read or nothing is found.
     fn wand(&self, picture: &[u8], request: &str) -> Result<String, String>;
 
+    /// The area `request` names in the artwork as it shows, as SVG path data: the magic wand at
+    /// a point or a colour, a picture's subject, or the selection's edge refined.
+    ///
+    /// # Errors
+    ///
+    /// Why the artwork cannot be drawn or nothing is found.
+    fn find(
+        &self,
+        artwork: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String>;
+
+    /// The marks `request` names combined into one path, as the path's JSON: its outline and
+    /// fill.
+    ///
+    /// # Errors
+    ///
+    /// Why the shapes cannot be combined.
+    fn combine(&self, artwork: &str, request: &str) -> Result<String, String>;
+
+    /// How the marks `request` names put down ink, as the engine's JSON.
+    ///
+    /// # Errors
+    ///
+    /// Why the artwork cannot be drawn or there is no such mark.
+    fn measure(
+        &self,
+        artwork: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String>;
+
+    /// The artwork beside, over or against its reference picture, as `request` asks: PNG bytes
+    /// and the info JSON.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be drawn or there is no reference picture.
+    fn compare(
+        &self,
+        artwork: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<(Vec<u8>, String), String>;
+
     /// The artwork, or the marks `request` names, as an SVG document.
     ///
     /// # Errors
@@ -120,6 +166,37 @@ impl CanvasHost for NoCanvas {
         Err(unavailable())
     }
 
+    fn find(
+        &self,
+        _artwork: &str,
+        _request: &str,
+        _pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String> {
+        Err(unavailable())
+    }
+
+    fn combine(&self, _artwork: &str, _request: &str) -> Result<String, String> {
+        Err(unavailable())
+    }
+
+    fn measure(
+        &self,
+        _artwork: &str,
+        _request: &str,
+        _pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String> {
+        Err(unavailable())
+    }
+
+    fn compare(
+        &self,
+        _artwork: &str,
+        _request: &str,
+        _pictures: &[(String, Vec<u8>)],
+    ) -> Result<(Vec<u8>, String), String> {
+        Err(unavailable())
+    }
+
     fn svg(&self, _artwork: &str, _request: &str) -> Result<String, String> {
         Err(unavailable())
     }
@@ -160,7 +237,7 @@ impl Core {
                     Ok((bytes, info)) => {
                         let (name, mime) = named(&info, "png");
                         let file = self.keep_bytes(&name, mime, &bytes).or_else(trap)?;
-                        self.ret_h(Value::file(file))
+                        self.result(Ok(Value::file(file)))
                     }
                     Err(why) => self.result(Err(why)),
                 }
@@ -174,16 +251,50 @@ impl Core {
                         let file = self
                             .keep_bytes("graded.png", "image/png", &bytes)
                             .or_else(trap)?;
-                        self.ret_h(Value::file(file))
+                        self.result(Ok(Value::file(file)))
                     }
                     Err(why) => self.result(Err(why)),
                 }
             }
             Imp::CanvasWand => {
-                let picture = self.canvas_bytes(a.h(0)?)?;
+                let picture = self.picture_bytes(a.h(0)?)?;
                 let request = self.text(a.h(1)?)?;
                 let answer = self.canvas.borrow().wand(&picture, &request);
                 self.result(answer.map(Value::text))
+            }
+            Imp::CanvasFind => {
+                let artwork = self.text(a.h(0)?)?;
+                let request = self.text(a.h(1)?)?;
+                let pictures = self.file_pairs(a.h(2)?)?;
+                let answer = self.canvas.borrow().find(&artwork, &request, &pictures);
+                self.result(answer.map(Value::text))
+            }
+            Imp::CanvasCombine => {
+                let artwork = self.text(a.h(0)?)?;
+                let request = self.text(a.h(1)?)?;
+                let answer = self.canvas.borrow().combine(&artwork, &request);
+                self.result(answer.map(Value::text))
+            }
+            Imp::CanvasMeasure => {
+                let artwork = self.text(a.h(0)?)?;
+                let request = self.text(a.h(1)?)?;
+                let pictures = self.file_pairs(a.h(2)?)?;
+                let answer = self.canvas.borrow().measure(&artwork, &request, &pictures);
+                self.result(answer.map(Value::text))
+            }
+            Imp::CanvasCompare => {
+                let artwork = self.text(a.h(0)?)?;
+                let request = self.text(a.h(1)?)?;
+                let pictures = self.file_pairs(a.h(2)?)?;
+                let answer = self.canvas.borrow().compare(&artwork, &request, &pictures);
+                match answer {
+                    Ok((bytes, info)) => {
+                        let (name, mime) = named(&info, "png");
+                        let file = self.keep_bytes(&name, mime, &bytes).or_else(trap)?;
+                        self.result(Ok(Value::file(file)))
+                    }
+                    Err(why) => self.result(Err(why)),
+                }
             }
             Imp::CanvasSvg => {
                 let artwork = self.text(a.h(0)?)?;
@@ -210,7 +321,7 @@ impl Core {
                                 &bytes,
                             )
                             .or_else(trap)?;
-                        self.ret_h(Value::file(file))
+                        self.result(Ok(Value::file(file)))
                     }
                     Err(why) => self.result(Err(why)),
                 }
@@ -266,6 +377,31 @@ impl Core {
                 }
             })
             .collect()
+    }
+
+    /// The bytes of the picture behind `h`: a file the person chose, or the address a picture of
+    /// the artwork is kept at.
+    fn picture_bytes(&self, h: i32) -> HResult<Vec<u8>> {
+        match self.val_whole(h)? {
+            Value::File(file) => self.file_bytes(&file).or_else(trap),
+            Value::Text(address) => {
+                let bare = hash_of(&address)
+                    .ok_or_else(|| format!("{address} names no picture"))
+                    .or_else(trap)?;
+                let blobs = self.blobs.borrow();
+                let host = blobs
+                    .as_ref()
+                    .ok_or_else(|| "this device keeps no pictures".to_owned())
+                    .or_else(trap)?;
+                host.read(bare)
+                    .ok_or_else(|| format!("the picture {address} is not on this device"))
+                    .or_else(trap)
+            }
+            other => trap(format!(
+                "a picture is a file or the address of one, got {}",
+                other.kind_name()
+            )),
+        }
     }
 
     /// The bytes of the file behind `h`, when this device holds them.

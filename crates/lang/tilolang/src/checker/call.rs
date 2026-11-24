@@ -3074,8 +3074,32 @@ impl Checker<'_> {
             "wand" => (
                 Imp::CanvasWand,
                 result(Ty::Text),
-                "the picture and what to find, as JSON",
-                vec![Ty::File, Ty::Text],
+                "the picture's address and what to find, as JSON",
+                vec![Ty::Text, Ty::Text],
+            ),
+            "find" => (
+                Imp::CanvasFind,
+                result(Ty::Text),
+                "the artwork as JSON, what to find as JSON, and its pictures' addresses",
+                vec![Ty::Text, Ty::Text, pictures()],
+            ),
+            "combine" => (
+                Imp::CanvasCombine,
+                result(Ty::Text),
+                "the artwork as JSON and the marks to combine, as JSON",
+                vec![Ty::Text, Ty::Text],
+            ),
+            "measure" => (
+                Imp::CanvasMeasure,
+                result(Ty::Text),
+                "the artwork as JSON, what to measure as JSON, and its pictures' addresses",
+                vec![Ty::Text, Ty::Text, pictures()],
+            ),
+            "compare" => (
+                Imp::CanvasCompare,
+                result(Ty::File),
+                "the artwork as JSON, the comparison's fields as JSON, and its pictures' addresses",
+                vec![Ty::Text, Ty::Text, pictures()],
             ),
             "svg" => (
                 Imp::CanvasSvg,
@@ -3106,9 +3130,10 @@ impl Checker<'_> {
                     "E022",
                     name.span,
                     format!(
-                        "`canvas` has `look`, `export`, `grade`, `wand`, `svg`, `svg_import`, \
-                         `save` and `open`, not `{other}`: `canvas.look(artwork, request, \
-                         pictures)` is a picture of the artwork"
+                        "`canvas` has `look`, `export`, `grade`, `wand`, `find`, `combine`, \
+                         `measure`, `compare`, `svg`, `svg_import`, `save` and `open`, not \
+                         `{other}`: `canvas.look(artwork, request, pictures)` is a picture of \
+                         the artwork"
                     ),
                 );
                 for a in args {

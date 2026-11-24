@@ -502,6 +502,10 @@ imports! {
     CanvasExport = "canvas_export" ([H, H, H] -> [H]);
     CanvasGrade = "canvas_grade" ([H, H] -> [H]);
     CanvasWand = "canvas_wand" ([H, H] -> [H]);
+    CanvasFind = "canvas_find" ([H, H, H] -> [H]);
+    CanvasCombine = "canvas_combine" ([H, H] -> [H]);
+    CanvasMeasure = "canvas_measure" ([H, H, H] -> [H]);
+    CanvasCompare = "canvas_compare" ([H, H, H] -> [H]);
     CanvasSvg = "canvas_svg" ([H, H] -> [H]);
     CanvasSvgImport = "canvas_svg_import" ([H, H] -> [H]);
     CanvasSave = "canvas_save" ([H, H] -> [H]);

@@ -115,11 +115,54 @@ mod cases {
         }
 
         fn grade(&self, _picture: &[u8], _adjust: &str) -> Result<Vec<u8>, String> {
-            undrawn()
+            Ok(vec![9, 9, 9])
         }
 
         fn wand(&self, _picture: &[u8], _request: &str) -> Result<String, String> {
-            undrawn()
+            Ok("M 10 20 L 30 20 L 30 40 Z".to_owned())
+        }
+
+        fn find(
+            &self,
+            _artwork: &str,
+            _request: &str,
+            _pictures: &[(String, Vec<u8>)],
+        ) -> Result<String, String> {
+            Ok("M 1 1 L 9 1 L 9 9 Z".to_owned())
+        }
+
+        fn combine(&self, _artwork: &str, _request: &str) -> Result<String, String> {
+            Ok(
+                r##"{"d":"M 0 0 L 12 0 L 12 8 Z","fill":"#2f7fb8","stroke":"","stroke_width":0.0}"##
+                    .to_owned(),
+            )
+        }
+
+        fn measure(
+            &self,
+            artwork: &str,
+            _request: &str,
+            _pictures: &[(String, Vec<u8>)],
+        ) -> Result<String, String> {
+            self.0.borrow_mut().push(artwork.to_owned());
+            Ok(r#"[{"id":"mark-0","ink_area":12.5,"offset":[-1.5,2.0]}]"#.to_owned())
+        }
+
+        fn compare(
+            &self,
+            artwork: &str,
+            request: &str,
+            pictures: &[(String, Vec<u8>)],
+        ) -> Result<(Vec<u8>, String), String> {
+            self.0.borrow_mut().push(format!(
+                "{artwork}|{request}|{}",
+                pictures
+                    .iter()
+                    .map(|(address, _)| address.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+            Ok((vec![4, 5, 6], r#"{"format":"png","score":0.12}"#.to_owned()))
         }
 
         fn svg(&self, _artwork: &str, _request: &str) -> Result<String, String> {
@@ -529,6 +572,530 @@ mod cases {
                 }
             }
             other => panic!("pictures, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shapes_combine_ink_is_measured_and_the_reference_compares() {
+        let c = Canvas::new();
+        let art = c.new_artwork("Balance");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let device = Device::default();
+        device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
+        c.rt.set_blobs(device);
+        c.rt.set_canvas(Drawing(log.clone()));
+        let one = returned_ref(c.call(
+            "add_shape",
+            vec![
+                Value::resource(&art),
+                Value::none(),
+                Value::text("M 0 0 L 10 0 L 10 10 Z"),
+                Value::text("#2f7fb8"),
+            ],
+        ));
+        let two = returned_ref(c.call(
+            "add_shape",
+            vec![
+                Value::resource(&art),
+                Value::none(),
+                Value::text("M 2 2 L 12 2 L 12 8 Z"),
+                Value::text("#d24b3a"),
+            ],
+        ));
+        let combined = match c.call(
+            "combine_marks",
+            vec![
+                Value::resource(&art),
+                Value::List(vec![Value::resource(&one), Value::resource(&two)]),
+                Value::text("union"),
+            ],
+        ) {
+            InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
+                Value::Ref(at) => ResourceRef::clone(&at.target),
+                other => panic!("the combined mark, not {other:?}"),
+            },
+            other => panic!("the combined mark, not {other:?}"),
+        };
+        assert_eq!(c.text(&combined, "d"), "M 0 0 L 12 0 L 12 8 Z");
+        assert_eq!(c.text(&combined, "kind"), "path");
+        assert_eq!(c.text(&combined, "colour"), "#2f7fb8");
+        assert_eq!(
+            c.marks(&art).len(),
+            1,
+            "the shapes became one mark, in the bottom one's place"
+        );
+
+        let measured = match c.call(
+            "measure_marks",
+            vec![
+                Value::resource(&art),
+                Value::List(vec![Value::resource(&combined)]),
+            ],
+        ) {
+            InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
+                Value::Text(answer) => answer,
+                other => panic!("the measurement, not {other:?}"),
+            },
+            other => panic!("the measurement, not {other:?}"),
+        };
+        assert!(
+            measured.contains("mark-0"),
+            "the engine measured the mark: {measured}"
+        );
+        assert!(
+            c.text(&art, "notice").contains("units of ink"),
+            "the window says what the ink weighs: {}",
+            c.text(&art, "notice")
+        );
+
+        let file = FileValue::new("Dawn.png", "image/png", 3, "h3");
+        c.call(
+            "set_reference",
+            vec![Value::resource(&art), Value::file(file), Value::Float(0.5)],
+        );
+        let compared = c.call(
+            "compare_reference",
+            vec![
+                Value::resource(&art),
+                Value::text("overlay"),
+                Value::Int(640),
+            ],
+        );
+        match compared {
+            InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
+                Value::File(made) => assert_eq!(made.media, "image/png"),
+                other => panic!("the comparison, not {other:?}"),
+            },
+            other => panic!("the comparison, not {other:?}"),
+        }
+        let seen = log.borrow().last().cloned().expect("the engine compared");
+        assert!(
+            seen.contains("\"reference\""),
+            "the engine is given the reference: {seen}"
+        );
+        assert!(
+            seen.contains("h3"),
+            "the reference's picture is lent to the engine: {seen}"
+        );
+        assert!(seen.contains("\"mode\":\"overlay\""), "the mode: {seen}");
+
+        let actions: Vec<String> =
+            c.rt.versions(&art)
+                .unwrap()
+                .into_iter()
+                .map(|version| version.action)
+                .collect();
+        for action in [
+            "combine_marks",
+            "measure_marks",
+            "set_reference",
+            "compare_reference",
+        ] {
+            let id = c.app.action(action);
+            assert!(
+                actions.iter().any(|made| made == &id),
+                "{action} is Canvas's change in the system's history: {actions:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_picture_is_cropped_turned_flipped_blended_and_graded() {
+        let c = Canvas::new();
+        let art = c.new_artwork("A photo");
+        let device = Device::default();
+        device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
+        c.rt.set_blobs(device);
+        let log = Rc::new(RefCell::new(Vec::new()));
+        c.rt.set_canvas(Drawing(log.clone()));
+        let file = FileValue::new("Dawn.png", "image/png", 3, "h3");
+        let picture = returned_ref(c.call(
+            "place_picture",
+            vec![Value::resource(&art), Value::file(file)],
+        ));
+        c.call(
+            "crop_picture",
+            vec![
+                Value::resource(&picture),
+                Value::Float(0.25),
+                Value::Float(0.25),
+                Value::Float(0.5),
+                Value::Float(0.5),
+            ],
+        );
+        c.call(
+            "straighten_picture",
+            vec![Value::resource(&picture), Value::Float(3.0)],
+        );
+        c.call(
+            "flip_picture",
+            vec![
+                Value::resource(&picture),
+                Value::Bool(true),
+                Value::Bool(false),
+            ],
+        );
+        c.call(
+            "blend_mark",
+            vec![Value::resource(&picture), Value::text("multiply")],
+        );
+        c.call(
+            "adjust_mark",
+            vec![
+                Value::resource(&picture),
+                Value::Float(1.5),  // exposure
+                Value::Float(0.2),  // contrast
+                Value::Float(0.0),  // highlights
+                Value::Float(0.0),  // shadows
+                Value::Float(0.0),  // saturation
+                Value::Float(0.0),  // vibrance
+                Value::Float(0.0),  // hue
+                Value::Float(0.0),  // temperature
+                Value::Float(0.0),  // tint
+                Value::Bool(false), // grayscale
+                Value::Bool(false), // invert
+                Value::Float(0.0),  // blur
+                Value::Float(0.0),  // sharpen
+                Value::Float(0.0),  // vignette
+            ],
+        );
+        assert_eq!(c.float(&picture, "crop_x"), 0.25);
+        assert_eq!(c.float(&picture, "crop_width"), 0.5);
+        assert_eq!(c.float(&picture, "straighten"), 3.0);
+        assert!(c.flag(&picture, "flip_h"), "the picture stands mirrored");
+        assert_eq!(c.text(&picture, "blend"), "multiply");
+        assert_eq!(c.float(&picture, "exposure"), 1.5);
+        // The engine reads all of it from the records.
+        c.call("draw_look", vec![Value::resource(&art), Value::Int(128)]);
+        let seen = log.borrow().first().cloned().expect("the engine was asked");
+        for field in [
+            "\"crop_x\":0.25",
+            "\"straighten\":3.0",
+            "\"flip_h\":true",
+            "\"blend\":\"multiply\"",
+            "\"exposure\":1.5",
+        ] {
+            assert!(seen.contains(field), "the engine reads {field}: {seen}");
+        }
+    }
+
+    #[test]
+    fn a_picture_is_graded_into_a_new_file() {
+        let c = Canvas::new();
+        let device = Device::default();
+        device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
+        c.rt.set_blobs(device);
+        c.rt.set_canvas(Drawing::default());
+        let file = FileValue::new("Dawn.png", "image/png", 3, "h3");
+        let graded = c.call(
+            "grade_picture",
+            vec![
+                Value::file(file),
+                Value::Float(0.5), // exposure
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Bool(true), // grayscale
+                Value::Bool(false),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(0.0),
+            ],
+        );
+        match graded {
+            InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
+                Value::File(made) => assert_eq!(made.media, "image/png"),
+                other => panic!("a graded file, not {other:?}"),
+            },
+            other => panic!("a graded file, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_layer_is_masked_clipped_and_grouped() {
+        let c = Canvas::new();
+        let art = c.new_artwork("Masks");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        c.rt.set_blobs(Device::default());
+        c.rt.set_canvas(Drawing(log.clone()));
+        c.call("add_layer", vec![Value::resource(&art), Value::text("Ink")]);
+        let ink = c.layer(&art, "Ink");
+        let mask = returned_ref(c.call(
+            "add_mask",
+            vec![Value::resource(&art), Value::resource(&ink)],
+        ));
+        assert_eq!(c.text(&mask, "name"), "Ink mask");
+        assert_eq!(c.text(&mask, "mask_of"), "Ink");
+        assert_eq!(c.layer_names(&art), ["Layer 1", "Ink", "Ink mask"]);
+        c.call(
+            "set_mask",
+            vec![
+                Value::resource(&art),
+                Value::resource(&mask),
+                Value::Float(0.4),
+                Value::Bool(true),
+                Value::Bool(true),
+            ],
+        );
+        assert_eq!(c.float(&mask, "base"), 0.4);
+        assert!(c.flag(&mask, "invert"));
+        assert!(c.flag(&mask, "unlinked"));
+        c.call(
+            "clip_layer",
+            vec![
+                Value::resource(&art),
+                Value::resource(&ink),
+                Value::Bool(true),
+            ],
+        );
+        assert!(c.flag(&ink, "clip"));
+        c.call(
+            "set_layer_group",
+            vec![Value::resource(&ink), Value::text("icons")],
+        );
+        assert_eq!(c.text(&ink, "group"), "icons");
+        let stroke = returned_ref(c.call(
+            "add_stroke",
+            vec![
+                Value::resource(&art),
+                Value::some(Value::resource(&ink)),
+                Value::List(vec![
+                    Value::Float(1.0),
+                    Value::Float(2.0),
+                    Value::Float(1.0),
+                ]),
+                Value::Float(6.0),
+                Value::text("#1d1b19"),
+                Value::text(""),
+            ],
+        ));
+        c.call(
+            "group_mark",
+            vec![Value::resource(&stroke), Value::text("icons")],
+        );
+        assert_eq!(c.text(&stroke, "group"), "icons");
+        c.call("draw_look", vec![Value::resource(&art), Value::Int(128)]);
+        let seen = log.borrow().first().cloned().expect("the engine was asked");
+        for field in [
+            "\"mask_of\":\"Ink\"",
+            "\"base\":0.4",
+            "\"invert\":true",
+            "\"clip\":true",
+            "\"group\":\"icons\"",
+        ] {
+            assert!(seen.contains(field), "the engine reads {field}: {seen}");
+        }
+    }
+
+    #[test]
+    fn the_wand_selects_what_a_colour_touches() {
+        let c = Canvas::new();
+        let art = c.new_artwork("Wand");
+        let device = Device::default();
+        device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
+        c.rt.set_blobs(device);
+        c.rt.set_canvas(Drawing::default());
+        let file = FileValue::new("Dawn.png", "image/png", 3, "h3");
+        c.call(
+            "place_picture",
+            vec![Value::resource(&art), Value::file(file)],
+        );
+        let found = c.call(
+            "select_like",
+            vec![
+                Value::resource(&art),
+                Value::List(vec![Value::Float(3.0), Value::Float(3.0)]),
+                Value::text(""),
+                Value::Float(0.15),
+                Value::Bool(false),
+            ],
+        );
+        match found {
+            InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
+                Value::Text(d) => assert!(d.contains("M 10 20"), "the area the engine found: {d}"),
+                other => panic!("the found area, not {other:?}"),
+            },
+            other => panic!("the found area, not {other:?}"),
+        }
+        let selection = c.rt.read(&art, "selection").unwrap();
+        assert!(
+            format!("{selection:?}").contains("M 10 20 L 30 20"),
+            "the found area is the artwork's selection: {selection:?}"
+        );
+    }
+
+    #[test]
+    fn the_subject_and_a_refined_edge_come_back_as_selections() {
+        let c = Canvas::new();
+        let art = c.new_artwork("Subject");
+        c.rt.set_blobs(Device::default());
+        c.rt.set_canvas(Drawing::default());
+        let subject = c.call(
+            "select_subject",
+            vec![Value::resource(&art), Value::Float(0.0)],
+        );
+        match subject {
+            InvokeOutcome::Done(Value::Opt(Some(held))) => match *held {
+                Value::Text(d) => assert!(d.contains("M 1 1"), "the subject's area: {d}"),
+                other => panic!("the subject's area, not {other:?}"),
+            },
+            other => panic!("the subject's area, not {other:?}"),
+        }
+        c.call(
+            "select_area",
+            vec![
+                Value::resource(&art),
+                Value::text("M 0 0 L 100 0 L 100 100 Z"),
+                Value::Float(0.0),
+            ],
+        );
+        c.call(
+            "refine_selection",
+            vec![Value::resource(&art), Value::Float(6.0)],
+        );
+        let selection = c.rt.read(&art, "selection").unwrap();
+        assert!(
+            format!("{selection:?}").contains("M 1 1 L 9 1"),
+            "the refined edge is the artwork's selection: {selection:?}"
+        );
+    }
+
+    #[test]
+    fn text_and_a_gradient_are_marks_the_engine_draws() {
+        let c = Canvas::new();
+        let art = c.new_artwork("Type");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        c.rt.set_blobs(Device::default());
+        c.rt.set_canvas(Drawing(log.clone()));
+        let text = returned_ref(c.call(
+            "add_text",
+            vec![
+                Value::resource(&art),
+                Value::none(),
+                Value::text("Hello"),
+                Value::Float(40.0),
+                Value::Float(60.0),
+                Value::Float(48.0),
+                Value::text("#1d1b19"),
+                Value::text("serif"),
+                Value::Int(700),
+                Value::Bool(true),
+                Value::text("center"),
+                Value::Float(1.2),
+                Value::Float(40.0),
+            ],
+        ));
+        assert_eq!(c.text(&text, "kind"), "text");
+        assert_eq!(c.text(&text, "text"), "Hello");
+        c.call(
+            "set_text",
+            vec![Value::resource(&text), Value::text("Hello, Tilo")],
+        );
+        assert_eq!(c.text(&text, "text"), "Hello, Tilo");
+        let shape = returned_ref(c.call(
+            "add_shape",
+            vec![
+                Value::resource(&art),
+                Value::none(),
+                Value::text("M 0 0 L 100 0 L 100 100 Z"),
+                Value::text("#2f7fb8"),
+            ],
+        ));
+        c.call(
+            "fill_gradient",
+            vec![
+                Value::resource(&shape),
+                Value::text("linear"),
+                Value::Float(0.0),
+                Value::Float(0.0),
+                Value::Float(100.0),
+                Value::Float(100.0),
+                Value::List(vec![Value::Float(0.0), Value::Float(1.0)]),
+                Value::List(vec![Value::text("#2f7fb8"), Value::text("#2f7fb800")]),
+            ],
+        );
+        assert_eq!(c.text(&shape, "gradient"), "linear");
+        c.call("draw_look", vec![Value::resource(&art), Value::Int(128)]);
+        let seen = log.borrow().first().cloned().expect("the engine was asked");
+        for field in [
+            "\"kind\":\"text\"",
+            "\"text\":\"Hello, Tilo\"",
+            "\"weight\":700",
+            "\"gradient_kind\":\"linear\"",
+            "\"gradient_offsets\":[0.0,1.0]",
+        ] {
+            assert!(seen.contains(field), "the engine reads {field}: {seen}");
+        }
+    }
+
+    #[test]
+    fn a_layer_is_painted_with_a_saved_medium() {
+        let c = Canvas::new();
+        let art = c.new_artwork("Oil");
+        let log = Rc::new(RefCell::new(Vec::new()));
+        c.rt.set_blobs(Device::default());
+        c.rt.set_canvas(Drawing(log.clone()));
+        let medium = returned_ref(c.call(
+            "save_medium",
+            vec![
+                Value::resource(&art),
+                Value::text("studio-oil"),
+                Value::text("Studio oil"),
+                Value::text("oil"),
+                Value::text("Loose and glossy"),
+                Value::text("linen"),
+            ],
+        ));
+        assert_eq!(c.text(&medium, "label"), "Studio oil");
+        assert_eq!(c.text(&medium, "key"), "studio-oil");
+        match c.rt.read(&art, "media").unwrap() {
+            Value::List(rows) => assert_eq!(rows.len(), 1, "the medium is saved in the artwork"),
+            other => panic!("media, not {other:?}"),
+        }
+        let layer = c.layers(&art).first().cloned().expect("a layer");
+        c.call(
+            "set_medium",
+            vec![
+                Value::resource(&art),
+                Value::resource(&layer),
+                Value::text("studio-oil"),
+            ],
+        );
+        assert_eq!(c.text(&layer, "medium"), "studio-oil");
+        let stroke = returned_ref(c.call(
+            "add_stroke",
+            vec![
+                Value::resource(&art),
+                Value::some(Value::resource(&layer)),
+                Value::List(vec![
+                    Value::Float(1.0),
+                    Value::Float(2.0),
+                    Value::Float(1.0),
+                ]),
+                Value::Float(6.0),
+                Value::text("#1d1b19"),
+                Value::text("round"),
+            ],
+        ));
+        c.call(
+            "wet_mark",
+            vec![Value::resource(&stroke), Value::Bool(true)],
+        );
+        assert!(c.flag(&stroke, "wet"));
+        c.call("draw_look", vec![Value::resource(&art), Value::Int(128)]);
+        let seen = log.borrow().first().cloned().expect("the engine was asked");
+        for field in [
+            "\"medium\":\"studio-oil\"",
+            "\"wet\":true",
+            "\"id\":\"studio-oil\"",
+            "\"engine\":\"oil\"",
+        ] {
+            assert!(seen.contains(field), "the engine reads {field}: {seen}");
         }
     }
 

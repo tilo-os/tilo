@@ -988,6 +988,37 @@ impl tilolang_runtime::canvas::CanvasHost for SharedCanvas {
         self.0.wand(picture, request)
     }
 
+    fn find(
+        &self,
+        artwork: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String> {
+        self.0.find(artwork, request, pictures)
+    }
+
+    fn combine(&self, artwork: &str, request: &str) -> Result<String, String> {
+        self.0.combine(artwork, request)
+    }
+
+    fn measure(
+        &self,
+        artwork: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String> {
+        self.0.measure(artwork, request, pictures)
+    }
+
+    fn compare(
+        &self,
+        artwork: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<(Vec<u8>, String), String> {
+        self.0.compare(artwork, request, pictures)
+    }
+
     fn svg(&self, artwork: &str, request: &str) -> Result<String, String> {
         self.0.svg(artwork, request)
     }

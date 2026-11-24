@@ -56,6 +56,41 @@ impl CanvasHost for Engine {
         canvas_engine::host::wand(picture, request)
     }
 
+    fn find(
+        &self,
+        artwork_json: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String> {
+        let art = artwork(artwork_json)?;
+        canvas_engine::host::find_area(&art, request, pictures)
+    }
+
+    fn combine(&self, artwork_json: &str, request: &str) -> Result<String, String> {
+        let art = artwork(artwork_json)?;
+        canvas_engine::host::combine(&art, request)
+    }
+
+    fn measure(
+        &self,
+        artwork_json: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String> {
+        let art = artwork(artwork_json)?;
+        canvas_engine::host::measure(&art, request, pictures)
+    }
+
+    fn compare(
+        &self,
+        artwork_json: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<(Vec<u8>, String), String> {
+        let art = artwork(artwork_json)?;
+        canvas_engine::host::compare(&art, request, pictures)
+    }
+
     fn svg(&self, artwork_json: &str, request: &str) -> Result<String, String> {
         let art = artwork(artwork_json)?;
         canvas_engine::host::svg(&art, request)
