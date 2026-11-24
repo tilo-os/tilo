@@ -2088,10 +2088,7 @@ impl Reply {
         };
         let mut arguments = Map::new();
         arguments.insert("body".into(), json!(words));
-        arguments.insert(
-            "reply_to".into(),
-            json!(triggered::published(CHAT, &place.item)),
-        );
+        arguments.insert("reply_to".into(), place.reference());
         if !self.turn.is_empty() {
             arguments.insert("turn".into(), json!(self.turn));
         }
@@ -2255,10 +2252,7 @@ impl Reply {
         let body = rich_text.reference(label, to)?;
         let mut arguments = Map::new();
         arguments.insert("body".into(), body);
-        arguments.insert(
-            "reply_to".into(),
-            json!(triggered::published(CHAT, &place.item)),
-        );
+        arguments.insert("reply_to".into(), place.reference());
         invoke_named(
             &self.provider,
             &self.caller,

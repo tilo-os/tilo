@@ -396,11 +396,27 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     // The firing starts the agent's answer on her device; the engine there takes the turn, and
     // its tools go through the device's dispatch, which hands a call the workspace's grants
     // admit to the provider that answers it here: Chat's `send` is carried out by Chat.
+    // What each call the turn made was answered, for a failure to say.
+    let answered = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let dispatch = {
         let providers = beas.providers();
+        let answered = Arc::clone(&answered);
         Arc::new(TestProvider::new().answering(move |caller, request| {
             match providers.get(&request.target.provider) {
-                Some(registered) => registered.answers.invoke(caller, request.clone()),
+                Some(registered) => {
+                    let answered = Arc::clone(&answered);
+                    let action = request.target.address.action.clone();
+                    registered
+                        .answers
+                        .invoke(caller, request.clone())
+                        .map(move |receipt| {
+                            answered
+                                .lock()
+                                .unwrap()
+                                .push(format!("{action}: {receipt:?}"));
+                            receipt
+                        })
+                }
                 None => Pending::ready(Ok(tilo_actions::remote::InvocationReceipt {
                     invocation: request.invocation,
                     status: ReceiptStatus::Completed {
@@ -460,8 +476,9 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         "it answers in the channel she wrote in"
     );
     assert_eq!(
-        argument(&request, "reply_to"),
-        json!(format!("tl:{CHAT}:m-1"))
+        argument(&request, "reply_to")["id"],
+        json!("m-1"),
+        "it answers her message"
     );
     // The reply begins empty, naming the turn, and takes the model's words as it writes them.
     let deadline = tilo_test_env::hang_deadline();
@@ -512,7 +529,8 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "Chat never carried out the reply"
+            "Chat never carried out the reply; the turn's calls were answered {:?}",
+            answered.lock().unwrap()
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };

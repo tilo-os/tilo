@@ -346,8 +346,9 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
         Value::String(invocation.to_string())
     );
     assert_eq!(
-        argument(sent, "reply_to"),
-        Value::String("tl:so.tilo.chat:asked-1".to_owned())
+        argument(sent, "reply_to")["id"],
+        Value::String("asked-1".to_owned()),
+        "it answers the message that asked"
     );
     assert_eq!(
         last_edit(&invoked),

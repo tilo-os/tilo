@@ -370,6 +370,13 @@ impl Where {
         json!({"app": self.app, "kind": self.kind, "resource": self.item})
     }
 
+    /// The item that asked, as an action's argument that picks an existing resource takes it
+    /// ([`tilo_actions::resource_reference_schema`]): its app, kind and id.
+    #[must_use]
+    pub fn reference(&self) -> Value {
+        json!({"app": self.app, "kind": self.kind, "id": self.item, "label": ""})
+    }
+
     /// Where the ask is in the workspace, by its address: `app/conversation`.
     #[must_use]
     pub fn conversation(&self) -> String {
@@ -442,7 +449,7 @@ pub(super) async fn write_answer(
     }
     let (app, resource, action) = if place.app == CHAT {
         arguments.insert("body".into(), json!(words));
-        arguments.insert("reply_to".into(), json!(published(CHAT, &place.item)));
+        arguments.insert("reply_to".into(), place.reference());
         (CHAT, published(CHAT, &place.record), "send")
     } else if place.app == MAIL {
         // Mail answers the conversation, to whoever wrote its newest message, as a reply.

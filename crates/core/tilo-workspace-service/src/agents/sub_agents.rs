@@ -102,10 +102,7 @@ pub(super) async fn tell(
     };
     let mut arguments = Map::new();
     arguments.insert("body".into(), mentioning(rich_text, agent, name, text)?);
-    arguments.insert(
-        "reply_to".into(),
-        json!(triggered::published(CHAT, &place.item)),
-    );
+    arguments.insert("reply_to".into(), place.reference());
     invoke_named(
         provider,
         caller,
