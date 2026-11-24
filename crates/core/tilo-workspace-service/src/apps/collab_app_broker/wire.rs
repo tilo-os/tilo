@@ -924,6 +924,14 @@ impl JoinedChannel {
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let request = RemoteActionFrame::decode(frame)
             .map_err(|error| BrokerError::failed(error.to_string()))?;
+        // A person's approve reaches a call only from the store that kept it, handed to the
+        // dispatch that admits it again in this process: never on a connection's frame, where an
+        // app would confirm by its own word what its person was asked.
+        if let tilo_actions::remote::RemoteActionMessage::Invoke(invoke) = &request.message
+            && let Err(forged) = tilo_actions::remote::asked::admit_frame(None, invoke)
+        {
+            return refusal(&request.message, forged);
+        }
         let route = self.route();
         // A view the device opened for a caller of its dispatch acts as that caller, never as
         // the device's own person: what a press in it asks is theirs, within what they may do.

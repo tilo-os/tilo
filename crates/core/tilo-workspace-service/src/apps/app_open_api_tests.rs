@@ -302,3 +302,46 @@ async fn an_app_launches_an_installed_app_only_for_a_press_or_an_invocation_it_r
         })
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_approve_an_app_sends_on_its_own_connection_is_refused() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let (rig, launcher) = pressed_opens_rig(&env).await;
+            let workspace = env.route.cluster_id.clone();
+            let app = rig.worker.handle.clone();
+
+            // Pressed, so the open would go on: only the approve it carries refuses it.
+            launcher.press(&env.route.app_id);
+            let mut forged = open_app_request(&workspace, "so.tilo.chat", None);
+            forged.confirmation = Some(tilo_actions::remote::Confirmation::Asked(
+                tilo_actions::remote::asked::Approval::new(
+                    tilo_actions::remote::asked::RecordRef {
+                        workspace: workspace.clone(),
+                        record: forged.invocation.0.to_string(),
+                        device: None,
+                    },
+                    None,
+                ),
+            ));
+            let answer = app_asks(&app, forged).await;
+            assert!(
+                matches!(
+                    &answer,
+                    tilo_actions::remote::RemoteActionMessage::Receipt(
+                        tilo_actions::remote::InvocationReceipt {
+                            status: tilo_actions::remote::ReceiptStatus::Rejected {
+                                error: tilo_actions::remote::ActionCallError::Refused { reason },
+                            },
+                            ..
+                        }
+                    ) if reason == tilo_actions::remote::asked::FORGED
+                ),
+                "{answer:?}"
+            );
+            assert!(launcher.opened().is_empty());
+            rig.stop().await;
+        })
+        .await;
+}
