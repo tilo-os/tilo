@@ -43,7 +43,15 @@ pub struct RecordReads {
     broker: Option<std::sync::Weak<Broker>>,
     /// The app action server this host was given, which reads for every other caller.
     served: Option<Arc<dyn ResourceReads>>,
+    /// What admits a caller to the invocations of a dispatch's workspace: its admitted run.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    admitted: Option<Admitted>,
 }
+
+/// Whether a caller reads the invocations of a workspace through a dispatch: the dispatch's own
+/// workspace, as the run it admitted, still valid now.
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+pub type Admitted = Arc<dyn Fn(&Caller, &str) -> Result<(), ActionCallError> + Send + Sync>;
 
 /// Who reads a record for its caller.
 enum Route {
@@ -74,6 +82,8 @@ impl RecordReads {
             #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
             broker: None,
             served,
+            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+            admitted: None,
         }
     }
 
@@ -84,18 +94,38 @@ impl RecordReads {
             workspaces: None,
             broker: Some(broker),
             served: None,
+            admitted: None,
         }
     }
 
     /// The reader of a device's dispatch: the workspaces it holds, for a caller whose
-    /// certificate a workspace keeps, and the apps `broker` serves, for every caller inside it.
+    /// certificate a workspace keeps, and the apps `broker` serves, for every caller inside it;
+    /// its invocations for the callers `admitted` admits.
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    pub fn with_apps(workspaces: &Workspaces, broker: &Arc<Broker>) -> Arc<Self> {
+    pub fn with_apps(
+        workspaces: &Workspaces,
+        broker: &Arc<Broker>,
+        admitted: Admitted,
+    ) -> Arc<Self> {
         Arc::new(Self {
             workspaces: Some(WeakWorkspaces(Arc::downgrade(&workspaces.inner))),
             broker: Some(Arc::downgrade(broker)),
             served: None,
+            admitted: Some(admitted),
         })
+    }
+
+    /// Whether `caller` reads `workspace`'s invocations: as the run a dispatch admitted, in its
+    /// own workspace, where this reader is a dispatch's.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    fn may_read_invocations(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+    ) -> Result<(), ActionCallError> {
+        self.admitted
+            .as_ref()
+            .map_or(Ok(()), |admitted| admitted(caller, workspace))
     }
 
     /// The workspace's invocations ([`tilo_actions::remote::workspace_invocations::PROVIDER`]),
@@ -107,6 +137,7 @@ impl RecordReads {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
+        self.may_read_invocations(caller, &address.workspace)?;
         let broker = self.broker().ok_or_else(refused)?;
         let asked = self
             .workspaces
@@ -453,6 +484,7 @@ impl ResourceReads for RecordReads {
         if address.app == tilo_actions::remote::workspace_invocations::PROVIDER
             && let Some(broker) = self.broker()
         {
+            self.may_read_invocations(caller, &address.workspace)?;
             return broker.watch_invocations(caller, &address.workspace, wake);
         }
         let route = self.route(caller, address)?;

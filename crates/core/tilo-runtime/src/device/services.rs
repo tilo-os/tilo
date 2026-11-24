@@ -3041,9 +3041,27 @@ impl ActionProvider for RuntimeActionProvider {
     /// the rest: a key's run as that key, whose certificate the workspace keeps, and every caller
     /// by the grants the apps this device serves decide for it.
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        let (own, session, workspaces) = (
+            self.workspace.clone(),
+            self.session.clone(),
+            Arc::clone(&self.workspaces),
+        );
+        // A dispatch's invocations are its own workspace's, read as the run it admitted.
+        let admitted = move |caller: &Caller, workspace: &str| {
+            if workspace != own {
+                return Err(ActionCallError::Refused {
+                    reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
+                });
+            }
+            if let Some(session) = &session {
+                session.check(caller, &workspaces)?;
+            }
+            Ok(())
+        };
         Some(tilo_workspace_service::workspaces::RecordReads::with_apps(
             self.workspaces.copies(),
             self.broker.state(),
+            Arc::new(admitted),
         ))
     }
 
