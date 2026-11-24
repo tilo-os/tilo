@@ -198,11 +198,7 @@ pub const WORKSPACE_ACCESS: &str = "workspace/access";
 const WORKSPACE_ROOTS: &[(&str, &str, &str)] = &[
     ("members", "Members", WORKSPACE_MEMBERS),
     ("content", "Content", WORKSPACE_CONTENT),
-    (
-        "agents",
-        "WorkspaceAgent",
-        "workspace:tilo.workspace.agent",
-    ),
+    ("agents", "WorkspaceAgent", "workspace:tilo.workspace.agent"),
     ("access", "Access", WORKSPACE_ACCESS),
 ];
 
@@ -245,6 +241,9 @@ const MODELS_ROOTS: &[(&str, &str, &str)] = &[("models", "Models", "models")];
 const ACCOUNTS_ROOTS: &[(&str, &str, &str)] = &[("accounts", "Accounts", "accounts")];
 /// The host account's root, the one resource its plan, card, usage and invoices are
 /// read from.
+/// The hosting account's package: the person's plan, payment method and invoices, which the
+/// session publishes and Billing reads.
+const HOST_ACCOUNT_APP: &str = "tilo.host-account";
 const HOST_ACCOUNT_ROOTS: &[(&str, &str, &str)] = &[("account", "HostAccount", "host-account")];
 /// The reports' root, every report this computer recorded.
 const CRASH_REPORT_ROOTS: &[(&str, &str, &str)] = &[("reports", "CrashReports", "crash-reports")];
