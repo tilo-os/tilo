@@ -411,7 +411,10 @@ impl Workspaces {
         let removed = {
             let governed = self.workspace(workspace).await?;
             let governed = governed.lock().await;
-            governed.peer().governance().removed_from_roster(device)
+            governed
+                .peer()
+                .governance()
+                .removed_from_member_list(device)
         };
         if removed {
             return Err(CollaborationError::new(

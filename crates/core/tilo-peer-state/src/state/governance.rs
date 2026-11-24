@@ -283,13 +283,13 @@ impl PeerGovernance<'_> {
     }
 
     /// Whether the workspace has met `device` and no longer lists it: its
-    /// certificate is one this copy holds, and the roster carries no row for
-    /// it. A device the workspace took out of its roster
+    /// certificate is one this copy holds, and the member list carries no row for
+    /// it. A device the workspace took off its member list
     /// ([`PeerGovernanceMut::forget_device`]) stays out until a deliberate
     /// admission writes its row again, never by presenting the certificate
     /// the workspace already has. A device the workspace never met is not
     /// one; neither is any while no governance is held here.
-    pub fn removed_from_roster(self, device: &DeviceCert) -> bool {
+    pub fn removed_from_member_list(self, device: &DeviceCert) -> bool {
         let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
             return false;
         };
@@ -1081,7 +1081,7 @@ impl PeerGovernanceMut<'_> {
     /// whose certificate the workspace holds but whose row it took out of its
     /// roster is admitted afresh here, by the workspace's own deliberate
     /// admission: the join exchange and the entry refuse it before reaching
-    /// this ([`PeerGovernance::removed_from_roster`]).
+    /// this ([`PeerGovernance::removed_from_member_list`]).
     ///
     /// # Errors
     ///

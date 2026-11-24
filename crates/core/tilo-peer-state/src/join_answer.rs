@@ -442,7 +442,7 @@ fn admit_member_device(
             .governed()
             .peer
             .governance()
-            .removed_from_roster(device)
+            .removed_from_member_list(device)
         {
             return Err(JoinError::new(crate::REMOVED_DEVICE_REFUSED));
         }

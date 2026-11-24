@@ -285,7 +285,7 @@ impl Workspaces {
     ) -> Option<tilo_action_policy::ContentPolicy> {
         let governed = self.workspace(workspace).await.ok()?;
         let governed = governed.lock().await;
-        Some(governed.peer().governance().governed_content())
+        Some(governed.peer().governance().content_policy())
     }
 
     /// Settle `workspace`'s content policy as `policy`, as `device`: the
@@ -313,7 +313,7 @@ impl Workspaces {
             WorkspaceOp::Govern(governance::SETTINGS),
             now,
         )?;
-        if governed.peer().governance().governed_content() == policy {
+        if governed.peer().governance().content_policy() == policy {
             return Ok(policy);
         }
         let digest = request_digest(&("the workspace's content policy", &policy))
@@ -324,7 +324,7 @@ impl Workspaces {
             digest,
             |peer| {
                 peer.governance_mut()
-                    .put_governed_content(&policy, &key, super::system_time(now))
+                    .put_content_policy(&policy, &key, super::system_time(now))
             },
             now,
         )

@@ -2407,7 +2407,7 @@ impl Workspaces {
             }
             ADD_MEMBER => self.governance_add_member(call).await,
             CONTENT_HELD => Ok(self.content_held(call.workspace).await),
-            CONTENT_POLICY | SET_CONTENT_POLICY => self.governance_content_policy(call).await,
+            CONTENT_POLICY | SET_CONTENT_POLICY => self.set_or_read_content_policy(call).await,
             CONTENT_REFUSED => Ok(json!({
                 "workspace": call.workspace,
                 "refused": self.content_refused(call.workspace).await,
@@ -3419,7 +3419,7 @@ impl Workspaces {
     /// settles it as the person who may change the workspace's settings gives
     /// the values it names; one left out stays as it is. Answers the policy the
     /// workspace now records, which every host of it obeys.
-    async fn governance_content_policy(
+    async fn set_or_read_content_policy(
         &self,
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionCallError> {
@@ -4767,7 +4767,7 @@ mod surface_tests {
     use serde_json::{Value, json};
     use tilo_actions::ParamType;
     use tilo_actions::remote::{
-        WORKSPACE_AGENTS, WORKSPACE_GOVERNANCE_PUBLISHED, WORKSPACE_INVITATIONS, WORKSPACE_MEMBER,
+        WORKSPACE_AGENTS, WORKSPACE_INVITATIONS, WORKSPACE_MEMBER, WORKSPACE_MEMBER_LIST_PUBLISHED,
         WORKSPACE_MEMBERS, WORKSPACE_WAITING,
     };
     use tilo_actions::remote::{
@@ -4825,7 +4825,7 @@ mod surface_tests {
         let resources: Vec<Value> = RESOURCES
             .iter()
             .map(|(kind, label)| {
-                let verbs: Vec<Value> = WORKSPACE_GOVERNANCE_PUBLISHED
+                let verbs: Vec<Value> = WORKSPACE_MEMBER_LIST_PUBLISHED
                     .iter()
                     // The workspace's agents are the record's own actions, published on
                     // `workspace/agents` by the record's grants: no verb of this surface.

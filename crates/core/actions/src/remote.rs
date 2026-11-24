@@ -128,9 +128,9 @@ pub use content_link::{
 };
 pub use content_put::{
     CONTENT_PUTS_UNAVAILABLE, CONTENT_REFERENCE, ContentPut, ContentPutAnswer, ContentPutStep,
-    ContentPuts, content_hash,
-    HostedContentPuts, MAX_CONTENT_PUT_AHEAD, MAX_CONTENT_PUT_CHUNK, MAX_HAVE_HASHES,
+    ContentPuts, HostedContentPuts, MAX_CONTENT_PUT_AHEAD, MAX_CONTENT_PUT_CHUNK, MAX_HAVE_HASHES,
     MAX_HOSTED_CONTENT_PUTS, MAX_OPEN_CONTENT_PUTS, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES,
+    content_hash,
 };
 pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
@@ -300,7 +300,7 @@ pub const WORKSPACE_AGENT_DELETE: &str = "agent.delete";
 /// is its `person`, and one listed on [`WORKSPACE_APP`] on each app the workspace runs, which
 /// is its `app`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
 /// workspace's grants.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 43] = [
+pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 43] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
@@ -399,7 +399,7 @@ pub fn workspace_app(workspace: &str, app: &str) -> String {
 /// `operation` at, where it is not one person's or one app's.
 #[must_use]
 pub fn workspace_governance_address(workspace: &str, operation: &str) -> ActionAddress {
-    match WORKSPACE_GOVERNANCE_PUBLISHED
+    match WORKSPACE_MEMBER_LIST_PUBLISHED
         .iter()
         .find(|(granted, child, _)| {
             *granted == operation
@@ -440,13 +440,13 @@ pub fn workspace_governance_operation(address: &ActionAddress) -> Option<(&str, 
     } else {
         child
     };
-    let published = WORKSPACE_GOVERNANCE_PUBLISHED
+    let published = WORKSPACE_MEMBER_LIST_PUBLISHED
         .iter()
         .find(|(_, at, published)| *at == child && *published == action);
     match published {
         Some((granted, _, _)) => Some((workspace, granted)),
         None if child.is_none()
-            && !WORKSPACE_GOVERNANCE_PUBLISHED
+            && !WORKSPACE_MEMBER_LIST_PUBLISHED
                 .iter()
                 .any(|(granted, _, _)| *granted == action) =>
         {

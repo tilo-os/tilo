@@ -98,7 +98,7 @@ impl StatePeer {
                 self.governance_mut().put_governed_entry(&entry, key, now)
             }
             SettingsChange::Content(policy) => {
-                self.governance_mut().put_governed_content(policy, key, now)
+                self.governance_mut().put_content_policy(policy, key, now)
             }
             SettingsChange::Shortcuts(change) => self
                 .workspace_mut()
@@ -161,7 +161,7 @@ impl PeerGovernance<'_> {
     /// The content policy the workspace's owners set, as its governance
     /// records it: the limits its content keeps when they set none.
     #[must_use]
-    pub fn governed_content(self) -> tilo_action_policy::ContentPolicy {
+    pub fn content_policy(self) -> tilo_action_policy::ContentPolicy {
         self.peer
             .core
             .workspace_doc
@@ -208,7 +208,7 @@ impl PeerGovernanceMut<'_> {
     /// # Errors
     ///
     /// `key` is not a member's device, or governance cannot be updated.
-    pub fn put_governed_content(
+    pub fn put_content_policy(
         self,
         policy: &tilo_action_policy::ContentPolicy,
         key: &dyn DeviceSigner,
