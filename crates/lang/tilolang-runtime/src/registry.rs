@@ -32,6 +32,11 @@ pub struct TypeInfo {
     /// `(readers: people)`: who reads a record of the type and everything under it — the field
     /// holding them, or its author and the field that makes it every member's.
     pub readers: Option<ReaderRule>,
+    /// The fields the type hides from its places (`hide` in its `search` block), by id: what an
+    /// app keeps for itself (who gave it to whom, when) rather than offers to a person. History
+    /// names none of them while it names a field the places show, so no sentence says a field
+    /// only the app reads.
+    pub hidden: Vec<String>,
 }
 
 impl TypeInfo {
@@ -242,6 +247,7 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
         fields,
         title: t.title.clone(),
         readers: t.readers.clone(),
+        hidden: t.search.hidden.clone(),
     })
 }
 

@@ -1866,6 +1866,59 @@ fn fixture_dump(view: &ViewInstance) -> String {
     format!("{:#?}", view.tree())
 }
 
+/// The hand that gave a task and the moment it was given are the app's own bookkeeping, hidden
+/// from its places: history says who the task went to and never names the fields a person cannot
+/// see, and the change reads as one sentence rather than a chain of "and"s.
+#[test]
+fn history_says_who_a_task_went_to_not_the_bookkeeping_kept_for_its_agent() {
+    let (ada, root) = workspace();
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
+        ],
+        None,
+    );
+    let task = call(&ada, "new_task", create(&root, "Write the launch post"));
+    // Ben gives it to Ada, so the change is his while the task goes to the person looking.
+    let assign = {
+        let meta = &ada.host.package(APP).unwrap().meta;
+        meta.actions
+            .iter()
+            .find(|action| action.name == "assign")
+            .unwrap()
+            .id
+            .clone()
+    };
+    let ben = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben"));
+    let to_ada = Value::some(Value::Actor(Actor::from(
+        tilolang_tilo::runtime::ids::MemberId::person("ada"),
+    )));
+    ada.host
+        .runtime()
+        .invoke_action(
+            &ben,
+            (assign.as_str(), vec![task.clone(), to_ada, Value::none()]),
+        )
+        .unwrap();
+    ada.commit();
+
+    let shown = history_texts(&ada, &task);
+    let joined = shown.join(" ");
+    assert!(
+        joined.contains("assigned it to"),
+        "history says what the assignment did: {shown:?}"
+    );
+    assert!(
+        !joined.contains("assigned at"),
+        "the moment it was given is the app's bookkeeping, never a sentence: {shown:?}"
+    );
+    assert!(
+        !joined.contains("assigned by"),
+        "the hand that gave it is the app's bookkeeping: {shown:?}"
+    );
+}
+
 tilo_test_env::scenario! {
     fn a_tasks_assignee_priority_and_copy_are_single_fields_and_steps;
 

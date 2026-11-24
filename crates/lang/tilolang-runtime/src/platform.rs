@@ -951,6 +951,11 @@ impl Core {
             };
             held.push((field, side(before)?, side(after)?, words));
         }
+        // A field the type hides is the app's own bookkeeping, not a fact its places offer: an
+        // assignment keeps who gave it and when beside the person it went to, and history says
+        // the person, never the bookkeeping. So a change's sentence and notes name no hidden
+        // field; one that wrote only hidden fields reads as the action's own words instead.
+        held.retain(|entry| !info.hidden.contains(&entry.0.id));
         let mut out = Vec::with_capacity(held.len());
         let mut first = true;
         for (field, before, after, changed) in &held {

@@ -53,6 +53,10 @@ type Message {
 - `hide field` keeps a field out of filters. `conceal field` keeps it out of the index as well:
   search never holds or finds what a credential, or a note kept for one person, says. A concealed
   field is no filter either.
+- A hidden field is the app's own bookkeeping, not a fact its places offer, so history's
+  sentences and notes name none of it while they name a field the places show: an assignment
+  says who the task went to, never the moment or the hand it was kept for an agent to act on. A
+  change that wrote only hidden fields reads as the action's own words.
 - Text fields: every `Text` and `RichText` field is indexed, and a result shows the resource's
   first one, cut to its first line.
 - Without a `search` block, every simple field (`Bool`, enum, date, number, reference, set) is a
