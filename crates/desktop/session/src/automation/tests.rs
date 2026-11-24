@@ -38,27 +38,94 @@ fn a_chord_fires_the_shortcuts_that_name_it() {
     assert!(chord_pressed(&armed, &other).is_empty());
 }
 
-/// A pressed chord's call is its shortcut's run under the firing's id: the call the device's
-/// dispatch keeps as the shortcut's asked record when a step needs the person's yes.
+/// The device's dispatch as a pressed chord reaches it: every call it is sent, and who sent it.
+#[derive(Default)]
+struct Dispatch(std::sync::Mutex<Vec<(tilo_actions::remote::Caller, InvokeRequest)>>);
+
+impl ActionProvider for Dispatch {
+    fn query(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
+    > {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionCallError::UnknownAction,
+        ))
+    }
+
+    fn invoke(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((caller.clone(), request));
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionCallError::NotPermitted,
+        ))
+    }
+
+    fn observe(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: &InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
+    }
+}
+
+/// A pressed chord runs its shortcut through the device's dispatch, as the person who saved it
+/// in its workspace, under the firing's id: the call the dispatch keeps as the shortcut's asked
+/// record when a step needs their yes. It says the key started it, so its history does too.
 #[test]
-fn a_pressed_chord_calls_its_shortcuts_run_through_the_dispatch() {
-    let armed = [armed_with(&TriggerSpec::Keyboard {
+fn a_pressed_chord_runs_its_shortcut_through_the_dispatch_as_its_saver() {
+    let pressed = TriggerSpec::Keyboard {
         chord: "Super+Shift+N".into(),
-    })];
+    };
+    let armed = [armed_with(&pressed)];
     let fired = chord_pressed(&armed, &KeyChord::parse("Super+Shift+N").expect("a chord"));
-    let call = pressed_run(&fired[0]);
+    let dispatch = Dispatch::default();
+    run_pressed(&dispatch, &fired[0]);
+    let calls = dispatch
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(calls.len(), 1, "one press, one call");
+    let (caller, call) = &calls[0];
     assert_eq!(
         tilo_workspace_service::apps::automation::run_target(&call.target.address),
         Some("tidy"),
-        "the dispatch reads it as the shortcut's run"
+        "the shortcut's run"
     );
     assert_eq!(
         call.invocation.0, fired[0].invocation.0,
         "under the firing's id"
     );
+    assert_eq!(caller.workspace(), Some(armed[0].workspace.as_str()));
+    assert_eq!(caller.acting().person_id(), Some("person"), "as its saver");
+    let shortcut: Shortcut = serde_json::from_value(json!({
+        "id": "tidy", "name": "Tidy", "steps": [], "triggers": [pressed],
+    }))
+    .expect("shortcut JSON");
     assert_eq!(
-        fired[0].caller().workspace(),
-        Some(armed[0].workspace.as_str())
+        tilo_workspace_service::apps::automation::run_trigger(call.context.as_ref(), &shortcut),
+        tilo_automation::InvocationTrigger::Fired(pressed),
+        "the key that started it, chord and all"
     );
 }
 

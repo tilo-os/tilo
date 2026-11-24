@@ -641,20 +641,6 @@ impl AppActionBroker {
         self.state.set_app_action_consent(prompter);
     }
 
-    /// Shortcut runs finished since the last call, oldest first, for the
-    /// history recorder to record against the documents they changed.
-    #[must_use]
-    pub fn take_finished_invocations(&self) -> Vec<crate::apps::automation::FinishedInvocation> {
-        self.state.take_finished_invocations()
-    }
-
-    /// Whether a finished shortcut run is waiting to be taken, without
-    /// taking it: a frame can ask every tick.
-    #[must_use]
-    pub fn has_finished_shortcut_runs(&self) -> bool {
-        self.state.has_finished_shortcut_runs()
-    }
-
     /// The shortcut runs going in `workspace`: what the workspace says is
     /// running, and what can be stopped.
     #[must_use]

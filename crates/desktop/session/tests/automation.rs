@@ -344,6 +344,16 @@ fn pass(session: &mut Session, span: Duration) {
     }
 }
 
+/// The shortcut runs the session's broker finished since the last look.
+fn finished(
+    session: &Session,
+) -> Vec<tilo_workspace_service::apps::automation::FinishedInvocation> {
+    session
+        .action_broker()
+        .map(|broker| broker.take_finished_invocations())
+        .unwrap_or_default()
+}
+
 /// Step the session until it started a shortcut `wanted` run.
 #[track_caller]
 fn until_a_run(session: &mut Session, wanted: usize) -> Vec<String> {
@@ -352,14 +362,16 @@ fn until_a_run(session: &mut Session, wanted: usize) -> Vec<String> {
     // of the suite is what makes it take a while: the bound is the suite's own, not a second count.
     tilo_test_env::wait_for("a shortcut run to start", || {
         session.step(Duration::from_millis(2)).expect("step");
-        seen.extend(session.take_finished_invocations());
+        seen.extend(finished(session));
         (seen.len() >= wanted).then_some(())
     });
     seen.iter().map(|run| run.shortcut.id.clone()).collect()
 }
 
+/// A chord the person presses is the keys' to the automation, not the desktop's, and runs its
+/// shortcut through the device's dispatch (`automation::tests` covers the call it makes).
 #[test]
-fn a_shortcut_armed_on_a_chord_runs_once_when_the_person_presses_it() {
+fn a_shortcut_armed_on_a_chord_is_not_run_by_the_session_itself() {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     let (_identity, device, cert) = this_computer(&mut home);
     let person = person_of(&cert);
@@ -388,18 +400,15 @@ fn a_shortcut_armed_on_a_chord_runs_once_when_the_person_presses_it() {
     // so the keys reach it rather than the desktop.
     session.step(Duration::from_millis(1)).expect("a frame");
     chord(&mut session, &[KEY_LEFT_CTRL, KEY_LEFT_ALT, KEY_J]);
-    let runs = until_a_run(&mut session, 1);
-    assert_eq!(
-        runs,
-        vec!["tidy".to_string()],
-        "the chord the person pressed started the shortcut"
-    );
+    // The press runs the shortcut through the device's one dispatch, as the person (where a
+    // step that needs their yes asks them), which this session reaches none of: its own broker
+    // runs nothing of it.
     for _ in 0..50 {
         session.step(Duration::from_millis(2)).expect("step");
     }
     assert!(
-        session.take_finished_invocations().is_empty(),
-        "one press, one run"
+        finished(&session).is_empty(),
+        "a pressed chord never runs on the session's own broker"
     );
 }
 
@@ -443,10 +452,7 @@ fn a_shortcut_armed_on_an_app_runs_once_when_it_starts() {
     );
     // The app keeps running, which starts nothing more.
     pass(&mut session, Duration::from_millis(1200));
-    assert!(
-        session.take_finished_invocations().is_empty(),
-        "one start, one run"
-    );
+    assert!(finished(&session).is_empty(), "one start, one run");
 }
 
 #[test]
@@ -487,8 +493,5 @@ fn a_shortcut_armed_on_a_focus_mode_runs_once_when_it_switches_on() {
         "Do Not Disturb switching on started the shortcut"
     );
     pass(&mut session, Duration::from_millis(1200));
-    assert!(
-        session.take_finished_invocations().is_empty(),
-        "one switch, one run"
-    );
+    assert!(finished(&session).is_empty(), "one switch, one run");
 }

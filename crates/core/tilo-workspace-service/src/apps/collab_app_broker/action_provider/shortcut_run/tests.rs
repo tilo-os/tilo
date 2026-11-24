@@ -1208,3 +1208,39 @@ async fn an_agent_cannot_answer_for_the_person_it_acts_for() {
     assert!(asked.carried.readmitted.lock().unwrap().is_empty());
     asked.ran_nothing();
 }
+
+/// A run a pressed key started says so on its call through the dispatch: its history names the
+/// keyboard trigger with its chord. A trigger the shortcut does not have reads as a run by hand.
+#[tokio::test(flavor = "current_thread")]
+async fn a_run_a_pressed_key_started_says_so_in_its_history() {
+    for (chord, kind) in [("Super+Shift+E", "keyboard"), ("Super+Shift+Q", "manual")] {
+        let mut fixture = Fixture::new();
+        let pressed = tilo_automation::TriggerSpec::Keyboard {
+            chord: chord.into(),
+        };
+        fixture.request.context = Some(automation::fired_context(&pressed));
+        fixture.invoke().await.unwrap();
+        let record = fixture
+            .state
+            .journal
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .lookup(&fixture.key)
+            .unwrap()
+            .unwrap();
+        let expected = if kind == "keyboard" {
+            serde_json::to_value(&pressed).unwrap()
+        } else {
+            serde_json::json!({"trigger": "manual"})
+        };
+        assert_eq!(record.intent["host_start"]["trigger"], expected, "{chord}");
+        fixture.finish().await;
+        let finished = fixture.state.take_finished_invocations();
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].report.trigger, kind, "{chord}");
+    }
+}

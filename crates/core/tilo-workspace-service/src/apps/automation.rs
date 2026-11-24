@@ -544,6 +544,51 @@ pub fn run_target(address: &ActionAddress) -> Option<&str> {
         .flatten()
 }
 
+/// The facet a shortcut run's call names the trigger that started it by, when one did: the key
+/// the person pressed. Provenance its history shows, never authority.
+pub const TRIGGER_FACET: &str = "trigger";
+
+/// The context of the call that runs a shortcut `trigger` started: what its history says
+/// started it, with the trigger whole (a key's chord).
+#[must_use]
+pub fn fired_context(trigger: &TriggerSpec) -> ActionContext {
+    let mut context = ActionContext::default();
+    if let Some(named) = tilo_failure::ignored!(
+        "a trigger is plain data, and always reads as JSON",
+        serde_json::to_string(trigger).ok()
+    ) {
+        context.facets.push(tilo_actions::context::ActionFacet::new(
+            TRIGGER_FACET,
+            named,
+        ));
+    }
+    context
+}
+
+/// What started the run of `shortcut` that `context` belongs to: the trigger it names when the
+/// shortcut has that trigger, else the person, by hand.
+#[must_use]
+pub fn run_trigger(
+    context: Option<&ActionContext>,
+    shortcut: &Shortcut,
+) -> tilo_automation::InvocationTrigger {
+    context
+        .into_iter()
+        .flat_map(|context| &context.facets)
+        .filter(|facet| facet.key == TRIGGER_FACET)
+        .find_map(|facet| {
+            tilo_failure::ignored!(
+                "a trigger that does not read is provenance lost, and the run reads as by hand",
+                serde_json::from_str::<TriggerSpec>(&facet.value).ok()
+            )
+        })
+        .filter(|trigger| shortcut.triggers.contains(trigger))
+        .map_or(
+            tilo_automation::InvocationTrigger::Manual,
+            tilo_automation::InvocationTrigger::Fired,
+        )
+}
+
 /// One decoded library invocation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LibraryOperation {

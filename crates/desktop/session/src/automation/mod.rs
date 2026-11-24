@@ -20,21 +20,16 @@ use settings_store::hardware::{ActionChord, KeyChord};
 use settings_store::notification_policy::NotificationPolicy;
 use tilo_actions::InvocationId;
 use tilo_actions::api::ActionAddress;
-use tilo_actions::remote::{ActionProvider as _, InvokeRequest, RemoteActionTarget};
+use tilo_actions::remote::{ActionProvider, InvokeRequest, RemoteActionTarget};
 use tilo_automation::{FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, TriggerSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desktop::state::DesktopHandle;
-use tilo_workspace_service::apps::automation::chord_target;
+use tilo_workspace_service::apps::automation::{chord_target, fired_context};
 use tilo_workspace_service::apps::collab_broker::AppActionBroker;
 use tilo_workspace_service::apps::triggers::{Armed, Firing, StartRun as _, armed, seen_here};
 
-pub use tilo_workspace_service::apps::automation::FinishedInvocation;
-
 /// How often the apps running and the focus modes are looked at.
 const TICK_INTERVAL: Duration = Duration::from_millis(500);
-
-/// How many finished runs are kept for the history recorder to take.
-const KEPT_RUNS: usize = 64;
 
 /// Whether each focus mode is on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -62,7 +57,7 @@ pub struct Automation {
     broker: Option<Arc<AppActionBroker>>,
     /// The device's one dispatch, on the session's shell link: where a pressed chord's shortcut
     /// runs, as the person.
-    daemon: Option<runtime_collab::ShellClient>,
+    dispatch: Option<Arc<dyn ActionProvider + Send + Sync>>,
     /// The apps this session started, which an application-opened trigger follows.
     launches: Arc<crate::launches::Launches>,
     /// The person's notification policy, as the session keeps it current: the focus modes a
@@ -86,8 +81,6 @@ pub struct Automation {
     focus: Option<FocusState>,
     /// When the apps and focus modes were last looked at.
     last_tick: RefCell<Option<Instant>>,
-    /// Runs that finished and no history recorder took yet.
-    finished: RefCell<Vec<FinishedInvocation>>,
     /// Firings that came while the apps' broker was still starting: they start once it serves,
     /// rather than being lost.
     waiting: RefCell<Vec<Firing>>,
@@ -100,8 +93,8 @@ pub struct Feeds {
     pub launches: Arc<crate::launches::Launches>,
     pub policy: Arc<std::sync::Mutex<NotificationPolicy>>,
     pub revocations: crate::engine::Revocations,
-    /// The session's link to the device's daemon, when it has one.
-    pub daemon: Option<runtime_collab::ShellClient>,
+    /// The device's one dispatch, on the session's link to its daemon, when it has one.
+    pub dispatch: Option<Arc<dyn ActionProvider + Send + Sync>>,
 }
 
 impl Automation {
@@ -112,11 +105,11 @@ impl Automation {
             launches,
             policy,
             revocations,
-            daemon,
+            dispatch,
         } = feeds;
         Self {
             broker: None,
-            daemon,
+            dispatch,
             launches,
             policy,
             revocations,
@@ -128,7 +121,6 @@ impl Automation {
             running: None,
             focus: None,
             last_tick: RefCell::new(None),
-            finished: RefCell::new(Vec::new()),
             waiting: RefCell::new(Vec::new()),
         }
     }
@@ -158,10 +150,8 @@ impl Automation {
         self.published = Some(revision);
     }
 
-    /// Take what the broker finished, look at the apps and focus modes when it is time, and start
-    /// whatever fired. Once per pass.
+    /// Look at the apps and focus modes when it is time, and start whatever fired. Once per pass.
     pub fn settle(&mut self, shell: Option<&crate::app_wire::LayoutAuthority>) {
-        self.keep_finished();
         if self.broker.is_some() {
             let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
             self.start(waiting);
@@ -286,7 +276,12 @@ impl Automation {
             .into_iter()
             .partition(|firing| matches!(firing.trigger, TriggerSpec::Keyboard { .. }));
         for firing in &pressed {
-            self.run_pressed(firing);
+            match &self.dispatch {
+                Some(dispatch) => run_pressed(dispatch.as_ref(), firing),
+                None => {
+                    tracing::warn!(shortcut = %firing.shortcut, "a chord was pressed, but this session reaches no dispatch to run its shortcut");
+                }
+            }
         }
         if firings.is_empty() {
             return;
@@ -310,58 +305,28 @@ impl Automation {
             }
         }
     }
-
-    /// Run the shortcut a pressed chord names through the device's one dispatch, as the person
-    /// who saved it: the run they would start from anywhere. One that needs their yes waits for
-    /// it as its asked record, which they answer from any device.
-    fn run_pressed(&self, firing: &Firing) {
-        let Some(daemon) = &self.daemon else {
-            tracing::warn!(shortcut = %firing.shortcut, "a chord was pressed, but this session reaches no dispatch to run its shortcut");
-            return;
-        };
-        let runtime = match tilo_rt::try_app() {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                tracing::warn!(shortcut = %firing.shortcut, %error, "a chord was pressed, but its shortcut has nowhere to run");
-                return;
-            }
-        };
-        let _entered = runtime.handle().enter();
-        let shortcut = firing.shortcut.clone();
-        daemon
-            .dispatch()
-            .invoke(&firing.caller(), pressed_run(firing))
-            .then(move |answered| match answered {
-                Some(Ok(_)) => {}
-                Some(Err(error)) => {
-                    tracing::info!(%shortcut, %error, "a chord was pressed but its shortcut did not start");
-                }
-                None => {
-                    tracing::info!(%shortcut, "a chord was pressed but the dispatch stopped before its shortcut started");
-                }
-            });
-    }
-
-    /// Keep the runs the broker finished until the history recorder takes them.
-    fn keep_finished(&self) {
-        let Some(broker) = &self.broker else {
-            return;
-        };
-        let mut finished = self.finished.borrow_mut();
-        finished.extend(broker.take_finished_invocations());
-        if finished.len() > KEPT_RUNS {
-            let excess = finished.len().saturating_sub(KEPT_RUNS);
-            finished.drain(..excess);
-        }
-    }
-
-    /// The shortcut runs that finished and no history recorder took yet, oldest first.
-    pub fn take_finished(&self) -> Vec<FinishedInvocation> {
-        std::mem::take(&mut *self.finished.borrow_mut())
-    }
 }
 
-/// The call a pressed chord makes: its shortcut's `run`, under the firing's id.
+/// Run the shortcut a pressed chord names through the device's one dispatch, `dispatch`, as the
+/// person who saved it: the run they would start from anywhere, saying a key started it. One
+/// that needs their yes waits for it as its asked record, which they answer from any device.
+fn run_pressed(dispatch: &dyn ActionProvider, firing: &Firing) {
+    let shortcut = firing.shortcut.clone();
+    dispatch
+        .invoke(&firing.caller(), pressed_run(firing))
+        .then(move |answered| match answered {
+            Some(Ok(_)) => {}
+            Some(Err(error)) => {
+                tracing::info!(%shortcut, %error, "a chord was pressed but its shortcut did not start");
+            }
+            None => {
+                tracing::info!(%shortcut, "a chord was pressed but the dispatch stopped before its shortcut started");
+            }
+        });
+}
+
+/// The call a pressed chord makes: its shortcut's `run`, under the firing's id, saying the key
+/// started it.
 fn pressed_run(firing: &Firing) -> InvokeRequest {
     let target = chord_target(&firing.workspace, &firing.shortcut);
     let mut request = InvokeRequest::plain(
@@ -372,6 +337,7 @@ fn pressed_run(firing: &Firing) -> InvokeRequest {
         firing.inputs.clone(),
     );
     request.invocation = InvocationId(firing.invocation.0);
+    request.context = Some(fired_context(&firing.trigger));
     request
 }
 

@@ -69,6 +69,8 @@ impl AppBrokerState {
                 }));
             }
         };
+        // A key the person pressed says so, and its history shows it with the chord.
+        let trigger = automation::run_trigger(request.context.as_ref(), &shortcut);
         let job = self
             .start_shortcut_run(
                 caller,
@@ -76,7 +78,7 @@ impl AppBrokerState {
                 shortcut,
                 automation::InvocationStart {
                     invocation: tilo_automation::AutomationInvocationId(request.invocation.0),
-                    trigger: tilo_automation::InvocationTrigger::Manual,
+                    trigger,
                     mode: automation::run_mode(request.approval()),
                     inputs,
                     // A task that invoked this run is its parent: the caller's

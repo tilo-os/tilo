@@ -30,7 +30,6 @@ use ui::host_operation::ResourceOperationStart;
 
 use crate::assembly::{Session, Shared};
 
-pub use crate::automation::FinishedInvocation;
 pub use crate::bars::BarShown;
 pub use crate::clock_wait::ClockWait;
 pub use crate::config::SessionConfig;
@@ -1383,7 +1382,13 @@ impl Session {
                 policy: std::sync::Arc::clone(&notification_policy),
                 revocations,
                 // A chord the person presses runs its shortcut through the device's one dispatch.
-                daemon: daemon_link.ok(),
+                dispatch: daemon_link.ok().map(|daemon| {
+                    let _entered = tilo_rt::app().handle().enter();
+                    let dispatch: std::sync::Arc<
+                        dyn tilo_actions::remote::ActionProvider + Send + Sync,
+                    > = std::sync::Arc::new(daemon.dispatch());
+                    dispatch
+                }),
             },
         );
 
@@ -2879,13 +2884,6 @@ impl Session {
         for chord in pressed {
             self.automation.press(&chord);
         }
-    }
-
-    /// The shortcut runs that finished and no history recorder took yet,
-    /// oldest first: what the history names its changes by.
-    #[must_use]
-    pub fn take_finished_invocations(&self) -> Vec<FinishedInvocation> {
-        self.automation.take_finished()
     }
 
     /// Ask the system to suspend, restart or shut the machine down.
