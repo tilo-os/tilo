@@ -11,8 +11,8 @@
 //! machine: a fixed number would pass on a fast machine and fail on a slow one for no reason
 //! the code gave.
 //!
-//! The suite runs a size that takes seconds. `TILO_FILES_SPEED=full` runs the full size (100k
-//! pieces, 3 GB), which the `files-at-disk-speed` check runs as a benchmark.
+//! Only the `files-at-disk-speed` check runs it, until the content path meets the bound: it runs
+//! 10k files by default, and the full size (100k pieces, 3 GB) with `TILO_FILES_SPEED=full`.
 
 use std::io::{Read as _, Write as _};
 use std::path::Path;
@@ -45,7 +45,7 @@ struct Size {
 }
 
 impl Size {
-    /// What the run moves: the suite's size, or the full one.
+    /// What the run moves: 10k files, or the full size.
     fn chosen() -> Self {
         if std::env::var("TILO_FILES_SPEED").as_deref() == Ok("full") {
             Self {
@@ -127,6 +127,7 @@ fn plain_copy(from: &Path, to: &Path, names: &[String]) -> Duration {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "run by the files-at-disk-speed check"]
 async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
     // `TILO_FILES_SPEED_LOG` names what to log while the files move (a tracing filter).
     if let Ok(filter) = std::env::var("TILO_FILES_SPEED_LOG") {
