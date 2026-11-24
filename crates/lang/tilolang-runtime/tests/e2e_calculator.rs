@@ -6,7 +6,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
+        AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/calculator/app.tl");
@@ -20,8 +20,9 @@ mod cases {
     impl Calc {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-            app.load(&rt);
+            let authority = TestAuthority::new();
+            let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
+            authority.trust(&app.load(&rt));
             let root = rt.create_root("Calculator").unwrap();
             Self { rt, app, root }
         }
@@ -31,24 +32,32 @@ mod cases {
             self.rt.invoke_action(&me(), (id.as_str(), args)).unwrap()
         }
 
-        /// Works `expr` out and answers what it came to, as the record keeps it.
-        fn calculate(&self, expr: &str) -> Result<String, InvokeOutcome> {
+        /// Works `expr` out and answers what it came to, as the record keeps it, or why the
+        /// calculator refused it.
+        fn calculate(&self, expr: &str) -> Result<String, String> {
             self.work_out(expr, false)
         }
 
         /// The same, in degrees where `degrees`.
-        fn work_out(&self, expr: &str, degrees: bool) -> Result<String, InvokeOutcome> {
-            let done = self.call(
-                "calculate",
-                vec![
-                    Value::resource(&self.root),
-                    Value::text(expr),
-                    Value::Bool(degrees),
-                ],
+        fn work_out(&self, expr: &str, degrees: bool) -> Result<String, String> {
+            let done = self.rt.invoke_action(
+                &me(),
+                (
+                    self.app.action("calculate").as_str(),
+                    vec![
+                        Value::resource(&self.root),
+                        Value::text(expr),
+                        Value::Bool(degrees),
+                    ],
+                ),
             );
+            let done = match done {
+                Ok(done) => done,
+                Err(refused) => return Err(refused.to_string()),
+            };
             match &done {
                 InvokeOutcome::Done(Value::Ref(_)) => {}
-                other => return Err(other.clone()),
+                other => return Err(format!("{other:?}")),
             }
             let kept = returned_ref(done);
             match self.rt.read(&kept, "result").unwrap() {
@@ -71,7 +80,7 @@ mod cases {
 
         fn worked_out(&self, expr: &str) -> String {
             self.calculate(expr)
-                .unwrap_or_else(|bad| panic!("{expr}: refused: {bad:?}"))
+                .unwrap_or_else(|refused| panic!("{expr}: refused: {refused}"))
         }
 
         fn add_curve(&self, formula: &str) -> ResourceRef {
@@ -307,7 +316,7 @@ mod cases {
             let c = Calc::new();
             let kept = c.work_out_ref("12*(4+3)");
             c.worked_out("2+2");
-            let view = c.window();
+            let mut view = c.window();
             let list = of_kind(view.tree(), "ui.VirtualList")
                 .into_iter()
                 .next()
@@ -319,6 +328,8 @@ mod cases {
                 view.fire_with(&list, "activate", Some(&Value::resource(&kept))).unwrap(),
                 InvokeOutcome::Done(_)
             ));
+            // The window draws again, as the host's next turn draws it.
+            view.poll_patches().unwrap();
             let fields = of_kind(view.tree(), "ui.TextInput");
             assert!(
                 fields.iter().any(|f| f.props.get("text").and_then(Value::as_text) == Some("84")),
@@ -345,7 +356,7 @@ mod cases {
         phase conversion_turns_one_unit_into_another;
         {
             let c = Calc::new();
-            c.stage("mode", "1");
+            c.stage("calculator.mode", "1");
             let view = c.window();
             // Each quantity starts at a pair of its own: a metre to feet, and then mass's own.
             assert!(
@@ -354,14 +365,14 @@ mod cases {
                 dump(view.tree())
             );
             assert_eq!(of_kind(view.tree(), "ui.Dropdown").len(), 2, "from and to");
-            c.stage("quantity", "Quantity.mass");
+            c.stage("calculator.quantity", "Quantity.mass");
             let mass = c.window();
             assert!(
                 texts(mass.tree()).iter().any(|t| t.as_str() == "1 kg = 2.2046226218 lb"),
                 "mass converts kilograms to pounds:\n{}",
                 dump(mass.tree())
             );
-            c.stage("quantity", "Quantity.temperature");
+            c.stage("calculator.quantity", "Quantity.temperature");
             let warm = c.window();
             assert!(
                 texts(warm.tree()).iter().any(|t| t.as_str() == "1 °C = 33.8 °F"),
@@ -376,7 +387,7 @@ mod cases {
             let curve = c.add_curve("sin(x)");
             assert_eq!(c.rt.read(&curve, "expr").unwrap(), Value::text("sin(x)"));
             assert_eq!(c.rt.read(&curve, "visible").unwrap(), Value::Bool(true));
-            c.stage("mode", "2");
+            c.stage("calculator.mode", "2");
             let view = c.window();
             let drawings = drawn(view.tree());
             assert_eq!(drawings.len(), 1, "one plot");
@@ -394,7 +405,7 @@ mod cases {
         phase surfaces_are_added_and_deleted_and_the_graph_opens_with_a_starter;
         {
             let c = Calc::new();
-            c.stage("mode", "3");
+            c.stage("calculator.mode", "3");
             let starter = c.window();
             assert_eq!(drawn(starter.tree()).len(), 1, "the starter surface is drawn");
             let surface = c.add_surface("sin(x)*cos(y)");

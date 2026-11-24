@@ -1154,7 +1154,7 @@ fn named(cs: List<Text>, st: Map<Float>) -> Float {
     apply(name, first, second, second_given, st)
 }
 
-/// The definite integral of `text` over `[a, b]`, Simpson's rule on 256 intervals: enough for a
+/// The definite integral of `text` over `[a, b]`, Simpson's rule on 512 intervals: enough for a
 /// plotted or typed function, and bounded work however wrong the bounds are.
 fn integrate(text: Text, a: Float, b: Float, st: Map<Float>) -> Float {
     if a.is_nan() or b.is_nan() or not a.is_finite() or not b.is_finite() {
@@ -1163,7 +1163,7 @@ fn integrate(text: Text, a: Float, b: Float, st: Map<Float>) -> Float {
     let degrees = (st.get("deg") ?? 0.0) > 0.0
     let answer = st.get("ans") ?? 0.0
     let memory = st.get("mem") ?? 0.0
-    let h = (b - a) / 256.0
+    let h = (b - a) / 512.0
     // The ends count once, the odd points four times and the even ones twice.
     let ends = eval_at(text, degrees, answer, memory, a, 0.0)
         + eval_at(text, degrees, answer, memory, b, 0.0)
@@ -1181,7 +1181,7 @@ fn odd_points(
     h: Float,
     i: Float,
 ) -> Float {
-    if i >= 256.0 {
+    if i >= 512.0 {
         return 0.0
     }
     eval_at(text, degrees, answer, memory, a + h * i, 0.0)
@@ -1197,7 +1197,7 @@ fn even_points(
     h: Float,
     i: Float,
 ) -> Float {
-    if i >= 256.0 {
+    if i >= 512.0 {
         return 0.0
     }
     eval_at(text, degrees, answer, memory, a + h * i, 0.0)
@@ -1210,7 +1210,18 @@ fn read_name(cs: List<Text>, st: Map<Float>) -> Text {
         return ""
     }
     take(cs, st)
-    c.lower() + read_name(cs, st)
+    c.lower() + read_name_tail(cs, st)
+}
+
+/// The rest of a name: letters, digits and underscores, so `log10` and `log2` read as the
+/// functions they are, as a calculator's own names do.
+fn read_name_tail(cs: List<Text>, st: Map<Float>) -> Text {
+    let c = peek(cs, st)
+    if not (is_letter(c) or digit(c) >= 0.0 or c == "_") {
+        return ""
+    }
+    take(cs, st)
+    c.lower() + read_name_tail(cs, st)
 }
 
 fn constant(name: Text, st: Map<Float>) -> Float {
