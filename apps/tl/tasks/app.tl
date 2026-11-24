@@ -529,9 +529,10 @@ fn money_used(t: Task) -> Bool {
     } else { false }
 }
 
-/// Whether the task's sessions were lost too often in a row to begin another.
+/// Whether the task's sessions were lost too often in a row to begin another: two ended without
+/// finishing since the last one ended or its person said go on.
 fn lost_too_often(t: Task) -> Bool {
-    if let w = t.work { w.session_since != .none and w.lost >= 2 } else { false }
+    if let w = t.work { w.lost >= 2 } else { false }
 }
 
 /// Whether work on a piece is over for now: it is closed, waiting for a person to look, or its
@@ -1030,14 +1031,15 @@ fn latest(a: Option<Time>, b: Option<Time>) -> Option<Time> {
 }
 
 /// Ends every wait a task is on: what it waited for came, which `cause` says in a few words, and
-/// whoever is doing it goes on with it.
+/// whoever is doing it goes on with it. It is also how a person starts its work over after its
+/// sessions were lost too often: the losses no longer stand in a row, and a session may begin.
 action resume(t: Task, cause: Text = "") uses time (
     label: "Stop waiting",
     icon: .play,
     did: "went on with",
     group: "Plan",
 ) {
-    applies t.waiting_for != "" or t.waiting_until != .none "It waits for nothing"
+    applies t.waiting_for != "" or t.waiting_until != .none or lost_too_often(t) "It waits for nothing, and none of its sessions was lost"
     if let w = t.work {
         t.work = Work(
             folder: w.folder,
@@ -1052,7 +1054,8 @@ action resume(t: Task, cause: Text = "") uses time (
             worked_ms: w.worked_ms,
             sessions: w.sessions,
             session_since: w.session_since,
-            lost: w.lost,
+            // Its person said go on: the sessions lost before that no longer stand in a row.
+            lost: 0,
             stopped: w.stopped,
             resumed: .some(Resumed(cause: cause, at: now)),
             pieces_at_once: w.pieces_at_once,
@@ -1201,7 +1204,9 @@ action session_ended(t: Task, spent_micros: Int = 0, worked_ms: Int = 0) uses ti
         worked_ms: w.worked_ms + worked_ms,
         sessions: w.sessions,
         session_since: .none,
-        lost: w.lost,
+        // A session that ended finished its work: what was lost before it no longer stands in a
+        // row with anything.
+        lost: 0,
         stopped: w.stopped,
         resumed: w.resumed,
         pieces_at_once: w.pieces_at_once,
