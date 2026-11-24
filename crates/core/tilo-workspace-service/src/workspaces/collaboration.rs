@@ -1714,14 +1714,35 @@ impl Workspaces {
         &self,
         workspace: &str,
     ) -> Result<Vec<tilo_peer_state::PackageRegistry>, CollaborationError> {
-        Ok(self
+        let mut rows = self
             .workspace(workspace)
             .await?
             .lock()
             .await
             .peer()
             .governance()
-            .package_registries())
+            .package_registries();
+        Self::repair_official_pin(&mut rows);
+        Ok(rows)
+    }
+
+    /// Restore the official registry's pin on its row when the row carries none (an emptied or
+    /// placeholder key): the image's official key is what a new workspace records, so a row that
+    /// lost the pin reads as that, never as trust in nobody. The row stays the workspace's to
+    /// change; only the reading is whole.
+    fn repair_official_pin(rows: &mut [tilo_peer_state::PackageRegistry]) {
+        let seeded = super::default_apps::registries();
+        let Some(official) = seeded.registries.first() else {
+            return;
+        };
+        for row in rows {
+            if row.name == official.name
+                && (row.owner_pubkey_hex.is_empty()
+                    || !row.owner_pubkey_hex.bytes().any(|byte| byte != b'0'))
+            {
+                row.owner_pubkey_hex.clone_from(&official.owner_pubkey_hex);
+            }
+        }
     }
 
     /// Change what the call in `channel` of `workspace` allows, as `member`, whom the workspace
