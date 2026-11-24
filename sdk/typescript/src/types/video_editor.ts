@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-editor@07b59ba1b19c756a";
+export const SURFACE = "so.tilo.video-editor@c1036ba6df1f5196";
 
 /** How a title's lines sit in its box. One of "left", "centre", "right". */
 export type Align = "left" | "centre" | "right";
@@ -217,7 +217,7 @@ export interface TroubleArgs {
 /** The arguments of `adopt_probe`. */
 export interface AdoptProbeArgs {
   m: Media;
-  probed: Probed;
+  said: string;
 }
 
 /** The arguments of `refresh_source`. */
@@ -822,10 +822,10 @@ export interface Project extends tilo.Resource {
   absorb(args: {
     file: unknown;
   }): Promise<string>;
-  /** Writes what the device read of a source onto it: what it is, how long it runs, its size and rate, and whether it carries sound. */
+  /** Writes what the device read of a source onto it, as the engine said it: what it is, how long it runs, its size and rate, and whether it carries sound. An action is handed the engine's words rather than the decoded `Probed`, which is a value no resource holds. */
   adopt_probe(args: {
     m: Media;
-    probed: Probed;
+    said: string;
   }): Promise<void>;
   /** Runs `adopt_probe` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   adopt_probeMany(items: AdoptProbeArgs[]): Promise<tilo.ActionAnswer[]>;

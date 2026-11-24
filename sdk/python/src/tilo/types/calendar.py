@@ -24,6 +24,7 @@ __all__ = [
     "Priority",
     "Repeat",
     "Attendee",
+    "Account",
     "Project",
     "Task",
     "Event",
@@ -62,6 +63,7 @@ __all__ = [
     "RemindOffArgs",
     "RepeatRuleArgs",
     "RepeatWeekdaysArgs",
+    "ToggleWeekdayArgs",
     "RepeatOffArgs",
     "SkipDateArgs",
     "RestoreDateArgs",
@@ -74,6 +76,7 @@ __all__ = [
     "ChangeStartArgs",
     "ChangeEndArgs",
     "MoveEndDayArgs",
+    "EndOnDayArgs",
     "RepeatArgs",
     "RepeatEveryArgs",
     "RepeatUntilArgs",
@@ -97,6 +100,7 @@ __all__ = [
     "PreviousDayArgs",
     "NextDayArgs",
     "ThisDayArgs",
+    "DiscardDraftArgs",
     "PreviousWeekArgs",
     "NextWeekArgs",
     "PreviousMonthArgs",
@@ -270,6 +274,11 @@ RepeatWeekdaysArgs = TypedDict("RepeatWeekdaysArgs", {
 })
 """The arguments of `repeat_weekdays`."""
 
+ToggleWeekdayArgs = TypedDict("ToggleWeekdayArgs", {
+    "day": "str",
+})
+"""The arguments of `toggle_weekday`."""
+
 RepeatOffArgs = TypedDict("RepeatOffArgs", {
 })
 """The arguments of `repeat_off`."""
@@ -332,6 +341,11 @@ MoveEndDayArgs = TypedDict("MoveEndDayArgs", {
     "at": "str",
 })
 """The arguments of `move_end_day`."""
+
+EndOnDayArgs = TypedDict("EndOnDayArgs", {
+    "end_day": "str",
+})
+"""The arguments of `end_on_day`."""
 
 RepeatArgs = TypedDict("RepeatArgs", {
     "how": "Repeat",
@@ -444,6 +458,11 @@ ThisDayArgs = TypedDict("ThisDayArgs", {
 })
 """The arguments of `this_day`."""
 
+DiscardDraftArgs = TypedDict("DiscardDraftArgs", {
+    "e": "Event",
+})
+"""The arguments of `discard_draft`."""
+
 PreviousWeekArgs = TypedDict("PreviousWeekArgs", {
 })
 """The arguments of `previous_week`."""
@@ -466,16 +485,45 @@ ThisWeekArgs = TypedDict("ThisWeekArgs", {
 
 class Attendee(Resource):
     """Attendee — `tl.so.tilo.calendar.Attendee`."""
-    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
+    __surface__ = "so.tilo.calendar@aaee158565626f7f"
     oiolhfhy: str  # name
     zr5l6sfu: str  # email
     wyfwksgq: str  # status
     fweteite: str  # role
 
 
+class Account(Resource):
+    """Account — `tl.so.tilo.calendar.Account`."""
+    __surface__ = "so.tilo.calendar@aaee158565626f7f"
+    f44j5f26: str  # key
+    gxn236ef: str  # address
+    rfeeyuff: str  # name
+    turzovgi: str  # server
+    vupfntcd: bool  # read_only
+    cgmndfzg: str  # trouble
+    yfntdxb7: bool  # online
+    @property
+    def _5ebgjcbp(self) -> bool:
+        """checking (`5ebgjcbp` on the wire)."""
+        return self.fields["5ebgjcbp"]
+
+    @_5ebgjcbp.setter
+    def _5ebgjcbp(self, value: bool) -> None:
+        self.edit("5ebgjcbp", value=value)
+    qmpjl3oc: str  # fetched
+
+    def sync_account(self) -> None:
+        """Asks one account's server for its calendars now: what 'Sync again' over its notice does."""
+        return self.action("sync_account")
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"sync_account"})
+
+
 class Project(Resource):
     """Project — `tl.so.tilo.calendar.Project`."""
-    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
+    __surface__ = "so.tilo.calendar@aaee158565626f7f"
     iivr4dfm: str  # name
     @property
     def _5kprlx3s(self) -> Color:
@@ -510,7 +558,7 @@ class Project(Resource):
 
 class Task(Resource):
     """Task — `tl.so.tilo.calendar.Task`."""
-    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
+    __surface__ = "so.tilo.calendar@aaee158565626f7f"
     r2vx64eh: str  # title
     s6raiajy: bool  # done
     kibl2yut: str | None  # due
@@ -648,7 +696,7 @@ class Task(Resource):
 
 class Event(Resource):
     """Event — `tl.so.tilo.calendar.Event`."""
-    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
+    __surface__ = "so.tilo.calendar@aaee158565626f7f"
     qqkexjof: str  # key
     yclpjnie: str  # href
     lpmkddba: str  # etag
@@ -895,6 +943,14 @@ class Event(Resource):
         """Runs `repeat_weekdays` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("repeat_weekdays", items)
 
+    def toggle_weekday(self, *, day: str) -> None:
+        """Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's `BYDAY`, and the repeat keeps the day it ends on, if it ends on one."""
+        return self.action("toggle_weekday", day=day)
+
+    def toggle_weekday_many(self, items: list[ToggleWeekdayArgs]) -> list[dict[str, Any]]:
+        """Runs `toggle_weekday` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("toggle_weekday", items)
+
     def repeat_off(self) -> None:
         """Stops an event repeating from the day it stands on."""
         return self.action("repeat_off")
@@ -1001,6 +1057,14 @@ class Event(Resource):
         """Runs `move_end_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("move_end_day", items)
 
+    def end_on_day(self, *, end_day: str) -> None:
+        """Ends an event on a day, keeping the time of day it ends at, as `move_end_day` does with the day a moment names."""
+        return self.action("end_on_day", end_day=end_day)
+
+    def end_on_day_many(self, items: list[EndOnDayArgs]) -> list[dict[str, Any]]:
+        """Runs `end_on_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("end_on_day", items)
+
     def repeat(self, *, how: Repeat) -> None:
         """Repeats an event every day, week, month or year from the day it stands on, on the days chosen of a week, and no longer on the days it named before."""
         return self.action("repeat", how=how)
@@ -1081,6 +1145,14 @@ class Event(Resource):
         """Runs `answer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("answer", items)
 
+    def answer_and_tell(self,
+        *,
+        g: Attendee,
+        said: str,
+    ) -> None:
+        """Answers the person's own invitation to an account's event, telling the organiser through the account's server: what settles the RSVP the invitation asked for."""
+        return self.action("answer_and_tell", g=g, said=said)
+
     def uninvite(self, *, g: Attendee) -> None:
         """Takes someone off an event's guests: nothing is sent to them."""
         return self.action("uninvite", g=g)
@@ -1139,12 +1211,12 @@ class Event(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "dropped", "dropped_many", "ended", "ended_many", "file_event", "file_event_many", "set_event_color", "set_event_color_many", "clear_event_color", "clear_event_color_many", "set_categories", "set_categories_many", "set_zone", "set_zone_many", "add_category", "add_category_many", "remove_category", "remove_category_many", "organize", "organize_many", "remind_at_start", "remind_at_start_many", "remind_before", "remind_before_many", "remind_off", "remind_off_many", "repeat_rule", "repeat_rule_many", "repeat_weekdays", "repeat_weekdays_many", "repeat_off", "repeat_off_many", "skip_date", "skip_date_many", "restore_date", "restore_date_many", "move_occurrence", "move_occurrence_many", "cancel_occurrence", "cancel_occurrence_many", "restore_occurrence", "restore_occurrence_many", "move_following", "move_following_many", "move_to_day", "move_to_day_many", "change_day", "change_day_many", "change_start", "change_start_many", "change_end", "change_end_many", "move_end_day", "move_end_day_many", "repeat", "repeat_many", "repeat_every", "repeat_every_many", "repeat_until", "repeat_until_many", "repeat_until_at", "repeat_until_at_many", "repeat_count", "repeat_count_many", "file_in", "file_in_many", "invite", "answer", "answer_many", "uninvite", "uninvite_many", "invite_by_mail", "invite_by_mail_many", "ring_due", "ring_due_many", "remind_now", "remind_now_many", "go_to", "go_to_many", "repeat_every_text", "repeat_every_text_many", "repeat_count_text", "repeat_count_text_many"})
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "dropped", "dropped_many", "ended", "ended_many", "file_event", "file_event_many", "set_event_color", "set_event_color_many", "clear_event_color", "clear_event_color_many", "set_categories", "set_categories_many", "set_zone", "set_zone_many", "add_category", "add_category_many", "remove_category", "remove_category_many", "organize", "organize_many", "remind_at_start", "remind_at_start_many", "remind_before", "remind_before_many", "remind_off", "remind_off_many", "repeat_rule", "repeat_rule_many", "repeat_weekdays", "repeat_weekdays_many", "toggle_weekday", "toggle_weekday_many", "repeat_off", "repeat_off_many", "skip_date", "skip_date_many", "restore_date", "restore_date_many", "move_occurrence", "move_occurrence_many", "cancel_occurrence", "cancel_occurrence_many", "restore_occurrence", "restore_occurrence_many", "move_following", "move_following_many", "move_to_day", "move_to_day_many", "change_day", "change_day_many", "change_start", "change_start_many", "change_end", "change_end_many", "move_end_day", "move_end_day_many", "end_on_day", "end_on_day_many", "repeat", "repeat_many", "repeat_every", "repeat_every_many", "repeat_until", "repeat_until_many", "repeat_until_at", "repeat_until_at_many", "repeat_count", "repeat_count_many", "file_in", "file_in_many", "invite", "answer", "answer_many", "answer_and_tell", "uninvite", "uninvite_many", "invite_by_mail", "invite_by_mail_many", "ring_due", "ring_due_many", "remind_now", "remind_now_many", "go_to", "go_to_many", "repeat_every_text", "repeat_every_text_many", "repeat_count_text", "repeat_count_text_many"})
 
 
 class Calendar(Resource):
     """Calendar — `tl.so.tilo.calendar.Calendar`."""
-    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
+    __surface__ = "so.tilo.calendar@aaee158565626f7f"
     gzrwihvd: str  # key
     pwrd7qqx: str  # account
     dn3prfqt: str  # sync_token
@@ -1175,9 +1247,10 @@ class Calendar(Resource):
 
 class Calendars(Resource):
     """Calendars — `tl.so.tilo.calendar.Calendars`."""
-    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
+    __surface__ = "so.tilo.calendar@aaee158565626f7f"
     g3gq3jmz: list[Entry[Event]]  # events
     ozulkrgt: list[Entry[Calendar]]  # calendars
+    lubytvuv: list[Entry[Account]]  # accounts
     jum24lyb: list[Entry[Task]]  # tasks
     japv422q: list[Entry[Project]]  # projects
     i5l2mswn: str  # anchor_at
@@ -1306,6 +1379,14 @@ class Calendars(Resource):
         return self.action("new_calendar")
 
     # the app's `remove` action is the SDK's own: run it with `action("remove")`.
+    def discard_draft(self, *, e: Event) -> None:
+        """Throws away an event nothing was written in yet: what a person's New event leaves when they decide against it."""
+        return self.action("discard_draft", e=e)
+
+    def discard_draft_many(self, items: list[DiscardDraftArgs]) -> list[dict[str, Any]]:
+        """Runs `discard_draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("discard_draft", items)
+
     def previous_week(self) -> None:
         """The window shows the week before."""
         return self.action("previous_week")
@@ -1356,18 +1437,22 @@ class Calendars(Resource):
             args["e"] = e
         return self.action("export_calendar", **args)
 
+    def take_invitation(self, *, text: str) -> str:
+        """Takes an invitation into the calendar: the event it asks for is kept by the account's server where one can be written to it, so the organiser hears the answer, and by this workspace otherwise. What the server took comes back with the account's next sync."""
+        return self.action("take_invitation", text=text)
+
     def import_ics(self, *, file: Any) -> str:
         """Imports the events and tasks of an iCalendar file, and answers how many it took: what a person's own file offers, and what another calendar exported. A line naming a zone this build cannot read is read in the person's zone."""
         return self.action("import_ics", file=file)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_event", "new_between", "new_task", "add_step", "remove_task", "remove_task_many", "new_project", "move_project", "move_project_many", "remove_project", "remove_project_many", "go_to_day", "go_to_day_many", "previous_day", "previous_day_many", "next_day", "next_day_many", "this_day", "this_day_many", "sync", "new_calendar", "previous_week", "previous_week_many", "next_week", "next_week_many", "previous_month", "previous_month_many", "next_month", "next_month_many", "this_week", "this_week_many", "export_calendar", "import_ics"})
+    __actions__ = frozenset({"new_event", "new_between", "new_task", "add_step", "remove_task", "remove_task_many", "new_project", "move_project", "move_project_many", "remove_project", "remove_project_many", "go_to_day", "go_to_day_many", "previous_day", "previous_day_many", "next_day", "next_day_many", "this_day", "this_day_many", "sync", "new_calendar", "discard_draft", "discard_draft_many", "previous_week", "previous_week_many", "next_week", "next_week_many", "previous_month", "previous_month_many", "next_month", "next_month_many", "this_week", "this_week_many", "export_calendar", "take_invitation", "import_ics"})
 
 
 class Moment(Resource):
     """Moment — `tl.so.tilo.calendar.Moment`."""
-    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
+    __surface__ = "so.tilo.calendar@aaee158565626f7f"
     kd3noj7y: Event  # event
     ejfozpye: str  # at
     @property
@@ -1382,5 +1467,5 @@ class Moment(Resource):
 
 class TiloCalendar(Resource):
     """Calendar — `tl.so.tilo.calendar`."""
-    __surface__ = "so.tilo.calendar@7fd976639ef7547f"
+    __surface__ = "so.tilo.calendar@aaee158565626f7f"
 

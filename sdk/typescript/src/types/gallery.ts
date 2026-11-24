@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.gallery@578137dcb8e9a15c";
+export const SURFACE = "so.tilo.lang.gallery@df34a723bcf369d2";
 
 /** What a pinned app is, and the picture it shows on a dock. One of "notes", "tasks", "mail". */
 export type Kind = "notes" | "tasks" | "mail";
@@ -378,6 +378,36 @@ export interface LangGallery extends tilo.Resource {
     last: string;
     card: Card;
   }): Promise<void>;
+  /** Note the cells the sheet chose, in the page's answer. */
+  mark_chosen(args: {
+    last: string;
+    chosen: string;
+  }): Promise<void>;
+  /** Note the cells the sheet edited, in the page's answer. */
+  mark_edit(args: {
+    last: string;
+    pairs: string[];
+  }): Promise<void>;
+  /** Note the byte the grid was pressed on, in the page's answer. */
+  mark_byte(args: {
+    last: string;
+    at: string[];
+  }): Promise<void>;
+  /** Note the key the grid was given, in the page's answer. */
+  mark_key(args: {
+    last: string;
+    pressed: string;
+  }): Promise<void>;
+  /** Note the rows the grid scrolled by, in the page's answer. */
+  mark_wheel(args: {
+    last: string;
+    rows: number;
+  }): Promise<void>;
+  /** Note the row the diff grid was pressed on, in the page's answer. */
+  mark_row(args: {
+    last: string;
+    row: number;
+  }): Promise<void>;
   /** Note the change the history took back, in the page's answer. */
   reverted(args: {
     last: string;
@@ -402,6 +432,11 @@ export interface LangGallery extends tilo.Resource {
     last: string;
     index: number;
     at: number;
+  }): Promise<void>;
+  /** Note a stroke on the paint surface, in the page's answer. */
+  mark_paint(args: {
+    last: string;
+    p: number[];
   }): Promise<void>;
   /** Note the files dropped, in the window's last answer. */
   mark_files(args: {
@@ -428,7 +463,7 @@ export interface LangGallery extends tilo.Resource {
 
 /** The actions `LangGallery` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LANGGALLERY_ACTIONS = ["note_item", "picked", "opened", "picked_node", "opened_node", "opened_card", "reverted", "opened_change", "picture_from", "mark_page", "mark_move", "mark_files", "note_photo", "mark_moved", "dropped"] as const;
+export const LANGGALLERY_ACTIONS = ["note_item", "picked", "opened", "picked_node", "opened_node", "opened_card", "mark_chosen", "mark_edit", "mark_byte", "mark_key", "mark_wheel", "mark_row", "reverted", "opened_change", "picture_from", "mark_page", "mark_move", "mark_paint", "mark_files", "note_photo", "mark_moved", "dropped"] as const;
 
 /** The `tl.so.tilo.lang.gallery` kind at `path`. */
 export function langGallery(ws: tilo.Workspace, path: string): LangGallery {

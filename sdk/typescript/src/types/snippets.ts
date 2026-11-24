@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.snippets@cf9df303c6aa7519";
+export const SURFACE = "so.tilo.snippets@275605095d14df3c";
 
 /** The kind of text a snippet is written in: its badge in the list and the colours its body is shown with. One of "text", "shell", "rust", "sql", "git", "python", "javascript", "json", "yaml", "markdown", "html", "css", "toml", "dockerfile". */
 export type Language = "text" | "shell" | "rust" | "sql" | "git" | "python" | "javascript" | "json" | "yaml" | "markdown" | "html" | "css" | "toml" | "dockerfile";
@@ -212,11 +212,15 @@ export function library(ws: tilo.Workspace, path: string): Library {
 
 /** Snippets — `tl.so.tilo.snippets`. */
 export interface Snippets extends tilo.Resource {
+  /** Puts `text` on the clipboard: as a secret, which histories do not keep and which leaves the clipboard after a while, when it looks like it carries a credential, so an API key does not stay there for whatever is pasted next. */
+  copy_text(args: {
+    text: string;
+  }): Promise<void>;
 }
 
 /** The actions `Snippets` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SNIPPETS_ACTIONS = [] as const;
+export const SNIPPETS_ACTIONS = ["copy_text"] as const;
 
 /** The `tl.so.tilo.snippets` kind at `path`. */
 export function snippets(ws: tilo.Workspace, path: string): Snippets {

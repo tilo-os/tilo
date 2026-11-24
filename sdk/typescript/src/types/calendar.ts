@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.calendar@7fd976639ef7547f";
+export const SURFACE = "so.tilo.calendar@aaee158565626f7f";
 
 /** The colours a calendar, an event or a project can take, each a place in the theme. One of "indigo", "emerald", "amber", "red", "blue", "violet", "slate". */
 export type Color = "indigo" | "emerald" | "amber" | "red" | "blue" | "violet" | "slate";
@@ -190,6 +190,11 @@ export interface RepeatWeekdaysArgs {
   days: string[];
 }
 
+/** The arguments of `toggle_weekday`. */
+export interface ToggleWeekdayArgs {
+  day: string;
+}
+
 /** The arguments of `repeat_off`. */
 export interface RepeatOffArgs {
 }
@@ -251,6 +256,11 @@ export interface ChangeEndArgs {
 /** The arguments of `move_end_day`. */
 export interface MoveEndDayArgs {
   at: string;
+}
+
+/** The arguments of `end_on_day`. */
+export interface EndOnDayArgs {
+  end_day: string;
 }
 
 /** The arguments of `repeat`. */
@@ -364,6 +374,11 @@ export interface NextDayArgs {
 export interface ThisDayArgs {
 }
 
+/** The arguments of `discard_draft`. */
+export interface DiscardDraftArgs {
+  e: Event;
+}
+
 /** The arguments of `previous_week`. */
 export interface PreviousWeekArgs {
 }
@@ -399,6 +414,30 @@ export const ATTENDEE_ACTIONS = [] as const;
 /** The `tl.so.tilo.calendar.Attendee` kind at `path`. */
 export function attendee(ws: tilo.Workspace, path: string): Attendee {
   return resourceProxy(ws, path, SURFACE, ATTENDEE_ACTIONS) as unknown as Attendee;
+}
+
+/** Account — `tl.so.tilo.calendar.Account`. */
+export interface Account extends tilo.Resource {
+  f44j5f26: string;  // key
+  gxn236ef: string;  // address
+  rfeeyuff: string;  // name
+  turzovgi: string;  // server
+  vupfntcd: boolean;  // read_only
+  cgmndfzg: string;  // trouble
+  yfntdxb7: boolean;  // online
+  "5ebgjcbp": boolean;  // checking
+  qmpjl3oc: string;  // fetched
+  /** Asks one account's server for its calendars now: what 'Sync again' over its notice does. */
+  sync_account(): Promise<void>;
+}
+
+/** The actions `Account` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ACCOUNT_ACTIONS = ["sync_account"] as const;
+
+/** The `tl.so.tilo.calendar.Account` kind at `path`. */
+export function account(ws: tilo.Workspace, path: string): Account {
+  return resourceProxy(ws, path, SURFACE, ACCOUNT_ACTIONS) as unknown as Account;
 }
 
 /** Project — `tl.so.tilo.calendar.Project`. */
@@ -652,6 +691,12 @@ export interface Event extends tilo.Resource {
   }): Promise<void>;
   /** Runs `repeat_weekdays` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   repeat_weekdaysMany(items: RepeatWeekdaysArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's `BYDAY`, and the repeat keeps the day it ends on, if it ends on one. */
+  toggle_weekday(args: {
+    day: string;
+  }): Promise<void>;
+  /** Runs `toggle_weekday` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  toggle_weekdayMany(items: ToggleWeekdayArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Stops an event repeating from the day it stands on. */
   repeat_off(): Promise<void>;
   /** Runs `repeat_off` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -726,6 +771,12 @@ export interface Event extends tilo.Resource {
   }): Promise<void>;
   /** Runs `move_end_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   move_end_dayMany(items: MoveEndDayArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Ends an event on a day, keeping the time of day it ends at, as `move_end_day` does with the day a moment names. */
+  end_on_day(args: {
+    end_day: string;
+  }): Promise<void>;
+  /** Runs `end_on_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  end_on_dayMany(items: EndOnDayArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Repeats an event every day, week, month or year from the day it stands on, on the days chosen of a week, and no longer on the days it named before. */
   repeat(args: {
     how: Repeat;
@@ -774,6 +825,11 @@ export interface Event extends tilo.Resource {
   }): Promise<void>;
   /** Runs `answer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   answerMany(items: AnswerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Answers the person's own invitation to an account's event, telling the organiser through the account's server: what settles the RSVP the invitation asked for. */
+  answer_and_tell(args: {
+    g: Attendee;
+    said: string;
+  }): Promise<void>;
   /** Takes someone off an event's guests: nothing is sent to them. */
   uninvite(args: {
     g: Attendee;
@@ -814,7 +870,7 @@ export interface Event extends tilo.Resource {
 
 /** The actions `Event` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const EVENT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "dropped", "droppedMany", "ended", "endedMany", "file_event", "file_eventMany", "set_event_color", "set_event_colorMany", "clear_event_color", "clear_event_colorMany", "set_categories", "set_categoriesMany", "set_zone", "set_zoneMany", "add_category", "add_categoryMany", "remove_category", "remove_categoryMany", "organize", "organizeMany", "remind_at_start", "remind_at_startMany", "remind_before", "remind_beforeMany", "remind_off", "remind_offMany", "repeat_rule", "repeat_ruleMany", "repeat_weekdays", "repeat_weekdaysMany", "repeat_off", "repeat_offMany", "skip_date", "skip_dateMany", "restore_date", "restore_dateMany", "move_occurrence", "move_occurrenceMany", "cancel_occurrence", "cancel_occurrenceMany", "restore_occurrence", "restore_occurrenceMany", "move_following", "move_followingMany", "move_to_day", "move_to_dayMany", "change_day", "change_dayMany", "change_start", "change_startMany", "change_end", "change_endMany", "move_end_day", "move_end_dayMany", "repeat", "repeatMany", "repeat_every", "repeat_everyMany", "repeat_until", "repeat_untilMany", "repeat_until_at", "repeat_until_atMany", "repeat_count", "repeat_countMany", "file_in", "file_inMany", "invite", "answer", "answerMany", "uninvite", "uninviteMany", "invite_by_mail", "invite_by_mailMany", "ring_due", "ring_dueMany", "remind_now", "remind_nowMany", "go_to", "go_toMany", "repeat_every_text", "repeat_every_textMany", "repeat_count_text", "repeat_count_textMany"] as const;
+export const EVENT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "dropped", "droppedMany", "ended", "endedMany", "file_event", "file_eventMany", "set_event_color", "set_event_colorMany", "clear_event_color", "clear_event_colorMany", "set_categories", "set_categoriesMany", "set_zone", "set_zoneMany", "add_category", "add_categoryMany", "remove_category", "remove_categoryMany", "organize", "organizeMany", "remind_at_start", "remind_at_startMany", "remind_before", "remind_beforeMany", "remind_off", "remind_offMany", "repeat_rule", "repeat_ruleMany", "repeat_weekdays", "repeat_weekdaysMany", "toggle_weekday", "toggle_weekdayMany", "repeat_off", "repeat_offMany", "skip_date", "skip_dateMany", "restore_date", "restore_dateMany", "move_occurrence", "move_occurrenceMany", "cancel_occurrence", "cancel_occurrenceMany", "restore_occurrence", "restore_occurrenceMany", "move_following", "move_followingMany", "move_to_day", "move_to_dayMany", "change_day", "change_dayMany", "change_start", "change_startMany", "change_end", "change_endMany", "move_end_day", "move_end_dayMany", "end_on_day", "end_on_dayMany", "repeat", "repeatMany", "repeat_every", "repeat_everyMany", "repeat_until", "repeat_untilMany", "repeat_until_at", "repeat_until_atMany", "repeat_count", "repeat_countMany", "file_in", "file_inMany", "invite", "answer", "answerMany", "answer_and_tell", "uninvite", "uninviteMany", "invite_by_mail", "invite_by_mailMany", "ring_due", "ring_dueMany", "remind_now", "remind_nowMany", "go_to", "go_toMany", "repeat_every_text", "repeat_every_textMany", "repeat_count_text", "repeat_count_textMany"] as const;
 
 /** The `tl.so.tilo.calendar.Event` kind at `path`. */
 export function calendarEvent(ws: tilo.Workspace, path: string): Event {
@@ -856,6 +912,7 @@ export function calendar(ws: tilo.Workspace, path: string): Calendar {
 export interface Calendars extends tilo.Resource {
   g3gq3jmz: Array<tilo.Entry<Event>>;  // events
   ozulkrgt: Array<tilo.Entry<Calendar>>;  // calendars
+  lubytvuv: Array<tilo.Entry<Account>>;  // accounts
   jum24lyb: Array<tilo.Entry<Task>>;  // tasks
   japv422q: Array<tilo.Entry<Project>>;  // projects
   i5l2mswn: string;  // anchor_at
@@ -926,6 +983,12 @@ export interface Calendars extends tilo.Resource {
   /** Adds a calendar of the workspace's own. */
   new_calendar(): Promise<Calendar>;
   // the app's `remove` action is the SDK's own: run it with `action("remove")`.
+  /** Throws away an event nothing was written in yet: what a person's New event leaves when they decide against it. */
+  discard_draft(args: {
+    e: Event;
+  }): Promise<void>;
+  /** Runs `discard_draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  discard_draftMany(items: DiscardDraftArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The window shows the week before. */
   previous_week(): Promise<void>;
   /** Runs `previous_week` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -950,6 +1013,10 @@ export interface Calendars extends tilo.Resource {
   export_calendar(args?: {
     e?: Event;
   }): Promise<unknown>;
+  /** Takes an invitation into the calendar: the event it asks for is kept by the account's server where one can be written to it, so the organiser hears the answer, and by this workspace otherwise. What the server took comes back with the account's next sync. */
+  take_invitation(args: {
+    text: string;
+  }): Promise<string>;
   /** Imports the events and tasks of an iCalendar file, and answers how many it took: what a person's own file offers, and what another calendar exported. A line naming a zone this build cannot read is read in the person's zone. */
   import_ics(args: {
     file: unknown;
@@ -958,7 +1025,7 @@ export interface Calendars extends tilo.Resource {
 
 /** The actions `Calendars` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CALENDARS_ACTIONS = ["new_event", "new_between", "new_task", "add_step", "remove_task", "remove_taskMany", "new_project", "move_project", "move_projectMany", "remove_project", "remove_projectMany", "go_to_day", "go_to_dayMany", "previous_day", "previous_dayMany", "next_day", "next_dayMany", "this_day", "this_dayMany", "sync", "new_calendar", "previous_week", "previous_weekMany", "next_week", "next_weekMany", "previous_month", "previous_monthMany", "next_month", "next_monthMany", "this_week", "this_weekMany", "export_calendar", "import_ics"] as const;
+export const CALENDARS_ACTIONS = ["new_event", "new_between", "new_task", "add_step", "remove_task", "remove_taskMany", "new_project", "move_project", "move_projectMany", "remove_project", "remove_projectMany", "go_to_day", "go_to_dayMany", "previous_day", "previous_dayMany", "next_day", "next_dayMany", "this_day", "this_dayMany", "sync", "new_calendar", "discard_draft", "discard_draftMany", "previous_week", "previous_weekMany", "next_week", "next_weekMany", "previous_month", "previous_monthMany", "next_month", "next_monthMany", "this_week", "this_weekMany", "export_calendar", "take_invitation", "import_ics"] as const;
 
 /** The `tl.so.tilo.calendar.Calendars` kind at `path`. */
 export function calendars(ws: tilo.Workspace, path: string): Calendars {

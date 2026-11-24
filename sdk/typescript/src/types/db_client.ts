@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.db-client@d2dbad176698d0d2";
+export const SURFACE = "so.tilo.db-client@05c2dde9e2b5fec6";
 
 /** The engine a connection targets. One of "sqlite", "postgres", "mysql". */
 export type Engine = "sqlite" | "postgres" | "mysql";
@@ -197,6 +197,10 @@ export interface ClearTablesArgs {
 
 /** The arguments of `clear_structure`. */
 export interface ClearStructureArgs {
+}
+
+/** The arguments of `clear_columns`. */
+export interface ClearColumnsArgs {
 }
 
 /** The arguments of `clear_rows`. */
@@ -378,7 +382,7 @@ export interface Database extends tilo.Resource {
   }): Promise<void>;
   /** Runs `browse` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   browseMany(items: BrowseArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Reads the selected table's columns, keys and indexes. */
+  /** Reads the selected table's keys and indexes; its columns came with the catalog. */
   load_structure(): Promise<void>;
   /** Runs `load_structure` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   load_structureMany(items: LoadStructureArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -466,6 +470,8 @@ export function tableInfo(ws: tilo.Workspace, path: string): TableInfo {
 
 /** ColumnInfo — `tl.so.tilo.db-client.ColumnInfo`. */
 export interface ColumnInfo extends tilo.Resource {
+  kdq23jfd: string;  // schema
+  wklm2rxq: string;  // table
   qmrcvjjn: string;  // name
   ffkug4qg: string;  // decl_type
   ifa6r5by: boolean;  // nullable
@@ -657,7 +663,7 @@ export interface Session extends tilo.Resource {
   utbjkevx: Tab;  // tab
   "62jlzlao": string[];  // schemas
   c5axoen6: Array<tilo.Entry<TableInfo>>;  // tables
-  qto4lhnk: Array<tilo.Entry<ColumnInfo>>;  // columns
+  solxuk72: Array<tilo.Entry<ColumnInfo>>;  // catalog_columns
   p5c7ywkh: Array<tilo.Entry<KeyInfo>>;  // keys
   zb4ttvcb: Array<tilo.Entry<IndexInfo>>;  // indexes
   y5w3id3d: string;  // selected_schema
@@ -689,10 +695,14 @@ export interface Session extends tilo.Resource {
   clear_tables(): Promise<void>;
   /** Runs `clear_tables` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clear_tablesMany(items: ClearTablesArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Empties the columns, keys and indexes a window holds. */
+  /** Empties the keys and indexes of the relation the window last chose. */
   clear_structure(): Promise<void>;
   /** Runs `clear_structure` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clear_structureMany(items: ClearStructureArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Empties the columns a window holds, so a catalog read again never stands beside the one before. */
+  clear_columns(): Promise<void>;
+  /** Runs `clear_columns` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clear_columnsMany(items: ClearColumnsArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Empties a window's rows, so a fresh result never stands beside the one before it. */
   clear_rows(args: {
     result: boolean;
@@ -709,7 +719,7 @@ export interface Session extends tilo.Resource {
 
 /** The actions `Session` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SESSION_ACTIONS = ["forget_password", "forget_passwordMany", "clear_tables", "clear_tablesMany", "clear_structure", "clear_structureMany", "clear_rows", "clear_rowsMany", "failed_job", "failed_jobMany"] as const;
+export const SESSION_ACTIONS = ["forget_password", "forget_passwordMany", "clear_tables", "clear_tablesMany", "clear_structure", "clear_structureMany", "clear_columns", "clear_columnsMany", "clear_rows", "clear_rowsMany", "failed_job", "failed_jobMany"] as const;
 
 /** The `tl.so.tilo.db-client.Session` kind at `path`. */
 export function session(ws: tilo.Workspace, path: string): Session {

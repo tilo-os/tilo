@@ -22,7 +22,10 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.photos@a69ddce203fc6629";
+export const SURFACE = "so.tilo.photos@96e9dbabec8e793f";
+
+/** What an edit does to one field of every selected photo: keeps what each photo has, takes it off all of them, gives them all one value, or adds or takes off names (tags, people). One of "keep", "clear", "set", "add", "remove". */
+export type Change = "keep" | "clear" | "set" | "add" | "remove";
 
 /** The arguments of `toggle_favorite`. */
 export interface ToggleFavoriteArgs {
@@ -104,6 +107,27 @@ export interface FavoriteSelectedArgs {
 /** The arguments of `remove_selected`. */
 export interface RemoveSelectedArgs {
   ids: string[];
+}
+
+/** The arguments of `edit_selected`. */
+export interface EditSelectedArgs {
+  ids: string[];
+  tags?: Change;
+  tag_names?: string[];
+  tags_off?: string[];
+  people?: Change;
+  person_names?: string[];
+  people_off?: string[];
+  folder?: Change;
+  folder_text?: string;
+  captured_at?: Change;
+  captured_text?: string;
+  description?: Change;
+  description_text?: string;
+  place?: Change;
+  place_name?: string;
+  latitude?: number;
+  longitude?: number;
 }
 
 /** The arguments of `remove_album`. */
@@ -365,6 +389,28 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
   /** Runs `remove_selected` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   remove_selectedMany(items: RemoveSelectedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Changes the details of every named photo as one change: a field left `keep` keeps what each photo has, `clear` takes it off all of them, `set` gives them all one value, and tags and people are added or taken off across the selection, so every photo keeps the rest of its own. The selection is names in a list, so a person's selection, an agent's and a program's are the same change, undone at once. */
+  edit_selected(args: {
+    ids: string[];
+    tags?: Change;
+    tag_names?: string[];
+    tags_off?: string[];
+    people?: Change;
+    person_names?: string[];
+    people_off?: string[];
+    folder?: Change;
+    folder_text?: string;
+    captured_at?: Change;
+    captured_text?: string;
+    description?: Change;
+    description_text?: string;
+    place?: Change;
+    place_name?: string;
+    latitude?: number;
+    longitude?: number;
+  }): Promise<void>;
+  /** Runs `edit_selected` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  edit_selectedMany(items: EditSelectedArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `remove` action is the SDK's own: run it with `action("remove")`.
   /** Starts an album, and puts the photo it is started from in it. */
   new_album(args?: {
@@ -456,7 +502,7 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["import_photo", "absorb_picture", "import_photo_meta", "import_dropped", "import_droppedMany", "dismiss_import", "dismiss_importMany", "favorite_selected", "favorite_selectedMany", "remove_selected", "remove_selectedMany", "new_album", "remove_album", "remove_albumMany", "add_person", "add_personMany", "remove_person", "remove_personMany", "rename_person", "rename_personMany", "find_faces", "scan_faces", "approve_suggestion", "approve_suggestionMany", "merge_suggestion", "merge_suggestionMany", "dismiss_suggestion", "dismiss_suggestionMany", "person_named", "new_person", "merge_people", "merge_peopleMany", "split_photo", "split_photoMany", "remove_person_resource", "remove_person_resourceMany"] as const;
+export const LIBRARY_ACTIONS = ["import_photo", "absorb_picture", "import_photo_meta", "import_dropped", "import_droppedMany", "dismiss_import", "dismiss_importMany", "favorite_selected", "favorite_selectedMany", "remove_selected", "remove_selectedMany", "edit_selected", "edit_selectedMany", "new_album", "remove_album", "remove_albumMany", "add_person", "add_personMany", "remove_person", "remove_personMany", "rename_person", "rename_personMany", "find_faces", "scan_faces", "approve_suggestion", "approve_suggestionMany", "merge_suggestion", "merge_suggestionMany", "dismiss_suggestion", "dismiss_suggestionMany", "person_named", "new_person", "merge_people", "merge_peopleMany", "split_photo", "split_photoMany", "remove_person_resource", "remove_person_resourceMany"] as const;
 
 /** The `tl.so.tilo.photos.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {

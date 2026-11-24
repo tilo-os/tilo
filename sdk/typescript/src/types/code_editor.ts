@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.code-editor@5acf667865adaa72";
+export const SURFACE = "so.tilo.code-editor@7d9a8e07c61d5396";
 
 /** What an entry of the project is: code that is written, or a place that holds entries. One of "file", "folder". */
 export type EntryKind = "file" | "folder";
@@ -115,12 +115,10 @@ export interface DeleteArgs {
   entry: Entry;
 }
 
-/** The arguments of `find_in_file`. */
-export interface FindInFileArgs {
-  entry: Entry;
+/** The arguments of `find_in_window`. */
+export interface FindInWindowArgs {
   text: string;
-  case?: boolean;
-  word?: boolean;
+  entry?: Entry;
 }
 
 /** The arguments of `check`. */
@@ -1015,15 +1013,13 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Finds the words `text` in a file and keeps what it found, for the page's find row. */
-  find_in_file(args: {
-    entry: Entry;
+  /** The window's search finds the words in the open file and across the project's files: the first place in the file is shown, so a hit is in sight as the words are typed. */
+  find_in_window(args: {
     text: string;
-    case?: boolean;
-    word?: boolean;
+    entry?: Entry;
   }): Promise<void>;
-  /** Runs `find_in_file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  find_in_fileMany(items: FindInFileArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `find_in_window` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  find_in_windowMany(items: FindInWindowArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Checks a file and keeps what it found: the device's server's problems when one answers for the file, the editor's own otherwise. */
   check(args: {
     entry: Entry;
@@ -1259,7 +1255,7 @@ export interface Project extends tilo.Resource {
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["new_file", "new_folder", "rename", "renameMany", "move_entry", "move_entryMany", "move_after", "move_afterMany", "delete", "deleteMany", "find_in_file", "find_in_fileMany", "check", "checkMany", "open_folder", "open_folderMany", "read_into", "read_intoMany", "read_folder_into", "read_folder_intoMany", "read_text", "read_textMany", "open_file", "open_fileMany", "save", "saveMany", "write", "overwrite", "overwriteMany", "reload", "reloadMany", "save_all", "save_allMany", "save_into", "save_intoMany", "move_on_disk", "move_on_diskMany", "import_dropped", "import_droppedMany", "run", "runMany", "stop", "stopMany", "rerun", "rerunMany", "rerun_test", "rerun_testMany", "run_", "run_Many", "clear_commands", "clear_commandsMany", "open_terminal", "open_terminalMany", "poll", "pollMany", "reveal_item", "reveal_itemMany", "go_to_line", "go_to_lineMany", "search_project", "search_projectMany", "stop_search", "stop_searchMany", "open_hit", "open_hitMany", "ensure_server", "ensure_serverMany", "announce", "poll_server", "poll_serverMany", "read_answer", "read_answerMany", "complete", "completeMany", "hover", "hoverMany", "definition", "definitionMany", "accept_completion", "accept_completionMany", "format_file", "format_fileMany", "toggle_language_servers", "toggle_language_serversMany", "toggle_format_on_save", "toggle_format_on_saveMany", "restart_server", "restart_serverMany"] as const;
+export const PROJECT_ACTIONS = ["new_file", "new_folder", "rename", "renameMany", "move_entry", "move_entryMany", "move_after", "move_afterMany", "delete", "deleteMany", "find_in_window", "find_in_windowMany", "check", "checkMany", "open_folder", "open_folderMany", "read_into", "read_intoMany", "read_folder_into", "read_folder_intoMany", "read_text", "read_textMany", "open_file", "open_fileMany", "save", "saveMany", "write", "overwrite", "overwriteMany", "reload", "reloadMany", "save_all", "save_allMany", "save_into", "save_intoMany", "move_on_disk", "move_on_diskMany", "import_dropped", "import_droppedMany", "run", "runMany", "stop", "stopMany", "rerun", "rerunMany", "rerun_test", "rerun_testMany", "run_", "run_Many", "clear_commands", "clear_commandsMany", "open_terminal", "open_terminalMany", "poll", "pollMany", "reveal_item", "reveal_itemMany", "go_to_line", "go_to_lineMany", "search_project", "search_projectMany", "stop_search", "stop_searchMany", "open_hit", "open_hitMany", "ensure_server", "ensure_serverMany", "announce", "poll_server", "poll_serverMany", "read_answer", "read_answerMany", "complete", "completeMany", "hover", "hoverMany", "definition", "definitionMany", "accept_completion", "accept_completionMany", "format_file", "format_fileMany", "toggle_language_servers", "toggle_language_serversMany", "toggle_format_on_save", "toggle_format_on_saveMany", "restart_server", "restart_serverMany"] as const;
 
 /** The `tl.so.tilo.code-editor.Project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {

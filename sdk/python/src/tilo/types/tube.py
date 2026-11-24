@@ -49,8 +49,7 @@ __all__ = [
     "SetSpeedArgs",
     "FilterSearchArgs",
     "EndSearchArgs",
-    "ImportHistoryArgs",
-    "ImportPreviousArgs",
+    "LikeCommentArgs",
 ]
 
 SubscribeArgs = TypedDict("SubscribeArgs", {
@@ -134,19 +133,15 @@ EndSearchArgs = TypedDict("EndSearchArgs", {
 })
 """The arguments of `end_search`."""
 
-ImportHistoryArgs = TypedDict("ImportHistoryArgs", {
-    "watched": "list[list[Any]]",
+LikeCommentArgs = TypedDict("LikeCommentArgs", {
+    "c": "Comment",
+    "liked": NotRequired["bool | None"],
 })
-"""The arguments of `import_history`."""
-
-ImportPreviousArgs = TypedDict("ImportPreviousArgs", {
-    "previous": "list[list[Any]]",
-})
-"""The arguments of `import_previous`."""
+"""The arguments of `like_comment`."""
 
 class Channel(Resource):
     """Channel — `tl.so.tilo.tube.Channel`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
     @property
     def _26ctwf34(self) -> str:
         """key (`26ctwf34` on the wire)."""
@@ -211,7 +206,7 @@ class Channel(Resource):
 
 class Video(Resource):
     """Video — `tl.so.tilo.tube.Video`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
     irzy3c7m: str  # key
     fpxk5w7b: str  # title
     mhkply6c: str  # channel_key
@@ -331,7 +326,7 @@ class Video(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.tube.Playlist`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
     ow7glfos: str  # key
     ljyc7mx2: str  # title
     bzfmd6pg: str  # channel_key
@@ -370,7 +365,7 @@ class Playlist(Resource):
 
 class Comment(Resource):
     """Comment — `tl.so.tilo.tube.Comment`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
     pv4laajx: str  # key
     li4xiefh: str  # video_key
     @property
@@ -400,7 +395,7 @@ class Comment(Resource):
 
 class Segment(Resource):
     """Segment — `tl.so.tilo.tube.Segment`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
     uakovynu: str  # key
     pvlf5o2c: str  # video_key
     qlgpeq35: str  # category
@@ -411,7 +406,7 @@ class Segment(Resource):
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.tube.Reply`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
     y4coaxks: str  # comment
     kwxg57v6: str  # video
     @property
@@ -440,20 +435,20 @@ class Reply(Resource):
 
 class Subscription(Resource):
     """Subscription — `tl.so.tilo.tube.Subscription`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
     slhmwv67: str  # key
     ynf67l6e: str  # name
 
 
 class QueuedVideo(Resource):
     """QueuedVideo — `tl.so.tilo.tube.QueuedVideo`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
     o3xolmld: str  # key
 
 
 class PlaybackPrefs(Resource):
     """PlaybackPrefs — `tl.so.tilo.tube.PlaybackPrefs`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
     @property
     def _5twttwwn(self) -> str:
         """member (`5twttwwn` on the wire)."""
@@ -480,7 +475,7 @@ class PlaybackPrefs(Resource):
 
 class WatchEntry(Resource):
     """WatchEntry — `tl.so.tilo.tube.WatchEntry`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
     noppuxpb: str  # key
     stuii7l7: str  # title
     j37y2bbw: str  # channel_name
@@ -494,11 +489,12 @@ class WatchEntry(Resource):
         self.edit("7mtvj3xd", value=value)
     dmm6f63t: str  # watched
     omff5ciz: float  # progress
+    rqajp43d: int  # left_ms
 
 
 class YouTube(Resource):
     """YouTube — `tl.so.tilo.tube.YouTube`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
     olrung72: str  # title
     ihhzrm3f: list[Entry[Channel]]  # channels
     qnfjkti5: list[Entry[Video]]  # videos
@@ -509,6 +505,14 @@ class YouTube(Resource):
     puten5ar: bool  # history_cleared
     ugv4b6is: list[Entry[Comment]]  # comments
     cjlgivfs: list[Entry[Segment]]  # segments
+    @property
+    def _5oxdbju7(self) -> list[str]:
+        """liked_comments (`5oxdbju7` on the wire)."""
+        return self.fields["5oxdbju7"]
+
+    @_5oxdbju7.setter
+    def _5oxdbju7(self, value: list[str]) -> None:
+        self.edit("5oxdbju7", value=value)
     iphlnbkx: list[Entry[Reply]]  # replies
     epgpppzy: list[Entry[PlaybackPrefs]]  # playback
     f5zuqdsr: Any | None  # playing
@@ -675,21 +679,21 @@ class YouTube(Resource):
         """Opens a link of the scheme this client claims: the video (`tube:watch?v=<key>`), channel (`tube:channel?key=<key>`) or playlist (`tube:playlist?key=<key>`) it names, or the search it asks for (`tube:search?q=<query>`). A shell hands a link here whether or not a window of the client is open, and what this returns opens in the window. The host publishes it as the system's `open-link` on the client's root, which is what a shell hands a link to."""
         return self.action("open_link", link=link)
 
-    def import_history(self, *, watched: list[list[Any]]) -> None:
-        """Imports a watch history another device kept, in the format the native app's own history and its `import` call used: rows of `[a video's key, when it was watched in milliseconds since 1970]`. A video the person already watched keeps its place; each one imported becomes part of their own history, which keeps its newest thousand videos."""
-        return self.action("import_history", watched=watched)
+    def like_comment(self,
+        *,
+        c: Comment,
+        liked: bool | None = None,
+    ) -> None:
+        """Likes a comment, or takes the like back: the person's own, kept with the workspace, since YouTube lets no app act as them."""
+        args: dict[str, Any] = {}
+        args["c"] = c
+        if liked is not None:
+            args["liked"] = liked
+        return self.action("like_comment", **args)
 
-    def import_history_many(self, items: list[ImportHistoryArgs]) -> list[dict[str, Any]]:
-        """Runs `import_history` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("import_history", items)
-
-    def import_previous(self, *, previous: list[list[Any]]) -> None:
-        """Imports the watch history an earlier version of this app kept for the person, in that version's own format: rows of `[a video's key, when it was watched in milliseconds since 1970, where it was left in milliseconds or nothing]`. Nothing is imported once the person deleted their history, since the delete is theirs to keep; a video already in it keeps its place."""
-        return self.action("import_previous", previous=previous)
-
-    def import_previous_many(self, items: list[ImportPreviousArgs]) -> list[dict[str, Any]]:
-        """Runs `import_previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("import_previous", items)
+    def like_comment_many(self, items: list[LikeCommentArgs]) -> list[dict[str, Any]]:
+        """Runs `like_comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("like_comment", items)
 
     def play_again(self, *, h: WatchEntry) -> None:
         """Plays the video a history entry names, from where the person left off."""
@@ -697,10 +701,10 @@ class YouTube(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"play_queue", "session", "play_items", "play_items_many", "autoplay_next", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_quality", "set_quality_many", "set_sponsorblock", "set_sponsorblock_many", "set_dearrow", "set_dearrow_many", "set_dislikes", "set_dislikes_many", "set_comments", "set_comments_many", "set_speed", "set_speed_many", "search", "filter_search", "filter_search_many", "filter_length", "filter_published", "end_search", "end_search_many", "refresh_feed", "load_trending", "open_link", "import_history", "import_history_many", "import_previous", "import_previous_many", "play_again"})
+    __actions__ = frozenset({"play_queue", "session", "play_items", "play_items_many", "autoplay_next", "delete_history", "delete_history_many", "set_autoplay", "set_autoplay_many", "set_quality", "set_quality_many", "set_sponsorblock", "set_sponsorblock_many", "set_dearrow", "set_dearrow_many", "set_dislikes", "set_dislikes_many", "set_comments", "set_comments_many", "set_speed", "set_speed_many", "search", "filter_search", "filter_search_many", "filter_length", "filter_published", "end_search", "end_search_many", "refresh_feed", "load_trending", "open_link", "like_comment", "like_comment_many", "play_again"})
 
 
 class Tube(Resource):
     """YouTube — `tl.so.tilo.tube`."""
-    __surface__ = "so.tilo.tube@68c5c43f94e3acbb"
+    __surface__ = "so.tilo.tube@357e1ad1b9edd0e1"
 

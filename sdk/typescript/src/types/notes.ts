@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@a850357236087c79";
+export const SURFACE = "so.tilo.notes@f93603daff5cced6";
 
 /** The arguments of `edit-block`. */
 export interface EditBlockArgs {
@@ -304,6 +304,10 @@ export interface Notebook extends tilo.Resource {
     parent?: Note;
     after?: Note;
   }): Promise<Note>;
+  /** The window's search narrows the notebook's tree to the notes it finds, and opens the first of them: the note a person searched for is the one they read. */
+  search_notebook(args: {
+    text: string;
+  }): Promise<void>;
   /** Moves a note to a place in the tree: at the end of `parent`'s own, or where `before` stands. */
   move_to(args: {
     moved: Note;
@@ -404,7 +408,7 @@ export interface Notebook extends tilo.Resource {
 
 /** The actions `Notebook` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTEBOOK_ACTIONS = ["new_note", "move_to", "move_toMany", "move_after", "move_afterMany", "duplicate", "sort_children", "sort_childrenMany", "delete", "deleteMany", "append_to_note", "append_to_noteMany", "file_note", "new_tag", "rename_tag", "rename_tagMany", "delete_tag", "delete_tagMany", "export_notebook", "export_notebook_markdown", "import_markdown", "import_page", "import_text", "import_archive", "import_archiveMany", "import_dropped", "import_droppedMany"] as const;
+export const NOTEBOOK_ACTIONS = ["new_note", "search_notebook", "move_to", "move_toMany", "move_after", "move_afterMany", "duplicate", "sort_children", "sort_childrenMany", "delete", "deleteMany", "append_to_note", "append_to_noteMany", "file_note", "new_tag", "rename_tag", "rename_tagMany", "delete_tag", "delete_tagMany", "export_notebook", "export_notebook_markdown", "import_markdown", "import_page", "import_text", "import_archive", "import_archiveMany", "import_dropped", "import_droppedMany"] as const;
 
 /** The `tl.so.tilo.notes.Notebook` kind at `path`. */
 export function notebook(ws: tilo.Workspace, path: string): Notebook {

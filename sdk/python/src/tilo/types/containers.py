@@ -66,7 +66,7 @@ DismissPullArgs = TypedDict("DismissPullArgs", {
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.containers.Draft`."""
-    __surface__ = "so.tilo.containers@823180d2717f563c"
+    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
     mnoqvwjm: str  # name
     kc5y7sq2: str  # image
     gkz666im: str  # ports
@@ -91,7 +91,7 @@ class Draft(Resource):
 
 class Pull(Resource):
     """Pull — `tl.so.tilo.containers.Pull`."""
-    __surface__ = "so.tilo.containers@823180d2717f563c"
+    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
     shb65p47: str  # image
     gubc3b62: str  # job
     hhqtcu4c: list[str]  # lines
@@ -101,7 +101,7 @@ class Pull(Resource):
 
 class Containers(Resource):
     """Containers — `tl.so.tilo.containers.Containers`."""
-    __surface__ = "so.tilo.containers@823180d2717f563c"
+    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
     svwiioos: Draft  # draft
     ilelnqwj: list[Entry[Pull]]  # pulls
 
@@ -128,6 +128,26 @@ class Containers(Resource):
     def create_container(self) -> None:
         """Runs an image as a new container from the draft, and clears the form when the engine took it."""
         return self.action("create_container")
+
+    def show_containers(self) -> None:
+        """Shows what the engine holds of one kind. Each is the place's number key, pressed anywhere in the window."""
+        return self.action("show_containers")
+
+    def show_images(self) -> None:
+        """Runs the app's action."""
+        return self.action("show_images")
+
+    def show_volumes(self) -> None:
+        """Runs the app's action."""
+        return self.action("show_volumes")
+
+    def show_distrobox(self) -> None:
+        """Runs the app's action."""
+        return self.action("show_distrobox")
+
+    def new_container_form(self) -> None:
+        """Opens the new-container form, as `n` does from the window."""
+        return self.action("new_container_form")
 
     def make_volume(self, *, name: str) -> None:
         """Makes a volume."""
@@ -175,24 +195,24 @@ class Containers(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"clear_create", "clear_create_many", "fill", "fill_many", "create_container", "make_volume", "tag_image", "begin_pull", "begin_pull_many", "poll_pull", "poll_pull_many", "cancel_pull", "cancel_pull_many", "dismiss_pull", "dismiss_pull_many"})
+    __actions__ = frozenset({"clear_create", "clear_create_many", "fill", "fill_many", "create_container", "show_containers", "show_images", "show_volumes", "show_distrobox", "new_container_form", "make_volume", "tag_image", "begin_pull", "begin_pull_many", "poll_pull", "poll_pull_many", "cancel_pull", "cancel_pull_many", "dismiss_pull", "dismiss_pull_many"})
 
 
 class PullAsk(Resource):
     """PullAsk — `tl.so.tilo.containers.PullAsk`."""
-    __surface__ = "so.tilo.containers@823180d2717f563c"
+    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
     tukmkidh: str  # image
 
 
 class JobAnswer(Resource):
     """JobAnswer — `tl.so.tilo.containers.JobAnswer`."""
-    __surface__ = "so.tilo.containers@823180d2717f563c"
+    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
     znalhivd: str  # job
 
 
 class JobState(Resource):
     """JobState — `tl.so.tilo.containers.JobState`."""
-    __surface__ = "so.tilo.containers@823180d2717f563c"
+    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
     h3ie7k7k: str  # state
     bzkmqs4p: list[str]  # lines
     a6sjrj6l: str  # error
@@ -200,7 +220,7 @@ class JobState(Resource):
 
 class TiloContainers(Resource):
     """Containers — `tl.so.tilo.containers`."""
-    __surface__ = "so.tilo.containers@823180d2717f563c"
+    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
     def open_shell(self, *, container: str) -> None:
         """Opens a shell in a running container: podman's, in the Tilo terminal."""
         return self.action("open_shell", container=container)

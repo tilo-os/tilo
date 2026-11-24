@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.windows@7a88f357b1ba0b3b";
+export const SURFACE = "so.tilo.windows@a767de6e4f35d95c";
 
 /** How a program opens: with Wine or Proton in a private capsule, or in the Windows appliance. One of "wine", "proton", "vm". */
 export type OpenWith = "wine" | "proton" | "vm";
@@ -45,7 +45,7 @@ export interface Windows extends tilo.Resource {
   }): Promise<void>;
   /** Open the document the person chose in `program`. */
   opened_file(args: {
-    program: string;
+    program: unknown;
     file: unknown;
   }): Promise<void>;
 }

@@ -20,6 +20,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "Change",
     "Photo",
     "Album",
     "Person",
@@ -43,6 +44,7 @@ __all__ = [
     "DismissImportArgs",
     "FavoriteSelectedArgs",
     "RemoveSelectedArgs",
+    "EditSelectedArgs",
     "RemoveAlbumArgs",
     "AddPersonArgs",
     "RemovePersonArgs",
@@ -54,6 +56,9 @@ __all__ = [
     "SplitPhotoArgs",
     "RemovePersonResourceArgs",
 ]
+
+Change = Literal["keep", "clear", "set", "add", "remove"]
+"""What an edit does to one field of every selected photo: keeps what each photo has, takes it off all of them, gives them all one value, or adds or takes off names (tags, people)."""
 
 ToggleFavoriteArgs = TypedDict("ToggleFavoriteArgs", {
     "favorite": NotRequired["bool | None"],
@@ -137,6 +142,27 @@ RemoveSelectedArgs = TypedDict("RemoveSelectedArgs", {
 })
 """The arguments of `remove_selected`."""
 
+EditSelectedArgs = TypedDict("EditSelectedArgs", {
+    "ids": "list[str]",
+    "tags": NotRequired["Change | None"],
+    "tag_names": NotRequired["list[str] | None"],
+    "tags_off": NotRequired["list[str] | None"],
+    "people": NotRequired["Change | None"],
+    "person_names": NotRequired["list[str] | None"],
+    "people_off": NotRequired["list[str] | None"],
+    "folder": NotRequired["Change | None"],
+    "folder_text": NotRequired["str | None"],
+    "captured_at": NotRequired["Change | None"],
+    "captured_text": NotRequired["str | None"],
+    "description": NotRequired["Change | None"],
+    "description_text": NotRequired["str | None"],
+    "place": NotRequired["Change | None"],
+    "place_name": NotRequired["str | None"],
+    "latitude": NotRequired["float | None"],
+    "longitude": NotRequired["float | None"],
+})
+"""The arguments of `edit_selected`."""
+
 RemoveAlbumArgs = TypedDict("RemoveAlbumArgs", {
     "a": "Album",
 })
@@ -196,7 +222,7 @@ RemovePersonResourceArgs = TypedDict("RemovePersonResourceArgs", {
 
 class Photo(Resource):
     """Photo — `tl.so.tilo.photos.Photo`."""
-    __surface__ = "so.tilo.photos@a69ddce203fc6629"
+    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
     rv4vs7su: str  # name
     r55t3rg3: str  # picture
     vwrtdas3: str  # thumb
@@ -369,7 +395,7 @@ class Photo(Resource):
 
 class Album(Resource):
     """Album — `tl.so.tilo.photos.Album`."""
-    __surface__ = "so.tilo.photos@a69ddce203fc6629"
+    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
     unujaudz: str  # name
     k7fl2y27: list[str]  # photos
 
@@ -404,14 +430,14 @@ class Album(Resource):
 
 class Person(Resource):
     """Person — `tl.so.tilo.photos.Person`."""
-    __surface__ = "so.tilo.photos@a69ddce203fc6629"
+    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
     segahwtp: str  # name
     vbzsnqg5: list[str]  # photos
 
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.photos.Suggestion`."""
-    __surface__ = "so.tilo.photos@a69ddce203fc6629"
+    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
     qracadw6: str  # name
     ehc6rrhm: list[str]  # photos
     @property
@@ -426,7 +452,7 @@ class Suggestion(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.photos.Library`."""
-    __surface__ = "so.tilo.photos@a69ddce203fc6629"
+    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
     moeuycny: list[Entry[Photo]]  # photos
     tqa4lyow: list[Entry[Album]]  # albums
     xr5mtp2m: list[Entry[Person]]  # people
@@ -496,6 +522,67 @@ class Library(Resource):
     def remove_selected_many(self, items: list[RemoveSelectedArgs]) -> list[dict[str, Any]]:
         """Runs `remove_selected` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove_selected", items)
+
+    def edit_selected(self,
+        *,
+        ids: list[str],
+        tags: Change | None = None,
+        tag_names: list[str] | None = None,
+        tags_off: list[str] | None = None,
+        people: Change | None = None,
+        person_names: list[str] | None = None,
+        people_off: list[str] | None = None,
+        folder: Change | None = None,
+        folder_text: str | None = None,
+        captured_at: Change | None = None,
+        captured_text: str | None = None,
+        description: Change | None = None,
+        description_text: str | None = None,
+        place: Change | None = None,
+        place_name: str | None = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+    ) -> None:
+        """Changes the details of every named photo as one change: a field left `keep` keeps what each photo has, `clear` takes it off all of them, `set` gives them all one value, and tags and people are added or taken off across the selection, so every photo keeps the rest of its own. The selection is names in a list, so a person's selection, an agent's and a program's are the same change, undone at once."""
+        args: dict[str, Any] = {}
+        args["ids"] = ids
+        if tags is not None:
+            args["tags"] = tags
+        if tag_names is not None:
+            args["tag_names"] = tag_names
+        if tags_off is not None:
+            args["tags_off"] = tags_off
+        if people is not None:
+            args["people"] = people
+        if person_names is not None:
+            args["person_names"] = person_names
+        if people_off is not None:
+            args["people_off"] = people_off
+        if folder is not None:
+            args["folder"] = folder
+        if folder_text is not None:
+            args["folder_text"] = folder_text
+        if captured_at is not None:
+            args["captured_at"] = captured_at
+        if captured_text is not None:
+            args["captured_text"] = captured_text
+        if description is not None:
+            args["description"] = description
+        if description_text is not None:
+            args["description_text"] = description_text
+        if place is not None:
+            args["place"] = place
+        if place_name is not None:
+            args["place_name"] = place_name
+        if latitude is not None:
+            args["latitude"] = latitude
+        if longitude is not None:
+            args["longitude"] = longitude
+        return self.action("edit_selected", **args)
+
+    def edit_selected_many(self, items: list[EditSelectedArgs]) -> list[dict[str, Any]]:
+        """Runs `edit_selected` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit_selected", items)
 
     # the app's `remove` action is the SDK's own: run it with `action("remove")`.
     def new_album(self,
@@ -645,10 +732,10 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"import_photo", "absorb_picture", "import_photo_meta", "import_dropped", "import_dropped_many", "dismiss_import", "dismiss_import_many", "favorite_selected", "favorite_selected_many", "remove_selected", "remove_selected_many", "new_album", "remove_album", "remove_album_many", "add_person", "add_person_many", "remove_person", "remove_person_many", "rename_person", "rename_person_many", "find_faces", "scan_faces", "approve_suggestion", "approve_suggestion_many", "merge_suggestion", "merge_suggestion_many", "dismiss_suggestion", "dismiss_suggestion_many", "person_named", "new_person", "merge_people", "merge_people_many", "split_photo", "split_photo_many", "remove_person_resource", "remove_person_resource_many"})
+    __actions__ = frozenset({"import_photo", "absorb_picture", "import_photo_meta", "import_dropped", "import_dropped_many", "dismiss_import", "dismiss_import_many", "favorite_selected", "favorite_selected_many", "remove_selected", "remove_selected_many", "edit_selected", "edit_selected_many", "new_album", "remove_album", "remove_album_many", "add_person", "add_person_many", "remove_person", "remove_person_many", "rename_person", "rename_person_many", "find_faces", "scan_faces", "approve_suggestion", "approve_suggestion_many", "merge_suggestion", "merge_suggestion_many", "dismiss_suggestion", "dismiss_suggestion_many", "person_named", "new_person", "merge_people", "merge_people_many", "split_photo", "split_photo_many", "remove_person_resource", "remove_person_resource_many"})
 
 
 class Photos(Resource):
     """Photos — `tl.so.tilo.photos`."""
-    __surface__ = "so.tilo.photos@a69ddce203fc6629"
+    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
 

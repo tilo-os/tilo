@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.store@7ceac51030e390f2";
+export const SURFACE = "so.tilo.store@d9a335360b4c83a7";
 
 /** The arguments of `get`. */
 export interface GetArgs {
@@ -276,6 +276,8 @@ export interface App extends tilo.Resource {
   ehbiqgtb: Array<tilo.Entry<Permission>>;  // permissions
   foea7x37: Array<tilo.Entry<Release>>;  // releases
   fngfv6n4: number;  // size
+  cifjx7ck: number;  // installed_size
+  w626nsxj: string[];  // languages
   "25c7mbdv": string;  // reference
   tdkfnlcz: string;  // runtime
   qnnzjwd4: string;  // runtime_registry
@@ -624,6 +626,7 @@ export interface Item extends tilo.Resource {
   ojgbghet: string;  // runtime
   j5umq2va: boolean;  // updatable
   "2nmtgjmg": string;  // trouble
+  czhobryy: string[] | null;  // supported_languages
 }
 
 /** The actions `Item` reaches before it is read: `ws` calls them without a
@@ -683,12 +686,14 @@ export interface Details extends tilo.Resource {
   a37qv2oa: string;  // homepage
   uba5apij: string;  // source_code
   nt6mule6: number;  // size
+  lrlxwbcb: number;  // installed_size
   oj36amou: string[];  // screenshots
   g3nhe33n: string[];  // permissions
   lygslquo: string[];  // releases
   whmuitft: string;  // runtime
   uijcroeo: string;  // runtime_registry
   it2pk5w4: string;  // digest
+  gmjvqfez: string[] | null;  // supported_languages
 }
 
 /** The actions `Details` reaches before it is read: `ws` calls them without a

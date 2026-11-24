@@ -26,27 +26,29 @@ __all__ = [
     "Vault",
     "LoginList",
     "LoginEntry",
-    "AskedItem",
-    "ItemsAsk",
-    "BackupAsk",
-    "RestoreAsk",
+    "TypedAsk",
     "AskedFile",
-    "RemoveAsk",
-    "DeviceItem",
-    "DeviceAnswer",
+    "ImportAsk",
     "CsvRow",
     "RowsAnswer",
+    "CountAnswer",
+    "RestoredAnswer",
+    "CarriedAnswer",
     "UrlAnswer",
     "Passwords",
-    "SaveEditorArgs",
+    "KeepFactsArgs",
+    "SetUsernameArgs",
     "GeneratePasswordArgs",
     "FavoriteArgs",
     "AddTagArgs",
     "RemoveTagArgs",
     "AddOriginArgs",
     "RemoveOriginArgs",
-    "NoticeAgeArgs",
+    "RenameArgs",
+    "SetKindArgs",
+    "CarryArgs",
     "DeleteArgs",
+    "SettleArgs",
     "PreviewCsvArgs",
     "ApplyImportArgs",
     "ClearImportArgs",
@@ -56,14 +58,22 @@ __all__ = [
 Kind = Literal["login", "api_key", "note", "wifi", "secret"]
 """What kind of secret an item is: what it is for, which sets the fields it has and the words that name them."""
 
-SaveEditorArgs = TypedDict("SaveEditorArgs", {
-    "password": "str",
-    "notes": "str",
-    "fields": "str",
+KeepFactsArgs = TypedDict("KeepFactsArgs", {
+    "username": "str",
+    "origins": "list[str]",
 })
-"""The arguments of `save_editor`."""
+"""The arguments of `keep_facts`."""
+
+SetUsernameArgs = TypedDict("SetUsernameArgs", {
+    "username": "str",
+})
+"""The arguments of `set_username`."""
 
 GeneratePasswordArgs = TypedDict("GeneratePasswordArgs", {
+    "length": NotRequired["int | None"],
+    "capitals": NotRequired["bool | None"],
+    "digits": NotRequired["bool | None"],
+    "symbols": NotRequired["bool | None"],
 })
 """The arguments of `generate_password`."""
 
@@ -92,14 +102,28 @@ RemoveOriginArgs = TypedDict("RemoveOriginArgs", {
 })
 """The arguments of `remove_origin`."""
 
-NoticeAgeArgs = TypedDict("NoticeAgeArgs", {
+RenameArgs = TypedDict("RenameArgs", {
+    "title": "str",
 })
-"""The arguments of `notice_age`."""
+"""The arguments of `rename`."""
+
+SetKindArgs = TypedDict("SetKindArgs", {
+    "kind": "Kind",
+})
+"""The arguments of `set_kind`."""
+
+CarryArgs = TypedDict("CarryArgs", {
+})
+"""The arguments of `carry`."""
 
 DeleteArgs = TypedDict("DeleteArgs", {
     "item": "Item",
 })
 """The arguments of `delete`."""
+
+SettleArgs = TypedDict("SettleArgs", {
+})
+"""The arguments of `settle`."""
 
 PreviewCsvArgs = TypedDict("PreviewCsvArgs", {
     "file": "Any",
@@ -120,34 +144,78 @@ AbsorbDeviceArgs = TypedDict("AbsorbDeviceArgs", {
 
 class Item(Resource):
     """Item — `tl.so.tilo.passwords.Item`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
+    vvthph26: str  # entry
     ildzcyo2: str  # title
     ujkdowq4: Kind  # kind
+    qoa35hei: list[str]  # tags
+    tzeujwn7: bool  # favorite
     tpqopgvl: str  # username
     txdg33mm: str  # password
     fxvfkz3x: str  # notes
     qgllbsrc: list[str]  # origins
-    qoa35hei: list[str]  # tags
     japk242o: dict[str, str]  # fields
-    tzeujwn7: bool  # favorite
-    qzpekkx6: bool  # old
 
-    def save_editor(self,
+    def keep_facts(self,
         *,
-        password: str,
-        notes: str,
-        fields: str,
+        username: str,
+        origins: list[str],
     ) -> None:
-        """Writes what the editor holds onto an item: the password and notes it was given, and the custom fields it typed. An empty password keeps the one the item had."""
-        return self.action("save_editor", password=password, notes=notes, fields=fields)
+        """Writes what is safe to say of an item into its vault entry: who it signs in as and where, with the item's name, kind and tags."""
+        return self.action("keep_facts", username=username, origins=origins)
 
-    def save_editor_many(self, items: list[SaveEditorArgs]) -> list[dict[str, Any]]:
-        """Runs `save_editor` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("save_editor", items)
+    def keep_facts_many(self, items: list[KeepFactsArgs]) -> list[dict[str, Any]]:
+        """Runs `keep_facts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep_facts", items)
 
-    def generate_password(self) -> None:
-        """Draws a strong password for the item: 20 characters, at least one capital, one small letter, one digit and one symbol."""
-        return self.action("generate_password")
+    def set_username(self, *, username: str) -> None:
+        """Writes who the item signs in as."""
+        return self.action("set_username", username=username)
+
+    def set_username_many(self, items: list[SetUsernameArgs]) -> list[dict[str, Any]]:
+        """Runs `set_username` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_username", items)
+
+    def change_secret(self) -> str:
+        """Changes the item's password, key or secret: the person types it on the system's card, and the vault keeps it. Nothing of it reaches this app's code, its records or history."""
+        return self.action("change_secret")
+
+    def write_note(self) -> str:
+        """Writes the item's note: typed on the system's card, kept in the vault."""
+        return self.action("write_note")
+
+    def add_field(self,
+        *,
+        label: str | None = None,
+    ) -> str:
+        """Adds a field to the item, such as a PIN: its value typed on the system's card."""
+        args: dict[str, Any] = {}
+        if label is not None:
+            args["label"] = label
+        return self.action("add_field", **args)
+
+    def remove_field(self, *, label: str) -> str:
+        """Takes a field off the item."""
+        return self.action("remove_field", label=label)
+
+    def generate_password(self,
+        *,
+        length: int | None = None,
+        capitals: bool | None = None,
+        digits: bool | None = None,
+        symbols: bool | None = None,
+    ) -> None:
+        """Draws a strong password for the item where the vault is: 20 characters by default, with a capital, a small letter, a digit and a symbol. Nobody types or sees it."""
+        args: dict[str, Any] = {}
+        if length is not None:
+            args["length"] = length
+        if capitals is not None:
+            args["capitals"] = capitals
+        if digits is not None:
+            args["digits"] = digits
+        if symbols is not None:
+            args["symbols"] = symbols
+        return self.action("generate_password", **args)
 
     def generate_password_many(self, items: list[GeneratePasswordArgs]) -> list[dict[str, Any]]:
         """Runs `generate_password` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -211,8 +279,24 @@ class Item(Resource):
         """Runs `remove_origin` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove_origin", items)
 
+    def rename(self, *, title: str) -> None:
+        """Renames an item, in its record and its vault entry."""
+        return self.action("rename", title=title)
+
+    def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
+        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename", items)
+
+    def set_kind(self, *, kind: Kind) -> None:
+        """Changes what kind of secret an item is."""
+        return self.action("set_kind", kind=kind)
+
+    def set_kind_many(self, items: list[SetKindArgs]) -> list[dict[str, Any]]:
+        """Runs `set_kind` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_kind", items)
+
     def copy_secret(self) -> None:
-        """Copies the item's secret to the person's clipboard."""
+        """Copies the item's secret to the person's clipboard, which forgets it again after a while. Copying reads the vault and keeps nothing."""
         return self.action("copy_secret")
 
     def copy_identity(self) -> None:
@@ -223,34 +307,22 @@ class Item(Resource):
         """Copies the addresses the item signs in to, one a line."""
         return self.action("copy_origins")
 
-    def notice_age(self) -> None:
-        """Notes an item whose password was last changed more than a year ago, as the daily check runs."""
-        return self.action("notice_age")
+    def carry(self) -> None:
+        """Moves what an item's record keeps into the vault, once, and empties the record: an entry the vault already keeps under the item's id stays as it is."""
+        return self.action("carry")
 
-    def notice_age_many(self, items: list[NoticeAgeArgs]) -> list[dict[str, Any]]:
-        """Runs `notice_age` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("notice_age", items)
-
-    def write_origins(self, *, values: list[str]) -> bool:
-        """Replaces an item's addresses with `values`, one change."""
-        return self.action("write_origins", values=values)
-
-    def write_tags(self, *, values: list[str]) -> bool:
-        """Replaces an item's tags with `values`, one change."""
-        return self.action("write_tags", values=values)
-
-    def write_fields(self, *, values: dict[str, str]) -> bool:
-        """Replaces an item's custom fields with `values`, one change."""
-        return self.action("write_fields", values=values)
+    def carry_many(self, items: list[CarryArgs]) -> list[dict[str, Any]]:
+        """Runs `carry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("carry", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"save_editor", "save_editor_many", "generate_password", "generate_password_many", "favorite", "favorite_many", "add_tag", "add_tag_many", "remove_tag", "remove_tag_many", "add_origin", "add_origin_many", "remove_origin", "remove_origin_many", "copy_secret", "copy_identity", "copy_origins", "notice_age", "notice_age_many", "write_origins", "write_tags", "write_fields"})
+    __actions__ = frozenset({"keep_facts", "keep_facts_many", "set_username", "set_username_many", "change_secret", "write_note", "add_field", "remove_field", "generate_password", "generate_password_many", "favorite", "favorite_many", "add_tag", "add_tag_many", "remove_tag", "remove_tag_many", "add_origin", "add_origin_many", "remove_origin", "remove_origin_many", "rename", "rename_many", "set_kind", "set_kind_many", "copy_secret", "copy_identity", "copy_origins", "carry", "carry_many"})
 
 
 class ImportRow(Resource):
     """ImportRow — `tl.so.tilo.passwords.ImportRow`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
     l7jn4eol: str  # title
     s6pvezan: str  # username
     @property
@@ -261,8 +333,6 @@ class ImportRow(Resource):
     @_4jcknnmq.setter
     def _4jcknnmq(self, value: str) -> None:
         self.edit("4jcknnmq", value=value)
-    jtrf57qd: str  # password
-    sx76etl2: str  # notes
     @property
     def _23s6djq3(self) -> bool:
         """skip (`23s6djq3` on the wire)."""
@@ -275,7 +345,7 @@ class ImportRow(Resource):
 
 class Vault(Resource):
     """Vault — `tl.so.tilo.passwords.Vault`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
     vflzrccj: list[Entry[Item]]  # items
     @property
     def _6n7bahst(self) -> list[str]:
@@ -286,6 +356,7 @@ class Vault(Resource):
     def _6n7bahst(self, value: list[str]) -> None:
         self.edit("6n7bahst", value=value)
     wa4uxojt: list[Entry[ImportRow]]  # pending
+    fatb5kmf: str  # importing
     @property
     def _3xf6uda7(self) -> str:
         """notice (`3xf6uda7` on the wire)."""
@@ -299,7 +370,7 @@ class Vault(Resource):
         *,
         title: str | None = None,
     ) -> Item:
-        """Starts an item: it opens in the window, named by what is typed first."""
+        """Starts an item: an entry of the vault and the item that lists it, named by what is typed first. Its secret is typed on the system's card, never here."""
         args: dict[str, Any] = {}
         if title is not None:
             args["title"] = title
@@ -310,25 +381,32 @@ class Vault(Resource):
         name: str,
         origin: str,
         username: str,
-        password: str,
     ) -> Item:
-        """Adds a login in one step: what an agent, a script or the VM's own end-to-end check asks of the vault. The name is required, the password is required, and an address is checked as a web address."""
-        return self.action("save_login", name=name, origin=origin, username=username, password=password)
+        """Adds a login in one step: what an agent, a script or the VM's own end-to-end check asks of the vault. The person types its password on the system's card, so whoever asked never holds it, and the vault keeps it. An address is checked as a web address."""
+        return self.action("save_login", name=name, origin=origin, username=username)
 
     def list_logins(self) -> LoginList:
-        """The vault's logins, by name and by the item that holds each: what a script, an agent or another device's window lists. The passwords are never part of it."""
+        """The vault's logins, by name and by the entry that holds each: what a script, an agent or another device's window lists. The passwords are never part of it."""
         return self.action("list_logins")
 
     def delete(self, *, item: Item) -> None:
-        """Deletes an item from the vault."""
+        """Deletes an item, and the entry it stands for, from the vault."""
         return self.action("delete", item=item)
 
     def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
         """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete", items)
 
+    def settle(self) -> None:
+        """Brings the vault and its items together: an entry kept elsewhere (a mail account's password, a connector's token, one another device added) gets an item, an item's name, kind and tags reach its entry, and what an older Passwords kept in its own records moves into the vault and leaves the record. Runs while Passwords is open, and changes nothing when all is settled."""
+        return self.action("settle")
+
+    def settle_many(self, items: list[SettleArgs]) -> list[dict[str, Any]]:
+        """Runs `settle` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("settle", items)
+
     def preview_csv(self, *, file: Any) -> None:
-        """Reads the browser's CSV the person chose into the vault's waiting rows, each marked when the vault already holds that login."""
+        """Reads the browser's CSV the person chose into the vault's waiting rows, each marked when the vault already holds that login. The passwords stay in the file."""
         return self.action("preview_csv", file=file)
 
     def preview_csv_many(self, items: list[PreviewCsvArgs]) -> list[dict[str, Any]]:
@@ -336,7 +414,7 @@ class Vault(Resource):
         return self.many("preview_csv", items)
 
     def apply_import(self) -> None:
-        """Brings the rows the person agreed to into the vault, skipping the ones the vault holds."""
+        """Brings the rows the person agreed to into the vault, skipping the ones the vault holds. The vault reads their passwords from the file."""
         return self.action("apply_import")
 
     def apply_import_many(self, items: list[ApplyImportArgs]) -> list[dict[str, Any]]:
@@ -356,23 +434,19 @@ class Vault(Resource):
         return self.action("clear_pending")
 
     def export_csv(self) -> Any:
-        """The vault as a browser's CSV, named for what it holds: the person chooses where it goes."""
+        """The vault as a browser's CSV: the person chooses where it goes."""
         return self.action("export_csv")
 
-    def export_backup(self, *, password: str) -> Any:
-        """The vault as an encrypted backup under `password`: the person chooses where it goes."""
-        return self.action("export_backup", password=password)
+    def export_backup(self) -> Any:
+        """The vault as an encrypted backup under the password the person types twice on the system's card: the person chooses where it goes."""
+        return self.action("export_backup")
 
-    def restore_backup(self,
-        *,
-        password: str,
-        file: Any,
-    ) -> int:
-        """Brings the items a backup holds into the vault, and answers how many came in."""
-        return self.action("restore_backup", password=password, file=file)
+    def restore_backup(self, *, file: Any) -> int:
+        """Brings the entries a backup holds into the vault with the password the person types on the system's card, and answers how many came in. An entry the vault already keeps is left as it is, so restoring twice adds nothing."""
+        return self.action("restore_backup", file=file)
 
     def absorb_device(self) -> None:
-        """Takes into the vault what this device's secret service holds and a workspace may share. Each entry is sealed into the vault; the device's authentication material and its Wi-Fi networks stay where they are. An entry already taken in is not taken again."""
+        """Takes into the vault what this device's secret service holds and a workspace may share. The device's authentication material and its Wi-Fi networks stay where they are, and each entry leaves the device's service once the vault keeps it."""
         return self.action("absorb_device")
 
     def absorb_device_many(self, items: list[AbsorbDeviceArgs]) -> list[dict[str, Any]]:
@@ -381,119 +455,59 @@ class Vault(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_item", "save_login", "list_logins", "delete", "delete_many", "preview_csv", "preview_csv_many", "apply_import", "apply_import_many", "clear_import", "clear_import_many", "clear_pending", "export_csv", "export_backup", "restore_backup", "absorb_device", "absorb_device_many"})
+    __actions__ = frozenset({"new_item", "save_login", "list_logins", "delete", "delete_many", "settle", "settle_many", "preview_csv", "preview_csv_many", "apply_import", "apply_import_many", "clear_import", "clear_import_many", "clear_pending", "export_csv", "export_backup", "restore_backup", "absorb_device", "absorb_device_many"})
 
 
 class LoginList(Resource):
     """LoginList — `tl.so.tilo.passwords.LoginList`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
     nkbtq6y2: list[LoginEntry]  # logins
 
 
 class LoginEntry(Resource):
     """LoginEntry — `tl.so.tilo.passwords.LoginEntry`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
     mtdotryg: str  # item
     yiseqxtu: str  # name
 
 
-class AskedItem(Resource):
-    """AskedItem — `tl.so.tilo.passwords.AskedItem`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
-    rzuvlal6: str  # title
+class TypedAsk(Resource):
+    """TypedAsk — `tl.so.tilo.passwords.TypedAsk`."""
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
     @property
-    def _65lzjom4(self) -> str:
-        """kind (`65lzjom4` on the wire)."""
-        return self.fields["65lzjom4"]
+    def _5se7svg2(self) -> str:
+        """id (`5se7svg2` on the wire)."""
+        return self.fields["5se7svg2"]
 
-    @_65lzjom4.setter
-    def _65lzjom4(self, value: str) -> None:
-        self.edit("65lzjom4", value=value)
-    gtezt3ys: str  # username
-    nqzlkgho: str  # password
-    nyoijvnx: str  # notes
-    pupxu7gb: list[str]  # origins
-    zrtsugqu: list[str]  # tags
-    yczcbynv: dict[str, str]  # fields
-
-
-class ItemsAsk(Resource):
-    """ItemsAsk — `tl.so.tilo.passwords.ItemsAsk`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
+    @_5se7svg2.setter
+    def _5se7svg2(self, value: str) -> None:
+        self.edit("5se7svg2", value=value)
     @property
-    def _6nicnbs2(self) -> list[AskedItem]:
-        """items (`6nicnbs2` on the wire)."""
-        return self.fields["6nicnbs2"]
+    def _3f2i24zq(self) -> str:
+        """part (`3f2i24zq` on the wire)."""
+        return self.fields["3f2i24zq"]
 
-    @_6nicnbs2.setter
-    def _6nicnbs2(self, value: list[AskedItem]) -> None:
-        self.edit("6nicnbs2", value=value)
-
-
-class BackupAsk(Resource):
-    """BackupAsk — `tl.so.tilo.passwords.BackupAsk`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
-    a45t5mnl: list[AskedItem]  # items
-    wmhsd5ch: str  # passphrase
-
-
-class RestoreAsk(Resource):
-    """RestoreAsk — `tl.so.tilo.passwords.RestoreAsk`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
-    rnonlkte: str  # url
-    cynjyelt: str  # passphrase
+    @_3f2i24zq.setter
+    def _3f2i24zq(self, value: str) -> None:
+        self.edit("3f2i24zq", value=value)
 
 
 class AskedFile(Resource):
     """AskedFile — `tl.so.tilo.passwords.AskedFile`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
     roquvgtj: str  # url
 
 
-class RemoveAsk(Resource):
-    """RemoveAsk — `tl.so.tilo.passwords.RemoveAsk`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
-    eevmellb: list[str]  # ids
-
-
-class DeviceItem(Resource):
-    """DeviceItem — `tl.so.tilo.passwords.DeviceItem`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
-    wnjsdr3d: str  # id
-    lwvhidtr: str  # title
-    vd3jnhgx: str  # kind
-    f7f2gp2a: str  # username
-    @property
-    def _6okrlhly(self) -> str:
-        """password (`6okrlhly` on the wire)."""
-        return self.fields["6okrlhly"]
-
-    @_6okrlhly.setter
-    def _6okrlhly(self, value: str) -> None:
-        self.edit("6okrlhly", value=value)
-    p4viod5a: str  # notes
-    @property
-    def _4ejpoi2g(self) -> list[str]:
-        """origins (`4ejpoi2g` on the wire)."""
-        return self.fields["4ejpoi2g"]
-
-    @_4ejpoi2g.setter
-    def _4ejpoi2g(self, value: list[str]) -> None:
-        self.edit("4ejpoi2g", value=value)
-    wze5ieza: list[str]  # tags
-    gr5iqwm5: dict[str, str]  # fields
-
-
-class DeviceAnswer(Resource):
-    """DeviceAnswer — `tl.so.tilo.passwords.DeviceAnswer`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
-    vqmxqaz7: list[DeviceItem]  # items
-    is77ciid: str  # error
+class ImportAsk(Resource):
+    """ImportAsk — `tl.so.tilo.passwords.ImportAsk`."""
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
+    trzw7c4z: str  # url
+    xbct2xaa: list[int]  # skip
 
 
 class CsvRow(Resource):
     """CsvRow — `tl.so.tilo.passwords.CsvRow`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
     ufq2o5qa: str  # title
     pjl3fx3t: str  # username
     @property
@@ -504,23 +518,59 @@ class CsvRow(Resource):
     @_7ca4ejcb.setter
     def _7ca4ejcb(self, value: str) -> None:
         self.edit("7ca4ejcb", value=value)
-    u3j7epmt: str  # password
-    we5a77lw: str  # notes
 
 
 class RowsAnswer(Resource):
     """RowsAnswer — `tl.so.tilo.passwords.RowsAnswer`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
     janzxbln: list[CsvRow]  # rows
+
+
+class CountAnswer(Resource):
+    """CountAnswer — `tl.so.tilo.passwords.CountAnswer`."""
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
+    @property
+    def _35klc2sc(self) -> int:
+        """imported (`35klc2sc` on the wire)."""
+        return self.fields["35klc2sc"]
+
+    @_35klc2sc.setter
+    def _35klc2sc(self, value: int) -> None:
+        self.edit("35klc2sc", value=value)
+
+
+class RestoredAnswer(Resource):
+    """RestoredAnswer — `tl.so.tilo.passwords.RestoredAnswer`."""
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
+    ks2ix353: int  # restored
+
+
+class CarriedAnswer(Resource):
+    """CarriedAnswer — `tl.so.tilo.passwords.CarriedAnswer`."""
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
+    wd5mzler: int  # carried
+    arw4q74m: str  # error
 
 
 class UrlAnswer(Resource):
     """UrlAnswer — `tl.so.tilo.passwords.UrlAnswer`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
     vlz4ie4r: str  # url
 
 
 class Passwords(Resource):
     """Passwords — `tl.so.tilo.passwords`."""
-    __surface__ = "so.tilo.passwords@37130bd8058a96d7"
+    __surface__ = "so.tilo.passwords@dac1b67d7a707940"
+    def keep_typed(self,
+        *,
+        id: str,
+        part: str,
+    ) -> str:
+        """Hands what the person typed on the system's card to the vault as `part` of the entry `id`: the host passes it on, so it never becomes a value here. Answers why it could not, or nothing."""
+        return self.action("keep_typed", id=id, part=part)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"keep_typed"})
+
 

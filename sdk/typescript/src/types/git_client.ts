@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.git-client@b0e5ccf8496b432f";
+export const SURFACE = "so.tilo.git-client@c4c68831343dbe97";
 
 /** Where a change stands: in the next commit, still in the working tree, or not tracked yet. One of "staged", "unstaged", "untracked". */
 export type ChangeArea = "staged" | "unstaged" | "untracked";
@@ -35,6 +35,9 @@ export type RefKind = "head" | "local_branch" | "remote_branch" | "tag";
 
 /** How a diff reads. One of "unified", "split". */
 export type DiffLayout = "unified" | "split";
+
+/** Where the last approved check stands: none ran yet (or it was put away), the host runs it now, the host observed how its commands ended, it was stopped, or the workspace or the host refused it. One of "idle", "running", "observed", "stopped", "refused". */
+export type CheckState = "idle" | "running" | "observed" | "stopped" | "refused";
 
 /** The arguments of `read_folder`. */
 export interface ReadFolderArgs {
@@ -173,6 +176,23 @@ export interface PullArgs {
 /** The arguments of `push`. */
 export interface PushArgs {
   remote?: string;
+}
+
+/** The arguments of `run-approved-check`. */
+export interface RunApprovedCheckArgs {
+  check_id: string;
+}
+
+/** The arguments of `poll_check`. */
+export interface PollCheckArgs {
+}
+
+/** The arguments of `cancel_check`. */
+export interface CancelCheckArgs {
+}
+
+/** The arguments of `clear_check`. */
+export interface ClearCheckArgs {
 }
 
 /** The arguments of `read_commit`. */
@@ -468,6 +488,7 @@ export interface Repository extends tilo.Resource {
   "6ejc2liq": string;  // author_email
   os3blsxu: string;  // snapshot
   vioio4dz: Array<tilo.Entry<Session>>;  // sessions
+  "6lsikkhk": ApprovedCheck;  // check
   // the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
   /** Opens the repository at `path` on this device. */
   open_repository(args: {
@@ -622,6 +643,24 @@ export interface Repository extends tilo.Resource {
   }): Promise<void>;
   /** Runs `push` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   pushMany(items: PushArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs a check this project's host approved, by its id: the host picks the commands, the sources and the bounds, reports how far it has got, and says what it observed once it ends. */
+  runApprovedCheck(args: {
+    check_id: string;
+  }): Promise<void>;
+  /** Runs `run-approved-check` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  runApprovedCheckMany(items: RunApprovedCheckArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Asks the device how the running check is doing, and keeps what the host reported. */
+  poll_check(): Promise<void>;
+  /** Runs `poll_check` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  poll_checkMany(items: PollCheckArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Stops the running check; the host ends its commands. */
+  cancel_check(): Promise<void>;
+  /** Runs `cancel_check` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  cancel_checkMany(items: CancelCheckArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts the last check's result away. */
+  clear_check(): Promise<void>;
+  /** Runs `clear_check` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clear_checkMany(items: ClearCheckArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Reads a commit's changed files and their diffs when it is opened. */
   read_commit(args: {
     id: string;
@@ -676,11 +715,36 @@ export interface Repository extends tilo.Resource {
 
 /** The actions `Repository` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const REPOSITORY_ACTIONS = ["open_repository", "open_repositoryMany", "choose_repository", "choose_repositoryMany", "open_browsed", "open_browsedMany", "close_picker", "close_pickerMany", "stage_file", "stage_fileMany", "unstage_file", "unstage_fileMany", "discard_file", "discard_fileMany", "stage_all", "stage_allMany", "unstage_all", "unstage_allMany", "stage_hunk", "stage_hunkMany", "unstage_hunk", "unstage_hunkMany", "discard_hunk", "discard_hunkMany", "commit", "commitMany", "resolve_conflict", "resolve_conflictMany", "create_branch", "create_branchMany", "checkout_branch", "checkout_branchMany", "switch_stashing", "switch_stashingMany", "switch_carrying", "switch_carryingMany", "cancel_switch", "cancel_switchMany", "switch_to", "switch_toMany", "delete_branch", "delete_branchMany", "save_stash", "save_stashMany", "apply_stash", "apply_stashMany", "create_worktree", "create_worktreeMany", "fetch", "fetchMany", "pull", "pullMany", "push", "pushMany", "read_commit", "read_commitMany", "toggle_layout", "toggle_layoutMany", "toggle_syntax", "toggle_syntaxMany", "toggle_whitespace", "toggle_whitespaceMany", "toggle_wrap", "toggle_wrapMany", "clear_trouble", "clear_troubleMany", "clear_notice", "clear_noticeMany", "asks", "asksMany"] as const;
+export const REPOSITORY_ACTIONS = ["open_repository", "open_repositoryMany", "choose_repository", "choose_repositoryMany", "open_browsed", "open_browsedMany", "close_picker", "close_pickerMany", "stage_file", "stage_fileMany", "unstage_file", "unstage_fileMany", "discard_file", "discard_fileMany", "stage_all", "stage_allMany", "unstage_all", "unstage_allMany", "stage_hunk", "stage_hunkMany", "unstage_hunk", "unstage_hunkMany", "discard_hunk", "discard_hunkMany", "commit", "commitMany", "resolve_conflict", "resolve_conflictMany", "create_branch", "create_branchMany", "checkout_branch", "checkout_branchMany", "switch_stashing", "switch_stashingMany", "switch_carrying", "switch_carryingMany", "cancel_switch", "cancel_switchMany", "switch_to", "switch_toMany", "delete_branch", "delete_branchMany", "save_stash", "save_stashMany", "apply_stash", "apply_stashMany", "create_worktree", "create_worktreeMany", "fetch", "fetchMany", "pull", "pullMany", "push", "pushMany", "runApprovedCheck", "runApprovedCheckMany", "poll_check", "poll_checkMany", "cancel_check", "cancel_checkMany", "clear_check", "clear_checkMany", "read_commit", "read_commitMany", "toggle_layout", "toggle_layoutMany", "toggle_syntax", "toggle_syntaxMany", "toggle_whitespace", "toggle_whitespaceMany", "toggle_wrap", "toggle_wrapMany", "clear_trouble", "clear_troubleMany", "clear_notice", "clear_noticeMany", "asks", "asksMany"] as const;
 
 /** The `tl.so.tilo.git-client.Repository` kind at `path`. */
 export function repository(ws: tilo.Workspace, path: string): Repository {
   return resourceProxy(ws, path, SURFACE, REPOSITORY_ACTIONS) as unknown as Repository;
+}
+
+/** ApprovedCheck — `tl.so.tilo.git-client.ApprovedCheck`. */
+export interface ApprovedCheck extends tilo.Resource {
+  rmw3ex57: string;  // check_id
+  nsdsyb5s: string;  // job
+  ui5llo7z: CheckState;  // state
+  d5rqal3v: string;  // phase
+  poxyr3cm: number;  // completed
+  eezoev2x: number;  // total
+  u3i4t7tf: string;  // outcome
+  dl6kn2wc: number | null;  // exit_code
+  pllfspge: number;  // elapsed_ms
+  vmj5rkri: string;  // output
+  qmhx4rnw: string;  // errors
+  rclt3d5w: string;  // refusal
+}
+
+/** The actions `ApprovedCheck` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const APPROVEDCHECK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.git-client.ApprovedCheck` kind at `path`. */
+export function approvedCheck(ws: tilo.Workspace, path: string): ApprovedCheck {
+  return resourceProxy(ws, path, SURFACE, APPROVEDCHECK_ACTIONS) as unknown as ApprovedCheck;
 }
 
 /** Loaded — `tl.so.tilo.git-client.Loaded`. */
@@ -1053,6 +1117,30 @@ export const RESOLVEASK_ACTIONS = [] as const;
 /** The `tl.so.tilo.git-client.ResolveAsk` kind at `path`. */
 export function resolveAsk(ws: tilo.Workspace, path: string): ResolveAsk {
   return resourceProxy(ws, path, SURFACE, RESOLVEASK_ACTIONS) as unknown as ResolveAsk;
+}
+
+/** CheckStatus — `tl.so.tilo.git-client.CheckStatus`. */
+export interface CheckStatus extends tilo.Resource {
+  uygk57xo: string;  // state
+  "55lyz5up": string;  // phase
+  pl44hgyv: number | null;  // completed
+  "5qgxxmf2": number | null;  // total
+  jdbite5b: string;  // error
+  lseynsql: string;  // outcome
+  unt7o3nt: number | null;  // exit_code
+  oo44f2s2: number;  // elapsed_ms
+  phjhwilm: string;  // output
+  hmbphto7: string;  // errors
+  z5xx44zw: string;  // failure
+}
+
+/** The actions `CheckStatus` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CHECKSTATUS_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.git-client.CheckStatus` kind at `path`. */
+export function checkStatus(ws: tilo.Workspace, path: string): CheckStatus {
+  return resourceProxy(ws, path, SURFACE, CHECKSTATUS_ACTIONS) as unknown as CheckStatus;
 }
 
 /** RemoteAsk — `tl.so.tilo.git-client.RemoteAsk`. */

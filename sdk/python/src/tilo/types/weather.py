@@ -25,10 +25,12 @@ __all__ = [
     "Reading",
     "Air",
     "Place",
+    "PlaceReading",
     "Refresh",
     "Found",
     "Searching",
     "Locations",
+    "Readings",
     "Weather",
     "UseAsDefaultArgs",
     "MoveToTopArgs",
@@ -86,7 +88,7 @@ AcceptFoundArgs = TypedDict("AcceptFoundArgs", {
 
 class Hour(Resource):
     """Hour — `tl.so.tilo.weather.Hour`."""
-    __surface__ = "so.tilo.weather@7872d52c5968bf1a"
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
     hqg5l743: str  # at
     nz766xgs: float  # temperature
     bszivu27: float  # chance
@@ -97,7 +99,7 @@ class Hour(Resource):
 
 class Day(Resource):
     """Day — `tl.so.tilo.weather.Day`."""
-    __surface__ = "so.tilo.weather@7872d52c5968bf1a"
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
     jpx34w56: str  # date
     @property
     def _7yqjq2lc(self) -> int:
@@ -127,7 +129,7 @@ class Day(Resource):
 
 class Reading(Resource):
     """Reading — `tl.so.tilo.weather.Reading`."""
-    __surface__ = "so.tilo.weather@7872d52c5968bf1a"
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
     wz5kgppi: str  # at
     nfn3o6kh: float  # temperature
     npx3rbww: float  # apparent
@@ -151,7 +153,7 @@ class Reading(Resource):
 
 class Air(Resource):
     """Air — `tl.so.tilo.weather.Air`."""
-    __surface__ = "so.tilo.weather@7872d52c5968bf1a"
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
     qhxusqd7: str  # at
     b43at2ai: float | None  # european
     rwv4mbrr: float | None  # us
@@ -170,7 +172,7 @@ class Air(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.weather.Place`."""
-    __surface__ = "so.tilo.weather@7872d52c5968bf1a"
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
     bacjedt3: str  # name
     aohkzfz3: str  # region
     j6rsr6zo: str  # country
@@ -185,39 +187,49 @@ class Place(Resource):
     ax54oez6: float  # latitude
     ewmohhie: float  # longitude
     y5lbxwn7: str  # timezone
-    ikazv44r: bool  # read
-    gbrotevm: Reading  # current
-    qt6zc3me: list[Entry[Hour]]  # hours
-    fjbo2bs7: list[Entry[Day]]  # days
-    qz7n6v2n: Air  # air
-    uthtg3cy: bool  # has_air
+
+
+class PlaceReading(Resource):
+    """PlaceReading — `tl.so.tilo.weather.PlaceReading`."""
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    uzxnvv67: str  # name
+    hfv2phzu: str  # place
+    kgqshwck: bool  # read
+    eecg6i33: Reading  # current
+    yc3wt5yt: list[Entry[Hour]]  # hours
     @property
-    def _42oai4b2(self) -> str | None:
-        """fetched (`42oai4b2` on the wire)."""
-        return self.fields["42oai4b2"]
+    def _7xtuywip(self) -> list[Entry[Day]]:
+        """days (`7xtuywip` on the wire)."""
+        return self.fields["7xtuywip"]
 
-    @_42oai4b2.setter
-    def _42oai4b2(self, value: str | None) -> None:
-        self.edit("42oai4b2", value=value)
-    lkrdcuut: bool  # stale
-    ckqlainl: str  # trouble
+    @_7xtuywip.setter
+    def _7xtuywip(self, value: list[Entry[Day]]) -> None:
+        self.edit("7xtuywip", value=value)
+    @property
+    def _7eu3357v(self) -> Air:
+        """air (`7eu3357v` on the wire)."""
+        return self.fields["7eu3357v"]
 
-    def read_place(self) -> bool:
-        """Reads one place's forecast and air quality. One failing leaves the other's answer standing, and a place the service did not answer keeps what it had and says why."""
-        return self.action("read_place")
+    @_7eu3357v.setter
+    def _7eu3357v(self, value: Air) -> None:
+        self.edit("7eu3357v", value=value)
+    gqv7rwej: bool  # has_air
+    caagd74f: str | None  # fetched
+    juxtrvon: bool  # stale
+    losawnjy: str  # trouble
 
     def apply_forecast(self, *, body: str) -> bool:
-        """The forecast a service answered, written into the place: its current reading, a day of hours and a week of days. False when the body is not a forecast the service could have sent."""
+        """The forecast a service answered, written into this device's reading of the place: its current reading, a day of hours and a week of days. False when the body is not a forecast the service could have sent."""
         return self.action("apply_forecast", body=body)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"read_place", "apply_forecast"})
+    __actions__ = frozenset({"apply_forecast"})
 
 
 class Refresh(Resource):
     """Refresh — `tl.so.tilo.weather.Refresh`."""
-    __surface__ = "so.tilo.weather@7872d52c5968bf1a"
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
     @property
     def _6a665z7q(self) -> str:
         """state (`6a665z7q` on the wire)."""
@@ -242,7 +254,7 @@ class Refresh(Resource):
 
 class Found(Resource):
     """Found — `tl.so.tilo.weather.Found`."""
-    __surface__ = "so.tilo.weather@7872d52c5968bf1a"
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
     mgz6jurw: str  # name
     @property
     def _6jas4neh(self) -> float:
@@ -268,7 +280,7 @@ class Found(Resource):
 
 class Searching(Resource):
     """Searching — `tl.so.tilo.weather.Searching`."""
-    __surface__ = "so.tilo.weather@7872d52c5968bf1a"
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
     fmhvvp6l: str  # wanted
     o4whnz6t: str  # asked
     @property
@@ -284,10 +296,9 @@ class Searching(Resource):
 
 class Locations(Resource):
     """Locations — `tl.so.tilo.weather.Locations`."""
-    __surface__ = "so.tilo.weather@7872d52c5968bf1a"
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
     b2qn6gqw: list[Entry[Place]]  # places
     vqfze2cq: Place | None  # default
-    esvv4ymu: Refresh  # refresh
     ms5dkio6: list[Entry[Searching]]  # searches
     @property
     def _73zdj7wy(self) -> str:
@@ -418,7 +429,33 @@ class Locations(Resource):
     __actions__ = frozenset({"save_place", "use_as_default", "use_as_default_many", "move_to_top", "move_to_top_many", "remove_place", "remove_place_many", "stop_refresh", "stop_refresh_many", "retry_place", "retry_place_many", "read_next", "read_next_many", "poll_weather", "poll_weather_many", "begin_search", "end_search", "end_search_many", "add_found", "accept_found", "accept_found_many"})
 
 
+class Readings(Resource):
+    """Readings — `tl.so.tilo.weather.Readings`."""
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
+    @property
+    def _6fze2ppw(self) -> list[Entry[PlaceReading]]:
+        """of (`6fze2ppw` on the wire)."""
+        return self.fields["6fze2ppw"]
+
+    @_6fze2ppw.setter
+    def _6fze2ppw(self, value: list[Entry[PlaceReading]]) -> None:
+        self.edit("6fze2ppw", value=value)
+    vf63zjb2: Refresh  # refresh
+
+    def reading_for(self, *, place: Place) -> PlaceReading:
+        """What this device read of `place`, made the first time something writes it."""
+        return self.action("reading_for", place=place)
+
+    def read_place(self, *, place: Place) -> bool:
+        """Reads one place's forecast and air quality. One failing leaves the other's answer standing, and a place the service did not answer keeps what it had and says why."""
+        return self.action("read_place", place=place)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"reading_for", "read_place"})
+
+
 class Weather(Resource):
     """Weather — `tl.so.tilo.weather`."""
-    __surface__ = "so.tilo.weather@7872d52c5968bf1a"
+    __surface__ = "so.tilo.weather@7b246f7223912bf2"
 

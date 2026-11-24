@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@172587f7789744b0";
+export const SURFACE = "so.tilo.browser@2c67cfdeabe046ed";
 
 /** The arguments of `remove_bookmark`. */
 export interface RemoveBookmarkArgs {
@@ -353,6 +353,8 @@ export interface Page extends tilo.Resource {
   jbnzv4tj: Array<tilo.Entry<LoginAccount>>;  // login_accounts
   jz6xwcus: string;  // capture
   wqz44fsx: string;  // login_notice
+  a45urcsf: Array<tilo.Entry<PageButton>>;  // buttons
+  "3wa3bkzu": Array<tilo.Entry<ExtensionNotice>>;  // notices
   ctm6ma5g: Array<tilo.Entry<HistoryEntry>>;  // back
   znzxwmxa: Array<tilo.Entry<HistoryEntry>>;  // forward
   eiqyiw53: boolean;  // loading
@@ -360,6 +362,7 @@ export interface Page extends tilo.Resource {
   "5gspmng7": number;  // zoom_level
   j5emshom: number;  // find_at
   n6y73q7c: number;  // find_count
+  cjwvjr5r: string;  // find_text
   /** What the page of `p` says and does, carried to the window that holds it. Each action answers the page's own report as an [`Answer`], and what was done is written into the page's record. Read the page: what it says, line by line, as an agent reads it. A long page is read in parts: a read that stops short names the line to read on from. */
   read_page(args?: {
     from?: number;
@@ -555,7 +558,7 @@ export interface Page extends tilo.Resource {
   zoom(args: {
     level: number;
   }): Promise<Answer>;
-  /** Find words in the page, as the find bar does. */
+  /** Find words in the page: the window's search is the page's find, and the words are kept so the way on to the next match and back to the previous ask for the same ones. No words takes the find away: the marks go, and the page is left as it was before they were typed. */
   find_in_page(args: {
     text: string;
     forward?: boolean;
@@ -672,6 +675,19 @@ export interface Page extends tilo.Resource {
   remove_extension(args: {
     e: Extension;
   }): Promise<Answer>;
+  /** Presses one of the page's extension buttons: the engine runs the extension's action, or opens the page it offers. */
+  click_extension(args: {
+    b: PageButton;
+  }): Promise<Answer>;
+  /** Presses one of the buttons a notification an extension showed offers. */
+  choose_extension_notice(args: {
+    n: ExtensionNotice;
+    button: string;
+  }): Promise<Answer>;
+  /** Takes a notification an extension showed away without pressing anything. */
+  dismiss_extension_notice(args: {
+    n: ExtensionNotice;
+  }): Promise<Answer>;
   /** Writes the extensions a page's window listed into the Browser's record. The window raises it; a person, agent or script never does. */
   remember_extensions(args: {
     installed: string;
@@ -758,7 +774,7 @@ export interface Page extends tilo.Resource {
 
 /** The actions `Page` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "update_download", "update_downloadMany", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "back", "forward", "reload", "stop_loading", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "cancel_download", "retry_download", "cancel_all_downloads", "developer_tools", "mute", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "list_extensions", "install_extension", "enable_extension", "remove_extension", "remember_extensions", "remember_extensionsMany", "note_extension", "note_extensionMany", "remember_credential", "remember_credentialMany", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page"] as const;
+export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "update_download", "update_downloadMany", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "back", "forward", "reload", "stop_loading", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "cancel_download", "retry_download", "cancel_all_downloads", "developer_tools", "mute", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "list_extensions", "install_extension", "enable_extension", "remove_extension", "click_extension", "choose_extension_notice", "dismiss_extension_notice", "remember_extensions", "remember_extensionsMany", "note_extension", "note_extensionMany", "remember_credential", "remember_credentialMany", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page"] as const;
 
 /** The `tl.so.tilo.browser.Page` kind at `path`. */
 export function page(ws: tilo.Workspace, path: string): Page {
@@ -905,6 +921,42 @@ export function historyEntry(ws: tilo.Workspace, path: string): HistoryEntry {
   return resourceProxy(ws, path, SURFACE, HISTORYENTRY_ACTIONS) as unknown as HistoryEntry;
 }
 
+/** PageButton — `tl.so.tilo.browser.PageButton`. */
+export interface PageButton extends tilo.Resource {
+  t25qin6v: string;  // ext
+  pigtj7mb: string;  // label
+  dizhfbps: string;  // badge
+  ugbnd25j: boolean;  // enabled
+  "2wovoiro": boolean;  // popup
+}
+
+/** The actions `PageButton` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PAGEBUTTON_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.PageButton` kind at `path`. */
+export function pageButton(ws: tilo.Workspace, path: string): PageButton {
+  return resourceProxy(ws, path, SURFACE, PAGEBUTTON_ACTIONS) as unknown as PageButton;
+}
+
+/** ExtensionNotice — `tl.so.tilo.browser.ExtensionNotice`. */
+export interface ExtensionNotice extends tilo.Resource {
+  bmmxddfi: string;  // ext
+  "7wjg3mlt": string;  // notification
+  sqkziu2x: string;  // title
+  h27qgqgy: string;  // message
+  c3idm5kp: string[];  // buttons
+}
+
+/** The actions `ExtensionNotice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const EXTENSIONNOTICE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.ExtensionNotice` kind at `path`. */
+export function extensionNotice(ws: tilo.Workspace, path: string): ExtensionNotice {
+  return resourceProxy(ws, path, SURFACE, EXTENSIONNOTICE_ACTIONS) as unknown as ExtensionNotice;
+}
+
 /** Extension — `tl.so.tilo.browser.Extension`. */
 export interface Extension extends tilo.Resource {
   iymjskx5: string;  // key
@@ -980,6 +1032,7 @@ export interface Ask extends tilo.Resource {
   jmhhkxjz: string | null;  // url
   "2l2hjzlp": string | null;  // path
   "5px2ripq": string | null;  // extension
+  xtjgu4pr: string | null;  // notification
   lqvkggvx: number | null;  // level
   zroiv7hs: string[] | null;  // values
   ntpmcicu: Record<string, string> | null;  // answers

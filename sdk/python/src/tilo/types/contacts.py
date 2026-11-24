@@ -20,11 +20,15 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "VCardVersion",
+    "CardFate",
     "MergeField",
     "Labeled",
     "Address",
     "Contact",
     "Group",
+    "ImportCard",
+    "ImportReport",
     "Book",
     "Contacts",
     "EditBlockArgs",
@@ -35,10 +39,13 @@ __all__ = [
     "RemovePhoneArgs",
     "RemoveEmailArgs",
     "RemoveAddressArgs",
+    "KeepBirthdayYearArgs",
     "UngroupArgs",
     "GroupArgs",
     "DeleteArgs",
     "MergeIntoArgs",
+    "DismissImportArgs",
+    "KeepExistingArgs",
     "ConfirmArgs",
     "ChangeArgs",
     "ForgetArgs",
@@ -46,6 +53,12 @@ __all__ = [
     "ShareCardArgs",
     "UnshareArgs",
 ]
+
+VCardVersion = Literal["v4", "v3"]
+"""The versions of the card format another address book reads."""
+
+CardFate = Literal["taken", "held", "review", "skipped"]
+"""What one card of a file is to the book."""
 
 MergeField = Literal["name", "org", "role", "website", "birthday", "notes"]
 """What a merge may take from the card that goes: the values each card keeps one of. Numbers, mailboxes, addresses and groups always come over; these are the person's to choose."""
@@ -92,6 +105,11 @@ RemoveAddressArgs = TypedDict("RemoveAddressArgs", {
 })
 """The arguments of `remove_address`."""
 
+KeepBirthdayYearArgs = TypedDict("KeepBirthdayYearArgs", {
+    "on": "bool",
+})
+"""The arguments of `keep_birthday_year`."""
+
 UngroupArgs = TypedDict("UngroupArgs", {
     "name": "str",
 })
@@ -116,6 +134,15 @@ MergeIntoArgs = TypedDict("MergeIntoArgs", {
     "directory": NotRequired["Any | None"],
 })
 """The arguments of `merge_into`."""
+
+DismissImportArgs = TypedDict("DismissImportArgs", {
+})
+"""The arguments of `dismiss_import`."""
+
+KeepExistingArgs = TypedDict("KeepExistingArgs", {
+    "p": "ImportCard",
+})
+"""The arguments of `keep_existing`."""
 
 ConfirmArgs = TypedDict("ConfirmArgs", {
     "d": "Any",
@@ -165,14 +192,14 @@ UnshareArgs = TypedDict("UnshareArgs", {
 
 class Labeled(Resource):
     """Labeled — `tl.so.tilo.contacts.Labeled`."""
-    __surface__ = "so.tilo.contacts@1b03874977f50857"
+    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
     fzyd2a52: str  # label
     b4cilqkx: str  # value
 
 
 class Address(Resource):
     """Address — `tl.so.tilo.contacts.Address`."""
-    __surface__ = "so.tilo.contacts@1b03874977f50857"
+    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
     @property
     def _5iipld72(self) -> str:
         """label (`5iipld72` on the wire)."""
@@ -190,7 +217,7 @@ class Address(Resource):
 
 class Contact(Resource):
     """Contact — `tl.so.tilo.contacts.Contact`."""
-    __surface__ = "so.tilo.contacts@1b03874977f50857"
+    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
     zut4kvim: str  # name
     rfhxkccf: str  # org
     @property
@@ -203,6 +230,14 @@ class Contact(Resource):
         self.edit("7wq5grnt", value=value)
     dg7b4wfh: str  # website
     fc62qk5v: str | None  # birthday
+    @property
+    def _32tuvb6l(self) -> bool:
+        """birthday_year (`32tuvb6l` on the wire)."""
+        return self.fields["32tuvb6l"]
+
+    @_32tuvb6l.setter
+    def _32tuvb6l(self, value: bool) -> None:
+        self.edit("32tuvb6l", value=value)
     @property
     def _4lfazbdq(self) -> str:
         """notes (`4lfazbdq` on the wire)."""
@@ -328,6 +363,14 @@ class Contact(Resource):
         """Runs `remove_address` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove_address", items)
 
+    def keep_birthday_year(self, *, on: bool) -> None:
+        """Keeps a birthday with its year or without it: a birthday kept without one is the day it falls on every year, as many address books keep one."""
+        return self.action("keep_birthday_year", on=on)
+
+    def keep_birthday_year_many(self, items: list[KeepBirthdayYearArgs]) -> list[dict[str, Any]]:
+        """Runs `keep_birthday_year` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep_birthday_year", items)
+
     def ungroup(self, *, name: str) -> None:
         """Takes a contact out of a group."""
         return self.action("ungroup", name=name)
@@ -336,26 +379,53 @@ class Contact(Resource):
         """Runs `ungroup` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("ungroup", items)
 
-    def export_contact(self) -> Any:
+    def export_contact(self,
+        *,
+        version: VCardVersion | None = None,
+    ) -> Any:
         """A contact as a file: their card, named for them."""
-        return self.action("export_contact")
+        args: dict[str, Any] = {}
+        if version is not None:
+            args["version"] = version
+        return self.action("export_contact", **args)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "rename", "rename_many", "favorite", "favorite_many", "add_phone", "remove_phone", "remove_phone_many", "add_email", "remove_email", "remove_email_many", "add_address", "remove_address", "remove_address_many", "ungroup", "ungroup_many", "export_contact"})
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "rename", "rename_many", "favorite", "favorite_many", "add_phone", "remove_phone", "remove_phone_many", "add_email", "remove_email", "remove_email_many", "add_address", "remove_address", "remove_address_many", "keep_birthday_year", "keep_birthday_year_many", "ungroup", "ungroup_many", "export_contact"})
 
 
 class Group(Resource):
     """Group — `tl.so.tilo.contacts.Group`."""
-    __surface__ = "so.tilo.contacts@1b03874977f50857"
+    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
     jn6l7z6v: str  # name
+
+
+class ImportCard(Resource):
+    """ImportCard — `tl.so.tilo.contacts.ImportCard`."""
+    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
+    op5ercnd: str  # card
+    a4s7qvbf: str  # name
+    kcnlll33: str  # uid
+    rsywb3bl: Contact | None  # existing
+
+
+class ImportReport(Resource):
+    """ImportReport — `tl.so.tilo.contacts.ImportReport`."""
+    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
+    ydus2juj: int  # imported
+    bqy264j6: int  # unchanged
+    jm2un2fr: int  # awaiting
+    sikc2jgn: int  # skipped
+    azh3qbqs: bool  # seen
 
 
 class Book(Resource):
     """Book — `tl.so.tilo.contacts.Book`."""
-    __surface__ = "so.tilo.contacts@1b03874977f50857"
+    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
     qfj7l6eu: list[Entry[Contact]]  # contacts
     uyyz5pg2: list[Entry[Group]]  # groups
+    zc4aqhgg: list[Entry[ImportCard]]  # review
+    scky6ngy: ImportReport  # last_import
 
     def new_contact(self,
         *,
@@ -424,21 +494,95 @@ class Book(Resource):
         """Runs `merge_into` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("merge_into", items)
 
-    def export_book(self) -> Any:
+    def export_book(self,
+        *,
+        version: VCardVersion | None = None,
+    ) -> Any:
         """Every contact as one vCard file, which another address book reads whole."""
-        return self.action("export_book")
+        args: dict[str, Any] = {}
+        if version is not None:
+            args["version"] = version
+        return self.action("export_book", **args)
 
-    def import_vcard(self, *, file: Any) -> int:
-        """Imports the contacts a vCard file holds into the book, each card a contact of its own, and answers how many were added. A file whose cards cannot be read adds nothing and changes nothing: what it says is the refusal."""
+    def export_vcard_content(self,
+        *,
+        name: str | None = None,
+    ) -> Any:
+        """Every contact as the text of one card file, or the one `name` calls: for an agent or a script that hands the cards on where a person's file chooser cannot, as the address its bytes are kept at. A name the book holds twice is refused rather than guessed."""
+        args: dict[str, Any] = {}
+        if name is not None:
+            args["name"] = name
+        return self.action("export_vcard_content", **args)
+
+    def import_vcard(self, *, file: Any) -> ImportReport:
+        """Imports the contacts a vCard file holds into the book, each new card a contact of its own, and answers what it did. A card whose id the book already holds unchanged is nobody new; one that says something else about the person waits in the book's review, and the contact stays as it is until someone says which card is theirs. A file beyond what this app reads is refused whole: what the refusal says is why."""
         return self.action("import_vcard", file=file)
 
-    def add_contacts(self, *, cards: str) -> int:
-        """The cards `cards`, the words of a vCard file, as contacts of this book, and how many named somebody: what an importer, an agent or a script hands a book in one call."""
+    def add_contacts(self, *, cards: str) -> ImportReport:
+        """The cards `cards`, the words of a vCard file, as contacts of this book, and what became of each: what an importer, an agent or a script hands a book in one call."""
         return self.action("add_contacts", cards=cards)
 
+    def refuse_import(self, *, skipped: int) -> ImportReport:
+        """The report of an import of `skipped` cards, and no others: what a file that could not be read answers."""
+        return self.action("refuse_import", skipped=skipped)
+
+    def report_import(self,
+        *,
+        imported: int,
+        unchanged: int,
+        awaiting: int,
+        skipped: int,
+    ) -> ImportReport:
+        """What an import did, kept on the book for the window's banner to read and answer."""
+        return self.action("report_import", imported=imported, unchanged=unchanged, awaiting=awaiting, skipped=skipped)
+
+    def dismiss_import(self) -> None:
+        """The person has read what the last import did: the banner stops showing it."""
+        return self.action("dismiss_import")
+
+    def dismiss_import_many(self, items: list[DismissImportArgs]) -> list[dict[str, Any]]:
+        """Runs `dismiss_import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("dismiss_import", items)
+
+    def file_card(self,
+        *,
+        card: str,
+        uid: str | None = None,
+    ) -> CardFate:
+        """Brings one card of a vCard file to the book: takes it as a contact, finds the book already holds it unchanged, puts it up for review where it says something else about a contact the book holds by the same id, or refuses a card that names nobody. `uid` is the id the caller gives a card whose file names none, so the caller can find the contact it makes."""
+        args: dict[str, Any] = {}
+        args["card"] = card
+        if uid is not None:
+            args["uid"] = uid
+        return self.action("file_card", **args)
+
+    def take_card(self,
+        *,
+        card: str,
+        id: str | None = None,
+    ) -> Contact:
+        """The contact a card makes in the book, under the id `id`: what a new card becomes, and what a card someone chose over the one the book held becomes. Its rows are filled after it stands in the book, as every resource's are."""
+        args: dict[str, Any] = {}
+        args["card"] = card
+        if id is not None:
+            args["id"] = id
+        return self.action("take_card", **args)
+
     def add_card(self, *, card: str) -> Contact | None:
-        """The contact a vCard card says, made in the book, or none for a card that names nobody. Its rows are filled after it stands in the book, as every resource's are."""
+        """The contact a vCard card says, made in the book, or none for a card that names nobody and for one the book already holds: the single-card form of importing a file."""
         return self.action("add_card", card=card)
+
+    def import_as_new(self, *, p: ImportCard) -> Contact:
+        """Takes a card that waited for review as a contact of its own, beside the one the book holds under the id it named: the file's card is the person's, and the card the book kept keeps everything of its own. Its id is new, because the two cards are two now."""
+        return self.action("import_as_new", p=p)
+
+    def keep_existing(self, *, p: ImportCard) -> None:
+        """Leaves the card the book holds as it is, and takes the file's card out of the review."""
+        return self.action("keep_existing", p=p)
+
+    def keep_existing_many(self, items: list[KeepExistingArgs]) -> list[dict[str, Any]]:
+        """Runs `keep_existing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep_existing", items)
 
     def find_for_address(self, *, address: str) -> Contact | None:
         """The contact the book holds for `address`, as an action: what a person, an agent or another app asks before they write to it. Nothing is changed and nothing is guessed from a name."""
@@ -446,12 +590,12 @@ class Book(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_contact", "named_or_new", "group", "group_many", "new_group", "delete", "delete_many", "merge_into", "merge_into_many", "export_book", "import_vcard", "add_contacts", "add_card", "find_for_address"})
+    __actions__ = frozenset({"new_contact", "named_or_new", "group", "group_many", "new_group", "delete", "delete_many", "merge_into", "merge_into_many", "export_book", "export_vcard_content", "import_vcard", "add_contacts", "refuse_import", "report_import", "dismiss_import", "dismiss_import_many", "file_card", "take_card", "add_card", "import_as_new", "keep_existing", "keep_existing_many", "find_for_address"})
 
 
 class Contacts(Resource):
     """Contacts — `tl.so.tilo.contacts`."""
-    __surface__ = "so.tilo.contacts@1b03874977f50857"
+    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
     def confirm(self,
         *,
         d: Any,

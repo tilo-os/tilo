@@ -185,7 +185,7 @@ ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
 
 class Note(Resource):
     """Note — `tl.so.tilo.notes.Note`."""
-    __surface__ = "so.tilo.notes@a850357236087c79"
+    __surface__ = "so.tilo.notes@f93603daff5cced6"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
@@ -402,7 +402,7 @@ class Note(Resource):
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.notes.Notebook`."""
-    __surface__ = "so.tilo.notes@a850357236087c79"
+    __surface__ = "so.tilo.notes@f93603daff5cced6"
     tmqqtkeb: list[Entry[Note]]  # notes
     qgq6mcy7: list[Entry[Note]]  # set_aside
     dq2mnb22: list[Entry[Tag]]  # tags
@@ -425,6 +425,10 @@ class Notebook(Resource):
         if after is not None:
             args["after"] = after
         return self.action("new_note", **args)
+
+    def search_notebook(self, *, text: str) -> None:
+        """The window's search narrows the notebook's tree to the notes it finds, and opens the first of them: the note a person searched for is the one they read."""
+        return self.action("search_notebook", text=text)
 
     def move_to(self,
         *,
@@ -595,18 +599,18 @@ class Notebook(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_note", "move_to", "move_to_many", "move_after", "move_after_many", "duplicate", "sort_children", "sort_children_many", "delete", "delete_many", "append_to_note", "append_to_note_many", "file_note", "new_tag", "rename_tag", "rename_tag_many", "delete_tag", "delete_tag_many", "export_notebook", "export_notebook_markdown", "import_markdown", "import_page", "import_text", "import_archive", "import_archive_many", "import_dropped", "import_dropped_many"})
+    __actions__ = frozenset({"new_note", "search_notebook", "move_to", "move_to_many", "move_after", "move_after_many", "duplicate", "sort_children", "sort_children_many", "delete", "delete_many", "append_to_note", "append_to_note_many", "file_note", "new_tag", "rename_tag", "rename_tag_many", "delete_tag", "delete_tag_many", "export_notebook", "export_notebook_markdown", "import_markdown", "import_page", "import_text", "import_archive", "import_archive_many", "import_dropped", "import_dropped_many"})
 
 
 class Tag(Resource):
     """Tag — `tl.so.tilo.notes.Tag`."""
-    __surface__ = "so.tilo.notes@a850357236087c79"
+    __surface__ = "so.tilo.notes@f93603daff5cced6"
     itadoh74: str  # name
 
 
 class Found(Resource):
     """Found — `tl.so.tilo.notes.Found`."""
-    __surface__ = "so.tilo.notes@a850357236087c79"
+    __surface__ = "so.tilo.notes@f93603daff5cced6"
     dxxdlopq: int  # at
     @property
     def _2vlaqp45(self) -> str:
@@ -620,5 +624,5 @@ class Found(Resource):
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.notes`."""
-    __surface__ = "so.tilo.notes@a850357236087c79"
+    __surface__ = "so.tilo.notes@f93603daff5cced6"
 

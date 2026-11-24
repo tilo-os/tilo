@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@68c5c43f94e3acbb";
+export const SURFACE = "so.tilo.tube@357e1ad1b9edd0e1";
 
 /** The arguments of `subscribe`. */
 export interface SubscribeArgs {
@@ -105,14 +105,10 @@ export interface FilterSearchArgs {
 export interface EndSearchArgs {
 }
 
-/** The arguments of `import_history`. */
-export interface ImportHistoryArgs {
-  watched: unknown[][];
-}
-
-/** The arguments of `import_previous`. */
-export interface ImportPreviousArgs {
-  previous: unknown[][];
+/** The arguments of `like_comment`. */
+export interface LikeCommentArgs {
+  c: Comment;
+  liked?: boolean;
 }
 
 /** Channel — `tl.so.tilo.tube.Channel`. */
@@ -368,6 +364,7 @@ export interface WatchEntry extends tilo.Resource {
   "7mtvj3xd": string | null;  // member
   dmm6f63t: string;  // watched
   omff5ciz: number;  // progress
+  rqajp43d: number;  // left_ms
 }
 
 /** The actions `WatchEntry` reaches before it is read: `ws` calls them without a
@@ -391,6 +388,7 @@ export interface YouTube extends tilo.Resource {
   puten5ar: boolean;  // history_cleared
   ugv4b6is: Array<tilo.Entry<Comment>>;  // comments
   cjlgivfs: Array<tilo.Entry<Segment>>;  // segments
+  "5oxdbju7": string[];  // liked_comments
   iphlnbkx: Array<tilo.Entry<Reply>>;  // replies
   epgpppzy: Array<tilo.Entry<PlaybackPrefs>>;  // playback
   f5zuqdsr: unknown | null;  // playing
@@ -496,18 +494,13 @@ export interface YouTube extends tilo.Resource {
   open_link(args: {
     link: string;
   }): Promise<unknown>;
-  /** Imports a watch history another device kept, in the format the native app's own history and its `import` call used: rows of `[a video's key, when it was watched in milliseconds since 1970]`. A video the person already watched keeps its place; each one imported becomes part of their own history, which keeps its newest thousand videos. */
-  import_history(args: {
-    watched: unknown[][];
+  /** Likes a comment, or takes the like back: the person's own, kept with the workspace, since YouTube lets no app act as them. */
+  like_comment(args: {
+    c: Comment;
+    liked?: boolean;
   }): Promise<void>;
-  /** Runs `import_history` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  import_historyMany(items: ImportHistoryArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Imports the watch history an earlier version of this app kept for the person, in that version's own format: rows of `[a video's key, when it was watched in milliseconds since 1970, where it was left in milliseconds or nothing]`. Nothing is imported once the person deleted their history, since the delete is theirs to keep; a video already in it keeps its place. */
-  import_previous(args: {
-    previous: unknown[][];
-  }): Promise<void>;
-  /** Runs `import_previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  import_previousMany(items: ImportPreviousArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `like_comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  like_commentMany(items: LikeCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Plays the video a history entry names, from where the person left off. */
   play_again(args: {
     h: WatchEntry;
@@ -516,7 +509,7 @@ export interface YouTube extends tilo.Resource {
 
 /** The actions `YouTube` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const YOUTUBE_ACTIONS = ["play_queue", "session", "play_items", "play_itemsMany", "autoplay_next", "delete_history", "delete_historyMany", "set_autoplay", "set_autoplayMany", "set_quality", "set_qualityMany", "set_sponsorblock", "set_sponsorblockMany", "set_dearrow", "set_dearrowMany", "set_dislikes", "set_dislikesMany", "set_comments", "set_commentsMany", "set_speed", "set_speedMany", "search", "filter_search", "filter_searchMany", "filter_length", "filter_published", "end_search", "end_searchMany", "refresh_feed", "load_trending", "open_link", "import_history", "import_historyMany", "import_previous", "import_previousMany", "play_again"] as const;
+export const YOUTUBE_ACTIONS = ["play_queue", "session", "play_items", "play_itemsMany", "autoplay_next", "delete_history", "delete_historyMany", "set_autoplay", "set_autoplayMany", "set_quality", "set_qualityMany", "set_sponsorblock", "set_sponsorblockMany", "set_dearrow", "set_dearrowMany", "set_dislikes", "set_dislikesMany", "set_comments", "set_commentsMany", "set_speed", "set_speedMany", "search", "filter_search", "filter_searchMany", "filter_length", "filter_published", "end_search", "end_searchMany", "refresh_feed", "load_trending", "open_link", "like_comment", "like_commentMany", "play_again"] as const;
 
 /** The `tl.so.tilo.tube.YouTube` kind at `path`. */
 export function youTube(ws: tilo.Workspace, path: string): YouTube {

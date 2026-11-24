@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.weather@7872d52c5968bf1a";
+export const SURFACE = "so.tilo.weather@7b246f7223912bf2";
 
 /** The arguments of `use_as_default`. */
 export interface UseAsDefaultArgs {
@@ -164,30 +164,43 @@ export interface Place extends tilo.Resource {
   ax54oez6: number;  // latitude
   ewmohhie: number;  // longitude
   y5lbxwn7: string;  // timezone
-  ikazv44r: boolean;  // read
-  gbrotevm: Reading;  // current
-  qt6zc3me: Array<tilo.Entry<Hour>>;  // hours
-  fjbo2bs7: Array<tilo.Entry<Day>>;  // days
-  qz7n6v2n: Air;  // air
-  uthtg3cy: boolean;  // has_air
-  "42oai4b2": string | null;  // fetched
-  lkrdcuut: boolean;  // stale
-  ckqlainl: string;  // trouble
-  /** Reads one place's forecast and air quality. One failing leaves the other's answer standing, and a place the service did not answer keeps what it had and says why. */
-  read_place(): Promise<boolean>;
-  /** The forecast a service answered, written into the place: its current reading, a day of hours and a week of days. False when the body is not a forecast the service could have sent. */
+}
+
+/** The actions `Place` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PLACE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.weather.Place` kind at `path`. */
+export function place(ws: tilo.Workspace, path: string): Place {
+  return resourceProxy(ws, path, SURFACE, PLACE_ACTIONS) as unknown as Place;
+}
+
+/** PlaceReading — `tl.so.tilo.weather.PlaceReading`. */
+export interface PlaceReading extends tilo.Resource {
+  uzxnvv67: string;  // name
+  hfv2phzu: string;  // place
+  kgqshwck: boolean;  // read
+  eecg6i33: Reading;  // current
+  yc3wt5yt: Array<tilo.Entry<Hour>>;  // hours
+  "7xtuywip": Array<tilo.Entry<Day>>;  // days
+  "7eu3357v": Air;  // air
+  gqv7rwej: boolean;  // has_air
+  caagd74f: string | null;  // fetched
+  juxtrvon: boolean;  // stale
+  losawnjy: string;  // trouble
+  /** The forecast a service answered, written into this device's reading of the place: its current reading, a day of hours and a week of days. False when the body is not a forecast the service could have sent. */
   apply_forecast(args: {
     body: string;
   }): Promise<boolean>;
 }
 
-/** The actions `Place` reaches before it is read: `ws` calls them without a
+/** The actions `PlaceReading` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PLACE_ACTIONS = ["read_place", "apply_forecast"] as const;
+export const PLACEREADING_ACTIONS = ["apply_forecast"] as const;
 
-/** The `tl.so.tilo.weather.Place` kind at `path`. */
-export function place(ws: tilo.Workspace, path: string): Place {
-  return resourceProxy(ws, path, SURFACE, PLACE_ACTIONS) as unknown as Place;
+/** The `tl.so.tilo.weather.PlaceReading` kind at `path`. */
+export function placeReading(ws: tilo.Workspace, path: string): PlaceReading {
+  return resourceProxy(ws, path, SURFACE, PLACEREADING_ACTIONS) as unknown as PlaceReading;
 }
 
 /** Refresh — `tl.so.tilo.weather.Refresh`. */
@@ -250,7 +263,6 @@ export function searching(ws: tilo.Workspace, path: string): Searching {
 export interface Locations extends tilo.Resource {
   b2qn6gqw: Array<tilo.Entry<Place>>;  // places
   vqfze2cq: Place | null;  // default
-  esvv4ymu: Refresh;  // refresh
   ms5dkio6: Array<tilo.Entry<Searching>>;  // searches
   "73zdj7wy": string;  // today
   rusdri25: string;  // tomorrow
@@ -330,6 +342,29 @@ export const LOCATIONS_ACTIONS = ["save_place", "use_as_default", "use_as_defaul
 /** The `tl.so.tilo.weather.Locations` kind at `path`. */
 export function locations(ws: tilo.Workspace, path: string): Locations {
   return resourceProxy(ws, path, SURFACE, LOCATIONS_ACTIONS) as unknown as Locations;
+}
+
+/** Readings — `tl.so.tilo.weather.Readings`. */
+export interface Readings extends tilo.Resource {
+  "6fze2ppw": Array<tilo.Entry<PlaceReading>>;  // of
+  vf63zjb2: Refresh;  // refresh
+  /** What this device read of `place`, made the first time something writes it. */
+  reading_for(args: {
+    place: Place;
+  }): Promise<PlaceReading>;
+  /** Reads one place's forecast and air quality. One failing leaves the other's answer standing, and a place the service did not answer keeps what it had and says why. */
+  read_place(args: {
+    place: Place;
+  }): Promise<boolean>;
+}
+
+/** The actions `Readings` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const READINGS_ACTIONS = ["reading_for", "read_place"] as const;
+
+/** The `tl.so.tilo.weather.Readings` kind at `path`. */
+export function readings(ws: tilo.Workspace, path: string): Readings {
+  return resourceProxy(ws, path, SURFACE, READINGS_ACTIONS) as unknown as Readings;
 }
 
 /** Weather — `tl.so.tilo.weather`. */

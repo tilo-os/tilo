@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.shell@052b0a2cc4e9385f";
+export const SURFACE = "so.tilo.shell@c46b7198bb3d1a3f";
 
 /** One part a person can put on the top bar, in their order. The case's icon is the glyph the settings and the drag ghost show for it. One of "menu", "workspace", "app_menu", "strip", "tasks", "clock", "people", "status", "power", "agent", "spacer". */
 export type BarPartKind = "menu" | "workspace" | "app_menu" | "strip" | "tasks" | "clock" | "people" | "status" | "power" | "agent" | "spacer";
@@ -47,6 +47,9 @@ export type Showing = "always" | "no_overlap" | "edge_reveal" | "auto_hide";
 
 /** How large the parts are. One of "small", "regular", "large". */
 export type Size = "small" | "regular" | "large";
+
+/** The widgets a person can keep on their shell. One of "music", "team", "calendar", "system_monitor". */
+export type WidgetKind = "music" | "team" | "calendar" | "system_monitor";
 
 /** The arguments of `open_folder`. */
 export interface OpenFolderArgs {
@@ -290,6 +293,15 @@ export interface ShowPlaceArgs {
 /** The arguments of `equal_widths`. */
 export interface EqualWidthsArgs {
   w: unknown;
+}
+
+/** The arguments of `place_widget`. */
+export interface PlaceWidgetArgs {
+  kind: WidgetKind;
+  at: number[];
+  across: number;
+  down: number;
+  display: number;
 }
 
 /** Picking — `tl.so.tilo.shell.Picking`. */
@@ -930,6 +942,15 @@ export interface TiloShell extends tilo.Resource {
   place_droppedMany(items: PlaceDroppedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Puts the surface away once a recent resource is opened again beside the window in front, by the same `open` an agent and a reference's press run. */
   put_history_away(): Promise<void>;
+  /** Steps the value of the row `step` names (`1` up, `-1` down), as Left and Right do on an adjustable row: the volume or the brightness in front, by a twentieth. */
+  step_level(args: {
+    step: string;
+  }): Promise<void>;
+  /** What choosing a row with a modifier held does: a row the search found opens the way `here` (a tab in front), `beside` (a window beside it) or `more` (the row's own way) names, and every other row opens as it does plainly. */
+  choose_launcher_row_as(args: {
+    packed: string;
+    current: boolean;
+  }): Promise<void>;
   /** What choosing the row the person reached does, read off the row's value: opening an application or a window here, running a row the search found, or one of the shell's own surfaces. A row is only ever one of those, so a raw choice — what is typed with no row under it — opens the first row the text finds, or searches everywhere for it. */
   choose_launcher_row(args: {
     choice: string;
@@ -987,11 +1008,21 @@ export interface TiloShell extends tilo.Resource {
   }): Promise<void>;
   /** Runs `equal_widths` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   equal_widthsMany(items: EqualWidthsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts the widget `kind` where a drag let go, at `at` on this display: the place the person left it at, as fractions of the room it can move in there. */
+  place_widget(args: {
+    kind: WidgetKind;
+    at: number[];
+    across: number;
+    down: number;
+    display: number;
+  }): Promise<void>;
+  /** Runs `place_widget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  place_widgetMany(items: PlaceWidgetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `TiloShell` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TILOSHELL_ACTIONS = ["rename_workspace", "rename_strip", "decline", "size_place", "size_placeMany", "drew_place", "place_dropped", "place_droppedMany", "put_history_away", "choose_launcher_row", "open_surface", "close_launcher", "toggle_vpn", "a_style_settings", "query_show", "query_showMany", "query_retry", "query_retryMany", "detach_place", "show_place", "show_placeMany", "move_before", "move_right", "equal_widths", "equal_widthsMany"] as const;
+export const TILOSHELL_ACTIONS = ["rename_workspace", "rename_strip", "decline", "size_place", "size_placeMany", "drew_place", "place_dropped", "place_droppedMany", "put_history_away", "step_level", "choose_launcher_row_as", "choose_launcher_row", "open_surface", "close_launcher", "toggle_vpn", "a_style_settings", "query_show", "query_showMany", "query_retry", "query_retryMany", "detach_place", "show_place", "show_placeMany", "move_before", "move_right", "equal_widths", "equal_widthsMany", "place_widget", "place_widgetMany"] as const;
 
 /** The `tl.so.tilo.shell` kind at `path`. */
 export function tiloShell(ws: tilo.Workspace, path: string): TiloShell {

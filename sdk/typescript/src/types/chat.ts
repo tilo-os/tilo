@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@0b960ba822d6cc17";
+export const SURFACE = "so.tilo.chat@313be8bbe0f2d2c4";
 
 /** One emoji of the workspace. */
 export interface Emoji {
@@ -214,6 +214,11 @@ export interface DecideArgs {
   decision: string;
 }
 
+/** The arguments of `overturn`. */
+export interface OverturnArgs {
+  why: string;
+}
+
 /** The arguments of `summarize`. */
 export interface ThreadSummarizeArgs {
   summary: string;
@@ -344,6 +349,7 @@ export interface Conversations extends tilo.Resource {
   "5kzdptyg": Array<tilo.Entry<Category | Direct | TextChannel | VoiceChannel>>;  // channels
   n2xgh234: Array<tilo.Entry<Skill>>;  // skills
   "64vv225r": Array<tilo.Entry<Draft>>;  // drafts
+  "7spkrvju": Array<tilo.Entry<ChatReport>>;  // reports
   /** Adds a text channel to the sidebar, under `category` when it is given and about `topic` when that is. */
   new_channel(args?: {
     name?: string;
@@ -407,11 +413,16 @@ export interface Conversations extends tilo.Resource {
   }): Promise<void>;
   /** Runs `move_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   move_categoryMany(items: MoveCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Reports a person to the workspace's moderators, for how they behave here rather than for one message: what the reporter says is the whole of it, and the moderators decide it as any other report. */
+  report_person(args: {
+    who: string;
+    reason: string;
+  }): Promise<ChatReport>;
 }
 
 /** The actions `Conversations` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CONVERSATIONS_ACTIONS = ["new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "conversation_with", "write_to", "delete_channel", "delete_channelMany", "delete_category", "delete_categoryMany", "move_channel", "move_channelMany", "move_category", "move_categoryMany"] as const;
+export const CONVERSATIONS_ACTIONS = ["new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "conversation_with", "write_to", "delete_channel", "delete_channelMany", "delete_category", "delete_categoryMany", "move_channel", "move_channelMany", "move_category", "move_categoryMany", "report_person"] as const;
 
 /** The `tl.so.tilo.chat.Conversations` kind at `path`. */
 export function conversations(ws: tilo.Workspace, path: string): Conversations {
@@ -543,6 +554,7 @@ export interface TextChannel extends tilo.Resource {
     avatar?: string;
     service?: string;
     outside_emoji?: OutsideEmoji[];
+    member?: string;
   }): Promise<Message>;
   /** Renames a text channel. What was said in it stays. */
   rename_channel(args: {
@@ -562,6 +574,10 @@ export interface TextChannel extends tilo.Resource {
   }): Promise<void>;
   /** Runs `archive_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   archive_channelMany(items: ArchiveChannelArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Asks the agent that wrote `m` to carry on where its answer stopped: a reply to it from the person, naming the agent, which the agent's next turn reads with the answer before it. An answer that ran out of room, was stopped or broke off is finished this way, not written again from its start. */
+  continue_answer(args: {
+    m: Message;
+  }): Promise<Message>;
   /** Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted, as far as the one deleting reads them. */
   delete(args: {
     m: Message;
@@ -582,7 +598,7 @@ export interface TextChannel extends tilo.Resource {
 
 /** The actions `TextChannel` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TEXTCHANNEL_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "send", "summarize", "summarizeMany", "send_view", "relay", "rename_channel", "rename_channelMany", "set_topic", "set_topicMany", "archive_channel", "archive_channelMany", "delete", "deleteMany", "report", "start_thread"] as const;
+export const TEXTCHANNEL_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "send", "summarize", "summarizeMany", "send_view", "relay", "rename_channel", "rename_channelMany", "set_topic", "set_topicMany", "archive_channel", "archive_channelMany", "continue_answer", "delete", "deleteMany", "report", "start_thread"] as const;
 
 /** The `tl.so.tilo.chat.TextChannel` kind at `path`. */
 export function textChannel(ws: tilo.Workspace, path: string): TextChannel {
@@ -594,6 +610,7 @@ export interface OutsideAuthor extends tilo.Resource {
   "5fxndhc2": string;  // name
   zkszdahn: string;  // avatar
   yycajap4: string;  // service
+  ew25p5fb: string | null;  // member
 }
 
 /** The actions `OutsideAuthor` reaches before it is read: `ws` calls them without a
@@ -628,6 +645,7 @@ export interface Message extends tilo.Resource {
   mwily5kw: Array<tilo.Entry<Part>>;  // parts
   "4zr7hti6": boolean;  // pinned
   hj4axvbu: string;  // turn
+  t2kepujk: string;  // reasoning
   ofad24rc: Record<string, string[]>;  // reactions
   dh6346no: string;  // sent_view
   wqxsenb3: OutsideAuthor | null;  // outside
@@ -680,11 +698,13 @@ export interface Message extends tilo.Resource {
   }): Promise<void>;
   /** Runs `react` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   reactMany(items: ReactArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Copies what a message says, as plain words, to the clipboard. */
+  copy_text(): Promise<void>;
 }
 
 /** The actions `Message` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGE_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "relay_reaction", "relay_reactionMany", "pin", "pinMany", "react", "reactMany"] as const;
+export const MESSAGE_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "relay_reaction", "relay_reactionMany", "pin", "pinMany", "react", "reactMany", "copy_text"] as const;
 
 /** The `tl.so.tilo.chat.Message` kind at `path`. */
 export function message(ws: tilo.Workspace, path: string): Message {
@@ -698,17 +718,24 @@ export interface ChatReport extends tilo.Resource {
   adip7bw4: string;  // said
   bmfbgqt6: string;  // reason
   "3oner4zg": string;  // decision
-  /** Settles a report: what a moderator decided about it. */
+  maczz6ef: string;  // overturned
+  /** Settles a report: what a moderator decided about it. A report whose decision was overturned is decided again this way. */
   decide(args: {
     decision: string;
   }): Promise<void>;
   /** Runs `decide` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   decideMany(items: DecideArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Overturns what was decided about a report, saying why: the report is open again, for a moderator to decide anew, and the decision overturned stays in its history. */
+  overturn(args: {
+    why: string;
+  }): Promise<void>;
+  /** Runs `overturn` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  overturnMany(items: OverturnArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `ChatReport` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CHATREPORT_ACTIONS = ["decide", "decideMany"] as const;
+export const CHATREPORT_ACTIONS = ["decide", "decideMany", "overturn", "overturnMany"] as const;
 
 /** The `tl.so.tilo.chat.Report` kind at `path`. */
 export function chatReport(ws: tilo.Workspace, path: string): ChatReport {
@@ -752,6 +779,11 @@ export interface Thread extends tilo.Resource {
     avatar?: string;
     service?: string;
     outside_emoji?: OutsideEmoji[];
+    member?: string;
+  }): Promise<Message>;
+  /** Asks the agent that wrote `m` to carry on where its answer stopped: a reply to it from the person, naming the agent, which the agent's next turn reads with the answer before it. An answer that ran out of room, was stopped or broke off is finished this way, not written again from its start. */
+  continue_answer(args: {
+    m: Message;
   }): Promise<Message>;
   /** Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted, as far as the one deleting reads them. */
   delete(args: {
@@ -768,7 +800,7 @@ export interface Thread extends tilo.Resource {
 
 /** The actions `Thread` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const THREAD_ACTIONS = ["send", "summarize", "summarizeMany", "send_view", "relay", "delete", "deleteMany", "report"] as const;
+export const THREAD_ACTIONS = ["send", "summarize", "summarizeMany", "send_view", "relay", "continue_answer", "delete", "deleteMany", "report"] as const;
 
 /** The `tl.so.tilo.chat.Thread` kind at `path`. */
 export function thread(ws: tilo.Workspace, path: string): Thread {
@@ -829,6 +861,11 @@ export interface Direct extends tilo.Resource {
     avatar?: string;
     service?: string;
     outside_emoji?: OutsideEmoji[];
+    member?: string;
+  }): Promise<Message>;
+  /** Asks the agent that wrote `m` to carry on where its answer stopped: a reply to it from the person, naming the agent, which the agent's next turn reads with the answer before it. An answer that ran out of room, was stopped or broke off is finished this way, not written again from its start. */
+  continue_answer(args: {
+    m: Message;
   }): Promise<Message>;
   /** Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted, as far as the one deleting reads them. */
   delete(args: {
@@ -850,7 +887,7 @@ export interface Direct extends tilo.Resource {
 
 /** The actions `Direct` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DIRECT_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "unread_count", "send", "summarize", "summarizeMany", "send_view", "relay", "delete", "deleteMany", "report", "start_thread"] as const;
+export const DIRECT_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "unread_count", "send", "summarize", "summarizeMany", "send_view", "relay", "continue_answer", "delete", "deleteMany", "report", "start_thread"] as const;
 
 /** The `tl.so.tilo.chat.Direct` kind at `path`. */
 export function direct(ws: tilo.Workspace, path: string): Direct {

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@88ced6314e0a490a";
+export const SURFACE = "so.tilo.mail@9b5d0d29b4e68e46";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -516,6 +516,10 @@ export interface Mail extends tilo.Resource {
   set_holdMany(items: SetHoldArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Starts a message. A message is written before the workspace has an account to send it from: it waits in Drafts, and goes once the person adds one. */
   new_draft(): Promise<Draft>;
+  /** Opens a `mailto:` link: a message to whom it names, in Drafts, for the person to read and send. A link that names no address opens nothing, as it names nobody to write to. The host publishes this as the system's `open-link` on the mailbox, which is what a shell hands a link to. */
+  open_link(args: {
+    link: string;
+  }): Promise<Draft | null>;
   /** Writes a message for the person to read and send: to whom, its subject and what it says, answering `in_reply_to` (a Message-ID) when it names one. Every call makes a draft of its own beside the others; nothing is written over and nothing is sent. Where an agent drafts a message, the person finds it in Drafts and sends it. */
   draft_message(args: {
     to: string;
@@ -579,7 +583,7 @@ export interface Mail extends tilo.Resource {
 
 /** The actions `Mail` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MAIL_ACTIONS = ["trust_sender", "trust_senderMany", "distrust_sender", "distrust_senderMany", "set_hold", "set_holdMany", "new_draft", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany", "save_to_drafts"] as const;
+export const MAIL_ACTIONS = ["trust_sender", "trust_senderMany", "distrust_sender", "distrust_senderMany", "set_hold", "set_holdMany", "new_draft", "open_link", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany", "save_to_drafts"] as const;
 
 /** The `tl.so.tilo.mail.Mail` kind at `path`. */
 export function mail(ws: tilo.Workspace, path: string): Mail {

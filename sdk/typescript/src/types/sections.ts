@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings.sections@795abeb58990c36e";
+export const SURFACE = "so.tilo.settings.sections@d4b2ea0cd53d9cf9";
 
 export interface Ink {
   primary: number;
@@ -82,6 +82,7 @@ export interface ThemeRecord {
   hover_alpha: number;
   refraction: number;
   origin: string | null;
+  findings: string[];
 }
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
@@ -105,17 +106,44 @@ export type TouchpadClickMethod = "areas" | "clickfinger" | "default";
 /** One of "edge", "two_finger". */
 export type TouchpadScrollMethod = "edge" | "two_finger";
 
+/** One of native, left, middle, right, back, forward, shortcut: an object whose case the app tags it with. */
+export type EraserAction = Record<string, unknown>;
+
 export interface KeyboardProfile {
   sources: string[];
   active: string;
   options: Record<string, SourceOptions>;
 }
 
+/** One of "nothing", "scroll", "zoom", "brush_size", "volume", "brightness". */
+export type PadDialAction = "nothing" | "scroll" | "zoom" | "brush_size" | "volume" | "brightness";
+
+/** One of "search", "workspace_overview", "lock", "quick_settings", "shortcut_help", "focus_previous_window", "focus_next_window", "previous_tab", "next_tab", "tab_menu", "previous_strip", "next_strip", "previous_workspace", "next_workspace", "toggle_maximize", "maximize_window", "restore_window", "detach_tab", "attach_tab_left", "attach_tab_right", "move_group_left", "move_group_right", "move_group_to_previous_strip", "move_group_to_next_strip", "move_group_to_previous_display", "move_group_to_next_display", "resize_narrower", "resize_wider", "reopen_closed_tab", "focus_group1", "focus_group2", "focus_group3", "focus_group4", "focus_group5", "focus_group6", "focus_group7", "focus_group8", "focus_group9", "focus_strip1", "focus_strip2", "focus_strip3", "focus_strip4", "focus_strip5", "focus_strip6", "focus_strip7", "focus_strip8", "focus_strip9", "open_files", "open_terminal", "clipboard_history", "notifications", "toggle_fullscreen", "toggle_magnifier", "magnifier_zoom_in", "magnifier_zoom_out", "power_menu", "next_input_source", "emoji_picker", "ask_agent", "say_something", "report_problem", "dictation_toggle", "dictation_finish", "dictation_cancel", "toggle_float". */
+export type ShortcutAction = "search" | "workspace_overview" | "lock" | "quick_settings" | "shortcut_help" | "focus_previous_window" | "focus_next_window" | "previous_tab" | "next_tab" | "tab_menu" | "previous_strip" | "next_strip" | "previous_workspace" | "next_workspace" | "toggle_maximize" | "maximize_window" | "restore_window" | "detach_tab" | "attach_tab_left" | "attach_tab_right" | "move_group_left" | "move_group_right" | "move_group_to_previous_strip" | "move_group_to_next_strip" | "move_group_to_previous_display" | "move_group_to_next_display" | "resize_narrower" | "resize_wider" | "reopen_closed_tab" | "focus_group1" | "focus_group2" | "focus_group3" | "focus_group4" | "focus_group5" | "focus_group6" | "focus_group7" | "focus_group8" | "focus_group9" | "focus_strip1" | "focus_strip2" | "focus_strip3" | "focus_strip4" | "focus_strip5" | "focus_strip6" | "focus_strip7" | "focus_strip8" | "focus_strip9" | "open_files" | "open_terminal" | "clipboard_history" | "notifications" | "toggle_fullscreen" | "toggle_magnifier" | "magnifier_zoom_in" | "magnifier_zoom_out" | "power_menu" | "next_input_source" | "emoji_picker" | "ask_agent" | "say_something" | "report_problem" | "dictation_toggle" | "dictation_finish" | "dictation_cancel" | "toggle_float";
+
 export interface SourceOptions {
   model: string | null;
   compose_key: string | null;
   caps_lock: string | null;
   customised: boolean;
+}
+
+/** One of default, left, middle, right, back, forward, shortcut, disabled: an object whose case the app tags it with. */
+export type StylusButtonAction = Record<string, unknown>;
+
+export interface TabletConfig {
+  output: string | null;
+  keep_aspect: boolean;
+  left_handed: boolean;
+  pressure_curve: number[];
+  lower_button: StylusButtonAction;
+  upper_button: StylusButtonAction;
+  third_button: StylusButtonAction;
+  eraser: EraserAction;
+  pad_buttons: Record<string, ShortcutAction>;
+  pad_map_button: number | null;
+  pad_rings: Record<string, PadDialAction[]>;
+  pad_strips: Record<string, PadDialAction[]>;
 }
 
 /** One of "suspend", "lock", "ignore". */
@@ -219,6 +247,52 @@ export interface HostedProfiles {
   profiles: unknown[];
 }
 
+export interface DisplayConfig {
+  outputs: Record<string, OutputConfig>;
+}
+
+export interface DisplaySet {
+  key: string;
+  members: Record<string, string>;
+}
+
+export interface DisplayTransaction {
+  id: number;
+  state: DisplayTransactionState;
+  set: DisplaySet;
+  previous: DisplayConfig;
+  candidate: DisplayConfig;
+  deadline_unix_ms: number | null;
+  message: string | null;
+}
+
+/** One of "requested", "awaiting_confirmation", "confirm_requested", "revert_requested", "confirmed", "reverted", "rejected". */
+export type DisplayTransactionState = "requested" | "awaiting_confirmation" | "confirm_requested" | "revert_requested" | "confirmed" | "reverted" | "rejected";
+
+export interface OutputConfig {
+  enabled: boolean;
+  primary: boolean;
+  x: number;
+  y: number;
+  scale: number;
+  transform: OutputTransform;
+  mode: OutputMode | null;
+  mirror_of: string | null;
+  hdr: boolean;
+  sdr_brightness_nits: number;
+  vrr: boolean;
+  color_profile: string | null;
+}
+
+export interface OutputMode {
+  width: number;
+  height: number;
+  refresh_mhz: number;
+}
+
+/** One of "normal", "rotate90", "rotate180", "rotate270". */
+export type OutputTransform = "normal" | "rotate90" | "rotate180" | "rotate270";
+
 export interface Bytes {
   received: number;
   sent: number;
@@ -319,6 +393,13 @@ export interface DeleteThemeArgs {
 export interface SwitchPolarityArgs {
   theme: string;
   dark: boolean;
+}
+
+/** The arguments of `review-theme`. */
+export interface ReviewThemeArgs {
+  theme: string;
+  role: string;
+  value?: number;
 }
 
 /** The arguments of `step-magnifier`. */
@@ -442,6 +523,32 @@ export interface SetSuspendPluggedInArgs {
 /** The arguments of `set-suspend-on-battery`. */
 export interface SetSuspendOnBatteryArgs {
   minutes: number;
+}
+
+/** The arguments of `set-widget-enabled`. */
+export interface SetWidgetEnabledArgs {
+  widget: string;
+  enabled: boolean;
+}
+
+/** The arguments of `set-widget-show`. */
+export interface SetWidgetShowArgs {
+  widget: string;
+  show: string;
+}
+
+/** The arguments of `place-widget`. */
+export interface PlaceWidgetArgs {
+  widget: string;
+  display: string;
+  x: number;
+  y: number;
+}
+
+/** The arguments of `resize-widget`. */
+export interface ResizeWidgetArgs {
+  widget: string;
+  width: number;
 }
 
 /** The arguments of `record-automatic-updates`. */
@@ -575,7 +682,7 @@ export interface SetDefaultAppHandlerArgs {
 
 /** The arguments of `request`. */
 export interface RequestArgs {
-  change: unknown;
+  change: DisplayTransaction;
 }
 
 /** The arguments of `set-layouts`. */
@@ -697,11 +804,18 @@ export interface Appearance extends tilo.Resource {
   }): Promise<void>;
   /** Runs `switch-polarity` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   switchPolarityMany(items: SwitchPolarityArgs[]): Promise<tilo.ActionAnswer[]>;
+  reviewTheme(args: {
+    theme: string;
+    role: string;
+    value?: number;
+  }): Promise<void>;
+  /** Runs `review-theme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reviewThemeMany(items: ReviewThemeArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Appearance` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const APPEARANCE_ACTIONS = ["chooseTheme", "chooseThemeMany", "setDarkMode", "setDarkModeMany", "useTheme", "useThemeMany", "newTheme", "newThemeMany", "importTheme", "importThemeMany", "resetTheme", "resetThemeMany", "deleteTheme", "deleteThemeMany", "switchPolarity", "switchPolarityMany"] as const;
+export const APPEARANCE_ACTIONS = ["chooseTheme", "chooseThemeMany", "setDarkMode", "setDarkModeMany", "useTheme", "useThemeMany", "newTheme", "newThemeMany", "importTheme", "importThemeMany", "resetTheme", "resetThemeMany", "deleteTheme", "deleteThemeMany", "switchPolarity", "switchPolarityMany", "reviewTheme", "reviewThemeMany"] as const;
 
 /** The `settings.appearance` kind at `path`. */
 export function appearance(ws: tilo.Workspace, path: string): Appearance {
@@ -853,7 +967,7 @@ export interface InputDevice extends tilo.Resource {
   readonly keyboard_preview_extra_levels: boolean;
   readonly keyboard_preview_level: number;
   readonly keyboard_inspected_key: string;
-  readonly tablets: Record<string, unknown>;
+  readonly tablets: Record<string, TabletConfig>;
   setKeyboardLayouts(args: {
     keyboard: string;
     profile: KeyboardProfile;
@@ -1005,11 +1119,37 @@ export interface Widgets extends tilo.Resource {
   team: WidgetPrefs;
   calendar: WidgetPrefs;
   system_monitor: WidgetPrefs;
+  setWidgetEnabled(args: {
+    widget: string;
+    enabled: boolean;
+  }): Promise<void>;
+  /** Runs `set-widget-enabled` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setWidgetEnabledMany(items: SetWidgetEnabledArgs[]): Promise<tilo.ActionAnswer[]>;
+  setWidgetShow(args: {
+    widget: string;
+    show: string;
+  }): Promise<void>;
+  /** Runs `set-widget-show` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setWidgetShowMany(items: SetWidgetShowArgs[]): Promise<tilo.ActionAnswer[]>;
+  placeWidget(args: {
+    widget: string;
+    display: string;
+    x: number;
+    y: number;
+  }): Promise<void>;
+  /** Runs `place-widget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  placeWidgetMany(items: PlaceWidgetArgs[]): Promise<tilo.ActionAnswer[]>;
+  resizeWidget(args: {
+    widget: string;
+    width: number;
+  }): Promise<void>;
+  /** Runs `resize-widget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  resizeWidgetMany(items: ResizeWidgetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Widgets` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WIDGETS_ACTIONS = [] as const;
+export const WIDGETS_ACTIONS = ["setWidgetEnabled", "setWidgetEnabledMany", "setWidgetShow", "setWidgetShowMany", "placeWidget", "placeWidgetMany", "resizeWidget", "resizeWidgetMany"] as const;
 
 /** The `settings.widgets` kind at `path`. */
 export function widgets(ws: tilo.Workspace, path: string): Widgets {
@@ -1423,13 +1563,10 @@ export function clock(ws: tilo.Workspace, path: string): Clock {
 export interface DisplayChange extends tilo.Resource {
   readonly id: number;
   readonly state: unknown;
-  readonly set: unknown;
-  readonly previous: unknown;
-  readonly candidate: unknown;
   readonly deadline_unix_ms: number | null;
   readonly message: string | null;
   request(args: {
-    change: unknown;
+    change: DisplayTransaction;
   }): Promise<void>;
   /** Runs `request` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   requestMany(items: RequestArgs[]): Promise<tilo.ActionAnswer[]>;

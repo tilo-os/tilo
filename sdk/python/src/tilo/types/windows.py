@@ -30,7 +30,7 @@ OpenWith = Literal["wine", "proton", "vm"]
 
 class Windows(Resource):
     """Windows — `tl.so.tilo.windows.Windows`."""
-    __surface__ = "so.tilo.windows@7a88f357b1ba0b3b"
+    __surface__ = "so.tilo.windows@a767de6e4f35d95c"
     @property
     def _3bu5zzlt(self) -> dict[str, OpenWith]:
         """routes (`3bu5zzlt` on the wire)."""
@@ -58,7 +58,7 @@ class Windows(Resource):
 
     def opened_file(self,
         *,
-        program: str,
+        program: Any,
         file: Any,
     ) -> None:
         """Open the document the person chose in `program`."""
@@ -71,7 +71,7 @@ class Windows(Resource):
 
 class TiloWindows(Resource):
     """Windows Apps — `tl.so.tilo.windows`."""
-    __surface__ = "so.tilo.windows@7a88f357b1ba0b3b"
+    __surface__ = "so.tilo.windows@a767de6e4f35d95c"
     def imported_iso(self, *, file: Any) -> None:
         """Set up the appliance from the Windows ISO the person chose."""
         return self.action("imported_iso", file=file)

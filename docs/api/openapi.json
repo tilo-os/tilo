@@ -10503,7 +10503,8 @@
               "url",
               "title",
               "capture",
-              "login_notice"
+              "login_notice",
+              "find_text"
             ],
             "type": "string"
           },
@@ -11128,7 +11129,7 @@
         "required": [
           "text"
         ],
-        "description": "Find words in the page, as the find bar does."
+        "description": "Find words in the page: the window's search is the page's find, and the words are kept so\nthe way on to the next match and back to the previous ask for the same ones. No words takes\nthe find away: the marks go, and the page is left as it was before they were typed."
       },
       "tl.so.tilo.browser.Page.stop_finding.Arguments": {
         "type": "object",
@@ -11817,6 +11818,133 @@
         ],
         "description": "Forgets an extension installed on this device: its folder and everything it may do."
       },
+      "tl.so.tilo.browser.Page.click_extension.Arguments": {
+        "type": "object",
+        "properties": {
+          "b": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.PageButton",
+            "type": "object"
+          }
+        },
+        "required": [
+          "b"
+        ],
+        "description": "Presses one of the page's extension buttons: the engine runs the extension's action, or opens\nthe page it offers."
+      },
+      "tl.so.tilo.browser.Page.choose_extension_notice.Arguments": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.ExtensionNotice",
+            "type": "object"
+          },
+          "button": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "n",
+          "button"
+        ],
+        "description": "Presses one of the buttons a notification an extension showed offers."
+      },
+      "tl.so.tilo.browser.Page.dismiss_extension_notice.Arguments": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.browser.ExtensionNotice",
+            "type": "object"
+          }
+        },
+        "required": [
+          "n"
+        ],
+        "description": "Takes a notification an extension showed away without pressing anything."
+      },
       "tl.so.tilo.browser.Page.remember_extensions.Arguments": {
         "type": "object",
         "properties": {
@@ -12450,6 +12578,112 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.browser.HistoryEntry.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.browser.PageButton.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.PageButton.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "ext",
+              "label",
+              "badge"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.PageButton.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "enabled",
+              "popup"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.PageButton.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.browser.ExtensionNotice.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.ExtensionNotice.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "ext",
+              "notification",
+              "title",
+              "message"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.ExtensionNotice.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.ExtensionNotice.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -13357,6 +13591,69 @@
         "required": [],
         "description": "What the outside service said is taken in."
       },
+      "tl.so.tilo.calendar.Account.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.calendar.Account.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "address",
+              "name",
+              "server",
+              "trouble"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Account.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "read_only",
+              "online",
+              "checking"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.calendar.Account.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.calendar.Account.sync_account.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks one account's server for its calendars now: what \"Sync again\" over its notice does."
+      },
       "tl.so.tilo.calendar.Project.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -14023,6 +14320,18 @@
         ],
         "description": "Repeats an event on chosen days of the week from the day it stands on."
       },
+      "tl.so.tilo.calendar.Event.toggle_weekday.Arguments": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "description": "Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's `BYDAY`,\nand the repeat keeps the day it ends on, if it ends on one."
+      },
       "tl.so.tilo.calendar.Event.repeat_off.Arguments": {
         "type": "object",
         "properties": {},
@@ -14191,6 +14500,19 @@
           "at"
         ],
         "description": "Ends an event on the day a moment names, keeping the time of day it ends at: a day after the\none it starts on makes it run through every day between, and a whole-day event ends at the\nmidnight after its last day, which is the day it shows on."
+      },
+      "tl.so.tilo.calendar.Event.end_on_day.Arguments": {
+        "type": "object",
+        "properties": {
+          "end_day": {
+            "format": "date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "end_day"
+        ],
+        "description": "Ends an event on a day, keeping the time of day it ends at, as `move_end_day` does with the\nday a moment names."
       },
       "tl.so.tilo.calendar.Event.repeat.Arguments": {
         "type": "object",
@@ -14367,6 +14689,51 @@
           "status"
         ],
         "description": "Records someone's answer to an invitation: `accepted`, `declined` or `tentative`."
+      },
+      "tl.so.tilo.calendar.Event.answer_and_tell.Arguments": {
+        "type": "object",
+        "properties": {
+          "g": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Attendee",
+            "type": "object"
+          },
+          "said": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "g",
+          "said"
+        ],
+        "description": "Answers the person's own invitation to an account's event, telling the organiser through the\naccount's server: what settles the RSVP the invitation asked for."
       },
       "tl.so.tilo.calendar.Event.uninvite.Arguments": {
         "type": "object",
@@ -14983,6 +15350,47 @@
         ],
         "description": "Deletes an event."
       },
+      "tl.so.tilo.calendar.Calendars.discard_draft.Arguments": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.calendar.Event",
+            "type": "object"
+          }
+        },
+        "required": [
+          "e"
+        ],
+        "description": "Throws away an event nothing was written in yet: what a person's New event leaves when they\ndecide against it."
+      },
       "tl.so.tilo.calendar.Calendars.previous_week.Arguments": {
         "type": "object",
         "properties": {},
@@ -15051,6 +15459,18 @@
         },
         "required": [],
         "description": "The calendar — every event and task it holds, or only one event — as an iCalendar file, for\na person to save or an agent to hand on. Nothing is written by this."
+      },
+      "tl.so.tilo.calendar.Calendars.take_invitation.Arguments": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "description": "Takes an invitation into the calendar: the event it asks for is kept by the account's server\nwhere one can be written to it, so the organiser hears the answer, and by this workspace\notherwise. What the server took comes back with the account's next sync."
       },
       "tl.so.tilo.calendar.Calendars.import_ics.Arguments": {
         "type": "object",
@@ -20287,6 +20707,51 @@
         ],
         "description": "Moves a category to a place in the sidebar, at `at` among the categories and channels listed\nthere (the end when it is negative). Its own channels move with it."
       },
+      "tl.so.tilo.chat.Conversations.report_person.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "who",
+          "reason"
+        ],
+        "description": "Reports a person to the workspace's moderators, for how they behave here rather than for one\nmessage: what the reporter says is the whole of it, and the moderators decide it as any other\nreport."
+      },
       "tl.so.tilo.chat.Category.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -20767,6 +21232,38 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "member": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
           }
         },
         "required": [
@@ -20809,6 +21306,47 @@
         },
         "required": [],
         "description": "Sets a channel aside, out of the sidebar, keeping everything said in it, or brings it back."
+      },
+      "tl.so.tilo.chat.TextChannel.continue_answer.Arguments": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Message",
+            "type": "object"
+          }
+        },
+        "required": [
+          "m"
+        ],
+        "description": "Asks the agent that wrote `m` to carry on where its answer stopped: a reply to it from the\nperson, naming the agent, which the agent's next turn reads with the answer before it. An answer that ran out\nof room, was stopped or broke off is finished this way, not written again from its start."
       },
       "tl.so.tilo.chat.TextChannel.delete.Arguments": {
         "type": "object",
@@ -21054,6 +21592,7 @@
             "enum": [
               "body",
               "turn",
+              "reasoning",
               "sent_view",
               "by",
               "written_in",
@@ -21186,6 +21725,9 @@
           },
           "turn": {
             "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
           }
         },
         "required": [],
@@ -21213,6 +21755,12 @@
         ],
         "description": "Adds your reaction with an emoji to a message, or takes it back when you had reacted with it."
       },
+      "tl.so.tilo.chat.Message.copy_text.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Copies what a message says, as plain words, to the clipboard."
+      },
       "tl.so.tilo.chat.Report.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -21227,7 +21775,8 @@
             "enum": [
               "said",
               "reason",
-              "decision"
+              "decision",
+              "overturned"
             ],
             "type": "string"
           },
@@ -21274,7 +21823,19 @@
         "required": [
           "decision"
         ],
-        "description": "Settles a report: what a moderator decided about it."
+        "description": "Settles a report: what a moderator decided about it. A report whose decision was overturned\nis decided again this way."
+      },
+      "tl.so.tilo.chat.Report.overturn.Arguments": {
+        "type": "object",
+        "properties": {
+          "why": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "why"
+        ],
+        "description": "Overturns what was decided about a report, saying why: the report is open again, for a\nmoderator to decide anew, and the decision overturned stays in its history."
       },
       "tl.so.tilo.chat.Thread.$create.Arguments": {
         "type": "object",
@@ -21548,6 +22109,38 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "member": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
           }
         },
         "required": [
@@ -21556,6 +22149,47 @@
           "written_in"
         ],
         "description": "Posts a message written on another service, as it was written there: who wrote it, as that\nservice names them, where and when. A bridge relays another service's conversation this\nway; the message's history names the bridge, and the message says whom it relays."
+      },
+      "tl.so.tilo.chat.Thread.continue_answer.Arguments": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Message",
+            "type": "object"
+          }
+        },
+        "required": [
+          "m"
+        ],
+        "description": "Asks the agent that wrote `m` to carry on where its answer stopped: a reply to it from the\nperson, naming the agent, which the agent's next turn reads with the answer before it. An answer that ran out\nof room, was stopped or broke off is finished this way, not written again from its start."
       },
       "tl.so.tilo.chat.Thread.delete.Arguments": {
         "type": "object",
@@ -21941,6 +22575,38 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "member": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
           }
         },
         "required": [
@@ -21949,6 +22615,47 @@
           "written_in"
         ],
         "description": "Posts a message written on another service, as it was written there: who wrote it, as that\nservice names them, where and when. A bridge relays another service's conversation this\nway; the message's history names the bridge, and the message says whom it relays."
+      },
+      "tl.so.tilo.chat.Direct.continue_answer.Arguments": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.chat.Message",
+            "type": "object"
+          }
+        },
+        "required": [
+          "m"
+        ],
+        "description": "Asks the agent that wrote `m` to carry on where its answer stopped: a reply to it from the\nperson, naming the agent, which the agent's next turn reads with the answer before it. An answer that ran out\nof room, was stopped or broke off is finished this way, not written again from its start."
       },
       "tl.so.tilo.chat.Direct.delete.Arguments": {
         "type": "object",
@@ -28081,7 +28788,7 @@
         ],
         "description": "Deletes `entry`, and every entry under it: a folder empties with its entries, as one change\na person takes back at once."
       },
-      "tl.so.tilo.code-editor.Project.find_in_file.Arguments": {
+      "tl.so.tilo.code-editor.Project.find_in_window.Arguments": {
         "type": "object",
         "properties": {
           "entry": {
@@ -28118,19 +28825,12 @@
           },
           "text": {
             "type": "string"
-          },
-          "case": {
-            "type": "boolean"
-          },
-          "word": {
-            "type": "boolean"
           }
         },
         "required": [
-          "entry",
           "text"
         ],
-        "description": "Finds the words `text` in a file and keeps what it found, for the page's find row."
+        "description": "The window's search finds the words in the open file and across the project's files: the\nfirst place in the file is shown, so a hit is in sight as the words are typed."
       },
       "tl.so.tilo.code-editor.Project.check.Arguments": {
         "type": "object",
@@ -29355,6 +30055,7 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
+              "birthday_year",
               "favorite"
             ],
             "type": "string"
@@ -29601,6 +30302,18 @@
         ],
         "description": "Takes one of a contact's addresses away."
       },
+      "tl.so.tilo.contacts.Contact.keep_birthday_year.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "description": "Keeps a birthday with its year or without it: a birthday kept without one is the day it falls\non every year, as many address books keep one."
+      },
       "tl.so.tilo.contacts.Contact.ungroup.Arguments": {
         "type": "object",
         "properties": {
@@ -29615,7 +30328,19 @@
       },
       "tl.so.tilo.contacts.Contact.export_contact.Arguments": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "version": {
+            "choice_labels": {
+              "v3": "vCard 3.0, which older address books read: dates with their dashes and kinds in capitals",
+              "v4": "vCard 4.0, the current format: dates in its compact form and kinds in lower case"
+            },
+            "enum": [
+              "v4",
+              "v3"
+            ],
+            "type": "string"
+          }
+        },
         "required": [],
         "description": "A contact as a file: their card, named for them."
       },
@@ -29663,6 +30388,106 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.contacts.Group.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.contacts.ImportCard.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.contacts.ImportCard.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "card",
+              "name",
+              "uid"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.ImportCard.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.ImportCard.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.contacts.ImportReport.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.contacts.ImportReport.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.ImportReport.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "seen"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.contacts.ImportReport.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -29997,9 +30822,31 @@
       },
       "tl.so.tilo.contacts.Book.export_book.Arguments": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "version": {
+            "choice_labels": {
+              "v3": "vCard 3.0, which older address books read: dates with their dashes and kinds in capitals",
+              "v4": "vCard 4.0, the current format: dates in its compact form and kinds in lower case"
+            },
+            "enum": [
+              "v4",
+              "v3"
+            ],
+            "type": "string"
+          }
+        },
         "required": [],
         "description": "Every contact as one vCard file, which another address book reads whole."
+      },
+      "tl.so.tilo.contacts.Book.export_vcard_content.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Every contact as the text of one card file, or the one `name` calls: for an agent or a script\nthat hands the cards on where a person's file chooser cannot, as the address its bytes are\nkept at. A name the book holds twice is refused rather than guessed."
       },
       "tl.so.tilo.contacts.Book.import_vcard.Arguments": {
         "type": "object",
@@ -30009,7 +30856,7 @@
         "required": [
           "file"
         ],
-        "description": "Imports the contacts a vCard file holds into the book, each card a contact of its own, and\nanswers how many were added. A file whose cards cannot be read adds nothing and changes\nnothing: what it says is the refusal."
+        "description": "Imports the contacts a vCard file holds into the book, each new card a contact of its own, and\nanswers what it did. A card whose id the book already holds unchanged is nobody new; one that\nsays something else about the person waits in the book's review, and the contact stays as it\nis until someone says which card is theirs. A file beyond what this app reads is refused whole:\nwhat the refusal says is why."
       },
       "tl.so.tilo.contacts.Book.add_contacts.Arguments": {
         "type": "object",
@@ -30021,7 +30868,79 @@
         "required": [
           "cards"
         ],
-        "description": "The cards `cards`, the words of a vCard file, as contacts of this book, and how many named\nsomebody: what an importer, an agent or a script hands a book in one call."
+        "description": "The cards `cards`, the words of a vCard file, as contacts of this book, and what became of\neach: what an importer, an agent or a script hands a book in one call."
+      },
+      "tl.so.tilo.contacts.Book.refuse_import.Arguments": {
+        "type": "object",
+        "properties": {
+          "skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "skipped"
+        ],
+        "description": "The report of an import of `skipped` cards, and no others: what a file that could not be read\nanswers."
+      },
+      "tl.so.tilo.contacts.Book.report_import.Arguments": {
+        "type": "object",
+        "properties": {
+          "imported": {
+            "type": "integer"
+          },
+          "unchanged": {
+            "type": "integer"
+          },
+          "awaiting": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "imported",
+          "unchanged",
+          "awaiting",
+          "skipped"
+        ],
+        "description": "What an import did, kept on the book for the window's banner to read and answer."
+      },
+      "tl.so.tilo.contacts.Book.dismiss_import.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The person has read what the last import did: the banner stops showing it."
+      },
+      "tl.so.tilo.contacts.Book.file_card.Arguments": {
+        "type": "object",
+        "properties": {
+          "card": {
+            "type": "string"
+          },
+          "uid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "card"
+        ],
+        "description": "Brings one card of a vCard file to the book: takes it as a contact, finds the book already\nholds it unchanged, puts it up for review where it says something else about a contact the\nbook holds by the same id, or refuses a card that names nobody. `uid` is the id the caller\ngives a card whose file names none, so the caller can find the contact it makes."
+      },
+      "tl.so.tilo.contacts.Book.take_card.Arguments": {
+        "type": "object",
+        "properties": {
+          "card": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "card"
+        ],
+        "description": "The contact a card makes in the book, under the id `id`: what a new card becomes, and what a\ncard someone chose over the one the book held becomes. Its rows are filled after it stands in\nthe book, as every resource's are."
       },
       "tl.so.tilo.contacts.Book.add_card.Arguments": {
         "type": "object",
@@ -30033,7 +30952,89 @@
         "required": [
           "card"
         ],
-        "description": "The contact a vCard card says, made in the book, or none for a card that names nobody. Its\nrows are filled after it stands in the book, as every resource's are."
+        "description": "The contact a vCard card says, made in the book, or none for a card that names nobody and for\none the book already holds: the single-card form of importing a file."
+      },
+      "tl.so.tilo.contacts.Book.import_as_new.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.ImportCard",
+            "type": "object"
+          }
+        },
+        "required": [
+          "p"
+        ],
+        "description": "Takes a card that waited for review as a contact of its own, beside the one the book holds\nunder the id it named: the file's card is the person's, and the card the book kept keeps\neverything of its own. Its id is new, because the two cards are two now."
+      },
+      "tl.so.tilo.contacts.Book.keep_existing.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.contacts.ImportCard",
+            "type": "object"
+          }
+        },
+        "required": [
+          "p"
+        ],
+        "description": "Leaves the card the book holds as it is, and takes the file's card out of the review."
       },
       "tl.so.tilo.contacts.Book.find_for_address.Arguments": {
         "type": "object",
@@ -30810,6 +31811,36 @@
         "properties": {},
         "required": [],
         "description": "Runs an image as a new container from the draft, and clears the form when the engine took it."
+      },
+      "tl.so.tilo.containers.Containers.show_containers.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows what the engine holds of one kind. Each is the place's number key, pressed anywhere in\nthe window."
+      },
+      "tl.so.tilo.containers.Containers.show_images.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Show images"
+      },
+      "tl.so.tilo.containers.Containers.show_volumes.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Show volumes"
+      },
+      "tl.so.tilo.containers.Containers.show_distrobox.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Show distroboxes"
+      },
+      "tl.so.tilo.containers.Containers.new_container_form.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opens the new-container form, as `n` does from the window."
       },
       "tl.so.tilo.containers.Containers.make_volume.Arguments": {
         "type": "object",
@@ -31818,7 +32849,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Reads the selected table's columns, keys and indexes."
+        "description": "Reads the selected table's keys and indexes; its columns came with the catalog."
       },
       "tl.so.tilo.db-client.Database.load_page.Arguments": {
         "type": "object",
@@ -32010,6 +33041,8 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
+              "schema",
+              "table",
               "name",
               "decl_type"
             ],
@@ -32596,7 +33629,13 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Empties the columns, keys and indexes a window holds."
+        "description": "Empties the keys and indexes of the relation the window last chose."
+      },
+      "tl.so.tilo.db-client.Session.clear_columns.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Empties the columns a window holds, so a catalog read again never stands beside the one\nbefore."
       },
       "tl.so.tilo.db-client.Session.clear_rows.Arguments": {
         "type": "object",
@@ -33304,6 +34343,51 @@
           "entry"
         ],
         "description": "Opens one file of the folder comparison: both its sides when both trees hold it, else the one\nthat does, against nothing."
+      },
+      "tl.so.tilo.diffmerge.Session.open_on_key.Arguments": {
+        "type": "object",
+        "properties": {
+          "entry": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.diffmerge.FolderEntry",
+            "type": "object"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry",
+          "key"
+        ],
+        "description": "Opens the file of the row the person pressed, for the key that asked: Enter opens it."
       },
       "tl.so.tilo.diffmerge.Session.edit_merged.Arguments": {
         "type": "object",
@@ -44170,6 +45254,108 @@
         ],
         "description": "Note the card the grid opened, in the page's answer."
       },
+      "tl.so.tilo.lang.gallery.mark_chosen.Arguments": {
+        "type": "object",
+        "properties": {
+          "last": {
+            "type": "string"
+          },
+          "chosen": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "last",
+          "chosen"
+        ],
+        "description": "Note the cells the sheet chose, in the page's answer."
+      },
+      "tl.so.tilo.lang.gallery.mark_edit.Arguments": {
+        "type": "object",
+        "properties": {
+          "last": {
+            "type": "string"
+          },
+          "pairs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "last",
+          "pairs"
+        ],
+        "description": "Note the cells the sheet edited, in the page's answer."
+      },
+      "tl.so.tilo.lang.gallery.mark_byte.Arguments": {
+        "type": "object",
+        "properties": {
+          "last": {
+            "type": "string"
+          },
+          "at": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "last",
+          "at"
+        ],
+        "description": "Note the byte the grid was pressed on, in the page's answer."
+      },
+      "tl.so.tilo.lang.gallery.mark_key.Arguments": {
+        "type": "object",
+        "properties": {
+          "last": {
+            "type": "string"
+          },
+          "pressed": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "last",
+          "pressed"
+        ],
+        "description": "Note the key the grid was given, in the page's answer."
+      },
+      "tl.so.tilo.lang.gallery.mark_wheel.Arguments": {
+        "type": "object",
+        "properties": {
+          "last": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "last",
+          "rows"
+        ],
+        "description": "Note the rows the grid scrolled by, in the page's answer."
+      },
+      "tl.so.tilo.lang.gallery.mark_row.Arguments": {
+        "type": "object",
+        "properties": {
+          "last": {
+            "type": "string"
+          },
+          "row": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "last",
+          "row"
+        ],
+        "description": "Note the row the diff grid was pressed on, in the page's answer."
+      },
       "tl.so.tilo.lang.gallery.reverted.Arguments": {
         "type": "object",
         "properties": {
@@ -44307,6 +45493,25 @@
           "at"
         ],
         "description": "Note where a page moved to, in the window's last answer."
+      },
+      "tl.so.tilo.lang.gallery.mark_paint.Arguments": {
+        "type": "object",
+        "properties": {
+          "last": {
+            "type": "string"
+          },
+          "p": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "last",
+          "p"
+        ],
+        "description": "Note a stroke on the paint surface, in the page's answer."
       },
       "tl.so.tilo.lang.gallery.mark_files.Arguments": {
         "type": "object",
@@ -45667,6 +46872,36 @@
         "required": [],
         "description": "Pushes the current branch to a like-named branch on a remote."
       },
+      "tl.so.tilo.git-client.Repository.run-approved-check.Arguments": {
+        "type": "object",
+        "properties": {
+          "check_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "check_id"
+        ],
+        "description": "Runs a check this project's host approved, by its id: the host picks the commands, the sources\nand the bounds, reports how far it has got, and says what it observed once it ends."
+      },
+      "tl.so.tilo.git-client.Repository.poll_check.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks the device how the running check is doing, and keeps what the host reported."
+      },
+      "tl.so.tilo.git-client.Repository.cancel_check.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Stops the running check; the host ends its commands."
+      },
+      "tl.so.tilo.git-client.Repository.clear_check.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Puts the last check's result away."
+      },
       "tl.so.tilo.git-client.Repository.read_commit.Arguments": {
         "type": "object",
         "properties": {
@@ -45923,6 +47158,61 @@
           "ask"
         ],
         "description": "Runs `op` with `ask` and keeps the answer: the repository as it now stands, and the working\ntree as the device read it."
+      },
+      "tl.so.tilo.git-client.ApprovedCheck.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.git-client.ApprovedCheck.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "check_id",
+              "job",
+              "phase",
+              "outcome",
+              "output",
+              "errors",
+              "refusal"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.git-client.ApprovedCheck.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.git-client.ApprovedCheck.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
       },
       "tl.so.tilo.git-client.Loaded.$create.Arguments": {
         "type": "object",
@@ -47002,6 +48292,61 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.git-client.ResolveAsk.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.git-client.CheckStatus.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.git-client.CheckStatus.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "state",
+              "phase",
+              "error",
+              "outcome",
+              "output",
+              "errors",
+              "failure"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.git-client.CheckStatus.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.git-client.CheckStatus.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -50341,6 +51686,18 @@
         "properties": {},
         "required": [],
         "description": "Starts a message. A message is written before the workspace has an account to send it from:\nit waits in Drafts, and goes once the person adds one."
+      },
+      "tl.so.tilo.mail.Mail.open_link.Arguments": {
+        "type": "object",
+        "properties": {
+          "link": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "link"
+        ],
+        "description": "Opens a `mailto:` link: a message to whom it names, in Drafts, for the person to read and\nsend. A link that names no address opens nothing, as it names nobody to write to. The\nhost publishes this as the system's `open-link` on the mailbox, which is what a shell hands\na link to."
       },
       "tl.so.tilo.mail.Mail.draft_message.Arguments": {
         "type": "object",
@@ -54363,6 +55720,18 @@
         "required": [],
         "description": "Starts a note titled `title` and saying `body` (Markdown) when the caller knows them already.\nStarted from the notebook both are empty: what is typed first names it. It stands under\n`parent` (at the top of the tree when none) and — where a caller names the note it belongs\nafter (`after`) — at that place among the notes there; without one it comes after the notes\nalready under `parent`, never at the foot of a tree it does not stand in."
       },
+      "tl.so.tilo.notes.Notebook.search_notebook.Arguments": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "description": "The window's search narrows the notebook's tree to the notes it finds, and opens the first\nof them: the note a person searched for is the one they read."
+      },
       "tl.so.tilo.notes.Notebook.move_to.Arguments": {
         "type": "object",
         "properties": {
@@ -55002,6 +56371,7 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
+              "entry",
               "title",
               "username",
               "password",
@@ -55024,8 +56394,7 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "favorite",
-              "old"
+              "favorite"
             ],
             "type": "string"
           },
@@ -55039,37 +56408,89 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.Item.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
-      "tl.so.tilo.passwords.Item.save_editor.Arguments": {
+      "tl.so.tilo.passwords.Item.keep_facts.Arguments": {
         "type": "object",
         "properties": {
-          "password": {
+          "username": {
             "type": "string"
           },
-          "notes": {
-            "type": "string"
-          },
-          "fields": {
+          "origins": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "username",
+          "origins"
+        ],
+        "description": "Writes what is safe to say of an item into its vault entry: who it signs in as and where,\nwith the item's name, kind and tags."
+      },
+      "tl.so.tilo.passwords.Item.set_username.Arguments": {
+        "type": "object",
+        "properties": {
+          "username": {
             "type": "string"
           }
         },
         "required": [
-          "password",
-          "notes",
-          "fields"
+          "username"
         ],
-        "description": "Writes what the editor holds onto an item: the password and notes it was given, and the\ncustom fields it typed. An empty password keeps the one the item had."
+        "description": "Writes who the item signs in as."
       },
-      "tl.so.tilo.passwords.Item.generate_password.Arguments": {
+      "tl.so.tilo.passwords.Item.change_secret.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Draws a strong password for the item: 20 characters, at least one capital, one small letter,\none digit and one symbol."
+        "description": "Changes the item's password, key or secret: the person types it on the system's card, and the\nvault keeps it. Nothing of it reaches this app's code, its records or history."
+      },
+      "tl.so.tilo.passwords.Item.write_note.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Writes the item's note: typed on the system's card, kept in the vault."
+      },
+      "tl.so.tilo.passwords.Item.add_field.Arguments": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Adds a field to the item, such as a PIN: its value typed on the system's card."
+      },
+      "tl.so.tilo.passwords.Item.remove_field.Arguments": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "description": "Takes a field off the item."
+      },
+      "tl.so.tilo.passwords.Item.generate_password.Arguments": {
+        "type": "object",
+        "properties": {
+          "length": {
+            "type": "integer"
+          },
+          "capitals": {
+            "type": "boolean"
+          },
+          "digits": {
+            "type": "boolean"
+          },
+          "symbols": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "description": "Draws a strong password for the item where the vault is: 20 characters by default, with a\ncapital, a small letter, a digit and a symbol. Nobody types or sees it."
       },
       "tl.so.tilo.passwords.Item.favorite.Arguments": {
         "type": "object",
@@ -55125,11 +56546,49 @@
         ],
         "description": "Takes an address off an item."
       },
+      "tl.so.tilo.passwords.Item.rename.Arguments": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "description": "Renames an item, in its record and its vault entry."
+      },
+      "tl.so.tilo.passwords.Item.set_kind.Arguments": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "choice_labels": {
+              "api_key": "A key an API takes",
+              "login": "A login: a username and a password for a site",
+              "note": "A note kept as a secret, with no address",
+              "secret": "Any other secret: a licence code, a recovery key",
+              "wifi": "The password of a Wi-Fi network"
+            },
+            "enum": [
+              "login",
+              "api_key",
+              "note",
+              "wifi",
+              "secret"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "description": "Changes what kind of secret an item is."
+      },
       "tl.so.tilo.passwords.Item.copy_secret.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Copies the item's secret to the person's clipboard."
+        "description": "Copies the item's secret to the person's clipboard, which forgets it again after a while.\nCopying reads the vault and keeps nothing."
       },
       "tl.so.tilo.passwords.Item.copy_identity.Arguments": {
         "type": "object",
@@ -55143,56 +56602,11 @@
         "required": [],
         "description": "Copies the addresses the item signs in to, one a line."
       },
-      "tl.so.tilo.passwords.Item.notice_age.Arguments": {
+      "tl.so.tilo.passwords.Item.carry.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Notes an item whose password was last changed more than a year ago, as the daily check runs."
-      },
-      "tl.so.tilo.passwords.Item.write_origins.Arguments": {
-        "type": "object",
-        "properties": {
-          "values": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "values"
-        ],
-        "description": "Replaces an item's addresses with `values`, one change."
-      },
-      "tl.so.tilo.passwords.Item.write_tags.Arguments": {
-        "type": "object",
-        "properties": {
-          "values": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "values"
-        ],
-        "description": "Replaces an item's tags with `values`, one change."
-      },
-      "tl.so.tilo.passwords.Item.write_fields.Arguments": {
-        "type": "object",
-        "properties": {
-          "values": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
-          }
-        },
-        "required": [
-          "values"
-        ],
-        "description": "Replaces an item's custom fields with `values`, one change."
+        "description": "Moves what an item's record keeps into the vault, once, and empties the record: an entry the\nvault already keeps under the item's id stays as it is."
       },
       "tl.so.tilo.passwords.ImportRow.$create.Arguments": {
         "type": "object",
@@ -55208,9 +56622,7 @@
             "enum": [
               "title",
               "username",
-              "origin",
-              "password",
-              "notes"
+              "origin"
             ],
             "type": "string"
           },
@@ -55243,12 +56655,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.ImportRow.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
       "tl.so.tilo.passwords.Vault.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -55261,6 +56667,7 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
+              "importing",
               "notice"
             ],
             "type": "string"
@@ -55292,12 +56699,6 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.Vault.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
       "tl.so.tilo.passwords.Vault.new_item.Arguments": {
         "type": "object",
         "properties": {
@@ -55306,7 +56707,7 @@
           }
         },
         "required": [],
-        "description": "Starts an item: it opens in the window, named by what is typed first."
+        "description": "Starts an item: an entry of the vault and the item that lists it, named by what is typed\nfirst. Its secret is typed on the system's card, never here."
       },
       "tl.so.tilo.passwords.Vault.save_login.Arguments": {
         "type": "object",
@@ -55319,24 +56720,20 @@
           },
           "username": {
             "type": "string"
-          },
-          "password": {
-            "type": "string"
           }
         },
         "required": [
           "name",
           "origin",
-          "username",
-          "password"
+          "username"
         ],
-        "description": "Adds a login in one step: what an agent, a script or the VM's own end-to-end check asks of\nthe vault. The name is required, the password is required, and an address is checked as a web\naddress."
+        "description": "Adds a login in one step: what an agent, a script or the VM's own end-to-end check asks of the\nvault. The person types its password on the system's card, so whoever asked never holds it,\nand the vault keeps it. An address is checked as a web address."
       },
       "tl.so.tilo.passwords.Vault.list_logins.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "The vault's logins, by name and by the item that holds each: what a script, an agent or\nanother device's window lists. The passwords are never part of it."
+        "description": "The vault's logins, by name and by the entry that holds each: what a script, an agent or\nanother device's window lists. The passwords are never part of it."
       },
       "tl.so.tilo.passwords.Vault.delete.Arguments": {
         "type": "object",
@@ -55377,7 +56774,13 @@
         "required": [
           "item"
         ],
-        "description": "Deletes an item from the vault."
+        "description": "Deletes an item, and the entry it stands for, from the vault."
+      },
+      "tl.so.tilo.passwords.Vault.settle.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Brings the vault and its items together: an entry kept elsewhere (a mail account's password,\na connector's token, one another device added) gets an item, an item's name, kind and tags\nreach its entry, and what an older Passwords kept in its own records moves into the vault and\nleaves the record. Runs while Passwords is open, and changes nothing when all is settled."
       },
       "tl.so.tilo.passwords.Vault.preview_csv.Arguments": {
         "type": "object",
@@ -55387,13 +56790,13 @@
         "required": [
           "file"
         ],
-        "description": "Reads the browser's CSV the person chose into the vault's waiting rows, each marked when the\nvault already holds that login."
+        "description": "Reads the browser's CSV the person chose into the vault's waiting rows, each marked when the\nvault already holds that login. The passwords stay in the file."
       },
       "tl.so.tilo.passwords.Vault.apply_import.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Brings the rows the person agreed to into the vault, skipping the ones the vault holds."
+        "description": "Brings the rows the person agreed to into the vault, skipping the ones the vault holds. The\nvault reads their passwords from the file."
       },
       "tl.so.tilo.passwords.Vault.clear_import.Arguments": {
         "type": "object",
@@ -55411,39 +56814,29 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "The vault as a browser's CSV, named for what it holds: the person chooses where it goes."
+        "description": "The vault as a browser's CSV: the person chooses where it goes."
       },
       "tl.so.tilo.passwords.Vault.export_backup.Arguments": {
         "type": "object",
-        "properties": {
-          "password": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "password"
-        ],
-        "description": "The vault as an encrypted backup under `password`: the person chooses where it goes."
+        "properties": {},
+        "required": [],
+        "description": "The vault as an encrypted backup under the password the person types twice on the system's\ncard: the person chooses where it goes."
       },
       "tl.so.tilo.passwords.Vault.restore_backup.Arguments": {
         "type": "object",
         "properties": {
-          "password": {
-            "type": "string"
-          },
           "file": {}
         },
         "required": [
-          "password",
           "file"
         ],
-        "description": "Brings the items a backup holds into the vault, and answers how many came in."
+        "description": "Brings the entries a backup holds into the vault with the password the person types on the\nsystem's card, and answers how many came in. An entry the vault already keeps is left as it\nis, so restoring twice adds nothing."
       },
       "tl.so.tilo.passwords.Vault.absorb_device.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Takes into the vault what this device's secret service holds and a workspace may share. Each\nentry is sealed into the vault; the device's authentication material and its Wi-Fi networks\nstay where they are. An entry already taken in is not taken again."
+        "description": "Takes into the vault what this device's secret service holds and a workspace may share. The\ndevice's authentication material and its Wi-Fi networks stay where they are, and each entry\nleaves the device's service once the vault keeps it."
       },
       "tl.so.tilo.passwords.LoginList.$create.Arguments": {
         "type": "object",
@@ -55485,12 +56878,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.LoginList.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
       },
       "tl.so.tilo.passwords.LoginEntry.$create.Arguments": {
         "type": "object",
@@ -55536,29 +56923,20 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.LoginEntry.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
-      "tl.so.tilo.passwords.AskedItem.$create.Arguments": {
+      "tl.so.tilo.passwords.TypedAsk.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.passwords.AskedItem.edit-text.Arguments": {
+      "tl.so.tilo.passwords.TypedAsk.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "title",
-              "kind",
-              "username",
-              "password",
-              "notes"
+              "id",
+              "part"
             ],
             "type": "string"
           },
@@ -55571,7 +56949,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.AskedItem.edit-flag.Arguments": {
+      "tl.so.tilo.passwords.TypedAsk.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -55588,158 +56966,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.AskedItem.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
-      "tl.so.tilo.passwords.ItemsAsk.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.passwords.ItemsAsk.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.ItemsAsk.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.ItemsAsk.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
-      "tl.so.tilo.passwords.BackupAsk.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.passwords.BackupAsk.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "passphrase"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.BackupAsk.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.BackupAsk.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
-      "tl.so.tilo.passwords.RestoreAsk.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.passwords.RestoreAsk.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "url",
-              "passphrase"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.RestoreAsk.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.RestoreAsk.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
       },
       "tl.so.tilo.passwords.AskedFile.$create.Arguments": {
         "type": "object",
@@ -55784,77 +57010,19 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.AskedFile.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
-      "tl.so.tilo.passwords.RemoveAsk.$create.Arguments": {
+      "tl.so.tilo.passwords.ImportAsk.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.passwords.RemoveAsk.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.RemoveAsk.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.RemoveAsk.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
-      "tl.so.tilo.passwords.DeviceItem.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.passwords.DeviceItem.edit-text.Arguments": {
+      "tl.so.tilo.passwords.ImportAsk.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "id",
-              "title",
-              "kind",
-              "username",
-              "password",
-              "notes"
+              "url"
             ],
             "type": "string"
           },
@@ -55867,7 +57035,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.DeviceItem.edit-flag.Arguments": {
+      "tl.so.tilo.passwords.ImportAsk.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -55884,61 +57052,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.DeviceItem.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
-      },
-      "tl.so.tilo.passwords.DeviceAnswer.$create.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The resource is made the first time it is wanted."
-      },
-      "tl.so.tilo.passwords.DeviceAnswer.edit-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [
-              "error"
-            ],
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "field"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.DeviceAnswer.edit-flag.Arguments": {
-        "type": "object",
-        "properties": {
-          "field": {
-            "description": "The name of the field to set.",
-            "enum": [],
-            "type": "string"
-          },
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "field",
-          "value"
-        ],
-        "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.DeviceAnswer.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
       },
       "tl.so.tilo.passwords.CsvRow.$create.Arguments": {
         "type": "object",
@@ -55954,9 +57067,7 @@
             "enum": [
               "title",
               "username",
-              "origin",
-              "password",
-              "notes"
+              "origin"
             ],
             "type": "string"
           },
@@ -55986,12 +57097,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.CsvRow.$scenario.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
       },
       "tl.so.tilo.passwords.RowsAnswer.$create.Arguments": {
         "type": "object",
@@ -56034,11 +57139,130 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.RowsAnswer.$scenario.Arguments": {
+      "tl.so.tilo.passwords.CountAnswer.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "The data the app's shots and demos start from is written."
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.CountAnswer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.CountAnswer.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.RestoredAnswer.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.RestoredAnswer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.RestoredAnswer.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.CarriedAnswer.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.CarriedAnswer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "error"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.CarriedAnswer.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.passwords.UrlAnswer.$create.Arguments": {
         "type": "object",
@@ -56083,11 +57307,21 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.UrlAnswer.$scenario.Arguments": {
+      "tl.so.tilo.passwords.keep_typed.Arguments": {
         "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "The data the app's shots and demos start from is written."
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "part"
+        ],
+        "description": "Hands what the person typed on the system's card to the vault as `part` of the entry `id`:\nthe host passes it on, so it never becomes a value here. Answers why it could not, or nothing."
       },
       "tl.so.tilo.pdf-viewer.Document.$create.Arguments": {
         "type": "object",
@@ -59730,6 +60964,165 @@
         ],
         "description": "Takes each named photo out of the library."
       },
+      "tl.so.tilo.photos.Library.edit_selected.Arguments": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tags": {
+            "choice_labels": {
+              "add": "Every photo gains these names; what it already has stays",
+              "clear": "The value is taken off every photo",
+              "keep": "Each photo keeps the value it has",
+              "remove": "These names are taken off every photo; what it keeps stays",
+              "set": "Every photo is given the same value"
+            },
+            "enum": [
+              "keep",
+              "clear",
+              "set",
+              "add",
+              "remove"
+            ],
+            "type": "string"
+          },
+          "tag_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tags_off": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "people": {
+            "choice_labels": {
+              "add": "Every photo gains these names; what it already has stays",
+              "clear": "The value is taken off every photo",
+              "keep": "Each photo keeps the value it has",
+              "remove": "These names are taken off every photo; what it keeps stays",
+              "set": "Every photo is given the same value"
+            },
+            "enum": [
+              "keep",
+              "clear",
+              "set",
+              "add",
+              "remove"
+            ],
+            "type": "string"
+          },
+          "person_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "people_off": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "folder": {
+            "choice_labels": {
+              "add": "Every photo gains these names; what it already has stays",
+              "clear": "The value is taken off every photo",
+              "keep": "Each photo keeps the value it has",
+              "remove": "These names are taken off every photo; what it keeps stays",
+              "set": "Every photo is given the same value"
+            },
+            "enum": [
+              "keep",
+              "clear",
+              "set",
+              "add",
+              "remove"
+            ],
+            "type": "string"
+          },
+          "folder_text": {
+            "type": "string"
+          },
+          "captured_at": {
+            "choice_labels": {
+              "add": "Every photo gains these names; what it already has stays",
+              "clear": "The value is taken off every photo",
+              "keep": "Each photo keeps the value it has",
+              "remove": "These names are taken off every photo; what it keeps stays",
+              "set": "Every photo is given the same value"
+            },
+            "enum": [
+              "keep",
+              "clear",
+              "set",
+              "add",
+              "remove"
+            ],
+            "type": "string"
+          },
+          "captured_text": {
+            "type": "string"
+          },
+          "description": {
+            "choice_labels": {
+              "add": "Every photo gains these names; what it already has stays",
+              "clear": "The value is taken off every photo",
+              "keep": "Each photo keeps the value it has",
+              "remove": "These names are taken off every photo; what it keeps stays",
+              "set": "Every photo is given the same value"
+            },
+            "enum": [
+              "keep",
+              "clear",
+              "set",
+              "add",
+              "remove"
+            ],
+            "type": "string"
+          },
+          "description_text": {
+            "type": "string"
+          },
+          "place": {
+            "choice_labels": {
+              "add": "Every photo gains these names; what it already has stays",
+              "clear": "The value is taken off every photo",
+              "keep": "Each photo keeps the value it has",
+              "remove": "These names are taken off every photo; what it keeps stays",
+              "set": "Every photo is given the same value"
+            },
+            "enum": [
+              "keep",
+              "clear",
+              "set",
+              "add",
+              "remove"
+            ],
+            "type": "string"
+          },
+          "place_name": {
+            "type": "string"
+          },
+          "latitude": {
+            "type": "number"
+          },
+          "longitude": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "description": "Changes the details of every named photo as one change: a field left `keep` keeps what each\nphoto has, `clear` takes it off all of them, `set` gives them all one value, and tags and\npeople are added or taken off across the selection, so every photo keeps the rest of its own.\nThe selection is names in a list, so a person's selection, an agent's and a program's are the\nsame change, undone at once."
+      },
       "tl.so.tilo.photos.Library.remove.Arguments": {
         "type": "object",
         "properties": {
@@ -62747,6 +64140,65 @@
         ],
         "description": "Takes in a theme saved with Export, from this workspace or another: every role, tuned value\nand glass shader, once it is admitted and keeps every contrast floor. Importing names it by\nits own name, so what a person exported under a name comes back under one."
       },
+      "tl.so.tilo.settings.move_screen.Arguments": {
+        "type": "object",
+        "properties": {
+          "screens": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.device.Displays",
+            "type": "object"
+          },
+          "picked": {
+            "type": "integer"
+          },
+          "start": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "let_go": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "screens",
+          "picked",
+          "start",
+          "let_go"
+        ],
+        "description": "Move the screen picked to where the pointer was let go, in the desktop's own pixels, snapped\nto a small grid: a drag too small to mean anything is not a change."
+      },
       "tl.so.tilo.settings.open_pane.Arguments": {
         "type": "object",
         "properties": {
@@ -62794,6 +64246,58 @@
           "percent"
         ],
         "description": "The memory this device keeps free for the people at it."
+      },
+      "tl.so.tilo.settings.review_contrast.Arguments": {
+        "type": "object",
+        "properties": {
+          "theme": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "value": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "theme",
+          "role",
+          "value"
+        ],
+        "description": "Lists every contrast floor the theme would miss with `role` at the control's value, so its\neditor shows each pairing under its floor while the theme is tuned. The theme keeps the\nroles it admits; a value that would break a floor is refused, and this says which pairs it\nwould break."
+      },
+      "tl.so.tilo.settings.review_contrast_on.Arguments": {
+        "type": "object",
+        "properties": {
+          "theme": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "theme",
+          "role",
+          "on"
+        ],
+        "description": "The same after a switch was tried: its on is `1` and its off `0`."
+      },
+      "tl.so.tilo.settings.review_contrast_now.Arguments": {
+        "type": "object",
+        "properties": {
+          "theme": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "theme"
+        ],
+        "description": "Records what the theme misses as it stands, when its editor opens or its polarity changes,\nbefore any control has carried a value."
       },
       "tl.so.tilo.settings.export_theme.Arguments": {
         "type": "object",
@@ -67425,6 +68929,34 @@
         "required": [],
         "description": "Puts the surface away once a recent resource is opened again beside the window in front, by\nthe same `open` an agent and a reference's press run."
       },
+      "tl.so.tilo.shell.step_level.Arguments": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "step"
+        ],
+        "description": "Steps the value of the row `step` names (`1` up, `-1` down), as Left and Right do on an\nadjustable row: the volume or the brightness in front, by a twentieth."
+      },
+      "tl.so.tilo.shell.choose_launcher_row_as.Arguments": {
+        "type": "object",
+        "properties": {
+          "packed": {
+            "type": "string"
+          },
+          "current": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "packed",
+          "current"
+        ],
+        "description": "What choosing a row with a modifier held does: a row the search found opens the way `here`\n(a tab in front), `beside` (a window beside it) or `more` (the row's own way) names, and\nevery other row opens as it does plainly."
+      },
       "tl.so.tilo.shell.choose_launcher_row.Arguments": {
         "type": "object",
         "properties": {
@@ -67777,6 +69309,49 @@
           "w"
         ],
         "description": "Give every window of the row the same share of it: what \"every window the same\" does where a\nperson sees their windows side by side in a band."
+      },
+      "tl.so.tilo.shell.place_widget.Arguments": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "choice_labels": {
+              "calendar": "Calendar",
+              "music": "Music",
+              "system_monitor": "System load",
+              "team": "People here"
+            },
+            "enum": [
+              "music",
+              "team",
+              "calendar",
+              "system_monitor"
+            ],
+            "type": "string"
+          },
+          "at": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "across": {
+            "type": "number"
+          },
+          "down": {
+            "type": "number"
+          },
+          "display": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "at",
+          "across",
+          "down",
+          "display"
+        ],
+        "description": "Puts the widget `kind` where a drag let go, at `at` on this display: the place the person\nleft it at, as fractions of the room it can move in there."
       },
       "tl.so.tilo.shortcuts.Param.$create.Arguments": {
         "type": "object",
@@ -72478,6 +74053,18 @@
           "fill"
         ],
         "description": "Copies the filled body, counts the use, and puts the filling away."
+      },
+      "tl.so.tilo.snippets.copy_text.Arguments": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "description": "Puts `text` on the clipboard: as a secret, which histories do not keep and which leaves the\nclipboard after a while, when it looks like it carries a credential, so an API key does not\nstay there for whatever is pasted next."
       },
       "tl.so.tilo.speed-test.SpeedTest.$create.Arguments": {
         "type": "object",
@@ -78459,37 +80046,49 @@
         ],
         "description": "Opens a link of the scheme this client claims: the video (`tube:watch?v=<key>`), channel\n(`tube:channel?key=<key>`) or playlist (`tube:playlist?key=<key>`) it names, or the search it\nasks for (`tube:search?q=<query>`). A shell hands a link here whether or not a window of the\nclient is open, and what this returns opens in the window. The host publishes it as the\nsystem's `open-link` on the client's root, which is what a shell hands a link to."
       },
-      "tl.so.tilo.tube.YouTube.import_history.Arguments": {
+      "tl.so.tilo.tube.YouTube.like_comment.Arguments": {
         "type": "object",
         "properties": {
-          "watched": {
-            "items": {
-              "items": {},
-              "type": "array"
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
             },
-            "type": "array"
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.tube.Comment",
+            "type": "object"
+          },
+          "liked": {
+            "type": "boolean"
           }
         },
         "required": [
-          "watched"
+          "c"
         ],
-        "description": "Imports a watch history another device kept, in the format the native app's own history and\nits `import` call used: rows of `[a video's key, when it was watched in milliseconds since\n1970]`. A video the person already watched keeps its place; each one imported becomes part of\ntheir own history, which keeps its newest thousand videos."
-      },
-      "tl.so.tilo.tube.YouTube.import_previous.Arguments": {
-        "type": "object",
-        "properties": {
-          "previous": {
-            "items": {
-              "items": {},
-              "type": "array"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "previous"
-        ],
-        "description": "Imports the watch history an earlier version of this app kept for the person, in that\nversion's own format: rows of `[a video's key, when it was watched in milliseconds since 1970,\nwhere it was left in milliseconds or nothing]`. Nothing is imported once the person deleted\ntheir history, since the delete is theirs to keep; a video already in it keeps its place."
+        "description": "Likes a comment, or takes the like back: the person's own, kept with the workspace, since\nYouTube lets no app act as them."
       },
       "tl.so.tilo.tube.YouTube.play_again.Arguments": {
         "type": "object",
@@ -81331,44 +82930,15 @@
             "resource_kind": "tl.so.tilo.video-editor.Media",
             "type": "object"
           },
-          "probed": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.video-editor.Probed",
-            "type": "object"
+          "said": {
+            "type": "string"
           }
         },
         "required": [
           "m",
-          "probed"
+          "said"
         ],
-        "description": "Writes what the device read of a source onto it: what it is, how long it runs, its size and\nrate, and whether it carries sound."
+        "description": "Writes what the device read of a source onto it, as the engine said it: what it is, how long\nit runs, its size and rate, and whether it carries sound. An action is handed the engine's\nwords rather than the decoded `Probed`, which is a value no resource holds."
       },
       "tl.so.tilo.video-editor.Project.refresh_source.Arguments": {
         "type": "object",
@@ -84432,8 +86002,7 @@
               "region",
               "country",
               "country_code",
-              "timezone",
-              "trouble"
+              "timezone"
             ],
             "type": "string"
           },
@@ -84447,6 +86016,57 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.weather.Place.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.weather.Place.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.weather.PlaceReading.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.weather.PlaceReading.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "place",
+              "trouble"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.weather.PlaceReading.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -84468,19 +86088,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.weather.Place.$scenario.Arguments": {
+      "tl.so.tilo.weather.PlaceReading.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
-      "tl.so.tilo.weather.Place.read_place.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Reads one place's forecast and air quality. One failing leaves the other's answer standing,\nand a place the service did not answer keeps what it had and says why."
-      },
-      "tl.so.tilo.weather.Place.apply_forecast.Arguments": {
+      "tl.so.tilo.weather.PlaceReading.apply_forecast.Arguments": {
         "type": "object",
         "properties": {
           "body": {
@@ -84490,7 +86104,7 @@
         "required": [
           "body"
         ],
-        "description": "The forecast a service answered, written into the place: its current reading, a day of hours\nand a week of days. False when the body is not a forecast the service could have sent."
+        "description": "The forecast a service answered, written into this device's reading of the place: its\ncurrent reading, a day of hours and a week of days. False when the body is not a forecast\nthe service could have sent."
       },
       "tl.so.tilo.weather.Refresh.$create.Arguments": {
         "type": "object",
@@ -85086,6 +86700,135 @@
         ],
         "description": "Takes the row a person picked from the search: saves the place and empties the search."
       },
+      "tl.so.tilo.weather.Readings.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.weather.Readings.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.weather.Readings.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.weather.Readings.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.weather.Readings.reading_for.Arguments": {
+        "type": "object",
+        "properties": {
+          "place": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.weather.Place",
+            "type": "object"
+          }
+        },
+        "required": [
+          "place"
+        ],
+        "description": "What this device read of `place`, made the first time something writes it."
+      },
+      "tl.so.tilo.weather.Readings.read_place.Arguments": {
+        "type": "object",
+        "properties": {
+          "place": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.weather.Place",
+            "type": "object"
+          }
+        },
+        "required": [
+          "place"
+        ],
+        "description": "Reads one place's forecast and air quality. One failing leaves the other's answer standing,\nand a place the service did not answer keeps what it had and says why."
+      },
       "tl.so.tilo.windows.Windows.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -85179,7 +86922,36 @@
         "type": "object",
         "properties": {
           "program": {
-            "type": "string"
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.device.WindowsApp",
+            "type": "object"
           },
           "file": {}
         },
@@ -85811,6 +87583,28 @@
         ],
         "description": ""
       },
+      "settings.appearance.review-theme.Arguments": {
+        "type": "object",
+        "properties": {
+          "theme": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "theme",
+          "role"
+        ],
+        "description": ""
+      },
       "settings.accessibility.step-magnifier.Arguments": {
         "type": "object",
         "properties": {
@@ -86170,6 +87964,78 @@
         ],
         "description": ""
       },
+      "settings.widgets.set-widget-enabled.Arguments": {
+        "type": "object",
+        "properties": {
+          "widget": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "widget",
+          "enabled"
+        ],
+        "description": ""
+      },
+      "settings.widgets.set-widget-show.Arguments": {
+        "type": "object",
+        "properties": {
+          "widget": {
+            "type": "string"
+          },
+          "show": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "widget",
+          "show"
+        ],
+        "description": ""
+      },
+      "settings.widgets.place-widget.Arguments": {
+        "type": "object",
+        "properties": {
+          "widget": {
+            "type": "string"
+          },
+          "display": {
+            "type": "string"
+          },
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "widget",
+          "display",
+          "x",
+          "y"
+        ],
+        "description": ""
+      },
+      "settings.widgets.resize-widget.Arguments": {
+        "type": "object",
+        "properties": {
+          "widget": {
+            "type": "string"
+          },
+          "width": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "widget",
+          "width"
+        ],
+        "description": ""
+      },
       "settings.updates.record-automatic-updates.Arguments": {
         "type": "object",
         "properties": {
@@ -86498,7 +88364,71 @@
       "settings.display-change.request.Arguments": {
         "type": "object",
         "properties": {
-          "change": {}
+          "change": {
+            "additionalProperties": false,
+            "properties": {
+              "candidate": {
+                "additionalProperties": false,
+                "properties": {
+                  "outputs": {
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              },
+              "deadline_unix_ms": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "message": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "previous": {
+                "additionalProperties": false,
+                "properties": {
+                  "outputs": {
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              },
+              "set": {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "members": {
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              },
+              "state": {
+                "enum": [
+                  "requested",
+                  "awaiting_confirmation",
+                  "confirm_requested",
+                  "revert_requested",
+                  "confirmed",
+                  "reverted",
+                  "rejected"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
         },
         "required": [
           "change"
@@ -89572,6 +91502,24 @@
     {
       "app": "so.tilo.browser",
       "resource": "tl.so.tilo.browser.Page",
+      "action": "click_extension",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.click_extension.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "choose_extension_notice",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.choose_extension_notice.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "dismiss_extension_notice",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.dismiss_extension_notice.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
       "action": "remember_extensions",
       "arguments": "#/components/schemas/tl.so.tilo.browser.Page.remember_extensions.Arguments"
     },
@@ -89814,6 +91762,54 @@
       "resource": "tl.so.tilo.browser.HistoryEntry",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.browser.HistoryEntry.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.PageButton",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.PageButton.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.PageButton",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.PageButton.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.PageButton",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.PageButton.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.PageButton",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.PageButton.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.ExtensionNotice",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.ExtensionNotice.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.ExtensionNotice",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.ExtensionNotice.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.ExtensionNotice",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.ExtensionNotice.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.ExtensionNotice",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.ExtensionNotice.$scenario.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -90279,6 +92275,36 @@
     },
     {
       "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Account",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Account.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Account",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Account.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Account",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Account.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Account",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Account.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Account",
+      "action": "sync_account",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Account.sync_account.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
       "resource": "tl.so.tilo.calendar.Project",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Project.$create.Arguments"
@@ -90538,6 +92564,12 @@
     {
       "app": "so.tilo.calendar",
       "resource": "tl.so.tilo.calendar.Event",
+      "action": "toggle_weekday",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.toggle_weekday.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
       "action": "repeat_off",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat_off.Arguments"
     },
@@ -90610,6 +92642,12 @@
     {
       "app": "so.tilo.calendar",
       "resource": "tl.so.tilo.calendar.Event",
+      "action": "end_on_day",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.end_on_day.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
       "action": "repeat",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.repeat.Arguments"
     },
@@ -90654,6 +92692,12 @@
       "resource": "tl.so.tilo.calendar.Event",
       "action": "answer",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.answer.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Event",
+      "action": "answer_and_tell",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Event.answer_and_tell.Arguments"
     },
     {
       "app": "so.tilo.calendar",
@@ -90850,6 +92894,12 @@
     {
       "app": "so.tilo.calendar",
       "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "discard_draft",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.discard_draft.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
       "action": "previous_week",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.previous_week.Arguments"
     },
@@ -90882,6 +92932,12 @@
       "resource": "tl.so.tilo.calendar.Calendars",
       "action": "export_calendar",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.export_calendar.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "take_invitation",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.take_invitation.Arguments"
     },
     {
       "app": "so.tilo.calendar",
@@ -92679,6 +94735,12 @@
     },
     {
       "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Conversations",
+      "action": "report_person",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Conversations.report_person.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Category",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Category.$create.Arguments"
@@ -92848,6 +94910,12 @@
     {
       "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.TextChannel",
+      "action": "continue_answer",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.continue_answer.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
       "action": "delete",
       "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.delete.Arguments"
     },
@@ -92979,6 +95047,12 @@
     },
     {
       "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Message",
+      "action": "copy_text",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Message.copy_text.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Report",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Report.$create.Arguments"
@@ -93006,6 +95080,12 @@
       "resource": "tl.so.tilo.chat.Report",
       "action": "decide",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Report.decide.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Report",
+      "action": "overturn",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Report.overturn.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -93054,6 +95134,12 @@
       "resource": "tl.so.tilo.chat.Thread",
       "action": "relay",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.relay.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
+      "action": "continue_answer",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.continue_answer.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -93132,6 +95218,12 @@
       "resource": "tl.so.tilo.chat.Direct",
       "action": "relay",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.relay.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
+      "action": "continue_answer",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.continue_answer.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -95248,8 +97340,8 @@
     {
       "app": "so.tilo.code-editor",
       "resource": "tl.so.tilo.code-editor.Project",
-      "action": "find_in_file",
-      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.find_in_file.Arguments"
+      "action": "find_in_window",
+      "arguments": "#/components/schemas/tl.so.tilo.code-editor.Project.find_in_window.Arguments"
     },
     {
       "app": "so.tilo.code-editor",
@@ -95680,6 +97772,12 @@
     {
       "app": "so.tilo.contacts",
       "resource": "tl.so.tilo.contacts.Contact",
+      "action": "keep_birthday_year",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.keep_birthday_year.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Contact",
       "action": "ungroup",
       "arguments": "#/components/schemas/tl.so.tilo.contacts.Contact.ungroup.Arguments"
     },
@@ -95712,6 +97810,54 @@
       "resource": "tl.so.tilo.contacts.Group",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.contacts.Group.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.ImportCard",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.ImportCard.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.ImportCard",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.ImportCard.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.ImportCard",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.ImportCard.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.ImportCard",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.ImportCard.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.ImportReport",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.ImportReport.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.ImportReport",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.ImportReport.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.ImportReport",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.ImportReport.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.ImportReport",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.ImportReport.$scenario.Arguments"
     },
     {
       "app": "so.tilo.contacts",
@@ -95782,6 +97928,12 @@
     {
       "app": "so.tilo.contacts",
       "resource": "tl.so.tilo.contacts.Book",
+      "action": "export_vcard_content",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.export_vcard_content.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
       "action": "import_vcard",
       "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.import_vcard.Arguments"
     },
@@ -95794,8 +97946,50 @@
     {
       "app": "so.tilo.contacts",
       "resource": "tl.so.tilo.contacts.Book",
+      "action": "refuse_import",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.refuse_import.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "report_import",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.report_import.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "dismiss_import",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.dismiss_import.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "file_card",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.file_card.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "take_card",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.take_card.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
       "action": "add_card",
       "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.add_card.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "import_as_new",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.import_as_new.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "tl.so.tilo.contacts.Book",
+      "action": "keep_existing",
+      "arguments": "#/components/schemas/tl.so.tilo.contacts.Book.keep_existing.Arguments"
     },
     {
       "app": "so.tilo.contacts",
@@ -95928,6 +98122,36 @@
       "resource": "tl.so.tilo.containers.Containers",
       "action": "create_container",
       "arguments": "#/components/schemas/tl.so.tilo.containers.Containers.create_container.Arguments"
+    },
+    {
+      "app": "so.tilo.containers",
+      "resource": "tl.so.tilo.containers.Containers",
+      "action": "show_containers",
+      "arguments": "#/components/schemas/tl.so.tilo.containers.Containers.show_containers.Arguments"
+    },
+    {
+      "app": "so.tilo.containers",
+      "resource": "tl.so.tilo.containers.Containers",
+      "action": "show_images",
+      "arguments": "#/components/schemas/tl.so.tilo.containers.Containers.show_images.Arguments"
+    },
+    {
+      "app": "so.tilo.containers",
+      "resource": "tl.so.tilo.containers.Containers",
+      "action": "show_volumes",
+      "arguments": "#/components/schemas/tl.so.tilo.containers.Containers.show_volumes.Arguments"
+    },
+    {
+      "app": "so.tilo.containers",
+      "resource": "tl.so.tilo.containers.Containers",
+      "action": "show_distrobox",
+      "arguments": "#/components/schemas/tl.so.tilo.containers.Containers.show_distrobox.Arguments"
+    },
+    {
+      "app": "so.tilo.containers",
+      "resource": "tl.so.tilo.containers.Containers",
+      "action": "new_container_form",
+      "arguments": "#/components/schemas/tl.so.tilo.containers.Containers.new_container_form.Arguments"
     },
     {
       "app": "so.tilo.containers",
@@ -96640,6 +98864,12 @@
     {
       "app": "so.tilo.db-client",
       "resource": "tl.so.tilo.db-client.Session",
+      "action": "clear_columns",
+      "arguments": "#/components/schemas/tl.so.tilo.db-client.Session.clear_columns.Arguments"
+    },
+    {
+      "app": "so.tilo.db-client",
+      "resource": "tl.so.tilo.db-client.Session",
       "action": "clear_rows",
       "arguments": "#/components/schemas/tl.so.tilo.db-client.Session.clear_rows.Arguments"
     },
@@ -96930,6 +99160,12 @@
       "resource": "tl.so.tilo.diffmerge.Session",
       "action": "open_folder_entry",
       "arguments": "#/components/schemas/tl.so.tilo.diffmerge.Session.open_folder_entry.Arguments"
+    },
+    {
+      "app": "so.tilo.diffmerge",
+      "resource": "tl.so.tilo.diffmerge.Session",
+      "action": "open_on_key",
+      "arguments": "#/components/schemas/tl.so.tilo.diffmerge.Session.open_on_key.Arguments"
     },
     {
       "app": "so.tilo.diffmerge",
@@ -101074,6 +103310,42 @@
     {
       "app": "so.tilo.lang.gallery",
       "resource": "tl.so.tilo.lang.gallery",
+      "action": "mark_chosen",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.mark_chosen.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.gallery",
+      "resource": "tl.so.tilo.lang.gallery",
+      "action": "mark_edit",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.mark_edit.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.gallery",
+      "resource": "tl.so.tilo.lang.gallery",
+      "action": "mark_byte",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.mark_byte.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.gallery",
+      "resource": "tl.so.tilo.lang.gallery",
+      "action": "mark_key",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.mark_key.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.gallery",
+      "resource": "tl.so.tilo.lang.gallery",
+      "action": "mark_wheel",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.mark_wheel.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.gallery",
+      "resource": "tl.so.tilo.lang.gallery",
+      "action": "mark_row",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.mark_row.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.gallery",
+      "resource": "tl.so.tilo.lang.gallery",
       "action": "reverted",
       "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.reverted.Arguments"
     },
@@ -101100,6 +103372,12 @@
       "resource": "tl.so.tilo.lang.gallery",
       "action": "mark_move",
       "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.mark_move.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.gallery",
+      "resource": "tl.so.tilo.lang.gallery",
+      "action": "mark_paint",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.mark_paint.Arguments"
     },
     {
       "app": "so.tilo.lang.gallery",
@@ -101632,6 +103910,30 @@
     {
       "app": "so.tilo.git-client",
       "resource": "tl.so.tilo.git-client.Repository",
+      "action": "run-approved-check",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.Repository.run-approved-check.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.Repository",
+      "action": "poll_check",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.Repository.poll_check.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.Repository",
+      "action": "cancel_check",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.Repository.cancel_check.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.Repository",
+      "action": "clear_check",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.Repository.clear_check.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.Repository",
       "action": "read_commit",
       "arguments": "#/components/schemas/tl.so.tilo.git-client.Repository.read_commit.Arguments"
     },
@@ -101676,6 +103978,30 @@
       "resource": "tl.so.tilo.git-client.Repository",
       "action": "asks",
       "arguments": "#/components/schemas/tl.so.tilo.git-client.Repository.asks.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.ApprovedCheck",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.ApprovedCheck.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.ApprovedCheck",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.ApprovedCheck.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.ApprovedCheck",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.ApprovedCheck.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.ApprovedCheck",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.ApprovedCheck.$scenario.Arguments"
     },
     {
       "app": "so.tilo.git-client",
@@ -102180,6 +104506,30 @@
       "resource": "tl.so.tilo.git-client.ResolveAsk",
       "action": "$scenario",
       "arguments": "#/components/schemas/tl.so.tilo.git-client.ResolveAsk.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.CheckStatus",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.CheckStatus.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.CheckStatus",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.CheckStatus.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.CheckStatus",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.CheckStatus.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.CheckStatus",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.CheckStatus.$scenario.Arguments"
     },
     {
       "app": "so.tilo.git-client",
@@ -103650,6 +106000,12 @@
       "resource": "tl.so.tilo.mail.Mail",
       "action": "new_draft",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.new_draft.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
+      "action": "open_link",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.open_link.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -105232,6 +107588,12 @@
     {
       "app": "so.tilo.notes",
       "resource": "tl.so.tilo.notes.Notebook",
+      "action": "search_notebook",
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.search_notebook.Arguments"
+    },
+    {
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "move_to",
       "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.move_to.Arguments"
     },
@@ -105418,14 +107780,38 @@
     {
       "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.Item",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.$scenario.Arguments"
+      "action": "keep_facts",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.keep_facts.Arguments"
     },
     {
       "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.Item",
-      "action": "save_editor",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.save_editor.Arguments"
+      "action": "set_username",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.set_username.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
+      "action": "change_secret",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.change_secret.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
+      "action": "write_note",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.write_note.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
+      "action": "add_field",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.add_field.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
+      "action": "remove_field",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.remove_field.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -105466,6 +107852,18 @@
     {
       "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.Item",
+      "action": "rename",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.rename.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
+      "action": "set_kind",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.set_kind.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
       "action": "copy_secret",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.copy_secret.Arguments"
     },
@@ -105484,26 +107882,8 @@
     {
       "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.Item",
-      "action": "notice_age",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.notice_age.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.Item",
-      "action": "write_origins",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.write_origins.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.Item",
-      "action": "write_tags",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.write_tags.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.Item",
-      "action": "write_fields",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.write_fields.Arguments"
+      "action": "carry",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.carry.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -105525,12 +107905,6 @@
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.ImportRow",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.ImportRow.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.Vault",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.$create.Arguments"
@@ -105546,12 +107920,6 @@
       "resource": "tl.so.tilo.passwords.Vault",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.Vault",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.$scenario.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -105576,6 +107944,12 @@
       "resource": "tl.so.tilo.passwords.Vault",
       "action": "delete",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.delete.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Vault",
+      "action": "settle",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.settle.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -105645,12 +108019,6 @@
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.LoginList",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.LoginList.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.LoginEntry",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.LoginEntry.$create.Arguments"
@@ -105669,105 +108037,21 @@
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.LoginEntry",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.LoginEntry.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.AskedItem",
+      "resource": "tl.so.tilo.passwords.TypedAsk",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.AskedItem.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.TypedAsk.$create.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.AskedItem",
+      "resource": "tl.so.tilo.passwords.TypedAsk",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.AskedItem.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.TypedAsk.edit-text.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.AskedItem",
+      "resource": "tl.so.tilo.passwords.TypedAsk",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.AskedItem.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.AskedItem",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.AskedItem.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.ItemsAsk",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.ItemsAsk.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.ItemsAsk",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.ItemsAsk.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.ItemsAsk",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.ItemsAsk.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.ItemsAsk",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.ItemsAsk.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.BackupAsk",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.BackupAsk.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.BackupAsk",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.BackupAsk.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.BackupAsk",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.BackupAsk.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.BackupAsk",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.BackupAsk.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RestoreAsk",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RestoreAsk.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RestoreAsk",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RestoreAsk.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RestoreAsk",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RestoreAsk.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RestoreAsk",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RestoreAsk.$scenario.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.TypedAsk.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -105789,81 +108073,21 @@
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.AskedFile",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.AskedFile.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RemoveAsk",
+      "resource": "tl.so.tilo.passwords.ImportAsk",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RemoveAsk.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.ImportAsk.$create.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RemoveAsk",
+      "resource": "tl.so.tilo.passwords.ImportAsk",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RemoveAsk.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.ImportAsk.edit-text.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RemoveAsk",
+      "resource": "tl.so.tilo.passwords.ImportAsk",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RemoveAsk.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RemoveAsk",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RemoveAsk.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.DeviceItem",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceItem.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.DeviceItem",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceItem.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.DeviceItem",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceItem.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.DeviceItem",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceItem.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.DeviceAnswer",
-      "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceAnswer.$create.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.DeviceAnswer",
-      "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceAnswer.edit-text.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.DeviceAnswer",
-      "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceAnswer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.DeviceAnswer",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceAnswer.$scenario.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.ImportAsk.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -105885,12 +108109,6 @@
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.CsvRow",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.CsvRow.$scenario.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.RowsAnswer",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.RowsAnswer.$create.Arguments"
@@ -105909,9 +108127,57 @@
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RowsAnswer",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RowsAnswer.$scenario.Arguments"
+      "resource": "tl.so.tilo.passwords.CountAnswer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.CountAnswer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.CountAnswer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.CountAnswer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.CountAnswer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.CountAnswer.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.RestoredAnswer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.RestoredAnswer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.RestoredAnswer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.RestoredAnswer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.RestoredAnswer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.RestoredAnswer.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.CarriedAnswer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.CarriedAnswer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.CarriedAnswer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.CarriedAnswer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.CarriedAnswer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.CarriedAnswer.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -105933,9 +108199,9 @@
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.UrlAnswer",
-      "action": "$scenario",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.UrlAnswer.$scenario.Arguments"
+      "resource": "tl.so.tilo.passwords",
+      "action": "keep_typed",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.keep_typed.Arguments"
     },
     {
       "app": "so.tilo.pdf-viewer",
@@ -107064,6 +109330,12 @@
       "resource": "tl.so.tilo.photos.Library",
       "action": "remove_selected",
       "arguments": "#/components/schemas/tl.so.tilo.photos.Library.remove_selected.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "edit_selected",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.edit_selected.Arguments"
     },
     {
       "app": "so.tilo.photos",
@@ -108286,6 +110558,12 @@
     {
       "app": "so.tilo.settings",
       "resource": "tl.so.tilo.settings",
+      "action": "move_screen",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.move_screen.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings",
       "action": "open_pane",
       "arguments": "#/components/schemas/tl.so.tilo.settings.open_pane.Arguments"
     },
@@ -108306,6 +110584,24 @@
       "resource": "tl.so.tilo.settings",
       "action": "set_memory_room",
       "arguments": "#/components/schemas/tl.so.tilo.settings.set_memory_room.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings",
+      "action": "review_contrast",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.review_contrast.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings",
+      "action": "review_contrast_on",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.review_contrast_on.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "tl.so.tilo.settings",
+      "action": "review_contrast_now",
+      "arguments": "#/components/schemas/tl.so.tilo.settings.review_contrast_now.Arguments"
     },
     {
       "app": "so.tilo.settings",
@@ -109738,6 +112034,18 @@
     {
       "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell",
+      "action": "step_level",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.step_level.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell",
+      "action": "choose_launcher_row_as",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.choose_launcher_row_as.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell",
       "action": "choose_launcher_row",
       "arguments": "#/components/schemas/tl.so.tilo.shell.choose_launcher_row.Arguments"
     },
@@ -109806,6 +112114,12 @@
       "resource": "tl.so.tilo.shell",
       "action": "equal_widths",
       "arguments": "#/components/schemas/tl.so.tilo.shell.equal_widths.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell",
+      "action": "place_widget",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.place_widget.Arguments"
     },
     {
       "app": "so.tilo.shortcuts",
@@ -110982,6 +113296,12 @@
       "resource": "tl.so.tilo.snippets.Library",
       "action": "copy_filled",
       "arguments": "#/components/schemas/tl.so.tilo.snippets.Library.copy_filled.Arguments"
+    },
+    {
+      "app": "so.tilo.snippets",
+      "resource": "tl.so.tilo.snippets",
+      "action": "copy_text",
+      "arguments": "#/components/schemas/tl.so.tilo.snippets.copy_text.Arguments"
     },
     {
       "app": "so.tilo.speed-test",
@@ -113308,14 +115628,8 @@
     {
       "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.YouTube",
-      "action": "import_history",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.import_history.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tl.so.tilo.tube.YouTube",
-      "action": "import_previous",
-      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.import_previous.Arguments"
+      "action": "like_comment",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.like_comment.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -115359,15 +117673,33 @@
     },
     {
       "app": "so.tilo.weather",
-      "resource": "tl.so.tilo.weather.Place",
-      "action": "read_place",
-      "arguments": "#/components/schemas/tl.so.tilo.weather.Place.read_place.Arguments"
+      "resource": "tl.so.tilo.weather.PlaceReading",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.PlaceReading.$create.Arguments"
     },
     {
       "app": "so.tilo.weather",
-      "resource": "tl.so.tilo.weather.Place",
+      "resource": "tl.so.tilo.weather.PlaceReading",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.PlaceReading.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.PlaceReading",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.PlaceReading.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.PlaceReading",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.PlaceReading.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.PlaceReading",
       "action": "apply_forecast",
-      "arguments": "#/components/schemas/tl.so.tilo.weather.Place.apply_forecast.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.weather.PlaceReading.apply_forecast.Arguments"
     },
     {
       "app": "so.tilo.weather",
@@ -115542,6 +117874,42 @@
       "resource": "tl.so.tilo.weather.Locations",
       "action": "accept_found",
       "arguments": "#/components/schemas/tl.so.tilo.weather.Locations.accept_found.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.Readings",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.Readings.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.Readings",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.Readings.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.Readings",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.Readings.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.Readings",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.Readings.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.Readings",
+      "action": "reading_for",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.Readings.reading_for.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.Readings",
+      "action": "read_place",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.Readings.read_place.Arguments"
     },
     {
       "app": "so.tilo.windows",
@@ -115959,6 +118327,12 @@
     },
     {
       "app": "so.tilo.settings.sections",
+      "resource": "settings.appearance",
+      "action": "review-theme",
+      "arguments": "#/components/schemas/settings.appearance.review-theme.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
       "resource": "settings.accessibility",
       "action": "step-magnifier",
       "arguments": "#/components/schemas/settings.accessibility.step-magnifier.Arguments"
@@ -116082,6 +118456,30 @@
       "resource": "settings.power",
       "action": "set-suspend-on-battery",
       "arguments": "#/components/schemas/settings.power.set-suspend-on-battery.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.widgets",
+      "action": "set-widget-enabled",
+      "arguments": "#/components/schemas/settings.widgets.set-widget-enabled.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.widgets",
+      "action": "set-widget-show",
+      "arguments": "#/components/schemas/settings.widgets.set-widget-show.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.widgets",
+      "action": "place-widget",
+      "arguments": "#/components/schemas/settings.widgets.place-widget.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.widgets",
+      "action": "resize-widget",
+      "arguments": "#/components/schemas/settings.widgets.resize-widget.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",

@@ -122,7 +122,7 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Block(Resource):
     """Block — `tl.so.tilo.diffmerge.Block`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     csjrkfwp: int  # first
     cjhoemux: int  # last
     w2shjabm: str  # kind
@@ -131,7 +131,7 @@ class Block(Resource):
 
 class Hunk(Resource):
     """Hunk — `tl.so.tilo.diffmerge.Hunk`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     @property
     def _47hfb7ea(self) -> int:
         """index (`47hfb7ea` on the wire)."""
@@ -155,7 +155,7 @@ class Hunk(Resource):
 
 class FolderEntry(Resource):
     """FolderEntry — `tl.so.tilo.diffmerge.FolderEntry`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     usttvqtv: str  # path
     q6kpasi4: str  # kind
     u5jul62r: int  # left_len
@@ -172,7 +172,7 @@ class FolderEntry(Resource):
 
 class Session(Resource):
     """Session — `tl.so.tilo.diffmerge.Session`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     j6uarraa: str  # name
     odsfatc7: str  # left_label
     kcdcrgzi: str  # left
@@ -411,6 +411,14 @@ class Session(Resource):
         """Opens one file of the folder comparison: both its sides when both trees hold it, else the one that does, against nothing."""
         return self.action("open_folder_entry", entry=entry)
 
+    def open_on_key(self,
+        *,
+        entry: FolderEntry,
+        key: str,
+    ) -> Session:
+        """Opens the file of the row the person pressed, for the key that asked: Enter opens it."""
+        return self.action("open_on_key", entry=entry, key=key)
+
     def edit_merged(self, *, text: str) -> None:
         """Replaces the merged result: what a person types into it, and what an agent or a script writes when the result is theirs to change. Once it is not what the sides compose, taking a side would throw the edit away, so the rest is resolved in the text."""
         return self.action("edit_merged", text=text)
@@ -461,12 +469,12 @@ class Session(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"open_comparison", "chosen_left", "chosen_right", "refresh_comparison", "open_merge", "refresh_merge", "take_ours", "take_ours_many", "take_theirs", "take_theirs_many", "take_both", "take_both_many", "resolve", "resolve_many", "take", "compose_into", "compare_folders", "compare_folders_many", "hold_folders", "chosen_folder_left", "chosen_folder_left_many", "chosen_folder_right", "chosen_folder_right_many", "open_folder_entry", "edit_merged", "edit_merged_many", "save_merged", "save_merged_many", "save_bytes", "fill_sample", "fill_sample_many", "sample_folders", "sample_folders_many", "refuse", "clear_notice", "clear_notice_many"})
+    __actions__ = frozenset({"open_comparison", "chosen_left", "chosen_right", "refresh_comparison", "open_merge", "refresh_merge", "take_ours", "take_ours_many", "take_theirs", "take_theirs_many", "take_both", "take_both_many", "resolve", "resolve_many", "take", "compose_into", "compare_folders", "compare_folders_many", "hold_folders", "chosen_folder_left", "chosen_folder_left_many", "chosen_folder_right", "chosen_folder_right_many", "open_folder_entry", "open_on_key", "edit_merged", "edit_merged_many", "save_merged", "save_merged_many", "save_bytes", "fill_sample", "fill_sample_many", "sample_folders", "sample_folders_many", "refuse", "clear_notice", "clear_notice_many"})
 
 
 class Library(Resource):
     """Library — `tl.so.tilo.diffmerge.Library`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     tzmh25hr: list[Entry[Session]]  # sessions
 
     def new_comparison(self) -> Session:
@@ -517,7 +525,7 @@ class Library(Resource):
 
 class OpenAsk(Resource):
     """OpenAsk — `tl.so.tilo.diffmerge.OpenAsk`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     ym5ajbxk: str  # path
     ou5hf2bx: str  # address
     qqwavfqy: str  # name
@@ -525,14 +533,14 @@ class OpenAsk(Resource):
 
 class OpenedAnswer(Resource):
     """OpenedAnswer — `tl.so.tilo.diffmerge.OpenedAnswer`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     f4rrknsp: str  # label
     ced6vdp4: str  # text
 
 
 class DiffAsk(Resource):
     """DiffAsk — `tl.so.tilo.diffmerge.DiffAsk`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     vz6ogvrp: str  # left
     @property
     def _3upzelrr(self) -> str:
@@ -546,7 +554,7 @@ class DiffAsk(Resource):
 
 class DiffAnswer(Resource):
     """DiffAnswer — `tl.so.tilo.diffmerge.DiffAnswer`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     hahxq35a: list[int]  # block_firsts
     jx4fqkfc: list[int]  # block_lasts
     we3fy74x: list[str]  # block_kinds
@@ -569,7 +577,7 @@ class DiffAnswer(Resource):
 
 class MergeAsk(Resource):
     """MergeAsk — `tl.so.tilo.diffmerge.MergeAsk`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     vx52jl2g: str  # base
     mrxlgkxk: str  # ours
     nvyd6cgn: str  # theirs
@@ -577,7 +585,7 @@ class MergeAsk(Resource):
 
 class MergeAnswer(Resource):
     """MergeAnswer — `tl.so.tilo.diffmerge.MergeAnswer`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     @property
     def _2pwajyjm(self) -> list[int]:
         """hunk_indices (`2pwajyjm` on the wire)."""
@@ -597,7 +605,7 @@ class MergeAnswer(Resource):
 
 class ComposeAsk(Resource):
     """ComposeAsk — `tl.so.tilo.diffmerge.ComposeAsk`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     @property
     def _55fy4avh(self) -> str:
         """base (`55fy4avh` on the wire)."""
@@ -621,7 +629,7 @@ class ComposeAsk(Resource):
 
 class ComposedAnswer(Resource):
     """ComposedAnswer — `tl.so.tilo.diffmerge.ComposedAnswer`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     wino2rjt: str  # merged
     niqoebpg: int  # changes
     gzqibeka: int  # conflicts
@@ -629,7 +637,7 @@ class ComposedAnswer(Resource):
 
 class FoldersAsk(Resource):
     """FoldersAsk — `tl.so.tilo.diffmerge.FoldersAsk`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     jasvo2t2: str  # left
     @property
     def _2go4z2dd(self) -> str:
@@ -643,7 +651,7 @@ class FoldersAsk(Resource):
 
 class FoldersAnswer(Resource):
     """FoldersAnswer — `tl.so.tilo.diffmerge.FoldersAnswer`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     uytgg4wc: str  # left_label
     bxame25h: str  # left_root
     ewdcrys5: str  # right_label
@@ -665,26 +673,26 @@ class FoldersAnswer(Resource):
 
 class SaveAsk(Resource):
     """SaveAsk — `tl.so.tilo.diffmerge.SaveAsk`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     t2ifxuue: str  # path
     zoq67abl: str  # text
 
 
 class SavedAnswer(Resource):
     """SavedAnswer — `tl.so.tilo.diffmerge.SavedAnswer`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     tmjabrvg: str  # name
 
 
 class SampleAsk(Resource):
     """SampleAsk — `tl.so.tilo.diffmerge.SampleAsk`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     ol4drxwd: str  # kind
 
 
 class SampleDiff(Resource):
     """SampleDiff — `tl.so.tilo.diffmerge.SampleDiff`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     uj6xvzvl: str  # left_label
     cjwd2i2z: str  # left
     vbhvxj6f: str  # right_label
@@ -693,7 +701,7 @@ class SampleDiff(Resource):
 
 class SampleMerge(Resource):
     """SampleMerge — `tl.so.tilo.diffmerge.SampleMerge`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
     opwxdlzs: str  # base_label
     l3kqbcv7: str  # base
     wxfngzy5: str  # ours_label
@@ -704,5 +712,5 @@ class SampleMerge(Resource):
 
 class Diffmerge(Resource):
     """Diff & Merge — `tl.so.tilo.diffmerge`."""
-    __surface__ = "so.tilo.diffmerge@dd870c6510d18309"
+    __surface__ = "so.tilo.diffmerge@4bbe25b0f9538b02"
 

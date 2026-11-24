@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.diffmerge@dd870c6510d18309";
+export const SURFACE = "so.tilo.diffmerge@4bbe25b0f9538b02";
 
 /** The arguments of `take_ours`. */
 export interface TakeOursArgs {
@@ -267,6 +267,11 @@ export interface Session extends tilo.Resource {
   open_folder_entry(args: {
     entry: FolderEntry;
   }): Promise<Session>;
+  /** Opens the file of the row the person pressed, for the key that asked: Enter opens it. */
+  open_on_key(args: {
+    entry: FolderEntry;
+    key: string;
+  }): Promise<Session>;
   /** Replaces the merged result: what a person types into it, and what an agent or a script writes when the result is theirs to change. Once it is not what the sides compose, taking a side would throw the edit away, so the rest is resolved in the text. */
   edit_merged(args: {
     text: string;
@@ -299,7 +304,7 @@ export interface Session extends tilo.Resource {
 
 /** The actions `Session` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SESSION_ACTIONS = ["open_comparison", "chosen_left", "chosen_right", "refresh_comparison", "open_merge", "refresh_merge", "take_ours", "take_oursMany", "take_theirs", "take_theirsMany", "take_both", "take_bothMany", "resolve", "resolveMany", "take", "compose_into", "compare_folders", "compare_foldersMany", "hold_folders", "chosen_folder_left", "chosen_folder_leftMany", "chosen_folder_right", "chosen_folder_rightMany", "open_folder_entry", "edit_merged", "edit_mergedMany", "save_merged", "save_mergedMany", "save_bytes", "fill_sample", "fill_sampleMany", "sample_folders", "sample_foldersMany", "refuse", "clear_notice", "clear_noticeMany"] as const;
+export const SESSION_ACTIONS = ["open_comparison", "chosen_left", "chosen_right", "refresh_comparison", "open_merge", "refresh_merge", "take_ours", "take_oursMany", "take_theirs", "take_theirsMany", "take_both", "take_bothMany", "resolve", "resolveMany", "take", "compose_into", "compare_folders", "compare_foldersMany", "hold_folders", "chosen_folder_left", "chosen_folder_leftMany", "chosen_folder_right", "chosen_folder_rightMany", "open_folder_entry", "open_on_key", "edit_merged", "edit_mergedMany", "save_merged", "save_mergedMany", "save_bytes", "fill_sample", "fill_sampleMany", "sample_folders", "sample_foldersMany", "refuse", "clear_notice", "clear_noticeMany"] as const;
 
 /** The `tl.so.tilo.diffmerge.Session` kind at `path`. */
 export function session(ws: tilo.Workspace, path: string): Session {

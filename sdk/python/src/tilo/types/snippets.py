@@ -87,7 +87,7 @@ RemoveTagArgs = TypedDict("RemoveTagArgs", {
 
 class Snippet(Resource):
     """Snippet — `tl.so.tilo.snippets.Snippet`."""
-    __surface__ = "so.tilo.snippets@cf9df303c6aa7519"
+    __surface__ = "so.tilo.snippets@275605095d14df3c"
     f7zljrnp: str  # title
     @property
     def _5k3zya5m(self) -> str:
@@ -152,14 +152,14 @@ class Snippet(Resource):
 
 class FillValue(Resource):
     """FillValue — `tl.so.tilo.snippets.FillValue`."""
-    __surface__ = "so.tilo.snippets@cf9df303c6aa7519"
+    __surface__ = "so.tilo.snippets@275605095d14df3c"
     u5ym5ttn: str  # name
     h5vss6x5: str  # value
 
 
 class Fill(Resource):
     """Fill — `tl.so.tilo.snippets.Fill`."""
-    __surface__ = "so.tilo.snippets@cf9df303c6aa7519"
+    __surface__ = "so.tilo.snippets@275605095d14df3c"
     qxvejddr: Snippet | None  # snippet
     e6uc6jtt: list[Entry[FillValue]]  # values
 
@@ -186,7 +186,7 @@ class Fill(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.snippets.Library`."""
-    __surface__ = "so.tilo.snippets@cf9df303c6aa7519"
+    __surface__ = "so.tilo.snippets@275605095d14df3c"
     g5k73yqh: list[Entry[Snippet]]  # snippets
     avqtjv3w: list[Entry[Fill]]  # fills
 
@@ -269,5 +269,13 @@ class Library(Resource):
 
 class Snippets(Resource):
     """Snippets — `tl.so.tilo.snippets`."""
-    __surface__ = "so.tilo.snippets@cf9df303c6aa7519"
+    __surface__ = "so.tilo.snippets@275605095d14df3c"
+    def copy_text(self, *, text: str) -> None:
+        """Puts `text` on the clipboard: as a secret, which histories do not keep and which leaves the clipboard after a while, when it looks like it carries a credential, so an API key does not stay there for whatever is pasted next."""
+        return self.action("copy_text", text=text)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"copy_text"})
+
 

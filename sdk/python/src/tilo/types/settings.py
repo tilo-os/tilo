@@ -25,6 +25,9 @@ __all__ = [
     "ImportThemeArgs",
     "OpenPaneArgs",
     "ShowSettingArgs",
+    "ReviewContrastArgs",
+    "ReviewContrastOnArgs",
+    "ReviewContrastNowArgs",
 ]
 
 ImportThemeArgs = TypedDict("ImportThemeArgs", {
@@ -42,9 +45,28 @@ ShowSettingArgs = TypedDict("ShowSettingArgs", {
 })
 """The arguments of `show_setting`."""
 
+ReviewContrastArgs = TypedDict("ReviewContrastArgs", {
+    "theme": "str",
+    "role": "str",
+    "value": "float",
+})
+"""The arguments of `review_contrast`."""
+
+ReviewContrastOnArgs = TypedDict("ReviewContrastOnArgs", {
+    "theme": "str",
+    "role": "str",
+    "on": "bool",
+})
+"""The arguments of `review_contrast_on`."""
+
+ReviewContrastNowArgs = TypedDict("ReviewContrastNowArgs", {
+    "theme": "str",
+})
+"""The arguments of `review_contrast_now`."""
+
 class Settings(Resource):
     """Settings — `tl.so.tilo.settings.Settings`."""
-    __surface__ = "so.tilo.settings@2f47e1185fbaba03"
+    __surface__ = "so.tilo.settings@b91ff8fb98358e8b"
     vfi4twig: str  # pane
 
     def import_theme(self, *, file: Any) -> None:
@@ -62,7 +84,17 @@ class Settings(Resource):
 
 class TiloSettings(Resource):
     """Settings — `tl.so.tilo.settings`."""
-    __surface__ = "so.tilo.settings@2f47e1185fbaba03"
+    __surface__ = "so.tilo.settings@b91ff8fb98358e8b"
+    def move_screen(self,
+        *,
+        screens: Any,
+        picked: int,
+        start: list[float],
+        let_go: list[float],
+    ) -> None:
+        """Move the screen picked to where the pointer was let go, in the desktop's own pixels, snapped to a small grid: a drag too small to mean anything is not a change."""
+        return self.action("move_screen", screens=screens, picked=picked, start=start, let_go=let_go)
+
     def open_pane(self, *, page: str) -> None:
         """Show the pane a search page names, as the search's own row runs it from outside the window."""
         return self.action("open_pane", page=page)
@@ -87,12 +119,46 @@ class TiloSettings(Resource):
         """The memory this device keeps free for the people at it."""
         return self.action("set_memory_room", percent=percent)
 
+    def review_contrast(self,
+        *,
+        theme: str,
+        role: str,
+        value: float,
+    ) -> None:
+        """Lists every contrast floor the theme would miss with `role` at the control's value, so its editor shows each pairing under its floor while the theme is tuned. The theme keeps the roles it admits; a value that would break a floor is refused, and this says which pairs it would break."""
+        return self.action("review_contrast", theme=theme, role=role, value=value)
+
+    def review_contrast_many(self, items: list[ReviewContrastArgs]) -> list[dict[str, Any]]:
+        """Runs `review_contrast` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("review_contrast", items)
+
+    def review_contrast_on(self,
+        *,
+        theme: str,
+        role: str,
+        on: bool,
+    ) -> None:
+        """The same after a switch was tried: its on is `1` and its off `0`."""
+        return self.action("review_contrast_on", theme=theme, role=role, on=on)
+
+    def review_contrast_on_many(self, items: list[ReviewContrastOnArgs]) -> list[dict[str, Any]]:
+        """Runs `review_contrast_on` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("review_contrast_on", items)
+
+    def review_contrast_now(self, *, theme: str) -> None:
+        """Records what the theme misses as it stands, when its editor opens or its polarity changes, before any control has carried a value."""
+        return self.action("review_contrast_now", theme=theme)
+
+    def review_contrast_now_many(self, items: list[ReviewContrastNowArgs]) -> list[dict[str, Any]]:
+        """Runs `review_contrast_now` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("review_contrast_now", items)
+
     def export_theme(self, *, t: Any) -> Any:
         """The theme as a file: what exporting it saves, and importing it on another workspace reads."""
         return self.action("export_theme", t=t)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"open_pane", "open_pane_many", "show_setting", "show_setting_many", "set_processors_room", "set_memory_room", "export_theme"})
+    __actions__ = frozenset({"move_screen", "open_pane", "open_pane_many", "show_setting", "show_setting_many", "set_processors_room", "set_memory_room", "review_contrast", "review_contrast_many", "review_contrast_on", "review_contrast_on_many", "review_contrast_now", "review_contrast_now_many", "export_theme"})
 
 

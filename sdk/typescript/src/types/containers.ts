@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.containers@823180d2717f563c";
+export const SURFACE = "so.tilo.containers@bd801114a22f5f9a";
 
 /** The arguments of `clear_create`. */
 export interface ClearCreateArgs {
@@ -107,6 +107,13 @@ export interface Containers extends tilo.Resource {
   fillMany(items: FillArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Runs an image as a new container from the draft, and clears the form when the engine took it. */
   create_container(): Promise<void>;
+  /** Shows what the engine holds of one kind. Each is the place's number key, pressed anywhere in the window. */
+  show_containers(): Promise<void>;
+  show_images(): Promise<void>;
+  show_volumes(): Promise<void>;
+  show_distrobox(): Promise<void>;
+  /** Opens the new-container form, as `n` does from the window. */
+  new_container_form(): Promise<void>;
   /** Makes a volume. */
   make_volume(args: {
     name: string;
@@ -142,7 +149,7 @@ export interface Containers extends tilo.Resource {
 
 /** The actions `Containers` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CONTAINERS_ACTIONS = ["clear_create", "clear_createMany", "fill", "fillMany", "create_container", "make_volume", "tag_image", "begin_pull", "begin_pullMany", "poll_pull", "poll_pullMany", "cancel_pull", "cancel_pullMany", "dismiss_pull", "dismiss_pullMany"] as const;
+export const CONTAINERS_ACTIONS = ["clear_create", "clear_createMany", "fill", "fillMany", "create_container", "show_containers", "show_images", "show_volumes", "show_distrobox", "new_container_form", "make_volume", "tag_image", "begin_pull", "begin_pullMany", "poll_pull", "poll_pullMany", "cancel_pull", "cancel_pullMany", "dismiss_pull", "dismiss_pullMany"] as const;
 
 /** The `tl.so.tilo.containers.Containers` kind at `path`. */
 export function containers(ws: tilo.Workspace, path: string): Containers {
