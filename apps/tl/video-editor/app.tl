@@ -847,6 +847,14 @@ fn ordered_tracks(p: Project) -> List<Track> {
         .flat_map(x -> x)
 }
 
+/// The playhead `frames` frames from `at` on the cut's own rate, never before the start: one
+/// step of the transport is one frame of the picture the cut is in.
+fn stepped(p: Project, at: Float, frames: Int) -> Float {
+    let fps = if p.fps > 0.0 { p.fps } else { 30.0 }
+    let frame = (at.max(0.0) * fps).round() + frames
+    (frame.to_float() / fps).max(0.0)
+}
+
 /// A moment on the cut, rounded to the frame it is nearest.
 fn snap_time(p: Project, t: Float) -> Float {
     if p.fps <= 0.0 {
@@ -967,6 +975,7 @@ action split_at(p: Project, c: Clip, at: Float) {
         ),
     )
     c.out_point = source
+    redraw(p)
 }
 
 /// The clips of one link group.
@@ -992,6 +1001,7 @@ action shifted(p: Project, c: Clip, start: Float) -> Bool {
     for one in moving {
         one.start = snap_time(p, (one.start + delta).max(0.0))
     }
+    redraw(p)
     true
 }
 
@@ -1229,12 +1239,15 @@ primary action new_project(e: Editor) -> Project (icon: .plus) {
     p.tracks.insert(Track(name: "V1", form: .video, index: 1))
     p.tracks.insert(Track(name: "A1", form: .audio, index: 1))
     e.open = .some(p)
+    draw_still(p, 0.0)
     p
 }
 
-/// Opens the cut the window shows.
+/// Opens the cut the window shows, and draws its first frame where the window has not shown
+/// one yet: a cut opens on its picture, not on an empty preview.
 action open_project(e: Editor, p: Project) {
     e.open = .some(p)
+    if p.still == "" or p.still_at < 0.0 { draw_still(p, 0.0) }
 }
 
 /// The session this window plays through: the one it has, or one made now.
@@ -1487,7 +1500,7 @@ action export_file(p: Project) -> File (icon: .download, label: "Save the film")
 action place(p: Project, m: Media, track: Track, at: Float) -> Clip {
     let length = if m.duration > 0.0 { m.duration } else { 5.0 }
     let start = free_at(p, track, at.max(0.0), length)
-    p.clips.insert(
+    let made = p.clips.insert(
         Clip(
             name: m.name,
             track: track,
@@ -1498,6 +1511,8 @@ action place(p: Project, m: Media, track: Track, at: Float) -> Clip {
             palette: m.palette,
         ),
     )
+    redraw(p)
+    made
 }
 
 /// Places the bin's source on the first track of its form, at `at`.
@@ -1547,6 +1562,7 @@ action commit_drag(p: Project, grab: Text, clip: Text, from: Float, at: Float) {
             c.out_point = source
         }
     }
+    redraw(p)
 }
 
 /// Cuts the clip at the playhead in two.
@@ -1578,6 +1594,7 @@ action remove_clip(p: Project, c: Clip) (icon: .trash_2, label: "Delete the clip
             p.clips.remove(other)
         }
     }
+    redraw(p)
 }
 
 /// Deletes a clip and closes the gap it leaves behind it.
@@ -1594,6 +1611,7 @@ action ripple_delete(p: Project, c: Clip) (icon: .scissors, label: "Close the ga
     for x in after {
         x.start = (x.start - gap).max(0.0)
     }
+    redraw(p)
 }
 
 /// Slips the clip along the timeline by frames.
@@ -1603,18 +1621,251 @@ action nudge(p: Project, c: Clip, frames: Int) {
 
 /// Sets the rate a clip plays at: 2 twice as fast and half as long, 0.5 in slow motion.
 action set_speed(c: Clip, speed: Float) {
-    c.speed_rate = speed.clamp(0.05, 20.0)
+    set_look(c, .speed, speed)
 }
 
 action normal_speed(c: Clip) {
     c.speed_rate = 1.0
     c.reverse = false
+    redraw_clip(c)
+}
+
+/// One look of a clip that the inspector sets with a slider: the clip's own picture and sound,
+/// which the preview draws again as the person changes it.
+enum Look {
+    opacity
+    volume
+    speed
+    fade_in
+    fade_out
+    brightness
+    contrast
+    saturation
+    scale_x
+    scale_y
+    pos_x
+    pos_y
+    rotation
+    crop_left
+    crop_right
+    crop_top
+    crop_bottom
+    key_tolerance
+    key_softness
+    key_spill
+    mask_x
+    mask_y
+    mask_w
+    mask_h
+    mask_rotation
+    mask_feather
+    transition_duration
+}
+
+/// Sets one look of the clip, and draws the frame the preview shows again, so an edit is seen
+/// as it is made rather than at the next move of the playhead.
+action set_look(c: Clip, look: Look, value: Float) {
+    match look {
+        .opacity => {
+            c.opacity = value.clamp(0.0, 1.0)
+        }
+        .volume => {
+            c.volume = value.clamp(0.0, 1.0)
+        }
+        .speed => {
+            c.speed_rate = value.clamp(0.05, 20.0)
+        }
+        .fade_in => {
+            c.fade_in = value.max(0.0)
+        }
+        .fade_out => {
+            c.fade_out = value.max(0.0)
+        }
+        .brightness => {
+            c.brightness = value.clamp(0.0, 1.0)
+        }
+        .contrast => {
+            c.contrast = value.clamp(0.0, 1.0)
+        }
+        .saturation => {
+            c.saturation = value.clamp(0.0, 1.0)
+        }
+        .scale_x => {
+            c.scale_x = value.clamp(0.05, 3.0)
+        }
+        .scale_y => {
+            c.scale_y = value.clamp(0.05, 3.0)
+        }
+        .pos_x => {
+            c.pos_x = value.clamp(-1.0, 1.0)
+        }
+        .pos_y => {
+            c.pos_y = value.clamp(-1.0, 1.0)
+        }
+        .rotation => {
+            c.rotation = value.clamp(-180.0, 180.0)
+        }
+        .crop_left => {
+            c.crop_left = value.clamp(0.0, 0.95)
+        }
+        .crop_right => {
+            c.crop_right = value.clamp(0.0, 0.95)
+        }
+        .crop_top => {
+            c.crop_top = value.clamp(0.0, 0.95)
+        }
+        .crop_bottom => {
+            c.crop_bottom = value.clamp(0.0, 0.95)
+        }
+        .key_tolerance => {
+            c.key_tolerance = value.clamp(0.0, 1.0)
+        }
+        .key_softness => {
+            c.key_softness = value.clamp(0.0, 1.0)
+        }
+        .key_spill => {
+            c.key_spill = value.clamp(0.0, 1.0)
+        }
+        .mask_x => {
+            c.mask_x = value.clamp(-1.0, 1.0)
+        }
+        .mask_y => {
+            c.mask_y = value.clamp(-1.0, 1.0)
+        }
+        .mask_w => {
+            c.mask_w = value.clamp(0.01, 2.0)
+        }
+        .mask_h => {
+            c.mask_h = value.clamp(0.01, 2.0)
+        }
+        .mask_rotation => {
+            c.mask_rotation = value.clamp(-180.0, 180.0)
+        }
+        .mask_feather => {
+            c.mask_feather = value.clamp(0.0, 1.0)
+        }
+        .transition_duration => {
+            c.transition_duration = value.clamp(0.0, 10.0)
+        }
+    }
+    redraw_clip(c)
+}
+
+/// Sets which shape limits where a clip shows: `off`, `rect` or `ellipse`.
+action set_mask(c: Clip, shape: Text) {
+    require shape == "off" or shape == "rect" or shape == "ellipse" "{shape} is not a mask shape"
+    c.mask_shape = if shape == "off" { "" } else { shape }
+    redraw_clip(c)
+}
+
+/// Keeps the inside of the clip's mask, or the outside of it.
+action invert_mask(c: Clip, invert: Bool) {
+    c.mask_invert = invert
+    redraw_clip(c)
 }
 
 /// Sets the incoming transition and how long it runs.
 action set_transition(c: Clip, transition: Text, seconds: Float) {
     c.transition = transition
     c.transition_duration = seconds
+    redraw_clip(c)
+}
+
+/// Plays the clip's source backwards, or forwards again, and draws the frame it holds now.
+action set_reverse(c: Clip, reverse: Bool) {
+    c.reverse = reverse
+    redraw_clip(c)
+}
+
+/// One style of a title's lines, drawn again as it changes.
+action set_title_style(m: Media, bold: Bool, italic: Bool) {
+    m.bold = bold
+    m.italic = italic
+    redraw_media(m)
+}
+
+/// One track's level, where the sound of everything on it sits in the mix.
+action set_track_gain(t: Track, db: Float) {
+    t.gain_db = db.clamp(-60.0, 12.0)
+}
+
+/// Where a track's sound sits across the stereo field: -1 hard left, 1 hard right.
+action set_track_pan(t: Track, pan: Float) {
+    t.pan = pan.clamp(-1.0, 1.0)
+}
+
+action set_track_muted(t: Track, muted: Bool) {
+    t.muted = muted
+}
+
+action set_track_solo(t: Track, solo: Bool) {
+    t.solo = solo
+}
+
+action set_track_locked(t: Track, locked: Bool) {
+    t.locked = locked
+}
+
+/// Puts a track back at unity and the centre.
+action reset_mix(t: Track) (icon: .rotate_ccw, label: "Reset the level and pan") {
+    t.gain_db = 0.0
+    t.pan = 0.0
+}
+
+/// One look of a title the inspector sets with a slider, drawn again as it changes.
+enum TitleLook {
+    size
+    red
+    green
+    blue
+    backdrop
+}
+
+action set_title_look(m: Media, look: TitleLook, value: Float) {
+    match look {
+        .size => {
+            m.size = value.clamp(0.02, 0.5)
+        }
+        .red => {
+            m.red = value.clamp(0.0, 1.0)
+        }
+        .green => {
+            m.green = value.clamp(0.0, 1.0)
+        }
+        .blue => {
+            m.blue = value.clamp(0.0, 1.0)
+        }
+        .backdrop => {
+            m.backdrop = value.clamp(0.0, 1.0)
+        }
+    }
+    redraw_media(m)
+}
+
+/// The cut a clip is in, as the editor holds it: the cut whose clips include this one.
+fn cut_of_clip(c: Clip) -> Option<Project> {
+    let e = root Editor
+    e.projects.find(p -> p.clips.any(x -> x.id() == c.id()))
+}
+
+/// The cut a source is in, as the editor holds it.
+fn cut_of_media(m: Media) -> Option<Project> {
+    let e = root Editor
+    e.projects.find(p -> p.media.any(x -> x.id() == m.id()))
+}
+
+/// Draws the frame the preview last showed again, so an edit made after it is seen at once. A
+/// cut whose frame the window never showed draws nothing: there is no place to draw it at.
+action redraw(p: Project) {
+    if p.still_at >= 0.0 { draw_still(p, p.still_at) }
+}
+
+action redraw_clip(c: Clip) {
+    if let p = cut_of_clip(c) { redraw(p) }
+}
+
+action redraw_media(m: Media) {
+    if let p = cut_of_media(m) { redraw(p) }
 }
 
 /// What a clip's animatable field holds as its constant value.
@@ -1658,11 +1909,13 @@ action key_at(c: Clip, at: Float, param: Text, interp: Text) {
         return
     }
     c.keys.insert(Key(param: param, t: t, v: v, interp: interp))
+    redraw_clip(c)
 }
 
 /// Removes a key.
 action unkey(c: Clip, k: Key) {
     c.keys.remove(k)
+    redraw_clip(c)
 }
 
 /// How a key's curve leaves it.
@@ -1778,6 +2031,13 @@ trigger fill_strips(p: Project) every 1s: draw_next_strip(p)
 /// Sets where a title's lines sit in its box.
 action set_align(m: Media, align: Align) {
     m.align = align
+    redraw_media(m)
+}
+
+/// What the title's lines say.
+action set_words(m: Media, words: Text) {
+    m.words = words
+    redraw_media(m)
 }
 
 /// Adds a title to the bin and places it at `at`.
@@ -1828,12 +2088,14 @@ action clear_marks(p: Project) {
 action set_frame_rate(p: Project, fps: Float) {
     p.fps = fps.clamp(1.0, 240.0)
     p.explicit_format = true
+    redraw(p)
 }
 
 action set_frame_size(p: Project, width: Int, height: Int) {
     p.width = width.clamp(16, 8192)
     p.height = height.clamp(16, 8192)
     p.explicit_format = true
+    redraw(p)
 }
 
 /// Takes its shape from a source: what "Use its format" does.
@@ -1845,14 +2107,17 @@ action adopt_format(p: Project, m: Media) {
             p.fps = m.fps
         }
         p.explicit_format = true
+        redraw(p)
     }
 }
 
 action add_track(p: Project, form: Form) -> Track (icon: .plus) {
     let index = p.tracks.filter(t -> t.form == form).len() + 1
-    p.tracks.insert(
+    let made = p.tracks.insert(
         Track(name: if form == .audio { "A{index}" } else { "V{index}" }, form: form, index: index),
     )
+    redraw(p)
+    made
 }
 
 action delete_track(p: Project, t: Track) (icon: .trash_2, label: "Delete the track") {
@@ -1860,6 +2125,7 @@ action delete_track(p: Project, t: Track) (icon: .trash_2, label: "Delete the tr
         p.clips.remove(c)
     }
     p.tracks.remove(t)
+    redraw(p)
 }
 
 /// Makes two clips one shot's picture and sound: they move and cut together.
@@ -1915,6 +2181,7 @@ action place_side_by_side(p: Project, left: Clip, right: Clip) {
     right.scale_y = 1.0
     right.pos_x = 0.25
     right.pos_y = 0.0
+    redraw(p)
 }
 
 action unplace_side_by_side(c: Clip) {
@@ -1922,14 +2189,52 @@ action unplace_side_by_side(c: Clip) {
     c.scale_y = 1.0
     c.pos_x = 0.0
     c.pos_y = 0.0
+    redraw_clip(c)
 }
 
 action add_effect(c: Clip, form: Text) {
     c.effects.insert(Effect(form: form, amount: 1.0))
+    redraw_clip(c)
 }
 
 action remove_effect(c: Clip, e: Effect) {
     c.effects.remove(e)
+    redraw_clip(c)
+}
+
+/// How strongly one effect of the clip applies, applied to the picture at once.
+action set_effect(c: Clip, e: Effect, amount: Float) {
+    e.amount = amount.clamp(0.0, 1.0)
+    redraw_clip(c)
+}
+
+/// Moves an effect up or down the clip's stack: the order decides what the picture goes through
+/// first.
+action move_effect(c: Clip, e: Effect, up: Bool) {
+    let at = c.effects.index_of(e) ?? 0
+    let to = if up { at - 1 } else { at + 1 }
+    if to < 0 or to >= c.effects.len() {
+        return
+    }
+    c.effects.move(e, to: to)
+    redraw_clip(c)
+}
+
+/// Takes every effect off a clip.
+action clear_effects(c: Clip) (icon: .x, label: "Remove every effect") {
+    for e in c.effects {
+        c.effects.remove(e)
+    }
+    redraw_clip(c)
+}
+
+/// Takes a source out of the bin, and every clip that showed it with it.
+destructive action delete_media(p: Project, m: Media) (icon: .trash_2, label: "Delete the source") {
+    for c in p.clips.filter(x -> x.media == m) {
+        p.clips.remove(c)
+    }
+    p.media.remove(m)
+    redraw(p)
 }
 
 /// Draws the frame the preview shows at `at`.
@@ -2499,6 +2804,12 @@ view window(e: Editor) {
                 ui.Button(std.say("New project"), icon: .plus) {
                     on press: new_project(e).then(set(playhead, 0.0))
                 }
+                ui.Button(std.say("Open a project"), icon: .folder_open) {
+                    on press: file.choose(open_project_file(e), accept: [".tlvp"])
+                }
+                ui.Button(std.say("Save the project"), icon: .save) {
+                    on press: file.save(save_project(p), name: "{p.name}.tlvp")
+                }
             }
             sidebar: {
                 ui.NavList {
@@ -2593,6 +2904,14 @@ view window(e: Editor) {
                             row(gap: .tight, align: .center) {
                                 ui.Button(
                                     "",
+                                    icon: .chevrons_left,
+                                    icon_only: true,
+                                    accessible_name: std.say("Jump to the start"),
+                                ) {
+                                    on press: preview(p, 0.0).then(set(playhead, 0.0))
+                                }
+                                ui.Button(
+                                    "",
                                     icon: .skip_back,
                                     icon_only: true,
                                     accessible_name: std.say("Back a second"),
@@ -2600,6 +2919,17 @@ view window(e: Editor) {
                                     on press: preview(p, (playhead - 1.0).max(0.0))
                                         .then(
                                             set(playhead, (playhead - 1.0).max(0.0)),
+                                        )
+                                }
+                                ui.Button(
+                                    "",
+                                    icon: .chevron_left,
+                                    icon_only: true,
+                                    accessible_name: std.say("Back a frame"),
+                                ) {
+                                    on press: preview(p, stepped(p, playhead, -1))
+                                        .then(
+                                            set(playhead, stepped(p, playhead, -1)),
                                         )
                                 }
                                 if playing {
@@ -2632,6 +2962,17 @@ view window(e: Editor) {
                                 }
                                 ui.Button(
                                     "",
+                                    icon: .chevron_right,
+                                    icon_only: true,
+                                    accessible_name: std.say("Forward a frame"),
+                                ) {
+                                    on press: preview(p, stepped(p, playhead, 1))
+                                        .then(
+                                            set(playhead, stepped(p, playhead, 1)),
+                                        )
+                                }
+                                ui.Button(
+                                    "",
                                     icon: .skip_forward,
                                     icon_only: true,
                                     accessible_name: std.say("Forward a second"),
@@ -2640,6 +2981,14 @@ view window(e: Editor) {
                                         .then(
                                             set(playhead, playhead + 1.0),
                                         )
+                                }
+                                ui.Button(
+                                    "",
+                                    icon: .chevrons_right,
+                                    icon_only: true,
+                                    accessible_name: std.say("Jump to the end"),
+                                ) {
+                                    on press: preview(p, total(p)).then(set(playhead, total(p)))
                                 }
                                 ui.Text(clock(playhead), role: .caption, numeric: true)
                                 ui.Text(
@@ -2950,7 +3299,9 @@ template view inspector(
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_look(c, .opacity, v)
+            }
             ui.Slider(
                 bind: c.volume,
                 label: std.say("Volume"),
@@ -2958,7 +3309,9 @@ template view inspector(
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_look(c, .volume, v)
+            }
             ui.Slider(
                 bind: c.speed_rate,
                 label: std.say("Speed"),
@@ -2966,8 +3319,12 @@ template view inspector(
                 max: 4.0,
                 step: 0.05,
                 shows_value: true,
-            )
-            ui.Toggle(bind: c.reverse, label: std.say("Play it backwards"))
+            ) {
+                on change(v): set_look(c, .speed, v)
+            }
+            ui.Toggle(bind: c.reverse, label: std.say("Play it backwards")) {
+                on check(on): set_reverse(c, on)
+            }
             ui.Slider(
                 bind: c.fade_in,
                 label: std.say("Fade in, seconds"),
@@ -2975,7 +3332,9 @@ template view inspector(
                 max: 5.0,
                 step: 0.1,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_look(c, .fade_in, v)
+            }
             ui.Slider(
                 bind: c.fade_out,
                 label: std.say("Fade out, seconds"),
@@ -2983,7 +3342,9 @@ template view inspector(
                 max: 5.0,
                 step: 0.1,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_look(c, .fade_out, v)
+            }
             row(gap: .tight, align: .center, wrap: true) {
                 ui.MenuButton(std.say("Transition"), icon: .arrow_right) {
                     ui.MenuItem(std.say("Cut"), checked: c.transition == "") {
@@ -3000,6 +3361,18 @@ template view inspector(
                     }
                     ui.MenuItem(std.say("Wipe"), checked: c.transition == "wipe") {
                         on choose: set_transition(c, "wipe", 0.6)
+                    }
+                }
+                if c.transition != "" {
+                    ui.Slider(
+                        bind: c.transition_duration,
+                        label: std.say("Transition, seconds"),
+                        min: 0.05,
+                        max: 5.0,
+                        step: 0.05,
+                        shows_value: true,
+                    ) {
+                        on change(v): set_look(c, .transition_duration, v)
                     }
                 }
                 ui.Button(std.say("Use its format"), icon: .crop) {
@@ -3036,7 +3409,9 @@ template view inspector(
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_look(c, .brightness, v)
+            }
             ui.Slider(
                 bind: c.contrast,
                 label: std.say("Contrast"),
@@ -3044,7 +3419,9 @@ template view inspector(
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_look(c, .contrast, v)
+            }
             ui.Slider(
                 bind: c.saturation,
                 label: std.say("Saturation"),
@@ -3052,7 +3429,9 @@ template view inspector(
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_look(c, .saturation, v)
+            }
             ui.Slider(
                 bind: c.scale_x,
                 label: std.say("Width"),
@@ -3060,7 +3439,19 @@ template view inspector(
                 max: 3.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_look(c, .scale_x, v)
+            }
+            ui.Slider(
+                bind: c.scale_y,
+                label: std.say("Height"),
+                min: 0.1,
+                max: 3.0,
+                step: 0.01,
+                shows_value: true,
+            ) {
+                on change(v): set_look(c, .scale_y, v)
+            }
             ui.Slider(
                 bind: c.pos_x,
                 label: std.say("Across"),
@@ -3068,7 +3459,9 @@ template view inspector(
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_look(c, .pos_x, v)
+            }
             ui.Slider(
                 bind: c.pos_y,
                 label: std.say("Up and down"),
@@ -3076,7 +3469,9 @@ template view inspector(
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_look(c, .pos_y, v)
+            }
             ui.Slider(
                 bind: c.rotation,
                 label: std.say("Turn, degrees"),
@@ -3084,23 +3479,51 @@ template view inspector(
                 max: 180.0,
                 step: 1.0,
                 shows_value: true,
-            )
-            ui.Slider(
-                bind: c.crop_left,
-                label: std.say("Crop from the left"),
-                min: 0.0,
-                max: 0.9,
-                step: 0.01,
-                shows_value: true,
-            )
-            ui.Slider(
-                bind: c.crop_right,
-                label: std.say("Crop from the right"),
-                min: 0.0,
-                max: 0.9,
-                step: 0.01,
-                shows_value: true,
-            )
+            ) {
+                on change(v): set_look(c, .rotation, v)
+            }
+            ui.Section(std.say("Crop")) {
+                ui.Slider(
+                    bind: c.crop_left,
+                    label: std.say("From the left"),
+                    min: 0.0,
+                    max: 0.9,
+                    step: 0.01,
+                    shows_value: true,
+                ) {
+                    on change(v): set_look(c, .crop_left, v)
+                }
+                ui.Slider(
+                    bind: c.crop_right,
+                    label: std.say("From the right"),
+                    min: 0.0,
+                    max: 0.9,
+                    step: 0.01,
+                    shows_value: true,
+                ) {
+                    on change(v): set_look(c, .crop_right, v)
+                }
+                ui.Slider(
+                    bind: c.crop_top,
+                    label: std.say("From the top"),
+                    min: 0.0,
+                    max: 0.9,
+                    step: 0.01,
+                    shows_value: true,
+                ) {
+                    on change(v): set_look(c, .crop_top, v)
+                }
+                ui.Slider(
+                    bind: c.crop_bottom,
+                    label: std.say("From the bottom"),
+                    min: 0.0,
+                    max: 0.9,
+                    step: 0.01,
+                    shows_value: true,
+                ) {
+                    on change(v): set_look(c, .crop_bottom, v)
+                }
+            }
             ui.Toggle(bind: c.key_enabled, label: std.say("Remove a colour"))
             row(gap: .tight, align: .center, wrap: true) {
                 ui.MenuButton(std.say("Screen colour"), icon: .palette) {
@@ -3151,7 +3574,9 @@ template view inspector(
                     max: 1.0,
                     step: 0.01,
                     shows_value: true,
-                )
+                ) {
+                    on change(v): set_look(c, .key_tolerance, v)
+                }
                 ui.Slider(
                     bind: c.key_softness,
                     label: std.say("Soft edge"),
@@ -3159,7 +3584,9 @@ template view inspector(
                     max: 1.0,
                     step: 0.01,
                     shows_value: true,
-                )
+                ) {
+                    on change(v): set_look(c, .key_softness, v)
+                }
                 ui.Slider(
                     bind: c.key_spill,
                     label: std.say("Take the tint away"),
@@ -3167,7 +3594,88 @@ template view inspector(
                     max: 1.0,
                     step: 0.01,
                     shows_value: true,
-                )
+                ) {
+                    on change(v): set_look(c, .key_spill, v)
+                }
+            }
+            // A shape that limits where the clip shows, and how soft its edge is.
+            ui.Section(std.say("Mask")) {
+                ui.MenuButton(std.say("Shape"), icon: .layers) {
+                    ui.MenuItem(std.say("Off"), checked: c.mask_shape == "") {
+                        on choose: set_mask(c, "off")
+                    }
+                    ui.MenuItem(std.say("Rectangle"), checked: c.mask_shape == "rect") {
+                        on choose: set_mask(c, "rect")
+                    }
+                    ui.MenuItem(std.say("Ellipse"), checked: c.mask_shape == "ellipse") {
+                        on choose: set_mask(c, "ellipse")
+                    }
+                }
+                if c.mask_shape != "" {
+                    ui.Toggle(shown: c.mask_invert, label: std.say("Keep the outside")) {
+                        on check(on): invert_mask(c, on)
+                    }
+                    ui.Slider(
+                        bind: c.mask_x,
+                        label: std.say("Centre across"),
+                        min: -1.0,
+                        max: 1.0,
+                        step: 0.01,
+                        shows_value: true,
+                    ) {
+                        on change(v): set_look(c, .mask_x, v)
+                    }
+                    ui.Slider(
+                        bind: c.mask_y,
+                        label: std.say("Centre up and down"),
+                        min: -1.0,
+                        max: 1.0,
+                        step: 0.01,
+                        shows_value: true,
+                    ) {
+                        on change(v): set_look(c, .mask_y, v)
+                    }
+                    ui.Slider(
+                        bind: c.mask_w,
+                        label: std.say("Mask width"),
+                        min: 0.01,
+                        max: 2.0,
+                        step: 0.01,
+                        shows_value: true,
+                    ) {
+                        on change(v): set_look(c, .mask_w, v)
+                    }
+                    ui.Slider(
+                        bind: c.mask_h,
+                        label: std.say("Mask height"),
+                        min: 0.01,
+                        max: 2.0,
+                        step: 0.01,
+                        shows_value: true,
+                    ) {
+                        on change(v): set_look(c, .mask_h, v)
+                    }
+                    ui.Slider(
+                        bind: c.mask_rotation,
+                        label: std.say("Mask turn, degrees"),
+                        min: -180.0,
+                        max: 180.0,
+                        step: 1.0,
+                        shows_value: true,
+                    ) {
+                        on change(v): set_look(c, .mask_rotation, v)
+                    }
+                    ui.Slider(
+                        bind: c.mask_feather,
+                        label: std.say("Mask feather"),
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.01,
+                        shows_value: true,
+                    ) {
+                        on change(v): set_look(c, .mask_feather, v)
+                    }
+                }
             }
             // Where the clip's own values change.
             ui.Section(std.say("Keys")) {
@@ -3280,11 +3788,30 @@ template view inspector(
                     ui.Text(effect.form, role: .body)
                     ui.Slider(
                         bind: effect.amount,
+                        label: std.say("Amount"),
                         min: 0.0,
                         max: 1.0,
                         step: 0.01,
                         shows_value: true,
-                    )
+                    ) {
+                        on change(v): set_effect(c, effect, v)
+                    }
+                    ui.Button(
+                        "",
+                        icon: .chevron_up,
+                        icon_only: true,
+                        accessible_name: std.say("Move {effect.form} earlier"),
+                    ) {
+                        on press: move_effect(c, effect, true)
+                    }
+                    ui.Button(
+                        "",
+                        icon: .chevron_down,
+                        icon_only: true,
+                        accessible_name: std.say("Move {effect.form} later"),
+                    ) {
+                        on press: move_effect(c, effect, false)
+                    }
                     ui.Button(
                         "",
                         icon: .trash_2,
@@ -3295,12 +3822,19 @@ template view inspector(
                     }
                 }
             }
+            if not c.effects.is_empty() {
+                ui.Button(std.say("Remove every effect"), icon: .x) {
+                    on press: clear_effects(c)
+                }
+            }
         }
     } else if let m = media {
         ui.TextInput(bind: m.name, title: true)
         ui.Text(form_words(m.form), role: .caption, secondary: true)
         if m.form == .title {
-            ui.TextInput(bind: m.words, placeholder: std.say("Words"), lines: 3)
+            ui.TextInput(bind: m.words, placeholder: std.say("Words"), lines: 3) {
+                on submit(words): set_words(m, words)
+            }
             ui.Slider(
                 bind: m.size,
                 label: std.say("Size"),
@@ -3308,7 +3842,9 @@ template view inspector(
                 max: 0.5,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_title_look(m, .size, v)
+            }
             ui.Slider(
                 bind: m.red,
                 label: std.say("Red"),
@@ -3316,7 +3852,9 @@ template view inspector(
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_title_look(m, .red, v)
+            }
             ui.Slider(
                 bind: m.green,
                 label: std.say("Green"),
@@ -3324,7 +3862,9 @@ template view inspector(
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(v): set_title_look(m, .green, v)
+            }
             ui.Slider(
                 bind: m.blue,
                 label: std.say("Blue"),
@@ -3332,9 +3872,25 @@ template view inspector(
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
-            ui.Toggle(bind: m.bold, label: std.say("Bold"))
-            ui.Toggle(bind: m.italic, label: std.say("Italic"))
+            ) {
+                on change(v): set_title_look(m, .blue, v)
+            }
+            ui.Slider(
+                bind: m.backdrop,
+                label: std.say("Backing plate"),
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            ) {
+                on change(v): set_title_look(m, .backdrop, v)
+            }
+            ui.Toggle(bind: m.bold, label: std.say("Bold")) {
+                on check(on): set_title_style(m, on, m.italic)
+            }
+            ui.Toggle(bind: m.italic, label: std.say("Italic")) {
+                on check(style): set_title_style(m, m.bold, style)
+            }
             ui.MenuButton(std.say("Lines"), icon: .align_justify) {
                 ui.MenuItem(std.say("Left"), checked: m.align == .left) {
                     on choose: set_align(m, .left)
@@ -3354,11 +3910,66 @@ template view inspector(
                 ui.Button(std.say("Use its format"), icon: .crop) {
                     on press: adopt_format(p, m)
                 }
+                ui.Button(std.say("Delete the source"), icon: .trash_2) {
+                    on press: delete_media(p, m)
+                }
             }
             ui.Text(clock(m.duration), role: .caption, secondary: true, numeric: true)
         }
     } else {
         ui.Text(std.say("Choose a clip or a source"), role: .caption, secondary: true)
+    }
+    // The mix: every track's level, pan and switches, whichever clip is chosen.
+    ui.Section(std.say("Tracks")) {
+        for t in ordered_tracks(p) {
+            stack(gap: .tight) {
+                row(gap: .tight, align: .center) {
+                    ui.TextInput(bind: t.name, fill)
+                    ui.Toggle(shown: t.muted, label: std.say("Mute")) {
+                        on check(on): set_track_muted(t, on)
+                    }
+                    ui.Toggle(shown: t.solo, label: std.say("Solo")) {
+                        on check(on): set_track_solo(t, on)
+                    }
+                    ui.Toggle(shown: t.locked, label: std.say("Lock")) {
+                        on check(on): set_track_locked(t, on)
+                    }
+                    ui.Button(
+                        "",
+                        icon: .trash_2,
+                        icon_only: true,
+                        accessible_name: std.say("Delete the track {t.name}"),
+                    ) {
+                        on press: delete_track(p, t)
+                    }
+                }
+                ui.Slider(
+                    bind: t.gain_db,
+                    label: std.say("Level, dB"),
+                    min: -60.0,
+                    max: 12.0,
+                    step: 0.5,
+                    shows_value: true,
+                ) {
+                    on change(v): set_track_gain(t, v)
+                }
+                ui.Slider(
+                    bind: t.pan,
+                    label: std.say("Pan"),
+                    min: -1.0,
+                    max: 1.0,
+                    step: 0.05,
+                    shows_value: true,
+                ) {
+                    on change(v): set_track_pan(t, v)
+                }
+                row(gap: .tight) {
+                    ui.Button(std.say("Reset the level and pan"), icon: .rotate_ccw) {
+                        on press: reset_mix(t)
+                    }
+                }
+            }
+        }
     }
     // The cut's marks, and what each says.
     if not p.markers.is_empty() {

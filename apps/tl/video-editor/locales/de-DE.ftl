@@ -1796,8 +1796,6 @@ d-kga7o3ur = Fenster
     .w-across = Waagerecht
     .w-up-and-down = Senkrecht
     .w-turn-degrees = Drehen, Grad
-    .w-crop-from-the-left = Links beschneiden
-    .w-crop-from-the-right = Rechts beschneiden
     .w-remove-a-colour = Eine Farbe entfernen
     .w-screen-colour = Leinwandfarbe
     .w-green = Grün
@@ -1857,7 +1855,83 @@ d-kga7o3ur = Fenster
     .w-save-the-film = Film sichern
     .w-no-cut-yet = Noch kein Schnitt
     .w-start-one-or-open-a-video = Starte einen oder öffne ein Video in der Bearbeitung
+    .w-jump-to-the-start = Zum Anfang
+    .w-back-a-frame = Ein Bild zurück
+    .w-forward-a-frame = Ein Bild vor
+    .w-jump-to-the-end = Zum Ende
+    .w-open-a-project = Projekt öffnen
+    .w-save-the-project = Projekt speichern
+    .w-mask = Maske
+    .w-shape = Form
+    .w-off = Aus
+    .w-rectangle = Rechteck
+    .w-ellipse = Ellipse
+    .w-keep-the-outside = Das Äußere behalten
+    .w-centre-across = Mitte waagerecht
+    .w-centre-up-and-down = Mitte senkrecht
+    .w-mask-width = Maskenbreite
+    .w-mask-height = Maskenhöhe
+    .w-mask-turn-degrees = Maske drehen, Grad
+    .w-mask-feather = Weiche Maskenkante
+    .w-crop = Zuschneiden
+    .w-from-the-left = Von links
+    .w-from-the-right = Von rechts
+    .w-from-the-top = Von oben
+    .w-from-the-bottom = Von unten
+    .w-transition-seconds = Übergang, Sekunden
+    .w-amount = Stärke
+    .w-move-earlier = Nach oben
+    .w-move-later = Nach unten
+    .w-remove-every-effect = Alle Effekte entfernen
+    .w-delete-the-source = Quelle löschen
+    .w-tracks = Spuren
+    .w-mute = Stumm
+    .w-solo = Solo
+    .w-lock = Sperren
+    .w-level-db = Pegel, dB
+    .w-pan = Panorama
+    .w-reset-the-level-and-pan = Pegel und Panorama zurücksetzen
+    .w-delete-the-track = Spur löschen
+    .w-backing-plate = Hinterlegung
 
+    .w-jump-to-the-start = Zum Anfang
+    .w-back-a-frame = Ein Bild zurück
+    .w-forward-a-frame = Ein Bild vor
+    .w-jump-to-the-end = Zum Ende
+    .w-open-a-project = Projekt öffnen
+    .w-save-the-project = Projekt speichern
+    .w-mask = Maske
+    .w-shape = Form
+    .w-off = Aus
+    .w-rectangle = Rechteck
+    .w-ellipse = Ellipse
+    .w-keep-the-outside = Das Äußere behalten
+    .w-centre-across = Mitte waagerecht
+    .w-centre-up-and-down = Mitte senkrecht
+    .w-mask-width = Maskenbreite
+    .w-mask-height = Maskenhöhe
+    .w-mask-turn-degrees = Maske drehen, Grad
+    .w-mask-feather = Weiche Maskenkante
+    .w-crop = Zuschneiden
+    .w-from-the-left = Von links
+    .w-from-the-right = Von rechts
+    .w-from-the-top = Von oben
+    .w-from-the-bottom = Von unten
+    .w-transition-seconds = Übergang, Sekunden
+    .w-amount = Stärke
+    .w-move-earlier = Nach oben
+    .w-move-later = Nach unten
+    .w-remove-every-effect = Alle Effekte entfernen
+    .w-delete-the-source = Quelle löschen
+    .w-tracks = Spuren
+    .w-mute = Stumm
+    .w-solo = Solo
+    .w-lock = Sperren
+    .w-level-db = Pegel, dB
+    .w-pan = Panorama
+    .w-reset-the-level-and-pan = Pegel und Panorama zurücksetzen
+    .w-delete-the-track = Spur löschen
+    .w-backing-plate = Hinterlegung
 d-bi2ut6h2 = Studio
     .w-open-in-the-editor = In der Bearbeitung öffnen
     .w-clips = { $clips } Clips
@@ -1868,3 +1942,154 @@ d-kfetalt5 = Schnittzeile
 
 d-kqgtcock = Quellenzeile
     .w-title = Titel
+
+d-pjmjk5qx = Aussehen
+    .doc = Eine Eigenschaft eines Clips, die der Inspektor mit einem Regler setzt: Bild und Ton des Clips, die die Vorschau beim Ändern neu zeichnet.
+
+d-7bz76hhu = Deckkraft
+
+d-ackkweow = Lautstärke
+
+d-mznepkyb = Geschwindigkeit
+
+d-t3a66fy3 = Einblenden
+
+d-xwb5szc5 = Ausblenden
+
+d-zkfola5e = Helligkeit
+
+d-4dzgy5u5 = Kontrast
+
+d-scr3ivvj = Sättigung
+
+d-nt3j7qwm = Breite
+
+d-zzsb76qw = Höhe
+
+d-3t54kflk = Waagerecht
+
+d-ctks3e6u = Senkrecht
+
+d-j54iofuh = Drehung
+
+d-nayfsbeu = Links beschneiden
+
+d-u4yy2sy5 = Rechts beschneiden
+
+d-66tcewmf = Oben beschneiden
+
+d-pl5pnpzn = Unten beschneiden
+
+d-2fynrz2a = Toleranz der Farbauswahl
+
+d-b446mw3c = Weiche Kante
+
+d-ki4feltm = Farbstich entfernen
+
+d-qi4f4ifl = Maske, Mitte waagerecht
+
+d-6qeg3bqq = Maske, Mitte senkrecht
+
+d-xn3ula5j = Maskenbreite
+
+d-6z4blfug = Maskenhöhe
+
+d-zrovxhbl = Maske, Drehung
+
+d-2hwgozrm = Maske, Weichzeichnen
+
+d-4gl2etau = Übergangslänge
+
+d-yu5ipsqv = Titelaussehen
+    .doc = Eine Eigenschaft eines Titels, die der Inspektor mit einem Regler setzt und die beim Ändern neu gezeichnet wird.
+
+d-yf2mstzg = Größe
+
+d-xbmye2tx = Rot
+
+d-qagwwldb = Grün
+
+d-g62cfe37 = Blau
+
+d-vl4qw7vt = Hinterlegung
+
+d-pugj26z7 = Aussehen ändern
+    .doc = Setzt eine Eigenschaft des Clips und zeichnet das Bild der Vorschau neu, sodass eine Änderung sofort zu sehen ist.
+
+d-bjresjz2 = Maske setzen
+    .doc = Legt fest, welche Form begrenzt, wo ein Clip zu sehen ist: `off`, `rect` oder `ellipse`.
+    .w-is-not-a-mask-shape = { $shape } ist keine Maskenform
+
+d-mikjlhmy = Maske umkehren
+    .doc = Behält das Innere der Maske des Clips oder ihr Äußeres.
+
+d-bwheqtmt = Rückwärts abspielen
+    .doc = Spielt die Quelle des Clips rückwärts oder wieder vorwärts und zeichnet das Bild neu, das sie jetzt zeigt.
+
+d-2cricpxh = Titelstil ändern
+    .doc = Eine Stileigenschaft der Zeilen eines Titels, die beim Ändern neu gezeichnet wird.
+
+d-xluldt6f = Spurniveau ändern
+    .doc = Der Pegel einer Spur, also wo der Ton von allem auf ihr im Mix liegt.
+
+d-j4nvruzm = Spurpanorama ändern
+    .doc = Wo der Ton einer Spur im Stereofeld liegt: -1 ganz links, 1 ganz rechts.
+
+d-dseablg3 = Spur stummschalten
+
+d-32fpyxzd = Spur solo schalten
+
+d-sjg7mrsa = Spur sperren
+
+d-qwyfccp4 = Pegel und Panorama zurücksetzen
+    .doc = Setzt eine Spur auf Einheit und Mitte zurück.
+
+d-pmzyq3cp = Titelaussehen ändern
+
+d-vgg5jf2p = Neu zeichnen
+    .doc = Zeichnet das zuletzt gezeigte Bild neu, sodass eine danach gemachte Änderung sofort zu sehen ist.
+
+d-puq37lmk = Clip neu zeichnen
+
+d-czjm4yan = Quelle neu zeichnen
+
+d-25a3ji5l = Wörter setzen
+    .doc = Was die Zeilen des Titels sagen.
+
+d-x23sha6o = Effektstärke ändern
+    .doc = Wie stark ein Effekt des Clips wirkt, sofort auf das Bild angewendet.
+
+d-xiuhdj77 = Effekt verschieben
+    .doc = Verschiebt einen Effekt in der Reihenfolge des Clips nach oben oder unten: die Reihenfolge entscheidet, was das Bild zuerst durchläuft.
+
+d-g7feka3j = Alle Effekte entfernen
+    .doc = Nimmt jeden Effekt von einem Clip.
+
+d-5oqtuzrw = Quelle löschen
+    .doc = Nimmt eine Quelle aus der Ablage und jeden Clip, der sie zeigte, mit.
+
+d-hw26iiy2 = Maske setzen
+
+
+
+
+d-25a3ji5l-words = Wörter
+d-2cricpxh-bold = Fett
+d-2cricpxh-italic = Kursiv
+d-32fpyxzd-solo = Solo
+d-5oqtuzrw-m = Quelle
+d-bjresjz2-shape = Form
+d-bwheqtmt-reverse = Rückwärts
+d-dseablg3-muted = Stumm
+d-j4nvruzm-pan = Panorama
+d-mikjlhmy-invert = Umkehren
+d-pmzyq3cp-look = Aussehen
+d-pmzyq3cp-value = Wert
+d-pugj26z7-look = Aussehen
+d-pugj26z7-value = Wert
+d-sjg7mrsa-locked = Gesperrt
+d-x23sha6o-amount = Stärke
+d-x23sha6o-e = Effekt
+d-xiuhdj77-e = Effekt
+d-xiuhdj77-up = Nach oben
+d-xluldt6f-db = Pegel in dB

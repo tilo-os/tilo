@@ -14,7 +14,7 @@ mod cases {
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::host_work::EngineHost;
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
+        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
         ViewInstance,
     };
 
@@ -136,7 +136,16 @@ mod cases {
 
     impl Studio {
         fn held(&self, file: &FileValue) -> String {
-            String::from_utf8_lossy(&self.device.0.borrow().get(&file.hash).cloned().unwrap_or_default()).into_owned()
+            String::from_utf8_lossy(
+                &self
+                    .device
+                    .0
+                    .borrow()
+                    .get(&file.hash)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+            .into_owned()
         }
     }
 
@@ -239,7 +248,11 @@ mod cases {
         fn window(&self) -> ViewInstance {
             let mut window = self
                 .rt
-                .open_view(&me(), &self.app.view("window"), vec![Value::resource(&self.root)])
+                .open_view(
+                    &me(),
+                    &self.app.view("window"),
+                    vec![Value::resource(&self.root)],
+                )
                 .unwrap();
             window.set_lazy_rows(false).unwrap();
             window
@@ -250,7 +263,8 @@ mod cases {
             let p = self.new_project();
             self.import(&p, "Harbour.mp4");
             let media = self.media(&p).into_iter().next().expect("a source");
-            let track = self.tracks(&p)
+            let track = self
+                .tracks(&p)
                 .into_iter()
                 .find(|t| self.text(t, "name") == "V1")
                 .expect("V1");
@@ -527,6 +541,88 @@ mod cases {
             assert_eq!(s.text(&marker, "note"), "the ferry");
         }
 
+        phase an_edit_draws_the_frame_the_mask_and_the_mix_are_its_own;
+        {
+            let s = Studio::new();
+            let (p, _, clip) = s.placed();
+            let look = |case: &str| {
+                Value::Enum(EnumValue {
+                    ty: s.app.compiled.ids.get("Look").expect("Look").to_owned(),
+                    variant: s
+                        .app
+                        .compiled
+                        .ids
+                        .get(&format!("Look.{case}"))
+                        .unwrap_or_else(|| panic!("Look.{case}"))
+                        .to_owned(),
+                    fields: std::collections::BTreeMap::default(),
+                })
+            };
+            let stills = || s.engine.ops().iter().filter(|op| *op == "still").count();
+            // The preview draws the frame the person looks at.
+            s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
+            assert_eq!(stills(), 1, "the frame at the playhead");
+            // A look the person changes draws it again: the edit is seen as it is made, not at
+            // the next move of the playhead.
+            s.call(
+                "set_look",
+                vec![Value::resource(&clip), look("opacity"), Value::Float(0.4)],
+            );
+            assert_eq!(s.number(&clip, "opacity"), 0.4);
+            assert_eq!(stills(), 2, "the frame was drawn again after the edit");
+            // The mask is a shape the clip shows through, with its place, size and edge.
+            s.call("set_mask", vec![Value::resource(&clip), Value::text("ellipse")]);
+            assert_eq!(s.text(&clip, "mask_shape"), "ellipse");
+            s.call("invert_mask", vec![Value::resource(&clip), Value::Bool(true)]);
+            assert!(matches!(
+                s.rt.read(&clip, "mask_invert").unwrap(),
+                Value::Bool(true)
+            ));
+            s.call(
+                "set_look",
+                vec![Value::resource(&clip), look("mask_feather"), Value::Float(0.3)],
+            );
+            assert_eq!(s.number(&clip, "mask_feather"), 0.3);
+            // Crop reaches every side, and both scales are the clip's.
+            s.call(
+                "set_look",
+                vec![Value::resource(&clip), look("crop_top"), Value::Float(0.2)],
+            );
+            s.call(
+                "set_look",
+                vec![Value::resource(&clip), look("scale_y"), Value::Float(0.5)],
+            );
+            assert_eq!(s.number(&clip, "crop_top"), 0.2);
+            assert_eq!(s.number(&clip, "scale_y"), 0.5);
+            // The track's mix is its own: level, pan and the switches.
+            let track = s
+                .tracks(&p)
+                .into_iter()
+                .find(|t| s.text(t, "name") == "V1")
+                .expect("V1");
+            s.call(
+                "set_track_gain",
+                vec![Value::resource(&track), Value::Float(-6.0)],
+            );
+            s.call(
+                "set_track_pan",
+                vec![Value::resource(&track), Value::Float(-1.0)],
+            );
+            s.call(
+                "set_track_muted",
+                vec![Value::resource(&track), Value::Bool(true)],
+            );
+            assert_eq!(s.number(&track, "gain_db"), -6.0);
+            assert_eq!(s.number(&track, "pan"), -1.0);
+            assert!(matches!(
+                s.rt.read(&track, "muted").unwrap(),
+                Value::Bool(true)
+            ));
+            s.call("reset_mix", vec![Value::resource(&track)]);
+            assert_eq!(s.number(&track, "gain_db"), 0.0);
+            assert_eq!(s.number(&track, "pan"), 0.0);
+        }
+
         phase the_window_draws_the_bin_the_timeline_and_the_inspector;
         {
             let s = Studio::new();
@@ -584,5 +680,4 @@ mod cases {
             );
         }
     }
-
 }

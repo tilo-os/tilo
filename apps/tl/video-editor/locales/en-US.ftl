@@ -1377,6 +1377,76 @@ d-niisiqbe = Head
 
 d-4gi6fhjp = Tail
 
+d-pjmjk5qx = Look
+    .doc = One look of a clip that the inspector sets with a slider: the clip's own picture and sound, which the preview draws again as the person changes it.
+
+d-7bz76hhu = Opacity
+
+d-ackkweow = Volume
+
+d-mznepkyb = Speed
+
+d-t3a66fy3 = Fade in
+
+d-xwb5szc5 = Fade out
+
+d-zkfola5e = Brightness
+
+d-4dzgy5u5 = Contrast
+
+d-scr3ivvj = Saturation
+
+d-nt3j7qwm = Scale x
+
+d-zzsb76qw = Scale y
+
+d-3t54kflk = Pos x
+
+d-ctks3e6u = Pos y
+
+d-j54iofuh = Rotation
+
+d-nayfsbeu = Crop left
+
+d-u4yy2sy5 = Crop right
+
+d-66tcewmf = Crop top
+
+d-pl5pnpzn = Crop bottom
+
+d-2fynrz2a = Key tolerance
+
+d-b446mw3c = Key softness
+
+d-ki4feltm = Key spill
+
+d-qi4f4ifl = Mask x
+
+d-6qeg3bqq = Mask y
+
+d-xn3ula5j = Mask w
+
+d-6z4blfug = Mask h
+
+d-zrovxhbl = Mask rotation
+
+d-2hwgozrm = Mask feather
+
+d-4gl2etau = Transition duration
+
+d-yu5ipsqv = Title look
+    .doc = One look of a title the inspector sets with a slider, drawn again as it changes.
+
+d-yf2mstzg = Size
+
+d-xbmye2tx = Red
+
+d-qagwwldb = Green
+
+d-g62cfe37 = Blue
+
+d-vl4qw7vt = Backdrop
+
 d-ekz7suen = Split at
     .doc = Cuts a clip in two at `at`, each half keeping the source its own part shows.
 
@@ -1429,7 +1499,7 @@ d-tpulmxks = New project
     .w-untitled-project = Untitled project
 
 d-6oillx2m = Open project
-    .doc = Opens the cut the window shows.
+    .doc = Opens the cut the window shows, and draws its first frame where the window has not shown one yet: a cut opens on its picture, not on an empty preview.
 
 d-6oillx2m-p = P
 
@@ -1532,12 +1602,80 @@ d-ne4it5nd-speed = Speed
 
 d-ig42742r = Normal speed
 
+d-pugj26z7 = Set look
+    .doc = Sets one look of the clip, and draws the frame the preview shows again, so an edit is seen as it is made rather than at the next move of the playhead.
+
+d-pugj26z7-look = Look
+
+d-pugj26z7-value = Value
+
+d-bjresjz2 = Set mask
+    .doc = Sets which shape limits where a clip shows: `off`, `rect` or `ellipse`.
+    .w-is-not-a-mask-shape = { $shape } is not a mask shape
+
+d-bjresjz2-shape = Shape
+
+d-mikjlhmy = Invert mask
+    .doc = Keeps the inside of the clip's mask, or the outside of it.
+
+d-mikjlhmy-invert = Invert
+
 d-lzc5gbav = Set transition
     .doc = Sets the incoming transition and how long it runs.
 
 d-lzc5gbav-transition = Transition
 
 d-lzc5gbav-seconds = Seconds
+
+d-bwheqtmt = Set reverse
+    .doc = Plays the clip's source backwards, or forwards again, and draws the frame it holds now.
+
+d-bwheqtmt-reverse = Reverse
+
+d-2cricpxh = Set title style
+    .doc = One style of a title's lines, drawn again as it changes.
+
+d-2cricpxh-bold = Bold
+
+d-2cricpxh-italic = Italic
+
+d-xluldt6f = Set track gain
+    .doc = One track's level, where the sound of everything on it sits in the mix.
+
+d-xluldt6f-db = Db
+
+d-j4nvruzm = Set track pan
+    .doc = Where a track's sound sits across the stereo field: -1 hard left, 1 hard right.
+
+d-j4nvruzm-pan = Pan
+
+d-dseablg3 = Set track muted
+
+d-dseablg3-muted = Muted
+
+d-32fpyxzd = Set track solo
+
+d-32fpyxzd-solo = Solo
+
+d-sjg7mrsa = Set track locked
+
+d-sjg7mrsa-locked = Locked
+
+d-qwyfccp4 = Reset the level and pan
+    .doc = Puts a track back at unity and the centre.
+
+d-pmzyq3cp = Set title look
+
+d-pmzyq3cp-look = Look
+
+d-pmzyq3cp-value = Value
+
+d-vgg5jf2p = Redraw
+    .doc = Draws the frame the preview last showed again, so an edit made after it is seen at once.
+
+d-puq37lmk = Redraw clip
+
+d-czjm4yan = Redraw media
 
 d-4vxaibys = Key at
     .doc = Sets a key of `param` at `at` (timeline seconds), at the value the field holds now: the value a curve changes from, as the inspection shows it.
@@ -1604,6 +1742,11 @@ d-57xowwoj = Set align
     .doc = Sets where a title's lines sit in its box.
 
 d-57xowwoj-align = Align
+
+d-25a3ji5l = Set words
+    .doc = What the title's lines say.
+
+d-25a3ji5l-words = Words
 
 d-fxlzpync = Add title
     .doc = Adds a title to the bin and places it at `at`.
@@ -1687,6 +1830,28 @@ d-7gjywuct = Remove effect
 
 d-7gjywuct-e = E
 
+d-x23sha6o = Set effect
+    .doc = How strongly one effect of the clip applies, applied to the picture at once.
+
+d-x23sha6o-e = E
+
+d-x23sha6o-amount = Amount
+
+d-xiuhdj77 = Move effect
+    .doc = Moves an effect up or down the clip's stack: the order decides what the picture goes through first.
+
+d-xiuhdj77-e = E
+
+d-xiuhdj77-up = Up
+
+d-g7feka3j = Remove every effect
+    .doc = Takes every effect off a clip.
+
+d-5oqtuzrw = Delete the source
+    .doc = Takes a source out of the bin, and every clip that showed it with it.
+
+d-5oqtuzrw-m = M
+
 d-aqdtfj76 = Preview
     .doc = Draws the frame the preview shows at `at`.
 
@@ -1729,11 +1894,15 @@ d-d4536bfd = Interp words
     .w-ease = Ease
     .w-linear = Linear
 
+d-hw26iiy2 = Set mask~present
+
 d-kga7o3ur = Window
     .w-rendering-the-cut = Rendering the cut… { $pct }%
     .w-the-film-is-ready = { $name } — the film is ready
     .w-video-editor = Video Editor
     .w-new-project = New project
+    .w-open-a-project = Open a project
+    .w-save-the-project = Save the project
     .w-projects = Projects
     .w-sources = Sources
     .w-drop-video-sound-or-pictures = Drop video, sound or pictures
@@ -1741,11 +1910,15 @@ d-kga7o3ur = Window
     .w-title = Title
     .w-nothing-to-show-yet = Nothing to show yet
     .w-add-a-source-and-the-frame = Add a source and the frame at the playhead stands here
+    .w-jump-to-the-start = Jump to the start
     .w-back-a-second = Back a second
+    .w-back-a-frame = Back a frame
     .w-pause = Pause
     .w-play-the-cut = Play the cut
     .w-render-and-play-the-cut = Render and play the cut
+    .w-forward-a-frame = Forward a frame
     .w-forward-a-second = Forward a second
+    .w-jump-to-the-end = Jump to the end
     .w-mark-in = Mark in
     .w-mark-out = Mark out
     .w-clear = Clear
@@ -1784,6 +1957,7 @@ d-kga7o3ur = Window
     .w-fade-in = Fade in
     .w-dip-to-black = Dip to black
     .w-wipe = Wipe
+    .w-transition-seconds = Transition, seconds
     .w-use-its-format = Use its format
     .w-split-the-sound = Split the sound
     .w-unlink = Unlink
@@ -1793,11 +1967,15 @@ d-kga7o3ur = Window
     .w-contrast = Contrast
     .w-saturation = Saturation
     .w-width = Width
+    .w-height = Height
     .w-across = Across
     .w-up-and-down = Up and down
     .w-turn-degrees = Turn, degrees
-    .w-crop-from-the-left = Crop from the left
-    .w-crop-from-the-right = Crop from the right
+    .w-crop = Crop
+    .w-from-the-left = From the left
+    .w-from-the-right = From the right
+    .w-from-the-top = From the top
+    .w-from-the-bottom = From the bottom
     .w-remove-a-colour = Remove a colour
     .w-screen-colour = Screen colour
     .w-green = Green
@@ -1809,6 +1987,18 @@ d-kga7o3ur = Window
     .w-how-much-of-it = How much of it
     .w-soft-edge = Soft edge
     .w-take-the-tint-away = Take the tint away
+    .w-mask = Mask
+    .w-shape = Shape
+    .w-off = Off
+    .w-rectangle = Rectangle
+    .w-ellipse = Ellipse
+    .w-keep-the-outside = Keep the outside
+    .w-centre-across = Centre across
+    .w-centre-up-and-down = Centre up and down
+    .w-mask-width = Mask width
+    .w-mask-height = Mask height
+    .w-mask-turn-degrees = Mask turn, degrees
+    .w-mask-feather = Mask feather
     .w-keys = Keys
     .w-key-a-field-here = Key a field here
     .w-turn = Turn
@@ -1827,10 +2017,15 @@ d-kga7o3ur = Window
     .w-cool = Cool
     .w-vignette = Vignette
     .w-this-clip-has-no-effect-of = This clip has no effect of its own
+    .w-amount = Amount
+    .w-move-earlier = Move { $form } earlier
+    .w-move-later = Move { $form } later
     .w-remove = Remove { $form }
+    .w-remove-every-effect = Remove every effect
     .w-words = Words
     .w-size = Size
     .w-red = Red
+    .w-backing-plate = Backing plate
     .w-bold = Bold
     .w-italic = Italic
     .w-lines = Lines
@@ -1838,13 +2033,21 @@ d-kga7o3ur = Window
     .w-centre = Centre
     .w-right = Right
     .w-place-at-the-playhead = Place at the playhead
+    .w-delete-the-source = Delete the source
     .w-choose-a-clip-or-a-source = Choose a clip or a source
+    .w-tracks = Tracks
+    .w-mute = Mute
+    .w-solo = Solo
+    .w-lock = Lock
+    .w-delete-the-track = Delete the track { $name }
+    .w-level-db = Level, dB
+    .w-pan = Pan
+    .w-reset-the-level-and-pan = Reset the level and pan
     .w-markers = Markers
     .w-remove-the-mark = Remove the mark
     .w-what-it-marks = What it marks
     .w-the-cut = The cut
     .w-frames-a-second = Frames a second
-    .w-height = Height
     .w-renders-from = Renders from
     .w-to = to
     .w-export = Export
