@@ -52,7 +52,8 @@ async fn act(key: &host::Key, workspace: &str, action: &str, args: &Value) -> (u
 fn a_migrated_account_is_connected_and_its_mail_is_read_from_its_server() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
-        let workspaces = host.daemon().workspaces();
+        let daemon = host.daemon();
+        let workspaces = daemon.workspaces();
         let proven = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let proving = std::sync::Arc::clone(&proven);
         workspaces.sign_in_accounts_through(move |account, password| {

@@ -99,21 +99,21 @@ fn what_an_app_publishes_is_found_through_the_daemon_by_whoever_may_read_it() {
 
         // The palette finds it through the daemon, and opens Notes at it.
         let palette = palette(&host);
-        let found = tilo_test_env::within("the note is found", async {
+        let hits = tilo_test_env::within("the note is found", async {
             loop {
-                let found = palette
+                let hits = palette
                     .find_within(&caller, "zanzibar", &Within::default())
                     .await
                     .and_then(Result::ok)
                     .unwrap_or_default();
-                if titles(&found).iter().any(|title| title == TITLE) {
-                    return found;
+                if titles(&hits).iter().any(|title| title == TITLE) {
+                    return hits;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await;
-        let note = found.iter().find(|found| found.label == TITLE).unwrap();
+        let note = hits.iter().find(|found| found.label == TITLE).unwrap();
         assert_eq!(note.app.as_deref(), Some(NOTES), "{note:?}");
         assert_eq!(
             note.workspace.as_deref(),

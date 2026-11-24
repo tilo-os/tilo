@@ -228,7 +228,8 @@ fn a_folder_put_is_one_run_and_one_write_per_chunk() {
         }
 
         // The records the folder changed each carry one change, not one per file.
-        let workspaces = host.daemon().workspaces();
+        let daemon = host.daemon();
+        let workspaces = daemon.workspaces();
         let index = workspaces
             .resource_document(&workspace, FILES_APP, &tree::document_id())
             .await

@@ -193,7 +193,7 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
     // The device relays through this machine's loopback relay: nothing reaches a relay or a
     // directory out on the internet.
-    test_server::relay_through_loopback_in(&config, &data);
+    let (relay, relay_url) = test_server::loopback_relay();
     let installed = if apps.is_empty() && rust.is_empty() {
         Vec::new()
     } else {
@@ -217,6 +217,7 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
         .env("XDG_RUNTIME_DIR", &runtime)
         .env("TILO_IDENTITY_ROOT", place("i"))
         .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+        .env(relay, relay_url)
         .env_remove(runtime_bundle::RUNTIME_DIR_ENV)
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
@@ -301,7 +302,11 @@ impl Host {
         })
         .await
         .unwrap();
-        assert_eq!(started.workspace(), self.workspace, "the same workspace");
+        assert_eq!(
+            started.workspace().expect("the workspace"),
+            self.workspace,
+            "the same workspace"
+        );
         *self.daemon.lock().unwrap() = Some(Arc::new(started));
     }
 
@@ -463,7 +468,7 @@ impl Host {
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         tilo_workspace_service::workspaces::fixtures::enter_key(
-            self.daemon.workspaces(),
+            self.daemon().workspaces(),
             workspace,
             &cert,
         )

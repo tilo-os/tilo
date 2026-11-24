@@ -140,7 +140,8 @@ fn opened(
 async fn terminal_holds(host: &host::Host, needle: &str) -> bool {
     let deadline = Instant::now().checked_add(PATIENCE).unwrap();
     loop {
-        let workspaces = host.daemon().workspaces();
+        let daemon = host.daemon();
+        let workspaces = daemon.workspaces();
         let workspace = host.workspace();
         let routes = workspaces.document_routes(workspace).await.unwrap();
         for (app, record) in routes
@@ -186,8 +187,9 @@ fn a_members_terminal_stream_is_its_own_and_every_line_typed_is_recorded_once() 
 
         // The device that did not open it is refused the stream, which stays the opener's.
         let (phone_endpoint, address_of_phone) = (phone.endpoint().clone(), address.clone());
+        let refused_stream = stream.clone();
         let refused = within(move || {
-            let (_, welcome) = Screen::take(&phone_endpoint, &address_of_phone, &stream);
+            let (_, welcome) = Screen::take(&phone_endpoint, &address_of_phone, &refused_stream);
             welcome
         })
         .await;

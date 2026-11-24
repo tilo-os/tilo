@@ -12,9 +12,10 @@
 //! reaches the conversation before the app runs stops at the app's open.
 
 use serde_json::{Value, json};
+use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationStatus};
 use tilo_actions::remote::{
-    ActionAddress, ActionProvider as _, ReceiptStatus, ResourceAddress, ResourceCopy,
+    ActionProvider as _, ReceiptStatus, ResourceAddress, ResourceCopy,
 };
 
 use crate::chat::{CHANNEL, chat_holds, made_channel, opens, said};
@@ -63,7 +64,7 @@ async fn write_to_scout(host: &host::Host, channel: &str, words: &str) -> (Strin
 /// The person allows what their assistant's turn asks: the newest invocation of the
 /// workspace's that waits for them is answered.
 async fn allow(host: &host::Host) {
-    let dispatch = host.daemon().dispatch();
+    let dispatch = host.dispatch();
     let caller = host.caller();
     let reads = dispatch
         .resource_reads()
@@ -113,7 +114,8 @@ async fn allow(host: &host::Host) {
 /// Whether one of the workspace's Terminal records holds `needle`: what the workspace's machine
 /// showed, as the session's screen keeps it.
 async fn terminal_holds(host: &host::Host, needle: &str) -> Result<bool, String> {
-    let workspaces = host.daemon().workspaces();
+    let daemon = host.daemon();
+    let workspaces = daemon.workspaces();
     let workspace = host.workspace();
     let routes = workspaces
         .document_routes(workspace)

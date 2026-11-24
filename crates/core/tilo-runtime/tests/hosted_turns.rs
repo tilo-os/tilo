@@ -75,9 +75,12 @@ async fn invoke(
     let receipt = host
         .dispatch()
         .invoke(caller, host::call(CHAT_PROVIDER, address, &arguments))
-        .await?;
+        .await
+        .expect("the dispatch answers")?;
     match receipt.status {
-        ReceiptStatus::Completed { output } => Ok(output.value),
+        ReceiptStatus::Completed { output } => {
+            Ok(output.value.expect("the action answers a value"))
+        }
         ReceiptStatus::Failed { error } => Err(ActionCallError::Refused {
             reason: error.message,
         }),

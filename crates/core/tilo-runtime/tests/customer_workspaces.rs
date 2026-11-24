@@ -27,7 +27,7 @@ fn account_action(action: &str) -> String {
 fn workspace_route(workspace: &str, path: &str) -> String {
     format!(
         "/v1/workspaces/{workspace}/resources/{}",
-        tilo_api::client::encode_path(path)
+        tilo_api::v1::routing::encode_path(path)
     )
 }
 
@@ -121,7 +121,7 @@ fn customer(host: &host::Host, workspace: &str, label: &str) -> Customer {
         DeviceCapabilities::agent_grant(AgentScope::Workspace(*id.as_bytes())),
     );
     let direct = tilo_api::direct::Direct::here(
-        Arc::clone(host.daemon()) as Arc<dyn tilo_api::session::Here>,
+        Arc::clone(&host.daemon()) as Arc<dyn tilo_api::session::Here>,
         key,
         cert,
         label,
@@ -515,7 +515,10 @@ fn neither_a_minted_key_nor_a_member_deletes_a_workspace() {
         );
 
         // The workspace stays, and the customer's key still reads it.
-        assert_eq!(host.daemon().workspace(), workspace);
+        assert_eq!(
+            host.daemon().workspace().expect("the workspace"),
+            workspace
+        );
         let (status, read) = customer
             .get(&format!("/v1/workspaces/{workspace}/resources"))
             .await;

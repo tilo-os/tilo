@@ -486,6 +486,7 @@ impl tilo_runtime::key_sessions::PageViews for ShownWindow {
                         }])
                     }
                     WindowAsk::Changed => WindowAnswer::Changed(Vec::new()),
+                    WindowAsk::Wells(_) => WindowAnswer::Changed(Vec::new()),
                 };
                 send(&mut window, &answer).unwrap();
             }
@@ -795,10 +796,6 @@ struct TestPlaces {
 impl Whereabouts for TestPlaces {
     fn workspaces(&self) -> Vec<String> {
         vec![self.workspace.clone()]
-    }
-
-    fn reachable(&self, _workspace: &str, _device: [u8; 32]) -> bool {
-        true
     }
 
     fn addr(&self, _id: EndpointId) -> EndpointAddr {

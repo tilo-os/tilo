@@ -329,7 +329,12 @@ pub fn install_rust(root: &Path, package: &str, bin: &str) {
     let parsed = tilo_app_package::Manifest::from_toml_str(&manifest)
         .unwrap_or_else(|error| panic!("{package}'s manifest reads: {error}"));
     let app_id = parsed.package.id.clone();
-    let entry = parsed.entrypoint.bin.clone();
+    let entry = parsed
+        .entrypoint
+        .as_ref()
+        .expect("the manifest names its entrypoint")
+        .bin
+        .clone();
     let surface = std::fs::read(dir.join("surface.toml"))
         .unwrap_or_else(|error| panic!("{package}'s surface: {error}"));
     let binary = std::fs::read(tilo_test_env::sibling_binary(package, bin))

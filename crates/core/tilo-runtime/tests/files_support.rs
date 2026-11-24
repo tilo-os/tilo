@@ -249,7 +249,8 @@ pub async fn content_at_hash(
 
 /// The tree `workspace`'s host keeps, or `None` until it holds every record the tree names.
 pub async fn tree_if_kept(host: &Host, workspace: &str) -> Option<Tree> {
-    let workspaces = host.daemon().workspaces();
+    let daemon = host.daemon();
+    let workspaces = daemon.workspaces();
     let index = workspaces
         .resource_document(workspace, FILES_APP, &tree::document_id())
         .await

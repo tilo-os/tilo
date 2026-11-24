@@ -34,10 +34,12 @@ fn ids(listed: &Value) -> Vec<String> {
 fn a_computer_and_a_key_share_the_persons_workspace_list() {
     host::run(|host| async move {
         let key = host.key("Visa backend");
-        let computer = tilo_api::session::Here::workspaces(host.daemon().as_ref())
-            .into_iter()
-            .map(|workspace| workspace.id)
-            .collect::<Vec<_>>();
+        let daemon = host.daemon();
+        let computer =
+            tilo_api::session::Here::workspaces(daemon.as_ref(), daemon.workspaces().device_cert())
+                .into_iter()
+                .map(|workspace| workspace.id)
+                .collect::<Vec<_>>();
 
         let (status, listed) = key.post(LIST, &json!({})).await;
         assert_eq!(status, 200, "{listed}");

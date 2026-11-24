@@ -172,10 +172,10 @@ fn the_shell_and_the_daemon_call_each_other_through_the_one_dispatch() {
             .await
             .unwrap()
             .unwrap();
-        let ended = ended(&host, receipt.invocation).await;
+        let update = ended(&host, receipt.invocation).await;
         assert!(
-            matches!(&ended, InvocationUpdate::Succeeded { output, .. } if output.value == Some(json!("approved"))),
-            "the dispatch's call of the shell's provider is answered: {ended:?}"
+            matches!(&update, InvocationUpdate::Succeeded { output, .. } if output.value == Some(json!("approved"))),
+            "the dispatch's call of the shell's provider is answered: {update:?}"
         );
         let asked = asks.asked();
         let reached = asked
@@ -262,9 +262,9 @@ fn a_closed_link_takes_the_shells_providers_and_fails_their_calls() {
         .await;
 
         drop((served, shell));
-        let ended = ended(&host, receipt.invocation).await;
-        let InvocationUpdate::Failed { error, .. } = &ended else {
-            panic!("the waiting call fails once the link closed: {ended:?}");
+        let update = ended(&host, receipt.invocation).await;
+        let InvocationUpdate::Failed { error, .. } = &update else {
+            panic!("the waiting call fails once the link closed: {update:?}");
         };
         assert!(
             error.message.contains("has closed"),
@@ -319,10 +319,10 @@ fn the_sessions_own_actions_are_answered_through_the_daemons_dispatch() {
             .await
             .unwrap()
             .unwrap();
-        let ended = ended(&host, receipt.invocation).await;
+        let update = ended(&host, receipt.invocation).await;
         assert!(
-            matches!(&ended, InvocationUpdate::Succeeded { output, .. } if output.value == Some(json!("placed"))),
-            "the session answers its layout's step: {ended:?}"
+            matches!(&update, InvocationUpdate::Succeeded { output, .. } if output.value == Some(json!("placed"))),
+            "the session answers its layout's step: {update:?}"
         );
         assert!(
             layout
@@ -361,10 +361,10 @@ fn the_sessions_own_actions_are_answered_through_the_daemons_dispatch() {
             .await
             .unwrap()
             .unwrap();
-        let ended = ended(&host, receipt.invocation).await;
+        let update = ended(&host, receipt.invocation).await;
         assert!(
-            matches!(&ended, InvocationUpdate::Succeeded { output, .. } if output.value == Some(json!("dismissed"))),
-            "a step offered from the session's next pass on is answered: {ended:?}"
+            matches!(&update, InvocationUpdate::Succeeded { output, .. } if output.value == Some(json!("dismissed"))),
+            "a step offered from the session's next pass on is answered: {update:?}"
         );
     });
 }

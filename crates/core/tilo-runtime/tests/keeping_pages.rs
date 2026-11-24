@@ -72,7 +72,7 @@ fn own_process(test: &str, apps: &[&str]) {
         dir
     };
     let (config, data) = (place("c"), place("d"));
-    test_server::relay_through_loopback_in(&config, &data);
+    let (relay, relay_url) = test_server::loopback_relay();
     let installed = host::apps::install(&place("a"), &data, apps);
     let server = keep_config(root.path());
     let log = root.path().join("out");
@@ -88,6 +88,7 @@ fn own_process(test: &str, apps: &[&str]) {
         .env("XDG_STATE_HOME", place("s"))
         .env("TILO_IDENTITY_ROOT", place("i"))
         .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+        .env(relay, relay_url)
         .env_remove(runtime_bundle::RUNTIME_DIR_ENV)
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")

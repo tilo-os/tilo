@@ -318,38 +318,19 @@ fn stop(action: &str) -> tilo_actions::remote::InvokeRequest {
     }
 }
 
-/// The workspace's invocations, as the person reads them.
+/// The workspace's invocations, as the person reads them: the record every record read
+/// reaches, holding its page of them.
 async fn invocation_page(
     host: &host::Host,
 ) -> tilo_actions::remote::workspace_invocations::Invocations {
-    use tilo_actions::remote::{ReceiptStatus, workspace_invocations};
-    let target = workspace_invocations::target();
-    let request = tilo_actions::remote::InvokeRequest {
-        on_behalf_of: None,
-        invocation: tilo_actions::InvocationId::new(),
-        target,
-        argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),
-        context: None,
-        confirmation: None,
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
-    let receipt = tilo_test_env::within(
-        "the workspace to list its invocations",
-        host.dispatch().invoke(&host.caller(), request),
+    let entry = host::record(
+        host,
+        tilo_actions::remote::workspace_invocations::PROVIDER,
+        "",
     )
     .await
-    .expect("the dispatch answers")
-    .expect("the person reads the invocations");
-    match receipt.status {
-        ReceiptStatus::Completed { output } => {
-            serde_json::from_value(output.value.expect("the listing says what it lists"))
-                .expect("the page reads as one")
-        }
-        other => panic!("a listing is answered whole, not {other:?}"),
-    }
+    .expect("the workspace reads its invocations");
+    serde_json::from_value(entry["value"].clone()).expect("the page reads as one")
 }
 
 /// The person stops their agent while it runs: what it was running is cancelled and writes
@@ -399,8 +380,7 @@ fn a_stopped_agent_is_cancelled_refused_and_goes_on() {
         );
         let (said, failed) = tilo_test_env::within("the running call to end", running)
             .await
-            .expect("the call ends")
-            .expect("the tool answers");
+            .expect("the call ends");
         assert!(
             failed || said.to_lowercase().contains("cancel"),
             "the running call ended cancelled: {said}"

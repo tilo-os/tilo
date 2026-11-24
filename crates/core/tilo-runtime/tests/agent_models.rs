@@ -19,7 +19,8 @@ use crate::host;
 #[test]
 fn the_model_chosen_in_a_computers_agent_models_pane_answers_its_agents() {
     host::run(|host| async move {
-        let workspaces = host.daemon().workspaces();
+        let daemon = host.daemon();
+        let workspaces = daemon.workspaces();
         // The pane's choice: Ollama on this computer's loopback, offering these models, of which
         // agents answer with `chosen`, and asked without a key.
         let choose = |models: &[&str], chosen: &str| {

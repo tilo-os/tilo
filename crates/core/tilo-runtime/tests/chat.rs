@@ -50,7 +50,8 @@ fn field(result: &Value, name: &str) -> Value {
 /// Whether one of the workspace's Chat records holds `needle`: the record as the app's readers
 /// lay it out, which is what a page following the chat is sent.
 pub(crate) async fn chat_holds(host: &host::Host, needle: &str) -> Result<bool, String> {
-    let workspaces = host.daemon().workspaces();
+    let daemon = host.daemon();
+    let workspaces = daemon.workspaces();
     let workspace = host.workspace();
     let routes = workspaces
         .document_routes(workspace)
