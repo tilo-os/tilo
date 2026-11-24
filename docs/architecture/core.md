@@ -1220,6 +1220,10 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   accepted only when the called action declares it, read from the registry and
   never from the call, and only from the device that keeps that record; history
   still names the caller, and every projection shows the declared effects.
+  A rule that asks first is answered only by a confirmation the call carries:
+  the person's attested press on the system's confirm view, or the CLI's own
+  prompt on a connection that is the person. Making the call is not the answer,
+  in any store, and an app or agent cannot set it.
   A device placed for one record alone, such as a hosted Browser's environment,
   carries that confinement in its certificate: the placing host, for the person,
   certifies it for that one record, short-lived and refused once stopped. The
