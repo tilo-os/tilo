@@ -506,7 +506,9 @@ impl Host {
     }
 
     /// A device of this person's, `label`, that serves `provider` beside the device's dispatcher:
-    /// what another device of theirs answers with on the action link.
+    /// what another device of theirs answers with on the action link. It holds `workspace` as a
+    /// member device does, as its state stands once the device entered it, so it decides what
+    /// the daemon asks it back by the workspace's own roster.
     pub async fn member_serving(
         &self,
         label: &str,
@@ -514,11 +516,13 @@ impl Host {
         provider: Arc<dyn ActionProvider + Send + Sync>,
     ) -> Member {
         let (key, cert) = self.certify(label, DeviceCapabilities::member());
-        self.daemon()
-            .workspaces()
-            .enter(workspace, &cert)
+        let daemon = self.daemon();
+        let workspaces = daemon.workspaces();
+        workspaces.enter(workspace, &cert).await.unwrap();
+        let held = workspaces
+            .state(workspace)
             .await
-            .unwrap();
+            .expect("the daemon holds the workspace the device entered");
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
             .relay_mode(iroh::RelayMode::Disabled)
@@ -528,6 +532,7 @@ impl Host {
             .await
             .unwrap();
         let service = ActionService::new(key.clone(), Arc::new(NoActions));
+        service.hold(tilo_peer_state::direct::Replica::new(held));
         service.add_provider(provider);
         let remote = Arc::new(service.remote(&endpoint, &self.daemon().endpoint_addr(), workspace));
         Member {
