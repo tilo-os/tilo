@@ -56,6 +56,7 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
         "feedback.tl",
         include_str!("../../../../apps/tl/shell/feedback.tl"),
     ),
+    ("hints.tl", include_str!("../../../../apps/tl/shell/hints.tl")),
     (
         "history.tl",
         include_str!("../../../../apps/tl/shell/history.tl"),
