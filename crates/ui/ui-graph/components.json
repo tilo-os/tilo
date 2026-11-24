@@ -11058,6 +11058,18 @@
       ],
       "parts": [
         {
+          "name": "menu",
+          "doc": "What the place offers on its context menu: a right press, the Menu key, a long press of a finger, or assistive technology opens it, and the place is chosen first. Its commands run as the view bound them (`on choose`), one undo step each.",
+          "accepts": {
+            "one_of": [
+              "MenuItem",
+              "MenuSeparator",
+              "EmojiBar"
+            ]
+          },
+          "many": true
+        },
+        {
           "name": "body",
           "doc": "What it shows.",
           "accepts": "view",
