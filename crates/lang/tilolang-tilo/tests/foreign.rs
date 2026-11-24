@@ -521,7 +521,9 @@ scenario "one waiting" {
         || None,
     )
     .unwrap();
-    let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    // Only the packages the source `use`s: the whole platform carries the actions package the
+    // runtime already runs, and a host loads one package once.
+    let metas = tilolang_tilo::platform_apps::named_platform_packages(STAGED).unwrap();
     for meta in &metas {
         host.runtime().load_foreign(meta.clone()).unwrap();
     }
@@ -620,7 +622,9 @@ view switcher(m: settings.AgentModels) {
 
     )
         .unwrap();
-        let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+        // Only the packages the source `use`s: the whole platform carries the actions package
+        // the runtime already runs, and a host loads one package once.
+        let metas = tilolang_tilo::platform_apps::named_platform_packages(VIEW).unwrap();
         for meta in &metas {
             host.runtime().load_foreign(meta.clone()).unwrap();
         }
