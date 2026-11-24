@@ -1084,18 +1084,6 @@ impl Roster {
         people
     }
 
-    #[cfg(target_os = "linux")]
-    /// Bring where this person's own agent works into view, when it moved or acted since the last
-    /// look, among the people this surface lists ([`tilo_session_core::desktop::here::reveal_own_agent_work`]).
-    /// Whether it asked the strip to move.
-    pub(crate) fn reveal_own_agent_work(&self, people: &[Person], handle: &DesktopHandle) -> bool {
-        tilo_session_core::desktop::here::reveal_own_agent_work(
-            &mut self.here.borrow_mut(),
-            people,
-            handle,
-        )
-    }
-
     /// The last wave at this person, for the bar to say.
     #[must_use]
     pub(crate) fn wave_notice(
@@ -1170,9 +1158,7 @@ impl Roster {
     /// The work is admitted only from a member the workspace's board knows as an agent
     /// ([`tilo_session_client::narration::Held`]) and bound to that member. Each app here keeps its
     /// own presence, so the work is kept for the apps too ([`Client::take_narrated`]), which draw
-    /// the agent's cursor in the window showing its record; and where the person's own agent works
-    /// comes into view on the surface's next frame ([`Self::reveal_own_agent_work`]). Whether
-    /// `event` was one.
+    /// the agent's cursor in the window showing its record. Whether `event` was one.
     fn hear_narrated(&self, event: &Event, client: &SessionClient) -> bool {
         let Event::Live { ws, from, frame } = event else {
             return false;
@@ -1189,7 +1175,6 @@ impl Roster {
         let work = narrated.take(&workspace);
         drop(narrated);
         if admitted {
-            tilo_session_core::desktop::here::note_narrated(&mut self.here.borrow_mut(), &work);
             self.for_apps
                 .borrow_mut()
                 .extend(work.into_iter().map(|work| (workspace.clone(), work)));
@@ -2022,15 +2007,6 @@ impl Client {
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
         self.hosting.roster.show(tree, notes, app_name)
-    }
-
-    #[cfg(target_os = "linux")]
-    /// Bring where this person's own agent works into view, when one of them moved or acted since
-    /// the surface last looked, among the `people` it lists
-    /// ([`tilo_session_core::desktop::here::reveal_own_agent_work`]): the strip scrolls to the window without
-    /// taking the keyboard. Whether it asked the strip to move.
-    pub fn reveal_own_agent_work(&self, people: &[Person], handle: &DesktopHandle) -> bool {
-        self.hosting.roster.reveal_own_agent_work(people, handle)
     }
 
     /// The waves at this person since the last call, as the bar says them.

@@ -136,20 +136,6 @@ impl Cards {
             .any(|slot| slot.contains(at.center()))
     }
 
-    /// A new pass of the layer's layout: the places it gave last are gone until it gives them
-    /// again.
-    pub(crate) fn begin_slots(&self) {
-        self.shared.borrow_mut().slots.clear();
-    }
-
-    /// The layer gave the activity's card this place on the shell.
-    pub(crate) fn slot_at(&self, app: &str, activity: &str, at: Rect) {
-        self.shared
-            .borrow_mut()
-            .slots
-            .insert((app.to_owned(), activity.to_owned()), at);
-    }
-
     /// Record the place the app was told to draw its card at (`None`: it draws the activity
     /// inline). Returns whether that is news.
     pub(crate) fn told(&self, app: &str, activity: &str, at: Option<Rect>) -> bool {

@@ -1610,16 +1610,15 @@ fn narration_of(
 }
 
 tilo_test_env::scenario! {
-    fn a_persons_own_agent_at_work_is_brought_into_view_here;
+    fn a_persons_own_agent_at_work_reaches_the_apps_here;
 
-    phase the_narrated_action_of_the_persons_own_agent_brings_its_window_into_view;
+    phase the_narrated_action_of_the_persons_own_agent_reaches_its_apps_and_cursor;
     // An agent's action reaches a device's session as its narration does on the live session: the
-    // window the person's own agent works in comes into view, so they see what it does, and the
-    // cursor it drew stands where it acted.
+    // apps here are handed the work, and the cursor it drew stands where it acted.
     {
         let _settled = ui::motion::testing::settled();
         let (sync, _said) = session("Quinten", Some(0x04));
-        let (handle, tab) = desktop_running("so.tilo.notes");
+        let (handle, _tab) = desktop_running("so.tilo.notes");
         sync.attach_shell(handle.clone());
         // The agent, run by this device for its own person, working in the notes window.
         let run = "agent-session:7";
@@ -1633,21 +1632,6 @@ tilo_test_env::scenario! {
             None,
         );
         sync.speak_for(&[(WORKSPACE.to_owned(), run.to_owned(), "claude-code".to_owned(), face)]);
-
-        // Where it works is news the first time the surface looks, and stays put after.
-        let mut tree = shell(WORKSPACE);
-        let people = sync.show(&mut tree, &no_records(), &|app: &str| Some(app.to_owned()));
-        assert!(
-            sync.reveal_own_agent_work(&people, &handle),
-            "the window its agent works in comes into view"
-        );
-        assert_eq!(handle.reveal_waiting(), Some(tab));
-        let mut tree = shell(WORKSPACE);
-        let people = sync.show(&mut tree, &no_records(), &|app: &str| Some(app.to_owned()));
-        assert!(
-            !sync.reveal_own_agent_work(&people, &handle),
-            "it did not move, so nothing moved"
-        );
 
         let (from, event) = narration_of(run, "so.tilo.notes", device(0xf0));
         sync.hear(Event::Live {
@@ -1687,15 +1671,6 @@ tilo_test_env::scenario! {
             handed[0].0
         );
         assert!(sync.take_narrated().is_empty(), "taken once");
-
-        // Acting where it already was shows that window again, without taking the keyboard.
-        let mut tree = shell(WORKSPACE);
-        let people = sync.show(&mut tree, &no_records(), &|app: &str| Some(app.to_owned()));
-        assert!(
-            sync.reveal_own_agent_work(&people, &handle),
-            "an action where it works shows that window again"
-        );
-        assert_eq!(handle.reveal_waiting(), Some(tab));
 
         // The work is the agent's, acting for this person, and its cursor stands where it acted.
         let here = sync.members(WORKSPACE);

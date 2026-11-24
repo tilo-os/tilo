@@ -25,7 +25,7 @@ mod following;
 mod screen;
 mod waves;
 
-pub use agent_work::{WorkPlace, apply_narrated, go_to, note_narrated, reveal_own_agent_work};
+pub use agent_work::{apply_narrated, go_to};
 pub use collab_types::presence::{
     ShownFocus as Focus, ShownLayout as MemberLayout, ShownWindow as MemberWindow,
 };
@@ -275,8 +275,6 @@ pub struct HereState {
     /// This person's own agents already met on this page, by publisher
     /// ([`HereState::take_own_agents_arrived`]).
     met_agents: std::collections::BTreeSet<String>,
-    /// Where this person's own agents were last shown working ([`HereState::take_own_agent_work`]).
-    agent_work: agent_work::AgentWork,
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
