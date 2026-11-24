@@ -716,4 +716,167 @@ action prune(g: Design, d: device.Desk, first: Text, second: Text) -> Text {
             );
         }
     }
+
+    /// A package whose action makes a resource and answers it, as the discussion makes a comment.
+    const SHELF: &str = r#"app so.tilo.shelf "Shelf"
+
+type Note {
+    title: Text
+}
+
+type Notes {
+    items: Collection<Note>
+}
+
+root shelf: Notes
+
+default view notes for Notes
+
+view notes(n: Notes) {
+    text("{n.items.len()}")
+}
+
+action make(all: Notes, title: Text) -> Note {
+    require title != "" "Name the note first"
+    all.items.insert(Note(title: title))
+}
+"#;
+
+    /// A package whose action asks the shelf for a note and goes on with the one it answers.
+    const DESK: &str = r#"app so.tilo.desk "Desk"
+
+use so.tilo.shelf as shelf
+
+type Pad {
+    last: Text
+    said: Text
+}
+
+root Pad
+
+default view pad for Pad
+
+view pad(p: Pad) {
+    text(p.said)
+}
+
+action jot(p: Pad, title: Text) -> shelf.Note {
+    let n = shelf.make(shelf.shelf, title).made_from(p)
+    p.last = n.id()
+    p.said = "kept {n.title}"
+    n
+}
+"#;
+
+    struct Jot {
+        rt: Runtime,
+        auth: SimpleAuthority,
+        desk: App,
+        dispatch: Dispatch,
+        pad: tilolang_runtime::ResourceRef,
+    }
+
+    fn jot_world() -> Jot {
+        let shelf = App::compile(SHELF, &[]);
+        let desk = App::compile(DESK, &[shelf.meta().clone()]);
+        let auth = SimpleAuthority::new();
+        let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
+        shelf.load(&rt);
+        desk.load(&rt);
+        let dispatch = Dispatch::new();
+        rt.set_foreign_invoker(dispatch.clone());
+        rt.create_root("Notes").unwrap();
+        let pad = rt.create_root("Pad").unwrap();
+        Jot {
+            rt,
+            auth,
+            desk,
+            dispatch,
+            pad,
+        }
+    }
+
+    impl Jot {
+        fn jot(&self, title: &str) -> Result<InvokeOutcome, tilolang_runtime::RuntimeError> {
+            self.rt.invoke_action(
+                &me(),
+                (
+                    self.desk.action("jot").as_str(),
+                    vec![Value::resource(&self.pad), Value::text(title)],
+                ),
+            )
+        }
+
+        /// The note `answer` is, as the caller went on with it.
+        fn kept(&self, answer: &Value) -> tilolang_runtime::ResourceRef {
+            let Value::Ref(note) = answer else {
+                panic!("the call answers the note it made: {answer:?}");
+            };
+            assert_eq!(
+                self.rt.read(&self.pad, "last").unwrap(),
+                Value::text(note.target.id_string()),
+                "the caller read the id of the note it was answered"
+            );
+            tilolang_runtime::ResourceRef::clone(&note.target)
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn an_action_goes_on_with_the_resource_another_packages_action_answers;
+
+        phase a_call_allowed_at_once_answers_the_note_it_made;
+        {
+            let w = jot_world();
+            w.auth.trust(&Runtime::module_hash(&w.desk.compiled.wasm));
+            let Ok(InvokeOutcome::Done(answer)) = w.jot("Groceries") else {
+                panic!("a trusted call runs at once");
+            };
+            let note = w.kept(&answer);
+            assert_eq!(w.rt.read(&note, "title").unwrap(), Value::text("Groceries"));
+            assert_eq!(
+                w.rt.read(&w.pad, "said").unwrap(),
+                Value::text("kept Groceries")
+            );
+        }
+
+        phase a_call_that_asks_first_answers_the_note_when_it_is_allowed;
+        {
+            let w = jot_world();
+            let Ok(InvokeOutcome::Waits { run, .. }) = w.jot("Groceries") else {
+                panic!("the other package's action is asked about first");
+            };
+            let RunOutcome::Done(answer) = w.dispatch.allow(&w.rt, &run) else {
+                panic!("the run ends once the call is answered");
+            };
+            let note = w.kept(&answer);
+            assert_eq!(w.rt.read(&note, "title").unwrap(), Value::text("Groceries"));
+            assert_eq!(
+                w.rt.read(&w.pad, "said").unwrap(),
+                Value::text("kept Groceries")
+            );
+        }
+
+        phase a_refused_call_stops_the_caller_with_why;
+        {
+            let w = jot_world();
+            w.auth.trust(&Runtime::module_hash(&w.desk.compiled.wasm));
+            let error = w.jot("").expect_err("the callee refused, so the caller cannot go on");
+            assert!(error.to_string().contains("Name the note first"), "{error}");
+            assert_eq!(w.rt.read(&w.pad, "said").unwrap(), Value::text(""));
+        }
+
+        phase a_declined_call_stops_the_caller;
+        {
+            let w = jot_world();
+            let Ok(InvokeOutcome::Waits { run, .. }) = w.jot("Groceries") else {
+                panic!("the other package's action is asked about first");
+            };
+            let error = decline(&w.rt, &run);
+            assert!(
+                matches!(error, tilolang_runtime::RuntimeError::Denied(_)),
+                "{error}"
+            );
+            assert_eq!(w.rt.read(&w.pad, "said").unwrap(), Value::text(""));
+        }
+    }
 }

@@ -104,7 +104,8 @@ view member_row(p: Member) {
 
     impl Writer {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let authority = SimpleAuthority::new();
+            let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let device = Device::default();
             rt.set_blobs(device.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
@@ -119,6 +120,8 @@ view member_row(p: Member) {
                 &[workspace.meta().clone(), discussion.meta().clone()],
             );
             app.load(&rt);
+            // The Writer the person installed may make its comments in the discussion.
+            authority.trust(&Runtime::module_hash(&app.compiled.wasm));
             let doc = rt.create_root("Document").unwrap();
             Self {
                 rt,
@@ -440,6 +443,52 @@ view member_row(p: Member) {
         view.press(&wrapped).unwrap();
         view.poll_patches().unwrap();
         assert_eq!(asked_of(&view), "picture:wrap:left:3");
+    }
+
+    #[test]
+    fn a_comment_is_the_discussions_and_anchored_to_the_words_it_is_about() {
+        let writer = Writer::new();
+        writer.one(
+            "open_document",
+            vec![
+                Value::resource(&writer.doc),
+                Value::file(writer.device.keeping(
+                    "plan.md",
+                    "text/markdown",
+                    b"# Plan\n\nWe open on Monday.\n",
+                )),
+            ],
+        );
+        let InvokeOutcome::Done(Value::Ref(comment)) = writer.call(
+            "comment_on",
+            vec![
+                Value::resource(&writer.doc),
+                writer.words("Which Monday?"),
+                Value::text("\u{b6}2"),
+                Value::Int(0),
+                Value::Int(2),
+            ],
+        ) else {
+            panic!("the comment is the answer");
+        };
+        match writer.rt.read(&comment.target, "text").unwrap() {
+            Value::Rich(text) => assert_eq!(text.written_text(), "Which Monday?"),
+            other => panic!("the comment's text reads {other:?}"),
+        }
+        let Value::Rich(body) = writer.rt.read(&writer.doc, "body").unwrap() else {
+            panic!("the body is rich text");
+        };
+        assert!(
+            format!("{body:?}").contains(&comment.target.id_string()),
+            "the words carry the comment's mark: {body:?}"
+        );
+        let InvokeOutcome::Done(Value::Ref(plain)) = writer.call(
+            "comment_on",
+            vec![Value::resource(&writer.doc), writer.words("Looks good.")],
+        ) else {
+            panic!("a comment on the whole document is the answer too");
+        };
+        assert_ne!(plain.target, comment.target);
     }
 
     #[test]

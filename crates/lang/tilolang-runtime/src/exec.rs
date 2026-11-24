@@ -2399,11 +2399,11 @@ impl Core {
         let Some(value) = replayed else {
             return Err(HostFail::Suspend);
         };
-        // What did not run stops a program that does not `try` it: it never goes on as if it
-        // had.
+        // What did not run stops the action or the program that does not `try` it, with why: it
+        // never goes on as if it had, holding the refusal where the call's answer belongs (a
+        // comment the discussion refused to make is no comment to mark the words with).
         if let Value::Error(reason) = &value
             && !self.trying.get()
-            && self.frames.borrow().program()
         {
             return trap(reason.clone());
         }
