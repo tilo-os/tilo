@@ -147,6 +147,7 @@ impl SignIn {
             Some(_) => Ok(()),
             None => {
                 *bound = Some(person);
+                drop(bound);
                 Ok(())
             }
         }
@@ -698,103 +699,25 @@ impl Tickets {
         let host = self.0.serving_host.get().cloned().ok_or(Refusal::NoPages)?;
         let reached = host.reached().ok_or(Refusal::Malformed)?;
         let now = tilo_clock::unix_now_ns();
-        let mut pages = self.0.pages.lock_recover();
-        pages.retain(|_, page| page.gone_at_ns > now);
-        if pages.len() >= MAX_PAGE_TICKETS {
+        let full = |pages: &mut HashMap<[u8; 32], PageTicket>| {
+            pages.retain(|_, page| page.gone_at_ns > now);
+            pages.len() >= MAX_PAGE_TICKETS
+        };
+        if full(&mut self.0.pages.lock_recover()) {
             return Err(Refusal::TooMany);
         }
         let expires_at_ns = now.saturating_add(TICKET_LIFETIME_NS);
         let ticket = new_ticket(mint.direction, reached.clone()).map_err(|_| Refusal::Malformed)?;
         let shown = match mint.direction {
-            Direction::Login => {
-                let user = hex_key(mint.user.as_deref()).ok_or(Refusal::Malformed)?;
-                let workspace = mint
-                    .workspace
-                    .clone()
-                    .filter(|workspace| !workspace.is_empty())
-                    .ok_or(Refusal::Malformed)?;
-                let host_origin = mint.host_origin.clone().unwrap_or_default();
-                let entry = Entry {
-                    workspace,
-                    workspace_name: mint.name.clone(),
-                    server_cert: host.server_cert(),
-                    server: reached,
-                    site: mint.site.clone().unwrap_or_else(|| host_origin.clone()),
-                    host_origin,
-                };
-                let setup = Arc::new_cyclic(|setup: &std::sync::Weak<Setup>| {
-                    let approver = Arc::new(PageApprover(setup.clone()));
-                    let served = if mint.browser {
-                        ServedTicket::for_browser(
-                            ticket.clone(),
-                            user,
-                            entry,
-                            approver,
-                            host.revocations(),
-                            expires_at_ns,
-                        )
-                    } else {
-                        ServedTicket::new(
-                            ticket.clone(),
-                            user,
-                            entry,
-                            tilo_user_identity::DeviceCapabilities::member(),
-                            approver,
-                            host.revocations(),
-                            expires_at_ns,
-                        )
-                    };
-                    Setup {
-                        served,
-                        asked: Mutex::default(),
-                        decision: watch::Sender::new(None),
-                        certified: Mutex::default(),
-                        declined: Mutex::default(),
-                        detail: Mutex::default(),
-                        steps: Mutex::default(),
-                        agent: Mutex::default(),
-                    }
-                });
-                self.0.served.serve(setup.served.clone());
-                self.watch_certified(&setup, &host);
-                Shown::Setup(setup)
-            }
-            Direction::SignIn => {
-                let tab = Tab {
-                    device_public_key: hex::encode(device),
-                    label: mint
-                        .label
-                        .clone()
-                        .filter(|label| !label.trim().is_empty())
-                        .unwrap_or_else(|| "Browser".to_owned()),
-                    agent: None,
-                };
-                // The name it asks to be listed by is one a certificate carries.
-                tab.certificate(device, now)
-                    .map_err(|_| Refusal::Malformed)?;
-                let named = match mint.user.as_deref() {
-                    Some(user) => Some(hex_key(Some(user)).ok_or(Refusal::Malformed)?),
-                    None => None,
-                };
-                let sign_in = Arc::new(SignIn {
-                    ticket: ticket.clone(),
-                    tab,
-                    from_page: true,
-                    expires_at_ns,
-                    person: Mutex::new(named),
-                    by: Mutex::default(),
-                    certified: watch::Sender::new(None),
-                });
-                let mut sign_ins = self.0.sign_ins.lock_recover();
-                sign_ins
-                    .retain(|_, kept| kept.expires_at_ns.saturating_add(KEEP_ANSWERED_NS) > now);
-                sign_ins.insert(sign_in.secret(), Arc::clone(&sign_in));
-                drop(sign_ins);
-                Shown::SignIn(sign_in)
-            }
+            Direction::Login => self.show_login(mint, &host, reached, &ticket, expires_at_ns)?,
+            Direction::SignIn => self.show_sign_in(device, mint, &ticket, now, expires_at_ns)?,
         };
         let mut id = [0u8; 32];
         getrandom::fill(&mut id).map_err(|_| Refusal::Malformed)?;
+        let mut pages = self.0.pages.lock_recover();
+        if full(&mut pages) {
+            return Err(Refusal::TooMany);
+        }
         pages.insert(
             id,
             PageTicket {
@@ -802,10 +725,114 @@ impl Tickets {
                 gone_at_ns: expires_at_ns.saturating_add(KEEP_ANSWERED_NS),
             },
         );
+        drop(pages);
         Ok(Minted {
             id: hex::encode(id),
             ticket: ticket.encode(),
         })
+    }
+
+    /// Serve a page's login `ticket`, which the page that asked for it answers.
+    fn show_login(
+        &self,
+        mint: &Mint,
+        host: &Arc<dyn PageHost>,
+        reached: Reached,
+        ticket: &Ticket,
+        expires_at_ns: u64,
+    ) -> Result<Shown, Refusal> {
+        let user = hex_key(mint.user.as_deref()).ok_or(Refusal::Malformed)?;
+        let workspace = mint
+            .workspace
+            .clone()
+            .filter(|workspace| !workspace.is_empty())
+            .ok_or(Refusal::Malformed)?;
+        let host_origin = mint.host_origin.clone().unwrap_or_default();
+        let entry = Entry {
+            workspace,
+            workspace_name: mint.name.clone(),
+            server_cert: host.server_cert(),
+            server: reached,
+            site: mint.site.clone().unwrap_or_else(|| host_origin.clone()),
+            host_origin,
+        };
+        let setup = Arc::new_cyclic(|setup: &std::sync::Weak<Setup>| {
+            let approver = Arc::new(PageApprover(setup.clone()));
+            let served = if mint.browser {
+                ServedTicket::for_browser(
+                    ticket.clone(),
+                    user,
+                    entry,
+                    approver,
+                    host.revocations(),
+                    expires_at_ns,
+                )
+            } else {
+                ServedTicket::new(
+                    ticket.clone(),
+                    user,
+                    entry,
+                    tilo_user_identity::DeviceCapabilities::member(),
+                    approver,
+                    host.revocations(),
+                    expires_at_ns,
+                )
+            };
+            Setup {
+                served,
+                asked: Mutex::default(),
+                decision: watch::Sender::new(None),
+                certified: Mutex::default(),
+                declined: Mutex::default(),
+                detail: Mutex::default(),
+                steps: Mutex::default(),
+                agent: Mutex::default(),
+            }
+        });
+        self.0.served.serve(setup.served.clone());
+        self.watch_certified(&setup, host);
+        Ok(Shown::Setup(setup))
+    }
+
+    /// Keep a page's sign-in `ticket` for the tab whose key is `device`.
+    fn show_sign_in(
+        &self,
+        device: [u8; 32],
+        mint: &Mint,
+        ticket: &Ticket,
+        now: u64,
+        expires_at_ns: u64,
+    ) -> Result<Shown, Refusal> {
+        let tab = Tab {
+            device_public_key: hex::encode(device),
+            label: mint
+                .label
+                .clone()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| "Browser".to_owned()),
+            agent: None,
+        };
+        // The name it asks to be listed by is one a certificate carries.
+        tab.certificate(device, now)
+            .map_err(|_| Refusal::Malformed)?;
+        let named = match mint.user.as_deref() {
+            Some(user) => Some(hex_key(Some(user)).ok_or(Refusal::Malformed)?),
+            None => None,
+        };
+        let sign_in = Arc::new(SignIn {
+            ticket: ticket.clone(),
+            tab,
+            from_page: true,
+            expires_at_ns,
+            person: Mutex::new(named),
+            by: Mutex::default(),
+            certified: watch::Sender::new(None),
+        });
+        let mut sign_ins = self.0.sign_ins.lock_recover();
+        sign_ins.retain(|_, kept| kept.expires_at_ns.saturating_add(KEEP_ANSWERED_NS) > now);
+        sign_ins.insert(sign_in.secret(), Arc::clone(&sign_in));
+        drop(sign_ins);
+        Ok(Shown::SignIn(sign_in))
     }
 
     /// Record the certificate `setup`'s ticket gives once it gives one, and keep it where `host`
@@ -848,27 +875,32 @@ impl Tickets {
         match self.shown(id)? {
             Shown::Setup(setup) => {
                 let mut answer = Map::new();
-                if let Some(asked) = setup.asked.lock_recover().clone() {
+                let asked = setup.asked.lock_recover().clone();
+                if let Some(asked) = asked {
                     answer.insert(
                         "asked".to_owned(),
                         serde_json::to_value(asked).map_err(|_| Refusal::Malformed)?,
                     );
                 }
-                if let Some(cert) = setup.certified.lock_recover().as_ref() {
+                let certified = setup.certified.lock_recover().clone();
+                if let Some(cert) = certified {
                     answer.insert(
                         "certified".to_owned(),
-                        serde_json::to_string(cert)
+                        serde_json::to_string(&cert)
                             .map_err(|_| Refusal::Malformed)?
                             .into(),
                     );
                 }
-                if let Some(declined) = setup.declined.lock_recover().clone() {
+                let declined = setup.declined.lock_recover().clone();
+                if let Some(declined) = declined {
                     answer.insert("declined".to_owned(), declined.into());
                 }
-                if let Some(agent) = setup.agent.lock_recover().clone() {
+                let agent = setup.agent.lock_recover().clone();
+                if let Some(agent) = agent {
                     answer.insert("agent".to_owned(), agent.into());
                 }
-                if let Some(detail) = setup.detail.lock_recover().clone() {
+                let detail = setup.detail.lock_recover().clone();
+                if let Some(detail) = detail {
                     answer.insert("detail".to_owned(), detail.into());
                 }
                 answer.insert(
@@ -884,7 +916,8 @@ impl Tickets {
                     return Err(Refusal::NotTheTab);
                 }
                 let mut answer = Map::new();
-                if let Some(person) = *sign_in.person.lock_recover() {
+                let person = *sign_in.person.lock_recover();
+                if let Some(person) = person {
                     let by = sign_in
                         .by
                         .lock_recover()
@@ -895,10 +928,11 @@ impl Tickets {
                         json!({ "user": hex::encode(person), "by": by }),
                     );
                 }
-                if let Some(cert) = sign_in.certified.borrow().as_ref() {
+                let certified = sign_in.certified.borrow().clone();
+                if let Some(cert) = certified {
                     answer.insert(
                         "certified".to_owned(),
-                        serde_json::to_string(cert)
+                        serde_json::to_string(&cert)
                             .map_err(|_| Refusal::Malformed)?
                             .into(),
                     );
@@ -921,7 +955,22 @@ impl Tickets {
         let Shown::Setup(setup) = self.shown(&answer.id)? else {
             return Err(Refusal::Malformed);
         };
+        // The served ticket kept the revocations known when it was minted: a page whose device
+        // was removed since approves nothing, which only the host's live list knows.
+        let removed = |approved: &Approved| {
+            self.0.serving_host.get().is_some_and(|host| {
+                host.revocations().is_revoked(
+                    &approved.approver.user_public_key,
+                    &approved.approver.device_public_key,
+                )
+            })
+        };
         let decision = match (&answer.approved, &answer.declined) {
+            (Some(approved), None) if removed(approved) => Err(Declined(
+                "the device that showed this link was removed from its person's devices: \
+                 make a new link on a device they still use"
+                    .to_owned(),
+            )),
             (Some(approved), None) => Ok(approved.clone()),
             (None, Some(reason)) => Err(Declined(reason.clone())),
             (None, None) => Err(Declined("the page said no".to_owned())),
@@ -1087,7 +1136,8 @@ impl Approver for PageApprover {
             let mut decision = setup.decision.subscribe();
             let waited = tokio::time::timeout(Duration::from_nanos(TICKET_LIFETIME_NS), async {
                 loop {
-                    if let Some(answer) = decision.borrow_and_update().clone() {
+                    let decided = decision.borrow_and_update().clone();
+                    if let Some(answer) = decided {
                         return answer;
                     }
                     if decision.changed().await.is_err() {

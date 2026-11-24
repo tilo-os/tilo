@@ -75,6 +75,7 @@ macro_rules! over_each_carrier {
 over_each_carrier!(
     a_root_holding_device_certifies_a_new_one,
     the_persons_page_signs_a_new_device_in,
+    a_links_ticket_is_refused_once_used_and_once_the_page_showing_it_is_removed,
     documents_sync_both_ways_until_the_device_is_revoked,
     a_removed_device_is_told_that_it_was_removed,
     the_workspace_admits_the_device_and_its_live_session_carries_it,
@@ -227,6 +228,59 @@ impl Ada {
         .unwrap()
     }
 
+    /// A link's login ticket, as `page` (a device of Ada's whose page holds her root) shows one
+    /// for a browser entering the workspace: the id the page follows it by, and the ticket.
+    async fn show_link(
+        &self,
+        shown: &TicketLink,
+        page: &Device,
+    ) -> (serde_json::Value, tilo_device_identity::login::Ticket) {
+        let user = hex::encode(self.root.verifying_key().to_bytes());
+        let minted = self
+            .ask(
+                shown,
+                &page.key,
+                "issue",
+                json!({"user": user, "workspace": WORKSPACE, "browser": true}),
+            )
+            .await
+            .expect("the page asks for a link's ticket");
+        let ticket =
+            tilo_device_identity::login::Ticket::parse(minted["ticket"].as_str().unwrap()).unwrap();
+        (minted["id"].clone(), ticket)
+    }
+
+    /// `page` approves the tab that logged in with the ticket it follows by `id`: the root signs
+    /// the certificate the host built, and the page signs the question with its own key.
+    async fn approve_asked(&self, shown: &TicketLink, page: &Device, id: &serde_json::Value) {
+        use ed25519_dalek::Signer as _;
+        let asked: tilo_device_identity::login::Asked = wait_for("the tab to ask", || async move {
+            let status = self
+                .ask(shown, &page.key, "follow", json!({ "id": id }))
+                .await
+                .unwrap();
+            status
+                .get("asked")
+                .map(|asked| serde_json::from_value(asked.clone()).unwrap())
+        })
+        .await;
+        let mut cert = asked.cert.clone();
+        tilo_user_identity::sign_device_cert(&mut cert, &self.root).unwrap();
+        let approved = tilo_device_identity::login::Approved {
+            cert,
+            approver: page.cert.clone(),
+            signature: page.key.sign(&asked.digest).to_bytes(),
+        };
+        self.ask(
+            shown,
+            &page.key,
+            "answer",
+            json!({"id": id, "approved": approved}),
+        )
+        .await
+        .expect("the page's answer is taken");
+    }
+
     /// Ada's laptop, in the workspace over a direct session.
     pub(crate) async fn laptop_peer(&self, server_cert: &DeviceCert) -> Link {
         place(&self.host.server, &self.laptop.cert).await;
@@ -302,6 +356,116 @@ async fn the_persons_page_signs_a_new_device_in(carrier: Carrier) {
     );
     kept.close().await;
     ada.host.server.shutdown().await;
+}
+
+/// A link's login ticket, as a page holding Ada's root shows one, logs in one tab: used again it
+/// is refused, in words a person reads. And a page Ada removed from her devices approves nothing:
+/// the tab that logs in with the link it showed before is turned away, saying why, though the
+/// removed page still answers.
+async fn a_links_ticket_is_refused_once_used_and_once_the_page_showing_it_is_removed(
+    carrier: Carrier,
+) {
+    let ada = Ada::start().await;
+    let host = ada.host.over(carrier);
+    let (page_key, page_cert, _) = ada.certified(&host).await;
+    let page = Device {
+        key: page_key,
+        cert: page_cert,
+    };
+    let shown = TicketLink::new(host.clone());
+
+    let (id, ticket) = ada.show_link(&shown, &page).await;
+    let first = tokio::spawn(log_in_with(
+        host.clone(),
+        ada.host_device.cert.device_public_key,
+        ticket.clone(),
+    ));
+    ada.approve_asked(&shown, &page, &id).await;
+    let answer: tilo_device_identity::login::CertifyAnswer =
+        serde_json::from_value(first.await.unwrap().expect("the first tab logs in")).unwrap();
+    assert_eq!(
+        answer.cert.user_public_key,
+        ada.root.verifying_key().to_bytes()
+    );
+    let again = log_in_with(host.clone(), ada.host_device.cert.device_public_key, ticket)
+        .await
+        .expect_err("a link's ticket logs in one tab");
+    assert_eq!(again, "this ticket was used already: ask for a new one");
+
+    // Ada removes the page from her devices, on her laptop; the link it showed before stays out,
+    // though the removed page still answers, not knowing.
+    let (id, ticket) = ada.show_link(&shown, &page).await;
+    let laptop = ada.laptop_peer(&ada.host_device.cert).await;
+    let removal = tilo_server_client::revoke_device(
+        &ada.root,
+        page.cert.device_public_key,
+        tilo_clock::unix_now_ns(),
+        RevocationReason::Retired,
+    )
+    .await
+    .unwrap();
+    laptop.send(Cmd::Revoke(removal.clone())).unwrap();
+    wait_for("the server to take the removal in", || async {
+        ada.host
+            .server
+            .workspaces()
+            .unwrap()
+            .state(WORKSPACE)
+            .await?
+            .revocations()
+            .into_iter()
+            .find(|held| held == &removal)
+    })
+    .await;
+    let late = tokio::spawn(log_in_with(
+        host.clone(),
+        ada.host_device.cert.device_public_key,
+        ticket,
+    ));
+    ada.approve_asked(&shown, &page, &id).await;
+    let refused = late
+        .await
+        .unwrap()
+        .expect_err("a removed page's approval lets nobody in");
+    assert!(
+        refused.contains("was removed from its person's devices"),
+        "{refused}"
+    );
+    shown.close().await;
+    laptop.close();
+    ada.host.server.shutdown().await;
+}
+
+/// A tab, with a key of its own and a link of its own to the host `host` (its device key
+/// `host_key`), logging in with a link's `ticket`: the host's answer, once the page that showed
+/// the link answered.
+async fn log_in_with(
+    host: ServerAddress,
+    host_key: [u8; 32],
+    ticket: tilo_device_identity::login::Ticket,
+) -> Result<serde_json::Value, String> {
+    let tab = TicketLink::new(host);
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let serde_json::Value::Object(argument) = json!({
+        "secret": ticket.secret_hex(),
+        "device_public_key": hex::encode(key.verifying_key().to_bytes()),
+        "agent": "Safari on iPhone",
+    }) else {
+        unreachable!("an argument is an object")
+    };
+    let answer = tab
+        .ask(
+            Arc::new(key.clone()),
+            key.verifying_key().to_bytes(),
+            host_key,
+            "certify",
+            argument,
+            std::time::Duration::from_secs(20),
+        )
+        .await
+        .unwrap();
+    tab.close().await;
+    answer
 }
 
 async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) {

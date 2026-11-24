@@ -230,30 +230,8 @@ impl ServedTicket {
                 Err(ActionCallError::NotPermitted)
             };
         }
-        let InvokeArgument::Json(argument) = &request.argument else {
-            return Err(ActionCallError::refused(
-                "a computer asks with its key, its agent and the ticket's secret",
-            ));
-        };
-        let input: CertifyInput =
-            serde_json::from_value(serde_json::Value::Object(argument.clone())).map_err(|_| {
-                ActionCallError::refused(
-                    "a computer asks with its key, its agent and the ticket's secret",
-                )
-            })?;
-        let mut key = [0; 32];
-        if hex::decode_to_slice(&input.device_public_key, &mut key).is_err() || key != device {
-            return Err(ActionCallError::refused(
-                "a computer asks to be certified for the key it connects with",
-            ));
-        }
+        let (input, label) = certify_input(device, request)?;
         let agent = input.agent.trim();
-        if agent.is_empty() {
-            return Err(ActionCallError::refused(
-                "a computer names the agent that runs on it",
-            ));
-        }
-        let label = fitted(input.label.as_deref().map_or(agent, str::trim));
         let now = tilo_clock::unix_now_ns();
         self.0
             .secret
@@ -320,6 +298,36 @@ impl ServedTicket {
         });
         Ok(receipt)
     }
+}
+
+/// What a computer's certify call asks with, checked: its input, and the name it is listed by.
+fn certify_input(
+    device: [u8; 32],
+    request: &InvokeRequest,
+) -> Result<(CertifyInput, String), ActionCallError> {
+    let InvokeArgument::Json(argument) = &request.argument else {
+        return Err(ActionCallError::refused(
+            "a computer asks with its key, its agent and the ticket's secret",
+        ));
+    };
+    let input: CertifyInput = serde_json::from_value(serde_json::Value::Object(argument.clone()))
+        .map_err(|_| {
+        ActionCallError::refused("a computer asks with its key, its agent and the ticket's secret")
+    })?;
+    let mut key = [0; 32];
+    if hex::decode_to_slice(&input.device_public_key, &mut key).is_err() || key != device {
+        return Err(ActionCallError::refused(
+            "a computer asks to be certified for the key it connects with",
+        ));
+    }
+    let agent = input.agent.trim();
+    if agent.is_empty() {
+        return Err(ActionCallError::refused(
+            "a computer names the agent that runs on it",
+        ));
+    }
+    let label = fitted(input.label.as_deref().map_or(agent, str::trim));
+    Ok((input, label))
 }
 
 /// Several tickets a device serves at once on the one scope its action service admits computers
