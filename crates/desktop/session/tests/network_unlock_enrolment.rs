@@ -181,7 +181,6 @@ impl TwoDevices {
                     relays: test_server::loopback(),
                     lan: None,
                 },
-                None,
                 Some(asks.clone()),
                 Vec::new(),
             )
@@ -201,7 +200,6 @@ impl TwoDevices {
                     relays: test_server::loopback(),
                     lan: None,
                 },
-                None,
                 None,
                 Vec::new(),
             )

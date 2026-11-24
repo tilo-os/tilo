@@ -100,7 +100,6 @@ fn device_with(
             lan,
         },
         None,
-        None,
         Vec::new(),
     )
     .expect("a loopback endpoint binds");

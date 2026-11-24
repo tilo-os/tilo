@@ -528,7 +528,6 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
             lan: None,
         },
         None,
-        None,
         Vec::new(),
     )
     .expect("a loopback endpoint binds");
@@ -685,7 +684,6 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             lan: None,
         },
         None,
-        None,
         shell_vpn.served(),
     )
     .expect("this device's endpoint binds");
@@ -702,7 +700,6 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             relays: test_server::loopback(),
             lan: None,
         },
-        None,
         None,
         Vec::new(),
     )
