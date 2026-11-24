@@ -20967,6 +20967,7 @@ dependencies = [
  "tilo-runtime-portal",
  "tilo-test-env",
  "tracing",
+ "unicode-width",
  "uuid",
  "workspace-hack",
 ]

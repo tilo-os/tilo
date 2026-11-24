@@ -31,7 +31,11 @@ mod graphics;
 pub mod model;
 pub mod parse;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod input;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod provider;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod selection;
 #[cfg(not(target_arch = "wasm32"))]
 mod screen;
 #[cfg(not(target_arch = "wasm32"))]

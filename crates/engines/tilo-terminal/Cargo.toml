@@ -14,6 +14,8 @@ serde_json.workspace = true
 tracing.workspace = true
 # A session's shell marks its runs with a key this process makes up.
 uuid.workspace = true
+# A selection cuts whole glyphs: a cell column is not a byte offset.
+unicode-width = { version = "0.2.2" }
 # Where a session can run, and the environment records it can run in.
 tilo-environment = { path = "../../vm/environment" }
 
