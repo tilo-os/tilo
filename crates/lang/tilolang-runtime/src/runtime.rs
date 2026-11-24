@@ -1157,6 +1157,21 @@ impl Runtime {
             .collect()
     }
 
+    /// The descriptions of the apps this runtime does not run ([`Self::load_foreign`]), each
+    /// without code: what a host opened over another store describes again, so a package that
+    /// reads their roots (a scenario's `workspace.members`) reads there as here.
+    #[must_use]
+    pub fn descriptions(&self) -> Vec<Meta> {
+        self.core
+            .registry
+            .borrow()
+            .packages()
+            .iter()
+            .filter(|package| package.foreign && !package.code)
+            .map(|package| package.meta.clone())
+            .collect()
+    }
+
     /// The name of the type `ty` (an id), as its package declares it (`Label`), for a surface
     /// that says what a resource is. `None` for a type this runtime holds no package of.
     pub fn type_name(&self, ty: &str) -> Option<String> {

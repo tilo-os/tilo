@@ -204,6 +204,14 @@ impl ResourceService {
             host.load_module(&package.wasm, package.meta.clone(), package.ids.clone())
                 .map_err(|error| format!("{}: {error}", package.meta.app))?;
         }
+        // The apps it does not run, described here again (the workspace's members,
+        // `use tilo.workspace`): the seed that fills this store, and an action invoked on it
+        // later, reads their roots as it does on the host this one replaces.
+        for meta in self.host.runtime().descriptions() {
+            host.runtime()
+                .load_foreign(meta.clone())
+                .map_err(|error| format!("{}: {error}", meta.app))?;
+        }
         Ok(host)
     }
 
