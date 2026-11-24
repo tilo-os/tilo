@@ -146,11 +146,6 @@ pub enum ToolIntent {
     UninstallApplication {
         app: String,
     },
-    /// Open the address `url` (`https://…`, `http://…` or `mailto:…`) with the app that opens
-    /// links of its scheme, as a person pressing a link does: what `tool.open_link` asks for.
-    OpenLink {
-        url: String,
-    },
     /// Open the file `name` whose bytes the workspace's content store holds under `hash`, in
     /// `app`, one of the apps that open its type: what `File.open` asks for a file an action
     /// holds rather than a path it can read. The app reads the same content, so the bytes travel
@@ -159,6 +154,11 @@ pub enum ToolIntent {
         name: String,
         hash: String,
         app: String,
+    },
+    /// Open the address `url` (`https://…`, `http://…` or `mailto:…`) with the app that opens
+    /// links of its scheme, as a person pressing a link does: what `tool.open_link` asks for.
+    OpenLink {
+        url: String,
     },
 }
 

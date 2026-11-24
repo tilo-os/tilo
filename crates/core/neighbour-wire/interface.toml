@@ -180,6 +180,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "HelloRefusal" = "enum external"
 "HelloRefusal::CertificateRejected" = "#1 unit"
 "HelloRefusal::DeviceRevoked" = "#0 unit"
+"HelloRefusal::NotAdmitted" = "#2 unit"
 "HelloRefused" = "struct"
 "HelloRefused.cert" = "#1 DeviceCert"
 "HelloRefused.protocol" = "#0 u32"
