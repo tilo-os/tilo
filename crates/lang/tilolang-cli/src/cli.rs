@@ -1122,26 +1122,9 @@ pub fn commands() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Run the command line `args` (the program's name first).
-pub fn main(args: Vec<OsString>) -> ExitCode {
-    let cli = match Cli::try_parse_from(args) {
-        Ok(cli) => cli,
-        Err(error) => return report_usage_error(&error),
-    };
-    let json = if cli.json {
-        match json_stdout::JsonStdout::claim() {
-            Ok(stdout) => Some(stdout),
-            Err(error) => {
-                eprintln!("tilolang: reserving stdout for --json: {error}");
-                return ExitCode::FAILURE;
-            }
-        }
-    } else {
-        None
-    };
-    let interactive = json.is_none();
-    let name = cli.command.name();
-    let result = match cli.command {
+/// Run one parsed command.
+fn run_command(command: Command, interactive: bool) -> Result<Value> {
+    match command {
         Command::Guide { topic } => Ok(guide::run(topic, interactive)),
         Command::New(args) => run_new(args, interactive),
         Command::Examples { name, file } => {
@@ -1172,7 +1155,37 @@ pub fn main(args: Vec<OsString>) -> ExitCode {
         Command::Apply(args) => publishing::run_apply(args),
         Command::Publish(args) => publishing::run_publish(args),
         Command::Push(args) => tilo_app_builder::push::run_push(args),
+    }
+}
+
+/// Run the command line `args` (the program's name first).
+pub fn main(args: Vec<OsString>) -> ExitCode {
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(error) => return report_usage_error(&error),
     };
+    let json = if cli.json {
+        match json_stdout::JsonStdout::claim() {
+            Ok(stdout) => Some(stdout),
+            Err(error) => {
+                eprintln!("tilolang: reserving stdout for --json: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+    let interactive = json.is_none();
+    let name = cli.command.name();
+    // The commands that start the app, or build what someone runs, need Tilo's fonts: prepared
+    // once on this machine, before the first of them, so its output and its checks set text in
+    // the faces the product ships.
+    let fonts = if cli.command.runs_the_app() {
+        tilolang_cli::fonts::ensure().map(drop)
+    } else {
+        Ok(())
+    };
+    let result = fonts.and_then(|()| run_command(cli.command, interactive));
     let code = match &result {
         Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
@@ -1253,6 +1266,22 @@ fn failed(message: impl Into<String>, report: Value) -> anyhow::Error {
 }
 
 impl Command {
+    /// Whether the command starts the app or builds what someone runs: what needs Tilo's fonts.
+    fn runs_the_app(&self) -> bool {
+        match self {
+            Self::New(args) => args.dev,
+            Self::Scenario(args) => matches!(args.command, ScenarioCommand::Run { .. }),
+            Self::Check(_)
+            | Self::Certify(_)
+            | Self::Run(_)
+            | Self::Build(_)
+            | Self::Test(_)
+            | Self::Dev(_)
+            | Self::Shot(_) => true,
+            _ => false,
+        }
+    }
+
     fn name(&self) -> &'static str {
         match self {
             Self::Guide { .. } => "guide",
@@ -2109,6 +2138,13 @@ fn build_native(
         },
     )?;
     let mut json = build.to_json();
+    // The program sets text in Tilo's fonts on a machine without Tilo: they go beside it.
+    tilolang_cli::fonts::bundle_beside(
+        build
+            .executables
+            .iter()
+            .map(|(_, program)| program.as_path()),
+    )?;
     if let Some(output) = &args.output {
         let output = if output.is_absolute() {
             output.clone()
@@ -2132,6 +2168,7 @@ fn build_native(
             })?;
             copied.push(destination);
         }
+        tilolang_cli::fonts::bundle_beside(copied.iter().map(PathBuf::as_path))?;
         if let Some(fields) = json.as_object_mut() {
             fields.insert("copied".to_owned(), json!(copied));
         }

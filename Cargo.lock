@@ -17266,9 +17266,12 @@ name = "tilo-font-catalog"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-advisory-lock",
+ "tilo-net",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
@@ -21915,6 +21918,7 @@ dependencies = [
  "tilo-bounded-command",
  "tilo-collab-types",
  "tilo-files",
+ "tilo-font-catalog",
  "tilo-paths",
  "tilo-process",
  "tilo-registry-types",

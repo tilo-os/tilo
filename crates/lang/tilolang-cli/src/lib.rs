@@ -3,6 +3,7 @@
 
 pub mod describe;
 pub mod dev;
+pub mod fonts;
 mod installed_runtime;
 pub mod layout_check;
 pub mod package;

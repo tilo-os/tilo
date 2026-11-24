@@ -6650,7 +6650,20 @@ fn dev_session_dir(app_dir: &Path) -> PathBuf {
 /// the shell's file chooser. Returns this process's end of the chooser connection, to keep until the
 /// app has started. Name the app's committed `surface.toml` to the app, by path and hash, as its
 /// launcher names the one its package ships: the app reads it from there.
+/// The font artifact cache the command prepared Tilo's fonts in, when it did: every app it starts
+/// is told it (`TILO_FONT_ASSET_CACHE`), so an app run with a cache directory of its own (a
+/// scenario's isolated state) still finds the fonts there.
+static FONT_ARTIFACT_CACHE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Name the font artifact cache that holds the catalog the apps this command starts set text in.
+pub fn keep_font_artifact_cache(cache: PathBuf) {
+    let _ = FONT_ARTIFACT_CACHE.set(cache);
+}
+
 fn attach_surface_env(command: &mut ProcessCommand, app_dir: &Path) {
+    if let Some(cache) = FONT_ARTIFACT_CACHE.get() {
+        command.env("TILO_FONT_ASSET_CACHE", cache);
+    }
     let file = app_dir.join(surface::FILE);
     let Ok(bytes) = std::fs::read(&file) else {
         return;

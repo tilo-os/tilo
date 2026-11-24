@@ -41,6 +41,8 @@ NATIVE_TEST_FEATURES = {
     # The rest compile their tests only with a feature their default build
     # leaves to the dependents that want it; each costs a few small crates.
     "tilo-wire-frame": ("tokio", "postcard"),
+    # Preparing a catalog without a checkout, which the tilolang command does.
+    "tilo-font-catalog": ("prepare",),
     "tilo-accounts": ("person",),
     "tilo-bounded-zip": ("epub",),
     "tilo-settings-store": ("watch",),
