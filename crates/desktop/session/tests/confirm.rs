@@ -121,7 +121,7 @@ fn session(calls: &Rc<RefCell<Vec<Call>>>) -> Session {
         &[OutputConfig::new("HEADLESS-1", WIDTH, TALL)],
         Options {
             services: vec![
-                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(settings_sections::service::SettingsService::new()),
                 Box::new(Connectivity {
                     network: network(),
                     bluetooth: bluetooth(),
