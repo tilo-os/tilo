@@ -1092,7 +1092,10 @@ owner_run() {
 # there is a person: the daemon is what makes one (stack_person).
 owner_daemon() {
   local runtime log=$state/logs/person.log
-  [[ ${1-} == --before-person || -f $state/owner/home/.local/state/tilo/device/login.json ]] \
+  # A person made by an earlier start that stopped before the Lounge joined them has no login
+  # yet, and still needs their daemon to print the Lounge's ticket.
+  [[ ${1-} == --before-person || -s $state/owner/key \
+    || -f $state/owner/home/.local/state/tilo/device/login.json ]] \
     || return 0
   [[ -z $(people_holders) ]] || return 0
   runtime=$(dirname "$(find_tilo)")/tilo-runtime
