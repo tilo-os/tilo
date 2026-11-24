@@ -507,14 +507,8 @@ profile = "thin-app"
 packages = ["runtime-dylib"]
 app_manifests = "apps/*/tilo-app.toml"
 features = [
-  "camera/live-capture", "disks/live", "typst-editor/runtime-engine",
-  "settings/runtime-engine",
-  "model-providers/runtime-engine", "calendar/runtime-engine",
-  "clocks/runtime-engine", "messages/runtime-engine",
-  "pdf-viewer/runtime-engine", "file-explorer/runtime-engine",
-  "print-centre/runtime-engine",
-  "browser/runtime-engine",
-  "store/runtime-engine", "chat/runtime-engine", "osk/runtime-engine",
+  "camera/live-capture", "typst-editor/runtime-engine", "settings/runtime-engine",
+  "model-providers/runtime-engine", "messages/runtime-engine", "osk/runtime-engine",
 ]
 layer = "direct"
 files = [
