@@ -99,7 +99,7 @@ view drives_pane() {
 }
 
 /// What a drive is, in a line: its size, where it sits, and whether it is open.
-fn drive_words(drive: device.Drive) -> Text {
+fn drive_words(drive: device.DriveVolume) -> Text {
     let size = drive_size_words(drive.size_bytes)
     let where_ = if drive.placement == .external { "external" } else { "inside this computer" }
     if let mounted = drive.mounted {
