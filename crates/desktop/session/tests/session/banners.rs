@@ -4,7 +4,34 @@
 use super::*;
 
 use super::shell::held_clock;
+use tilo_session_core::desktop::notifications::Notification;
+use tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX;
 use tilo_session_core::desktop::state::banners::CORNER_INSET;
+
+/// A banner's card is a banner's width, not the display's: the body inside the panel's inset,
+/// within a pixel of it.
+const BANNER_CARD: f64 = 360.0 - 2.0 * 8.0;
+
+/// A shell over two displays side by side, the first the one in use.
+fn two_displays() -> Session {
+    let mut session = crate::common::headless_on(
+        &[
+            OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT),
+            OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT).at(WIDTH, 0),
+        ],
+        Options {
+            collab: false,
+            ..Options::default()
+        },
+    );
+    settle(&mut session, 8);
+    session
+}
+
+/// A notice no app sent: what a person is told without an application behind it.
+fn notice() -> Notification {
+    Notification::new("Backup finished", "12 GB safe").with_app_name("Settings")
+}
 
 /// The frame the shell shows now, as RGBA pixels.
 fn screen(session: &mut Session) -> image::RgbaImage {
@@ -167,4 +194,83 @@ fn a_raised_notification_shows_a_banner_that_expires() {
         gone == 0,
         "nothing of the banner is left on the shell: {gone} pixels still differ"
     );
+}
+
+/// A banner is the card the display in use shows, in its corner: the display the person works on
+/// carries it at a banner's width, the shell's transient margin in from the edge, under the bar;
+/// the other display shows none of it.
+#[test]
+fn a_banner_is_the_corner_card_of_the_display_in_use() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = two_displays();
+    session.notices().post(notice());
+    crate::common::until(&mut session, "the banner's words", |session| {
+        session.shell_text_bounds("Backup finished").is_some()
+    });
+
+    // One display draws it: a part lays out its own screen, so a banner on both would come back
+    // twice.
+    let bounds = session.shell_text_bounds_all("Backup finished");
+    assert_eq!(
+        bounds.len(),
+        1,
+        "only the display in use rises the banner: {bounds:?}"
+    );
+    let (x, y, width, height) = bounds[0];
+    assert!(
+        x > f64::from(WIDTH) / 2.0,
+        "the banner stands in the corner: {bounds:?}"
+    );
+    assert!(
+        x + width <= f64::from(WIDTH) - CORNER_INSET + 0.5,
+        "it keeps the corner margin every transient keeps: {bounds:?}"
+    );
+    assert!(
+        y >= f64::from(TOPBAR_HEIGHT_PX),
+        "it starts under the bar: {bounds:?}"
+    );
+    assert!(
+        (width - BANNER_CARD).abs() <= 1.5,
+        "the card is a banner's width, not the display's: {bounds:?}"
+    );
+    assert!(height > 40.0, "the banner is more than a line: {bounds:?}");
+}
+
+/// A banner's × takes the card away and keeps the notice: it waits in the notification centre,
+/// where the person reads it again, as the Rust shell's banners did.
+#[test]
+fn a_banners_dismiss_takes_the_card_away_and_keeps_the_notice() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        ..Options::default()
+    });
+    settle(&mut session, 8);
+    let id = session.notices().post(notice());
+    crate::common::until(&mut session, "the banner's ×", |session| {
+        session.shell_control("Dismiss").is_some()
+    });
+    assert_eq!(
+        session.notifications().log().active().len(),
+        1,
+        "the notice stands as one banner"
+    );
+
+    session
+        .press_action("Dismiss", ui::window_targets::TargetAction::Activate)
+        .expect("the banner's × is a control a person presses");
+    crate::common::until(&mut session, "the card leaves", |session| {
+        session.shell_text_bounds("Backup finished").is_none()
+    });
+    let log = session.notifications();
+    let log = log.log();
+    assert!(
+        log.active().is_empty(),
+        "the card is gone from the stack: {:?}",
+        log.active()
+    );
+    let kept = log
+        .history_entry(id)
+        .unwrap_or_else(|| panic!("the notice waits in the centre: {:?}", log.history()));
+    assert_eq!(kept.title, "Backup finished", "the same notice, kept");
 }

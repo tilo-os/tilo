@@ -951,6 +951,10 @@ d-43am22do = Ansicht des Platzes
 
 d-fziuz57n = Wechsler
     .w-of = { $at } von { $count }
+    .w-switch-windows-of-this-app = Fenster dieser App wechseln
+    .w-switch-windows = Fenster wechseln
+    .w-this-app-s-windows-in-this = Fenster dieser App in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke ` zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
+    .w-windows-in-this-workspace-most-recently = Fenster in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke Tab oder die Pfeiltasten zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
     .w-no-windows = Keine Fenster
     .w-open-something-to-switch-to-it = Öffne etwas, um dazu zu wechseln
 

@@ -6,7 +6,11 @@
 ///
 /// Banners are a stack, newest first, as many as fit; what does not fit is one row that opens the
 /// centre, where every one waits. The session takes a banner away a few seconds after it arrived,
-/// so the stack empties by itself.
+/// so the stack empties by itself. A banner's × takes the card away and leaves its notice in the
+/// centre, where the person reads it again.
+///
+/// The banner stack rises in the corner of the display in use (`shell.tl`, `banners_over`), each
+/// card a panel's width; a narrow display takes the card across it instead.
 ///
 /// The notification centre is a floating panel at the screen's trailing edge, over what it covers,
 /// on the theme's material as every notification centre is: its header says how many are waiting
@@ -152,6 +156,9 @@ view notice_row(n: device.Notice) {
 /// The banners standing now, newest first, as many as fit, and a row that opens the centre when
 /// more wait behind them than show. What the person was told is held back while notifications are
 /// silenced.
+///
+/// Each stands as the floating card a notice rises as: a banner's width in the corner, or across a
+/// display too narrow to keep it there.
 view banner() {
     let centre = device.notifications
     asked_banners()
@@ -160,26 +167,34 @@ view banner() {
         if not ids.is_empty() {
             let shown = ids.take(3)
             let more = ids.len() - shown.len()
+            let roomy = not space.compact and space.width >= 44.0
             stack(gap: .related) {
                 for id in shown {
                     if let n = centre.notices.find(n -> n.number == id) {
-                        if space.compact or space.width < 44.0 {
-                            banner_row(n)
-                        } else {
+                        if roomy {
                             banner_full(n)
+                        } else {
+                            banner_row(n)
                         }
                     }
                 }
                 if more > 0 {
-                    ui.Button(
-                        if more == 1 {
-                            "1 more notification"
-                        } else { "{more} more notifications" },
-                        icon: .bell,
-                        size: .small,
-                        role: .plain,
+                    ui.FloatingPanel(
+                        width: if roomy { 360.0 },
+                        fill: not roomy,
+                        slide: true,
                     ) {
-                        on press: device.show_surface(device.overlays, surface: "centre")
+                        ui.Button(
+                            if more == 1 {
+                                "1 more notification"
+                            } else { "{more} more notifications" },
+                            icon: .bell,
+                            size: .small,
+                            role: .plain,
+                            fill,
+                        ) {
+                            on press: device.show_surface(device.overlays, surface: "centre")
+                        }
                     }
                 }
             }
@@ -199,82 +214,90 @@ fn standing_banners(centre: device.Notifications) -> List<Int> {
     return []
 }
 
-/// A banner on a wide screen: the notice with its kind's tone, what sent it, its actions and its
-/// reply. Each part it has is the part it shows: a notice that says nothing puts no line under the
-/// title, and one with no sender names none above it.
+/// A banner on a wide screen: the notice as the floating card a notice rises as, at a banner's
+/// width in the corner, with its kind's tone, what sent it, its actions and its reply. Each part
+/// it has is the part it shows: a notice that says nothing puts no line under the title, and one
+/// with no sender names none above it.
 view banner_full(n: device.Notice) {
     let actions = n.actions
     let can_reply = actions.any(a -> a.key == "inline-reply")
-    ui.Banner(
-        n.title,
-        message: if n.body != "" and n.preview { n.body },
-        source: if n.from != "" { n.from },
-        kind: if n.kind == "error" {
-            .error
-        } else if n.kind == "warning" {
-            .warning
-        } else if n.kind == "success" { .success } else { .info },
-        action: if not actions.is_empty() { actions.first()?.label ?? "Open" },
-    ) {
-        on act: device.banners.act(banner: "{n.number}", choice: actions.first()?.key ?? "")
-        on dismiss: device.dismiss(device.notifications, notification: n.number)
-    }
-    if can_reply {
-        reply_row(n)
+    ui.FloatingPanel(width: 360.0, slide: true) {
+        ui.Banner(
+            n.title,
+            message: if n.body != "" and n.preview { n.body },
+            source: if n.from != "" { n.from },
+            kind: if n.kind == "error" {
+                .error
+            } else if n.kind == "warning" {
+                .warning
+            } else if n.kind == "success" { .success } else { .info },
+            action: if not actions.is_empty() { actions.first()?.label ?? "Open" },
+            bare: true,
+        ) {
+            on act: device.banners.act(banner: "{n.number}", choice: actions.first()?.key ?? "")
+            // The card goes; the notice stays in the centre, where the person reads it again.
+            on dismiss: device.dismiss(device.banners, banner: "{n.number}")
+        }
+        if can_reply {
+            reply_row(n)
+        }
     }
 }
 
 /// A banner on a narrow screen: the notice as a row with what sent it, its actions under it.
 view banner_row(n: device.Notice) {
     let can_reply = n.actions.any(a -> a.key == "inline-reply")
-    stack(gap: .related) {
-        ui.ListRow(
-            n.title,
-            secondary: if n.body != "" { n.body },
-            meta: if n.from != "" { n.from },
-            selected: n.number == (device.banners.focused ?? 0),
-        ) {
-            trailing: {
-                ui.Badge(
-                    dot: true,
-                    tone: if n.kind == "error" {
-                        .danger
-                    } else if n.kind == "warning" { .warning } else { .info },
-                )
+    ui.FloatingPanel(fill: true, slide: true) {
+        stack(gap: .related) {
+            ui.ListRow(
+                n.title,
+                secondary: if n.body != "" { n.body },
+                meta: if n.from != "" { n.from },
+                selected: n.number == (device.banners.focused ?? 0),
+            ) {
+                trailing: {
+                    ui.Badge(
+                        dot: true,
+                        tone: if n.kind == "error" {
+                            .danger
+                        } else if n.kind == "warning" { .warning } else { .info },
+                    )
+                }
+                on activate: device.open_banner(device.banners, banner: "{n.number}")
             }
-            on activate: device.open_banner(device.banners, banner: "{n.number}")
-        }
-        row(gap: .related, wrap: true) {
-            // A call's answer and decline are their own actions, as a snooze is: each press is
-            // the banner resource's own, and the rest of the sender's choices run as a choice.
-            for a in n.actions {
-                if a.key == "answer" or a.key == "accept" {
-                    ui.Button("Answer", role: .primary, size: .small) {
-                        on press: device.answer_call(device.banners, banner: "{n.number}")
-                    }
-                } else if a.key == "decline" or a.key == "reject" or a.key == "hangup" {
-                    ui.Button("Decline", size: .small, role: .plain) {
-                        on press: device.decline_call(device.banners, banner: "{n.number}")
-                    }
-                } else if a.key == "snooze" {
-                    ui.Button("Snooze", size: .small, role: .plain) {
-                        on press: device.snooze(device.banners, banner: "{n.number}")
-                    }
-                } else if a.key != "inline-reply" {
-                    ui.Button(a.label, size: .small) {
-                        on press: device.banners.act(banner: "{n.number}", choice: a.key)
+            row(gap: .related, wrap: true) {
+                // A call's answer and decline are their own actions, as a snooze is: each press is
+                // the banner resource's own, and the rest of the sender's choices run as a choice.
+                for a in n.actions {
+                    if a.key == "answer" or a.key == "accept" {
+                        ui.Button("Answer", role: .primary, size: .small) {
+                            on press: device.answer_call(device.banners, banner: "{n.number}")
+                        }
+                    } else if a.key == "decline" or a.key == "reject" or a.key == "hangup" {
+                        ui.Button("Decline", size: .small, role: .plain) {
+                            on press: device.decline_call(device.banners, banner: "{n.number}")
+                        }
+                    } else if a.key == "snooze" {
+                        ui.Button("Snooze", size: .small, role: .plain) {
+                            on press: device.snooze(device.banners, banner: "{n.number}")
+                        }
+                    } else if a.key != "inline-reply" {
+                        ui.Button(a.label, size: .small) {
+                            on press: device.banners.act(banner: "{n.number}", choice: a.key)
+                        }
                     }
                 }
+                ui.Button("Read", size: .small, role: .plain) {
+                    on press: device.read(device.banners, banner: "{n.number}")
+                }
+                // The card goes; the notice stays in the centre, where the person reads it again.
+                ui.Button("Dismiss", icon: .x, icon_only: true, size: .small, role: .plain) {
+                    on press: device.dismiss(device.banners, banner: "{n.number}")
+                }
             }
-            ui.Button("Read", size: .small, role: .plain) {
-                on press: device.read(device.banners, banner: "{n.number}")
+            if can_reply {
+                reply_row(n)
             }
-            ui.Button("Dismiss", icon: .x, icon_only: true, size: .small, role: .plain) {
-                on press: device.dismiss(device.notifications, notification: n.number)
-            }
-        }
-        if can_reply {
-            reply_row(n)
         }
     }
 }

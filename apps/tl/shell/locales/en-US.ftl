@@ -1556,6 +1556,10 @@ d-xwhxaimf = Frameless style settings
 
 d-fziuz57n = Switcher
     .w-of = { $at } of { $count }
+    .w-switch-windows-of-this-app = Switch windows of this app
+    .w-switch-windows = Switch windows
+    .w-this-app-s-windows-in-this = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
+    .w-windows-in-this-workspace-most-recently = Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay.
     .w-no-windows = No windows
     .w-open-something-to-switch-to-it = Open something to switch to it
 

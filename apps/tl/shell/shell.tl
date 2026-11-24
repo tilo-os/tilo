@@ -400,12 +400,20 @@ template view over_band(body: View) {
 ///
 /// A person with windows sees them through the compositor behind this, and who is here is in the
 /// bar's own menu, so this adds nothing to the bar's band: with nothing to show it lays nothing
-/// out and draws nothing. A banner stands the shell's gutter in from the window's edge, as a
-/// surface does: its card is rounded, and a rounded card on the edge has its corners cut by it.
+/// out and draws nothing. A banner is the display in use's: it rises in the corner of the screen
+/// the person works on, a banner's width in from the edge the transient panels keep, and another
+/// display shows none of it. A display too narrow for the corner (a phone) takes the card across
+/// it, a phone's gutter in from either edge.
 view banners_over() {
-    if (device.notifications.banner ?? -1) != -1 {
-        stack(at: .top, fill, padding: .group) {
-            banner()
+    if (device.notifications.banner ?? -1) != -1 and on_primary() {
+        if space.compact or space.width < 44.0 {
+            stack(at: .top, fill, padding: .sibling) {
+                banner()
+            }
+        } else {
+            stack(at: .top_trailing, padding: .related) {
+                banner()
+            }
         }
     }
 }
