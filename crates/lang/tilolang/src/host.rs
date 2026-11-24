@@ -953,6 +953,7 @@ fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> Acti
         did_many: None,
         present: None,
         toggles: None,
+        settles: None,
         key: None,
         group: None,
         uses: Vec::new(),

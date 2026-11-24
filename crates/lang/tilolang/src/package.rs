@@ -691,6 +691,7 @@ fn build_meta(
                     uses: uses_meta(&c.uses),
                     present: None,
                     toggles: None,
+                    settles: None,
                     key: None,
                     group: None,
                     guard: false,
@@ -788,6 +789,7 @@ fn build_meta(
                     uses: uses_meta(&c.uses),
                     present: c.present.view.clone(),
                     toggles: toggled_field(env, a, &c.params),
+                    settles: c.present.settles.clone(),
                     key: c.present.key.clone(),
                     group: c.present.group.clone(),
                     guard: a
@@ -1079,6 +1081,7 @@ pub fn compile_program_reading(
             search: None,
             present: None,
             toggles: None,
+            settles: None,
             key: None,
             group: None,
             uses: Vec::new(),

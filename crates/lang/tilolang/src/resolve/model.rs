@@ -244,6 +244,10 @@ pub struct Presentation {
     /// `takes: ["User name", ("Password", .secret)]`: what the person types where they answer
     /// its ask ([`crate::meta::TakeMeta`]).
     pub takes: Vec<crate::meta::TakeMeta>,
+    /// `settles: t.status`: the id of the target's field this action is how a value is set into,
+    /// so a control bound to the field runs it with the value chosen
+    /// ([`crate::meta::ActionMeta::settles`]).
+    pub settles: Option<String>,
 }
 
 /// The shortcut an action's `key:` declares, as it is published and compared: the modifiers in one

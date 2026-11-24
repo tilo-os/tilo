@@ -828,6 +828,25 @@ impl HostInner {
 
     fn plan_in_mirror(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         let package = self.package_of(request.app)?;
+        // An edit of a field an action settles is that action, given the value.
+        if let Some(declared) = package
+            .meta
+            .types
+            .iter()
+            .find(|declared| package.meta.kind_of(&declared.name) == request.kind)
+            && let Some((settler, args)) = crate::publish::settled_edit(
+                &package.meta,
+                declared,
+                request.action_id,
+                request.args,
+            )
+        {
+            return self.plan_in_mirror(&PlanRequest {
+                action_id: &settler,
+                args: &args,
+                ..*request
+            });
+        }
         // A bound control's edit of a field is no declared action: it writes the field itself.
         if let Some(edit) = crate::publish::plan_edit(
             &self.store,

@@ -93,6 +93,7 @@ mod tasks_devices;
 mod tasks_features;
 mod tasks_menu;
 mod tasks_places;
+mod tasks_settles;
 mod tasks_time;
 mod tasks_today;
 mod triggers;

@@ -691,9 +691,17 @@ d-4fezz4oa-at = At
 d-zrdjom25 = Endtag verschieben
     .doc = Beendet einen Termin an dem Tag, den ein Zeitpunkt nennt, und behält dabei die Uhrzeit seines Endes: ein Tag nach seinem Beginn lässt ihn jeden Tag dazwischen dauern, und ein ganztägiger Termin endet um Mitternacht nach seinem letzten Tag, dem Tag, an dem er erscheint.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
-    .w-an-event-does-not-end-before = Ein Termin endet nicht vor seinem Beginn
 
 d-zrdjom25-at = Zeitpunkt
+
+d-674w4zdj = Endet am Tag
+    .doc = Beendet einen Termin an einem Tag und behält dabei die Uhrzeit seines Endes, wie es „Endtag verschieben“ mit dem Tag tut, den ein Zeitpunkt nennt.
+    .w-an-event-does-not-end-before = Ein Termin endet nicht vor seinem Beginn
+    .w-this-calendar-is-connected-for-reading = Dieser Kalender ist nur zum Lesen verbunden, darin wird nichts geändert
+
+d-674w4zdj-end_day = Letzter Tag
+
+d-cbhbqh5c = Endet am Tag~present
 
 d-lbfkyak2 = Repeat
     .doc = Repeats an event every day, week, month or year from the day it stands on, on the days chosen of a week, and no longer on the days it named before.

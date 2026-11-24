@@ -786,7 +786,7 @@ fn pristine(e: Event) -> Bool {
 
 /// Moves an event to a day, keeping the time of day it starts and how long it lasts, and its
 /// reminder at the same distance from its start.
-action move_to_day(e: Event, day: Date) uses time {
+action move_to_day(e: Event, day: Date) uses time (settles: e.day) {
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     require e.day != day "It is on that day already"
     let zone = zone_of(e)
@@ -835,16 +835,22 @@ action change_end(e: Event, at: Time) uses time {
 /// midnight after its last day, which is the day it shows on.
 action move_end_day(e: Event, at: Time) uses time {
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
-    require at.day() >= (Date.parse(e.start, near: now) ?? today) "An event does not end before it starts"
-    let finish = at.day()
-    let ends_on = if e.all_day { finish + 1d } else { finish }
+    end_on_day(e, at.day())
+}
+
+/// Ends an event on a day, keeping the time of day it ends at, as `move_end_day` does with the
+/// day a moment names.
+action end_on_day(e: Event, end_day: Date) uses time (settles: e.end_day) {
+    require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
+    require end_day >= (Date.parse(e.start, near: now) ?? today) "An event does not end before it starts"
+    let ends_on = if e.all_day { end_day + 1d } else { end_day }
     e.end = wall_moved(e.end, zone_of(e), ends_on)
     e.end_day = end_day_of(e.all_day, ends_on)
 }
 
 /// Repeats an event every day, week, month or year from the day it stands on, on the days
 /// chosen of a week, and no longer on the days it named before.
-action repeat(e: Event, how: Repeat) (icon: .repeat, label: "Repeat") {
+action repeat(e: Event, how: Repeat) (icon: .repeat, label: "Repeat", settles: e.repeat) {
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     repeat_rule(e, how)
 }
@@ -857,7 +863,11 @@ action repeat_every(e: Event, every: Int) (icon: .repeat, label: "How often") {
 }
 
 /// The last day it repeats by, or none for a series that does not end.
-action repeat_until(e: Event, until: Option<Date>) (icon: .calendar, label: "Repeat until") {
+action repeat_until(e: Event, until: Option<Date>) (
+    icon: .calendar,
+    label: "Repeat until",
+    settles: e.recurrence_until,
+) {
     require writable(e) "This calendar is connected for reading only, so nothing in it is changed"
     repeat_rule(e, e.repeat, until: until)
 }

@@ -1438,6 +1438,45 @@ impl ViewInstance {
         }
     }
 
+    /// Set `field` of `target` to `value` by running `action`, the action that settles it, as
+    /// the view `view_module`'s person runs a control's action. A field that already holds the
+    /// value is no edit, as for any other bound field.
+    fn settle(
+        &self,
+        action: String,
+        target: &ResourceRef,
+        field: &crate::registry::FieldInfo,
+        value: Value,
+        view_module: ModuleHash,
+        gesture: Option<&str>,
+    ) -> Result<EditOutcome, RuntimeError> {
+        // The value as the field holds it, which is what the action's parameter takes: a control
+        // hands a person, a day or nothing as its text.
+        let value = match to_scalar(&value, &field.ty).map_err(RuntimeError::BadArgs)? {
+            crate::store::Scalar::Json(json) => {
+                crate::value::from_json(&json).map_err(RuntimeError::BadArgs)?
+            }
+            crate::store::Scalar::Bool(flag) => Value::Bool(flag),
+            crate::store::Scalar::Int(number) => Value::Int(number),
+            crate::store::Scalar::Float(number) => Value::Float(number),
+            crate::store::Scalar::Text(text) => Value::Text(text),
+        };
+        if self.core.read_value(target, field, None).ok().as_ref() == Some(&value) {
+            return Ok(EditOutcome::Applied);
+        }
+        let target = Value::Ref(crate::value::RefValue {
+            target: Rc::new(target.clone()),
+            author: Some(view_module.clone()),
+        });
+        let mut aref = ActionRef::new(action, vec![target, value]);
+        aref.author = Some(view_module);
+        Ok(match self.run_in(&aref, gesture)? {
+            InvokeOutcome::Done(_) | InvokeOutcome::Waits { .. } => EditOutcome::Applied,
+            InvokeOutcome::Asked(_) => EditOutcome::NeedsApproval,
+            InvokeOutcome::Denied => EditOutcome::Denied,
+        })
+    }
+
     /// Edit the field a node is bound to, as an attributed change.
     ///
     /// # Errors
@@ -1514,6 +1553,12 @@ impl ViewInstance {
         };
         let (pkg, field) = self.bound_field(&target, &field_id)?;
         let value = self.as_field_holds(&field.ty, value)?;
+        // A field an action settles (`settles: t.status`) is set by that action: what it keeps
+        // in step with the field (a task's `done`, its subtasks) follows a chip as it follows a
+        // menu, and the change is the action's, with its permission, history and undo.
+        if let Some(action) = crate::registry::settling_action(&pkg, &field.id) {
+            return self.settle(action, &target, &field, value, view_module, gesture);
+        }
         let value = &value;
         let ctx = ExecCtx {
             invoker: self.live.viewer.clone(),

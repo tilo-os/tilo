@@ -2482,6 +2482,47 @@ pub fn plan_edit(
     ))
 }
 
+/// The action a direct edit (`action_id`, one of [`DIRECT_EDITS`]) of a field of `declared`
+/// is, where an action of `meta` settles that field (`settles: t.status`): its id, and the
+/// arguments it takes the edit's value as. A bound control's edit, another app's program and an
+/// agent then set the field the way the app's own controls do, and what the action keeps in step
+/// with it follows. `None` for any other action, and for a field no action settles.
+#[must_use]
+pub fn settled_edit(
+    meta: &Meta,
+    declared: &TypeMeta,
+    action_id: &str,
+    args: &serde_json::Map<String, Json>,
+) -> Option<(String, serde_json::Map<String, Json>)> {
+    let direct = DIRECT_EDITS.iter().find(|direct| direct.id == action_id)?;
+    let field = args.get("field").and_then(Json::as_str)?;
+    let field = declared
+        .fields
+        .iter()
+        .find(|known| known.name == field)
+        .or_else(|| declared.fields.iter().find(|known| known.id == field))?;
+    let settler = meta
+        .actions
+        .iter()
+        .find(|action| !action.scenario && action.settles.as_deref() == Some(field.id.as_str()))?;
+    let param = settler.params.get(1)?;
+    let mut value = args.get("value").cloned().unwrap_or(Json::Null);
+    // A flag may come as its text, as an API that knows no parameter type for it hands it on.
+    if direct.value == ParamType::Boolean
+        && let Some(said) = value.as_str()
+        && let Some(set) = tilo_failure::ignored!(
+            "a flag given as other words goes to the action as given, which refuses it",
+            said.parse::<bool>().ok()
+        )
+    {
+        value = Json::Bool(set);
+    }
+    Some((
+        settler.id.clone(),
+        serde_json::Map::from_iter([(param.name.clone(), value)]),
+    ))
+}
+
 /// The names of `declared`'s fields, comma-separated, as a refusal that names a field the
 /// type lacks lists them: what an [`edit_action`] refusal says a caller may choose instead.
 fn field_names(declared: &TypeMeta) -> String {

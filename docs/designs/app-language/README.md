@@ -105,6 +105,25 @@ type Draft (title: subject, untitled: "New message", readers: author until sent)
 Those lines give collaborative, synced, searchable, undoable notes with a native default UI,
 which people, agents and automations can find, read and pin.
 
+A field whose change carries more with it names the action that sets it, with `settles:`. A
+task's status keeps its `done` and its subtasks in step, so `set_status` settles it:
+
+```
+action set_status(t: Task, status: Status, at: Int = 0) (label: "Status", settles: t.status) {
+    t.status = status
+    t.done = closed(status)
+    // ... its subtasks follow
+}
+```
+
+Every write of the field from outside the app's own code then runs the action with the record and
+the value: a control bound to it (`facts(t)` draws one for the status), an edit a view composed
+elsewhere sends, another app's program and an agent's field edit. The change is the action's, with
+its requirements, permission, history and undo. The action takes the record first and the field's
+value next, every parameter after those has a default, and one action settles a field. Only a
+field set whole can be settled (a case, a date, a person, a flag): a text is spliced where it is
+typed, and a collection changes by its items.
+
 `(readers: people)` makes privacy between members a rule on the record: only the actors its
 `List<Actor>` field `people` holds read a record of the type and everything under it, whatever the
 workspace's grants say, the owner's included. `std.may_read`, `members(r)`, opening it and search

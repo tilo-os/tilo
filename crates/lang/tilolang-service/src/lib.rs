@@ -446,6 +446,21 @@ impl ResourceService {
         Some(self.edit_field(&package.meta, declared, &at, field, &value, by))
     }
 
+    /// The action that settles the field the edit `action` of `resource` names, with the
+    /// arguments it takes the edit's value as: `None` where no action settles that field.
+    fn settled_edit(
+        &self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Json>,
+    ) -> Option<(String, Map<String, Json>)> {
+        let (app, path) = split_published(resource)?;
+        let package = self.host.package(app)?;
+        let at = resource_at(&self.host, app, path)?;
+        let declared = package.meta.types.iter().find(|ty| ty.id == at.ty)?;
+        tilolang_tilo::publish::settled_edit(&package.meta, declared, action, arguments)
+    }
+
     /// Set the field `field` (by its name, the spelling the edit verbs offer, or by its id) of
     /// `at`, a resource of the type `declared` of `meta`, to `value`, as `by`'s change.
     fn edit_field(
@@ -584,6 +599,12 @@ impl ResourceService {
         let address = ActionAddress::new(resource, action);
         if tilolang_tilo::publish::app_of(resource).is_some_and(|app| self.each_members_own(app)) {
             return Err(ApiError::Unknown(address));
+        }
+        // An edit of a field an action settles (`settles: t.status`) is that action, given the
+        // value: a view composed elsewhere, another app's program and an agent set a task's
+        // status as its own page does, and what the action keeps in step follows.
+        if let Some((settler, arguments)) = self.settled_edit(resource, action, arguments) {
+            return self.run(&settler, resource, &arguments, invoker);
         }
         // The place this invocation is asked in, taken as this one's: a note from the step that
         // brought it stands for it alone, never for the next invocation the service answers.

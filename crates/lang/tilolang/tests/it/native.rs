@@ -337,6 +337,48 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase an_action_settles_a_field_of_its_target_set_whole;
+    // `settles: t.status` names the target's field the action is how a value is set into: a field
+    // set whole, of the type the action's next parameter takes, every parameter after it having a
+    // default, and one action for each field. The metadata carries the field's id.
+    {
+        let head = "enum Status {\n    todo\n    done\n}\ntype Task {\n    title: Text\n    status: Status = .todo\n    done: Bool = false\n    tags: Set<Text>\n}\n";
+        let act = |sig: &str, opts: &str| {
+            format!("{head}action set_status({sig}) ({opts}) {{\n    t.done = false\n}}")
+        };
+        let good = compile_body(&act("t: Task, status: Status, at: Int = 0", "settles: t.status"));
+        let status = good
+            .meta
+            .types
+            .iter()
+            .find(|ty| ty.name == "Task")
+            .and_then(|ty| ty.fields.iter().find(|f| f.name == "status"))
+            .expect("the task's status")
+            .id
+            .clone();
+        assert_eq!(good.meta.actions[0].settles.as_deref(), Some(status.as_str()));
+        // Not a field of the target, and not written on the target.
+        expect("E090", &act("t: Task, status: Status", "settles: t.state"));
+        expect("E090", &act("t: Task, status: Status", "settles: status"));
+        expect("E090", &act("t: Task, u: Task, status: Status", "settles: u.status"));
+        // The value comes next, of the field's type.
+        expect("E090", &act("t: Task, status: Bool", "settles: t.status"));
+        expect("E090", &act("t: Task", "settles: t.status"));
+        // What comes after it has a default: a bound control gives the target and the value alone.
+        expect("E090", &act("t: Task, status: Status, at: Int", "settles: t.status"));
+        // A text is spliced where it is typed, a set changes by its items.
+        expect("E090", &act("t: Task, title: Text", "settles: t.title"));
+        expect("E090", &act("t: Task, tags: Set<Text>", "settles: t.tags"));
+        // One action settles a field.
+        expect(
+            "E090",
+            &format!(
+                "{}\naction finish(t: Task, status: Status) (settles: t.status) {{\n    t.done = true\n}}",
+                act("t: Task, status: Status", "settles: t.status")
+            ),
+        );
+    }
+
     phase a_view_of_one_item_draws_that_items_row;
     {
         // The row is the view's whole body, so the parameters after the item are what the place

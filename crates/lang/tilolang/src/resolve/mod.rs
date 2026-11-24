@@ -498,6 +498,7 @@ impl Env {
                 opens: a.opens.clone(),
                 shows: a.shows.clone(),
                 takes: a.takes.clone(),
+                settles: a.settles.clone(),
             };
             add(
                 CKind::Action,
@@ -603,6 +604,7 @@ pub fn resolve(
     // After the roots are named: an action that opens files acts on one of them.
     r.opening_actions(module);
     r.one_shortcut_each(module);
+    r.one_settler_each(module);
     r.env
 }
 
@@ -2098,6 +2100,7 @@ impl Resolver<'_> {
             opens: Vec::new(),
             shows: Vec::new(),
             takes: Vec::new(),
+            settles: None,
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -2261,14 +2264,121 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`opens:` takes a list of the kinds of file the action opens, each a media type in quotes or an extension with a dot: `opens: [\"text/markdown\", .md, .markdown]`",
                 ),
+                // `settles: t.status`: the action is how the target's field takes a value, so a
+                // control bound to the field runs it with the value chosen.
+                ("settles", _) => out.settles = self.settled_field(a, params, &opt.value),
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:`, `search:`, `opens:`, `shows:` and `takes:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:`, `search:`, `opens:`, `shows:`, `takes:` and `settles:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }
         out
+    }
+
+    /// The id of the field `settles:` names (`settles: t.status`): a field of the record the
+    /// action takes first, whose value its next parameter takes, every parameter after that
+    /// having a default. A control bound to the field then runs the action with the target and
+    /// the value chosen, so what the action keeps in step with the field (a task's `done`, its
+    /// subtasks) follows any way the field is set.
+    fn settled_field(
+        &mut self,
+        a: &ast::ActionDecl,
+        params: &[ParamInfo],
+        value: &Expr,
+    ) -> Option<String> {
+        let usage = "`settles:` names the field of the action's target it sets, written on the target: `settles: t.status`";
+        let ExprKind::Field { base, name } = &value.kind else {
+            self.err("E090", value.span, usage);
+            return None;
+        };
+        let target = params.first();
+        let named_target =
+            matches!(&base.kind, ExprKind::Ident(b) if target.is_some_and(|t| t.name == *b));
+        let key = match target.map(|t| &t.ty) {
+            Some(Ty::Record(key)) if named_target => key.clone(),
+            _ => {
+                self.err(
+                    "E090",
+                    base.span,
+                    format!("{usage}; the target is the record the action takes first"),
+                );
+                return None;
+            }
+        };
+        let Some(field) = self
+            .env
+            .type_info(&key)
+            .and_then(|t| t.field(&name.name))
+            .cloned()
+        else {
+            self.err(
+                "E090",
+                name.span,
+                format!(
+                    "`settles:` names a field of `{}`; `{}` is not one",
+                    key.name, name.name
+                ),
+            );
+            return None;
+        };
+        // A text is spliced where it is typed and a container changes by its items: neither is
+        // set whole, so no action stands for setting it.
+        if field.merge != MergeKind::Register {
+            self.err(
+                "E090",
+                name.span,
+                format!(
+                    "`settles:` names a field set whole, such as a case, a date or a person; `{}` is changed where it is typed or by its items",
+                    field.name
+                ),
+            );
+            return None;
+        }
+        match params.get(1) {
+            Some(next) if next.ty == field.ty => {}
+            Some(next) => {
+                let (said, wanted) = (
+                    next.ty.display(&self.env.app),
+                    field.ty.display(&self.env.app),
+                );
+                self.err(
+                    "E090",
+                    value.span,
+                    format!(
+                        "`settles: {}` gives the action the value chosen for the field as `{}`, which takes a {said}; the field holds a {wanted}",
+                        field.name, next.name
+                    ),
+                );
+                return None;
+            }
+            None => {
+                self.err(
+                    "E090",
+                    value.span,
+                    format!(
+                        "`settles: {}` gives the action the value chosen for the field: take it after the target, such as `{}: {}`",
+                        field.name,
+                        field.name,
+                        field.ty.display(&self.env.app)
+                    ),
+                );
+                return None;
+            }
+        }
+        if let Some(rest) = a.params.iter().skip(2).find(|p| p.default.is_none()) {
+            self.err(
+                "E090",
+                rest.name.span,
+                format!(
+                    "`settles:` runs the action with the target and the value chosen alone, so `{}` needs a default",
+                    rest.name.name
+                ),
+            );
+            return None;
+        }
+        Some(field.id)
     }
 
     /// The kebab-case name of the icon `.name`, or an error naming close ones.
@@ -2560,6 +2670,30 @@ impl Resolver<'_> {
                 continue;
             }
             seen.push((scope, key, a.name.name.clone()));
+        }
+    }
+
+    /// One action settles a field: a control bound to it runs that one.
+    fn one_settler_each(&mut self, module: &ast::Module) {
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for item in &module.items {
+            let Item::Action(a) = item else { continue };
+            let Some(field) = self.own_action(a).and_then(|c| c.present.settles.clone()) else {
+                continue;
+            };
+            let span = a
+                .opts
+                .iter()
+                .find(|o| o.name.name == "settles")
+                .map_or(a.name.span, |o| o.value.span);
+            if let Some((_, holder)) = seen.iter().find(|(f, _)| *f == field) {
+                let said = format!(
+                    "`{holder}` settles this field already: a control bound to it runs one action"
+                );
+                self.err("E090", span, said);
+                continue;
+            }
+            seen.push((field, a.name.name.clone()));
         }
     }
 

@@ -225,6 +225,17 @@ impl Package {
     }
 }
 
+/// The action of `pkg` that settles its field `field` (`settles: t.status`), by id: a write of
+/// the field from outside the app's own code runs it with the record and the value.
+#[must_use]
+pub fn settling_action(pkg: &Package, field: &str) -> Option<String> {
+    pkg.meta
+        .actions
+        .iter()
+        .find(|action| !action.scenario && action.settles.as_deref() == Some(field))
+        .map(|action| action.id.clone())
+}
+
 fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
     let fields = t
         .fields

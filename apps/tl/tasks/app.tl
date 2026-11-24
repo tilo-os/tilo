@@ -481,7 +481,11 @@ action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Ctrl+[", gro
 
 /// Puts a task in a column of the board, at the place `at` among the tasks already there: what a
 /// card's drag names.
-action set_status(t: Task, status: Status, at: Int = 0) uses time (label: "Status", did: "moved") {
+action set_status(t: Task, status: Status, at: Int = 0) uses time (
+    label: "Status",
+    did: "moved",
+    settles: t.status,
+) {
     require t.status != status "It stands there already"
     t.status = status
     t.done = closed(status)
@@ -582,6 +586,7 @@ action check(t: Task, done: Bool = not closed(t.status)) (
     icon: .check,
     on: closed(t.status),
     key: "Ctrl+Enter",
+    settles: t.done,
 ) {
     if closed(t.status) != done {
         set_status(t, if done { .done } else { .todo })
@@ -648,6 +653,7 @@ action schedule(t: Task, due: Option<Date>) (
     icon: .calendar,
     key: "Ctrl+D",
     group: "Due",
+    settles: t.due,
 ) {
     t.at = moved(t.at, t.due, due)
     t.remind = moved(t.remind, t.due, due)
@@ -670,6 +676,7 @@ action set_time(t: Task, at: Option<Time>) uses time (
     label: "Set time",
     icon: .clock,
     group: "Due",
+    settles: t.at,
 ) {
     let when: Option<Time> = if let m = at {
         if let d = t.due { .some(m + (d - m.day())) } else { .some(m) }
@@ -790,7 +797,7 @@ action assign(
     t: Task,
     who: Option<Actor> = .none,
     contact: Option<contacts.Contact> = .none,
-) uses time (label: "Assign", icon: .user) {
+) uses time (label: "Assign", icon: .user, settles: t.assignee) {
     require not (who != .none and contact != .none) "A task is a member's or a contact's, not both"
     require not (who?.kind() == .agent and held_back(t)) "The pieces in work already fill what this task lets work at once"
     require not (t.assignee == who and t.contact == contact) "It is theirs already"

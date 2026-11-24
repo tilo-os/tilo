@@ -710,6 +710,12 @@ pub struct ActionMeta {
     /// control bound to the field stands for the action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toggles: Option<String>,
+    /// `settles: t.status`: the id of the target's field the action is how a value is set into.
+    /// Every write of the field from outside the app's own code (a control bound to it, an edit
+    /// another app or an agent sends) runs this action with the target and the value instead,
+    /// so what it keeps in step with the field follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settles: Option<String>,
     /// `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the keyboard, and
     /// while its item is selected. One spelling: the modifiers in one order, then the key's token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
