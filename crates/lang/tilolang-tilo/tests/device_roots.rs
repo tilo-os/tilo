@@ -59,7 +59,7 @@ action read_names(p: Places) -> Text {
 }
 
 view places_window(p: Places) {
-    ui.Text("{p.places}")
+    ui.Text("Places")
 }
 "#,
     "",
