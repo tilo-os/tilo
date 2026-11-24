@@ -66,7 +66,7 @@ use Imp::{
     UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF,
     UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet,
     WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText, Withdraw, Word,
-    WorkspaceMembers,
+    WorkspaceMembers, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -602,24 +602,9 @@ impl Core {
             Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit | SortLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
-            Today
-            | TimeDay
-            | TimeDayIn
-            | TimeFromWall
-            | TimeWall
-            | TimeOfDay
-            | TimeClock
-            | TimeSpan
-            | DayShift
-            | DayPart
-            | DayWeekday
-            | DayStartOfWeek
-            | DayParse
-            | TimeParse
-            | WallClock
-            | DateShow
-            | Occurrences
-            | crate::abi::Imp::Zones => self.time_import(imp, a),
+            Today | TimeDay | TimeDayIn | TimeFromWall | TimeWall | TimeOfDay | TimeClock
+            | TimeSpan | DayShift | DayPart | DayWeekday | DayStartOfWeek | DayParse
+            | TimeParse | WallClock | DateShow | Occurrences | Zones => self.time_import(imp, a),
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }
