@@ -20319,7 +20319,6 @@ dependencies = [
  "tilolang-youtube",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
- "totp-engine",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -20955,6 +20954,16 @@ dependencies = [
  "tilo-net",
  "tilo-paths",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-totp-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-engine-loader",
+ "totp-engine",
  "workspace-hack",
 ]
 
@@ -22219,7 +22228,6 @@ dependencies = [
  "tilolang-tilo",
  "tilolang-youtube",
  "tokio",
- "totp-engine",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -22858,7 +22866,6 @@ dependencies = [
  "tilo-image-codec",
  "tilo-resource",
  "tilo-test-env",
- "tilolang-tilo",
  "workspace-hack",
 ]
 

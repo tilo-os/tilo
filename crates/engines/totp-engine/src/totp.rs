@@ -55,10 +55,7 @@ pub fn decode_secret(secret: &str) -> Option<Vec<u8>> {
     decode_base32_lenient(&SECRET_BASE32, normalised.as_bytes())
 }
 
-fn decode_base32_lenient(
-    encoding: &data_encoding::Encoding,
-    symbols: &[u8],
-) -> Option<Vec<u8>> {
+fn decode_base32_lenient(encoding: &data_encoding::Encoding, symbols: &[u8]) -> Option<Vec<u8>> {
     match encoding.decode(symbols) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind == data_encoding::DecodeKind::Length => {

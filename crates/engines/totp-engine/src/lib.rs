@@ -2,8 +2,8 @@
 //! picture a person chose, and whether a key reads as base32.
 //!
 //! An app runs sandboxed and reads no picture of its own, so this crate is what it reaches
-//! through `engine.call`. It registers as the engine of `so.tilo.totp` and answers that app
-//! alone.
+//! through `engine.call`, loaded as the engine library of `so.tilo.totp`
+//! (crates/engines/loadable/totp). It answers that app alone.
 //!
 //! Answers (`engine.call`):
 //!
@@ -77,8 +77,14 @@ impl TotpEngine {
     }
 }
 
-impl tilolang_tilo::engine::Provider for TotpEngine {
-    fn call(&self, op: &str, input: &str) -> Result<String, String> {
+impl TotpEngine {
+    /// One `engine.call`: the setup link read, the picture's QR code decoded, or whether a key
+    /// reads as base32.
+    ///
+    /// # Errors
+    ///
+    /// The ask's or the picture's refusal, and every op this engine does not run.
+    pub fn call(&self, op: &str, input: &str) -> Result<String, String> {
         match op {
             "parse" => self.op_parse(input),
             "scan" => self.op_scan(input),
@@ -87,22 +93,29 @@ impl tilolang_tilo::engine::Provider for TotpEngine {
         }
     }
 
-    fn start(&self, _op: &str, _input: &str) -> Result<String, String> {
+    /// No ask of this engine runs as a job.
+    ///
+    /// # Errors
+    ///
+    /// Every job, since this engine starts none.
+    pub fn start(&self, _op: &str, _input: &str) -> Result<String, String> {
         Err("Authenticator asks no job of its device".to_owned())
     }
 
-    fn status(&self, job: &str) -> Result<String, String> {
+    /// No ask of this engine runs as a job.
+    ///
+    /// # Errors
+    ///
+    /// Every job, since this engine starts none.
+    pub fn status(&self, job: &str) -> Result<String, String> {
         Err(format!("no job `{job}` runs on this device"))
     }
 
-    fn cancel(&self, _job: &str) -> bool {
+    /// No ask of this engine runs as a job, so there is none to stop.
+    #[must_use]
+    pub fn cancel(&self, _job: &str) -> bool {
         false
     }
-}
-
-/// Register Authenticator's engine for the session's lifetime.
-pub fn register() {
-    tilolang_tilo::engine::register(APP, std::sync::Arc::new(TotpEngine::new()));
 }
 
 /// The bytes of a `tilo-blob://` address, when this device holds them. The language names a

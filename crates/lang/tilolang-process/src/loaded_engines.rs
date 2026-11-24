@@ -40,6 +40,9 @@ pub const GIT_APP: &str = "so.tilo.git-client";
 /// The app whose Grayjay link `libtilo_grayjay_engine.so` answers.
 pub const GRAYJAY_APP: &str = "so.tilo.tube";
 
+/// The app whose setup links, pictures and keys `libtilo_totp_engine.so` answers.
+pub const TOTP_APP: &str = "so.tilo.totp";
+
 /// The library that answers `app`, when this device ships an engine for it.
 fn library_of(app: &str) -> Option<&'static str> {
     match app {
@@ -49,6 +52,7 @@ fn library_of(app: &str) -> Option<&'static str> {
         CAMERA_APP => Some("libtilo_camera_engine.so"),
         GIT_APP => Some("libtilo_git_engine.so"),
         GRAYJAY_APP => Some("libtilo_grayjay_engine.so"),
+        TOTP_APP => Some("libtilo_totp_engine.so"),
         _ => None,
     }
 }

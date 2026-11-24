@@ -7,7 +7,6 @@ license.workspace = true
 description = "Authenticator's device work: a setup link read, the QR code of a picture decoded, and whether a key reads as base32"
 
 [dependencies]
-tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 # A picture a chooser hands over is kept where every device reads it, by address.
 tilo-resource = { path = "../../core/tilo-resource" }
 # The picture's bytes as its pixels: the QR detector reads a still image.

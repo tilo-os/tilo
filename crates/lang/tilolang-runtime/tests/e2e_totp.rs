@@ -72,8 +72,8 @@ mod cases {
         }
     }
 
-    /// The device's engine, answered by the crate the session registers: setup links, pictures
-    /// and whether a key reads.
+    /// The device's engine, answered by the crate the app's engine library loads: setup links,
+    /// pictures and whether a key reads.
     #[derive(Clone)]
     struct Engine {
         engine: Rc<totp_engine::TotpEngine>,
@@ -82,25 +82,21 @@ mod cases {
 
     impl EngineHost for Engine {
         fn call(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
-            use tilolang_tilo::engine::Provider as _;
             let _window = self.scope.enter();
             self.engine.call(op, input)
         }
 
         fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
-            use tilolang_tilo::engine::Provider as _;
             let _window = self.scope.enter();
             self.engine.start(op, input)
         }
 
         fn status(&self, job: &str) -> Result<String, String> {
-            use tilolang_tilo::engine::Provider as _;
             let _window = self.scope.enter();
             self.engine.status(job)
         }
 
         fn cancel(&self, job: &str) -> bool {
-            use tilolang_tilo::engine::Provider as _;
             let _window = self.scope.enter();
             self.engine.cancel(job)
         }
