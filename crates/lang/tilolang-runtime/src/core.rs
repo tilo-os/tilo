@@ -688,6 +688,8 @@ impl Core {
             | ToolOpenWith | ToolTerminal | ToolOpenLink | ToolContext | ToolContainerShell => {
                 self.file_device_import(imp, a)
             }
+            ClipboardCopyText | ClipboardCopySecret | ClipboardCopyImage | ClipboardPasteText
+            | ClipboardPasteImage => self.clipboard_import(imp, a),
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
             FontFamilies => self.font_import(imp, a),
             EngineCall | EngineStart | EngineStream | EngineState | EnginePicture | EngineJob
