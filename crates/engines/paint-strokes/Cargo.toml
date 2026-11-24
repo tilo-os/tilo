@@ -12,8 +12,8 @@ homepage.workspace = true
 [dependencies]
 # Geometry: the outline of a stroke is a BezPath, its bounds and areas curves.
 vello.workspace = true
-# Dabs are laid along the same evenly spaced samples the wet-media simulation reads.
-tilo-wet-media = { version = "0.1.0", path = "../wet-media" }
+# Stroke points are shareable data: the simulation and a preview read the same marks.
+serde = { workspace = true, features = ["derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

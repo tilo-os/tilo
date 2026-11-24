@@ -18,8 +18,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tilo_wet_media::brush::Sample;
-use tilo_wet_media::StrokePoint as WetPoint;
+pub mod brush;
+
+use crate::brush::{Sample, StrokePoint as WetPoint};
 use vello::kurbo::{
     self, Affine, BezPath, Circle, Line, ParamCurveNearest as _, Point, Rect, Shape as _, Vec2,
 };
@@ -349,7 +350,7 @@ pub fn corners(points: &[Vec<f64>], amount: f64, size: f64) -> Vec<usize> {
     steps.sort_by(f64::total_cmp);
     let step = steps.get(steps.len() / 2).copied().unwrap_or(0.0);
     let close = (reach * 0.25).max(step * 2.0).min(reach);
-    let corner = f64::from(tilo_wet_media::brush::CORNER);
+    let corner = f64::from(crate::brush::CORNER);
     let mut corners: Vec<(usize, f64)> = Vec::new();
     let mut last_sharp: Option<usize> = None;
     for index in 1..at.len() - 1 {
@@ -414,7 +415,7 @@ fn smoothed_run(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
         })
         .collect();
     let mut points: Vec<(f64, f64, f64)> =
-        tilo_wet_media::brush::smooth(&curve, f32_of_f64(spacing))
+        crate::brush::smooth(&curve, f32_of_f64(spacing))
             .iter()
             .map(|sample| {
                 (
@@ -530,7 +531,7 @@ pub fn samples(points: &[Vec<f64>], spacing: f64, smoothing: f64, size: f64) -> 
                 WetPoint::new(f32_of_f64(x), f32_of_f64(y), f32_of_f64(pressure))
             })
             .collect();
-        let mut laid = tilo_wet_media::brush::smooth(&run, f32_of_f64(spacing));
+        let mut laid = crate::brush::smooth(&run, f32_of_f64(spacing));
         if let (Some(last), Some(end)) = (laid.last().copied(), run.last())
             && (end.x - last.x).hypot(end.y - last.y) > 1e-3
         {

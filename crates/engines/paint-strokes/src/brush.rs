@@ -3,7 +3,35 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::grid::float;
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "grid dimensions are far below the 2^24 limit of exact f32 integers"
+)]
+fn float(value: usize) -> f32 {
+    value as f32
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to the non-negative grid range before the cast"
+)]
+fn cell(value: f32, len: usize) -> usize {
+    if !value.is_finite() || value <= 0.0 {
+        return 0;
+    }
+    let max = len.saturating_sub(1);
+    (value as usize).min(max)
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let span = edge1 - edge0;
+    if span.abs() < f32::EPSILON {
+        return if value < edge0 { 0.0 } else { 1.0 };
+    }
+    let t = ((value - edge0) / span).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StrokePoint {
@@ -94,7 +122,7 @@ fn densify(points: &[StrokePoint]) -> Vec<StrokePoint> {
         }
         .unwrap_or_else(|| reflect(p1, p2));
         let length = distance(p1, p2);
-        let steps = crate::grid::cell((length * 2.0).ceil(), 4097).max(1);
+        let steps = cell((length * 2.0).ceil(), 4097).max(1);
         for step in 0..steps {
             dense.push(catmull_rom(p0, p1, p2, p3, float(step) / float(steps)));
         }
@@ -182,7 +210,7 @@ fn resample(dense: &[StrokePoint], spacing: f32) -> Vec<Sample> {
         let end = travelled + length;
         if next <= end {
             let count =
-                crate::grid::cell(((end - next) / spacing).floor(), usize::MAX).saturating_add(1);
+                cell(((end - next) / spacing).floor(), usize::MAX).saturating_add(1);
             for step in 0..count {
                 let at = next + float(step) * spacing;
                 let along = (at - travelled) / length;
@@ -220,8 +248,8 @@ pub fn length(samples: &[Sample]) -> f32 {
 pub fn taper(distance: f32, total: f32, size: f32) -> f32 {
     let land = (size * 0.6).max(0.5);
     let lift = (size * 0.9).max(0.5);
-    let start = crate::grid::smoothstep(0.0, land, distance);
-    let end = crate::grid::smoothstep(0.0, lift, total - distance);
+    let start = smoothstep(0.0, land, distance);
+    let end = smoothstep(0.0, lift, total - distance);
     (0.35 + 0.65 * start.min(end)).clamp(0.0, 1.0)
 }
 

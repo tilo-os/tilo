@@ -15,8 +15,8 @@ name = "runtime_dylib"
 path = "src/lib.rs"
 crate-type = ["dylib"]
 
-# What belongs here: the SDK an app links (the toolkit, `tilo-app`, the CLI
-# kit) and crates several shipped apps share; the async runtime the toolkit
+# What belongs here: the SDK an app links (the toolkit and `tilo-app`) and
+# crates several shipped apps share; the async runtime the toolkit
 # runs on and the HTTP client several apps ask (`tilo-rt`, `tilo-net`) are
 # shared the same way, re-exported from `lib.rs` so an app links them here.
 # What never does: OS daemons and other OS-internal crates (the FUSE
@@ -41,7 +41,6 @@ crate-type = ["dylib"]
 # only the code it calls. tools/policy/check_runtime_dylib_surface.py fails
 # when a denied crate re-enters the graph, through any dependency or feature.
 [dependencies]
-tilo-cli-kit = { path = "../cli" }
 # The UI toolkit and its rendering graph are included in the shared dylib.
 # `portal` covers apps that open host files through the XDG portal.
 # This must be the superset used by every thin app in the default collection.
@@ -61,15 +60,11 @@ tilo-app = { path = "../tilo-app" }
 # apps that configure the desktop.
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 desktop-policy = { package = "tilo-default-apps", path = "../../desktop/default-apps" }
-tilo-desktop-entry = { path = "../../desktop/desktop-entry" }
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-actions = { path = "../../core/actions" }
-os-actions = { path = "../../os/os-actions" }
 tilo-identity-client = { path = "../../core/tilo-identity-client" }
 tilo-user-identity = { path = "../../core/tilo-user-identity" }
 runtime-fs = { package = "tilo-fs-client", path = "../../core/tilo-fs-client" }
-tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
-tilo-bluez = { path = "../../os/tilo-bluez" }
 accounts = { package = "tilo-accounts", path = "../../integrations/accounts" }
 agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 # Only the gateway's client: its daemon (`service`) runs the models and the
@@ -96,9 +91,6 @@ vte = "0.15.0"
 # its calendar sign-in reaches account credentials, so Calendar and Settings load
 # it from the accounts engine.
 tilo-doc-codecs = { path = "../../engines/tilo-doc-codecs", default-features = false }
-# Without PDF pages: a program that reads PDFs links the PDF engine itself and
-# hands it to the thumbnailer.
-tilo-thumbnail = { path = "../../engines/thumbnail" }
 roxmltree.workspace = true
 xattr = "1.6.1"
 # The SSH client's curve: Remote and Git Client verify P-384 host keys through

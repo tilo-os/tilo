@@ -18,7 +18,7 @@
     )
 )]
 
-pub mod brush;
+pub use tilo_paint_strokes::brush;
 mod check;
 pub mod colour;
 pub mod composite;

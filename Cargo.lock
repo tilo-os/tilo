@@ -12498,18 +12498,14 @@ dependencies = [
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
- "os-actions",
  "p384 0.14.0",
  "roxmltree 0.21.1",
  "tilo-accounts",
  "tilo-actions",
  "tilo-agent-provider-config",
  "tilo-app",
- "tilo-bluez",
- "tilo-cli-kit",
  "tilo-collab-types",
  "tilo-default-apps",
- "tilo-desktop-entry",
  "tilo-doc-codecs",
  "tilo-document",
  "tilo-files",
@@ -12523,9 +12519,7 @@ dependencies = [
  "tilo-registry-types",
  "tilo-rich-text",
  "tilo-rt",
- "tilo-server-protocol",
  "tilo-settings-store",
- "tilo-thumbnail",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-webview",
@@ -18768,9 +18762,9 @@ dependencies = [
 name = "tilo-paint-strokes"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "tilo-test-env",
  "tilo-vello",
- "tilo-wet-media",
  "workspace-hack",
 ]
 
@@ -21483,6 +21477,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "tilo-paint-strokes",
  "tiny-skia",
  "workspace-hack",
 ]

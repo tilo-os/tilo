@@ -21,6 +21,8 @@ serde_json.workspace = true
 blake3.workspace = true
 # Row-parallel simulation steps.
 rayon = "1.12.0"
+# The stroke geometry a mark lays its paint along, shared with the toolkit's preview.
+tilo-paint-strokes = { version = "0.1.0", path = "../paint-strokes" }
 # Anti-aliased coverage of mark outlines.
 tiny-skia = "0.12"
 
