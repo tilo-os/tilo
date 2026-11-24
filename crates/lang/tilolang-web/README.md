@@ -18,7 +18,7 @@ server: `t exec -- crates/lang/tilolang-web/build-page.sh OUT`, fetched back wit
 | File | What it is |
 | --- | --- |
 | `tilolang_web.js`, `tilolang_web.d.ts`, `tilolang_web_bg.wasm`, `snippets/` | The module. `snippets/` holds JS that some toolkit crates import; keep it next to the `.js` file. |
-| `apps.json` | Every file of `apps/tl/**` (`.tl`, `locales/*.ftl`, `app.ids`, `tilo-app.toml`, `surface.toml`) by its repo path, which is what `open_app` and `compile_package` take. |
+| `apps.json` | Every file of `apps/tl/**` (`.tl`, `locales/*.ftl`, `app.ids`, `tilo-app.toml`, `surface.toml`) and the `tilo-app.toml` and `surface.toml` of every native app in `apps/*/` that has both, by its repo path, which is what `open_app` and `compile_package` take. |
 | `fonts/` | The two startup fonts (Tilo Sans, Onest Cyrillic, about 400 KB) the page hands over before it opens an app. |
 
 Every export takes and returns JSON **strings**, except `add_font` (bytes) and `app_close` (bool).

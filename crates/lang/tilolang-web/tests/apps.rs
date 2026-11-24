@@ -10,7 +10,9 @@ use std::path::Path;
 
 use serde_json::Value as Json;
 
-/// Every file below `apps/tl`, by its path from the repository's root, as a page holds them.
+/// Every file below `apps/tl`, by its path from the repository's root, as a page holds them: and
+/// the manifest and surface of every native app in `apps/` that has both, which `build-page.sh`
+/// hands over too and a package may `use` as metadata.
 fn app_files() -> BTreeMap<String, String> {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let mut out = BTreeMap::new();
@@ -24,6 +26,24 @@ fn app_files() -> BTreeMap<String, String> {
                 let shown = path.strip_prefix(&repo).expect("below the repo");
                 out.insert(shown.display().to_string(), text);
             }
+        }
+    }
+    for entry in std::fs::read_dir(repo.join("apps")).expect("apps reads") {
+        let app = entry.expect("an entry").path();
+        if !(app.join("tilo-app.toml").is_file() && app.join("surface.toml").is_file()) {
+            continue;
+        }
+        for name in ["tilo-app.toml", "surface.toml"] {
+            let shown = app
+                .join(name)
+                .strip_prefix(&repo)
+                .expect("below the repo")
+                .display()
+                .to_string();
+            out.insert(
+                shown,
+                std::fs::read_to_string(app.join(name)).expect("reads"),
+            );
         }
     }
     out
@@ -301,4 +321,69 @@ fn the_page_keeps_a_file_an_action_makes() {
         "the file a scenario made stands in the page, with the address its bytes are kept at: {body}"
     );
     tilolang_web::app_close(handle(&answer));
+}
+
+/// The text a page's body shows, with its markup and styling taken out.
+fn page_text(body: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in body.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The apps of `apps/tl` that open a window of their own show what they are: a page whose root
+/// view could not run is the window's shell with nothing in it, which this holds against.
+#[test]
+fn an_app_with_a_window_shows_its_content_on_the_page() {
+    let files = files_json(&app_files());
+    // What each window shows of itself, over the scenario it opens on.
+    let apps = [
+        ("apps/tl/calculator", "Calculator"),
+        ("apps/tl/files", "Files is starting"),
+        ("apps/tl/feeds", "A quiet morning in the city"),
+        ("apps/tl/photos", "Dawn"),
+        ("apps/tl/canvas", "No artwork yet"),
+        ("apps/tl/weather", "The week ahead"),
+    ];
+    let mut failures = Vec::new();
+    for (root, shows) in apps {
+        let answer = open(&files, root, "");
+        if answer["ok"] != true {
+            failures.push(format!("{root}: {}", answer["message"]));
+            continue;
+        }
+        let body = answer["body"].as_str().expect("a body");
+        let text = page_text(body);
+        eprintln!("{root}: gaps {}, text {text:?}", answer["gaps"]);
+        if !text.contains(shows) {
+            failures.push(format!(
+                "{root}: the page does not show {shows:?}: {text:?}"
+            ));
+        }
+        assert!(tilolang_web::app_close(handle(&answer)));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// An app whose views a host draws itself (a player's card in the shell) declares no window: a
+/// page says so rather than opening an empty one.
+#[test]
+fn an_app_with_no_window_is_refused_in_its_own_words() {
+    let files = files_json(&app_files());
+    let answer = open(&files, "apps/tl/playback", "");
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert!(
+        answer["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("so.tilo.playback declares no root")),
+        "{}",
+        answer["message"]
+    );
 }
