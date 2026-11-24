@@ -335,8 +335,17 @@ d-vkgfmufj = Waage setzen
 d-vkgfmufj-on = On
 d-jdd5qaoa = Einstellungen von
     .doc = Die Einstellungen der Person, beim ersten Schreiben angelegt.
+d-o6smwxgu = Schauen starten
+    .doc = Startet das bewegte Bild der Kamera: das Fenster zeichnet das neueste Bild, sobald es ankommt.
+
+d-cigvdjta = Schauen beenden
+    .doc = Beendet das bewegte Bild der Kamera und gibt das Gerät frei.
+
 d-ehd7gfhp = Beim Öffnen schauen
     .doc = Das Öffnen der Kamera zeigt, was sie sieht.
+d-b4frgf3q = Strom
+    .doc = Das bewegte Bild der Kamera, nach seinem Engine-Strom.
+
 d-ne7yftmp = Sitzung von
     .doc = Das Dokument der Person, beim ersten Schreiben angelegt.
 d-lgezlkbg = Modus wählen

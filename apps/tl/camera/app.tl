@@ -80,6 +80,8 @@ type CapturePreferences (readers: author) {
     device: Text = ""
     /// The newest frame the camera showed, kept as a picture.
     preview: Text = ""
+    /// The camera's moving picture, by its engine stream.
+    stream: Text = ""
     /// The first code the newest frame holds, and where it is in it.
     found: Text = ""
     found_x: Float = 0.0
@@ -553,21 +555,62 @@ action set_default_lens(c: Camera, lens: Facing) {
     p.default_lens = lens
 }
 
-/// Looks through the camera once: the newest frame becomes the picture the viewfinder shows and
-/// the one the code scanner reads.
-action look(c: Camera) uses time {
+/// Starts the camera's moving picture: the window paints the newest frame as it arrives.
+action start_look(c: Camera) uses time {
     let p = prefs_of(c)
+    if p.stream != "" {
+        return
+    }
     let ask = FrameAsk(device: p.device, width: 1280, height: 720)
-    match engine.picture("frame", json.encode(ask)) {
-        .ok(file) => {
-            p.preview = file.url
-            p.trouble = ""
-            read_codes(c, file.url)
-        }
+    match engine.stream("preview", json.encode(ask)) {
+        .ok(text) => match json.decode<JobAnswer>(text) {
+            .ok(answer) => {
+                p.stream = answer.job
+                p.trouble = ""
+                look(c)
+            }
+            .err(why) => {
+                p.trouble = why
+            }
+        },
         .err(why) => {
             p.trouble = why
-            p.preview = ""
-            p.found = ""
+        }
+    }
+}
+
+/// Stops the camera's moving picture, letting the device go.
+action stop_look(c: Camera) {
+    let p = prefs_of(c)
+    if p.stream != "" {
+        engine.cancel(p.stream)
+        p.stream = ""
+    }
+}
+
+/// Reads the codes the newest frame holds, keeping the first one the scanner view shows.
+action look(c: Camera) {
+    let p = prefs_of(c)
+    let ask = FrameAsk(device: p.device, width: 1280, height: 720)
+    match engine.call("codes-live", json.encode(ask)) {
+        .ok(text) => match json.decode<CodesAnswer>(text) {
+            .ok(answer) => {
+                if let first = answer.codes.first() {
+                    p.found = first.text
+                    p.found_x = first.x
+                    p.found_y = first.y
+                    p.found_w = first.w
+                    p.found_h = first.h
+                } else {
+                    p.found = ""
+                }
+            }
+            .err(why) => {
+                p.trouble = why
+            }
+        },
+        .err(why) => {
+            p.trouble = why
         }
     }
 }
@@ -798,9 +841,9 @@ action poll(c: Camera) uses time {
 /// The viewfinder and the document scanner ask about their work once a second.
 trigger watch(c: Camera) every 1s: poll(c)
 
-/// Opening the camera shows what it sees.
+/// Opening the camera starts its moving picture and reads what it sees.
 opened action look_on_open(c: Camera) uses time {
-    look(c)
+    start_look(c)
 }
 
 /// Takes a chosen image as the code to read, without importing it.
@@ -1044,16 +1087,16 @@ view viewfinder(c: Camera) {
                 on press: open(c, view: scanner_page)
             }
             ui.Chip("Documents") {
-                on press: open(c, view: documents_page)
+                on press: stop_look(c).then(open(c, view: documents_page))
             }
             ui.Button("Photos", icon: .image) {
                 on press: open_photos()
             }
             ui.Button("Settings", icon: .settings, icon_only: true) {
-                on press: open(c, view: settings_page)
+                on press: stop_look(c).then(open(c, view: settings_page))
             }
         }
-        if p.preview != "" {
+        if live_picture(p) != "" {
             ui.Drawing(
                 viewfinder_shapes(p),
                 meaning: .decoration,
@@ -1134,8 +1177,14 @@ fn no_picture_words(p: CapturePreferences) -> Text {
 }
 
 /// The frame, and over it what the person asked to see: the rule-of-thirds grid and the level.
+/// The picture the view paints: the camera's moving picture, or the last still when it is not
+/// streaming.
+fn live_picture(p: CapturePreferences) -> Text {
+    if p.stream != "" { "tilo-live://{p.stream}" } else { p.preview }
+}
+
 fn viewfinder_shapes(p: CapturePreferences) -> List<ui.Shape> {
-    let frame = [ui.Shape.picture(x: 0.0, y: 0.0, w: 1.0, h: 1.0, src: p.preview)]
+    let frame = [ui.Shape.picture(x: 0.0, y: 0.0, w: 1.0, h: 1.0, src: live_picture(p))]
     let grid = [
         ui.Shape.line(x1: 0.333, y1: 0.0, x2: 0.333, y2: 1.0, stroke: .track, weight: .hairline),
         ui.Shape.line(x1: 0.666, y1: 0.0, x2: 0.666, y2: 1.0, stroke: .track, weight: .hairline),
@@ -1161,7 +1210,7 @@ view scanner_page(c: Camera) {
                 on press: look(c)
             }
             ui.Chip("Documents") {
-                on press: open(c, view: documents_page)
+                on press: stop_look(c).then(open(c, view: documents_page))
             }
             ui.Button("Scan an image", icon: .image) {
                 on press: file.choose(import_image(c), accept: ["image/*"])
@@ -1170,7 +1219,7 @@ view scanner_page(c: Camera) {
                 on press: look(c)
             }
         }
-        if p.preview != "" {
+        if live_picture(p) != "" {
             ui.Drawing(
                 scan_shapes(p, found),
                 meaning: .decoration,
@@ -1255,7 +1304,7 @@ view scanner_page(c: Camera) {
 }
 
 fn scan_shapes(p: CapturePreferences, found: Text) -> List<ui.Shape> {
-    let frame = [ui.Shape.picture(x: 0.0, y: 0.0, w: 1.0, h: 1.0, src: p.preview)]
+    let frame = [ui.Shape.picture(x: 0.0, y: 0.0, w: 1.0, h: 1.0, src: live_picture(p))]
     let outline = [
         ui.Shape.rect(
             x: p.found_x,

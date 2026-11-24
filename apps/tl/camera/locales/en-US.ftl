@@ -125,6 +125,9 @@ d-zaeshfry = Device
 d-ffavn4zg = Preview
     .doc = The newest frame the camera showed, kept as a picture.
 
+d-b4frgf3q = Stream
+    .doc = The camera's moving picture, by its engine stream.
+
 d-s45visew = Found
     .doc = The first code the newest frame holds, and where it is in it.
 
@@ -578,8 +581,14 @@ d-pzlmrbni = Set default lens
 
 d-pzlmrbni-lens = Lens
 
+d-o6smwxgu = Start look
+    .doc = Starts the camera's moving picture: the window paints the newest frame as it arrives.
+
+d-cigvdjta = Stop look
+    .doc = Stops the camera's moving picture, letting the device go.
+
 d-2sycocxn = Look
-    .doc = Looks through the camera once: the newest frame becomes the picture the viewfinder shows and the one the code scanner reads.
+    .doc = Reads the codes the newest frame holds, keeping the first one the scanner view shows.
 
 d-md4bq2ap = Read codes
     .doc = Decodes the codes in the picture at `url`, keeping the first one the scanner view shows.
@@ -605,7 +614,7 @@ d-w7cps4pe = Poll
     .doc = Asks how far the recording and the document scan have got, finishing what is done.
 
 d-ehd7gfhp = Look on open
-    .doc = Opening the camera shows what it sees.
+    .doc = Opening the camera starts its moving picture and reads what it sees.
 
 d-el5ehp2f = Import image
     .doc = Takes a chosen image as the code to read, without importing it.
