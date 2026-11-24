@@ -644,15 +644,36 @@ fn receiver(details: Value) -> Kind {
         Some(crate::i18n::t_args(
             "airdrop-verify-detail",
             &[
-                ("name", ArgValue::Text(asked.name)),
+                ("name", ArgValue::Text(wrapped(&asked.name))),
                 ("bytes", ArgValue::Text(asked.bytes.to_string())),
-                ("endpoint", ArgValue::Text(asked.endpoint)),
+                ("endpoint", ArgValue::Text(wrapped(&asked.endpoint))),
             ],
         )),
     );
     facts.takes = vec![take(crate::i18n::t("airdrop-verify-fingerprint"), false)];
     Some((facts, Reply::Fingerprint(asked.certificate)))
 }
+
+/// `value` broken into lines of at most [`REVIEW_WIDTH`] characters, so a file name or an
+/// endpoint with no space to wrap at stays inside the question's card instead of running past
+/// it. Every character is kept, in order: what the person reads is exactly what the receiver
+/// would be sent and where to.
+fn wrapped(value: &str) -> String {
+    let mut lines = String::with_capacity(value.len());
+    let mut column = 0_usize;
+    for character in value.chars() {
+        if column == REVIEW_WIDTH {
+            lines.push('\n');
+            column = 0;
+        }
+        lines.push(character);
+        column = column.saturating_add(1);
+    }
+    lines
+}
+
+/// How wide a line of a security question's text stands, in characters.
+const REVIEW_WIDTH: usize = 32;
 
 /// Another of the person's devices asks for its disk-unlock half: the code on its boot screen is
 /// shown beside the one the person answers with.

@@ -492,3 +492,59 @@ async fn the_asker_going_away_withdraws_its_record() {
     let refused = device.resolve(&asked, approve(&[SECRET])).await;
     assert!(refused.is_err(), "a withdrawn question takes no answer");
 }
+
+/// Verifying a receiver of another person shows the file's name and the receiver's endpoint
+/// exactly as it showed them, on lines that fit the card: a name or an address with no space to
+/// wrap at must not run past it.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_name_and_an_ipv6_receiver_fit_the_verification_card() {
+    use tilo_workspace_service::apps::nearby_send::{VERIFY_QUESTION, VerifyQuestion};
+    let (sender, device) = session();
+    let name = format!("{}.txt", "contract".repeat(30));
+    let endpoint = format!("AirDrop · [2001:db8:{}]:443", "ab".repeat(24));
+    let verifying = VerifyQuestion {
+        name: name.clone(),
+        bytes: 40_000,
+        endpoint: endpoint.clone(),
+        certificate: "cd".repeat(32),
+    };
+    let answer = sender.ask(tilo_service::Question {
+        handle: "airdrop:1".into(),
+        kind: VERIFY_QUESTION.into(),
+        app_id: None,
+        label: endpoint.clone(),
+        details: serde_json::to_value(verifying).unwrap(),
+    });
+    let asked = device.asked().await;
+    let detail = asked
+        .facts
+        .facts
+        .iter()
+        .map(|fact| fact.value.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        detail.replace('\n', "").contains(&name),
+        "the name is whole: {detail}"
+    );
+    assert!(
+        detail.replace('\n', "").contains(&endpoint),
+        "the endpoint is whole: {detail}"
+    );
+    let longest = detail
+        .split_whitespace()
+        .map(|word| word.chars().count())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        longest <= 32,
+        "no unbroken run outruns the card, and {longest} does: {detail}"
+    );
+    let fingerprint = asked.facts.takes.first().expect("a fingerprint to type");
+    assert!(
+        !fingerprint.secret,
+        "the fingerprint is read as it is typed"
+    );
+    drop(answer);
+}
