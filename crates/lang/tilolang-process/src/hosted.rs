@@ -2834,7 +2834,8 @@ impl Hosted {
             }
             HistoryEdit::Restore { .. }
             | HistoryEdit::RestoreReviewed { .. }
-            | HistoryEdit::Checkpoint { .. } => {
+            | HistoryEdit::Checkpoint { .. }
+            | HistoryEdit::Name { .. } => {
                 let host = self
                     .instance
                     .host()

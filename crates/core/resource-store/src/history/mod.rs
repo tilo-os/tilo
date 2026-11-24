@@ -62,6 +62,51 @@ pub fn entry_id_from_hash(change_hash_hex: &str) -> HistoryEntryId {
 /// `workspaces` / `active`.
 pub const GROUPS_KEY: &str = "tilo:group:";
 
+/// The longest name of a run of changes: a label, not a paragraph.
+pub const MAX_RUN_NAME: usize = 120;
+
+/// The id history names a change by in a run's name: the first half of its hash, in hex.
+#[must_use]
+pub fn run_id(change: &automerge::ChangeHash) -> String {
+    change.0[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Name the run of changes from `start` to `end` (open while `end` is `None`), each as
+/// [`run_id`] gives it, `label`, as `by` wrote it, replacing the name `replaces` holds; an empty
+/// label only removes that name. Two people naming one run write one key, the run itself, which
+/// settles the same way on every peer. Leaves the transaction open. The key of the name it
+/// wrote, if it wrote one.
+pub fn name_run(
+    doc: &mut automerge::AutoCommit,
+    (start, end): (&str, Option<&str>),
+    label: &str,
+    by: &str,
+    replaces: Option<&str>,
+) -> Option<String> {
+    use automerge::transaction::Transactable as _;
+    let label: String = label.trim().chars().take(MAX_RUN_NAME).collect();
+    let key = (!label.is_empty()).then(|| format!("{GROUPS_KEY}{start}"));
+    if let Some(replaced) = replaces
+        .filter(|replaced| replaced.starts_with(GROUPS_KEY) && Some(*replaced) != key.as_deref())
+    {
+        let _ = doc.delete(automerge::ROOT, replaced);
+    }
+    let key = key?;
+    // The whole record is written again, so no peer reads a new label against an old run.
+    let record = doc
+        .put_object(automerge::ROOT, &key, automerge::ObjType::Map)
+        .ok()?;
+    let _ = doc.put(&record, "label", label);
+    if let Some(end) = end {
+        let _ = doc.put(&record, "end", end);
+    }
+    let _ = doc.put(&record, "by", by);
+    Some(key)
+}
+
 /// True when every patch in `patches` lands inside the named-range map — used
 /// by the producer to keep naming out of the row list. An empty patch set is
 /// **not** a marker: a change that did nothing visible is still a change, and

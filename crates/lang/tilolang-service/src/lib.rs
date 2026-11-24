@@ -843,7 +843,8 @@ impl ResourceService {
             ),
             HistoryEdit::Restore { .. }
             | HistoryEdit::RestoreReviewed { .. }
-            | HistoryEdit::Checkpoint { .. } => {
+            | HistoryEdit::Checkpoint { .. }
+            | HistoryEdit::Name { .. } => {
                 version_edit(&self.host, &[self.tree(resource)?], edit, by)
             }
         }
@@ -995,7 +996,8 @@ pub fn version_edit(
             }
             Ok(serde_json::json!({ "checkpoint": name }))
         }
-        HistoryEdit::Undo { .. } | HistoryEdit::Redo { .. } => {
+        // The store keeps a tilolang app's history by invocation; it names no run of changes.
+        HistoryEdit::Undo { .. } | HistoryEdit::Redo { .. } | HistoryEdit::Name { .. } => {
             Err(format!("{} takes no version", edit.verb()))
         }
     }

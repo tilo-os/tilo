@@ -128,6 +128,19 @@ pub enum HistoryEdit {
         #[param("The name")]
         name: String,
     },
+    /// Name a run of changes in history, to find it again; with an empty name, remove the name
+    /// it replaces.
+    #[effect(document, kind = "undoable", returns = HistoryAnswer)]
+    Name {
+        #[param("The run's first change id from history")]
+        from: String,
+        #[param("The run's last change id from history")]
+        to: String,
+        #[param("The name; empty removes the name it replaces")]
+        name: String,
+        #[param("The id of the name this one replaces")]
+        replaces: Option<String>,
+    },
 }
 
 fn limit(steps: Option<u32>, default: usize) -> usize {
@@ -144,6 +157,7 @@ impl HistoryEdit {
             Self::Restore { .. } => "restore",
             Self::RestoreReviewed { .. } => "restore-reviewed",
             Self::Checkpoint { .. } => "checkpoint",
+            Self::Name { .. } => "name",
         }
     }
 
@@ -152,7 +166,7 @@ impl HistoryEdit {
     #[must_use]
     pub fn change_kind(&self) -> ChangeKind {
         match self {
-            Self::Checkpoint { .. } => ChangeKind::Housekeeping,
+            Self::Checkpoint { .. } | Self::Name { .. } => ChangeKind::Housekeeping,
             _ => ChangeKind::Content,
         }
     }
@@ -183,7 +197,9 @@ impl HistoryEdit {
             Self::Redo { steps, undos: None } => (HistoryOp::Redo, steps.unwrap_or(1)),
             Self::Restore { step: Some(_), .. } => (HistoryOp::Restore, 1),
             Self::Restore { .. } | Self::RestoreReviewed { .. } => (HistoryOp::Restore, 0),
-            Self::Checkpoint { name } => (HistoryOp::Checkpoint { name: name.clone() }, 0),
+            Self::Checkpoint { name } | Self::Name { name, .. } => {
+                (HistoryOp::Checkpoint { name: name.clone() }, 0)
+            }
         };
         // The one step it moves, when it moves one: a gesture's changes share one description,
         // and the newest names the step.
@@ -601,6 +617,18 @@ impl HistoryEdit {
             }
             Self::Restore { version, .. } => required(version, "version")?,
             Self::Checkpoint { name } => required(name, "name")?,
+            Self::Name {
+                from,
+                to,
+                name,
+                replaces,
+            } => {
+                required(from, "from")?;
+                required(to, "to")?;
+                if name.trim().is_empty() && replaces.is_none() {
+                    return Err("give a name, or the name it removes".into());
+                }
+            }
             Self::RestoreReviewed { .. } => {}
         }
         Ok(self)
@@ -740,6 +768,9 @@ fn part_action(edit: &PartEdit) -> Result<PartHistoryEditAction, String> {
             name: name.clone(),
             part,
         },
+        HistoryEdit::Name { .. } => {
+            return Err("a run of changes is named in a whole document's history".into());
+        }
         HistoryEdit::RestoreReviewed { .. } => {
             return Err("a part's history has no reviewed restore".into());
         }
@@ -1888,6 +1919,21 @@ impl HistoryEdit {
             }),
             Self::RestoreReviewed { review } => review.apply(doc),
             Self::Checkpoint { name } => steps::checkpoint(doc, name),
+            Self::Name {
+                from,
+                to,
+                name,
+                replaces,
+            } => (|| {
+                let first = |change: &str| match steps::resolve(doc, change)?[..] {
+                    [hash] => Ok(super::run_id(&hash)),
+                    _ => Err(format!("`{change}` names no one change")),
+                };
+                let (from, to) = (first(from)?, first(to)?);
+                let by = doc.get_actor().to_hex_string();
+                super::name_run(doc, (&from, Some(&to)), name, &by, replaces.as_deref());
+                Ok(())
+            })(),
         }
         .map_err(ActionError::Refused)
     }

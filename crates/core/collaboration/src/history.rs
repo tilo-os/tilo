@@ -6,9 +6,9 @@
 //! its dependency stays the collab client rather than the store.
 
 pub use tilo_resource_store::history::{
-    DESCRIPTIONS_KEY, GROUPS_KEY, HistoryMoment, INVOCATIONS_KEY, InstanceId,
+    DESCRIPTIONS_KEY, GROUPS_KEY, HistoryMoment, INVOCATIONS_KEY, InstanceId, MAX_RUN_NAME,
     OwnedActionAttribution, OwnedActionReceipt, UndoEntry, UndoLog, authors, entry_id_from_hash,
     feed, is_description_marker, is_group_marker, is_history_metadata, is_invocation_marker,
-    revert, same_frontier, steps, typing, verbs, words, write_patches, write_revert_patches,
-    write_revert_patches_where,
+    name_run, revert, same_frontier, steps, typing, verbs, words, write_patches,
+    write_revert_patches, write_revert_patches_where,
 };
