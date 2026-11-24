@@ -2959,7 +2959,10 @@ def build_tapp(name: str, out: Path, state: Path) -> Path:
     tool = tilolang_tool()
     runtime = (state / "runtimes/.version").read_text().strip()
     print(f"==> tilolang build {name}", file=sys.stderr)
-    run([str(tool), "build", str(REPO / "apps/tl" / name), "--search", str(REPO / "apps/tl"),
+    # `--locked`: a walk builds what is committed, and fails on a stale ids lock or catalogue
+    # rather than writing one mid-walk, which the session would see as a package no commit has.
+    run([str(tool), "build", "--locked", str(REPO / "apps/tl" / name),
+         "--search", str(REPO / "apps/tl"),
          "--out", str(out), "--tilo-runtime", f"tilo-runtime/{runtime}"])
     tapp = out / f"{name}.tapp"
     if not tapp.is_file():

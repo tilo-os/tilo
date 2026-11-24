@@ -42,7 +42,7 @@ def mail_tapp(out: Path):
     def built(state: Path) -> list[Path]:
         runtime = (state / "runtimes/.version").read_text().strip()
         tilolang = next(p for p in (state / "bin/tilolang", BUILD / "bin/tilolang") if p.exists())
-        run([tilolang, "build", REPO / "apps/tl/mail", "--search", REPO / "apps/tl",
+        run([tilolang, "build", "--locked", REPO / "apps/tl/mail", "--search", REPO / "apps/tl",
              "--out", out, "--tilo-runtime", f"tilo-runtime/{runtime}"])
         return [out / "mail.tapp"]
 

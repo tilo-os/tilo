@@ -22,6 +22,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
         tilo_runtime: "tilo-runtime/2026.07".into(),
         tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
         version: "0.1.0".into(),
+        locked: false,
     };
     let apps = package::build(&options, &identity).unwrap();
     let ids: Vec<&str> = apps.iter().map(|app| app.app.as_str()).collect();
@@ -123,6 +124,7 @@ fn a_package_offers_the_files_its_actions_open() {
         tilo_runtime: "tilo-runtime/2026.07".into(),
         tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
         version: "0.1.0".into(),
+        locked: false,
     };
     let apps = package::build(&options, &identity).unwrap();
     let notes = apps.iter().find(|app| app.app == "so.tilo.notes").unwrap();
@@ -275,6 +277,7 @@ fn a_package_that_uses_the_platforms_apps_builds() {
         tilo_runtime: "tilo-runtime/2026.07".into(),
         tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
         version: "0.1.0".into(),
+        locked: false,
     };
     let apps = package::build(&options, &identity).unwrap();
     let shell = apps.last().unwrap();
@@ -314,6 +317,7 @@ fn the_launcher_runs_a_built_app_on_the_runtime_binary_over_its_payload() {
         tilo_runtime: "tilo-runtime/2026.07".into(),
         tilolang_runtime: "tilolang/0.1.0+tilolang".into(),
         version: "0.1.0".into(),
+        locked: false,
     };
     let apps = package::build(&options, &identity).unwrap();
     let [counter] = apps.as_slice() else {
@@ -370,6 +374,7 @@ fn the_splash_budget_a_header_declares_is_the_manifests_entrypoint_budget() {
             tilo_runtime: "tilo-runtime/2026.07".into(),
             tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
             version: "0.1.0".into(),
+            locked: false,
         };
         let apps = package::build(&options, &identity).unwrap();
         apps.last().expect("the app").manifest.clone()
@@ -551,6 +556,7 @@ fn a_valid_tilolang_package_has_verified_exact_archive_bytes() {
         tilo_runtime: "tilo-runtime/2026.07".into(),
         tilolang_runtime: "tilolang/0.1.0+tilolang".into(),
         version: "0.1.0".into(),
+        locked: false,
     };
     let apps = package::build(&options, &identity).unwrap();
     let [counter] = apps.as_slice() else {
@@ -617,6 +623,7 @@ fn an_app_that_claims_a_uri_scheme_declares_it_in_its_manifest() {
         tilo_runtime: "tilo-runtime/2026.07".into(),
         tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
         version: "0.1.0".into(),
+        locked: false,
     };
     let apps = package::build(&options, &identity).unwrap();
     let tube = apps
@@ -650,5 +657,71 @@ fn an_app_that_claims_a_uri_scheme_declares_it_in_its_manifest() {
     assert_eq!(
         open_link.operation,
         tilo_app_package::manifest::OfferOperation::View
+    );
+}
+
+/// A check builds what is committed: `--locked` refuses a package whose ids lock its sources have
+/// moved past, says how to write it, and leaves the lock and the output as they were. Without it,
+/// a build writes the lock, as a person changing the sources wants.
+#[test]
+fn a_locked_build_refuses_an_out_of_date_ids_lock_and_writes_nothing() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl/counter");
+    copy_package(&packages().join("counter"), &source);
+    let lock = source.join("app.ids");
+    let stale: String = std::fs::read_to_string(&lock)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with("counter = "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    std::fs::write(&lock, &stale).unwrap();
+    let out = scratch.path().join("out");
+    let identity = scratch.path().join("publisher.json");
+    let build = |locked: bool| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_tilolang"));
+        command.arg("build").arg(&source).arg("--out").arg(&out);
+        command.arg("--identity").arg(&identity);
+        if locked {
+            command.arg("--locked");
+        }
+        command.output_locked().expect("run tilolang build")
+    };
+
+    let refused = build(true);
+    assert!(
+        !refused.status.success(),
+        "a locked build of a stale lock fails"
+    );
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        said.contains("the ids lock (app.ids)")
+            && said.contains("out of date")
+            && said.contains("tilolang check --write-ids"),
+        "it says what is out of date and how to write it: {said}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lock).unwrap(),
+        stale,
+        "the lock is untouched"
+    );
+    assert!(!out.join("counter.tapp").exists(), "nothing is built");
+
+    let built = build(false);
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(&lock)
+            .unwrap()
+            .contains("\ncounter = "),
+        "an unlocked build writes the lock"
+    );
+    assert!(
+        build(true).status.success(),
+        "and then a locked build passes"
     );
 }

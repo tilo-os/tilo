@@ -25,6 +25,7 @@ fn a_saved_build_is_the_generation_the_app_reads() {
         tilo_runtime: package::DEFAULT_TILO_RUNTIME.into(),
         tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
         version: "0.1.0".into(),
+        locked: false,
     };
     let publish = |app: &package::Published, updates: &Path| {
         tilo_app_module::publish(updates, |generation| {

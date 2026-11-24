@@ -1221,8 +1221,8 @@ def main() -> int:
         run(["cargo", "build", "-p", "collab-probe", "--bin", "tilo-collab-probe"], cwd=REPO)
     runtime = (state / "runtimes/.version").read_text().strip()
     print("==> tilolang build", file=sys.stderr)
-    run([tool, "build", REPO / "apps/tl/today", "--search", REPO / "apps/tl", "--out", out / "build",
-         "--tilo-runtime", f"tilo-runtime/{runtime}"])
+    run([tool, "build", "--locked", REPO / "apps/tl/today", "--search", REPO / "apps/tl",
+         "--out", out / "build", "--tilo-runtime", f"tilo-runtime/{runtime}"])
 
     summary: dict = {"checks": {}, "failed": []}
     # The session running now, stopped at the end whatever happens.

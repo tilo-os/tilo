@@ -180,6 +180,7 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         tilo_runtime,
         tilolang_runtime,
         version: "0.1.0".to_owned(),
+        locked: false,
     };
     let identity = crate::publisher_identity()?;
     let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"), &repo);

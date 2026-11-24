@@ -58,6 +58,10 @@ pub struct BuildOptions {
     /// The tilolang runtime bundle the apps execute (`tilolang/<version>`).
     pub tilolang_runtime: String,
     pub version: String,
+    /// Refuse a package whose ids lock or source catalogue is not what its sources write, rather
+    /// than rewriting it: a check builds what is committed, and a build that rewrote the tree
+    /// would install ids no commit has.
+    pub locked: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -284,8 +288,12 @@ pub fn manifest_text(
         .collect();
     let providers_ext: Vec<String> = providers_ext.iter().map(|ext| toml_string(ext)).collect();
     let origins = origins_of(meta);
-    let (capabilities, namespaces, net, seccomp) =
-        sandbox(&origins, uses_files(meta), meta.engine.as_deref(), &meta.web);
+    let (capabilities, namespaces, net, seccomp) = sandbox(
+        &origins,
+        uses_files(meta),
+        meta.engine.as_deref(),
+        &meta.web,
+    );
     // The runtimes the package needs beside the language's own: the app's page engine, which
     // installing the app installs in the same step or not at all.
     let mut runtimes = vec![toml_string(&options.tilolang_runtime)];
@@ -772,6 +780,10 @@ fn compiled(options: &BuildOptions) -> Result<Vec<tilolang::source::BuiltPackage
     let (built, _) = crate::compile(&options.dir, &options.search, &mut OsEntropy::default())
         .map_err(|e| e.to_string())?;
     for package in &built {
+        if options.locked {
+            refuse_stale(package)?;
+            continue;
+        }
         if write_ids(package)? {
             eprintln!("{}: ids lock updated", package.dir.display());
         }
@@ -780,6 +792,30 @@ fn compiled(options: &BuildOptions) -> Result<Vec<tilolang::source::BuiltPackage
         }
     }
     Ok(built)
+}
+
+/// `Err` naming what of `package` is not what its sources write, for a `--locked` build.
+fn refuse_stale(package: &tilolang::source::BuiltPackage) -> Result<(), String> {
+    let stale: Vec<&str> = [
+        (!tilolang::source::ids_current(package)).then_some("ids lock (app.ids)"),
+        (!tilolang::source::catalogue_current(package))
+            .then_some("source catalogue (locales/en-US.ftl)"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if stale.is_empty() {
+        return Ok(());
+    }
+    let dir = package.dir.display();
+    let (what, verb, it) = match stale.as_slice() {
+        [one] => ((*one).to_owned(), "is", "it"),
+        _ => (stale.join(" and the "), "are", "them"),
+    };
+    Err(format!(
+        "{dir}: the {what} {verb} out of date with its sources; write {it} with `tilolang check \
+         --write-ids {dir}` and commit {it} with them"
+    ))
 }
 
 struct Assembled {

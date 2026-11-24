@@ -609,7 +609,8 @@ def tl_packages(state: Path, out: Path, names: list[str], *, build: bool = False
     tapps = []
     for name in names:
         print(f"==> tilolang build {name}", file=sys.stderr)
-        run([str(tool), "build", str(REPO / "apps/tl" / name), "--search", str(REPO / "apps/tl"),
+        run([str(tool), "build", "--locked", str(REPO / "apps/tl" / name),
+             "--search", str(REPO / "apps/tl"),
              "--out", str(out), "--tilo-runtime", f"tilo-runtime/{runtime}"], cwd=REPO)
         tapp = out / f"{name}.tapp"
         if not tapp.is_file():

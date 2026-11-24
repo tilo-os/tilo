@@ -1775,6 +1775,7 @@ fn dev_in_session(
         tilo_runtime,
         tilolang_runtime,
         version: "0.1.0".to_owned(),
+        locked: false,
     };
     let mut dev = Dev::in_session(build, identity, vec![peer], bin, repo);
     dev.runtime = runtime;
@@ -1823,6 +1824,7 @@ fn dev_on_desktop(
         tilo_runtime: package::DEFAULT_TILO_RUNTIME.to_owned(),
         tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
         version: "0.1.0".to_owned(),
+        locked: false,
     };
     let mut dev = Dev::on_desktop(build, identity, &root, repo)?;
     dev.runtime = Some(DevRuntime {

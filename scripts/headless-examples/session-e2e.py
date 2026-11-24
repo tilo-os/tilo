@@ -853,7 +853,7 @@ def prepare(build: Path, state: Path, out: Path) -> list[Path]:
     # one from where it was built.
     tilolang = next(p for p in (state / "bin/tilolang", build / "bin/tilolang") if p.exists())
     for name in TL_APPS:
-        run([tilolang, "build", REPO / "apps/tl" / name, "--search", REPO / "apps/tl",
+        run([tilolang, "build", "--locked", REPO / "apps/tl" / name, "--search", REPO / "apps/tl",
              "--out", built, "--tilo-runtime", f"tilo-runtime/{runtime}"])
         tapps.append(built / f"{name}.tapp")
     return tapps

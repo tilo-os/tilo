@@ -29,9 +29,11 @@ const USAGE: &[(&str, &str)] = &[
         "build",
         "\
   tilolang build|package [DIR] [--search DIR]... [--out DIR] [--identity FILE]
-                         [--tilo-runtime tilo-runtime/<release>] [--version V]
+                         [--tilo-runtime tilo-runtime/<release>] [--version V] [--locked]
       compile the package in DIR (default: .) and the packages it uses, and write each as a
-      signed Tilo app: OUT/<name>.tapp (default OUT: DIR/target)",
+      signed Tilo app: OUT/<name>.tapp (default OUT: DIR/target). A build writes a package's
+      ids lock and source catalogue when its sources changed them; --locked refuses instead,
+      as a check does, so it builds only what is committed.",
     ),
     (
         "run",
@@ -515,10 +517,12 @@ fn build(args: &[String]) -> Result<(), String> {
     let mut identity = None;
     let mut tilo_runtime = package::DEFAULT_TILO_RUNTIME.to_owned();
     let mut version = "0.1.0".to_owned();
+    let mut locked = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--search" => common.search.push(value(&mut iter, arg)?.into()),
+            "--locked" => locked = true,
             "--out" => out = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--identity" => identity = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--tilo-runtime" => tilo_runtime = value(&mut iter, arg)?,
@@ -540,6 +544,7 @@ fn build(args: &[String]) -> Result<(), String> {
         tilo_runtime,
         tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
         version,
+        locked,
     };
     for app in package::build(&options, &identity)? {
         println!("{} ({}): {}", app.app, app.title, app.tapp.display());
