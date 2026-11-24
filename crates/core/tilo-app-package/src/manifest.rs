@@ -873,6 +873,12 @@ pub struct Entrypoint {
     /// of the app is open. Only for an entrypoint that names a `runtime`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub origins: Vec<String>,
+    /// The app keeps a long-lived connection to an outside service (a chat bridge's gateway, a
+    /// mail account's fetching): exactly one device of each workspace runs its process with no
+    /// window, one that has the app installed and gives it every capability it requires, and
+    /// another takes it over when that device goes silent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub connection: bool,
     /// What a window of the app is to other devices ([`WindowKind`]). Left out, it is a view of
     /// records, which every device opens for itself.
     #[serde(default, skip_serializing_if = "WindowKind::is_view")]

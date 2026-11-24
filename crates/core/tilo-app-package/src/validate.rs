@@ -1580,6 +1580,7 @@ mode = "off"
                 splash_budget_ms: 400,
                 runtime: None,
                 origins: Vec::new(),
+                connection: false,
                 window: crate::manifest::WindowKind::default(),
             });
             m.continuity.required.clear();
