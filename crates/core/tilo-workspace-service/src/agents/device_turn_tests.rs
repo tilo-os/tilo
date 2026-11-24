@@ -20,7 +20,6 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tilo_actions::remote::InvokeRequest;
-use tilo_agent_session::AppCatalogue;
 use tilo_agent_session::model::PlanTurns;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, Usage,
@@ -123,7 +122,6 @@ impl AgentKeys for Keys {
 async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = crate::workspaces::fixtures::governor();
-    let catalogue = AppCatalogue::native();
     // The native apps name their surfaces as the host first runs them.
     crate::surfaces::decide_receipt(&scratch.path().join("surfaces"));
     let server = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
@@ -132,11 +130,6 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     let person = hex::encode(cert.user_public_key);
 
     // The workspace's chat, and its record of the agents it keeps.
-    let chat_record = crate::agents::workspace_resource(&catalogue, CHAT);
-    workspaces
-        .prepare_application(&workspace, &cert, &catalogue, CHAT, &chat_record)
-        .await
-        .unwrap();
     workspaces
         .author_agents(&workspace, |doc| {
             let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))

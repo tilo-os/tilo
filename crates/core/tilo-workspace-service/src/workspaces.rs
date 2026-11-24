@@ -60,6 +60,7 @@ mod web_ui;
 pub mod webhooks;
 pub use web_ui::WebUi;
 mod surfaces;
+pub use views::ViewReadPolicy;
 #[cfg(test)]
 mod surfaces_tests;
 #[cfg(feature = "agents")]

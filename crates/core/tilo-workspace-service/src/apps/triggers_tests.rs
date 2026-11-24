@@ -2150,7 +2150,6 @@ async fn an_event_answers_a_post_in_the_workspace_once() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     // The native apps name their surfaces as the host first runs them.
-    let _ = tilo_agent_session::AppCatalogue::native();
     crate::surfaces::decide_receipt(&dir.path().join("surfaces"));
     let host = test_host(dir.path(), &key, &cert).await;
     let workspaces = host.workspaces();

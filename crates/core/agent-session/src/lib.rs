@@ -9,14 +9,9 @@
 //!   `tilo_server_protocol::delegation::Delegation` naming its label, cursor
 //!   colour, workspace and apps. The host confines the device to that workspace and
 //!   treats it as its own actor.
-//! - **Apps.** Each record the agent works in is a replica of the app's
-//!   resource, looked up by the kind the record names and used only through
-//!   the operations the resource publishes — the same API a person's window
-//!   uses — with no per-app code and nothing rendered ([`apps`]).
-//! - **Confinement.** On a host, each record lives in its own confined app
-//!   worker process, so no app code runs beside the host's and agents'
-//!   keys; the host admits what a worker returns before it signs it
-//!   ([`worker`]).
+//! - **Records.** Each record the agent works in is the workspace's, changed
+//!   through the app's own process and its published actions, as a person's
+//!   window changes it.
 //! - **Work.** The workspace's own agents (its `tilo.workspace.agent` roster) take
 //!   their turns through the device's dispatch; each signs its changes with its own key.
 //! - **Memory.** There is none of its own. What an agent learns it reads
@@ -25,7 +20,6 @@
 
 #![deny(rust_2018_idioms)]
 
-pub mod apps;
 pub mod render;
 pub mod facts;
 pub mod model;
@@ -33,14 +27,8 @@ pub mod record_actions;
 pub mod search;
 pub mod shell;
 pub mod transform;
-mod web_apps;
-pub mod worker;
 
-pub use apps::{
-    AppCatalogue, AppError, PlacedApp, PlacedArgument, Replica, ReplicaActor, Seed, component_apps,
-};
 pub use record_actions::{RESOURCE_PROVIDER, resource_provider};
-pub use worker::ConfinedReplica;
 
 // Unit tests admit peer bytes through the Automerge isolate, whose workers
 // are this test binary started again.

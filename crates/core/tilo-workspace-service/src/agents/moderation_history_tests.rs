@@ -19,7 +19,6 @@ use tilo_actions::remote::WORKSPACE_AGENT_CREATE;
 use tilo_actions::remote::{
     ActionProvider as _, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
-use tilo_agent_session::AppCatalogue;
 use tilo_agent_session::model::PlanTurns;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
@@ -320,17 +319,11 @@ fn posted(
 async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_run() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = crate::workspaces::fixtures::governor();
-    let catalogue = AppCatalogue::native();
     crate::surfaces::decide_receipt(&scratch.path().join("surfaces"));
     let server = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Moderation").await.unwrap().workspace;
     let owner = hex::encode(cert.user_public_key);
-    let chat_record = crate::agents::workspace_resource(&catalogue, CHAT);
-    workspaces
-        .prepare_application(&workspace, &cert, &catalogue, CHAT, &chat_record)
-        .await
-        .unwrap();
     create_watching_agent(&workspaces, &workspace, &cert).await;
     grant_scout(&workspaces, &workspace, &owner).await;
 
@@ -419,17 +412,11 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
 async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = crate::workspaces::fixtures::governor();
-    let catalogue = AppCatalogue::native();
     crate::surfaces::decide_receipt(&scratch.path().join("surfaces"));
     let server = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Moderation").await.unwrap().workspace;
     let owner = hex::encode(cert.user_public_key);
-    let chat_record = crate::agents::workspace_resource(&catalogue, CHAT);
-    workspaces
-        .prepare_application(&workspace, &cert, &catalogue, CHAT, &chat_record)
-        .await
-        .unwrap();
     create_watching_agent(&workspaces, &workspace, &cert).await;
     grant_scout(&workspaces, &workspace, &owner).await;
     post(&workspaces, &workspace, &cert, "m-1", "a spam offer").await;

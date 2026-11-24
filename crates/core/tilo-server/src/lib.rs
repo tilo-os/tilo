@@ -74,8 +74,6 @@ pub mod workspace_join;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 tilo_automerge_isolate::test_worker!();
-#[cfg(all(test, feature = "agents"))]
-tilo_agent_session::app_worker!();
 
 // The records and wire messages shared with server clients live in
 // `tilo-server-protocol`, the frame codec in `tilo-server-client`, and the

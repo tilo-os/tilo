@@ -2903,21 +2903,6 @@ where
     R::read(doc).map_err(|error| error.to_string())
 }
 
-/// The record of `app` a workspace keeps and seeds: the primary of an app that
-/// keeps one per workspace (chat), else the workspace's default record, which every
-/// member's first window of the app opens.
-#[must_use]
-pub fn workspace_resource(catalogue: &tilo_agent_session::AppCatalogue, app: &str) -> String {
-    match catalogue.get(app) {
-        Some(definition) if !definition.keeps_workspace_resource() => {
-            collab_types::document::DocumentId::workspace_default()
-                .as_str()
-                .to_owned()
-        }
-        _ => String::new(),
-    }
-}
-
 /// Today, `YYYY-MM-DD`, as an agent's keeper counts the days its spending is charged to.
 pub fn today() -> String {
     tilo_clock::local::today().to_string()

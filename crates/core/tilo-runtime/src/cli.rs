@@ -120,11 +120,6 @@ pub fn host(program: &str) -> std::process::ExitCode {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return std::process::ExitCode::from(code);
     }
-    // An app's record is founded and written through a confined worker of this executable,
-    // started again on its way: serve it here, before any thread starts.
-    if let Some(code) = tilo_agent_session::worker::dispatch_early() {
-        return std::process::ExitCode::from(code);
-    }
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {

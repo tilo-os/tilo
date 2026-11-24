@@ -28,9 +28,6 @@
 // started from this executable, which is the test binary here: the one worker
 // entry every module's tests start.
 tilo_automerge_isolate::test_worker!();
-// The host's app workers: a record's app is founded and written in a confined process of this
-// executable, started again on its way, which serves it here.
-tilo_agent_session::app_worker!();
 
 #[path = "account_sign_ins.rs"]
 mod account_sign_ins;

@@ -121,8 +121,6 @@ pub use tilo_endpoint_reachability::Reaching;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 tilo_automerge_isolate::test_worker!();
-#[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
-tilo_agent_session::app_worker!();
 
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_server_client::frame;
