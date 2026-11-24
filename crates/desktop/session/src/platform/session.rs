@@ -722,8 +722,17 @@ impl Session {
             .ok()
         });
         // What this device holds is read only once the channel service is up: before, nothing reads.
+        // The listing is the daemon's to answer and may take as long as its store does, so it is
+        // read on a thread of its own: the session starts at once, and what it notes reaches the
+        // roles when it arrives.
         if let Some(index) = &resource_index {
-            index.sweep();
+            let index = std::sync::Arc::clone(index);
+            if let Err(error) = std::thread::Builder::new()
+                .name("record-sweep".into())
+                .spawn(move || index.sweep())
+            {
+                tracing::warn!(%error, "the records this device holds are not noted");
+            }
         }
         // The workspaces' records the session reads and writes itself, where the daemon holds
         // them: what a window carries to another workspace.

@@ -271,14 +271,56 @@ impl<P: Resource> FollowedResource<P> {
         )
     }
 
+    /// Run `invoke` at the device's daemon, as the person, without waiting for it: what the
+    /// session says of itself on its loop, which must never wait on the daemon's store. `done`
+    /// hears how it went, on the daemon link's runtime; the follow shows what it changed.
+    pub(crate) fn invoke_unwaited(
+        &self,
+        invoke: &Invoke<P>,
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        if let Some(refusal) = invoke.refusal() {
+            done(Err(refusal.to_owned()));
+            return;
+        }
+        let request = self.request(invoke.address(), invoke.arguments.clone(), None);
+        let daemon = self.shared.daemon.clone();
+        let workspace = self.shared.workspace.clone();
+        self.shared.daemon.runtime().spawn(async move {
+            let ran = daemon
+                .dispatch(
+                    Some(&workspace),
+                    &tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                )
+                .await;
+            done(ran.map(|_| ()));
+        });
+    }
+
     fn run(
         &self,
         address: tilo_actions::ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
         invoker: Option<tilo_actions::ActionInvoker>,
     ) -> Result<(), String> {
+        let request = self.request(address, arguments, invoker);
+        self.shared
+            .daemon
+            .invoke_blocking(&self.shared.workspace, request)?;
+        self.refresh();
+        Ok(())
+    }
+
+    /// The request that runs `address` with `arguments` on this resource, as `invoker` where one
+    /// acts for the person.
+    fn request(
+        &self,
+        address: tilo_actions::ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        invoker: Option<tilo_actions::ActionInvoker>,
+    ) -> InvokeRequest {
         let shared = &self.shared;
-        let request = InvokeRequest {
+        InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: format!("{RESOURCE_PROVIDER}:{}:{}", shared.app, shared.id),
@@ -293,10 +335,7 @@ impl<P: Resource> FollowedResource<P> {
             wait_ms: None,
             appearance: None,
             signed: None,
-        };
-        shared.daemon.invoke_blocking(&shared.workspace, request)?;
-        self.refresh();
-        Ok(())
+        }
     }
 
     /// Read it again now, rather than when the follow next does: what a change just made shows
