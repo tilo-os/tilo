@@ -29,17 +29,15 @@ use crate::platform::fabric::{
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tilo_identity::device_fleet::DeviceFleetStore;
-use tilo_identity::store::IdentityRegistryStore;
 use tilo_service::{AskSender, Asked, Question};
 use tilo_unlock_protocol::{
     APPROVAL_TIMEOUT_NS, CHALLENGE_LIFETIME_NS, ClientFrame, ENROL_SOCKET, EnrolReply,
     EnrolRequest, EnrolResponse, RefusalReason, SiblingContact, SiblingFrame, SlotId, UnlockHello,
-    UnlockRequest, decode_frame, encode_frame, frame_len, seal_sibling_half,
+    UnlockRequest, decode_frame, encode_frame, frame_len,
 };
 use tilo_user_identity::{
-    CertifiedFleet, DeviceCapabilities, DeviceCert, DeviceCertification,
-    device_cert_signing_digest, verify_device_cert,
+    CertifiedFleet, DeviceCert, DeviceCertification, device_cert_signing_digest,
+    verify_device_cert,
 };
 
 /// The kind the session's sheet reads a disk-unlock request as.
@@ -72,9 +70,9 @@ pub(crate) struct EnrolQuestion {
     pub unattended: bool,
 }
 
-/// The person's identity this session answers as, and what it holds.
+/// The person's devices this session answers as, as the daemon that holds their record lists
+/// them, and whether that daemon keeps their root.
 struct Ownership {
-    identity_id: String,
     fleet: CertifiedFleet,
     /// Whether this device holds the person's root, so it can release.
     key_holder: bool,
@@ -146,6 +144,9 @@ impl Unlock {
         // The owner's answer to this boot, when their devices kept one, is the whole exchange: an
         // approval needs the half, a denial needs nothing loaded.
         let boot_digest = boot_cert_digest(&hello.boot_cert);
+        let request_digest = request
+            .digest(&hello.boot_cert, &self.local)
+            .unwrap_or_default();
         let allowed_before = boot_digest
             .and_then(|digest| {
                 decision_for(
@@ -158,12 +159,20 @@ impl Unlock {
             })
             .is_some_and(|record| record.outcome == DecisionOutcome::Approve);
         let frame = {
-            let secret_sync = if allowed_before {
-                self.secret_sync(&ownership).await
-            } else {
-                None
+            let release = match &boot_digest {
+                Some(digest) if allowed_before => {
+                    self.release(
+                        &ownership,
+                        &published,
+                        digest,
+                        &request_digest,
+                        &request.ephemeral_public,
+                    )
+                    .await
+                }
+                _ => None,
             };
-            let view = view_of(&ownership, &published, secret_sync.as_ref());
+            let view = view_of(&ownership, &published, release.as_ref());
             self.lock().request(&request, &hello, &nonce, &view, now)
         };
         let SiblingFrame::Pending { approval_code } = &frame else {
@@ -176,9 +185,7 @@ impl Unlock {
             return;
         };
         let pending = approval_code.clone();
-        let digest = request
-            .digest(&hello.boot_cert, &self.local)
-            .unwrap_or_default();
+        let digest = request_digest;
         if !write_sibling(&mut send, &frame).await {
             // The boot is gone before it could read even that: nobody will wait for a decision on
             // its behalf.
@@ -319,16 +326,40 @@ impl Unlock {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The person's secret-sync key, held only where this device may release a half: loaded then,
-    /// never before.
-    async fn secret_sync(&self, ownership: &Ownership) -> Option<tilo_seal::SecretKey> {
+    /// The boot's half, opened by the daemon that keeps the person's root and sealed to the
+    /// boot's ephemeral key: nothing here holds the secret-sync key, and the half never appears
+    /// in this process.
+    async fn release(
+        &self,
+        ownership: &Ownership,
+        published: &MergedUnlock,
+        boot_cert_digest: &[u8; 32],
+        request_digest: &[u8; 32],
+        ephemeral_public: &[u8; 32],
+    ) -> Option<tilo_unlock_protocol::Release> {
         if !ownership.key_holder {
             return None;
         }
-        tokio::task::spawn_blocking(secret_sync_key)
-            .await
-            .ok()
-            .flatten()
+        let enrolment = published.enrolments.get(boot_cert_digest)?;
+        let args = serde_json::json!({
+            "cert": hex::encode(postcard::to_allocvec(&enrolment.cert).ok()?),
+            "sealed_half": hex::encode(postcard::to_allocvec(&enrolment.sealed_half).ok()?),
+            "request_digest": hex::encode(request_digest),
+            "ephemeral": hex::encode(ephemeral_public),
+        });
+        tokio::task::spawn_blocking(move || {
+            tilo_api::daemon::this_computer()
+                .ok()?
+                .act(tilo_device_identity::login::RELEASE_HALF, args)
+                .ok()?
+                .get("release")?
+                .as_str()
+                .and_then(|release| hex::decode(release).ok())
+                .and_then(|release| postcard::from_bytes::<tilo_unlock_protocol::Release>(&release).ok())
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// Record the person's decision on the request `digest` , for the boot still waiting.
@@ -339,10 +370,19 @@ impl Unlock {
         digest: &[u8; 32],
         approved: bool,
     ) -> Option<Decided> {
-        let secret_sync = if approved {
-            self.secret_sync(ownership).await
-        } else {
-            None
+        let pending = self.lock().pending(digest);
+        let release = match pending {
+            Some(pending) if approved => {
+                self.release(
+                    ownership,
+                    published,
+                    &pending.enrolment,
+                    &pending.request_digest,
+                    &pending.ephemeral_public,
+                )
+                .await
+            }
+            _ => None,
         };
         let decision = if approved {
             UnlockDecision::Approve {
@@ -353,7 +393,7 @@ impl Unlock {
                 approver: self.local,
             }
         };
-        let view = view_of(ownership, published, secret_sync.as_ref());
+        let view = view_of(ownership, published, release.as_ref());
         self.lock()
             .decide(digest, decision, &view, tilo_clock::unix_now_ns())
     }
@@ -432,84 +472,80 @@ impl Unlock {
             return Err(NotEnrolled::NotKeyHolder);
         }
         let refused = NotEnrolled::Reason;
-        let store = DeviceFleetStore::from_env().map_err(|error| refused(error.to_string()))?;
-        // The boot key is certified as an ordinary device certificate that grants nothing: it can
-        // ask for the half, never act as the device.
-        let mut cert = DeviceCert {
-            user_public_key: *ownership.fleet.user_public_key(),
-            device_public_key: request.boot_public_key,
-            device_label: self.label_of(&enrollee),
-            capabilities: DeviceCapabilities::nothing(),
-            issued_at_ns: tilo_clock::unix_now_ns(),
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
+        let person = *ownership.fleet.user_public_key();
+        // An enrolment for an unattended unlock asks, with the boot chain it measures now, to be
+        // released without a prompt: the daemon that holds the root signs that acceptance.
+        let mut approval = request.unattended_chain.map(|chain| {
+            AutoApproval::unsigned(person, enrollee, vec![chain], tilo_clock::unix_now_ns())
+        });
+        let approval_digest = match &approval {
+            Some(approval) => Some(approval.digest().ok_or_else(|| {
+                refused("the unlock policy could not be encoded".into())
+            })?),
+            None => None,
         };
-        let digest = device_cert_signing_digest(&cert)
-            .map_err(|error| refused(format!("the boot key's certificate: {error}")))?;
-        cert.signature = store
-            .sign_root(&ownership.identity_id, &digest)
-            .map_err(|error| refused(error.to_string()))?;
+        let mut args = serde_json::json!({
+            "request": hex::encode(
+                postcard::to_allocvec(request)
+                    .map_err(|error| refused(format!("the enrolment request: {error}")))?,
+            ),
+            "device": hex::encode(enrollee),
+        });
+        if let Some(digest) = &approval_digest {
+            args["approval_digest"] = serde_json::Value::String(hex::encode(digest));
+        }
+        let answer = tilo_api::daemon::this_computer()
+            .and_then(|daemon| daemon.act(tilo_device_identity::login::ENROL_BOOT_KEY, args))
+            .map_err(refused)?;
+        let cert: DeviceCert = answer
+            .get("cert")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|cert| hex::decode(cert).ok())
+            .and_then(|cert| postcard::from_bytes(&cert).ok())
+            .ok_or_else(|| {
+                refused("the person's root gave no certificate for the boot key".into())
+            })?;
         verify_device_cert(&cert)
             .map_err(|error| refused(format!("the boot key's certificate: {error}")))?;
-        let secret_sync = store
-            .secret_sync_key(&ownership.identity_id)
-            .and_then(|key| key.public_key().map_err(std::io::Error::other))
-            .map_err(|error| refused(error.to_string()))?;
-        let sealed_half = seal_sibling_half(&secret_sync, &cert, &request.sibling_half)
-            .map_err(|error| refused(error.to_string()))?;
-        let now = tilo_clock::unix_now_ns();
-        // Every one of the person's devices holds the half once the enrolment
-        // reaches them, whatever is beside this device at this moment: the list
-        // is their fleet, named as the person's store names them.
-        let fleet = store
-            .load(&ownership.identity_id)
-            .map_err(|error| refused(error.to_string()))?;
-        let labels: std::collections::HashMap<String, String> = self
-            .link
-            .devices()
-            .devices()
-            .iter()
-            .map(|(id, device)| (id.as_str().to_owned(), device.about.label.clone()))
-            .collect();
-        let siblings = fleet
-            .personal_devices(&cert.user_public_key, now)
+        let sealed_half: tilo_unlock_protocol::SealedSiblingHalf = answer
+            .get("sealed_half")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|half| hex::decode(half).ok())
+            .and_then(|half| postcard::from_bytes(&half).ok())
+            .ok_or_else(|| refused("the boot key's half was not sealed".into()))?;
+        // Every one of the person's devices holds the half once the enrolment reaches them,
+        // whatever is beside this device at this moment: the list is their record, named as it
+        // names them.
+        let siblings = answer
+            .get("siblings")
+            .and_then(serde_json::Value::as_array)
             .into_iter()
-            // Every one of the person's devices but the one being enrolled: this
-            // device among them, which is the one asking them and holds the half
-            // like any other, so a person with two devices has one to ask at boot.
-            .filter(|key| key != &enrollee)
-            .map(|key| SiblingContact {
-                device_public_key: key,
-                label: labels.get(&hex::encode(key)).cloned().unwrap_or_default(),
-                endpoint: String::new(),
+            .flatten()
+            .filter_map(|sibling| {
+                Some(SiblingContact {
+                    device_public_key: hex::decode(sibling.get("device")?.as_str()?)
+                        .ok()?
+                        .try_into()
+                        .ok()?,
+                    label: sibling
+                        .get("label")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    endpoint: String::new(),
+                })
             })
             .collect();
-        // An enrolment for an unattended unlock asks, with the boot chain it
-        // measures now, to be released without a prompt. The root signs that
-        // acceptance, so any of the person's devices reads it as the owner's.
-        let approval = request
-            .unattended_chain
-            .map(|chain| -> Result<AutoApproval, NotEnrolled> {
-                let mut approval = AutoApproval::unsigned(
-                    *ownership.fleet.user_public_key(),
-                    enrollee,
-                    vec![chain],
-                    tilo_clock::unix_now_ns(),
-                );
-                let digest = approval
-                    .digest()
-                    .ok_or_else(|| refused("the unlock policy could not be encoded".into()))?;
-                approval.signature = store
-                    .sign_root(&ownership.identity_id, &digest)
-                    .map_err(|error| refused(error.to_string()))?
-                    .to_vec();
-                approval.validate().map_err(|error| {
-                    refused(format!("the unlock policy is not admissible: {error}"))
-                })?;
-                Ok(approval)
-            })
-            .transpose()?;
+        if let Some(approval) = &mut approval {
+            approval.signature = answer
+                .get("approval_signature")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|signature| hex::decode(signature).ok())
+                .ok_or_else(|| refused("the unlock policy was not signed".into()))?;
+            approval.validate().map_err(|error| {
+                refused(format!("the unlock policy is not admissible: {error}"))
+            })?;
+        }
         let holder =
             DeviceId::new(hex::encode(self.local)).map_err(|error| refused(error.to_string()))?;
         let enrolment = UnlockEnrolment {
@@ -638,7 +674,7 @@ impl Unlock {
 fn view_of<'a>(
     ownership: &'a Ownership,
     published: &'a MergedUnlock,
-    secret_sync: Option<&'a tilo_seal::SecretKey>,
+    release: Option<&'a tilo_unlock_protocol::Release>,
 ) -> UnlockView<'a> {
     UnlockView {
         fleet: &ownership.fleet,
@@ -646,7 +682,7 @@ fn view_of<'a>(
         auto_approvals: &published.auto_approvals,
         decisions: &published.decisions,
         key_holder: ownership.key_holder,
-        secret_sync,
+        release,
     }
 }
 
@@ -695,36 +731,50 @@ pub(crate) fn slot_name(slot: &SlotId) -> String {
     format!("{}:{}", hex::encode(slot.volume_uuid), slot.keyslot)
 }
 
-/// This device's identity, the fleet it is certified by, and whether it holds the person's root.
+/// The person's devices, as the daemon that holds their record lists them, and whether it keeps
+/// their root.
 fn read_ownership() -> Option<Ownership> {
-    let registry = IdentityRegistryStore::from_env()
+    use tilo_user_identity::RevocationEntry;
+    let answer = tilo_api::daemon::this_computer()
         .ok()?
-        .load_reconciled_cached()
+        .act(
+            tilo_device_identity::login::PERSONAL_DEVICES,
+            serde_json::json!({}),
+        )
         .ok()?;
-    let profile = registry.certified_identity()?;
-    let store = DeviceFleetStore::from_env().ok()?;
-    let fleet = store
-        .certified_fleet(&profile.id, profile.user_public_key)
+    let person: [u8; 32] = hex::decode(answer.get("person")?.as_str()?)
+        .ok()?
+        .try_into()
         .ok()?;
-    let key_holder = store.secret_sync_key(&profile.id).is_ok();
+    let mut fleet = CertifiedFleet::new(person);
+    for device in answer.get("devices")?.as_array()? {
+        let cert = device
+            .get("certificate")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|cert| hex::decode(cert).ok())
+            .and_then(|cert| postcard::from_bytes::<DeviceCert>(&cert).ok());
+        if let Some(cert) = cert {
+            let _ = fleet.certify(cert);
+        }
+    }
+    for entry in answer
+        .get("revocations")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let entry = entry
+            .as_str()
+            .and_then(|entry| hex::decode(entry).ok())
+            .and_then(|entry| postcard::from_bytes::<RevocationEntry>(&entry).ok());
+        if let Some(entry) = entry {
+            let _ = fleet.revoke(entry);
+        }
+    }
     Some(Ownership {
-        identity_id: profile.id,
         fleet,
-        key_holder,
+        key_holder: answer.get("key_holder")?.as_bool()?,
     })
-}
-
-/// The secret-sync key, loaded only where a half is released.
-fn secret_sync_key() -> Option<tilo_seal::SecretKey> {
-    let registry = IdentityRegistryStore::from_env()
-        .ok()?
-        .load_reconciled_cached()
-        .ok()?;
-    let profile = registry.certified_identity()?;
-    DeviceFleetStore::from_env()
-        .ok()?
-        .secret_sync_key(&profile.id)
-        .ok()
 }
 
 async fn read_client(recv: &mut RecvStream) -> Option<ClientFrame> {

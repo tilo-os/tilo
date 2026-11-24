@@ -139,6 +139,8 @@ tilo-content-device = { path = "../content-device" }
 tilo-session-actions = { path = "../session-actions" }
 # A workspace host's signed address, which a key enters a workspace at.
 tilo-server-client = { path = "../tilo-server-client" }
+tilo-unlock-protocol = { path = "../../os/tilo-unlock-protocol" }
+postcard.workspace = true
 tilo-server-protocol = { path = "../tilo-server-protocol" }
 tilo-rt.workspace = true
 # The errors a compute job fails with.

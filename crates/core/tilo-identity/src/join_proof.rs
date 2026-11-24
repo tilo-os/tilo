@@ -2,9 +2,11 @@
 //! workspace's join bytes, presented with its certificate.
 //!
 //! Signatures are deterministic, so a proof changes only when the identity it signs as, the device
-//! key, its certificate or the fleet changes — each a file (`stat`ed, settled past the filesystem
-//! clock's granularity, never cached while unsettled or on failure; the cache keeps no key). A
-//! receiver still checks it against current membership, fleet and policy time.
+//! key, its certificate or the person's devices change — the first three each a file (`stat`ed,
+//! settled past the filesystem clock's granularity, never cached while unsettled or on failure;
+//! the cache keeps no key), the last a number the host that holds their record moves when it
+//! does. A receiver still checks it against current membership, the person's devices and policy
+//! time.
 
 use std::collections::HashMap;
 use std::io;
@@ -15,7 +17,6 @@ use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::DeviceKeyOwnership;
 use tilo_user_identity::{DeviceCert, StatementSigner};
 
-use crate::device_fleet::{DeviceFleetStore, FleetStamps};
 use crate::store::IdentityRegistryStore;
 use tilo_files::native::FileStamp;
 
@@ -75,7 +76,9 @@ impl RegistryStamp {
 struct DeviceStamp {
     key: Option<FileStamp>,
     cert: Option<FileStamp>,
-    fleet: FleetStamps,
+    /// What the host that holds the person's devices answered when the proof was minted
+    /// ([`crate::sources::DeviceTrust::generation`]): it moves when their devices do.
+    trust: u64,
 }
 
 impl DeviceStamp {
@@ -84,7 +87,6 @@ impl DeviceStamp {
             .into_iter()
             .flatten()
             .all(FileStamp::settled)
-            && self.fleet.settled()
     }
 
     fn settles_at(&self) -> Option<std::time::SystemTime> {
@@ -92,7 +94,6 @@ impl DeviceStamp {
             .into_iter()
             .flatten()
             .map(FileStamp::settles_at)
-            .chain(self.fleet.settles_at())
             .max()
     }
 }
@@ -140,19 +141,13 @@ pub(crate) fn mints_on_this_thread() -> usize {
 struct Files {
     registry: IdentityRegistryStore,
     paths: IdentityPaths,
-    fleets: DeviceFleetStore,
 }
 
 impl Files {
     fn from_env() -> io::Result<Self> {
         let registry = IdentityRegistryStore::from_env()?;
         let paths = crate::provisioning::collaboration_identity_paths();
-        let fleets = DeviceFleetStore::at(registry.identity_dir(), paths.clone());
-        Ok(Self {
-            registry,
-            paths,
-            fleets,
-        })
+        Ok(Self { registry, paths })
     }
 
     fn key(&self, workspace: &str) -> CacheKey {
@@ -186,7 +181,8 @@ impl Files {
                 },
                 cert: FileStamp::of(&self.paths.device_cert_for_user(&selected.user_public_key))
                     .ok()?,
-                fleet: self.fleets.stamps(&selected.id)?,
+                trust: crate::sources::device_trust()
+                    .map_or(0, |trust| trust.generation()),
             }),
         };
         Some(CurrentDeviceStamp { registry, device })
@@ -324,7 +320,6 @@ pub(crate) mod tests {
     use std::time::{Duration, SystemTime};
 
     use tilo_device_identity::IdentityPaths;
-    use tilo_user_identity::RevocationReason;
 
     use super::*;
 
@@ -371,13 +366,19 @@ pub(crate) mod tests {
                 _root: temp,
             };
             fixture.settle();
+            // The person's devices, as the host that holds their record answers: their root
+            // certified this device as it made them.
+            fixture.trust();
             fixture
         }
 
-        fn fleet_file(&self) -> PathBuf {
-            self.identity_dir
-                .join("fleets")
-                .join(format!("{}.json", self.identity_id))
+        /// Answer the person's devices from the fake a test drives, with this device enrolled.
+        pub(crate) fn trust(&self) {
+            crate::sources::test_trust::install();
+            let device = tilo_device_identity::persist::read_device_cert(&self.cert_file())
+                .expect("this device's certificate")
+                .device_public_key;
+            crate::sources::test_trust::enrol(self.user_public_key, device);
         }
 
         fn cert_file(&self) -> PathBuf {
@@ -389,14 +390,9 @@ pub(crate) mod tests {
                 self.identity_dir.clone(),
                 self.paths.device_privkey.clone(),
                 self.cert_file(),
-                self.fleet_file(),
             ] {
                 settle(&path);
             }
-        }
-
-        pub(crate) fn store(&self) -> DeviceFleetStore {
-            DeviceFleetStore::at(&self.identity_dir, self.paths.clone())
         }
     }
 
@@ -437,7 +433,6 @@ pub(crate) mod tests {
         {
             let fixture = Fixture::new();
             let mut proofs = Vec::new();
-            let fleet_loads = crate::device_fleet::loads_on_this_thread();
             let mints = mints(|| {
                 for _ in 0..3 {
                     proofs
@@ -445,10 +440,6 @@ pub(crate) mod tests {
                 }
             });
             assert_eq!(mints, 1, "one mint serves every later call");
-            assert!(
-                crate::device_fleet::loads_on_this_thread().saturating_sub(fleet_loads) <= 1,
-                "the fleet is read at most once"
-            );
             assert!(proofs.windows(2).all(|pair| pair[0] == pair[1]));
             let proof = &proofs[0];
             ed25519_dalek::VerifyingKey::from_bytes(&proof.certificate.device_public_key)
@@ -481,20 +472,12 @@ pub(crate) mod tests {
                 .expect("trusted device")
                 .certificate
                 .device_public_key;
-            fixture
-                .store()
-                .revoke(
-                    &fixture.identity_id,
-                    device,
-                    RevocationReason::Lost,
-                    proof_issued_at(&fixture).saturating_add(1),
-                )
-                .expect("revoke");
+            crate::sources::test_trust::revoke(fixture.user_public_key, device);
             let refused = trusted_current_join_proof(&fixture.workspace)
                 .expect_err("a revoked device has no proof");
             assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
             assert_ne!(current_device_stamp(&fixture.workspace), Some(stamp));
-            // Even once the revoked fleet settles, nothing was cached.
+            // Even once the identity files settle, nothing was cached.
             fixture.settle();
             assert!(trusted_current_join_proof(&fixture.workspace).is_err());
         }
@@ -534,7 +517,6 @@ pub(crate) mod tests {
             for _ in 0..ROUNDS {
                 let (key, _) =
                     crate::trusted_device::current(&fixture.workspace).expect("trusted device");
-                fixture.store().load(&fixture.identity_id).expect("fleet");
                 let proof = key
                     .sign_digest(
                         &tilo_identity_client::collaboration_join_digest(&fixture.workspace).unwrap(),
@@ -579,15 +561,15 @@ pub(crate) mod tests {
         {
             let fixture = Fixture::new();
             std::fs::write(
-                fixture.fleet_file(),
-                std::fs::read(fixture.fleet_file()).expect("fleet"),
+                fixture.cert_file(),
+                std::fs::read(fixture.cert_file()).expect("certificate"),
             )
-            .expect("touch fleet");
+            .expect("touch certificate");
             let mints = mints(|| {
                 trusted_current_join_proof(&fixture.workspace).expect("trusted");
                 trusted_current_join_proof(&fixture.workspace).expect("trusted");
             });
-            assert_eq!(mints, 2, "a fleet written just now is read on every call");
+            assert_eq!(mints, 2, "a certificate written just now is read on every call");
             assert!(
                 !current_device_stamp(&fixture.workspace)
                     .expect("stamp")

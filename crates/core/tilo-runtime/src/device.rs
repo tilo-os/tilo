@@ -59,6 +59,7 @@ mod search;
 pub mod published;
 pub mod serve;
 pub mod server_settings;
+pub(crate) mod signing;
 pub mod services;
 #[cfg(unix)]
 mod shell;

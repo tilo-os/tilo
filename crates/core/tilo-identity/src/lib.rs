@@ -3,8 +3,8 @@
 //! Apps never hold the personal identity or the device key: they ask the
 //! [`broker`] to sign for them, and it answers only for the identity the
 //! [`store`] selected for their workspace, only while this device holds a
-//! valid, enrolled, non-revoked certificate ([`device_fleet`],
-//! [`certificates`]). A new device is added with a ticket the person's
+//! valid, enrolled, non-revoked certificate ([`certificates`], answered from
+//! the person's devices by the host that holds them, [`sources::DeviceTrust`]). A new device is added with a ticket the person's
 //! device issues; [`certification_ceremony`] holds the code a new device shows.
 //! [`provisioning`] creates that chain, [`store`]
 //! selects the certificate this device presents to the device serving each
@@ -27,7 +27,6 @@
 pub mod broker;
 pub mod certificates;
 pub mod certification_ceremony;
-pub mod device_fleet;
 pub mod identity_store;
 #[cfg(not(target_family = "wasm"))]
 pub mod join_proof;

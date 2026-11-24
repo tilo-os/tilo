@@ -8,13 +8,13 @@
 //! agent's, for its person, and a revocation the person signs ends it as it ends a device.
 //!
 //! Each key is an entry of the record of the person's keys in their own workspace, kept the one
-//! way every key their root certifies is ([`devices::keep`]): their device lists show it, marked
-//! as an agent's, and revoke it as they revoke a device.
+//! way every key their root certifies is ([`crate::workspaces::person_workspace::devices::keep`]):
+//! their device lists show it, marked as an agent's, and revoke it as they revoke a device.
 //!
-//! The key is derived, not kept: the person's root signs a statement naming the workspace and the
-//! agent, and the key is made from that signature. A device holding the root makes the same key
-//! every time, so nothing secret is written down, and a device without the root runs no turn of
-//! the agent's: it cannot make the key, and it never signs in its place.
+//! The key is derived, not kept: this device's key signs a statement naming the workspace and the
+//! agent, and the key is made from that signature. The device makes the same key every time, so
+//! nothing secret is written down, and only the daemon its person's root is kept by certifies it
+//! ([`AgentGrants`]), as it certifies every key of theirs.
 //!
 //! A device that does not hold the person's root runs the agent only where the person approved
 //! it: it makes a key of its own for the agent and asks for it with a ticket, which the person
@@ -36,7 +36,6 @@ use tilo_user_identity::{AgentScope, DeviceCert, RevocationEntry};
 use tilo_workspace_agent::Agent;
 
 use crate::workspaces::Workspaces;
-use crate::workspaces::person_workspace::devices;
 
 /// What an agent whose key its person revoked is told, on the call that finds it and as its
 /// connection ends.
@@ -51,8 +50,7 @@ pub trait AgentKeys: Send + Sync {
     /// `name`.
     ///
     /// # Errors
-    /// This device does not hold the root of `person`, the person revoked the key, or the fleet
-    /// could not certify it.
+    /// The person revoked the key, or the daemon that keeps their root did not certify it.
     fn grant(
         &self,
         workspace: WorkspaceId,
@@ -79,9 +77,9 @@ pub trait AgentKeys: Send + Sync {
     /// revoked it.
     fn made(&self, key: &[u8; 32]) -> Option<(DeviceCert, SigningKey)>;
 
-    /// The revocation the root of `person` signed for `key`, as their revocations stand now:
-    /// `None` while the key acts. A key found revoked is forgotten here, and its revocation
-    /// announced to the hosts of this device's workspaces. Nothing is revoked by default.
+    /// The revocation the root of `person` signed for `key`, as their devices say now: `None`
+    /// while the key acts. A key found revoked is forgotten here, so nothing signs with it
+    /// again. Nothing is revoked by default.
     ///
     /// # Errors
     /// The person's revocations cannot be read here.
@@ -93,9 +91,8 @@ pub trait AgentKeys: Send + Sync {
         Ok(None)
     }
 
-    /// Keep every key [`Self::grant`] gives from now on in the record of the person's keys that
-    /// `record` holds, on the runtime this is called on. The first record stands; nothing by
-    /// default.
+    /// The record of the person's keys this device holds, which some keys are kept in as they
+    /// are granted. Nothing by default: the daemon that certifies a key keeps it there.
     fn keep_in(&self, _record: &Workspaces) {}
 
     /// Keep `cert`, a key the person's root certified on this device for an agent, among their
@@ -103,8 +100,8 @@ pub trait AgentKeys: Send + Sync {
     fn keep_key(&self, _cert: &DeviceCert) {}
 
     /// The public key `agent` signs with in `workspace`, as its entry in the workspace's agents
-    /// record stands: one made from its person's root here, or, where this device holds no such
-    /// root, the key this device asked to run it with once its person approved it.
+    /// record stands: one this device made and its person's root certified, or, where the person
+    /// did not certify it here, the key this device asked to run it with once they approved it.
     ///
     /// # Errors
     /// As [`Self::grant`], and where the person has not approved this device's key for it.
@@ -178,9 +175,8 @@ impl crate::workspaces::Workspaces {
         if !kept.is_active() || person != Some(*root) {
             return Err("the agent does not act for that person here".to_owned());
         }
-        let keys = FleetAgentKeys::from_env()
-            .map_err(|error| format!("this device's identity store is not open: {error}"))?;
-        keys.keep_in(self);
+        let keys = this_device()
+            .map_err(|error| format!("this device makes no agent key: {error}"))?;
         let key = keys.grant(id, agent, &kept.name, *root)?;
         keys.sign_shortcut(id, &key, agent, shortcut)
     }
@@ -195,60 +191,93 @@ pub(crate) const LIFETIME_NS: u64 = 30 * DAY_NS;
 pub(crate) const RENEW_WITHIN_NS: u64 = 7 * DAY_NS;
 const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
-/// The agents' keys a device makes from the roots its identity store holds, certified in the
-/// people's fleets.
-pub struct FleetAgentKeys {
-    fleets: tilo_identity::device_fleet::DeviceFleetStore,
-    /// The keys made so far, by their public key, with their certificates.
-    made: Mutex<HashMap<[u8; 32], (DeviceCert, SigningKey)>>,
-    /// Where each key made is kept among the person's keys, and the runtime that writes it.
-    record: OnceLock<(Workspaces, tokio::runtime::Handle)>,
-    /// The certificates made before a record was named, kept once it is.
-    waiting: Mutex<Vec<DeviceCert>>,
-}
-
-impl FleetAgentKeys {
-    /// The keys this device makes from the identity store its environment names.
+/// What certifies an agent's key with the person's root and says when they took one back: the
+/// device's daemon, which keeps the root (`tilo.device#certifyAgent`). A device that keeps none
+/// hands the call on to one of theirs that does.
+pub trait AgentGrants: Send + Sync {
+    /// The certificate the person's root gives `grant` for `agent` in `workspace`, named
+    /// `name`; `None` where they took the key back.
     ///
     /// # Errors
-    /// The environment names no identity store.
-    pub fn from_env() -> std::io::Result<Self> {
-        Ok(Self::of(
-            tilo_identity::device_fleet::DeviceFleetStore::from_env()?,
-        ))
-    }
+    /// The person's root could not certify it here.
+    fn certify(
+        &self,
+        person: [u8; 32],
+        grant: [u8; 32],
+        workspace: WorkspaceId,
+        agent: &str,
+        name: &str,
+    ) -> Result<Option<DeviceCert>, String>;
 
-    /// The keys made from the roots `fleets` holds.
+    /// The revocation the root of `person` signed for `key`, as their devices say now.
+    ///
+    /// # Errors
+    /// The person's revocations cannot be read here.
+    fn revocation(
+        &self,
+        person: &[u8; 32],
+        key: &[u8; 32],
+    ) -> Result<Option<RevocationEntry>, String>;
+}
+
+static GRANTS: std::sync::RwLock<Option<Arc<dyn AgentGrants>>> = std::sync::RwLock::new(None);
+
+/// Certify this process's agents' keys through `grants` from now on: the daemon installs the
+/// root it keeps, which answers where it keeps none by handing the call on.
+pub fn install_grants(grants: Arc<dyn AgentGrants>) {
+    *GRANTS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(grants);
+}
+
+/// What certifies this process's agents' keys, when its host installed an answer.
+#[must_use]
+pub fn grants() -> Option<Arc<dyn AgentGrants>> {
+    GRANTS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// The agent keys this device makes: a key of its own for each agent in each workspace, made from
+/// its device key the way the key a server asks with is, and certified with the agent's person's
+/// root by the daemon that keeps it ([`AgentGrants`]).
+pub struct DeviceMadeKeys {
+    grants: Arc<dyn AgentGrants>,
+    /// The keys made so far, by their public key, with their certificates.
+    made: Mutex<HashMap<[u8; 32], (DeviceCert, SigningKey)>>,
+}
+
+impl DeviceMadeKeys {
+    /// The keys certified through `grants`.
     #[must_use]
-    pub fn of(fleets: tilo_identity::device_fleet::DeviceFleetStore) -> Self {
+    pub fn of(grants: Arc<dyn AgentGrants>) -> Self {
         Self {
-            fleets,
+            grants,
             made: Mutex::default(),
-            record: OnceLock::new(),
-            waiting: Mutex::default(),
         }
     }
 
-    /// Keep `cert` among its person's keys: once for each key this process makes, and again for
-    /// each certificate that renews it, as soon as a record is known.
-    fn keep(&self, cert: &DeviceCert) {
-        let Some((workspaces, runtime)) = self.record.get() else {
-            self.waiting.lock_recover().push(cert.clone());
-            return;
-        };
-        let (workspaces, cert) = (workspaces.clone(), cert.clone());
-        runtime.spawn(async move {
-            if let Err(error) = devices::keep(&workspaces, &cert).await {
-                tracing::warn!(%error, "an agent's key is not among its person's keys");
-            }
-        });
+    /// The key of `agent` in `workspace`, made from this device's key: the same key every time,
+    /// and nothing secret written down.
+    fn key(workspace: WorkspaceId, agent: &str) -> Result<SigningKey, String> {
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
+        let device = tilo_device_identity::persist::load_device_key(&paths).map_err(|error| {
+            format!("this computer has no device key to make an agent's key from ({error})")
+        })?;
+        let mut statement = KEY_DOMAIN.to_vec();
+        statement.extend_from_slice(workspace.as_uuid().as_bytes());
+        statement.extend_from_slice(agent.as_bytes());
+        let digest = blake3::hash(&statement);
+        let signature = ed25519_dalek::Signer::sign(&device, digest.as_bytes());
+        Ok(SigningKey::from_bytes(
+            blake3::hash(signature.to_bytes().as_slice()).as_bytes(),
+        ))
     }
 
     /// The key `key` this device made and its certificate, while its person has not revoked it:
-    /// their revocations are read as they stand now, never from what the key was granted under.
-    /// A revoked key is forgotten here, so nothing signs with it again, and its revocation is
-    /// announced to the hosts of the workspaces this device holds, which refuse it from then on
-    /// whichever device still signs with it.
+    /// their devices are asked as they stand now. A revoked key is forgotten here, so nothing
+    /// signs with it again.
     fn current(&self, key: &[u8; 32]) -> Result<(DeviceCert, SigningKey), String> {
         let made = self
             .made
@@ -256,77 +285,19 @@ impl FleetAgentKeys {
             .get(key)
             .cloned()
             .ok_or("the agent's key was not made on this device")?;
-        let Some(entry) = self.revoked(&made.0.user_public_key, key)? else {
-            return Ok(made);
-        };
-        self.forget(key, entry);
-        Err(REVOKED.to_owned())
-    }
-
-    /// Forget `key`, which `entry` revoked, so nothing signs with it again, and announce `entry`
-    /// to the hosts of the workspaces this device holds: once, as the key is forgotten.
-    fn forget(&self, key: &[u8; 32], entry: RevocationEntry) {
-        if self.made.lock_recover().remove(key).is_none() {
-            return;
+        if self
+            .grants
+            .revocation(&made.0.user_public_key, key)?
+            .is_some()
+        {
+            self.made.lock_recover().remove(key);
+            return Err(REVOKED.to_owned());
         }
-        if let Some((workspaces, runtime)) = self.record.get() {
-            let workspaces = workspaces.clone();
-            runtime.spawn(async move {
-                if let Err(error) = workspaces.announce_revocations(vec![entry]).await {
-                    tracing::warn!(%error, "an agent's revoked key was not announced to its hosts");
-                }
-            });
-        }
-    }
-
-    /// The revocation the root of `person` signed for `key`, read from their fleet as it stands.
-    ///
-    /// # Errors
-    /// The fleet cannot be read: an agent whose revocations nobody can read signs nothing.
-    fn revoked(
-        &self,
-        person: &[u8; 32],
-        key: &[u8; 32],
-    ) -> Result<Option<RevocationEntry>, String> {
-        let fleet = self.fleets.load(&hex::encode(person)).map_err(|error| {
-            format!(
-                "this computer cannot read its person's revocations, so the agent acts no further \
-                 ({error})"
-            )
-        })?;
-        Ok(fleet
-            .revocations
-            .into_iter()
-            .filter(|entry| {
-                entry.revoked_device_public_key == *key && entry.user_public_key == *person
-            })
-            .min_by_key(|entry| entry.revoked_at_ns))
-    }
-
-    /// The key of `agent` in `workspace`, made from `identity`'s root.
-    fn key(
-        &self,
-        identity: &str,
-        workspace: WorkspaceId,
-        agent: &str,
-    ) -> Result<SigningKey, String> {
-        let mut statement = KEY_DOMAIN.to_vec();
-        statement.extend_from_slice(workspace.as_uuid().as_bytes());
-        statement.extend_from_slice(agent.as_bytes());
-        let digest = *blake3::hash(&statement).as_bytes();
-        let signature = self.fleets.sign_root(identity, &digest).map_err(|error| {
-            format!(
-                "this computer cannot give the agent a key of its own: it does not hold its \
-                 person's root here ({error}). Approve this computer's ticket on a device of \
-                 theirs that holds the root (`tilo device add <ticket>`), then connect the agent \
-                 again"
-            )
-        })?;
-        Ok(SigningKey::from_bytes(blake3::hash(&signature).as_bytes()))
+        Ok(made)
     }
 }
 
-impl AgentKeys for FleetAgentKeys {
+impl AgentKeys for DeviceMadeKeys {
     fn grant(
         &self,
         workspace: WorkspaceId,
@@ -334,55 +305,30 @@ impl AgentKeys for FleetAgentKeys {
         name: &str,
         person: [u8; 32],
     ) -> Result<[u8; 32], String> {
-        let identity = hex::encode(person);
-        let key = self.key(&identity, workspace, agent)?;
+        let key = Self::key(workspace, agent)?;
         let public = key.verifying_key().to_bytes();
-        let now = tilo_clock::unix_now_ns();
-        let fleet = self
-            .fleets
-            .load(&identity)
-            .map_err(|error| format!("the person's devices could not be read here: {error}"))?;
-        if fleet.is_revoked(&public) {
-            if let Some(entry) = self.revoked(&person, &public)? {
-                self.forget(&public, entry);
-            }
+        // A key its person took back stays taken back: nothing certifies it again.
+        if self.grants.revocation(&person, &public)?.is_some() {
+            self.made.lock_recover().remove(&public);
             return Err(REVOKED.to_owned());
         }
-        let lasting = fleet
-            .certificates
-            .iter()
-            .filter(|cert| cert.device_public_key == public)
-            .filter(|cert| {
-                cert.expires_at_ns
-                    .is_some_and(|expires| expires.saturating_sub(now) > RENEW_WITHIN_NS)
-            })
-            .max_by_key(|cert| cert.expires_at_ns)
-            .cloned();
-        let fresh = lasting.is_none();
-        let cert = match lasting {
-            Some(cert) => cert,
-            None => self
-                .fleets
-                .certify_agent_grant(
-                    &identity,
-                    public,
-                    AgentScope::agent_in(*workspace.as_uuid().as_bytes(), agent),
-                    name,
-                    now,
-                    now.saturating_add(LIFETIME_NS),
-                )
-                .map_err(|error| {
-                    format!("the person's root did not certify the agent's key: {error}")
-                })?,
+        let Some(cert) = self.grants.certify(person, public, workspace, agent, name)? else {
+            self.made.lock_recover().remove(&public);
+            return Err(REVOKED.to_owned());
         };
-        let first = self
-            .made
-            .lock_recover()
-            .insert(public, (cert.clone(), key))
-            .is_none();
-        if fresh || first {
-            self.keep(&cert);
+        tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns()).map_err(
+            |error| format!("the person's root did not certify the agent's key: {error}"),
+        )?;
+        let scope = AgentScope::agent_in(*workspace.as_uuid().as_bytes(), agent);
+        if cert.user_public_key != person
+            || cert.device_public_key != public
+            || cert.capabilities != tilo_user_identity::DeviceCapabilities::agent_grant(scope)
+        {
+            return Err(
+                "the certificate is not the person's grant of this key to this agent".into(),
+            );
         }
+        self.made.lock_recover().insert(public, (cert, key));
         Ok(public)
     }
 
@@ -415,43 +361,30 @@ impl AgentKeys for FleetAgentKeys {
         person: &[u8; 32],
         key: &[u8; 32],
     ) -> Result<Option<RevocationEntry>, String> {
-        let revoked = self.revoked(person, key)?;
-        if let Some(entry) = &revoked {
-            self.forget(key, entry.clone());
+        let revoked = self.grants.revocation(person, key)?;
+        if revoked.is_some() {
+            self.made.lock_recover().remove(key);
         }
         Ok(revoked)
     }
-
-    fn keep_in(&self, record: &Workspaces) {
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        if self.record.set((record.clone(), runtime)).is_ok() {
-            let waiting = std::mem::take(&mut *self.waiting.lock_recover());
-            for cert in &waiting {
-                self.keep(cert);
-            }
-        }
-    }
-
-    fn keep_key(&self, cert: &DeviceCert) {
-        self.keep(cert);
-    }
 }
 
-/// The keys this device's agents sign with, made from the identity store the process's
-/// environment names: one for the process, so a key made once is held while it runs.
+/// The keys this device's agents sign with, made as this device's own and certified through what
+/// its daemon installed: one for the process, so a key made once is held while it runs.
 ///
 /// # Errors
-/// The environment names no identity store.
+/// This process's daemon installed no answer: it keeps no root here, and none of the person's.
 pub fn this_device() -> Result<Arc<dyn AgentKeys>, String> {
     static KEYS: OnceLock<Arc<dyn AgentKeys>> = OnceLock::new();
     if let Some(keys) = KEYS.get() {
         return Ok(Arc::clone(keys));
     }
-    let keys = FleetAgentKeys::from_env()
-        .map_err(|error| format!("this device's identity store is not open: {error}"))?;
-    Ok(Arc::clone(KEYS.get_or_init(|| Arc::new(keys))))
+    let grants = grants().ok_or(
+        "this computer's daemon keeps no identity to certify an agent's key with".to_owned(),
+    )?;
+    Ok(Arc::clone(
+        KEYS.get_or_init(|| Arc::new(DeviceMadeKeys::of(grants))),
+    ))
 }
 
 /// One agent's key in one workspace, as this device made it: what signs every call the agent
@@ -680,128 +613,121 @@ impl<P: ActionProvider> ActionProvider for Signed<P> {
 mod tests {
     use super::*;
     use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
+    use tilo_user_identity::{DeviceCapabilities, RevocationReason, sign_device_cert};
 
-    /// A device's identity store holding a person's root, and that person's identity id.
-    fn holding_a_root(
-        dir: &std::path::Path,
-    ) -> (tilo_identity::device_fleet::DeviceFleetStore, String) {
-        let identity_dir = dir.join("config/identity");
-        let paths = tilo_device_identity::IdentityPaths::under(dir.join("system"));
-        tilo_identity::provisioning::ensure_collaboration_identity(
-            &identity_dir,
-            &paths,
-            tilo_identity::provisioning::IdentityStorage::Files,
-        )
-        .unwrap();
-        let identity = tilo_identity::store::IdentityRegistryStore::at(&identity_dir)
-            .load()
-            .unwrap()
-            .default_identity
-            .unwrap();
-        (
-            tilo_identity::device_fleet::DeviceFleetStore::at(&identity_dir, paths),
-            identity,
-        )
+    /// A person's root, held here in place of the daemon that keeps one: it certifies the keys its
+    /// device makes for its agents, keeps what it certified, and takes a key back.
+    struct TestRoot {
+        root: SigningKey,
+        certs: Mutex<HashMap<[u8; 32], DeviceCert>>,
+        revoked: Mutex<Vec<RevocationEntry>>,
     }
 
-    /// Copy `from`'s files to `to`, as a disk copy of a computer carries what
-    /// its account's identity directory holds.
-    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
-        std::fs::create_dir_all(to).unwrap();
-        for entry in std::fs::read_dir(from).unwrap() {
-            let entry = entry.unwrap();
-            let target = to.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                copy_tree(&entry.path(), &target);
-            } else {
-                std::fs::copy(entry.path(), &target).unwrap();
+    impl TestRoot {
+        fn new() -> Self {
+            Self {
+                root: SigningKey::from_bytes(&[9; 32]),
+                certs: Mutex::default(),
+                revoked: Mutex::default(),
             }
+        }
+
+        fn person(&self) -> [u8; 32] {
+            self.root.verifying_key().to_bytes()
+        }
+
+        /// Take `key` back, as the person does from their device list.
+        fn revoke(&self, key: [u8; 32]) {
+            let mut entry = RevocationEntry {
+                user_public_key: self.person(),
+                revoked_device_public_key: key,
+                revoked_at_ns: tilo_clock::unix_now_ns(),
+                reason: RevocationReason::Retired,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_revocation_entry(&mut entry, &self.root).unwrap();
+            self.revoked.lock_recover().push(entry);
         }
     }
 
-    /// A person's own computer: the account's identity directory, carried over
-    /// from the computer that made their root, still holds that root here, and
-    /// this computer's device key is certified under it.
-    fn a_computer_holding_its_persons_root(
-        dir: &std::path::Path,
-    ) -> (
-        tilo_identity::device_fleet::DeviceFleetStore,
-        String,
-        [u8; 32],
-    ) {
-        let first = dir.join("first");
-        let first_identity = first.join("config/tilo/identity");
-        let first_paths = tilo_device_identity::IdentityPaths::under(first.join("system"));
+    impl AgentGrants for TestRoot {
+        fn certify(
+            &self,
+            person: [u8; 32],
+            grant: [u8; 32],
+            workspace: WorkspaceId,
+            agent: &str,
+            name: &str,
+        ) -> Result<Option<DeviceCert>, String> {
+            if person != self.person() {
+                return Err("this root made no key of that person's".into());
+            }
+            if self
+                .revoked
+                .lock_recover()
+                .iter()
+                .any(|entry| entry.revoked_device_public_key == grant)
+            {
+                return Ok(None);
+            }
+            let now = tilo_clock::unix_now_ns();
+            // One that still has time left is answered as it is, as the daemon answers it.
+            if let Some(cert) = self.certs.lock_recover().get(&grant).cloned()
+                && cert
+                    .expires_at_ns
+                    .is_some_and(|expires| expires.saturating_sub(now) > RENEW_WITHIN_NS)
+            {
+                return Ok(Some(cert));
+            }
+            let scope = AgentScope::agent_in(*workspace.as_uuid().as_bytes(), agent);
+            let mut cert = DeviceCert {
+                user_public_key: person,
+                device_public_key: grant,
+                device_label: name.to_owned(),
+                capabilities: DeviceCapabilities::agent_grant(scope),
+                issued_at_ns: now,
+                expires_at_ns: Some(now.saturating_add(LIFETIME_NS)),
+                signature: [0; 64],
+                issuer: None,
+            };
+            sign_device_cert(&mut cert, &self.root).map_err(|error| error.to_string())?;
+            self.certs.lock_recover().insert(grant, cert.clone());
+            Ok(Some(cert))
+        }
+
+        fn revocation(
+            &self,
+            person: &[u8; 32],
+            key: &[u8; 32],
+        ) -> Result<Option<RevocationEntry>, String> {
+            Ok(self
+                .revoked
+                .lock_recover()
+                .iter()
+                .filter(|entry| {
+                    entry.user_public_key == *person && entry.revoked_device_public_key == *key
+                })
+                .cloned()
+                .next())
+        }
+    }
+
+    /// A provisioned device the environment names, as a session's or a daemon's account has one.
+    fn device() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config");
+        let system = root.path().join("system");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &config)
+            .set("TILO_IDENTITY_ROOT", &system)
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity::provisioning::ensure_collaboration_identity(
-            &first_identity,
-            &first_paths,
+            &config.join("tilo/identity"),
+            &tilo_device_identity::IdentityPaths::under(&system),
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
-        let record = tilo_identity::store::resolve_active_identity(&first_identity).unwrap();
-        let root = tilo_identity::store::load_from_path(record).unwrap();
-        let person = root.group_public_key();
-
-        let here = dir.join("here");
-        let identity_dir = here.join("config/tilo/identity");
-        copy_tree(&first_identity, &identity_dir);
-        let paths = tilo_device_identity::IdentityPaths::under(here.join("system"));
-        let sign = |digest: &[u8]| {
-            let digest: [u8; 32] = digest.try_into().map_err(|_| "not a digest".to_owned())?;
-            root.sign(&digest).map_err(|error| error.to_string())
-        };
-        tilo_device_identity::persist::provision_joined_device(
-            &paths,
-            person,
-            sign,
-            "this computer",
-            tilo_clock::unix_now_ns(),
-        )
-        .unwrap();
-        // Its session's start takes up the identity this device is enrolled for, as a device's
-        // session does before it lists what it holds.
-        tilo_identity::provisioning::complete_enrolled_device(
-            &identity_dir,
-            &paths,
-            tilo_clock::unix_now_ns(),
-        )
-        .unwrap();
-
-        (
-            tilo_identity::device_fleet::DeviceFleetStore::at(&identity_dir, paths),
-            hex::encode(person),
-            person,
-        )
-    }
-
-    #[test]
-    fn a_computer_that_holds_its_persons_root_gives_its_agents_keys_of_their_own() {
-        let dir = tempfile::tempdir().unwrap();
-        let (fleets, identity, person) = a_computer_holding_its_persons_root(dir.path());
-        assert_eq!(
-            fleets
-                .sign_root(&identity, &[3; 32])
-                .map_err(|error| error.to_string())
-                .expect("the root this computer holds signs")
-                .len(),
-            64,
-            "the person's root signs where the identity directory carries it"
-        );
-
-        let workspace = WorkspaceId::new();
-        let keys = FleetAgentKeys::of(fleets);
-        let key = keys.grant(workspace, "scout", "Scout", person).unwrap();
-        let mut asked = request();
-        keys.sign(workspace, &key, &mut asked).unwrap();
-        let signer = tilo_server_protocol::invocation::verify_invocation(
-            &workspace.to_string(),
-            &asked,
-            &tilo_user_identity::RevocationList::new(),
-            tilo_clock::unix_now_ns(),
-        )
-        .expect("the agent's own key signed it");
-        assert_eq!(signer.device_public_key, key);
-        assert_eq!(signer.user_public_key, person);
+        (root, env)
     }
 
     fn request() -> InvokeRequest {
@@ -824,11 +750,11 @@ mod tests {
 
     #[test]
     fn an_agent_signs_as_its_own_key_the_persons_root_certified_for_one_agent_in_one_workspace() {
-        let dir = tempfile::tempdir().unwrap();
-        let (fleets, identity) = holding_a_root(dir.path());
-        let person: [u8; 32] = hex::decode(&identity).unwrap().try_into().unwrap();
+        let (_root, _env) = device();
+        let root = Arc::new(TestRoot::new());
+        let person = root.person();
         let workspace = WorkspaceId::new();
-        let keys = FleetAgentKeys::of(fleets);
+        let keys = DeviceMadeKeys::of(root);
 
         let key = keys.grant(workspace, "scribe", "Scribe", person).unwrap();
         assert_eq!(
@@ -884,138 +810,56 @@ mod tests {
     }
 
     #[test]
-    fn a_device_without_the_persons_root_makes_no_key_and_signs_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let (fleets, _) = holding_a_root(dir.path());
-        let keys = FleetAgentKeys::of(fleets);
-        let workspace = WorkspaceId::new();
-        let refused = keys
-            .grant(workspace, "scribe", "Scribe", [7; 32])
-            .unwrap_err();
-        assert!(
-            refused.contains("computer's ticket on a device of theirs that holds the root"),
-            "{refused}"
-        );
-        let mut asked = request();
-        assert!(keys.sign(workspace, &[7; 32], &mut asked).is_err());
-        assert!(asked.signed.is_none());
-    }
-
-    /// A grant the person's fleet holds that is about to run out is certified again, under the
-    /// same key, with a fresh lifetime; one that still has time left is kept as it is. This is
-    /// how an agent keeps acting across a lifetime that passes, the way a member's device
-    /// certificate is renewed.
-    #[test]
     fn a_grant_nearing_its_expiry_is_certified_again_for_the_same_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let (fleets, identity) = holding_a_root(dir.path());
-        let person: [u8; 32] = hex::decode(&identity).unwrap().try_into().unwrap();
+        let (_root, _env) = device();
+        let root = Arc::new(TestRoot::new());
+        let person = root.person();
         let workspace = WorkspaceId::new();
-        let key = FleetAgentKeys::of(fleets)
+        let key = DeviceMadeKeys::of(Arc::clone(&root) as Arc<dyn AgentGrants>)
             .grant(workspace, "scribe", "Scribe", person)
             .unwrap();
-
-        // The fleet keeps a certificate for that key with a day left, as a fleet does when a
-        // lifetime passes.
-        let (fleets, _) = holding_a_root(dir.path());
-        let now = tilo_clock::unix_now_ns();
-        let near = fleets
-            .certify_agent_grant(
-                &identity,
-                key,
-                AgentScope::agent_in(*workspace.as_uuid().as_bytes(), "scribe"),
-                "Scribe",
-                now,
-                now.saturating_add(DAY_NS),
-            )
-            .unwrap();
-        assert!(near.expires_at_ns.unwrap().saturating_sub(now) < RENEW_WITHIN_NS);
-
-        // Granted again, the agent keeps its key and its person's root certifies it anew.
-        let keys = FleetAgentKeys::of(fleets);
+        let first = root.certs.lock_recover()[&key].clone();
+        // What the daemon answers with time left: the certificate it kept.
+        let keys = DeviceMadeKeys::of(root);
         assert_eq!(
             keys.grant(workspace, "scribe", "Scribe", person).unwrap(),
             key,
-            "renewal keeps the key the agent signs with"
+            "a grant with time left keeps the key and its certificate"
         );
-        let (fleets, _) = holding_a_root(dir.path());
-        let cert = fleets
-            .load(&identity)
-            .unwrap()
-            .certificates
-            .iter()
-            .find(|cert| cert.device_public_key == key)
-            .cloned()
-            .expect("the person's devices list the agent's key");
-        assert_ne!(cert, near, "the certificate the fleet keeps is a new one");
-        assert!(
-            cert.expires_at_ns > near.expires_at_ns,
-            "the certificate's lifetime starts over"
-        );
-        assert!(
-            cert.expires_at_ns.unwrap().saturating_sub(now) > RENEW_WITHIN_NS,
-            "it has time left again"
-        );
-
-        // With time left, the same grant is kept: no certificate is written again.
-        let issued = cert.issued_at_ns;
-        assert_eq!(
-            keys.grant(workspace, "scribe", "Scribe", person).unwrap(),
-            key
-        );
-        let (fleets, _) = holding_a_root(dir.path());
-        let kept = fleets
-            .load(&identity)
-            .unwrap()
-            .certificates
-            .iter()
-            .find(|cert| cert.device_public_key == key)
-            .cloned()
-            .expect("the person's devices list the agent's key");
-        assert_eq!(
-            kept.issued_at_ns, issued,
-            "a grant with time left is used as it is"
-        );
+        assert_eq!(keys.made(&key).unwrap().0, first);
     }
 
     #[test]
     fn a_key_its_person_revoked_is_never_certified_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let (fleets, identity) = holding_a_root(dir.path());
-        let person: [u8; 32] = hex::decode(&identity).unwrap().try_into().unwrap();
+        let (_root, _env) = device();
+        let root = Arc::new(TestRoot::new());
+        let person = root.person();
         let workspace = WorkspaceId::new();
-        let key = FleetAgentKeys::of(fleets)
-            .grant(workspace, "scribe", "Scribe", person)
-            .unwrap();
-        let (fleets, _) = holding_a_root(dir.path());
-        fleets
-            .revoke(
-                &identity,
-                key,
-                tilo_user_identity::RevocationReason::Retired,
-                tilo_clock::unix_now_ns(),
-            )
-            .unwrap();
-        let refused = FleetAgentKeys::of(fleets)
+        let keys = DeviceMadeKeys::of(Arc::clone(&root) as Arc<dyn AgentGrants>);
+        let key = keys.grant(workspace, "scribe", "Scribe", person).unwrap();
+        root.revoke(key);
+        let refused = keys
             .grant(workspace, "scribe", "Scribe", person)
             .unwrap_err();
-        assert!(refused.contains("revoked"), "{refused}");
+        assert_eq!(refused, REVOKED);
     }
 
     /// An agent mid-run whose person revokes its key stops at its next call: the key it was
-    /// granted signs nothing more, though it was made and cached before, its connection is told
-    /// why, and a host refuses what it signed before or signs anywhere else from then on.
+    /// granted signs nothing more, and the connection is told why.
     #[test]
     fn a_run_whose_key_its_person_revokes_signs_nothing_from_its_next_call() {
-        let dir = tempfile::tempdir().unwrap();
-        let (fleets, identity) = holding_a_root(dir.path());
+        let (_root, _env) = device();
+        let root = Arc::new(TestRoot::new());
+        let person = root.person();
         let workspace = WorkspaceId::new();
-        let keys: Arc<dyn AgentKeys> = Arc::new(FleetAgentKeys::of(fleets));
+        let keys: Arc<dyn AgentKeys> = Arc::new(DeviceMadeKeys::of(
+            Arc::clone(&root) as Arc<dyn AgentGrants>
+        ));
         let (signer, _) = AgentSigner::grant(
             Arc::clone(&keys),
             &workspace.to_string(),
             ("scribe", "Scribe"),
-            &identity,
+            &hex::encode(person),
         )
         .unwrap();
         let mut first = request();
@@ -1029,19 +873,9 @@ mod tests {
         )
         .unwrap()
         .device_public_key;
-        // What a copy of the key signs with, as another device holding it would.
-        let (cert, other_device) = keys.made(&key).unwrap();
 
         // The person revokes the key while the run goes on.
-        let (fleets, _) = holding_a_root(dir.path());
-        let entry = fleets
-            .revoke(
-                &identity,
-                key,
-                tilo_user_identity::RevocationReason::Retired,
-                tilo_clock::unix_now_ns(),
-            )
-            .unwrap();
+        root.revoke(key);
 
         let mut next = request();
         let Err(ActionCallError::Refused { reason }) = signer.sign(&mut next) else {
@@ -1052,36 +886,18 @@ mod tests {
         assert_eq!(signer.ended().as_deref(), Some(REVOKED));
         assert!(keys.made(&key).is_none(), "the key is forgotten here");
         assert!(signer.signing().is_err(), "no connection signs with it");
-        let refused = keys
-            .grant(workspace, "scribe", "Scribe", entry.user_public_key)
-            .unwrap_err();
-        assert_eq!(refused, REVOKED);
+    }
 
-        // A host that was told the revocation refuses what the key signed before it, and what
-        // a copy of the key signs anywhere after.
-        let mut told = tilo_user_identity::RevocationList::new();
-        told.insert(entry).unwrap();
-        let mut elsewhere = request();
-        elsewhere.signed = Some(Box::new(
-            tilo_server_protocol::invocation::sign_invocation_now(
-                &workspace.to_string(),
-                &elsewhere,
-                &cert,
-                &other_device,
-                tilo_clock::unix_now_ns(),
-            )
-            .unwrap(),
-        ));
-        for signed in [&first, &elsewhere] {
-            assert_eq!(
-                tilo_server_protocol::invocation::verify_invocation(
-                    &workspace.to_string(),
-                    signed,
-                    &told,
-                    tilo_clock::unix_now_ns(),
-                ),
-                Err(tilo_server_protocol::invocation::InvocationError::Revoked)
-            );
-        }
+    #[test]
+    fn a_device_with_no_answer_for_the_key_signs_nothing() {
+        let (_root, _env) = device();
+        let workspace = WorkspaceId::new();
+        let root = Arc::new(TestRoot::new());
+        // A person whose root this daemon does not keep: it certifies nothing of theirs.
+        let keys = DeviceMadeKeys::of(root);
+        assert!(keys.grant(workspace, "scribe", "Scribe", [7; 32]).is_err());
+        let mut asked = request();
+        assert!(keys.sign(workspace, &[7; 32], &mut asked).is_err());
+        assert!(asked.signed.is_none());
     }
 }

@@ -18,7 +18,7 @@
 )]
 
 use crate::common::people::{
-    Device, Person, Site, at, join_together, share_the_fleet, start_together, target,
+    Device, Person, Site, at, join_together, start_together, target,
 };
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -478,7 +478,6 @@ fn a_device_takes_the_key_its_host_did_not_hand_it_from_the_persons_other_device
     site.publish(Role::Editor);
     let mut bob_laptop = bob.device("Bob's laptop");
     let mut bob_phone = bob.device("Bob's phone");
-    share_the_fleet(&bob, &[&bob_laptop, &bob_phone]);
     for device in [&bob_laptop, &bob_phone] {
         device.install_dev_apps();
     }

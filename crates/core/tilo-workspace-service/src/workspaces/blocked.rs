@@ -105,11 +105,14 @@ fn key_id(text: &str) -> Result<Id, Refusal> {
 
 /// The keys this host refuses now, as the records say them: those the operator
 /// blocks, and the devices of theirs the record of their devices marks revoked.
+/// It holds what that record certifies too, so a host asked whether a key is one
+/// of the person's answers from here ([`crate::sources`] is filled from it).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockedKeys {
     devices: BTreeSet<[u8; 32]>,
     users: BTreeSet<[u8; 32]>,
     revoked: BTreeSet<[u8; 32]>,
+    certified: BTreeSet<[u8; 32]>,
 }
 
 impl BlockedKeys {
@@ -127,23 +130,55 @@ impl BlockedKeys {
             devices: keys(&state.devices),
             users: keys(&state.users),
             revoked: BTreeSet::new(),
+            certified: BTreeSet::new(),
         }
     }
 
-    /// The devices of `person`'s that `record` marks revoked, and nothing
-    /// blocked: each by the key its root certified, so an entry another root
-    /// signed revokes nothing.
+    /// What the record of `person`'s devices says: the keys their root certified, and the ones it
+    /// took back. Nothing blocked: each key is the one its root certified, so an entry another
+    /// root signed counts for nothing.
     #[must_use]
     pub(crate) fn revoking(record: &Devices, person: &[u8; 32]) -> Self {
+        let listed = record.listed(person);
         Self {
-            revoked: record
-                .listed(person)
+            certified: listed
+                .iter()
+                .map(|listed| listed.cert.device_public_key)
+                .collect(),
+            revoked: listed
                 .into_iter()
                 .filter(|listed| listed.device.revoked)
                 .map(|listed| listed.cert.device_public_key)
                 .collect(),
             ..Self::default()
         }
+    }
+
+    /// Whether the root of the person's devices took `device` back.
+    #[must_use]
+    pub fn revokes_key(&self, device: &[u8; 32]) -> bool {
+        self.revoked.contains(device)
+    }
+
+    /// Whether the record of the person's devices holds `device`.
+    #[must_use]
+    pub fn certified(&self, device: &[u8; 32]) -> bool {
+        self.certified.contains(device)
+    }
+
+    /// A number that moves when what this holds does: what a cache of the person's devices is
+    /// keyed on.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        let mut generation = (self.devices.len() as u64)
+            ^ ((self.users.len() as u64) << 8)
+            ^ ((self.certified.len() as u64) << 16)
+            ^ ((self.revoked.len() as u64) << 24);
+        for key in self.certified.iter().chain(&self.revoked) {
+            let head = u64::from_le_bytes(key.get(..8).and_then(|head| head.try_into().ok()).unwrap_or_default());
+            generation = generation.rotate_left(1) ^ head;
+        }
+        generation
     }
 
     /// Whether `device`, a device of `user`, is blocked.
@@ -174,9 +209,10 @@ pub(crate) fn key_bytes(text: &str) -> Option<[u8; 32]> {
 }
 
 impl Workspaces {
-    /// The keys this host's operator blocks now ([`BlockedKeys`]).
+    /// The keys this host's operator blocks and the person's devices record holds now
+    /// ([`BlockedKeys`]).
     #[must_use]
-    pub(crate) fn blocked_keys(&self) -> BlockedKeys {
+    pub fn blocked_keys(&self) -> BlockedKeys {
         self.inner.host.blocked.read_recover().clone()
     }
 
@@ -211,8 +247,8 @@ impl Workspaces {
             (next.devices, next.users) = (of.devices, of.users);
         }
         if let Ok(record) = devices {
-            next.revoked =
-                BlockedKeys::revoking(&record, &self.serving_certificate().user_public_key).revoked;
+            let of = BlockedKeys::revoking(&record, &self.serving_certificate().user_public_key);
+            (next.certified, next.revoked) = (of.certified, of.revoked);
         }
         self.keep_blocked(next);
     }

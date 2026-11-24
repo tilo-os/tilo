@@ -1252,12 +1252,6 @@ fn take_identity(material: &Material) -> Result<(), String> {
     {
         return Err(format!("the person's record was not taken: {error}"));
     }
-    // The person's devices this device trusts are the ones their fleet lists, and an app's identity
-    // service answers only while this device is one of them: the certificate the server issued is
-    // listed, as a device enrolled at this login lists its own.
-    tilo_identity::device_fleet::DeviceFleetStore::from_env()
-        .and_then(|fleet| fleet.register_current_device(&user))
-        .map_err(|error| format!("this device was not listed among the person's: {error}"))?;
     Ok(())
 }
 
@@ -1522,18 +1516,14 @@ mod tests {
         take_identity(&handed).expect("the session took the identity it was handed");
         // Taken again, as a session restarted in the same VM takes it.
         take_identity(&handed).expect("the session took the identity it was handed again");
-        let fleet = tilo_identity::device_fleet::DeviceFleetStore::from_env()
-            .unwrap()
-            .load(&hex::encode(handed.user_public_key))
-            .unwrap();
-        assert!(
-            fleet
-                .certificates
-                .iter()
-                .any(|cert| cert.device_public_key == handed.device.device_public_key),
-            "the device is among the person's trusted devices, so an app's identity service answers"
-        );
         let paths = tilo_identity::provisioning::collaboration_identity_paths();
+        assert_eq!(
+            tilo_device_identity::persist::read_device_cert(&paths.device_cert)
+                .unwrap()
+                .device_public_key,
+            handed.device.device_public_key,
+            "the device keeps the certificate the server issued it"
+        );
         let mode =
             |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(

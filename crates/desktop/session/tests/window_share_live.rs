@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use tilo_server_protocol::workspaces::Role;
 
 use crate::common::people::{
-    Device, Person, Site, at, join_together, log_sessions_at, new_workspace, share_the_fleet,
+    Device, Person, Site, at, join_together, log_sessions_at, new_workspace,
     two_devices_of_one_person,
 };
 use crate::common::window::Client;
@@ -801,7 +801,6 @@ fn a_desktop_and_its_copy() -> (Person, Device, Device, String) {
     let workspace = desktop.showing().expect("the workspace the shell made");
     desktop.stop();
     let (mut copy, _) = ada.branch(&desktop);
-    share_the_fleet(&ada, &[&desktop, &copy]);
     desktop.start();
     desktop.wait_holding(&workspace);
     copy.start();
@@ -1127,7 +1126,6 @@ fn three_devices_of_one_person() -> (Site, Person, Device, Device, Device) {
     let mut laptop = ada.device("Ada's laptop");
     let mut phone = ada.device("Ada's phone");
     let tablet = ada.device("Ada's tablet");
-    share_the_fleet(&ada, &[&laptop, &phone, &tablet]);
     // Neither join needs the other device: both boot together, and the third is not started yet.
     let hers = site.invite(ada.public, Role::Editor);
     let hers_phone = site.invite(ada.public, Role::Editor);
@@ -1234,7 +1232,6 @@ fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goe
     let (mut later, _) = ada.branch(&desktop);
     // Two copies of one machine are called alike, and a device logs under what it is called.
     later.label = format!("{} made later", later.label);
-    share_the_fleet(&ada, &[&desktop, &copy, &later]);
     desktop.start();
     desktop.wait_holding(&workspace);
     copy.start();
@@ -1330,7 +1327,6 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
     let workspace = desktop.showing().expect("the workspace the shell made");
     desktop.stop();
     let (mut copy, _) = ada.branch(&desktop);
-    share_the_fleet(&ada, &[&desktop, &copy]);
     desktop.start();
     desktop.wait_holding(&workspace);
     copy.start();
@@ -1353,7 +1349,6 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
     // Two copies of one machine are called alike but for their keys' first letters, and a device
     // logs under what it is called.
     later.label = format!("{} made later", later.label);
-    share_the_fleet(&ada, &[&desktop, &copy, &later]);
     later.start();
     // The copy is up and holds the workspace before the machine it was copied from comes back: two
     // copies of one machine on the network at once, and the desktop finds a device that already

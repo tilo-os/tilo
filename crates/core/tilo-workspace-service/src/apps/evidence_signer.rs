@@ -139,9 +139,7 @@ mod tests {
     use std::time::Duration;
 
     use tilo_device_identity::IdentityPaths;
-    use tilo_identity::device_fleet::DeviceFleetStore;
     use tilo_identity::provisioning::{self, IdentityStorage};
-    use tilo_user_identity::RevocationReason;
 
     use super::*;
 
@@ -175,6 +173,17 @@ mod tests {
             let profile = tilo_identity::store::identity_for_workspace(&workspace)
                 .expect("registry")
                 .expect("selected identity");
+            // The person's devices, as the host that holds their record answers: their root
+            // certified this device as it made them.
+            tilo_identity::sources::test_trust::install();
+            tilo_identity::sources::test_trust::enrol(
+                profile.user_public_key,
+                tilo_device_identity::persist::read_device_cert(
+                    &paths.device_cert_for_user(&profile.user_public_key),
+                )
+                .expect("this device's certificate")
+                .device_public_key,
+            );
             let fixture = Self {
                 identity_dir,
                 paths,
@@ -197,9 +206,6 @@ mod tests {
                 self.identity_dir.clone(),
                 self.paths.device_privkey.clone(),
                 self.cert_file(),
-                self.identity_dir
-                    .join("fleets")
-                    .join(format!("{}.json", self.profile.id)),
             ] {
                 settle_file(&path);
             }
@@ -261,14 +267,10 @@ mod tests {
             let (cert, _) = cache
                 .sign_at(&fixture.workspace, b"before", Fixture::now())
                 .expect("sign");
-            DeviceFleetStore::at(&fixture.identity_dir, fixture.paths.clone())
-                .revoke(
-                    &fixture.profile.id,
-                    cert.device_public_key,
-                    RevocationReason::Lost,
-                    Fixture::now(),
-                )
-                .expect("revoke");
+            tilo_identity::sources::test_trust::revoke(
+                fixture.profile.user_public_key,
+                cert.device_public_key,
+            );
             assert!(
                 cache
                     .sign_at(&fixture.workspace, b"after", Fixture::now())

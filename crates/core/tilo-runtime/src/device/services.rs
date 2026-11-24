@@ -270,7 +270,7 @@ pub(crate) fn root() -> anyhow::Result<Option<tilo_identity::store::SigningIdent
 }
 
 /// The record of the person's root this daemon keeps, when it keeps one.
-fn root_record() -> io::Result<std::path::PathBuf> {
+pub(crate) fn root_record() -> io::Result<std::path::PathBuf> {
     tilo_identity::store::held_root(&tilo_identity::store::identity_dir_from_env()?).ok_or_else(
         || {
             io::Error::new(
@@ -359,67 +359,6 @@ pub fn backup(passphrase: &str) -> io::Result<Vec<u8>> {
             .and_then(|_| std::fs::read(&file));
     drop(std::fs::remove_file(&file));
     written
-}
-
-/// How long an agent's grant this daemon certifies lasts, and how much of it may be left when it
-/// is certified again.
-const AGENT_GRANT_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
-const AGENT_GRANT_RENEW_WITHIN_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
-
-/// Certify `grant`, an agent's grant key, with the person's root this daemon keeps, as the device
-/// certifies its own keys in `keys`: unless it is revoked (`{revoked: true}`), or certified for
-/// long enough already, which is answered as it stands.
-///
-/// # Errors
-/// This daemon keeps no root, or the root did not certify it.
-pub fn certify_agent(
-    keys: &tilo_device_identity::IdentityPaths,
-    grant: [u8; 32],
-) -> io::Result<Value> {
-    let record = root_record()?;
-    let dir = record
-        .parent()
-        .ok_or_else(|| io::Error::other("the root's record has no directory"))?;
-    let id = tilo_identity::store::IdentityRegistryStore::at(dir)
-        .load_reconciled()?
-        .identities
-        .into_values()
-        .find(|profile| profile.record_path == record)
-        .map(|profile| profile.id)
-        .ok_or_else(|| io::Error::other("the root's record is in no registry"))?;
-    let fleets = tilo_identity::device_fleet::DeviceFleetStore::at(dir, keys.clone());
-    let now = tilo_clock::unix_now_ns();
-    if let Ok(fleet) = fleets.load(&id) {
-        if fleet.is_revoked(&grant) {
-            return Ok(json!({ "revoked": true }));
-        }
-        let lasting = fleet
-            .certificates
-            .iter()
-            .filter(|cert| cert.device_public_key == grant)
-            .filter_map(|cert| cert.expires_at_ns.map(|expires| (expires, cert)))
-            .max_by_key(|(expires, _)| *expires)
-            .filter(|(expires, _)| expires.saturating_sub(now) > AGENT_GRANT_RENEW_WITHIN_NS);
-        if let Some((expires_at_ns, cert)) = lasting {
-            let cert = tilo_user_identity::canonical::canonical_bytes(cert)
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            return Ok(
-                json!({ "identity": id, "expires_at_ns": expires_at_ns, "cert": hex::encode(cert) }),
-            );
-        }
-    }
-    let expires_at_ns = now.saturating_add(AGENT_GRANT_LIFETIME_NS);
-    let cert = fleets.certify_agent_grant(
-        &id,
-        grant,
-        tilo_user_identity::AgentScope::AllWorkspaces,
-        "Agent key",
-        now,
-        expires_at_ns,
-    )?;
-    let cert = tilo_user_identity::canonical::canonical_bytes(&cert)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    Ok(json!({ "identity": id, "expires_at_ns": expires_at_ns, "cert": hex::encode(cert) }))
 }
 
 /// A file in `dir`, private to this daemon, that a backup passes through on its way in or out.
@@ -1007,6 +946,33 @@ impl Daemon {
         let personal = tilo_workspace_service::workspaces::PersonResources::default();
         personal.attach(workspaces.copies().clone(), tilo_rt::app().handle(), None);
         apps.device_grants().keep_in(std::sync::Arc::new(personal));
+        // The person's devices, as the record of their own workspace and the revocations their
+        // hosts keep answer: what `tilo-identity` admits a device by, and the one copy of it.
+        tilo_identity::sources::install_device_trust(std::sync::Arc::new(super::signing::TrustOf(
+            std::sync::Arc::downgrade(&workspaces),
+        )));
+        // This device is one of the person's, listed with their others: what every host admits
+        // it by, and where a revocation of it is marked.
+        {
+            let (copies, own) = (workspaces.copies().clone(), identity.cert.clone());
+            tilo_rt::app().handle().spawn(async move {
+                if let Err(error) =
+                    tilo_workspace_service::workspaces::person_workspace::devices::keep(
+                        &copies, &own,
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "this device is not listed with its person's");
+                }
+            });
+        }
+        // The keys this computer's agents sign with are certified here, with the root it keeps.
+        tilo_workspace_service::agents::agent_keys::install_grants(std::sync::Arc::new(
+            super::signing::GrantsOf {
+                workspaces: std::sync::Arc::downgrade(&workspaces),
+                keys: identity.place.keys().clone(),
+            },
+        ));
         // What the device's providers publish at fixed addresses is what an app's code calls them
         // by: each instance is handed their packages.
         apps.read_provided_from(workspaces.copies().providers());

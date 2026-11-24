@@ -13,7 +13,7 @@ use serde_json::json;
 use tilo_server_protocol::workspaces::Role;
 
 use crate::closed_tasks::{APP, titles};
-use crate::common::people::{Device, Person, Site, at, share_the_fleet, shared_invitation};
+use crate::common::people::{Device, Person, Site, at, shared_invitation};
 
 /// How long a write may take to show on another device. A person waiting on a message notices
 /// more than this; the suite's hang bound is for a write that never arrives.
@@ -121,7 +121,6 @@ impl Studio {
         let mut ada_laptop = ada.device("Ada's laptop");
         let mut bob_laptop = bob.device("Bob's laptop");
         let mut bob_phone = bob.device("Bob's phone");
-        share_the_fleet(&bob, &[&bob_laptop, &bob_phone]);
         for device in [&ada_laptop, &bob_laptop, &bob_phone] {
             device.install_dev_apps();
         }
@@ -144,7 +143,6 @@ impl Studio {
         let mut ada_laptop = ada.device("Ada's laptop");
         let mut bob_laptop = bob.device("Bob's laptop");
         let mut bob_phone = bob.device("Bob's phone");
-        share_the_fleet(&bob, &[&bob_laptop, &bob_phone]);
         for device in [&ada_laptop, &bob_laptop, &bob_phone] {
             device.install_dev_apps();
         }

@@ -436,10 +436,10 @@ There are three certificate formats: `tilo_user_identity::DeviceCert`
 `tilo-auth` sibling `Token` (`sibling/`, 2,085) that wraps the second. MLS
 credentials in `key-group` are a separate layer and stay.
 
-There are three device lists: `CertifiedFleet` (`tilo-user-identity`
-`fleet.rs`, a verifier), `DeviceFleetStore` (`tilo-identity` `device_fleet/`,
-on disk at `<identity_dir>/fleets/<id>.json`), and the devices the person's
-`WorkspaceList` names (`tilo-user-identity` `workspace_list.rs`).
+There are two device lists: `CertifiedFleet` (`tilo-user-identity`
+`fleet.rs`, a verifier) and the devices the person's own workspace holds
+(`so.tilo.devices/devices`), which every host reads through the daemon that
+keeps it.
 Revocation has a defect: `tilo-server` `admin.rs` `persist_fleet_revocation`
 defaults to `$XDG_CONFIG_HOME/tilo/identities`, while every other reader
 uses `tilo/identity`. It finds no fleet there and returns success, so by
@@ -553,7 +553,7 @@ A person's identity root is kept in more than one place:
 | Old CLI location | `tilo-cli` `identity.rs` `earlier()` | `$XDG_STATE_HOME/tilo/identity/user-identity/pubkey.bin` | ~20 |
 
 `tilo-identity` as a whole is 22,760 lines, with `store/`, `identity_store`,
-`device_fleet/`, `certificates` and `local_person` layered
+`certificates` and `local_person` layered
 over each other. `DeviceIdentity` means two different things: public
 metadata in `tilo-user-identity` `lib.rs`, and a certificate plus signer in
 `tilo-identity` `identity_store.rs`.

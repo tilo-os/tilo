@@ -1,6 +1,8 @@
 use ed25519_dalek::SigningKey;
 use tilo_seal::SecretKey;
-use tilo_unlock_protocol::{Half, open_release, seal_sibling_half};
+use tilo_unlock_protocol::{
+    Half, Release, open_release, open_sibling_half, seal_release, seal_sibling_half,
+};
 use tilo_user_identity::{
     RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
@@ -78,6 +80,9 @@ struct World {
     decisions: BTreeMap<DecisionKey, UnlockDecisionEntry>,
     secret_sync: SecretKey,
     key_holder: bool,
+    /// Each boot's half, opened with the secret-sync key and sealed to that boot's ephemeral
+    /// key, as the host that keeps the person's root hands it over.
+    releases: BTreeMap<[u8; 32], Release>,
 }
 
 impl World {
@@ -111,6 +116,7 @@ impl World {
             decisions: BTreeMap::new(),
             secret_sync,
             key_holder: true,
+            releases: BTreeMap::new(),
         }
     }
 
@@ -121,7 +127,33 @@ impl World {
             auto_approvals: &self.auto_approvals,
             decisions: &self.decisions,
             key_holder: self.key_holder,
-            secret_sync: self.key_holder.then_some(&self.secret_sync),
+            release: None,
+        }
+    }
+
+    /// [`Self::view`] for a decision on `boot`'s request `digest`: the half sealed to its
+    /// ephemeral key, as the daemon holding the root answers it.
+    fn view_for(&mut self, boot: &Boot, digest: &[u8; 32]) -> UnlockView<'_> {
+        if self.key_holder && !self.releases.contains_key(digest) {
+            let enrolment = self
+                .enrolments
+                .values()
+                .find(|enrolment| enrolment.cert == boot.hello.boot_cert)
+                .expect("the boot is enrolled");
+            let half = open_sibling_half(&self.secret_sync, &enrolment.cert, &enrolment.sealed_half)
+                .expect("the person's devices hold the half");
+            let release = seal_release(&boot.ephemeral.public_key().unwrap(), digest, &half)
+                .expect("the half seals to the boot");
+            self.releases.insert(*digest, release);
+        }
+        let release = self.releases.get(digest);
+        UnlockView {
+            fleet: &self.fleet,
+            enrolments: &self.enrolments,
+            auto_approvals: &self.auto_approvals,
+            decisions: &self.decisions,
+            key_holder: self.key_holder,
+            release,
         }
     }
 
@@ -208,7 +240,7 @@ fn pending_code(frame: &SiblingFrame) -> String {
 #[test]
 fn an_approved_request_releases_the_half_to_that_boot_only() {
     let cert = boot_cert();
-    let world = World::new(&cert, None);
+    let mut world = World::new(&cert, None);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert, 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
@@ -226,7 +258,7 @@ fn an_approved_request_releases_the_half_to_that_boot_only() {
             UnlockDecision::Approve {
                 approver: sibling(),
             },
-            &world.view(),
+            &world.view_for(&boot, &pending[0].request_digest),
             NOW + 1,
         )
         .unwrap();
@@ -247,7 +279,7 @@ fn an_approved_request_releases_the_half_to_that_boot_only() {
                 UnlockDecision::Approve {
                     approver: sibling()
                 },
-                &world.view(),
+                &world.view_for(&boot, &pending[0].request_digest),
                 NOW + 2,
             )
             .is_none()
@@ -333,7 +365,7 @@ fn replayed_exchanges_are_refused() {
             UnlockDecision::Approve {
                 approver: sibling(),
             },
-            &world.view(),
+            &world.view_for(&boot, &digest),
             NOW,
         )
         .unwrap()

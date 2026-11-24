@@ -113,21 +113,8 @@ fn fixture(keyring: Keyring) -> Fixture {
         .expect("this device's certificate");
     // The person's other device, enrolled as a pairing enrolls one.
     let now = tilo_clock::unix_now_ns();
-    let fleet =
-        tilo_identity::device_fleet::DeviceFleetStore::from_env().expect("the device fleet");
-    let profile = tilo_identity::store::identity_for_workspace(WORKSPACE)
-        .expect("the identity registry")
-        .expect("the workspace is answered by this device's person");
     let phone = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
-    let phone_cert = fleet
-        .certify_device(
-            &profile.id,
-            phone.verifying_key().to_bytes(),
-            "The phone",
-            tilo_user_identity::DeviceCapabilities::member(),
-            now,
-        )
-        .expect("the second device is enrolled");
+    let phone_cert = cert_under_root(phone.verifying_key().to_bytes(), "The phone", now);
     let keys = Keys {
         root: cert.user_public_key,
         device,
@@ -639,4 +626,23 @@ fn an_app_that_is_not_browser_is_told_that_only_browser_has_a_page_filled() {
         "{:?}",
         replies[1]
     );
+}
+
+/// The certificate the person's root kept here gives `key`.
+fn cert_under_root(key: [u8; 32], label: &str, now: u64) -> tilo_user_identity::DeviceCert {
+    let dir = tilo_identity::store::identity_dir_from_env().expect("this account's identity");
+    let record = tilo_identity::store::resolve_active_identity(&dir).expect("the person's record");
+    let root = tilo_identity::store::load_from_path(record).expect("the person's root");
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root.group_public_key(),
+        device_public_key: key,
+        device_label: label.to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: now,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).expect("the person's root signs");
+    cert
 }

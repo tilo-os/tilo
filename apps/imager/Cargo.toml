@@ -92,6 +92,8 @@ tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process" 
 # address.
 url = { workspace = true, optional = true }
 tilo-device-identity = { version = "0.1.0", path = "../../crates/core/tilo-device-identity" }
+# The daemon that issues the ticket an image joins with.
+tilo-api = { path = "../../crates/core/tilo-api" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

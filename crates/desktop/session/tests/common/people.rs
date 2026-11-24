@@ -726,7 +726,6 @@ fn two_devices_of_one_person_carrying(install: impl Fn(&Device)) -> (Site, Perso
     let site = Site::start(&ada, "Studio");
     let mut laptop = ada.device("Ada's laptop");
     let mut phone = ada.device("Ada's phone");
-    share_the_fleet(&ada, &[&laptop, &phone]);
     for device in [&laptop, &phone] {
         install(device);
     }
@@ -740,24 +739,6 @@ fn two_devices_of_one_person_carrying(install: impl Fn(&Device)) -> (Site, Perso
         device.wait_holding(&site.workspace);
     }
     (site, ada, laptop, phone)
-}
-
-/// Tell each of `devices` about the rest of the person's fleet, as the machine that enrolls a
-/// device does ([`tilo_identity::provisioning`]): a device admits what the fleet names, and
-/// dials the siblings it holds, so what the person records reaches their other devices.
-pub fn share_the_fleet(person: &Person, devices: &[&Device]) {
-    let identity_id = hex::encode(person.public);
-    for device in devices {
-        let fleet = tilo_identity::device_fleet::DeviceFleetStore::at(
-            device.directory().join("config/tilo/identity"),
-            device.identity(),
-        );
-        for other in devices {
-            fleet
-                .remember_certificate(&identity_id, other.cert.clone())
-                .expect("the person's device joins their fleet");
-        }
-    }
 }
 
 /// Start `devices`' sessions together: every session is started before any is waited for, so the

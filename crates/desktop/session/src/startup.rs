@@ -189,6 +189,20 @@ pub fn identity() -> Identity {
     if let Err(error) = tilo_onboarding_session::identity_provisioning::complete_enrolled_device() {
         tracing::warn!(%error, "the enrolled device could not take up its identity");
     }
+    // An image the person wrote as one of their devices carries a one-use ticket: its first boot
+    // redeems it here, before setup would ask for an identity, with nothing typed.
+    if tilo_identity::store::active_identity_path().is_err()
+        && let Ok(identity_dir) = tilo_identity::store::identity_dir_from_env()
+    {
+        match tilo_onboarding_session::nearby::redeem_staged_ticket(
+            &identity_dir,
+            &firstboot::collaboration_identity_paths(),
+        ) {
+            Ok(true) => tracing::info!("this computer joined the person's devices from its image"),
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%error, "the ticket this image carried was not redeemed"),
+        }
+    }
     let identity_path = match tilo_identity::store::active_identity_path() {
         Ok(path) => path,
         Err(error) => return Identity::Refused(format!("no identity store: {error}")),

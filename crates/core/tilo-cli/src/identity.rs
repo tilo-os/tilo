@@ -20,16 +20,15 @@ use ed25519_dalek::SigningKey;
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::{load_device_key, read_device_cert};
 use tilo_identity::provisioning::IdentityStorage;
-use tilo_identity::store::SigningIdentity;
 use tilo_user_identity::DeviceCert;
-use tilo_user_identity::StatementSigner as _;
 
 use crate::login;
 
 /// The person this computer holds the root of.
+///
+/// Their root stays where it is kept: the daemon that holds it signs for them
+/// ([`tilo_device_identity::login::ANSWER_SIGN_IN`]).
 pub struct Person {
-    /// Their root, from the identity store it is kept in.
-    pub root: SigningIdentity,
     pub device: SigningKey,
     /// The certificate the root signed for [`Self::device`].
     pub cert: DeviceCert,
@@ -65,7 +64,7 @@ impl Person {
 
     /// Their user public key.
     pub fn public_key(&self) -> [u8; 32] {
-        self.root.public_key()
+        self.cert.user_public_key
     }
 }
 
@@ -95,16 +94,16 @@ pub fn held() -> Result<Option<Person>> {
     let Some(active) = root_identity() else {
         return Ok(None);
     };
-    let identity = tilo_identity::store::load_from_path(active.clone())
+    // What the record says of the person, without their root: this process never reads it.
+    let metadata = tilo_identity::store::load_metadata_from_path(&active)
         .map_err(|error| anyhow!("{} cannot be opened: {error}", active.display()))?;
-    let name = identity.display_name().trim();
+    let name = metadata.display_name.trim();
     let name = if tilo_identity::store::is_chosen_display_name(name) {
         name.to_owned()
     } else {
         String::new()
     };
-    let root = identity;
-    let user = root.public_key();
+    let user = metadata.group_public_key;
     let paths = paths();
     let cert = read_device_cert(&paths.device_cert_for_user(&user))
         .or_else(|_| read_device_cert(&paths.device_cert))
@@ -117,7 +116,6 @@ pub fn held() -> Result<Option<Person>> {
             )
         })?;
     Ok(Some(Person {
-        root,
         device: load_device_key(&paths)?,
         cert,
         name,
@@ -298,41 +296,64 @@ pub fn asked(location: &str) -> Result<Asked> {
 /// A scope that is neither `all` nor a workspace id, a key for one workspace
 /// that names no expiry, or a certificate that does not sign.
 pub async fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, String)>> {
-    use tilo_server_client::certification::{GrantAsk, SignInAsk, answer_sign_in};
-    let scope = tilo_user_identity::AgentScope::parse(&asked.scope).with_context(|| {
+    use tilo_user_identity::AgentScope;
+    // What the key asks to reach, named the way the daemon that signs reads it.
+    AgentScope::parse(&asked.scope).with_context(|| {
         format!(
             "the key asks to reach {}, which is no workspace",
             asked.scope
         )
     })?;
-    let ask = SignInAsk {
-        audience: &asked.audience,
-        challenge: asked.challenge,
-        client: &asked.client,
-        grant: Some(GrantAsk {
-            key: asked.grant_key,
-            scope,
-            expires_at_ns: asked.expires_at_ns,
-            server_key: asked.server_key,
-            browser_pages: asked.pages,
-        }),
-    };
-    let signed = answer_sign_in(
-        &person.root,
-        &person.device,
-        &person.cert.device_label,
-        &ask,
-    )
+    let asked_args = serde_json::json!({
+        "audience": asked.audience,
+        "challenge": hex::encode(asked.challenge),
+        "client": asked.client,
+        "grant": {
+            "key": hex::encode(asked.grant_key),
+            "scope": asked.scope,
+            "expires_at_ns": asked.expires_at_ns,
+            "server_key": asked.server_key,
+            "browser_pages": asked.pages,
+        },
+    });
+    let pending = asked.pending.clone();
+    let answer = tokio::task::spawn_blocking(move || {
+        tilo_api::daemon::this_computer()?
+            .act(tilo_device_identity::login::ANSWER_SIGN_IN, asked_args)
+    })
     .await
-    .map_err(|error| anyhow!("{error}"))?;
-    let grant = signed
-        .grant
-        .context("the sign-in answered no certificate for the key")?;
+    .map_err(|error| anyhow!("the sign-in answer was not awaited: {error}"))?
+    .map_err(anyhow::Error::msg)?;
+    let proof = answer
+        .get("proof")
+        .and_then(serde_json::Value::as_str)
+        .context("this computer's daemon signed no proof")?
+        .to_owned();
+    let grant = answer
+        .get("grant")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if let Some(grant) = &grant {
+        let grant: DeviceCert =
+            tilo_user_identity::canonical::from_canonical_bytes(&base64_url(grant)?)
+                .map_err(|error| anyhow!("{error}"))?;
+        if grant.user_public_key != person.public_key() {
+            bail!("the key was certified by another person than the one kept here");
+        }
+    }
     Ok(vec![
-        ("pending", asked.pending.clone()),
-        ("proof", signed.proof),
-        ("grant", grant),
+        ("pending", pending),
+        ("proof", proof),
+        ("grant", grant.unwrap_or_default()),
     ])
+}
+
+/// `text`, the URL-safe canonical bytes the site's page reads, as the bytes.
+fn base64_url(text: &str) -> Result<Vec<u8>> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text)
+        .context("the answer is not URL-safe base64")
 }
 
 /// Approve the key `approve_url` asks for, as `person`'s Tilo on the web
@@ -371,17 +392,6 @@ pub async fn approve(person: &Person, approve_url: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine as _;
-    use tilo_user_identity::{DeviceCapabilities, SignInProof};
-
-    fn decoded<T: serde::de::DeserializeOwned>(text: &str) -> T {
-        tilo_user_identity::canonical::from_canonical_bytes(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(text)
-                .unwrap(),
-        )
-        .unwrap()
-    }
 
     /// A person made on this computer account as its daemon makes one
     /// ([`tilo_identity::provisioning::create_person`]), for a test that needs one there.
@@ -452,35 +462,8 @@ mod tests {
         assert!(wrong.to_string().contains("24 words"), "{wrong:#}");
     }
 
-    #[tokio::test]
-    async fn the_sign_in_is_answered_as_the_page_answers_it() {
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let device_key = SigningKey::from_bytes(&[2; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device_key.verifying_key().to_bytes(),
-            device_label: "tilo on box".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        let store = tempfile::tempdir().unwrap();
-        let kept = tilo_identity::provisioning::import_single_device_root(
-            store.path(),
-            &root,
-            "Ada",
-            tilo_identity::provisioning::IdentityStorage::Files,
-        )
-        .unwrap();
-        let person = Person {
-            root: tilo_identity::store::load_from_path(kept).unwrap(),
-            device: device_key,
-            cert,
-            name: "Ada".into(),
-        };
+    #[test]
+    fn a_sign_in_link_is_read_as_the_ask_it_is() {
         let location = format!(
             "http://tilo.localhost:24120/sign-in?audience=http%3A%2F%2Flocalhost%3A24110\
              &challenge={}&return=http%3A%2F%2Flocalhost%3A24110%2Fsign-in&pending=p1\
@@ -494,25 +477,9 @@ mod tests {
         assert_eq!(read.return_to, "http://localhost:24110/sign-in");
         assert!(read.server_key);
         assert_eq!(read.expires_at_ns, None);
-        let form = answer(&person, &read).await.unwrap();
-        assert_eq!(form[0], ("pending", "p1".to_owned()));
-        let proof: SignInProof = decoded(&form[1].1);
-        assert_eq!(
-            proof.verify(
-                "http://localhost:24110",
-                &[7; 32],
-                &tilo_user_identity::RevocationList::new(),
-                tilo_clock::unix_now_ns()
-            ),
-            Ok(person.public_key())
-        );
-        let grant: DeviceCert = decoded(&form[2].1);
-        tilo_user_identity::verify_device_cert(&grant).unwrap();
-        assert_eq!(grant.device_public_key, [9; 32]);
-        assert_eq!(grant.capabilities, DeviceCapabilities::server_key_grant());
-        // A key for one workspace is narrower than a server key: this computer approves it too,
-        // as the person's Tilo certifies it, an agent's grant for that workspace until the time
-        // it names.
+        assert_eq!(read.grant_key, [9; 32]);
+
+        // A key for one workspace until a time, which is narrower than a server key.
         let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
         let until_ms = tilo_clock::unix_now_ns() / 1_000_000 + 3_600_000;
         let one = asked(
@@ -523,32 +490,8 @@ mod tests {
         )
         .unwrap();
         assert!(!one.server_key);
-        let form = answer(&person, &one).await.unwrap();
-        let grant: DeviceCert = decoded(&form[2].1);
-        tilo_user_identity::verify_device_cert(&grant).unwrap();
-        assert_eq!(
-            grant.capabilities,
-            DeviceCapabilities::agent_grant(
-                tilo_user_identity::AgentScope::parse(workspace).unwrap()
-            )
-            .with_browser_pages(true)
-        );
-        assert_eq!(grant.expires_at_ns, Some(until_ms * 1_000_000));
-        // A key the person makes for one workspace is theirs, as one for all
-        // of them is; an agent's for one lasts until a time.
-        let narrowed =
-            asked(&location.replace("grant_scope=all", &format!("grant_scope={workspace}")))
-                .unwrap();
-        let form = answer(&person, &narrowed).await.unwrap();
-        let own: DeviceCert = decoded(&form[2].1);
-        tilo_user_identity::verify_device_cert(&own).unwrap();
-        assert!(own.capabilities.server_key);
-        let endless = asked(
-            &location
-                .replace("&grant_kind=server_key", "")
-                .replace("grant_scope=all", &format!("grant_scope={workspace}")),
-        )
-        .unwrap();
-        assert!(answer(&person, &endless).await.is_err());
+        assert!(one.pages);
+        assert_eq!(one.scope, workspace);
+        assert_eq!(one.expires_at_ns, Some(until_ms * 1_000_000));
     }
 }

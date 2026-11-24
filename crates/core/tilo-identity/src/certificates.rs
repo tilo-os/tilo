@@ -1,74 +1,64 @@
-//! Whether a certified device may act for the identity a workspace selected: the person's fleet
-//! as the host reads it, and the rules every host admits a device by.
+//! Whether a certified device may act for the identity a workspace selected: the person's
+//! devices as this host knows them ([`crate::sources::DeviceTrust`]), and the rules every host
+//! admits a device by.
 
 use tilo_user_identity::DeviceCert;
 
-use crate::device_fleet::DeviceFleet;
-
-/// Whether `cert` is a device of `person`'s fleet that is not revoked: the check every admitted
-/// action passes.
+/// Whether `cert` is a device of `person`'s that their root did not take back: the check every
+/// admitted action passes. A host that holds no answer for the person's devices knows of no
+/// revocation by them.
 #[must_use]
-pub fn admitted(person: &[u8; 32], fleet: &DeviceFleet, cert: &DeviceCert) -> bool {
-    cert.user_public_key == *person && !fleet.refuses(cert)
+pub fn admitted(person: &[u8; 32], cert: &DeviceCert) -> bool {
+    cert.user_public_key == *person
+        && !crate::sources::device_trust()
+            .and_then(|trust| trust.revoked(person, &cert.device_public_key))
+            .unwrap_or(false)
 }
 
-/// [`admitted`], and the device is enrolled in the fleet.
+/// [`admitted`], and the record of the person's devices holds the key `cert` names. A host that
+/// keeps no answer for their devices cannot say it is missing, and takes it.
 #[must_use]
-pub fn enrolled(person: &[u8; 32], fleet: &DeviceFleet, cert: &DeviceCert) -> bool {
-    admitted(person, fleet, cert)
-        && fleet
-            .certificates
-            .iter()
-            .any(|known| known.device_public_key == cert.device_public_key)
+pub fn enrolled(person: &[u8; 32], cert: &DeviceCert) -> bool {
+    admitted(person, cert)
+        && crate::sources::device_trust()
+            .and_then(|trust| trust.enrolled(cert))
+            .unwrap_or(true)
 }
 
 #[cfg(unix)]
 mod host {
-    //! A Linux desktop answers from the identity directory it reads.
-
-    use std::sync::Arc;
+    //! A Linux desktop answers from the identity it selects for a workspace.
 
     use tilo_user_identity::DeviceCert;
 
-    use crate::device_fleet::{DeviceFleet, DeviceFleetStore};
-    use crate::store::IdentityProfile;
-
-    /// `cert` belongs to the identity selected for `workspace` and its device is
-    /// not revoked.
+    /// `cert` belongs to the identity selected for `workspace` and its device is not revoked.
     ///
     /// # Errors
     ///
-    /// Returns a message when no identity is selected, the stores cannot be read,
-    /// or the certificate's identity or device does not qualify.
+    /// Returns a message when no identity is selected or the certificate's identity or device
+    /// does not qualify.
     pub fn authorize(workspace: &str, cert: &DeviceCert) -> Result<(), String> {
-        let (profile, fleet) = selected_fleet(workspace)?;
-        if super::admitted(&profile.user_public_key, &fleet, cert) {
+        let profile = crate::store::identity_for_workspace(workspace)
+            .map_err(|error| error.to_string())?
+            .ok_or("workspace identity unavailable")?;
+        if super::admitted(&profile.user_public_key, cert) {
             return Ok(());
         }
         Err("device revoked or identity mismatched".into())
     }
 
-    /// [`authorize`], and the device is enrolled in the identity's fleet.
+    /// [`authorize`], and the person's devices record holds this device.
     pub fn authorize_join(workspace: &str, cert: &DeviceCert) -> Result<(), String> {
-        let (profile, fleet) = selected_fleet(workspace)?;
-        if !super::admitted(&profile.user_public_key, &fleet, cert) {
+        let profile = crate::store::identity_for_workspace(workspace)
+            .map_err(|error| error.to_string())?
+            .ok_or("workspace identity unavailable")?;
+        if !super::admitted(&profile.user_public_key, cert) {
             return Err("device revoked or identity mismatched".into());
         }
-        if super::enrolled(&profile.user_public_key, &fleet, cert) {
+        if super::enrolled(&profile.user_public_key, cert) {
             return Ok(());
         }
         Err("certified collaboration device is not enrolled".into())
-    }
-
-    /// The identity selected for `workspace` and one verified snapshot of its fleet.
-    fn selected_fleet(workspace: &str) -> Result<(IdentityProfile, Arc<DeviceFleet>), String> {
-        let profile = crate::store::identity_for_workspace(workspace)
-            .map_err(|e| e.to_string())?
-            .ok_or("workspace identity unavailable")?;
-        let fleet = DeviceFleetStore::from_env()
-            .and_then(|store| store.load_cached(&profile.id))
-            .map_err(|e| e.to_string())?;
-        Ok((profile, fleet))
     }
 }
 
@@ -78,30 +68,26 @@ pub use host::{authorize, authorize_join};
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
-    use std::path::{Path, PathBuf};
-    use std::time::{Duration, SystemTime};
-
     use tilo_device_identity::IdentityPaths;
-    use tilo_user_identity::RevocationReason;
 
     use super::*;
-    use crate::device_fleet::{DeviceFleetStore, loads_on_this_thread};
 
     const WORKSPACE: &str = "workspace";
 
-    /// A provisioned identity the environment points at.
+    /// A provisioned identity the environment points at, with its device in the person's
+    /// devices as the daemon's answer says.
     struct Fixture {
-        identity_dir: PathBuf,
         identity_id: String,
         cert: DeviceCert,
-        // Dropped after the fields above: the environment is restored before
-        // the directory it named is removed.
+        // Dropped after the fields above: the environment is restored before the directory it
+        // named is removed.
         _env: tilo_test_env::ScopedEnv,
         _root: tempfile::TempDir,
     }
 
     impl Fixture {
         fn new() -> Self {
+            crate::sources::test_trust::install();
             let root = tempfile::tempdir().expect("temp root");
             let xdg = root.path().join("config");
             let system_root = root.path().join("system");
@@ -110,24 +96,22 @@ mod tests {
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = xdg.join("tilo/identity");
+            let paths = IdentityPaths::under(&system_root);
             crate::provisioning::ensure_collaboration_identity(
                 &identity_dir,
-                &IdentityPaths::under(&system_root),
+                &paths,
                 crate::provisioning::IdentityStorage::Files,
             )
             .expect("provision");
             let profile = crate::store::identity_for_workspace(WORKSPACE)
                 .expect("registry")
                 .expect("selected identity");
-            let cert = store()
-                .load(&profile.id)
-                .expect("fleet")
-                .certificates
-                .first()
-                .cloned()
-                .expect("this device is enrolled");
+            let cert = tilo_device_identity::persist::read_device_cert(
+                &paths.device_cert_for_user(&profile.user_public_key),
+            )
+            .expect("this device's certificate");
+            crate::sources::test_trust::enrol(profile.user_public_key, cert.device_public_key);
             Self {
-                identity_dir,
                 identity_id: profile.id,
                 cert,
                 _env: env,
@@ -135,102 +119,34 @@ mod tests {
             }
         }
 
-        fn fleet_file(&self) -> PathBuf {
-            self.identity_dir
-                .join("fleets")
-                .join(format!("{}.json", self.identity_id))
+        /// The same certificate, for a person and device no record holds.
+        fn stranger(&self) -> DeviceCert {
+            let mut cert = self.cert.clone();
+            cert.user_public_key = [7; 32];
+            cert.device_public_key = [8; 32];
+            cert
         }
-
-        /// Authorizes this device twice; returns how many fleet loads it took.
-        fn authorize_join_twice(&self) -> usize {
-            let before = loads_on_this_thread();
-            authorize_join(WORKSPACE, &self.cert).expect("an enrolled device joins");
-            authorize_join(WORKSPACE, &self.cert).expect("an enrolled device joins again");
-            loads_on_this_thread().saturating_sub(before)
-        }
-
-        fn revoke(&self) {
-            store()
-                .revoke(
-                    &self.identity_id,
-                    self.cert.device_public_key,
-                    RevocationReason::Lost,
-                    self.cert.issued_at_ns.saturating_add(1),
-                )
-                .expect("revoke");
-        }
-    }
-
-    fn store() -> DeviceFleetStore {
-        DeviceFleetStore::from_env().expect("fleet store")
-    }
-
-    /// Date `path` back past the filesystem clock's granularity, as any file
-    /// is a few seconds after its last write.
-    fn settle(path: &Path) {
-        std::fs::File::options()
-            .write(true)
-            .open(path)
-            .expect("open fleet file")
-            .set_modified(
-                SystemTime::now()
-                    .checked_sub(Duration::from_secs(10))
-                    .expect("a time ten seconds ago"),
-            )
-            .expect("date fleet file back");
     }
 
     tilo_test_env::scenario! {
-        fn authorizing_a_join_through_the_fleet_cache;
+        fn admitting_a_device_from_the_persons_devices;
 
-        phase a_login_on_an_established_identity_rewrites_no_fleet;
+        phase a_certified_device_is_admitted_and_enrolled;
         {
-            // Every login provisions again. A rewrite that changes nothing would
-            // make each login on a full disk fail.
             let fixture = Fixture::new();
-            let fleet = fixture.fleet_file();
-            settle(&fleet);
-            let before = std::fs::metadata(&fleet)
-                .expect("fleet")
-                .modified()
-                .expect("mtime");
-            let system_root = fixture
-                .identity_dir
-                .parent()
-                .and_then(Path::parent)
-                .and_then(Path::parent)
-                .expect("fixture root")
-                .join("system");
-            crate::provisioning::ensure_collaboration_identity(
-                &fixture.identity_dir,
-                &IdentityPaths::under(&system_root),
-                crate::provisioning::IdentityStorage::Files,
-            )
-            .expect("provisioning an established identity again");
-            let after = std::fs::metadata(&fleet)
-                .expect("fleet")
-                .modified()
-                .expect("mtime");
-            assert_eq!(before, after, "the unchanged fleet was not written again");
+            authorize(WORKSPACE, &fixture.cert).expect("a live device acts");
+            authorize_join(WORKSPACE, &fixture.cert).expect("an enrolled device joins");
         }
 
-        phase authorize_join_loads_fleet_once;
+        phase a_revoked_device_is_refused_at_the_next_call;
         {
             let fixture = Fixture::new();
-            settle(&fixture.fleet_file());
-            assert_eq!(
-                fixture.authorize_join_twice(),
-                1,
-                "one load serves both checks of the first call, and the unchanged fleet the second"
+            authorize_join(WORKSPACE, &fixture.cert).expect("an enrolled device joins");
+            // The person's root takes it back on another of their devices.
+            crate::sources::test_trust::revoke(
+                fixture.cert.user_public_key,
+                fixture.cert.device_public_key,
             );
-        }
-
-        phase revocation_visible_immediately_after_revoke;
-        {
-            let fixture = Fixture::new();
-            settle(&fixture.fleet_file());
-            assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
-            fixture.revoke();
             assert_eq!(
                 authorize_join(WORKSPACE, &fixture.cert),
                 Err("device revoked or identity mismatched".into())
@@ -239,34 +155,24 @@ mod tests {
                 authorize(WORKSPACE, &fixture.cert),
                 Err("device revoked or identity mismatched".into())
             );
+            assert_eq!(
+                crate::store::IdentityRegistryStore::from_env()
+                    .expect("registry")
+                    .identity_of(&fixture.cert.user_public_key)
+                    .map(|profile| profile.id),
+                Some(fixture.identity_id.clone()),
+                "the identity stays the one the workspace selected"
+            );
         }
 
-        phase external_fleet_write_invalidates;
+        phase another_persons_certificate_is_refused;
         {
             let fixture = Fixture::new();
-            let path = fixture.fleet_file();
-            let enrolled = std::fs::read(&path).expect("enrolled fleet");
-            fixture.revoke();
-            let revoked = std::fs::read(&path).expect("revoked fleet");
-
-            // Another process puts the enrolled fleet back; once old it is cached.
-            std::fs::write(&path, &enrolled).expect("external write");
-            settle(&path);
-            assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
-
-            std::fs::write(&path, &revoked).expect("external revocation");
+            let stranger = fixture.stranger();
             assert_eq!(
-                authorize_join(WORKSPACE, &fixture.cert),
+                authorize_join(WORKSPACE, &stranger),
                 Err("device revoked or identity mismatched".into())
             );
-
-            // A fleet that no longer parses denies instead of serving the cache.
-            std::fs::write(&path, &enrolled).expect("external write");
-            settle(&path);
-            assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
-            std::fs::write(&path, b"{ not a fleet").expect("external corruption");
-            assert!(authorize_join(WORKSPACE, &fixture.cert).is_err());
-            assert!(authorize(WORKSPACE, &fixture.cert).is_err());
         }
     }
 }

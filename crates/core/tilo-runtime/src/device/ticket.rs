@@ -32,9 +32,10 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    APPROVE, BACKUP, CERTIFY_AGENT, Device, Direction, FOUND, IDENTITIES, ISSUE, LOG_IN, PENDING,
-    PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE,
-    RESTORE, REVOKE, Report, TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
+    ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_AGENT, Device, Direction, ENROL_BOOT_KEY, FOUND,
+    IDENTITIES, ISSUE, LOG_IN, PENDING, PERSONAL_DEVICES, PROTECT_IDENTITY, PROVIDER, Place,
+    RECOVERY_WORDS, RELEASE_HALF, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE,
+    Report, TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
 };
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
@@ -232,6 +233,63 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
             )],
         ))),
         row(Some(descriptor(
+            PERSONAL_DEVICES,
+            "List your devices",
+            "The devices your root certified, the keys it took back, and whether this computer \
+             keeps your root.",
+            &[],
+        ))),
+        row(Some(descriptor(
+            ENROL_BOOT_KEY,
+            "Enrol a disk's boot key",
+            "Certify a boot key with your root and seal its unlock half to your devices.",
+            &[ActionParam::required(
+                "request",
+                ParamType::Text,
+                "The enrolment request the device sent, its bytes in hex.",
+            )],
+        ))),
+        row(Some(descriptor(
+            RELEASE_HALF,
+            "Release a boot's unlock half",
+            "Open a boot's sealed half and seal it to the boot's key.",
+            &[
+                ActionParam::required(
+                    "cert",
+                    ParamType::Text,
+                    "The boot key's certificate, its bytes in hex.",
+                ),
+                ActionParam::required(
+                    "sealed_half",
+                    ParamType::Text,
+                    "The half as it was sealed to your devices, its bytes in hex.",
+                ),
+                ActionParam::required(
+                    "request_digest",
+                    ParamType::Text,
+                    "The boot's request, as 32 bytes in hex.",
+                ),
+                ActionParam::required(
+                    "ephemeral",
+                    ParamType::Text,
+                    "The boot's ephemeral key, as 32 bytes in hex.",
+                ),
+            ],
+        ))),
+        row(Some(descriptor(
+            ANSWER_SIGN_IN,
+            "Answer a sign-in",
+            "Sign a site's sign-in challenge and certify the key it asked to sign in with.",
+            &[
+                ActionParam::required("audience", ParamType::Text, "The site asking."),
+                ActionParam::required(
+                    "challenge",
+                    ParamType::Text,
+                    "The challenge it gave, as 32 bytes in hex.",
+                ),
+            ],
+        ))),
+        row(Some(descriptor(
             BACKUP,
             "Back up the person",
             "A backup of the person's root kept here, sealed with a passphrase.",
@@ -425,7 +483,7 @@ fn descriptor(
     }
     // Only the person's root certifies an agent's key, as it revokes one
     // ([`tilo_actions::ROOT_ONLY_TAG`]).
-    if action == CERTIFY_AGENT {
+    if matches!(action, CERTIFY_AGENT | ENROL_BOOT_KEY | RELEASE_HALF | ANSWER_SIGN_IN) {
         descriptor
             .contract
             .tags
@@ -436,7 +494,7 @@ fn descriptor(
 
 /// The device actions whose answer is a secret ([`tilo_actions::SECRET_ANSWER_TAG`]): handed to
 /// the person once, and kept nowhere here.
-const SECRET_ANSWERS: [&str; 2] = [RECOVERY_WORDS, BACKUP];
+const SECRET_ANSWERS: [&str; 3] = [RECOVERY_WORDS, BACKUP, RELEASE_HALF];
 
 /// The device actions as the device's one dispatch runs them: it admitted the caller, recorded the
 /// invocation, and follows it here.
@@ -724,6 +782,10 @@ impl Tickets {
                         | RECOVERY_WORDS
                         | BACKUP
                         | CERTIFY_AGENT
+                        | PERSONAL_DEVICES
+                        | ENROL_BOOT_KEY
+                        | RELEASE_HALF
+                        | ANSWER_SIGN_IN
                         | IDENTITIES
                         | USE_IDENTITY
                         | REMOVE_IDENTITY
@@ -781,6 +843,16 @@ impl Tickets {
                 .map(|backup| json!({ "backup": hex::encode(backup) }))
                 .map_err(Into::into),
                 CERTIFY_AGENT => self.certify_agent(&args),
+                PERSONAL_DEVICES => super::signing::personal_devices(self.0.workspaces.as_ref())
+                    .map_err(Into::into),
+                ENROL_BOOT_KEY => super::signing::enrol_boot_key(
+                    self.0.workspaces.as_ref(),
+                    &args,
+                )
+                .map_err(Into::into),
+                RELEASE_HALF => super::signing::release_half(&args).map_err(Into::into),
+                ANSWER_SIGN_IN => super::signing::answer_sign_in(self.0.place.keys(), &args)
+                    .map_err(Into::into),
                 _ => super::services::identity_step(&action, &args).map_err(Into::into),
             };
             let update = match answer {

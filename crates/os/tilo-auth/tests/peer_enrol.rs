@@ -34,12 +34,11 @@ use iroh::{RelayMap, RelayMode};
 use settings_store::sign_in_comforts::SignInComforts;
 use tilo_auth::boot::sibling::{self, Outcome, Refusal, Siblings, Volume};
 use tilo_auth::luks;
-use tilo_auth::sibling::enrol::{self, Args, Machine, NotEnrolled, run};
+use tilo_auth::sibling::enrol::{self, Args, Machine, NotEnrolled, PeerRegistrar, run_with_peers};
 use tilo_auth::sibling::material::{Material, Network};
 use tilo_auth::sibling::token::{self, TOKEN_VERSION, Token};
 use tilo_auth::tpm::{self, Sealing};
 use tilo_device_identity::{IdentityPaths, persist};
-use tilo_identity::device_fleet::{DeviceFleet, DeviceFleetStore};
 use tilo_rollback::exec::Real;
 use tilo_rollback::policy::Workspace;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -75,35 +74,19 @@ fn certify(root: &SigningKey, device: &SigningKey, label: &str) -> DeviceCert {
     cert
 }
 
-/// What the enrolling machine keeps: this device's key and certificate, and
-/// the fleet that names the person's devices.
+/// What the enrolling machine keeps: this device's key and certificate.
 struct Enrolling {
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
 }
 
-fn enrolling(root: &SigningKey, certs: &[DeviceCert]) -> Enrolling {
-    joined(root, certs, true)
-}
-
-/// A machine of the person's with no account of its own, as a server is: its
-/// enrollment put the person's fleet in its identity root, and no session or
-/// home directory of theirs exists to read one from.
-fn enrolled_server(root: &SigningKey, certs: &[DeviceCert]) -> Enrolling {
-    joined(root, certs, false)
-}
-
-fn joined(root: &SigningKey, certs: &[DeviceCert], personal: bool) -> Enrolling {
+fn enrolling(certs: &[DeviceCert]) -> Enrolling {
     let dir = tempfile::tempdir().expect("a directory for the identity");
     let config = dir.path().join("config");
     let system = dir.path().join("system");
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("TILO_IDENTITY_ROOT", &system);
-    if personal {
-        env.set("XDG_CONFIG_HOME", &config);
-    } else {
-        env.remove("XDG_CONFIG_HOME").remove("HOME");
-    }
+    env.set("TILO_IDENTITY_ROOT", &system)
+        .set("XDG_CONFIG_HOME", &config);
     let paths = IdentityPaths::under(&system);
     paths.ensure_directories().expect("the identity layout");
     let key = device_key(0x61);
@@ -113,26 +96,22 @@ fn joined(root: &SigningKey, certs: &[DeviceCert], personal: bool) -> Enrolling 
         .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
         .expect("this device's certificate");
     persist::write_device_cert(&paths.device_cert, cert).expect("this device's certificate");
-    let fleet = DeviceFleet {
-        schema_version: 1,
-        identity_id: hex::encode(root.verifying_key().to_bytes()),
-        certificates: certs.to_vec(),
-        revocations: Vec::new(),
-    };
-    let store = if personal {
-        DeviceFleetStore::at(config.join("tilo/identity"), paths)
-    } else {
-        DeviceFleetStore::of_device(paths, &fleet.identity_id)
-    };
-    let file = store.fleet_file(&fleet.identity_id);
-    std::fs::create_dir_all(file.parent().expect("the fleet's directory"))
-        .expect("the fleet's directory");
-    std::fs::write(&file, serde_json::to_vec(&fleet).expect("the fleet"))
-        .expect("the fleet is written");
     Enrolling {
         _env: env,
         _root: dir,
     }
+}
+
+/// The person's devices this machine asks, as the daemon that holds their record lists them.
+fn peers(devices: &[DeviceCert], relays: &RelayMap) -> PeerRegistrar {
+    PeerRegistrar::new(
+        device_key(0x61),
+        devices
+            .iter()
+            .map(|cert| cert.device_public_key)
+            .collect(),
+        Some(relays.clone()),
+    )
 }
 
 /// What an answering device does with a request.
@@ -490,9 +469,14 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
 
     // Neither device the machine knows holds the root: no slot stays behind.
     {
-        let _enrolled = enrolling(&root, &[laptop.clone(), phone.clone(), me.clone()]);
+        let _enrolled = enrolling(&[laptop.clone(), phone.clone(), me.clone()]);
         let devices = Devices::new(&root, Answer::NotKeyHolder, Answer::NotKeyHolder);
-        let refused = run(&args(&devices.relays), machine).expect_err("nobody can enrol it");
+        let refused = run_with_peers(
+            &args(&devices.relays),
+            machine,
+            Some(peers(&[laptop.clone(), phone.clone()], &devices.relays)),
+        )
+        .expect_err("nobody can enrol it");
         assert_eq!(
             refused.downcast_ref::<NotEnrolled>(),
             Some(&NotEnrolled::NotKeyHolder),
@@ -507,10 +491,11 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
         assert_eq!(slots(&device), ["0"], "the slot is removed again");
     }
 
-    // A server nobody is signed in to has no account of the person's to read
-    // their devices from: its enrollment left their fleet in its own store.
-    let _enrolled = enrolled_server(&root, &[laptop, phone, server, me]);
+    // A server nobody is signed in to asks the person's devices its daemon lists: their record
+    // is one copy, and the daemon that holds it answers here.
+    let _enrolled = enrolling(&[laptop.clone(), phone.clone(), server.clone(), me]);
     let devices = Devices::new(&root, Answer::NotKeyHolder, Answer::Enrol);
+    let registrar = || peers(&[laptop.clone(), phone.clone(), server.clone()], &devices.relays);
     // What this machine cannot do is refused before a slot is added.
     for (wrong, why) in [
         (
@@ -542,7 +527,8 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
             "no sibling unlock whose networks could be replaced",
         ),
     ] {
-        let refused = run(&wrong, machine).expect_err(why);
+        let refused =
+            run_with_peers(&wrong, machine, Some(registrar())).expect_err(why);
         assert!(format!("{refused:#}").contains(why), "{refused:#}");
     }
     assert_eq!(slots(&device), ["0"]);
@@ -551,7 +537,8 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
     // The comforts token is there first, so the sibling token is found among
     // others.
     luks::write_comforts(&runner, &ws, &device, &SignInComforts::default()).unwrap();
-    run(&args(&devices.relays), machine).expect("the phone enrols the volume");
+    run_with_peers(&args(&devices.relays), machine, Some(registrar()))
+        .expect("the phone enrols the volume");
     assert_eq!(
         devices.laptop.load(Ordering::SeqCst),
         1,
@@ -570,7 +557,10 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
     assert_eq!(slots(&device), ["0", "1"]);
     assert!(sibling::enrolled(&runner, &device));
     assert!(
-        format!("{:#}", run(&args(&devices.relays), machine).unwrap_err())
+        format!(
+            "{:#}",
+            run_with_peers(&args(&devices.relays), machine, Some(registrar())).unwrap_err()
+        )
             .contains("already has a sibling unlock")
     );
     let status = enrol::status(&runner, &device).unwrap();
@@ -779,7 +769,8 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
         runner: &with_tpm,
         has_tpm: true,
     };
-    run(&required, machine).expect("a required TPM that is there seals it");
+    run_with_peers(&required, machine, Some(registrar()))
+        .expect("a required TPM that is there seals it");
     let status = enrol::status(&with_tpm, &sealed).unwrap();
     assert_eq!(status.sealing, Sealing::Tpm2);
     let token = luks::sibling(&with_tpm, &sealed).unwrap().unwrap();

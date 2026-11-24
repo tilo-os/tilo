@@ -874,17 +874,18 @@ mod tests {
         // The one key the person's root certified the agent here, and what signs with it, as a
         // copy of it on another device would.
         let identities = tilo_identity::store::identity_dir_from_env().unwrap();
-        let identity = tilo_identity::store::IdentityRegistryStore::at(&identities)
-            .load()
-            .unwrap()
-            .default_identity
-            .unwrap();
-        let fleets = tilo_identity::device_fleet::DeviceFleetStore::from_env().unwrap();
-        let agents: Vec<_> = fleets
-            .load(&identity)
-            .unwrap()
-            .certificates
+        let record = tilo_identity::store::resolve_active_identity(&identities).unwrap();
+        let root = tilo_identity::store::load_from_path(record).unwrap();
+        let copies = daemon.serving().copies().clone();
+        let person = copies.serving_certificate().user_public_key;
+        let devices = runtime.block_on(async {
+            tilo_workspace_service::workspaces::person_workspace::devices::of(&copies, &person)
+                .await
+        });
+        let agents: Vec<_> = devices
+            .listed(&person)
             .into_iter()
+            .map(|listed| listed.cert)
             .filter(|cert| cert.capabilities.agent.is_some())
             .collect();
         let [cert] = agents.as_slice() else {
@@ -906,14 +907,18 @@ mod tests {
             .made(&cert.device_public_key)
             .unwrap();
 
-        // The person revokes it while the agent's connection is open.
-        fleets
-            .revoke(
-                &identity,
-                cert.device_public_key,
-                tilo_user_identity::RevocationReason::Retired,
-                tilo_clock::unix_now_ns(),
-            )
+        // The person revokes it while the agent's connection is open: their root signs the entry
+        // and their devices take it in, the record marking it with them.
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: cert.user_public_key,
+            revoked_device_public_key: cert.device_public_key,
+            revoked_at_ns: tilo_clock::unix_now_ns(),
+            reason: tilo_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        runtime
+            .block_on(daemon.serving().copies().announce_revocations(vec![entry]))
             .unwrap();
 
         // The same connection's next call is refused with why, and the connection ends.

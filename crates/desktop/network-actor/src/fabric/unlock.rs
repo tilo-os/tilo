@@ -15,11 +15,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use tilo_seal::SecretKey;
 use tilo_unlock_protocol::{
     APPROVAL_TIMEOUT_NS, BootId, CHALLENGE_LIFETIME_NS, Challenge, PROTOCOL_VERSION, RefusalReason,
-    SealedSiblingHalf, SiblingFrame, SlotId, UnlockHello, UnlockRequest, approval_code, attest,
-    open_sibling_half, seal_release,
+    Release, SealedSiblingHalf, SiblingFrame, SlotId, UnlockHello, UnlockRequest, approval_code,
+    attest,
 };
 use tilo_user_identity::{
     CertifiedFleet, DeviceCapabilities, DeviceCert, DeviceCertification,
@@ -380,8 +379,9 @@ pub struct UnlockView<'a> {
     pub decisions: &'a BTreeMap<DecisionKey, UnlockDecisionEntry>,
     /// Whether this device holds the person's root, so it can release.
     pub key_holder: bool,
-    /// The secret-sync key, loaded only where a half is released.
-    pub secret_sync: Option<&'a SecretKey>,
+    /// The boot's half, opened and re-sealed to its ephemeral key by the host that keeps the
+    /// person's root: what a release hands over, and nothing this device can open for another.
+    pub release: Option<&'a Release>,
 }
 
 /// A request waiting for the owner's decision on `device.unlock`.
@@ -681,6 +681,13 @@ impl UnlockSibling {
     /// Apply the owner's decision. Returns the frame for the waiting boot and
     /// the answer to keep, or `None` when no such request is pending (already
     /// decided, withdrawn, or never made).
+    /// The request `request_digest` waits for, while it waits: what a release for it is sealed
+    /// to.
+    #[must_use]
+    pub fn pending(&self, request_digest: &[u8; 32]) -> Option<PendingUnlock> {
+        self.pending.get(request_digest).cloned()
+    }
+
     pub fn decide(
         &mut self,
         request_digest: &[u8; 32],
@@ -816,22 +823,17 @@ fn decision_record(
     }
 }
 
-/// Open the sibling half with the secret-sync key and seal it to the
-/// request's ephemeral key.
+/// The half the host that keeps the person's root sealed to this boot's ephemeral key: a
+/// release this device holds and no key of another boot opens.
 fn release(
-    pending: &PendingUnlock,
-    enrolment: &UnlockEnrolment,
+    _pending: &PendingUnlock,
+    _enrolment: &UnlockEnrolment,
     view: &UnlockView<'_>,
 ) -> SiblingFrame {
-    let Some(secret_sync) = view.secret_sync else {
-        return SiblingFrame::Refused(RefusalReason::NotAKeyHolder);
-    };
-    open_sibling_half(secret_sync, &enrolment.cert, &enrolment.sealed_half)
-        .and_then(|half| seal_release(&pending.ephemeral_public, &pending.request_digest, &half))
-        .map_or(
-            SiblingFrame::Refused(RefusalReason::NotAKeyHolder),
-            SiblingFrame::Released,
-        )
+    view.release.map_or(
+        SiblingFrame::Refused(RefusalReason::NotAKeyHolder),
+        |release| SiblingFrame::Released(release.clone()),
+    )
 }
 
 #[cfg(test)]

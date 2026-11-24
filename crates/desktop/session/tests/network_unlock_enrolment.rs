@@ -24,7 +24,6 @@ use std::time::{Duration, Instant};
 use iroh::endpoint::{Endpoint, presets};
 use tilo_compositor::OutputConfig;
 use tilo_device_identity::IdentityPaths;
-use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_network_actor::DeviceIdentity;
 use tilo_service::{Answer, AskReceiver, AskSender, Question};
@@ -154,29 +153,18 @@ impl TwoDevices {
         let profile = registry
             .certified_identity()
             .expect("this device's person is known");
-        let store = DeviceFleetStore::from_env().expect("the device fleet");
+        let _ = profile;
         let now = tilo_clock::unix_now_ns();
         let phone_key = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
         let phone_public = phone_key.verifying_key().to_bytes();
-        let phone_cert = store
-            .certify_device(
-                &profile.id,
-                phone_public,
-                "The phone",
-                DeviceCapabilities::member(),
-                now,
-            )
-            .expect("the second device is enrolled");
+        let phone_cert = cert_under_root(phone_public, "The phone", DeviceCapabilities::member(), now);
         let enrollee = ed25519_dalek::SigningKey::from_bytes(&[0x53; 32]);
-        store
-            .certify_device(
-                &profile.id,
-                enrollee.verifying_key().to_bytes(),
-                "The laptop",
-                DeviceCapabilities::member(),
-                now,
-            )
-            .expect("the third device is enrolled");
+        let _enrollee_cert = cert_under_root(
+            enrollee.verifying_key().to_bytes(),
+            "The laptop",
+            DeviceCapabilities::member(),
+            now,
+        );
         let (asks, questions): (AskSender, AskReceiver) = tilo_service::asks::channel();
         let shell = Rc::new(
             Client::start(
@@ -395,4 +383,28 @@ fn a_refused_enrolment_signs_nothing() {
         devices.questions.pending().is_empty(),
         "the sheet holds no answered question"
     );
+}
+
+/// The certificate the person's root kept here gives `key`.
+fn cert_under_root(
+    key: [u8; 32],
+    label: &str,
+    capabilities: DeviceCapabilities,
+    now: u64,
+) -> DeviceCert {
+    let dir = tilo_identity::store::identity_dir_from_env().expect("this account's identity");
+    let record = tilo_identity::store::resolve_active_identity(&dir).expect("the person's record");
+    let root = tilo_identity::store::load_from_path(record).expect("the person's root");
+    let mut cert = DeviceCert {
+        user_public_key: root.group_public_key(),
+        device_public_key: key,
+        device_label: label.to_owned(),
+        capabilities,
+        issued_at_ns: now,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).expect("the person's root signs");
+    cert
 }

@@ -84,9 +84,13 @@ impl Tickets {
             .and_then(|grant| hex::decode(grant).ok())
             .and_then(|grant| <[u8; 32]>::try_from(grant).ok())
             .ok_or_else(|| anyhow!("an agent's grant is named by its key, as hex"))?;
-        Ok(super::super::services::certify_agent(
-            self.0.place.keys(),
-            grant,
+        let mut args = args.clone();
+        if args.get("grant").is_none() {
+            args["grant"] = Value::String(hex::encode(grant));
+        }
+        Ok(super::super::signing::certify_agent(
+            self.0.workspaces.as_ref(),
+            &args,
         )?)
     }
 
@@ -414,18 +418,5 @@ impl Issuer for Fleet {
             .map(|service| service.copies().clone())
     }
 
-    /// The fleet store keeps what this computer's root revoked: an agent's key it made here
-    /// signs nothing from then on, its next call is refused and its connection ends.
-    fn keep_revocation(&self, entry: &tilo_user_identity::RevocationEntry) {
-        let kept = tilo_identity::device_fleet::DeviceFleetStore::from_env()
-            .map_err(|error| error.to_string())
-            .and_then(|fleets| {
-                fleets
-                    .record_revocation(&hex::encode(entry.user_public_key), entry)
-                    .map_err(|error| error.to_string())
-            });
-        if let Err(error) = kept {
-            tracing::warn!(%error, "this computer does not keep the revocation it signed");
-        }
-    }
+
 }

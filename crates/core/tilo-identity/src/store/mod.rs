@@ -26,36 +26,4 @@ pub use registry::{
 pub const CANNOT_SIGN_ALONE: &str = "this device holds only part of your identity's key, so it \
      signs nothing as your identity: use the device you set up first";
 
-/// Open the person's root from the active identity in `identity_dir`, the one place a root is
-/// kept: what signs a certificate for a new device of theirs, or a revocation.
-///
-/// # Errors
-///
-/// `identity_dir` holds no active identity, it cannot be opened here, or this device holds only
-/// the public half of its key ([`CANNOT_SIGN_ALONE`]).
-pub fn load_person_root(identity_dir: &std::path::Path) -> std::io::Result<SigningIdentity> {
-    const MISSING_ROOT: &str = "this device does not hold the person's root";
-    let file = resolve_active_identity(identity_dir).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "{MISSING_ROOT}: {} holds no active identity",
-                identity_dir.display()
-            ),
-        )
-    })?;
-    let identity = load_from_path(file.clone()).map_err(|error| {
-        std::io::Error::other(format!(
-            "{MISSING_ROOT}: cannot open {}: {error} (start this as the account that owns the \
-             identity, in a session that can reach its secret store)",
-            file.display()
-        ))
-    })?;
-    if !identity.is_single_device() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            CANNOT_SIGN_ALONE,
-        ));
-    }
-    Ok(identity)
-}
+

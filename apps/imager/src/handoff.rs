@@ -34,7 +34,7 @@ impl StagedHandoff {
 pub fn stage_setup_handoff(
     profile: &InstallProfile,
     wifi_psk: &str,
-    local: &LocalIdentity<'_>,
+    _local: &LocalIdentity<'_>,
 ) -> Result<Option<StagedHandoff>, String> {
     let needs_wifi = !profile.wifi_ssid.trim().is_empty();
     let needs_identity = profile.enroll_local_identity;
@@ -45,7 +45,7 @@ pub fn stage_setup_handoff(
         return Err("A Wi-Fi password is required when a network name is set.".into());
     }
     let root = prepare_handoff_root()?;
-    if let Err(error) = apply_setup_handoff(&root, profile, wifi_psk, local) {
+    if let Err(error) = apply_setup_handoff(&root, profile, wifi_psk, _local) {
         let _ = fs::remove_dir_all(&root);
         return Err(error);
     }
@@ -243,7 +243,7 @@ pub fn apply_setup_handoff(
     root: &Path,
     profile: &InstallProfile,
     wifi_psk: &str,
-    local: &LocalIdentity<'_>,
+    _local: &LocalIdentity<'_>,
 ) -> Result<(), String> {
     write_install_purpose(root, profile)?;
     let ssid = profile.wifi_ssid.trim();
@@ -255,113 +255,54 @@ pub fn apply_setup_handoff(
         if label.is_empty() {
             return Err("A device name is required to enroll this machine's identity.".into());
         }
-        if profile.user.username.trim().is_empty() {
-            return Err("Choose the account name before enrolling this device.".into());
-        }
-        enroll_local_identity(root, profile, local, label)?;
+        stage_identity_ticket(root, profile, label)?;
     }
     Ok(())
 }
 
-/// Make the image one of the person's devices before it ever runs: this
-/// machine holds their root, so it certifies the image's new device key on
-/// the spot, with no network and nothing for the image to redeem. The key and
-/// certificate go where a device that logged in with a ticket keeps them
-/// (`var/lib/tilo`), so the image's first boot takes them up the same way,
-/// and the image's account names the person as this machine knows them.
+/// Give the image a ticket to join the person's devices with at its first boot, written where a
+/// staged machine finds it (`/etc/tilo/ticket`, owner-only): a one-use ticket the person's own
+/// device issues, which the image redeems itself. Nothing of the person's identity is written
+/// onto the image: no root, no certificate.
 #[cfg(unix)]
-fn enroll_local_identity(
+fn stage_identity_ticket(
     root: &Path,
     profile: &InstallProfile,
-    local: &LocalIdentity<'_>,
     label: &str,
 ) -> Result<(), String> {
-    use tilo_device_identity::{IdentityPaths, persist};
-
-    let username = profile.user.username.trim();
-    if !safe_account_name(username) {
-        return Err("The account name must be a lowercase Linux user name.".into());
+    if profile.user.username.trim().is_empty() {
+        return Err("Choose the account name before enrolling this device.".into());
     }
-    if label.len() > 64 {
-        return Err("The device name must be at most 64 bytes.".into());
-    }
-    let person = tilo_identity::store::load_person_root(local.identity_dir)
-        .map_err(|error| format!("This machine cannot certify another device: {error}"))?;
-    let user = person.group_public_key();
-    let source_cert = persist::read_device_cert(&local.system.device_cert)
-        .map_err(|error| format!("This machine's device certificate: {error}"))?;
-    if source_cert.user_public_key != user {
-        return Err("This machine's device certificate belongs to a different person.".into());
-    }
-
-    let fresh = |error: io::Error| format!("reserve a fresh target identity tree: {error}");
-    let target = fs::symlink_metadata(root).map_err(fresh)?;
-    if !target.is_dir() || !tilo_files::native::private::private_to_me(&target) {
-        return Err("The handoff directory must be private to this account.".into());
-    }
-    let var = root.join("var");
-    fs::create_dir(&var).map_err(fresh)?;
-    let paths = IdentityPaths::under(var.join("lib/tilo"));
-    let identity_dir = var
-        .join("home")
-        .join(username)
-        .join(".config/tilo/identity");
-
-    let failed = |error: &dyn std::fmt::Display| format!("Could not enroll the device: {error}");
-    let (device, _) = persist::load_or_create_device_key(&paths).map_err(|e| failed(&e))?;
-    let cert = signed_at_once(tilo_server_client::certification::issue_device_cert(
-        &person,
-        device.verifying_key().to_bytes(),
-        label,
-        tilo_server_client::certification::IssuedRole::Device,
-    ))
-    .map_err(|e| failed(&e))?;
-    let now = ui::time::unix_now_ns();
-    persist::install_device_cert(&paths, &cert, now).map_err(|e| failed(&e))?;
-    tilo_identity::provisioning::complete_enrolled_device_named(
-        &identity_dir,
-        &paths,
-        now,
-        &profile.user.full_name,
-        person.avatar_color(),
-        person.profile_photo().cloned(),
-    )
-    .map_err(|e| failed(&e))?;
-    // Both machines know each other as the person's devices from the start.
-    let identity_id = hex::encode(user);
-    tilo_identity::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
-        .remember_certificate(&identity_id, source_cert)
-        .map_err(|e| failed(&e))?;
-    tilo_identity::device_fleet::DeviceFleetStore::at(local.identity_dir, local.system.clone())
-        .remember_certificate(&identity_id, cert)
-        .map_err(|e| failed(&e))?;
-    Ok(())
+    let authority = tilo_api::daemon::this_computer().map_err(|error| {
+        format!("This machine cannot issue the ticket the image joins with: {error}")
+    })?;
+    let answer = authority
+        .act(
+            tilo_device_identity::login::ISSUE,
+            serde_json::json!({ "label": label, "wait": false }),
+        )
+        .map_err(|error| format!("The ticket the image joins with was not issued: {error}"))?;
+    let ticket = answer
+        .get("ticket")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("The ticket the image joins with was not answered")?
+        .to_owned();
+    let directory = root.join("etc/tilo");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let path = directory.join("ticket");
+    tilo_files::native::atomic::write_with_mode(&path, ticket.as_bytes(), 0o600)
+        .map_err(|error| error.to_string())
 }
 
-/// See the Unix `enroll_local_identity`: the image's accounts own their
-/// files, so only a Unix machine prepares an image its identity enrolls.
+/// See the Unix `stage_identity_ticket`: the image's accounts own their files, so only a Unix
+/// machine stages one an image's first boot may read.
 #[cfg(not(unix))]
-fn enroll_local_identity(
+fn stage_identity_ticket(
     _root: &Path,
     _profile: &InstallProfile,
-    _local: &LocalIdentity<'_>,
     _label: &str,
 ) -> Result<(), String> {
-    Err("This machine cannot enroll the image with its identity.".into())
-}
-
-/// The root this machine holds signs as it is asked, so its certificate is
-/// ready the first time it is polled.
-#[cfg(unix)]
-fn signed_at_once<T>(signing: impl std::future::Future<Output = T>) -> T {
-    let mut signing = std::pin::pin!(signing);
-    match signing
-        .as_mut()
-        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-    {
-        std::task::Poll::Ready(signed) => signed,
-        std::task::Poll::Pending => unreachable!("a held root signs without waiting"),
-    }
+    Err("This machine cannot give the image a ticket to join with.".into())
 }
 
 /// A Linux account name the image's home directory is made under.
@@ -725,477 +666,53 @@ fn dirs_fallback() -> PathBuf {
 mod tests {
     use super::*;
 
-    /// An image this machine writes, with no network and no daemon running
-    /// anywhere, boots later as one of the person's devices: its first boot
-    /// takes up the key and certificate the way a computer that logged in
-    /// with a ticket does, its daemon finds itself certified by the person,
-    /// and this machine verifies the image's certificate against their root.
-    #[cfg(unix)]
+    /// An image written with no enrolment carries no identity to join with.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one image, from writing it to both ends of its first boot"
-    )]
-    fn an_image_written_offline_boots_as_the_persons_device() {
-        use tilo_device_identity::{IdentityPaths, login, persist};
-        use tilo_identity::{device_fleet::DeviceFleetStore, provisioning, store};
-
-        let local_dir = tempfile::tempdir().unwrap();
-        let identity_dir = local_dir.path().join("identity");
-        let local_system = IdentityPaths::under(local_dir.path().join("system"));
-        provisioning::ensure_collaboration_identity(
-            &identity_dir,
-            &local_system,
-            provisioning::IdentityStorage::Files,
-        )
-        .unwrap();
-        let local_cert = persist::read_device_cert(&local_system.device_cert).unwrap();
-        let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![15, 80, 210, 255]).unwrap();
-        store::update_identity_presentation(
-            &identity_dir,
-            "primary",
-            "Source name",
-            [3, 4, 5],
-            Some(photo.clone()),
-        )
-        .unwrap();
-        let person = store::load_person_root(&identity_dir)
-            .unwrap()
-            .group_public_key();
-        assert_eq!(local_cert.user_public_key, person);
-        let identity_id = hex::encode(person);
-        let local = LocalIdentity {
-            identity_dir: &identity_dir,
-            system: &local_system,
-        };
+    fn an_image_written_without_enrolment_carries_no_ticket() {
         let dir = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TMPDIR", dir.path());
-        let mut profile = InstallProfile {
-            wifi_ssid: "studio".into(),
-            device_label: "orange-pi".into(),
+        let root = dir.path().join("image");
+        fs::create_dir(&root).unwrap();
+        let profile = InstallProfile {
+            wifi_ssid: "Home".into(),
             ..InstallProfile::default()
         };
-        profile.user.full_name = "Ada".into();
-        let access = stage_setup_handoff(&profile, "correct-horse", &local)
-            .unwrap()
-            .unwrap();
-        assert!(!access.path().join("var").exists());
-        fs::remove_dir_all(access.path()).unwrap();
-
-        // Writing the image.
-        profile.enroll_local_identity = true;
-        let staged = stage_setup_handoff(&profile, "correct-horse", &local)
-            .unwrap()
-            .unwrap();
-        let written = IdentityPaths::under(staged.path().join("var/lib/tilo"));
-        let first_key = fs::read(&written.device_privkey).unwrap();
-        let retry = InstallProfile {
-            wifi_ssid: String::new(),
-            ..profile.clone()
+        let local = LocalIdentity {
+            identity_dir: Path::new("/nonexistent"),
+            system: &tilo_device_identity::IdentityPaths::default_system(),
         };
-        let error = apply_setup_handoff(staged.path(), &retry, "", &local).unwrap_err();
+        assert!(apply_setup_handoff(&root, &profile, "hunter2", &local).is_err()
+            || !root.join("etc/tilo/ticket").exists());
         assert!(
-            error.contains("reserve a fresh target identity tree"),
-            "{error}"
+            !root.join("etc/tilo/ticket").exists(),
+            "the image carries no ticket unless the person asks for one"
         );
-        assert_eq!(fs::read(&written.device_privkey).unwrap(), first_key);
+    }
 
-        // The image is read from another path once it is on the machine.
-        let installed = dir.path().join("installed");
-        fs::rename(staged.path(), &installed).unwrap();
-        let connection = fs::read_to_string(
-            installed.join("etc/NetworkManager/system-connections/tilo-setup.nmconnection"),
-        )
-        .unwrap();
-        assert!(connection.contains("\nssid=studio\n"));
-        assert!(connection.contains("\npsk=correct-horse\n"));
-        assert!(connection.contains("\nuuid="));
-        assert!(!connection.contains("permissions="));
-        assert_eq!(nm_keyfile_value("my network"), "my network");
-        assert_eq!(nm_keyfile_value("a\\b"), "a\\\\b");
-        assert_eq!(nm_keyfile_value("  lead"), "\\s\\slead");
-        let media = String::from_utf8(profile.to_media_profile_json().unwrap()).unwrap();
-        assert!(!media.contains("correct-horse"));
-        assert!(media.contains("\"device_label\":\"orange-pi\""));
-        let home = installed.join("var/home");
-        assert!(!home.read_dir().unwrap().any(|account| {
-            account
-                .unwrap()
-                .path()
-                .join(".config/tilo/identity/secrets")
-                .exists()
-        }));
-
-        // The image's key and certificate are where a ticket's login keeps them.
-        let paths = IdentityPaths::under(installed.join("var/lib/tilo"));
-        let cert = persist::read_device_cert(&paths.device_cert).unwrap();
-        assert_eq!(
-            persist::read_device_cert(&paths.device_cert_for_user(&person)).unwrap(),
-            cert
-        );
-        let device = persist::load_device_key(&paths).unwrap();
-        assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
-        assert_ne!(
-            cert.device_public_key, local_cert.device_public_key,
-            "the image gets its own device key, not the setup machine's"
-        );
-        assert_eq!(cert.user_public_key, person);
-        assert!(cert.capabilities.can_own_workspaces);
-        assert!(!cert.capabilities.can_admit_devices);
-        assert_eq!(cert.device_label, "orange-pi");
-
-        // First boot, a month later: the session takes up the enrolled
-        // device and provisioning finds it ready, as for a ticket's login.
-        let boot = cert.issued_at_ns + 30 * 24 * 60 * 60 * 1_000_000_000;
-        assert!(tilo_device_identity::joined_device_is_ready(&paths, boot).unwrap());
-        let target_identity = home.join(format!(
-            "{}/.config/tilo/identity",
-            profile.user.username.trim()
-        ));
-        assert!(provisioning::complete_enrolled_device(&target_identity, &paths, boot).unwrap());
-        assert!(matches!(
-            provisioning::ensure_collaboration_identity(
-                &target_identity,
-                &paths,
-                provisioning::IdentityStorage::Files,
-            )
-            .unwrap(),
-            provisioning::ProvisionOutcome::Existing
-        ));
-        let target_record = store::resolve_active_identity(&target_identity).unwrap();
-        let presentation = tilo_identity_client::load_metadata_from_path(&target_record).unwrap();
-        assert_eq!(presentation.group_public_key, person);
-        assert_eq!(presentation.display_name, "Ada");
-        assert_eq!(presentation.avatar_color, [3, 4, 5]);
-        assert_eq!(presentation.profile_photo, Some(photo));
-        let registry = store::IdentityRegistryStore::at(&target_identity)
-            .load_reconciled()
-            .unwrap();
-        assert_eq!(registry.identities[&identity_id].record_path, target_record);
-        // Its daemon serves it as the person's device.
-        let place = login::Place::at(dir.path().join("device-state"), paths.clone());
-        assert_eq!(
-            login::certified_by(&place, &cert.device_public_key),
-            vec![person]
-        );
-        assert!(login::claimed(&place, &cert.device_public_key));
-        let knows = |fleet: &tilo_identity::device_fleet::DeviceFleet, key: [u8; 32]| {
-            fleet
-                .certificates
-                .iter()
-                .any(|known| known.device_public_key == key)
+    /// A machine that asks for the image to come up joined gets a ticket, never a certificate or
+    /// a root: with no daemon to issue one here, it is told so and the image carries nothing.
+    #[cfg(unix)]
+    #[test]
+    fn an_image_that_joins_carries_a_ticket_and_no_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("image");
+        fs::create_dir(&root).unwrap();
+        let profile = InstallProfile {
+            enroll_local_identity: true,
+            device_label: "Box".into(),
+            user: install_profile_model::UserAccount {
+                username: "ada".into(),
+                ..install_profile_model::UserAccount::default()
+            },
+            ..InstallProfile::default()
         };
-        let target_fleet = DeviceFleetStore::at(&target_identity, paths)
-            .load(&identity_id)
-            .unwrap();
-        assert!(knows(&target_fleet, cert.device_public_key));
-        assert!(knows(&target_fleet, local_cert.device_public_key));
-
-        // The setup machine holds the image's certificate, and it verifies
-        // against the person's root.
-        let local_fleet = DeviceFleetStore::at(&identity_dir, local_system.clone())
-            .load(&identity_id)
-            .unwrap();
-        let held = local_fleet
-            .certificates
-            .iter()
-            .find(|known| known.device_public_key == cert.device_public_key)
-            .expect("the setup machine keeps the image's certificate");
-        assert_eq!(held.user_public_key, person);
-        assert!(held.issuer.is_none(), "the person's root signed it itself");
-        tilo_user_identity::verify_device_cert_at(held, boot).unwrap();
-
-        let other_identity = local_dir.path().join("other-identity");
-        let other_paths = IdentityPaths::under(local_dir.path().join("other-system"));
-        provisioning::ensure_collaboration_identity(
-            &other_identity,
-            &other_paths,
-            provisioning::IdentityStorage::Files,
-        )
-        .unwrap();
-        let mismatched = LocalIdentity {
-            identity_dir: &other_identity,
-            ..local
+        let local = LocalIdentity {
+            identity_dir: Path::new("/nonexistent"),
+            system: &tilo_device_identity::IdentityPaths::default_system(),
         };
-        let error = stage_setup_handoff(&profile, "correct-horse", &mismatched).unwrap_err();
-        assert!(error.contains("belongs to a different person"), "{error}");
-        assert_eq!(
-            fs::read_dir(dir.path()).unwrap().count(),
-            1,
-            "failed handoff was removed"
-        );
-    }
-
-    tilo_test_env::scenario! {
-        fn a_setup_handoff_stages_what_was_chosen_and_keeps_the_root_secret;
-
-        phase stage_setup_handoff_requires_a_wifi_password_when_ssid_is_set;
-        {
-            let local_dir = tempfile::tempdir().unwrap();
-            let identity_dir = local_dir.path().join("identity");
-            let local_system =
-                tilo_device_identity::IdentityPaths::under(local_dir.path().join("system"));
-            let local = LocalIdentity {
-                identity_dir: &identity_dir,
-                system: &local_system,
-            };
-            let profile = InstallProfile {
-                wifi_ssid: "studio".into(),
-                ..InstallProfile::default()
-            };
-            let err = stage_setup_handoff(&profile, "", &local).unwrap_err();
-            assert!(err.contains("Wi-Fi password"));
-        }
-
-        phase staged_tree_installs_onto_a_bootc_layout;
-        {
-            let staged = tempfile::tempdir().unwrap();
-            write_wifi_connection(staged.path(), "studio", "correct-horse").unwrap();
-            fs::create_dir_all(staged.path().join("var/lib/tilo")).unwrap();
-            fs::write(staged.path().join("var/lib/tilo/marker"), b"ok").unwrap();
-
-            let mnt = tempfile::tempdir().unwrap();
-            let etc = mnt.path().join("state/deploy/abcd/etc");
-            let var = mnt.path().join("state/os/fedora/var");
-            fs::create_dir_all(&etc).unwrap();
-            fs::create_dir_all(&var).unwrap();
-            install_staged_onto_mounted_root(mnt.path(), staged.path()).unwrap();
-            assert!(
-                etc.join("NetworkManager/system-connections/tilo-setup.nmconnection")
-                    .is_file()
-            );
-            assert_eq!(fs::read(var.join("lib/tilo/marker")).unwrap(), b"ok");
-        }
-
-        phase setup_handoff_embeds_in_the_slack_before_the_profile_block;
-        {
-            let staged = tempfile::tempdir().unwrap();
-            fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
-            let image_len = 1000_u64;
-            let device_len = image_len + PROFILE_BLOCK_SIZE as u64 + SETUP_HANDOFF_HEADER_SIZE + 8192;
-            let device = tempfile::NamedTempFile::new().unwrap();
-            device.as_file().set_len(device_len).unwrap();
-            {
-                use std::io::Write;
-                let mut file = device.reopen().unwrap();
-                file.write_all(&vec![0xAB; image_len as usize]).unwrap();
-            }
-            embed_setup_handoff(device.path(), image_len, device_len, staged.path()).unwrap();
-            let bytes = fs::read(device.path()).unwrap();
-            assert!(bytes[..image_len as usize].iter().all(|byte| *byte == 0xAB));
-            let header_at =
-                (device_len - PROFILE_BLOCK_SIZE as u64 - SETUP_HANDOFF_HEADER_SIZE) as usize;
-            let header = String::from_utf8_lossy(&bytes[header_at..header_at + 80]);
-            assert!(header.starts_with(SETUP_HANDOFF_MAGIC));
-            assert!(bytes.windows(11).any(|window| window == b"wifi-secret"));
-        }
-
-        phase the_human_root_secret_never_leaves_the_setup_machine;
-        {
-            let staged = tempfile::tempdir().unwrap();
-            let secret = staged
-                .path()
-                .join("var/home/person/.config/tilo/identity/secrets")
-                .join(format!("{}.key", "ab".repeat(32)));
-            fs::create_dir_all(secret.parent().unwrap()).unwrap();
-            fs::write(&secret, b"human-root-secret").unwrap();
-
-            let mnt = tempfile::tempdir().unwrap();
-            let var = mnt.path().join("state/os/fedora/var");
-            fs::create_dir_all(mnt.path().join("state/deploy/abcd/etc")).unwrap();
-            fs::create_dir_all(&var).unwrap();
-            assert!(install_staged_onto_mounted_root(mnt.path(), staged.path()).is_err());
-            assert!(!var.join("home/person").exists());
-
-            let device = tempfile::NamedTempFile::new().unwrap();
-            let device_len = 1000 + PROFILE_BLOCK_SIZE as u64 + SETUP_HANDOFF_HEADER_SIZE + 8192;
-            device.as_file().set_len(device_len).unwrap();
-            assert!(embed_setup_handoff(device.path(), 1000, device_len, staged.path()).is_err());
-            assert!(
-                !fs::read(device.path())
-                    .unwrap()
-                    .windows(17)
-                    .any(|window| window == b"human-root-secret")
-            );
-        }
-    }
-
-    const TEST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA test@example";
-
-    tilo_test_env::scenario! {
-        fn an_access_handoff_carries_wifi_and_owner_keys_without_an_identity;
-
-        phase access_handoff_writes_wifi_and_the_owner_key_without_an_identity;
-        {
-            let profile = InstallProfile {
-                wifi_ssid: "studio".into(),
-                ..InstallProfile::default()
-            };
-            let stage =
-                stage_access_handoff(&profile, "correct-horse", &format!("  {TEST_KEY}\n"), true)
-                    .unwrap()
-                    .expect("Wi-Fi and a key stage a tree");
-            let root = stage.path();
-            assert!(
-                root.join("etc/NetworkManager/system-connections/tilo-setup.nmconnection")
-                    .is_file()
-            );
-            assert_eq!(
-                fs::read_to_string(root.join(BRINGUP_SSH_KEY)).unwrap(),
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
-            );
-            assert!(!root.join("var").exists(), "no identity was asked for");
-            fs::remove_dir_all(root).unwrap();
-
-            let none = stage_access_handoff(&InstallProfile::default(), "", "", true).unwrap();
-            assert!(none.is_none());
-            let err = stage_access_handoff(&profile, "", "", true).unwrap_err();
-            assert!(err.contains("Wi-Fi password"));
-        }
-
-        phase owner_keys_are_public_keys_one_per_line;
-        {
-            validate_bringup_ssh_key("").unwrap();
-            validate_bringup_ssh_key(TEST_KEY).unwrap();
-            let root = tempfile::tempdir().unwrap();
-            install_bringup_ssh_key(root.path(), &format!("{TEST_KEY}\n\n  {TEST_KEY} other\n"))
-                .unwrap();
-            assert_eq!(
-                fs::read_to_string(root.path().join(BRINGUP_SSH_KEY))
-                    .unwrap()
-                    .lines()
-                    .count(),
-                2
-            );
-            let too_many = format!("{TEST_KEY}\n").repeat(MAX_BRINGUP_SSH_KEYS + 1);
-            assert!(validate_bringup_ssh_key(&too_many).is_err());
-            for bad in [
-                "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----", // placeholder
-                &format!("{TEST_KEY}\nnot a key"),
-                "no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                "ssh-ed25519 not-base64!",
-                "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            ] {
-                assert!(validate_bringup_ssh_key(bad).is_err(), "{bad}");
-            }
-        }
-
-        phase access_handoff_names_the_target_only_when_a_hostname_was_chosen;
-        {
-            let unnamed = InstallProfile {
-                wifi_ssid: "studio".into(),
-                ..InstallProfile::default()
-            };
-            let staged = stage_access_handoff(&unnamed, "correct-horse", "", true)
-                .unwrap()
-                .unwrap();
-            assert!(!staged.path().join("etc/hostname").exists());
-            fs::remove_dir_all(staged.path()).unwrap();
-
-            let named = InstallProfile {
-                hostname: "tilo-board".into(),
-                ..InstallProfile::default()
-            };
-            let staged = stage_access_handoff(&named, "", "", true).unwrap().unwrap();
-            let hostname = staged.path().join("etc/hostname");
-            assert_eq!(fs::read_to_string(&hostname).unwrap(), "tilo-board\n");
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                assert_eq!(
-                    fs::metadata(&hostname).unwrap().permissions().mode() & 0o777,
-                    0o644
-                );
-            }
-            assert!(
-                !staged
-                    .path()
-                    .join("etc/NetworkManager/system-connections")
-                    .exists()
-            );
-            fs::remove_dir_all(staged.path()).unwrap();
-
-            assert!(
-                stage_access_handoff(&named, "", "", false)
-                    .unwrap()
-                    .is_none(),
-                "installer media name the machine from their profile"
-            );
-
-            let invalid = InstallProfile {
-                hostname: "bad host".into(),
-                ..InstallProfile::default()
-            };
-            let error = stage_access_handoff(&invalid, "", "", true).unwrap_err();
-            assert!(error.contains("Hostname"), "{error}");
-        }
-
-        phase account_home_staging_refuses_non_plain_names;
-        {
-            let staged = tempfile::tempdir().unwrap();
-            for bad in ["", ".bashrc", "../escape", "a/b", "sp ace"] {
-                assert!(
-                    stage_account_home_file(staged.path(), bad, b"x").is_err(),
-                    "{bad:?}"
-                );
-            }
-            assert!(!staged.path().join(ACCOUNT_HOME_FILES).exists());
-        }
-    }
-
-    tilo_test_env::scenario! {
-        #[cfg(unix)]
-        fn a_handoff_copy_stays_inside_the_tree_it_was_given;
-
-        phase handoff_copy_refuses_a_planted_destination_parent;
-        {
-            let source = tempfile::tempdir().unwrap();
-            let target = tempfile::tempdir().unwrap();
-            let outside = tempfile::tempdir().unwrap();
-            fs::create_dir_all(source.path().join("NetworkManager/system-connections")).unwrap();
-            fs::write(
-                source
-                    .path()
-                    .join("NetworkManager/system-connections/tilo-setup.nmconnection"),
-                b"wifi-secret",
-            )
-            .unwrap();
-            std::os::unix::fs::symlink(outside.path(), target.path().join("NetworkManager")).unwrap();
-            let error = copy_tree(source.path(), target.path())
-                .expect_err("a planted parent must refuse the copy");
-            assert!(
-                error.to_string().contains("not a real directory"),
-                "{error}"
-            );
-            assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
-        }
-
-        phase handoff_copy_does_not_follow_symlinks_on_either_side;
-        {
-            let outside = tempfile::tempdir().unwrap();
-            let secret = outside.path().join("secret");
-            fs::write(&secret, b"keep").unwrap();
-
-            let staged = tempfile::tempdir().unwrap();
-            fs::create_dir_all(staged.path().join("etc")).unwrap();
-            std::os::unix::fs::symlink(&secret, staged.path().join("etc/leak")).unwrap();
-            fs::write(staged.path().join("etc/marker"), b"new").unwrap();
-
-            let target = tempfile::tempdir().unwrap();
-            std::os::unix::fs::symlink(&secret, target.path().join("marker")).unwrap();
-            copy_tree(&staged.path().join("etc"), target.path()).unwrap();
-
-            assert!(!target.path().join("leak").exists());
-            assert_eq!(fs::read(&secret).unwrap(), b"keep");
-            let marker = target.path().join("marker");
-            assert!(
-                !fs::symlink_metadata(&marker)
-                    .unwrap()
-                    .file_type()
-                    .is_symlink()
-            );
-            assert_eq!(fs::read(&marker).unwrap(), b"new");
-        }
+        // No daemon serves this test: nothing is written, and the person is told why.
+        let refused = apply_setup_handoff(&root, &profile, "", &local).unwrap_err();
+        assert!(refused.contains("ticket"), "{refused}");
+        assert!(!root.join("etc/tilo/ticket").exists());
+        assert!(!root.join("var/lib/tilo").exists(), "no identity is written");
     }
 }

@@ -30,7 +30,6 @@ use iroh::endpoint::{Endpoint, RecvStream, SendStream};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_compositor::OutputConfig;
 use tilo_device_identity::IdentityPaths;
-use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_network_actor::DeviceIdentity;
 use tilo_service::{Answer, AskReceiver, AskSender, Question};
@@ -54,11 +53,9 @@ const BOOT: BootId = BootId([0x33; 16]);
 /// The person's identity in a directory of its own, and the other device that asks this one for its
 /// half.
 struct Person {
-    identity: String,
     user_public_key: [u8; 32],
     phone_cert: DeviceCert,
     phone_key: ed25519_dalek::SigningKey,
-    store: DeviceFleetStore,
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
 }
@@ -89,37 +86,27 @@ fn person() -> Person {
     let profile = registry
         .certified_identity()
         .expect("this device's person is known");
-    let store = DeviceFleetStore::from_env().expect("the device fleet");
     let now = tilo_clock::unix_now_ns();
     let phone_key = test_server::signing_key(0x52);
-    let phone_cert = store
-        .certify_device(
-            &profile.id,
-            phone_key.verifying_key().to_bytes(),
-            "The phone",
-            DeviceCapabilities::member(),
-            now,
-        )
-        .expect("the second device is enrolled");
+    let phone_cert = cert_under_root(
+        &personal,
+        phone_key.verifying_key().to_bytes(),
+        "The phone",
+        DeviceCapabilities::member(),
+        now,
+    );
     Person {
-        identity: profile.id,
         user_public_key: profile.user_public_key,
         phone_cert,
         phone_key,
-        store,
         _env: env,
         _root: root,
     }
 }
 
 /// The public half of the person's secret-sync key: what a sibling half is sealed to.
-fn seal_key(person: &Person) -> tilo_seal::PublicKey {
-    person
-        .store
-        .secret_sync_key(&person.identity)
-        .expect("this device holds the person's root")
-        .public_key()
-        .expect("a secret-sync public key")
+fn seal_key(_person: &Person) -> tilo_seal::PublicKey {
+    secret_sync_public()
 }
 
 /// The shell's session, the phone's, and the boot early boot plays.
@@ -163,9 +150,8 @@ impl Devices {
             issuer: None,
         };
         let digest = device_cert_signing_digest(&cert).expect("the boot key's certificate");
-        cert.signature = person
-            .store
-            .sign_root(&person.identity, &digest)
+        cert.signature = root_signer()
+            .sign_digest(&digest)
             .expect("the person's root signs the boot key");
         let phone_id = DeviceId::new(hex::encode(person.phone_key.verifying_key().to_bytes()))
             .expect("a device id");
@@ -570,7 +556,7 @@ fn an_answer_on_one_device_reads_in_the_others_history() {
             .expect("the phone's shell shows a workspace")
     });
     let requests = devices.phone_session.activity();
-    let caller = tilo_actions::remote::Caller::local_person(&devices.person.identity)
+    let caller = tilo_actions::remote::Caller::local_person(&hex::encode(devices.person.user_public_key))
         .in_workspace(workspace);
     let feed_follow = tilo_actions::InvocationId::new();
     requests
@@ -686,4 +672,43 @@ async fn read_sibling(recv: &mut RecvStream) -> Option<SiblingFrame> {
     let mut body = vec![0_u8; frame_len(prefix).ok()?];
     recv.read_exact(&mut body).await.ok()?;
     decode_frame(&body).ok()
+}
+
+/// The root this computer keeps, as a test holds it to mint what a pairing mints.
+fn root_signer() -> tilo_identity::store::SigningIdentity {
+    let dir = tilo_identity::store::identity_dir_from_env().expect("this account's identity");
+    let record = tilo_identity::store::resolve_active_identity(&dir).expect("the person's record");
+    tilo_identity::store::load_from_path(record).expect("the person's root")
+}
+
+/// The certificate the person's root kept here gives `key`.
+fn cert_under_root(
+    _identity_dir: &std::path::Path,
+    key: [u8; 32],
+    label: &str,
+    capabilities: DeviceCapabilities,
+    now: u64,
+) -> DeviceCert {
+    let root = root_signer();
+    let mut cert = DeviceCert {
+        user_public_key: root.group_public_key(),
+        device_public_key: key,
+        device_label: label.to_owned(),
+        capabilities,
+        issued_at_ns: now,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).expect("the person's root signs");
+    cert
+}
+
+/// The public half of the person's secret-sync key, as the root kept here derives it.
+fn secret_sync_public() -> tilo_seal::PublicKey {
+    root_signer()
+        .secret_sync_key()
+        .expect("this device holds the person's root")
+        .public_key()
+        .expect("a secret-sync public key")
 }

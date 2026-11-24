@@ -241,6 +241,36 @@ impl Drop for NearbyJoin {
     }
 }
 
+/// Where an image written as one of the person's devices keeps the ticket it joins with: the
+/// path the installer stages one at, owner-only.
+pub const STAGED_TICKET: &str = "/etc/tilo/ticket";
+
+/// Join the person's devices with the ticket an image carried, when one waits and this computer
+/// is nobody's device yet: its first boot does what `tilo login` does, with nothing typed.
+/// Answers whether one was redeemed.
+///
+/// # Errors
+/// The ticket was not redeemed; it stays for a later boot to try again.
+pub fn redeem_staged_ticket(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+) -> Result<bool, String> {
+    let Ok(text) = std::fs::read_to_string(STAGED_TICKET) else {
+        return Ok(false);
+    };
+    if !Ticket::looks_like(&text) {
+        return Ok(false);
+    }
+    let label = tilo_identity::provisioning::machine_label(Path::new("/")).unwrap_or_default();
+    let cancelled = AtomicBool::new(false);
+    join(text.trim(), identity_dir, paths, &label, &cancelled)
+        .map_err(|error| format!("{error:?}"))?;
+    if let Err(error) = std::fs::remove_file(STAGED_TICKET) {
+        tracing::warn!(%error, "the ticket this computer joined with is still there");
+    }
+    Ok(true)
+}
+
 /// Redeem `ticket` on this computer's daemon and take the certificate it files
 /// up as the identity under `identity_dir`.
 fn join(

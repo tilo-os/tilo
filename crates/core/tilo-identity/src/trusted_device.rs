@@ -1,8 +1,12 @@
 //! This machine's device key, for the host only, while the identity it signs for still trusts it.
 //!
 //! The key answers only while this device holds a valid certificate from the identity a workspace
-//! selected, enrolled in that identity's fleet and not revoked, so a revocation takes effect at the
-//! very next call. Apps never get the key: they sign through the [`broker`](crate::broker).
+//! selected, held in that person's devices record and not revoked there, so a revocation takes
+//! effect at the very next call. Apps never get the key: they sign through the
+//! [`broker`](crate::broker).
+//!
+//! The person's devices are answered by the host that holds their record
+//! ([`crate::sources::DeviceTrust`]): this crate keeps no list of its own.
 
 use std::io;
 
@@ -40,21 +44,15 @@ pub(crate) fn of_profile(
             "this device certificate does not belong to the selected identity and device",
         ));
     }
-    // Served from memory only while the fleet files are unchanged, so a
-    // revocation — of the device or of the stand-in that issued it — is seen by
-    // the very next call.
-    let fleet = crate::device_fleet::DeviceFleetStore::from_env()?.load_cached(&profile.id)?;
-    if !crate::certificates::admitted(&profile.user_public_key, &fleet, &cert) {
+    // The person's devices, as the host that holds their record answers: a revocation — of the
+    // device or of the stand-in that issued it — is seen by the very next call.
+    if !crate::certificates::admitted(&profile.user_public_key, &cert) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "this device has been revoked for the selected identity",
         ));
     }
-    if !fleet
-        .certificates
-        .iter()
-        .any(|known| known.device_public_key == device_key)
-    {
+    if !crate::certificates::enrolled(&profile.user_public_key, &cert) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "this device is not enrolled for the selected identity",
@@ -69,6 +67,7 @@ mod tests {
 
     #[test]
     fn the_key_answers_only_while_the_identity_trusts_this_device() {
+        crate::sources::test_trust::install();
         let temp = tempfile::tempdir().unwrap();
         let config = temp.path().join("config");
         let system_root = temp.path().join("system");
@@ -93,17 +92,21 @@ mod tests {
             device.verifying_key().to_bytes()
         );
 
+        // The person's devices record holds this device: their root certified it as it made them.
         let profile = crate::store::identity_for_workspace(&workspace)
             .unwrap()
             .unwrap();
-        crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
-            .revoke(
-                &profile.id,
-                device.verifying_key().to_bytes(),
-                tilo_user_identity::RevocationReason::Compromised,
-                1,
-            )
-            .unwrap();
+        crate::sources::test_trust::enrol(
+            profile.user_public_key,
+            device.verifying_key().to_bytes(),
+        );
+        current(&workspace).unwrap();
+
+        // Their root takes it back, on another of their devices.
+        crate::sources::test_trust::revoke(
+            profile.user_public_key,
+            device.verifying_key().to_bytes(),
+        );
         let error = current(&workspace).unwrap_err();
         assert!(error.to_string().contains("revoked"), "{error}");
     }

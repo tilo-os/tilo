@@ -41,7 +41,6 @@ use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tilo_device_identity::IdentityPaths;
-use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_rollback::exec::Runner;
 use tilo_rollback::policy::Workspace;
 use tilo_unlock_protocol::{
@@ -267,36 +266,51 @@ impl PeerRegistrar {
         }
     }
 
-    /// This device's own key and the person's other devices, read from the
-    /// identity this machine was bound with and the fleet `session_uid`'s
-    /// identity directory holds. `relays` reaches them when the caller knows
-    /// the network; `None` uses the peer network's default.
+    /// This device's own key and the person's other devices, as the daemon this machine runs
+    /// lists them: the record of their own workspace, answered by the daemon that holds it. Boot
+    /// unlock exists only where that daemon runs. `relays` reaches them when the caller knows the
+    /// network; `None` uses the peer network's default.
     pub fn find(session_uid: Option<u32>, relays: Option<RelayMap>) -> Result<Self> {
         let paths = identity_paths();
         let device = tilo_device_identity::persist::load_device_key(&paths)
             .map_err(|error| anyhow!("this device's key: {error}"))?;
         let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
             .map_err(|error| anyhow!("this device's certificate: {error}"))?;
-        if cert.device_public_key != device.verifying_key().to_bytes() {
+        let this = device.verifying_key().to_bytes();
+        if cert.device_public_key != this {
             bail!("this device's key is not the one its certificate names");
         }
-        let identity_id = hex::encode(cert.user_public_key);
-        // The person's devices as this machine's own store lists them: on a
-        // personal device their account's identity directory holds the fleet,
-        // and on a server the identity root its enrollment wrote it into. No
-        // session has to be running for this machine to know who to ask.
-        let store = identity_dir(session_uid)
-            .ok()
-            .map(|directory| DeviceFleetStore::at(directory, paths.clone()))
-            .filter(|store| store.fleet_file(&identity_id).exists())
-            .unwrap_or_else(|| DeviceFleetStore::of_device(paths, &identity_id));
-        let fleet = store
-            .load(&identity_id)
+        let answer = local_daemon(session_uid)?
+            .act(
+                tilo_device_identity::login::PERSONAL_DEVICES,
+                serde_json::json!({}),
+            )
             .map_err(|error| anyhow!("your devices: {error}"))?;
-        let devices: Vec<[u8; 32]> = fleet
-            .personal_devices(&cert.user_public_key, tilo_clock::unix_now_ns())
+        let now = tilo_clock::unix_now_ns();
+        let devices: Vec<[u8; 32]> = answer
+            .get("devices")
+            .and_then(serde_json::Value::as_array)
             .into_iter()
-            .filter(|key| key != &cert.device_public_key)
+            .flatten()
+            .filter_map(|listed| {
+                let kept: tilo_user_identity::DeviceCert = listed
+                    .get("certificate")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|bytes| hex::decode(bytes).ok())
+                    .and_then(|bytes| postcard::from_bytes(&bytes).ok())?;
+                let revoked = listed
+                    .get("revoked")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                // Every device of the person's but this one: this device asks the others, and
+                // holds the half like any other, so a person with two has one to ask at boot.
+                (kept.user_public_key == cert.user_public_key
+                    && kept.capabilities.is_personal_device()
+                    && tilo_user_identity::verify_device_cert_at(&kept, now).is_ok()
+                    && !revoked
+                    && kept.device_public_key != this)
+                    .then_some(kept.device_public_key)
+            })
             .collect();
         if devices.is_empty() {
             bail!("none of your other devices can enrol this one");
@@ -433,17 +447,18 @@ fn identity_paths() -> IdentityPaths {
 /// Where a login account keeps its identity records, relative to its home.
 const IDENTITY_DIR_IN_HOME: &str = ".config/tilo/identity";
 
-/// The identity directory whose device fleet names the person's devices: the
-/// named account's, or this process's own.
-fn identity_dir(session_uid: Option<u32>) -> Result<PathBuf> {
-    if let Some(uid) = session_uid {
-        return Ok(home_of(uid)?.join(IDENTITY_DIR_IN_HOME));
+/// The daemon to ask for the person's devices: this account's, or the one `session_uid` names on
+/// a machine whose daemon runs as the system unit.
+fn local_daemon(session_uid: Option<u32>) -> Result<tilo_api::daemon::DaemonPlace> {
+    let ours = rustix::process::geteuid().as_raw();
+    match session_uid.filter(|uid| *uid != ours) {
+        None => tilo_api::daemon::this_computer().map_err(|error| anyhow!("{error}")),
+        Some(uid) => {
+            let sockets = PathBuf::from(format!("/run/user/{uid}/tilo"));
+            let dir = home_of(uid)?.join(IDENTITY_DIR_IN_HOME);
+            Ok(tilo_api::daemon::DaemonPlace::at(&sockets, &dir))
+        }
     }
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(xdg).join("tilo/identity"));
-    }
-    let home = std::env::var_os("HOME").context("this account has no home directory")?;
-    Ok(PathBuf::from(home).join(IDENTITY_DIR_IN_HOME))
 }
 
 /// The home directory of account `uid`.
@@ -639,6 +654,17 @@ pub fn existing_passphrase(
 /// # Errors
 /// When any step fails; the slot is removed again.
 pub fn run(args: &Args, machine: Machine<'_>) -> Result<()> {
+    run_with_peers(args, machine, None)
+}
+
+/// [`run`] with the person's devices named rather than read from this machine's daemon: what a
+/// machine holding the identity asks, with a daemon that lists them there. `None` reads them from
+/// the daemon, as every command does.
+pub fn run_with_peers(
+    args: &Args,
+    machine: Machine<'_>,
+    peers: Option<PeerRegistrar>,
+) -> Result<()> {
     let sealing = enrollment_sealing(machine.sealing(), args.require_tpm)?;
     machine.require(args.unattended)?;
     let enrolled = luks::sibling(machine.runner, &args.device)?.is_some();
@@ -661,7 +687,7 @@ pub fn run(args: &Args, machine: Machine<'_>) -> Result<()> {
     if args.replace_networks {
         return replace_networks(machine.runner, &args.device, networks);
     }
-    let registrar = registrars(args.session_uid, args.relay.as_deref())?;
+    let registrar = registrars(args.session_uid, args.relay.as_deref(), peers)?;
     let existing = existing_passphrase(&args.device, args.key_file.as_deref())?;
     enrol(
         machine,
@@ -677,14 +703,18 @@ pub fn run(args: &Args, machine: Machine<'_>) -> Result<()> {
 /// This machine's registrars in the order they are asked: its own session,
 /// then the person's devices over the peer network. A machine that holds no
 /// root reaches the same devices either way.
-fn registrars(session_uid: Option<u32>, relay: Option<&str>) -> Result<Choosing> {
+fn registrars(
+    session_uid: Option<u32>,
+    relay: Option<&str>,
+    peers: Option<PeerRegistrar>,
+) -> Result<Choosing> {
     let mut candidates: Vec<Box<dyn Registrar>> = Vec::new();
     match SessionRegistrar::find(session_uid) {
         Ok(session) => candidates.push(Box::new(session)),
         Err(error) if session_uid.is_some() => return Err(error),
         Err(_) => {}
     }
-    match PeerRegistrar::find(session_uid, relays(relay)?) {
+    match peers.map_or_else(|| PeerRegistrar::find(session_uid, relays(relay)?), Ok) {
         Ok(peer) => candidates.push(Box::new(peer)),
         Err(error) => {
             if candidates.is_empty() {

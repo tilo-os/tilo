@@ -1,6 +1,6 @@
 //! Provisioning of the collaboration identity chain: the personal identity
 //! record, the per-device key and its root-signed certificate, and their
-//! registration in the identity registry and device fleet.
+//! registration in the identity registry.
 
 use std::fs;
 use std::io::{self, Write};
@@ -522,8 +522,6 @@ pub fn restore_from_recovery_words(
     } else {
         ensure_collaboration_identity(identity_dir, paths, storage)?;
     }
-    crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
-        .register_current_device(&profile.id)?;
     Ok(profile)
 }
 
@@ -551,15 +549,12 @@ pub fn restore_from_backup(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid identity id"))?;
     crate::store::set_active_identity(identity_dir, runtime_id)?;
     ensure_collaboration_identity(identity_dir, paths, storage)?;
-    crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
-        .register_current_device(&profile.id)?;
     Ok(profile)
 }
 
 /// Complete this device's own side of an enrollment made without the root: the
-/// certificate filed for its person, a public record naming that person as
-/// the account's active identity under `identity_dir`, and a fleet that knows
-/// this device. A node's session is enrolled so when its node is installed,
+/// certificate filed for its person and a public record naming that person as
+/// the account's active identity under `identity_dir`. A node's session is enrolled so when its node is installed,
 /// by a server that writes it only the certificate and the person's public
 /// key. Answers whether `paths` holds such a device; idempotent, and never
 /// writes a root or replaces an active identity.
@@ -690,8 +685,6 @@ fn complete_enrolled(
             )?;
         }
     }
-    crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
-        .remember_certificate(&identity_id, cert)?;
     Ok(true)
 }
 
@@ -1025,11 +1018,7 @@ fn ensure_collaboration_identity_in_context(
     // Register the primary record in the multi-identity registry. A registry
     // write failure is a provisioning failure: silently creating a key that no
     // workspace can select strands the identity immediately.
-    let registry = crate::store::IdentityRegistryStore::at(identity_dir).load_reconciled()?;
-    if let Some(identity_id) = registry.default_identity {
-        crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
-            .register_current_device(&identity_id)?;
-    }
+    crate::store::IdentityRegistryStore::at(identity_dir).load_reconciled()?;
 
     Ok(outcome)
 }
@@ -1514,7 +1503,7 @@ fn protect_identity_record_at(
 
 /// What the machine under `root` calls itself, for a device nobody named yet: its pretty hostname,
 /// else a hostname that is not a distribution's default, else what kind of machine it is.
-fn machine_label(root: &Path) -> Option<String> {
+pub fn machine_label(root: &Path) -> Option<String> {
     let read = |path: &str| std::fs::read_to_string(root.join(path)).unwrap_or_default();
     let pretty = read("etc/machine-info").lines().find_map(|line| {
         let value = line.trim().strip_prefix("PRETTY_HOSTNAME=")?;
@@ -2021,10 +2010,11 @@ mod tests {
                 .load_reconciled()
                 .unwrap();
             assert_eq!(registry.default_identity, Some(hex::encode(user)));
-            let fleet = crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
-                .load(&hex::encode(user))
-                .unwrap();
-            assert!(fleet.certificates.contains(&cert));
+            assert_eq!(
+                persist::read_device_cert(&paths.device_cert).unwrap(),
+                cert,
+                "the certificate the person's root signed is this device's"
+            );
         }
     }
 

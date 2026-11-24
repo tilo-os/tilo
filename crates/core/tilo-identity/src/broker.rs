@@ -1676,10 +1676,10 @@ params = []
             );
         }
 
-        phase group_keys_trust_check_reads_identity_files_once_and_sees_revocation;
+        phase group_keys_trust_check_reads_the_devices_on_every_answer;
         // Answering an app's key request checks this device's trust from the
-        // identity files while they are unchanged without reading them again,
-        // and still refuses keys on the very next request after a revocation.
+        // person's devices as the host that holds them answers, and refuses keys
+        // on the very next request after a revocation.
         {
             let fixture = crate::join_proof::tests::Fixture::new();
             let workspace = WorkspaceId::parse(&fixture.workspace).expect("workspace");
@@ -1705,7 +1705,6 @@ params = []
                     0,
                 )
             };
-            let fleet_loads = crate::device_fleet::loads_on_this_thread();
             let derived = crate::join_proof::tests::mints(|| {
                 for _ in 0..3 {
                     assert!(matches!(ask(), Response::GroupKeys { .. }));
@@ -1715,25 +1714,19 @@ params = []
                 derived, 1,
                 "the identity files are read for the first answer only"
             );
-            assert!(
-                crate::device_fleet::loads_on_this_thread().saturating_sub(fleet_loads) <= 1,
-                "the fleet is read at most once"
-            );
 
             let device = crate::trusted_device::current(&fixture.workspace)
                 .expect("trusted device")
                 .0
                 .verifying_key()
                 .to_bytes();
-            fixture
-                .store()
-                .revoke(
-                    &fixture.identity_id,
-                    device,
-                    tilo_user_identity::RevocationReason::Lost,
-                    crate::join_proof::tests::proof_issued_at(&fixture).saturating_add(1),
-                )
-                .expect("revoke");
+            crate::sources::test_trust::revoke(
+                crate::store::identity_for_workspace(&fixture.workspace)
+                    .expect("registry")
+                    .expect("profile")
+                    .user_public_key,
+                device,
+            );
             assert!(
                 matches!(ask(), Response::Denied(_)),
                 "a revoked device gets no keys on the next request"

@@ -394,6 +394,12 @@ pub async fn keep(workspaces: &super::Workspaces, cert: &DeviceCert) -> Result<(
     super::apply(workspaces, DEVICES, Devices::keeping(cert)?).await
 }
 
+/// The record of `person`'s devices as `workspaces` holds it: empty where this device holds no
+/// copy of their own workspace.
+pub async fn of(workspaces: &super::Workspaces, person: &[u8; 32]) -> Devices {
+    workspaces.devices_of(person).await
+}
+
 /// Mark this device, `cert`'s, in the record of the person's own workspace `workspaces` holds, as
 /// one that keeps their root `root`, signed by that root: kept there first where it is not yet.
 ///

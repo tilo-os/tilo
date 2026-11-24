@@ -254,7 +254,7 @@ ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 tilo-app-cli = { path = "../../../tools/tilo-app-cli" }
 # The apps the device serves, tested against.
 tilo-workspace-keys = { path = "../workspace-keys", features = ["test-support"] }
-tilo-identity = { path = "../tilo-identity" }
+tilo-identity = { path = "../tilo-identity", features = ["test-support"] }
 registry-server = { path = "../registry-server" }
 # A package from another release: the registry's signed runtime package, the
 # runtime bundle it carries, and the entry and snapshot that offer it.

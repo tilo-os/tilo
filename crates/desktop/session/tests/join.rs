@@ -20,7 +20,6 @@ use automerge::transaction::Transactable as _;
 use runtime_collab::CollabClient;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_device_identity::IdentityPaths;
-use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
 use tilo_session::{AppLists, AppSocket, Launches, Lists, Options, Session};
@@ -82,18 +81,9 @@ fn person() -> Person {
         .expect("this device's certificate");
     // The other of the person's devices: this device holds their root, so it certifies the key
     // that device keeps.
-    let store = DeviceFleetStore::from_env().expect("the device fleet");
     let now = tilo_clock::unix_now_ns();
     let other_device = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
-    let other_cert = store
-        .certify_device(
-            &profile.id,
-            other_device.verifying_key().to_bytes(),
-            "The phone",
-            tilo_user_identity::DeviceCapabilities::member(),
-            now,
-        )
-        .expect("the second device is enrolled");
+    let other_cert = other_device_cert(&profile, "The phone", other_device.verifying_key().to_bytes(), now);
     let keys = Keys {
         root: cert.user_public_key,
         device,
@@ -633,4 +623,30 @@ fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_jso
         let _ = done.send(settings_read(&app_wire, &keys, &called));
     });
     until_the_apps_are_done(&mut session, &received)
+}
+
+/// The certificate the person's root gives another of their devices.
+fn other_device_cert(
+    profile: &tilo_identity::store::IdentityProfile,
+    label: &str,
+    key: [u8; 32],
+    now: u64,
+) -> tilo_user_identity::DeviceCert {
+    let record = tilo_identity::store::resolve_active_identity(
+        &tilo_identity::store::identity_dir_from_env().expect("this account's identity"),
+    )
+    .expect("the person's record");
+    let root = tilo_identity::store::load_from_path(record).expect("the person's root");
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: profile.user_public_key,
+        device_public_key: key,
+        device_label: label.to_owned(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: now,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).expect("the person's root signs");
+    cert
 }
