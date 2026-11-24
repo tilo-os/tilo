@@ -1178,6 +1178,11 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   an invocation carries that invocation and its id, signed by the device running
   the app; it runs as the original caller, bounded by both the caller's access and
   the app's grants, and only while that invocation is live.
+  An action declares its effects in the one registry: the app, kind and verb each
+  step writes. A recorded step on another resource or verb than the call named is
+  accepted only when the called action declares it, read from the registry and
+  never from the call, and only from the device that keeps that record; history
+  still names the caller, and every projection shows the declared effects.
   Reads work the same way: a record, page, search or view opened for a person
   reads with that person's grants, never with those of the person whose
   device serves it.
