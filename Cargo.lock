@@ -16452,15 +16452,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-app-process-engine"
-version = "0.1.0"
-dependencies = [
- "app-catalogue",
- "runtime-dylib",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-app-state"
 version = "0.1.0"
 dependencies = [
@@ -16547,15 +16538,6 @@ dependencies = [
  "tempfile",
  "workspace-hack",
  "zip",
-]
-
-[[package]]
-name = "tilo-archive-engine"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "tilo-archive",
- "workspace-hack",
 ]
 
 [[package]]
@@ -16835,19 +16817,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-browser-import-engine"
-version = "0.1.0"
-dependencies = [
- "browser-continuity",
- "runtime-dylib",
- "rusqlite",
- "tempfile",
- "tilo-accounts-engine",
- "tilo-browser-sessions",
  "workspace-hack",
 ]
 
@@ -19407,16 +19376,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-paint-engine"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "tilo-subject",
- "tilo-wet-media",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-paint-stream"
 version = "0.1.0"
 dependencies = [
@@ -19492,15 +19451,6 @@ dependencies = [
  "unicode-bidi",
  "unicode-normalization",
  "wire-frame",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-pdf-engine"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "tilo-pdf",
  "workspace-hack",
 ]
 
@@ -21091,17 +21041,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-spotify-engine"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "tilo-accounts-engine",
- "tilo-spotify",
- "tilo-youtube-engine",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-staging-reclaim"
 version = "0.1.0"
 dependencies = [
@@ -21347,16 +21286,6 @@ dependencies = [
  "tilo-paths",
  "workspace-hack",
  "zip",
-]
-
-[[package]]
-name = "tilo-timezone-engine"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "jiff-tzdb",
- "runtime-dylib",
- "workspace-hack",
 ]
 
 [[package]]
@@ -22316,16 +22245,6 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "x11rb",
-]
-
-[[package]]
-name = "tilo-youtube-engine"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "rustypipe",
- "tilo-innertube",
- "workspace-hack",
 ]
 
 [[package]]

@@ -2,8 +2,7 @@
 //!
 //! rustypipe's queries are generic and async, so an app that awaits one instantiates
 //! the query's whole request and response path in its own binary: about 800 KB of
-//! code in each of Music and Tube, though rustypipe itself is in
-//! `libtilo_youtube_engine.so`. Each function here fixes one query's types and
+//! code in each of Music and Tube. Each function here fixes one query's types and
 //! returns a boxed future, so that code is compiled in this crate instead.
 //!
 //! They are `#[inline(never)]`: inlined into the app, a call would instantiate the

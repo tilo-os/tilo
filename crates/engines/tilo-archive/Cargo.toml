@@ -10,11 +10,9 @@ description = "Reading, extracting and creating archives (zip, tar with gzip, xz
 name = "tilo_archive"
 path = "src/lib.rs"
 
-# Every codec is pure Rust: Files loads this crate from its engine library
-# (crates/engines/loadable/archive), a Rust dylib that exports only Rust
-# symbols, so a statically compiled C library here could not be called from
-# the app. ruzstd rather than zstd, libbz2-rs-sys rather than libbz2, and
-# lzma-rust2 rather than liblzma for that reason.
+# Every codec is pure Rust, so the crate builds wherever Rust does, a thin
+# app's Rust dylib included: ruzstd rather than zstd, libbz2-rs-sys rather
+# than libbz2, and lzma-rust2 rather than liblzma.
 [dependencies]
 tar.workspace = true
 # Zip keeps local times; reading them needs the device's zone.

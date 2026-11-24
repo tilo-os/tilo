@@ -132,39 +132,8 @@ typst() (
   rm -rf "$runtime"
 )
 
-# Music runs Spotify playback from its engine library.
-spotify() (
-  set -euo pipefail
-  set -euo pipefail
-  if [[ ! -x $target/thin-app/music ]]; then
-    echo "music is not among this run's apps; no Spotify engine to run" | tee -a "$GITHUB_STEP_SUMMARY"
-    exit 0
-  fi
-  grep -Fxq libtilo_spotify_engine.so $target/thin-app/runtime-engines \
-    || { echo "build-thin-apps.sh did not list libtilo_spotify_engine.so" >&2; exit 1; }
-  libdir=$(rustc --print target-libdir)
-  runtime=$(mktemp -d)
-  chmod 700 "$runtime"
-  status=0
-  XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="$target/thin-app:$libdir" LD_DEBUG=files \
-    timeout 120 $target/thin-app/music --probe-spotify-engine check \
-    >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
-  if (( status != 0 )); then
-    grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
-    echo "music could not run its Spotify engine (exit $status)" >&2
-    exit 1
-  fi
-  arrival=$(grep -Eo 'file=libtilo_spotify_engine\.so \[0\];  needed by [^ ]*' \
-    "$runtime/loader.log" | head -1 || true)
-  [[ $arrival == *music* ]] \
-    || { echo "music ran Spotify playback without loading libtilo_spotify_engine.so itself: ${arrival:-not loaded}" >&2; exit 1; }
-  printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
-  rm -rf "$runtime"
-)
-
 # Apps run their engine libraries. Settings has no probe (its binary is one
-# call into its engine library), Calendar none for the accounts engine (its probe runs the time-zone
-# one), and the PDF engine's apps, Imager, Browser, Store, Chat and the
+# call into its engine library), Calendar none for the accounts engine, and Chat and the
 # on-screen keyboard none (build-thin-apps.sh runs those engines' own
 # checks): for those only the trace of the start counts (an app need not
 # accept --help). An engine another engine chains on (`via:` the engine the
@@ -178,20 +147,10 @@ engines() (
   set -euo pipefail
   libdir=$(rustc --print target-libdir)
   failed=0
-  for probe in "canvas libtilo_paint_engine.so --probe-paint-engine" \
-               "music libtilo_youtube_engine.so --probe-youtube-engine" \
-               "settings libtilo_accounts_engine.so via:libtilo_settings_engine.so" \
+  for probe in "settings libtilo_accounts_engine.so via:libtilo_settings_engine.so" \
                "settings libtilo_settings_engine.so" \
-               "calendar libtilo_timezone_engine.so --probe-timezone-engine" \
                "calendar libtilo_accounts_engine.so" \
-               "clocks libtilo_timezone_engine.so --probe-timezone-engine" \
                "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
-               "file-explorer libtilo_pdf_engine.so" \
-               "file-explorer libtilo_archive_engine.so" \
-               "print-centre libtilo_pdf_engine.so" \
-               "browser libtilo_browser_import_engine.so" \
-               "browser libtilo_accounts_engine.so via:libtilo_browser_import_engine.so" \
-               "store libtilo_app_process_engine.so" \
                "chat libtilo_emoji_engine.so" \
                "osk libtilo_emoji_engine.so" \
                "notes libtilo_emoji_engine.so"; do
@@ -250,9 +209,9 @@ engines() (
 failed=()
 # RELEASE_SMOKE_STEPS narrows the run to some of the steps (the size check on main takes the two
 # size budgets); a release runs them all.
-for step in ${RELEASE_SMOKE_STEPS:-tapp_size runtime_size loader_cost first_frame typst spotify engines}; do
+for step in ${RELEASE_SMOKE_STEPS:-tapp_size runtime_size loader_cost first_frame typst engines}; do
   case $step in
-    tapp_size|runtime_size|loader_cost|first_frame|typst|spotify|engines) ;;
+    tapp_size|runtime_size|loader_cost|first_frame|typst|engines) ;;
     *) printf 'unknown release smoke step: %s\n' "$step" >&2; exit 2 ;;
   esac
   printf '==> %s\n' "$step"

@@ -95,7 +95,6 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # (crates/engines/loadable/), by library: they load it at exec. the app release
 # fails when one of those apps loads any other engine.
 [engine_users]
-"libtilo_timezone_engine.so" = ["clocks"]
 
 [runtime.x86_64]
 bytes = 149618688
@@ -137,37 +136,21 @@ bytes = 2490368
 [engines.x86_64]
 "libtilo_accounts_engine.so" = 2752512
 "libtilo_adblock_engine.so" = 262144
-"libtilo_app_process_engine.so" = 720896
-"libtilo_archive_engine.so" = 1048576
-"libtilo_browser_import_engine.so" = 2818048
 "libtilo_contact_directory_engine.so" = 393216
 "libtilo_emoji_engine.so" = 65536
 "libtilo_highlight_engine.so" = 2818048
-"libtilo_paint_engine.so" = 917504
-"libtilo_pdf_engine.so" = 10551296
 "libtilo_settings_engine.so" = 14090240
-"libtilo_spotify_engine.so" = 9961472
 "libtilo_theme_painter_engine.so" = 131072
-"libtilo_timezone_engine.so" = 327680
 "libtilo_typst_engine.so" = 41156608
 "libtilo_wasm_engine.so" = 2621440
-"libtilo_youtube_engine.so" = 5898240
 
 [engines.aarch64]
 "libtilo_accounts_engine.so" = 2490368
 "libtilo_adblock_engine.so" = 262144
-"libtilo_app_process_engine.so" = 1179648
-"libtilo_archive_engine.so" = 983040
-"libtilo_browser_import_engine.so" = 2686976
 "libtilo_contact_directory_engine.so" = 393216
 "libtilo_emoji_engine.so" = 65536
 "libtilo_highlight_engine.so" = 2752512
-"libtilo_paint_engine.so" = 786432
-"libtilo_pdf_engine.so" = 9568256
 "libtilo_settings_engine.so" = 9240576
-"libtilo_spotify_engine.so" = 11337728
 "libtilo_theme_painter_engine.so" = 131072
-"libtilo_timezone_engine.so" = 1376256
 "libtilo_typst_engine.so" = 41418752
 "libtilo_wasm_engine.so" = 2621440
-"libtilo_youtube_engine.so" = 5308416

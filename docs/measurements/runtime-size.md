@@ -62,25 +62,10 @@ out.
 An engine a few apps use moves out of the runtime into an engine library
 of its own: a crate under `crates/engines/loadable/<name>/` that is a Rust
 `dylib` chained on the runtime (Typst: `libtilo_typst_engine.so` for Typst
-Editor; Spotify playback: `libtilo_spotify_engine.so` for Music; the wet-media
-simulation and subject mattes: `libtilo_paint_engine.so` for Canvas; the
-YouTube client, rustypipe with its QuickJS: `libtilo_youtube_engine.so` for
-Music and Tube; account credentials with its OAuth client and cloud-storage
+Editor; account credentials with its OAuth client and cloud-storage
 providers, the IMAP client, and the WebDAV/CalDAV client whose calendar sign-in
-reaches ownership: `libtilo_accounts_engine.so` for Settings, Calendar
-and the Spotify engine; the time-zone database, jiff-tzdb:
-`libtilo_timezone_engine.so` for Calendar and Clocks; the contact directory:
-`libtilo_contact_directory_engine.so` for Contacts and Messages; Tilo's
-PDF engine, tilo-pdf with the hayro rasteriser, the pdfium helper's client and
-PDF export: `libtilo_pdf_engine.so` for PDF Viewer, Files and Print Centre, which hand its first-page rasteriser to the thumbnailer every app
-shares; the import
-from another browser's profile, browser-continuity's capture with the SQLite
-it reads Chromium's and Firefox's databases with:
-`libtilo_browser_import_engine.so` for Browser, with the
-website-session codec check; the app process's client, with
-its control wire, and the catalogue Store browses:
-`libtilo_app_process_engine.so` for Store; the archive codecs, tilo-archive with the 7z, xz and bzip2 decoders:
-`libtilo_archive_engine.so` for Files; Settings itself, its library with
+reaches ownership: `libtilo_accounts_engine.so` for Settings; the contact directory:
+`libtilo_contact_directory_engine.so` for Messages; Settings itself, its library with
 every pane, and the libraries only Settings uses, the settings sections, the
 model-provider administration panel, the NTFS mount protocol, the wallpaper
 catalogue, the accessibility settings, the PC keyboard outlines and the
@@ -134,9 +119,7 @@ relies on:
 - one app may not load two engine libraries that both carry a crate (rustc
   refuses a crate that shows up twice in a link); an engine whose crates
   overlap another's that its app always loads with it chains on that one
-  instead (`tilo-spotify-engine` takes rand 0.9 and sha1 0.10, which librespot
-  shares with rustypipe, from the YouTube engine Music loads beside it, and
-  account credentials, which Spotify's sign-in uses, from the accounts engine);
+  instead;
 - the engine's crates go into the surface check's `ENGINES`. The
   workspace-hack listing one does not put it into the runtime: the hack's
   library names none of its dependencies, and rustc links only the crates a
@@ -152,13 +135,8 @@ beside the runtime's, holds each engine's file to its budget (`[engines.<arch>]`
 in the budget, by library name, with the runtime's headroom, rounding and
 raise files: a raise adds `"lib<name>.so" = <bytes>` under
 `[engines.<arch>]`, and an engine without a budget fails), fails when an app of `apps_without_media` loads one it
-does not use (`[engine_users]` in the budget names the ones those apps use:
-Clocks the time-zone database), renders Typst Editor through its engine, runs
-Music's Spotify engine (`music --probe-spotify-engine`, librespot's code
-without an account, network or audio device), and runs the other engines
-from each app that loads them (`canvas --probe-paint-engine`, `music` and
-`tube --probe-youtube-engine`, `mail --probe-accounts-engine`, `calendar` and
-`clocks --probe-timezone-engine`, `contacts`, `mail` and
+does not use (`[engine_users]` in the budget names the ones those apps use), renders Typst Editor through its engine, and runs the other engines
+from each app that loads them (`mail --probe-accounts-engine`, `contacts`, `mail` and
 `messages --probe-contact-directory-engine`), checking each app loads its
 engine itself. Settings has no probe: the trace of its start shows it loads
 its engine library, which runs the app and brings the accounts engine.

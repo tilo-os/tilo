@@ -79,27 +79,23 @@ DENIED = {
     "tilo-web-search": "the keyless web search and page reader the agent engine runs in the "
                        "runtime daemon",
 }
-# Crates of an engine that is a library of its own beside the runtime
-# (crates/engines/loadable/): only its app maps them.
+# Crates only the programs that use them map: an engine's library of its own
+# beside the runtime (crates/engines/loadable/), or code a program links itself.
 ENGINES = {
     "tilo-typst-engine": "Typst's engine library (libtilo_typst_engine.so)",
     "typst": "Typst, which Typst Editor loads from libtilo_typst_engine.so",
     "typst-library": "Typst's standard library, in libtilo_typst_engine.so",
     "typst-assets": "Typst's 9.6 MB font table, in libtilo_typst_engine.so",
-    "tilo-spotify-engine": "Spotify playback's engine library (libtilo_spotify_engine.so)",
-    "tilo-spotify": "Spotify playback, which Music loads from libtilo_spotify_engine.so",
-    "librespot": "the Spotify client, in libtilo_spotify_engine.so",
-    "tilo-paint-engine": "Canvas's painting engines' library (libtilo_paint_engine.so)",
-    "tilo-wet-media": "the wet-media simulation, which Canvas loads from libtilo_paint_engine.so",
-    "tilo-subject": "Canvas's subject mattes, in libtilo_paint_engine.so",
-    "tilo-segment": "matte refinement under tilo-subject, in libtilo_paint_engine.so",
-    "tilo-youtube-engine": "the YouTube client's engine library (libtilo_youtube_engine.so)",
-    "rustypipe": "the YouTube client, which Music and Tube load from libtilo_youtube_engine.so",
-    "tilo-innertube": "the queries Music and Tube make of the YouTube client, in "
-                      "libtilo_youtube_engine.so",
-    "rquickjs": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
-    "rquickjs-core": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
-    "rquickjs-sys": "QuickJS, rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
+    "tilo-spotify": "Spotify playback, which only a program playing it links",
+    "librespot": "the Spotify client under tilo-spotify",
+    "tilo-wet-media": "the wet-media simulation, which only a painting program links",
+    "tilo-subject": "subject mattes, which only a program cutting them out links",
+    "tilo-segment": "matte refinement under tilo-subject",
+    "rustypipe": "the YouTube client, which only a program watching YouTube links",
+    "tilo-innertube": "the queries made of the YouTube client, under rustypipe",
+    "rquickjs": "rustypipe's JavaScript engine",
+    "rquickjs-core": "rustypipe's JavaScript engine",
+    "rquickjs-sys": "QuickJS, rustypipe's JavaScript engine",
     "tilo-accounts-engine": "the online-account engine library (libtilo_accounts_engine.so)",
     "account-credentials": "online-account credentials, which Mail, Settings and Calendar load from "
                        "libtilo_accounts_engine.so",
@@ -112,20 +108,16 @@ ENGINES = {
     "imap-proto": "the IMAP parser under async-imap, in libtilo_accounts_engine.so",
     "tilo-dav": "the WebDAV/CalDAV client, whose calendar sign-in reaches account credentials, which "
                 "Calendar and Settings load from libtilo_accounts_engine.so",
-    "tilo-timezone-engine": "the time-zone database's engine library (libtilo_timezone_engine.so)",
-    "jiff-tzdb": "the time-zone database, which Calendar and Clocks load from "
-                 "libtilo_timezone_engine.so",
+    "jiff-tzdb": "the time-zone database, which only a program that reads a named zone carries",
     "tilo-contact-directory-engine": "the contact directory's engine library "
                                      "(libtilo_contact_directory_engine.so)",
     "tilo-contact-directory": "the contact directory, which Contacts, Mail and Messages load from "
                               "libtilo_contact_directory_engine.so",
-    "tilo-pdf-engine": "the PDF engine's library (libtilo_pdf_engine.so)",
-    "tilo-pdf": "the PDF engine, which PDF Viewer, Files and Print Centre load from "
-                "libtilo_pdf_engine.so",
-    "hayro": "the in-process PDF rasteriser, in libtilo_pdf_engine.so",
-    "hayro-interpret": "the in-process PDF rasteriser, in libtilo_pdf_engine.so",
-    "hayro-jpeg2000": "the PDF rasteriser's JPEG 2000 decoder, in libtilo_pdf_engine.so",
-    "pdfium-render": "the pdfium helper's bindings, in libtilo_pdf_engine.so",
+    "tilo-pdf": "the PDF engine, which only a program reading PDFs links",
+    "hayro": "the in-process PDF rasteriser under tilo-pdf",
+    "hayro-interpret": "the in-process PDF rasteriser under tilo-pdf",
+    "hayro-jpeg2000": "the PDF rasteriser's JPEG 2000 decoder under tilo-pdf",
+    "pdfium-render": "the pdfium helper's bindings under tilo-pdf",
     "tilo-highlight-engine": "the syntax grammars' engine library (libtilo_highlight_engine.so)",
     "tilo-highlight-grammars": "the syntax grammars, which the toolkit opens from "
                                "libtilo_highlight_engine.so the first time code is highlighted",
@@ -144,13 +136,9 @@ ENGINES = {
     "tilo-content-blocker": "the ad-block compiler, which the toolkit opens from "
                             "libtilo_adblock_engine.so the first time an app compiles lists",
     "adblock": "adblock-rust, in libtilo_adblock_engine.so",
-    "tilo-browser-import-engine": "the browser import's engine library "
-                                  "(libtilo_browser_import_engine.so)",
-    "browser-continuity": "the import from another browser's profile, which Browser loads from "
-                          "libtilo_browser_import_engine.so (the runtime keeps "
-                          "browser-continuity-core)",
-    "tilo-app-process-engine": "the Store's catalogue engine library (libtilo_app_process_engine.so)",
-    "app-catalogue": "the Store's catalogue, which Store loads from libtilo_app_process_engine.so",
+    "browser-continuity": "the import from another browser's profile, which only the importing "
+                          "program links (the runtime keeps browser-continuity-core)",
+    "app-catalogue": "the Store's catalogue, which only the Store links",
     "tilo-settings-engine": "Settings' engine library (libtilo_settings_engine.so)",
     "settings": "Settings' own library, which the app runs from libtilo_settings_engine.so",
     "tilo-ntfs-mount": "the NTFS mount protocol, which Settings loads from libtilo_settings_engine.so",
@@ -169,13 +157,11 @@ ENGINES = {
     # Notes and the on-screen keyboard still name is emptied out as they
     # migrate.
     "tilo-emoji-engine": "the emoji catalogue's engine library (libtilo_emoji_engine.so)",
-    "tilo-archive-engine": "the archive codecs' engine library (libtilo_archive_engine.so)",
-    "tilo-archive": "the archive reader and writer, which Files loads from "
-                    "libtilo_archive_engine.so",
-    "sevenz-rust2": "the 7z reader, in libtilo_archive_engine.so",
-    "lzma-rust2": "the xz and LZMA decoder, in libtilo_archive_engine.so",
-    "bzip2": "the bzip2 codec, in libtilo_archive_engine.so",
-    "libbz2-rs-sys": "the bzip2 codec's pure-Rust core, in libtilo_archive_engine.so",
+    "tilo-archive": "the archive reader and writer, which only a program opening archives links",
+    "sevenz-rust2": "the 7z reader under tilo-archive",
+    "lzma-rust2": "the xz and LZMA decoder under tilo-archive",
+    "bzip2": "the bzip2 codec under tilo-archive",
+    "libbz2-rs-sys": "the bzip2 codec's pure-Rust core under tilo-archive",
 }
 
 # C-library crates (a `-sys` name or Cargo's `links` key) the runtime may
@@ -390,8 +376,8 @@ def violations(tree: str, apps: list[str], target: str,
         )
     for name in sorted(runtime & ENGINES.keys()):
         found.append(
-            f"{RUNTIME} reaches {name}, {ENGINES[name]}, for {target}: an engine with a library "
-            "of its own stays out of the runtime every app maps; keep it out of the runtime's "
+            f"{RUNTIME} reaches {name}, {ENGINES[name]}, for {target}: code only the programs that "
+            "use it map stays out of the runtime every app maps; keep it out of the runtime's "
             "dependencies and of the features apps enable on them (docs/measurements/runtime-size.md)"
         )
     for name in sorted(runtime & APP_LINKED.keys()):

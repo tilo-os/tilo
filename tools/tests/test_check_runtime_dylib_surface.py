@@ -84,8 +84,8 @@ class RuntimeSurfaceTests(unittest.TestCase):
         self.assertEqual(checker.violations(tree, ["notes", "imager"], TARGET), [])
 
     def test_the_youtube_client_back_in_the_runtime_fails(self) -> None:
-        # Music and Tube load rustypipe from libtilo_youtube_engine.so; the
-        # runtime depending on it again maps it into every app process.
+        # Only a program watching YouTube links rustypipe; the runtime
+        # depending on it again maps it into every app process.
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2rustypipe v0.11.4\n",
@@ -96,12 +96,12 @@ class RuntimeSurfaceTests(unittest.TestCase):
         found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 1, found)
         self.assertIn("reaches rustypipe", found[0])
-        self.assertIn("libtilo_youtube_engine.so", found[0])
+        self.assertIn("only a program watching YouTube links", found[0])
 
     def test_the_browser_import_back_in_the_runtime_fails(self) -> None:
-        # Browser loads browser-continuity's capture, with the SQLite it reads
-        # profiles with, from libtilo_browser_import_engine.so; the runtime
-        # depending on it again maps it into every app process.
+        # Only the importing program links browser-continuity's capture, with
+        # the SQLite it reads profiles with; the runtime depending on it again
+        # maps it into every app process.
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2browser-continuity v0.1.0 (/repo/crates/import/browser-continuity)\n",
@@ -113,12 +113,11 @@ class RuntimeSurfaceTests(unittest.TestCase):
         found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 1, found)
         self.assertIn("reaches browser-continuity", found[0])
-        self.assertIn("libtilo_browser_import_engine.so", found[0])
+        self.assertIn("only the importing program links", found[0])
 
     def test_the_store_catalogue_back_in_the_runtime_fails(self) -> None:
-        # Store loads the app host's client and the catalogue from
-        # libtilo_app_process_engine.so; the runtime depending on the catalogue
-        # again maps it into every app process.
+        # Only the Store links the catalogue; the runtime depending on it again
+        # maps it into every app process.
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2app-catalogue v0.1.0 (/repo/crates/core/app-catalogue)\n",
@@ -130,13 +129,13 @@ class RuntimeSurfaceTests(unittest.TestCase):
         found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 1, found)
         self.assertIn("reaches app-catalogue", found[0])
-        self.assertIn("libtilo_app_process_engine.so", found[0])
+        self.assertIn("only the Store links", found[0])
 
     def test_account_credentials_or_the_zone_database_back_in_the_runtime_fails(self) -> None:
         # Mail and Settings load account credentials from
-        # libtilo_accounts_engine.so, Calendar and Clocks the zone database
-        # from libtilo_timezone_engine.so; the runtime depending on either
-        # again maps it into every app process, even though apps reach it.
+        # libtilo_accounts_engine.so, and only a program reading a named zone
+        # carries the zone database; the runtime depending on either maps it
+        # into every app process, even though apps reach it.
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2account-credentials v0.1.0 (/repo/crates/integrations/account-credentials)\n"
@@ -152,7 +151,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
         self.assertIn("reaches account-credentials", found[0])
         self.assertIn("libtilo_accounts_engine.so", found[0])
         self.assertIn("reaches jiff-tzdb", found[1])
-        self.assertIn("libtilo_timezone_engine.so", found[1])
+        self.assertIn("reads a named zone", found[1])
 
     def _with_runtime_crates(self, *crates: str) -> str:
         """CLEAN with `crates` under the toolkit and reached by Notes too."""

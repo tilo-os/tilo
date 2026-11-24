@@ -94,8 +94,8 @@ vte = "0.15.0"
 # its calendar sign-in reaches account credentials, so Calendar and Settings load
 # it from the accounts engine.
 tilo-doc-codecs = { path = "../../engines/tilo-doc-codecs", default-features = false }
-# Without PDF pages: those come from the PDF engine (crates/engines/loadable/pdf),
-# which the apps that read PDFs hand to the thumbnailer.
+# Without PDF pages: a program that reads PDFs links the PDF engine itself and
+# hands it to the thumbnailer.
 tilo-thumbnail = { path = "../../engines/thumbnail" }
 roxmltree.workspace = true
 xattr = "1.6.1"

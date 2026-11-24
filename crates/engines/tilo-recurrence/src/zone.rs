@@ -25,10 +25,6 @@ pub enum Resolution {
 
 /// The zone named `name` (`Europe/Vienna`, any letter case) from the database built into Tilo,
 /// so every device reads a named zone the same way whatever its host has installed.
-///
-/// A thin release build of an app that links the database's engine library
-/// (`libtilo_timezone_engine.so`) reads it from there: `jiff-tzdb` is linked from that library,
-/// so no app carries a copy.
 #[must_use]
 pub fn named(name: &str) -> Option<TimeZone> {
     let (name, data) = jiff_tzdb::get(name)?;
