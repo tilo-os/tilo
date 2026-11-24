@@ -751,7 +751,7 @@ pub fn versions_in<'c>(
                 suggested_by: note.suggested_by.clone(),
                 count: note.count.max(1),
                 gesture: None,
-                invocation: note.invocation.clone(),
+                invocation: note.invocation,
             }
         })
         .collect();
