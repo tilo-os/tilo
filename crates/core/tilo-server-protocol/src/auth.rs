@@ -221,6 +221,10 @@ pub enum HelloRefusal {
     /// device whose kept certificate lapsed, or one a device of its person
     /// signed with a certificate this server cannot take.
     CertificateRejected,
+    /// The device's certificate is valid, and the server admits nobody of its
+    /// person: no workspace it serves has them as a member any more. A device
+    /// that kept a copy of one of them lets it go.
+    NotAdmitted,
 }
 
 impl HelloRefusal {
@@ -231,6 +235,7 @@ impl HelloRefusal {
         match self {
             Self::DeviceRevoked => "device-revoked",
             Self::CertificateRejected => "certificate-rejected",
+            Self::NotAdmitted => "not-admitted",
         }
     }
 
@@ -247,6 +252,13 @@ impl HelloRefusal {
     /// person has are never said; when and why only to a device its person
     /// retired ([`HelloRefused::revocation`]).
     ///
+    /// A person an endpoint of the workspaces' members ([`HandshakeTrust::Live`])
+    /// does not admit hears only that: whoever is turned
+    /// away works it out from the closed link anyway, and a copy they kept of
+    /// a workspace that removed them learns to let it go. Their removed
+    /// devices hear the same, so the answer tells no removed device from the
+    /// others.
+    ///
     /// A certificate the server cannot verify is the device's own: it may
     /// certify again, and it learns nothing about the people this server
     /// serves.
@@ -261,6 +273,11 @@ impl HelloRefusal {
             AuthError::Revoked if trust.admits(cert, own_user_public_key) => {
                 Some(Self::DeviceRevoked)
             }
+            AuthError::Revoked | AuthError::PolicyReject
+                if matches!(trust, HandshakeTrust::Live(_)) =>
+            {
+                Some(Self::NotAdmitted)
+            }
             AuthError::Cert(_) => Some(Self::CertificateRejected),
             _ => None,
         }
@@ -272,6 +289,7 @@ impl std::fmt::Display for HelloRefusal {
         match self {
             Self::DeviceRevoked => f.write_str("its person removed this device"),
             Self::CertificateRejected => f.write_str("the certificate it showed was refused"),
+            Self::NotAdmitted => f.write_str("no workspace it serves has this person"),
         }
     }
 }
@@ -1630,6 +1648,15 @@ mod tests {
             let (error, said) = refused(HandshakeTrust::OwnerDevicesOnly, &stranger, &strangers);
             assert!(matches!(error, AuthError::Revoked));
             assert_eq!(said, None);
+            // An endpoint of the workspaces' members tells a person it admits no more only that,
+            // their removed device and the others alike: a copy they kept learns to let it go.
+            let nobody = TrustPolicy::AllowList { users: Vec::new() };
+            let (error, said) = refused(HandshakeTrust::Live(&nobody), &member, &revocations);
+            assert!(matches!(error, AuthError::PolicyReject));
+            assert_eq!(said, Some(HelloRefusal::NotAdmitted));
+            let (error, said) = refused(HandshakeTrust::Live(&nobody), &stranger, &strangers);
+            assert!(matches!(error, AuthError::Revoked));
+            assert_eq!(said, Some(HelloRefusal::NotAdmitted));
             // Where that person is admitted, the removal alone refuses the device, and it is told.
             let admitting = TrustPolicy::AllowList {
                 users: vec![hex::encode(stranger.cert.user_public_key)],
@@ -1810,7 +1837,7 @@ mod tests {
             let later = postcard::to_stdvec(&Later {
                 protocol: PEER_PROTOCOL_VERSION,
                 cert: &server.cert,
-                refusal: 2,
+                refusal: 3,
                 sig_over_refusal: refused.sig_over_refusal,
                 revocation: None,
             })

@@ -326,7 +326,7 @@ async fn proved_link(
     addr: &iroh_base::EndpointAddr,
     device: &MemberDevice,
     host: &DeviceCert,
-) -> Result<Arc<dyn tilo_peer_state::transport::Transport>, String> {
+) -> Result<Arc<dyn tilo_peer_state::transport::Transport>, Refusal> {
     use tilo_server_client::link::{Dialer, Purpose};
     let dialer = Dialer::from_endpoint(
         tilo_server_client::host::ServerAddress::at(addr.clone()),
@@ -335,10 +335,19 @@ async fn proved_link(
     let link = dialer
         .link(Purpose::Records)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| Refusal::Other(error.to_string()))?;
     link.prove_member(&device.cert, device.signer.as_ref(), host)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| match error {
+            // The host says, under its own signature, that it admits nobody of this person: no
+            // workspace it serves has them, this one among them.
+            tilo_server_client::LinkError::Refused(code)
+                if code == tilo_server_protocol::auth::HelloRefusal::NotAdmitted.code() =>
+            {
+                Refusal::NotAMember(code)
+            }
+            error => Refusal::Other(error.to_string()),
+        })?;
     Ok(Arc::new(link))
 }
 
@@ -1966,7 +1975,7 @@ impl Workspaces {
             loop {
                 let dialed = match proved_link(&endpoint, &member.addr, &device, &host).await {
                     Ok(carrier) => link.dial_over(carrier, serving).await,
-                    Err(error) => Err(Refusal::Other(error)),
+                    Err(refusal) => Err(refusal),
                 };
                 match dialed {
                     Ok(dialed) => {
@@ -1988,11 +1997,17 @@ impl Workspaces {
                             workspaces.take_refusal(refusal).await;
                         }
                     }
-                    Err(refusal @ Refusal::NotAMember(_)) => {
-                        // The device serving the workspace answers that this device is no member
-                        // of it: the copy is let go rather than kept and dialled again, so what
-                        // the Files mounts enforce for it goes with it. Off this task, which
-                        // letting the copy go ends along with its other syncs.
+                    Err(Refusal::NotAMember(said))
+                        if said == tilo_peer_state::direct::REMOVED
+                            || said == tilo_server_protocol::auth::HelloRefusal::NotAdmitted.code() =>
+                    {
+                        // The device serving the workspace answers that it removed this device's
+                        // person, or that none of its workspaces has them any more: the copy is
+                        // let go rather than kept and dialled again, so what the Files mounts
+                        // enforce for it goes with it. A device it does not know yet, or whose
+                        // certificate lapsed, is not told this, and dials again. Off this task,
+                        // which letting the copy go ends along with its other syncs.
+                        let refusal = Refusal::NotAMember(said);
                         tracing::info!(%name, ?refusal, "this device is no longer a member of the workspace");
                         let Some(released) = workspaces.upgrade() else {
                             return;

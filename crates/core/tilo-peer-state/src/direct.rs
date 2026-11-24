@@ -3774,7 +3774,7 @@ fn arrived_late(error: &crate::AdmissionError) -> bool {
 
 /// Why a link to a device ends, or is refused: the workspace removed its
 /// person.
-const REMOVED: &str = "the workspace removed the device's person";
+pub const REMOVED: &str = "the workspace removed the device's person";
 
 /// Why a channel's governance is never admitted into the workspace: what a
 /// [`Heard`] carrying it reports.
