@@ -30,6 +30,8 @@ jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+# A view's sound, and the file a package ships for it: staged natively, a blob URL on a page.
+media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media" }
 
 [dev-dependencies]
 tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
@@ -44,10 +46,9 @@ workspace = true
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 # A view's song or video is a Tilo content address (`tilo-blob://…`): the window reads its bytes
-# from the device's content store and stages a file the toolkit plays. A page's media element
-# plays the address itself, so this is native only.
+# from the device's content store and stages a file the toolkit plays. A page's media element has
+# no such store, so this is native only.
 tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
-media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media" }
 
 [[example]]
 name = "component-catalogue"

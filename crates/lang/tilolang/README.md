@@ -20,10 +20,16 @@ apps/tl/counter/
   app.tl        app so.tilo.counter "Counter"   (the header, then any declarations)
   views.tl      more declarations; no header
   app.ids       the ids lock: generated, committed
+  media/        files its views and scenarios name as pkg:media/<name>
 ```
 
 How the declarations are spread over the files does not matter: a file may use what another
 declares, in any order. Diagnostics name the file and the line within it.
+
+A file a package ships under `media/` — a short sound, a piece of data — is named
+`pkg:media/<name>`, and a window plays it from the package's own bytes: nothing is fetched. An
+install carries only the files a view or an action names; one only a `scenario` names stays on
+the development machine, since an install starts empty and stages no scenario.
 
 The ids lock gives every declaration its stable id. The compiler adds new declarations to it and
 retires removed ones; commit it with the sources. Rename a declaration with
@@ -1068,7 +1074,7 @@ and writes each as a signed `.tapp`:
   package's payload with `TILO_APP_MODULE`;
 - the payload: `app.wasm`, `app.ids`, the compiled modules of the packages it uses (`imports/`), the
   `surface.toml` generated from the metadata (declaring the kinds it reads from the packages it
-  uses as `reads`), and the icon.
+  uses as `reads`), the icon, and the `media/` files its views and actions name.
 
 The runtime compiles nothing: it loads the one module it was started for, under the id the
 package was signed as. Each app has its own window, record, ownership and permissions. It reads

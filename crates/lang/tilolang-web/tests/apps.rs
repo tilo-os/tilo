@@ -10,8 +10,9 @@ use std::path::Path;
 
 use serde_json::Value as Json;
 
-/// Every file below `apps/tl`, by its path from the repository's root, as a page holds them: and
-/// the manifest and surface of every native app in `apps/` that has both, which `build-page.sh`
+/// Every file below `apps/tl`, by its path from the repository's root, as a page holds them: the
+/// files a package ships under `media/` as base64, since a page's answer is JSON text; and the
+/// manifest and surface of every native app in `apps/` that has both, which `build-page.sh`
 /// hands over too and a package may `use` as metadata.
 fn app_files() -> BTreeMap<String, String> {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
@@ -22,9 +23,22 @@ fn app_files() -> BTreeMap<String, String> {
             let path = entry.expect("an entry").path();
             if path.is_dir() {
                 dirs.push(path);
+                continue;
+            }
+            let shown = path.strip_prefix(&repo).expect("below the repo");
+            let shown = shown.display().to_string();
+            let shipped = path
+                .components()
+                .any(|component| component.as_os_str() == "media");
+            if shipped {
+                use base64::Engine as _;
+                let bytes = std::fs::read(&path).expect("a shipped file reads");
+                out.insert(
+                    shown,
+                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                );
             } else if let Ok(text) = std::fs::read_to_string(&path) {
-                let shown = path.strip_prefix(&repo).expect("below the repo");
-                out.insert(shown.display().to_string(), text);
+                out.insert(shown, text);
             }
         }
     }
@@ -132,6 +146,43 @@ fn every_app_opens_over_its_first_scenario_as_a_page() {
         assert!(tilolang_web::app_close(handle(&answer)));
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn a_song_playing_plays_the_tone_the_package_ships() {
+    let files = app_files();
+    assert!(
+        files.contains_key("apps/tl/music/media/first-light.wav"),
+        "the scenario's tone is the package's own file"
+    );
+    assert!(
+        !files.values().any(|text| text.contains("music.example")),
+        "nothing the page is handed names a domain that cannot answer"
+    );
+    let answer = open(&files_json(&files), "apps/tl/music", "");
+    assert_eq!(answer["ok"], true, "{}", answer["message"]);
+    assert_eq!(answer["scenario"], "a song playing");
+    let body = answer["body"].as_str().expect("a body");
+    assert!(body.contains("First Light"), "{body}");
+    assert!(!body.contains("music.example"), "no fetch to a dead domain");
+    // The page installed the file the scenario names, and the address the view declares plays
+    // its bytes: a page's media element gets a blob URL of them, never a URL to fetch.
+    let played =
+        tilolang_window::media_source::playable("pkg:media/first-light.wav", Some("First Light"));
+    assert_ne!(played, "pkg:media/first-light.wav");
+    assert!(!played.contains("music.example"), "{played}");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let shipped = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps/tl/music/media/first-light.wav");
+        let bytes = std::fs::read(played.strip_prefix("file://").expect("a staged file"))
+            .expect("the staged tone reads");
+        assert_eq!(
+            bytes,
+            std::fs::read(shipped).expect("the shipped tone reads")
+        );
+    }
+    tilolang_web::app_close(handle(&answer));
 }
 
 #[test]

@@ -1086,7 +1086,7 @@ fn deliver_all(
         let stage_dir = staging.path().join(&name);
         let stage_payload = stage_dir.join("payload");
         app.bundle
-            .write(&stage_payload)
+            .write_installed(&stage_payload)
             .map_err(|error| error.to_string())?;
         if let Some(icon) = &app.meta.icon {
             let path = stage_payload.join(ICON_FILE);
@@ -1475,6 +1475,13 @@ fn digest(
     for import in &bundle.imports {
         hasher.update((import.wasm.len() as u64).to_le_bytes());
         hasher.update(&import.wasm);
+    }
+    // The files the package ships that an install carries: what it holds is part of what it is.
+    for asset in bundle.assets.iter().filter(|asset| !asset.scenario_only) {
+        hasher.update((asset.name.len() as u64).to_le_bytes());
+        hasher.update(asset.name.as_bytes());
+        hasher.update((asset.bytes.len() as u64).to_le_bytes());
+        hasher.update(&asset.bytes);
     }
     for (relative, source) in files {
         let path = relative.to_string_lossy();

@@ -26,6 +26,18 @@ pub const SURFACE_FILE: &str = "surface.toml";
 pub const ICON_FILE: &str = "icon.svg";
 pub const IMPORTS_DIR: &str = "imports";
 
+/// A file the package ships beside its sources, under `media/`, which a view or a scenario names
+/// as `pkg:<name>`: a picture, a short sound, a piece of data. `name` is its path from the
+/// package's directory (`media/first-light.wav`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Asset {
+    pub name: String,
+    pub bytes: Vec<u8>,
+    /// Only a scenario names it: an install leaves it out, since an install starts empty and
+    /// stages no scenario.
+    pub scenario_only: bool,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BundleError {
     #[error("{path}: {source}")]
@@ -55,6 +67,9 @@ pub struct Bundle {
     pub ids: String,
     /// The packages this one uses, each before those that use it.
     pub imports: Vec<Import>,
+    /// The files the package ships under `media/`, which its views and its scenarios name as
+    /// `pkg:<name>`.
+    pub assets: Vec<Asset>,
 }
 
 /// A package another one uses: its compiled module and the metadata the module embeds.
@@ -103,7 +118,13 @@ pub fn of_build(built: &[tilolang::source::BuiltPackage]) -> Vec<Bundle> {
             let imports = std::iter::once(tilolang::stdlib::compiled())
                 .chain(built.iter().take(index).map(|earlier| &earlier.compiled))
                 .filter(|earlier| used.contains(&earlier.meta.app));
-            Bundle::new(&package.compiled, imports)
+            let scenario_only = tilolang::source::scenario_only_assets(&package.source);
+            let assets = package.source.assets.iter().map(|asset| Asset {
+                name: asset.name.clone(),
+                bytes: asset.bytes.clone(),
+                scenario_only: scenario_only.contains(&asset.name),
+            });
+            Bundle::new(&package.compiled, imports).with_assets(assets)
         })
         .collect()
 }
@@ -133,7 +154,15 @@ impl Bundle {
             meta: compiled.meta.clone(),
             ids: compiled.ids.to_text(),
             imports: imports.into_iter().map(Import::new).collect(),
+            assets: Vec::new(),
         }
+    }
+
+    /// The bundle carrying `assets`, as a package's directory ships them.
+    #[must_use]
+    pub fn with_assets(mut self, assets: impl IntoIterator<Item = Asset>) -> Self {
+        self.assets = assets.into_iter().collect();
+        self
     }
 
     /// The bundle of the compiled module `wasm`, its ids lock `ids` and the compiled modules of
@@ -160,6 +189,7 @@ impl Bundle {
             meta,
             ids,
             imports,
+            assets: Vec::new(),
         }
         .checked()
     }
@@ -220,11 +250,24 @@ impl Bundle {
                 }
             }
         }
+        let assets = tilolang::source::read_assets(dir)
+            .map_err(|message| BundleError::Read {
+                path: dir.join("media"),
+                source: std::io::Error::other(message),
+            })?
+            .into_iter()
+            .map(|asset| Asset {
+                name: asset.name,
+                bytes: asset.bytes,
+                scenario_only: false,
+            })
+            .collect();
         Self {
             wasm,
             meta,
             ids,
             imports,
+            assets,
         }
         .checked()
     }
@@ -304,28 +347,53 @@ impl Bundle {
             .collect()
     }
 
-    /// Write the bundle into `dir` (created when missing): module, ids lock, imports and
-    /// surface. The icon is the caller's, since it is drawn by the platform.
+    /// Write the bundle into `dir` (created when missing): module, ids lock, imports, surface and
+    /// every file under `media/` the package ships, scenario-only ones included. The icon is the
+    /// caller's, since it is drawn by the platform. A development run writes this: the window it
+    /// opens stages the app's scenarios, and they show what only they name.
     pub fn write(&self, dir: &Path) -> Result<(), BundleError> {
-        let write = |path: PathBuf, bytes: &[u8]| {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|source| BundleError::Read {
-                    path: parent.to_path_buf(),
-                    source,
-                })?;
-            }
-            std::fs::write(&path, bytes).map_err(|source| BundleError::Read { path, source })
-        };
-        write(dir.join(WASM_FILE), &self.wasm)?;
-        write(dir.join(IDS_FILE), self.ids.as_bytes())?;
-        write(dir.join(SURFACE_FILE), &self.surface()?)?;
+        self.write_payload(dir)?;
+        for asset in &self.assets {
+            write_file(&dir.join(&asset.name), &asset.bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Write the bundle into `dir` as a person's install of it carries it: the same payload, but
+    /// without the files only its scenarios name, which an install never shows.
+    pub fn write_installed(&self, dir: &Path) -> Result<(), BundleError> {
+        self.write_payload(dir)?;
+        for asset in self.assets.iter().filter(|asset| !asset.scenario_only) {
+            write_file(&dir.join(&asset.name), &asset.bytes)?;
+        }
+        Ok(())
+    }
+
+    fn write_payload(&self, dir: &Path) -> Result<(), BundleError> {
+        write_file(&dir.join(WASM_FILE), &self.wasm)?;
+        write_file(&dir.join(IDS_FILE), self.ids.as_bytes())?;
+        write_file(&dir.join(SURFACE_FILE), &self.surface()?)?;
         for import in &self.imports {
-            write(
-                dir.join(IMPORTS_DIR)
+            write_file(
+                &dir.join(IMPORTS_DIR)
                     .join(format!("{}.wasm", import.meta.app)),
                 &import.wasm,
             )?;
         }
         Ok(())
     }
+}
+
+/// Write `bytes` to `path`, making its directory when it is missing.
+fn write_file(path: &Path, bytes: &[u8]) -> Result<(), BundleError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| BundleError::Read {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    std::fs::write(path, bytes).map_err(|source| BundleError::Read {
+        path: path.to_path_buf(),
+        source,
+    })
 }

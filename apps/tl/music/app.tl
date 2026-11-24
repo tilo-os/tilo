@@ -1649,7 +1649,9 @@ fn listeners(n: Int) -> Text {
 }
 
 /// A song playing, as a person's first listen leaves it: one song of their own in the library,
-/// playing on this device, with nothing of the catalogue fetched.
+/// playing on this device, with nothing of the catalogue fetched. The song plays a two-second
+/// tone the package ships (`media/first-light.wav`, which `make-scenario-clip.py` writes), so the
+/// demo sounds with no network; only the scenario names it, so an install does not carry it.
 scenario "a song playing" {
     let lib = root Library
     let song = lib.tracks.insert(
@@ -1658,8 +1660,8 @@ scenario "a song playing" {
             title: "First Light",
             artist: "Ava",
             album: "Morning",
-            seconds: 214,
-            stream: "https://music.example/first-light.wav",
+            seconds: 2,
+            stream: "pkg:media/first-light.wav",
         ),
     )
     play_song(song)

@@ -70,6 +70,7 @@ impl Apps {
                     meta: compiled.meta.clone(),
                     ids: String::new(),
                     imports: Vec::new(),
+                    assets: Vec::new(),
                 });
                 if !metas.iter().any(|meta| meta.app == compiled.meta.app) {
                     metas.push(compiled.meta.clone());
