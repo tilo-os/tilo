@@ -775,7 +775,7 @@ hosts = ["gateway.example", "*.example.media"]
 
     let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
     let options = BuildOptions {
-        dir: dir.clone(),
+        dir,
         search: Vec::new(),
         out: scratch.path().join("out"),
         tilo_runtime: "tilo-runtime/2026.07".into(),
