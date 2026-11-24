@@ -171,15 +171,15 @@ impl Mapping {
         max_len: usize,
     ) -> io::Result<Self> {
         Self::sealed(
-            File::from(fd.as_fd().try_clone_to_owned()?),
+            &File::from(fd.as_fd().try_clone_to_owned()?),
             immutable,
             min_len,
             max_len,
         )
     }
 
-    fn sealed(file: File, immutable: bool, min_len: usize, max_len: usize) -> io::Result<Self> {
-        sys::require_seals(&file, immutable)?;
+    fn sealed(file: &File, immutable: bool, min_len: usize, max_len: usize) -> io::Result<Self> {
+        sys::require_seals(file, immutable)?;
         let len = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
         if len < min_len || len > max_len || len == 0 {
             return Err(io::Error::new(
@@ -195,7 +195,7 @@ impl Mapping {
         if immutable {
             options.populate();
         }
-        let map = unsafe { options.map(&file) }?;
+        let map = unsafe { options.map(file) }?;
         Ok(Self::view(map, len))
     }
 }
@@ -214,14 +214,14 @@ impl Mapping {
         max_len: usize,
     ) -> io::Result<Self> {
         Self::sealed(
-            File::from(fd.as_fd().try_clone_to_owned()?),
+            &File::from(fd.as_fd().try_clone_to_owned()?),
             immutable,
             min_len,
             max_len,
         )
     }
 
-    fn sealed(file: File, immutable: bool, min_len: usize, max_len: usize) -> io::Result<Self> {
+    fn sealed(file: &File, immutable: bool, min_len: usize, max_len: usize) -> io::Result<Self> {
         if !immutable {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -238,7 +238,7 @@ impl Mapping {
         }
         // SAFETY: the sender may still write this memory; the mapping is only read once, to copy
         // the bytes out, and nothing is inferred from them until the copy is complete.
-        let map = unsafe { MmapOptions::new().len(len).map(&file) }?;
+        let map = unsafe { MmapOptions::new().len(len).map(file) }?;
         Ok(Self {
             backing: Backing::Copied(map.to_vec()),
             len,

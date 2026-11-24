@@ -370,7 +370,7 @@ and commit again, or regenerate it with 'cargo run -p tilo-app-window --example 
       if [ "${#cat_run[@]}" -gt 0 ]; then
         # A commit lands work, so its build ranks as a person's, not behind the agents' test
         # backlog: the same per-checkout human: session the push lint uses.
-        cat_generated=$(T_SESSION="human:commit.$(hostname).$(basename "$root" | tr -c 'A-Za-z0-9_.-\n' _)" \
+        cat_generated=$(T_SESSION="human:commit.$(hostname).$(basename "$root" | tr -c 'A-Za-z0-9_.\n-' _)" \
           "${cat_run[@]}" 2>/dev/null || true)
       fi
       if [ -n "$cat_generated" ]; then
