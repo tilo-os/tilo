@@ -66,9 +66,6 @@ d-ylzbkpat = Lauf
 d-fbbyyume = Phase
     .doc = Where the run stands: `ping`, `download`, `upload`, `complete` or `error`.
 
-d-376ly3mp = Auftrag
-    .doc = The device job measuring, while one runs; empty between runs.
-
 d-vufvfoij = Aktuell
     .doc = The reading of the stage in progress: milliseconds while pinging, megabits per second after.
 
@@ -84,56 +81,6 @@ d-wkhwlknc = Fehler
 d-ylzbkpat-filter-live = Aktuell
 
 d-ylzbkpat-filter-bytes = Bytes
-
-d-bofeq5tj = Laufzustand
-    .doc = What the device answers about a run (`engine.status`).
-    .noun = { $count ->
-        [one] run state
-       *[other] run states
-    }
-
-d-4xzztkvp = Zustand
-
-d-os4ndogp = Phase
-
-d-7eyrzvhi = Aktuell
-
-d-phil2ezm = Bytes
-
-d-5szkqkfk = Server
-
-d-hcm22tea = Ping
-
-d-esi4hzhw = Jitter
-
-d-gmjsrtmo = Download
-
-d-q4qvdsia = Upload
-
-d-eyu5ljwd = Gerät
-
-d-c6eopm2r = Fehlschlag
-
-d-bofeq5tj-filter-live = Aktuell
-
-d-bofeq5tj-filter-bytes = Bytes
-
-d-bofeq5tj-filter-ping = Ping
-
-d-bofeq5tj-filter-jitter = Jitter
-
-d-bofeq5tj-filter-download = Download
-
-d-bofeq5tj-filter-upload = Upload
-
-d-divjfr4m = Gestartet
-    .doc = What the device answers when a run starts (`engine.start`).
-    .noun = { $count ->
-        [one] started
-       *[other] starteds
-    }
-
-d-fltipwm6 = Auftrag
 
 d-gs3ocynq = Test starten
     .doc = Starts a run: the device measures latency, download and upload against the nearest Cloudflare test server, and the window follows it as it goes.
@@ -217,3 +164,32 @@ d-l4t3t7cr = Letzte Zeile
     .w-mbps-up-ms-ping = { $one } Mbps hoch, { $whole } ms Ping
 
 d-jsy7gexo = Zifferblatt
+
+d-t3padrs4 = Ping
+    .doc = Was die Ping-Stufe für den Eintrag des Laufs gemessen hat.
+
+d-vejad7bv = Jitter
+
+d-2kviwxr6 = Download
+    .doc = Was die Download-Stufe gemessen hat.
+
+d-ylzbkpat-filter-ping = Ping
+
+d-ylzbkpat-filter-jitter = Jitter
+
+d-ylzbkpat-filter-download = Download
+
+d-2gbg3cfn = Ping-Stufe
+    .doc = Misst einige Umläufe und behält den Server, den der erste gefunden hat.
+
+d-u32aogr2 = Download-Stufe
+    .doc = Lädt die Bytes eines Laufs in Stücken herunter, die die Sprache ganz hält, misst sie zusammen und behält die Rate, mit der sie kamen.
+
+d-m7rzekuz = Upload-Stufe
+    .doc = Lädt die Bytes eines Laufs hoch und hält fest, was der ganze Lauf gemessen hat.
+
+d-m7rzekuz-run = Lauf
+
+d-y5lrri6f = Fehlertext
+    .w-failed = { $stage } fehlgeschlagen: { $status_text }
+    .w-failed-the-server-refused-the-request = { $stage } fehlgeschlagen: der Server hat die Anfrage abgelehnt (HTTP { $status })

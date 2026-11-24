@@ -68,7 +68,6 @@ fn main() -> std::process::ExitCode {
     // servers — answered for the one app that asks it (`engine.call`, `engine.start`).
     code_engine::register();
     // The speed test's device work: its one run measuring latency, download and upload.
-    speed_engine::register();
     // The disk usage analyzer's device work, for the hosts this process runs itself.
     tilo_disk_usage::register();
     // The hex editor's device work: the bytes of a file, the edits typed into them and the

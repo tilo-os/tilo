@@ -22,11 +22,12 @@ pub fn fetch(request: &WebRequest) -> WebReply {
     if let Some(tag) = &request.if_none_match {
         headers.push(("If-None-Match".to_owned(), tag.clone()));
     }
+    let body = request.body_bytes();
     match tilo_network_client::fetch(
         &request.method,
         &request.url,
         &headers,
-        request.body.as_deref().map(str::as_bytes),
+        body.as_deref(),
         MAX_BODY,
         TIMEOUT,
     ) {
@@ -59,6 +60,7 @@ mod tests {
             url: served.url(),
             headers: vec!["Accept: text/plain".to_owned()],
             body: None,
+            bytes: None,
             if_none_match: None,
         });
         assert_eq!(answer.status, 200);

@@ -200,8 +200,6 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 collaboration = { package = "tilo-collaboration", path = "../../core/collaboration", features = ["local-daemons"] }
 # The code editor's device work: its files, searches, commands and language servers.
 code-engine = { path = "../../engines/code-engine" }
-# The speed test's device work: its one run measuring latency, download and upload.
-speed-engine = { path = "../../engines/speed-engine" }
 # The disk usage analyzer's device work, for the hosts this process runs itself.
 tilo-disk-usage = { path = "../../engines/disk-usage" }
 # The hex editor's device work: a file's bytes and the edits typed into them.

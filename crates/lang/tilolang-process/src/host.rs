@@ -26,9 +26,6 @@ use tilolang_process::wait::{Wake, wait};
 static API: OnceLock<Arc<Descriptor>> = OnceLock::new();
 
 pub(super) fn main() -> std::process::ExitCode {
-    // The app engines this host answers for: a package's own work, asked for by name through
-    // `engine.start`, `engine.status` and `engine.cancel` (`tilolang_tilo::engine`).
-    speed_engine::register();
     // Diff & Merge's device work, for the calls that reach this host with no window.
     diffmerge_engine::register();
     tracing_subscriber::fmt()

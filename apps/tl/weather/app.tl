@@ -117,11 +117,11 @@ type Place (title: name) {
 
 /// How far an update has got, and how the last one ended.
 type Refresh {
-    /// The job the device runs, by its id; empty while nothing runs.
-    job: Text = ""
     /// `running` while the device reads the places, and `done` once it has.
     state: Text = "done"
-    done: Int = 0
+    /// The places this update has still to read, by their ids.
+    waiting: List<Text>
+    done: Int merge counter = 0
     total: Int = 0
     /// How many places the last update could not read.
     failed: Int merge counter = 0
@@ -140,17 +140,14 @@ type Found {
     timezone: Text = "auto"
 }
 
-/// A person's own place search: what they typed, what the device found, and the job it runs.
-/// It is theirs alone, so two people looking for different places never see each other's rows.
+/// A person's own place search: what they typed, what the device found, and what it was asked
+/// for. It is theirs alone, so two people looking for different places never see each other's
+/// rows.
 type Searching (readers: author) {
     /// What is in the field.
     wanted: Text = ""
-    /// What the device was last asked for: a job starts when the two differ.
+    /// What the device was last asked for: it looks when the two differ.
     asked: Text = ""
-    /// The search job the device runs, by its id; empty while nothing runs.
-    job: Text = ""
-    /// The device is looking now.
-    searching: Bool = false
     found: Collection<Found>
     /// Why the search could not be read, in words; empty otherwise.
     note: Text = ""
@@ -173,93 +170,6 @@ type Locations {
 root weather: Locations
 
 default view weather_window for Locations
-
-/// The places one update is asked for.
-// ---------------------------------------------------------------- what the device reads
-type Ask {
-    places: List<AskPlace>
-}
-
-type AskPlace {
-    place_id: Text
-    latitude: Float
-    longitude: Float
-}
-
-/// The search one job is asked for.
-type SearchAsk {
-    query: Text
-}
-
-/// The job a take names.
-type TakeAsk {
-    job: Text
-}
-
-/// How far a job has got.
-type Job {
-    state: Text
-    done: Int
-    total: Int
-}
-
-/// What a job finished since it was last taken.
-type Taken {
-    /// Each place's answer, as its own JSON text: a list of records is a list of resources in
-    /// this language, and JSON text makes none, so each is read into its record here.
-    answers: List<Text>
-    /// Each place a search found, as its own JSON text.
-    places: List<Text>
-    /// Why a search could not be read, in the engine's words.
-    error: Text = ""
-}
-
-/// One place's answer: its reading, the hours and days beside it as parallel lists, and its
-/// air reading.
-type Answer {
-    /// The place the answer is about, by its id; not `id`, which every record's is its own.
-    place_id: Text = ""
-    ok: Bool = false
-    reason: Text = ""
-    status: Int = 0
-    message: Text = ""
-    /// When the device read it, in epoch seconds.
-    fetched: Int = 0
-    time: Text = ""
-    temperature: Float = 0.0
-    apparent: Float = 0.0
-    humidity: Float = 0.0
-    precipitation: Float = 0.0
-    code: Int = 0
-    wind: Float = 0.0
-    wind_from: Float = 0.0
-    pressure: Float = 0.0
-    uv: Float = 0.0
-    is_day: Bool = true
-    hour_at: List<Text>
-    hour_temp: List<Float>
-    hour_chance: List<Float>
-    hour_code: List<Int>
-    hour_day: List<Bool>
-    day_date: List<Text>
-    day_weekday: List<Int>
-    day_high: List<Float>
-    day_low: List<Float>
-    day_chance: List<Float>
-    day_code: List<Int>
-    day_wind: List<Float>
-    day_uv: List<Float>
-    day_rise: List<Text>
-    day_set: List<Text>
-    air_ok: Bool = false
-    air_at: Text = ""
-    air_european: Option<Float> = .none
-    air_us: Option<Float> = .none
-    air_pm2_5: Option<Float> = .none
-    air_pm10: Option<Float> = .none
-    air_no2: Option<Float> = .none
-    air_ozone: Option<Float> = .none
-}
 
 /// Saves a place a person follows. A place near one already saved is that place, not a second
 /// entry, and a new place is the one windows show first.
@@ -323,48 +233,39 @@ destructive action remove_place(w: Locations, place: Place) (
     }
 }
 
-/// Reads the forecasts again: every place, or the one `place` names. The device fetches them
-/// away from the frame and the window takes each answer as it lands (`poll_weather`), so a slow
-/// service never holds the window.
-action refresh(w: Locations, place: Option<Place> = .none) (
+/// Reads the forecasts again: every place, or the one `place` names. The window reads a few
+/// places each second (`poll_weather`), so a slow service costs one place at a time and each
+/// forecast lands as it is read.
+action refresh(w: Locations, place: Option<Place> = .none) uses web, time (
     icon: .refresh,
     key: "r",
     label: "Refresh forecasts",
     did: "updated the forecasts",
 ) {
     require not w.places.is_empty() "There are no places to update"
-    require w.refresh.job == "" "An update is already running"
+    require w.refresh.state != "running" "An update is already running"
     let places: List<Place> = if let one = place { [one] } else { w.places.map(p -> p) }
     for p in places {
         p.trouble = ""
     }
-    match ask_update(places) {
-        .ok(job) => {
-            w.refresh.job = job
-            w.refresh.state = "running"
-            w.refresh.done = 0
-            w.refresh.total = places.len()
-            // What the last update added up to goes back to nothing for this one.
-            w.refresh.failed -= w.refresh.failed
-            w.refresh.note = ""
-        }
-        .err(why) => {
-            w.refresh.state = "done"
-            w.refresh.job = ""
-            w.refresh.note = std.say("Couldn't start updating: {why}")
-        }
-    }
+    w.refresh.waiting = places.map(p -> p.id())
+    w.refresh.state = "running"
+    w.refresh.done -= w.refresh.done
+    w.refresh.total = places.len()
+    // What the last update added up to goes back to nothing for this one.
+    w.refresh.failed -= w.refresh.failed
+    w.refresh.note = ""
+    read_next(w)
 }
 
-/// Stops an update that is running.
+/// Stops an update that is running; the places it had not read keep what they had.
 action stop_refresh(w: Locations) (icon: .x, label: "Stop updating") {
-    if w.refresh.job != "" { engine.cancel(w.refresh.job) }
     w.refresh.state = "done"
-    w.refresh.job = ""
+    w.refresh.waiting = []
 }
 
 /// Updates a place whose last read failed, once the person asks again.
-action retry_place(w: Locations, place: Place) (
+action retry_place(w: Locations, place: Place) uses web, time (
     icon: .refresh,
     label: "Try again",
     did: "asked for a forecast again",
@@ -373,146 +274,406 @@ action retry_place(w: Locations, place: Place) (
     refresh(w, place: .some(place))
 }
 
-/// Takes what the device has read so far: each place's answer as it lands, and what the service
-/// says of it. What an update reads is nobody's step of their own, so landing it says nothing and
-/// offers no undo of its own. A second read of the same place replaces the first.
+/// Reads one place an update has still to read, and says when the update has read them all.
+// ---------------------------------------------------------------- reading the forecasts
+action read_next(w: Locations) uses web, time {
+    if w.refresh.state != "running" {
+        return
+    }
+    if let id = w.refresh.waiting.first() {
+        w.refresh.waiting = w.refresh.waiting.filter(x -> x != id)
+        if let place = w.places.find(p -> p.id() == id) {
+            let read = read_place(place)
+            w.refresh.done += 1
+            if not read {
+                w.refresh.failed += 1
+            }
+        }
+    }
+    if w.refresh.waiting.is_empty() {
+        w.refresh.state = "done"
+    }
+}
+
+/// Reads one place's forecast and air quality. One failing leaves the other's answer standing,
+/// and a place the service did not answer keeps what it had and says why.
+action read_place(place: Place) -> Bool uses web, time {
+    let answer = web.get(forecast_address(place.latitude, place.longitude))
+    if not answer.ok {
+        place.trouble = refusal(answer)
+        return false
+    }
+    if not apply_forecast(place, answer.text()) {
+        place.trouble = "The answer wasn't a forecast"
+        return false
+    }
+    place.has_air = false
+    let air = web.get(air_address(place.latitude, place.longitude))
+    if air.ok {
+        if let reading = read_air(air.text()) {
+            place.air.at = reading.at
+            place.air.european = reading.european
+            place.air.us = reading.us
+            place.air.pm2_5 = reading.pm2_5
+            place.air.pm10 = reading.pm10
+            place.air.no2 = reading.no2
+            place.air.ozone = reading.ozone
+            place.has_air = true
+        }
+    }
+    place.read = true
+    place.trouble = ""
+    place.fetched = .some(now)
+    true
+}
+
+/// What a service's refusal says, as the place's row reads it.
+fn refusal(answer: Response) -> Text {
+    if answer.status == 0 {
+        "Couldn't reach the weather service. Check your connection."
+    } else if answer.status > 0 {
+        std.say("The weather service refused the request (HTTP {answer.status})")
+    } else {
+        "The weather service refused the request"
+    }
+}
+
+/// The forecast a service answered, written into the place: its current reading, a day of hours
+/// and a week of days. False when the body is not a forecast the service could have sent.
+action apply_forecast(place: Place, body: Text) -> Bool {
+    let root = match json.parse(body) {
+        .ok(value) => value,
+        .err(why) => {
+            return false
+        }
+    }
+    let current = field_of(root, "current")
+    let hourly = field_of(root, "hourly")
+    let daily = field_of(root, "daily")
+    if let cur = current, hours = hourly, days = daily {
+        let at = text_of(cur, "time")
+        place.current.at = at
+        place.current.temperature = number_at(cur, "temperature_2m")
+        place.current.apparent = number_at(cur, "apparent_temperature")
+        place.current.humidity = number_at(cur, "relative_humidity_2m")
+        place.current.precipitation = number_at(cur, "precipitation")
+        place.current.code = number_at(cur, "weather_code").to_int()
+        place.current.wind = number_at(cur, "wind_speed_10m")
+        place.current.wind_from = number_at(cur, "wind_direction_10m")
+        place.current.pressure = number_at(cur, "pressure_msl")
+        place.current.day = number_at(cur, "is_day") != 0.0
+        place.current.icon = glyph(place.current.code, place.current.day)
+        // The reading's own uv is today's highest: the service gives no current one.
+        let uv = numbers_of(list_at(days, "uv_index_max"))
+        place.current.uv = uv.first() ?? 0.0
+        let hour_at = texts_of(list_at(hours, "time"))
+        let hour_temp = numbers_of(list_at(hours, "temperature_2m"))
+        let hour_chance = numbers_of(list_at(hours, "precipitation_probability"))
+        let hour_code = counts_of(list_at(hours, "weather_code"))
+        let hour_day = flags_of(list_at(hours, "is_day"))
+        let start = start_at(hour_at, at)
+        for old in place.hours.map(hour -> hour) {
+            place.hours.remove(old)
+        }
+        for i in hour_at.map((time, i) -> i) {
+            if i >= start and i < start + 24 {
+                let code = hour_code.at(i) ?? 0
+                let day = hour_day.at(i) ?? true
+                place.hours.insert(
+                    Hour(
+                        at: hour_at.at(i) ?? "",
+                        temperature: hour_temp.at(i) ?? 0.0,
+                        chance: hour_chance.at(i) ?? 0.0,
+                        code: code,
+                        day: day,
+                        icon: glyph(code, day),
+                    ),
+                )
+            }
+        }
+        let day_date = texts_of(list_at(days, "time"))
+        let day_high = numbers_of(list_at(days, "temperature_2m_max"))
+        let day_low = numbers_of(list_at(days, "temperature_2m_min"))
+        let day_chance = numbers_of(list_at(days, "precipitation_probability_max"))
+        let day_code = counts_of(list_at(days, "weather_code"))
+        let day_wind = numbers_of(list_at(days, "wind_speed_10m_max"))
+        let day_uv = numbers_of(list_at(days, "uv_index_max"))
+        let day_rise = texts_of(list_at(days, "sunrise"))
+        let day_set = texts_of(list_at(days, "sunset"))
+        for old in place.days.map(day -> day) {
+            place.days.remove(old)
+        }
+        for i in day_date.map((date, i) -> i) {
+            let code = day_code.at(i) ?? 0
+            place.days.insert(
+                Day(
+                    date: day_date.at(i) ?? "",
+                    weekday: weekday(day_date.at(i) ?? ""),
+                    high: day_high.at(i) ?? 0.0,
+                    low: day_low.at(i) ?? 0.0,
+                    chance: day_chance.at(i) ?? 0.0,
+                    code: code,
+                    wind: day_wind.at(i) ?? 0.0,
+                    uv: day_uv.at(i) ?? 0.0,
+                    rise: day_rise.at(i) ?? "",
+                    set: day_set.at(i) ?? "",
+                    icon: glyph(code, true),
+                ),
+            )
+        }
+        true
+    } else { false }
+}
+
+/// The air a service answered, or nothing when its body is no air-quality reading. A value it
+/// omits stays absent, never a fabricated zero.
+fn read_air(body: Text) -> Option<Air> {
+    let root = match json.parse(body) {
+        .ok(value) => value,
+        .err(why) => {
+            return .none
+        }
+    }
+    if let cur = field_of(root, "current") {
+        .some(
+            Air(
+                at: text_of(cur, "time"),
+                european: optional_at(cur, "european_aqi"),
+                us: optional_at(cur, "us_aqi"),
+                pm2_5: optional_at(cur, "pm2_5"),
+                pm10: optional_at(cur, "pm10"),
+                no2: optional_at(cur, "nitrogen_dioxide"),
+                ozone: optional_at(cur, "ozone"),
+            ),
+        )
+    } else { .none }
+}
+
+/// The index at which the hours ahead begin: the first hour the place's own clock has reached.
+fn start_at(times: List<Text>, at: Text) -> Int {
+    let index = 0
+    for time in times {
+        if time >= at {
+            return index
+        }
+        index = index + 1
+    }
+    0
+}
+
+/// The weekday a `YYYY-MM-DD` date falls on, counted from Monday as 0; 0 when the text is no
+/// date. Sakamoto's algorithm: a month is shifted so March starts the year, which makes the leap
+/// day the last day of a year of thirteen months.
+fn weekday(date: Text) -> Int {
+    let parts = date.split("-")
+    let named = (parts.at(0) ?? "").to_int()
+    let month = (parts.at(1) ?? "").to_int()
+    let day = (parts.at(2) ?? "").to_int()
+    if let year = named, month = month, day = day {
+        if month >= 1 and month <= 12 and day >= 1 and day <= 31 {
+            let shifts = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4]
+            let counted = if month < 3 { year - 1 } else { year }
+            let sunday_first = (counted + counted / 4 - counted / 100
+                + counted / 400
+                + (shifts.at(month - 1) ?? 0)
+                + day)
+                % 7
+            // Sunday first becomes Monday first.
+            return (sunday_first + 6) % 7
+        } else {
+            return 0
+        }
+    }
+    0
+}
+
+/// The value at `key` of a JSON object, and nothing for anything else.
+fn field_of(value: json.Value, key: Text) -> Option<json.Value> {
+    match value {
+        .object(fields) => fields.get(key),
+        .array(items) => .none,
+        .string(text) => .none,
+        .number(number) => .none,
+        .bool(flag) => .none,
+        .null => .none,
+    }
+}
+
+/// The text at `key` of a JSON object, or empty.
+fn text_of(value: json.Value, key: Text) -> Text {
+    match field_of(value, key) {
+        .some(held) => match held {
+            .string(text) => text,
+            .object(fields) => "",
+            .array(items) => "",
+            .number(number) => "",
+            .bool(flag) => "",
+            .null => "",
+        },
+        .none => "",
+    }
+}
+
+/// The number at `key` of a JSON object, or zero.
+fn number_at(value: json.Value, key: Text) -> Float {
+    number_of(field_of(value, key))
+}
+
+/// The number a value holds when it is a number or a number written as text, or zero.
+fn number_of(value: Option<json.Value>) -> Float {
+    match value {
+        .some(held) => match held {
+            .number(number) => number,
+            .string(text) => text.to_float() ?? 0.0,
+            .object(fields) => 0.0,
+            .array(items) => 0.0,
+            .bool(flag) => 0.0,
+            .null => 0.0,
+        },
+        .none => 0.0,
+    }
+}
+
+/// The number a value holds when it is a number, or nothing: a value the service omitted stays
+/// absent.
+fn optional_number(value: Option<json.Value>) -> Option<Float> {
+    match value {
+        .some(held) => match held {
+            .number(number) => .some(number),
+            .string(text) => text.to_float(),
+            .object(fields) => .none,
+            .array(items) => .none,
+            .bool(flag) => .none,
+            .null => .none,
+        },
+        .none => .none,
+    }
+}
+
+/// The number at `key` of a JSON object, or nothing.
+fn optional_at(value: json.Value, key: Text) -> Option<Float> {
+    optional_number(field_of(value, key))
+}
+
+/// The array at `key` of a JSON object, or nothing.
+fn list_at(value: json.Value, key: Text) -> List<json.Value> {
+    match field_of(value, key) {
+        .some(held) => match held {
+            .array(items) => items,
+            .object(fields) => [],
+            .string(text) => [],
+            .number(number) => [],
+            .bool(flag) => [],
+            .null => [],
+        },
+        .none => [],
+    }
+}
+
+/// The numbers a JSON array holds, a value that is no number reading as zero.
+fn numbers_of(items: List<json.Value>) -> List<Float> {
+    items.map(item -> number_of(.some(item)))
+}
+
+/// The whole numbers a JSON array holds, a value that is no number reading as zero.
+fn counts_of(items: List<json.Value>) -> List<Int> {
+    items.map(item -> number_of(.some(item)).to_int())
+}
+
+/// The flags a JSON array holds, a value that is no number reading as false.
+fn flags_of(items: List<json.Value>) -> List<Bool> {
+    items.map(item -> number_of(.some(item)) != 0.0)
+}
+
+/// The texts a JSON array holds, a value that is no text reading as empty.
+fn texts_of(items: List<json.Value>) -> List<Text> {
+    items.map(
+        item -> match item {
+            .string(text) => text,
+            .object(fields) => "",
+            .array(inside) => "",
+            .number(number) => "",
+            .bool(flag) => "",
+            .null => "",
+        },
+    )
+}
+
+/// A place search's answers, as the places a person may save.
+fn found_places(items: List<json.Value>) -> List<Found> {
+    items.map(
+        item -> Found(
+            name: text_of(item, "name"),
+            latitude: number_at(item, "latitude"),
+            longitude: number_at(item, "longitude"),
+            country: text_of(item, "country"),
+            country_code: text_of(item, "country_code"),
+            region: text_of(item, "admin1"),
+            timezone: if text_of(item, "timezone") == "" {
+                "auto"
+            } else { text_of(item, "timezone") },
+        ),
+    )
+}
+
+/// The places worth offering, in the service's order: Open-Meteo also matches a place's other
+/// names ("Amsterdam" brings back a town now called "eMvelo"), and results that would read the
+/// same show once.
+fn refine(query: Text, places: List<Found>) -> List<Found> {
+    let needle = query.trim().lower()
+    let named = places.filter(place -> place.name.lower().contains(needle))
+    let kept = if needle != "" and not named.is_empty() { named } else { places }
+    let seen: List<Text> = []
+    let out: List<Found> = []
+    for place in kept {
+        let key = "{place.name.lower()}/{place.region.lower()}/{place.country.lower()}"
+        if not seen.contains(key) {
+            seen = seen + [key]
+            out = out + [place]
+        }
+    }
+    out
+}
+
+/// The forecast address for a place, asked in metric and stored so: the app converts to the
+/// units the person chose as it draws, so changing them never costs a fetch.
+fn forecast_address(latitude: Float, longitude: Float) -> Text {
+    "https://api.open-meteo.com/v1/forecast?latitude={place_number(latitude)}&longitude={place_number(longitude)}&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m,pressure_msl,is_day&hourly=temperature_2m,precipitation_probability,weather_code,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,wind_speed_10m_max,uv_index_max&timezone=auto&forecast_days=7&temperature_unit=celsius&wind_speed_unit=kmh"
+}
+
+/// The air-quality address for a place: the two AQI scales and the pollutants that matter most.
+fn air_address(latitude: Float, longitude: Float) -> Text {
+    "https://air-quality-api.open-meteo.com/v1/air-quality?latitude={place_number(latitude)}&longitude={place_number(longitude)}&current=european_aqi,us_aqi,pm2_5,pm10,nitrogen_dioxide,ozone&timezone=auto"
+}
+
+/// A place search's address: up to eight answers, in the service's own order.
+fn geocode_address(query: Text) -> Text {
+    "https://geocoding-api.open-meteo.com/v1/search?name={query.url_encode()}&count=8&language=en&format=json"
+}
+
+/// A coordinate as the service reads it: four places after the point.
+fn place_number(number: Float) -> Text {
+    number.round(4).to_text()
+}
+
+/// Takes what the last read found: a place's reading and its hours and days land together, and
+/// the search's rows beside the field. What an update reads is nobody's step of their own, so
+/// landing it says nothing and offers no undo of its own. A second read of the same place
+/// replaces the first.
 // ---------------------------------------------------------------- what has landed
-action poll_weather(w: Locations) uses time {
+action poll_weather(w: Locations) uses time, web {
     let day = now.day().iso()
     if w.today != day {
         w.today = day
         w.tomorrow = (now + 1d).day().iso()
     }
-    if w.refresh.job != "" {
-        match engine.status(w.refresh.job) {
-            .err(why) => {
-                w.refresh.state = "done"
-                w.refresh.job = ""
-                w.refresh.note = std.say("The update stopped: {why}")
-            }
-            .ok(said) => match json.decode<Job>(said) {
-                .err(why) => {
-                    w.refresh.note = std.say("The update's answer did not read: {why}")
-                }
-                .ok(job) => {
-                    w.refresh.done = job.done
-                    w.refresh.total = job.total
-                    let asked = TakeAsk(job: w.refresh.job)
-                    match engine.call("take", json.encode(asked)) {
-                        .err(why) => {
-                            w.refresh.note = std.say("The update's answer did not read: {why}")
-                        }
-                        .ok(text) => match json.decode<Taken>(text) {
-                            .err(why) => {
-                                w.refresh.note = std.say("The update's answer did not read: {why}")
-                            }
-                            .ok(taken) => {
-                                for said in taken.answers {
-                                    match json.decode<Answer>(said) {
-                                        .err(why) => {
-                                            w.refresh.note = std.say(
-                                                "A place's answer did not read: {why}",
-                                            )
-                                        }
-                                        .ok(answer) => {
-                                            if let place = w.places.find(
-                                                    p -> p.id() == answer.place_id,
-                                                ) {
-                                                if answer.ok {
-                                                    place.current.at = answer.time
-                                                    place.current.temperature = answer.temperature
-                                                    place.current.apparent = answer.apparent
-                                                    place.current.humidity = answer.humidity
-                                                    place.current.precipitation = answer
-                                                        .precipitation
-                                                    place.current.code = answer.code
-                                                    place.current.wind = answer.wind
-                                                    place.current.wind_from = answer.wind_from
-                                                    place.current.pressure = answer.pressure
-                                                    place.current.uv = answer.uv
-                                                    place.current.day = answer.is_day
-                                                    place.current.icon = glyph(
-                                                        answer.code,
-                                                        answer.is_day,
-                                                    )
-                                                    place.trouble = ""
-                                                    place.read = true
-                                                    for old in place.hours.map(hour -> hour) {
-                                                        place.hours.remove(old)
-                                                    }
-                                                    for i in answer.hour_at.map((at, i) -> i) {
-                                                        place.hours.insert(
-                                                            Hour(
-                                                                at: answer.hour_at.at(i) ?? "",
-                                                                temperature: answer.hour_temp.at(
-                                                                    i,
-                                                                )
-                                                                    ?? 0.0,
-                                                                chance: answer.hour_chance.at(i)
-                                                                    ?? 0.0,
-                                                                code: answer.hour_code.at(i) ?? 0,
-                                                                day: answer.hour_day.at(i) ?? true,
-                                                                icon: glyph(
-                                                                    answer.hour_code.at(i) ?? 0,
-                                                                    answer.hour_day.at(i) ?? true,
-                                                                ),
-                                                            ),
-                                                        )
-                                                    }
-                                                    for old in place.days.map(day -> day) {
-                                                        place.days.remove(old)
-                                                    }
-                                                    for i in answer.day_date.map((date, i) -> i) {
-                                                        place.days.insert(
-                                                            Day(
-                                                                date: answer.day_date.at(i) ?? "",
-                                                                weekday: answer.day_weekday.at(i)
-                                                                    ?? 0,
-                                                                high: answer.day_high.at(i) ?? 0.0,
-                                                                low: answer.day_low.at(i) ?? 0.0,
-                                                                chance: answer.day_chance.at(i)
-                                                                    ?? 0.0,
-                                                                code: answer.day_code.at(i) ?? 0,
-                                                                wind: answer.day_wind.at(i) ?? 0.0,
-                                                                uv: answer.day_uv.at(i) ?? 0.0,
-                                                                rise: answer.day_rise.at(i) ?? "",
-                                                                set: answer.day_set.at(i) ?? "",
-                                                                icon: glyph(
-                                                                    answer.day_code.at(i) ?? 0,
-                                                                    true,
-                                                                ),
-                                                            ),
-                                                        )
-                                                    }
-                                                    place.has_air = answer.air_ok
-                                                    if answer.air_ok {
-                                                        place.air.at = answer.air_at
-                                                        place.air.european = answer.air_european
-                                                        place.air.us = answer.air_us
-                                                        place.air.pm2_5 = answer.air_pm2_5
-                                                        place.air.pm10 = answer.air_pm10
-                                                        place.air.no2 = answer.air_no2
-                                                        place.air.ozone = answer.air_ozone
-                                                    }
-                                                    place.fetched = at(answer.fetched)
-                                                } else {
-                                                    place.trouble = why_answer(answer)
-                                                    w.refresh.failed += 1
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                    }
-                    if job.state == "done" or job.state == "cancelled" {
-                        w.refresh.state = "done"
-                        w.refresh.job = ""
-                    }
-                }
-            },
-        }
+    if w.refresh.state == "running" {
+        // A few places a second, side by side as a service likes: enough that a handful finishes
+        // together, few enough that a large library never holds the window for long.
+        read_next(w)
+        if w.refresh.state == "running" { read_next(w) }
+        if w.refresh.state == "running" { read_next(w) }
+        if w.refresh.state == "running" { read_next(w) }
     } else if w.refresh.note == "" and w.places.any(p -> not p.read and p.trouble == "") {
         // A place nothing has been read of yet is read the first time the app runs here, unless
         // its last read failed: a service that refused stays refused until a person asks again.
@@ -522,74 +683,29 @@ action poll_weather(w: Locations) uses time {
     // rather than one per keystroke, and the last of them is the one that stands.
     if let reader = w.searches.first() {
         if reader.wanted.trim() != reader.asked {
-            if reader.job != "" {
-                engine.cancel(reader.job)
-                reader.job = ""
-            }
             let query = reader.wanted.trim()
-            if query.len() < 2 {
-                reader.asked = query
-                for old in reader.found.map(place -> place) {
-                    reader.found.remove(old)
-                }
-                reader.searching = false
-                reader.note = ""
-            } else {
-                match engine.start("search", json.encode(SearchAsk(query: query))) {
-                    .ok(job) => {
-                        reader.job = job
-                        reader.asked = query
-                        reader.searching = true
-                        for old in reader.found.map(place -> place) {
-                            reader.found.remove(old)
-                        }
-                        reader.note = ""
-                    }
-                    .err(why) => {
-                        reader.asked = query
-                        reader.searching = false
-                        reader.note = std.say("Couldn't look for places: {why}")
-                    }
-                }
+            reader.asked = query
+            for old in reader.found.map(place -> place) {
+                reader.found.remove(old)
             }
-        }
-        if reader.job != "" {
-            match engine.status(reader.job) {
-                .err(why) => {
-                    reader.job = ""
-                    reader.searching = false
-                    reader.note = std.say("The place search stopped: {why}")
-                }
-                .ok(said) => match json.decode<Job>(said) {
-                    .err(_) => {}
-                    .ok(job) => {
-                        let asked = TakeAsk(job: reader.job)
-                        match engine.call("take", json.encode(asked)) {
-                            .err(_) => {}
-                            .ok(text) => match json.decode<Taken>(text) {
-                                .err(_) => {}
-                                .ok(taken) => {
-                                    if taken.error != "" {
-                                        reader.note = taken.error
-                                    }
-                                    for old in reader.found.map(place -> place) {
-                                        reader.found.remove(old)
-                                    }
-                                    for said in taken.places {
-                                        match json.decode<Found>(said) {
-                                            .err(_) => {}
-                                            .ok(place) => { reader.found.insert(place) }
-                                        }
-                                    }
-                                }
-                            },
+            reader.note = ""
+            if query.len() >= 2 {
+                let answer = web.get(geocode_address(query))
+                if not answer.ok {
+                    reader.note = refusal(answer)
+                } else {
+                    match json.parse(answer.text()) {
+                        .err(why) => {
+                            reader.note = std.say("The place search could not be read: {why}")
                         }
-                        if job.state == "done" or job.state == "cancelled" {
-                            reader.job = ""
-                            reader.searching = false
+                        .ok(root) => {
+                            let places = refine(query, found_places(list_at(root, "results")))
+                            for place in places {
+                                reader.found.insert(place)
+                            }
                         }
                     }
-                },
+                }
             }
         }
     }
@@ -604,45 +720,6 @@ action poll_weather(w: Locations) uses time {
 
 /// The forecasts are taken as they land, and a place nothing is known of is read once.
 trigger watch_weather(w: Locations) every 1s: poll_weather(w)
-
-/// Asks the device for `places`' forecasts and air, answered with the job's id.
-fn ask_update(places: List<Place>) -> Result<Text, Text> {
-    let asked = Ask(
-        places: places.map(
-            p -> AskPlace(place_id: p.id(), latitude: p.latitude, longitude: p.longitude),
-        ),
-    )
-    engine.start("refresh", json.encode(asked))
-}
-
-/// What an answer says, kept on the place: its reading written field by field, its hours and
-/// days made into the place's own records, and its air when the second service answered.
-///
-/// Why a place could not be read, as its page says it.
-fn why_answer(answer: Answer) -> Text {
-    if answer.reason == "unreachable" {
-        "Couldn't reach the weather service. Check your connection."
-    } else if answer.reason == "refused" {
-        if answer.status > 0 {
-            std.say("The weather service refused the request (HTTP {answer.status})")
-        } else {
-            "The weather service refused the request"
-        }
-    } else if answer.reason == "not_a_reading" {
-        "The answer wasn't a forecast"
-    } else if answer.reason == "unavailable" {
-        "This device reaches no weather service"
-    } else { answer.message }
-}
-
-/// A moment from the epoch seconds an answer carries, when it names one.
-fn at(seconds: Int) -> Option<Time> {
-    if seconds <= 0 {
-        .none
-    } else {
-        .some(Time("1970-01-01T00:00:00Z") + Duration(seconds))
-    }
-}
 
 /// Whether `place` stands within a twentieth of a degree of a point: about five kilometres.
 fn near(place: Place, latitude: Float, longitude: Float) -> Bool {
@@ -659,20 +736,16 @@ fn needs_update(place: Place, moment: Time) -> Bool {
 
 /// Opening the window reads the places whose forecast is missing or no longer current. Nothing
 /// is read while it stands, so opening a window again costs nothing.
-opened action arrive(w: Locations) uses time {
-    if w.refresh.job == "" and w.places.any(p -> needs_update(p, now)) { refresh(w) }
+opened action arrive(w: Locations) uses web, time {
+    if w.refresh.state != "running" and w.places.any(p -> needs_update(p, now)) { refresh(w) }
 }
 
-/// Looks for places by name. The device asks the service away from the frame; the window takes
-/// the rows as they land.
+/// Looks for places by name: the window asks the service once per query as it is typed.
 // ---------------------------------------------------------------- looking for a place
 action begin_search(w: Locations) -> Searching (icon: .search, label: "Look for a place") {
     let found = w.searches.first() ?? w.searches.insert(Searching())
-    if found.job != "" { engine.cancel(found.job) }
     found.wanted = ""
     found.asked = ""
-    found.job = ""
-    found.searching = false
     for old in found.found.map(place -> place) {
         found.found.remove(old)
     }
@@ -682,11 +755,8 @@ action begin_search(w: Locations) -> Searching (icon: .search, label: "Look for 
 
 /// Empties the field and stops looking.
 action end_search(w: Locations, reader: Searching) {
-    if reader.job != "" { engine.cancel(reader.job) }
     reader.wanted = ""
     reader.asked = ""
-    reader.job = ""
-    reader.searching = false
     for old in reader.found.map(place -> place) {
         reader.found.remove(old)
     }
@@ -944,9 +1014,7 @@ fn shown_key(w: Locations, shown: Option<Place>) -> Text {
 
 /// What the field under the search says when there is nothing to choose from.
 fn search_words(reader: Searching) -> Text {
-    if reader.searching {
-        "Looking for places…"
-    } else if reader.wanted.trim().len() < 2 {
+    if reader.wanted.trim().len() < 2 {
         "Type two letters or more"
     } else if reader.note != "" {
         reader.note

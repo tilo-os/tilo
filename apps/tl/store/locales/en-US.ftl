@@ -599,6 +599,23 @@ d-k33jf5d6 = Force
 
 d-dhqg2zaa-filter-force = Force
 
+d-4t4usi52 = Flathub ask
+    .doc = What a page of Flathub's catalogue is asked for.
+    .noun = { $count ->
+        [one] flathub ask
+       *[other] flathub asks
+    }
+
+d-yk5x3lyl = Query
+
+d-jyhorffp = Hits per page
+
+d-n6ivjlst = Page
+
+d-4t4usi52-filter-hits_per_page = Hits per page
+
+d-4t4usi52-filter-page = Page
+
 d-bqnffizl = Started
     .doc = The engine's answer when it starts a job.
     .noun = { $count ->
@@ -851,6 +868,17 @@ d-kcpgrqgg = Take catalogue
     .doc = The catalogue one read found, put into the workspace: apps in the order the sources gave them, each replaced where it stands, and the ones its sources stopped listing taken out.
 
 d-kcpgrqgg-status = Status
+
+d-f3masrhu = Read flathub
+    .doc = Reads Flathub's catalogue over its own search API, a page at a time, and keeps every app beside the registry's.
+    .w-flathub-s-catalogue-could-not-be = Flathub's catalogue could not be read: { $why }
+
+d-ij4f6k4m = Read flathub details
+    .doc = What one Flathub app's page reads: its own AppStream document and what its build asks for.
+    .w-flathub-did-not-answer-for = Flathub did not answer for { $name }
+    .w-flathub-s-answer-for-could-not = Flathub's answer for { $name } could not be read
+
+d-ij4f6k4m-a = A
 
 d-jb2fqpim = Absorb text
     .doc = One app as a source wrote it, read and kept where it stands: an app this workspace already knew keeps what the person looked at of it.

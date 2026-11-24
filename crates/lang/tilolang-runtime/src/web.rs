@@ -16,6 +16,10 @@ use crate::run::{WebRequest, WebResponse};
 /// The most a reply's body may be; a larger one is refused as a value.
 pub const MAX_BODY: usize = 2 * 1024 * 1024;
 
+/// The most bytes one request may send as a body of zeroes (`web.post(..., bytes: n)`); a larger
+/// one is refused as a value.
+pub const MAX_UPLOAD: usize = 32 * 1024 * 1024;
+
 /// How long a request may take before the answer is a failure of status 0.
 pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -109,9 +113,9 @@ pub fn granted(hosts: &[String], host: &str) -> bool {
 }
 
 impl WebResponse {
-    /// The answer to record, from what the transport answered.
+    /// The answer to record, from what the transport answered, and how long it took.
     #[must_use]
-    pub fn of(reply: WebReply) -> Self {
+    pub fn of(reply: WebReply, duration_ms: u64) -> Self {
         let WebReply {
             status,
             status_text,
@@ -124,6 +128,7 @@ impl WebResponse {
                 status_text: format!("the reply was larger than {MAX_BODY} bytes"),
                 headers: Vec::new(),
                 body: None,
+                duration_ms,
             };
         } else {
             body_json(&body)
@@ -133,6 +138,7 @@ impl WebResponse {
             status_text,
             headers,
             body,
+            duration_ms,
         }
     }
 }
@@ -170,19 +176,26 @@ mod tests {
 
         phase a_body_reads_back_as_the_bytes_it_was;
         {
-            let response = WebResponse::of(WebReply {
-                status: 200,
-                status_text: "OK".to_owned(),
-                headers: vec![],
-                body: vec![0xff, 0xfe],
-            });
+            let response = WebResponse::of(
+                WebReply {
+                    status: 200,
+                    status_text: "OK".to_owned(),
+                    headers: vec![],
+                    body: vec![0xff, 0xfe],
+                },
+                12,
+            );
+            assert_eq!(response.duration_ms, 12, "the request's own time travels");
             assert_eq!(response.bytes(), vec![0xff, 0xfe]);
-            let text = WebResponse::of(WebReply {
-                status: 200,
-                status_text: "OK".to_owned(),
-                headers: vec![],
-                body: b"hi".to_vec(),
-            });
+            let text = WebResponse::of(
+                WebReply {
+                    status: 200,
+                    status_text: "OK".to_owned(),
+                    headers: vec![],
+                    body: b"hi".to_vec(),
+                },
+                0,
+            );
             assert_eq!(text.bytes(), b"hi");
             assert_eq!(text.body, Some(serde_json::json!("hi")));
         }

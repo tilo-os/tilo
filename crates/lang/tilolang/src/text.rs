@@ -110,3 +110,19 @@ pub fn split(text: &str, sep: &str) -> Vec<String> {
 pub fn join(pieces: &[&str], sep: &str) -> String {
     pieces.join(sep)
 }
+
+/// `text` escaped so it travels in a URL's query component: every byte outside the unreserved
+/// letters, digits and `-._~` written as `%XX`.
+#[must_use]
+pub fn url_encode(text: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
+}

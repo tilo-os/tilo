@@ -147,9 +147,26 @@ pub struct WebRequest {
     /// A `POST`'s body, as the text the language gave.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// A `POST`'s body as this many zero bytes, for a request whose body is its size: a
+    /// measurement, a keep-alive. Bounded by [`crate::web::MAX_UPLOAD`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
     /// The tag a `GET` sent as `If-None-Match`, so an unchanged answer comes back as a `304`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub if_none_match: Option<String>,
+}
+
+impl WebRequest {
+    /// The bytes this request sends: its text body, or the zero bytes its `bytes` names.
+    #[must_use]
+    pub fn body_bytes(&self) -> Option<Vec<u8>> {
+        if let Some(text) = &self.body {
+            return Some(text.clone().into_bytes());
+        }
+        self.bytes
+            .and_then(|n| usize::try_from(n).ok())
+            .map(|n| vec![0; n])
+    }
 }
 
 /// What the service answered.
@@ -166,6 +183,14 @@ pub struct WebResponse {
     /// The body: a JSON string when it read as text, `{"base64": "..."}` when it did not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<serde_json::Value>,
+    /// How long the request took, in milliseconds; 0 when none was made (a refused host, no
+    /// network) and for a journal that names no time.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub duration_ms: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl WebResponse {

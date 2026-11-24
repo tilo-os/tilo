@@ -48,6 +48,7 @@ imports! {
     StrFind = "str_find" ([H, H] -> [H]);
     StrSlice = "str_slice" ([H, I64, I64] -> [H]);
     StrReplace = "str_replace" ([H, H, H] -> [H]);
+    StrUrlEncode = "str_url_encode" ([H] -> [H]);
     StrTrim = "str_trim" ([H] -> [H]);
     StrLower = "str_lower" ([H] -> [H]);
     StrUpper = "str_upper" ([H] -> [H]);
@@ -198,8 +199,10 @@ imports! {
     Zones = "zones" ([] -> [H]);
     WebGet = "web_get" ([H, H, H] -> [H]);
     WebPost = "web_post" ([H, H, H] -> [H]);
+    WebPostBytes = "web_post_bytes" ([H, I64, H] -> [H]);
     WebOk = "web_ok" ([H] -> [I32]);
     WebStatus = "web_status" ([H] -> [I64]);
+    WebDurationMs = "web_duration_ms" ([H] -> [I64]);
     WebStatusText = "web_status_text" ([H] -> [H]);
     WebHeaders = "web_headers" ([H] -> [H]);
     WebBody = "web_body" ([H] -> [H]);

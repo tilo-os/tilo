@@ -1018,12 +1018,13 @@ impl Checker<'_> {
                     "status_text" => (Imp::WebStatusText, Ty::Text),
                     "headers" => (Imp::WebHeaders, Ty::List(Box::new(Ty::Text))),
                     "body" => (Imp::WebBody, Ty::Bytes),
+                    "duration_ms" => (Imp::WebDurationMs, Ty::Int),
                     other => {
                         self.err(
                             "E021",
                             name.span,
                             format!(
-                                "a Response has no field `{other}`; its fields are ok, status, status_text, headers and body, and `.text()` reads the body as text"
+                                "a Response has no field `{other}`; its fields are ok, status, status_text, headers, body and duration_ms, and `.text()` reads the body as text"
                             ),
                         );
                         return Ex::error();

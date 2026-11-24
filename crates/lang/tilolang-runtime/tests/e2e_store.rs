@@ -12,9 +12,9 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::host_work::EngineHost;
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value, ViewInstance,
-    };
+    use tilolang_runtime::run::WebRequest;
+    use tilolang_runtime::web::{WebReply, WebTransport};
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/store/app.tl");
     const VIEWS: &str = include_str!("../../../../apps/tl/store/views.tl");
@@ -40,20 +40,58 @@ action open_app(app_name: Text) {
       "runtime": "", "updatable": true, "trouble": ""
     }"#;
 
-    /// A Flathub app this computer cannot run.
+    /// A Flathub app this computer cannot run, as Flathub's own catalogue names it.
     const SPOTIFY: &str = r#"{
-      "identity": "com.spotify.Client", "name": "Spotify", "summary": "Music for everyone",
-      "description": "Music.", "developer": "Spotify", "license": "proprietary",
-      "categories": ["AudioVideo"], "icon": "https://artwork.invalid/spotify.png",
-      "screenshots": [], "homepage": "", "source_code": "", "origin": "flathub",
-      "registry": "Flathub", "branch": "stable", "user_managed": true, "trust": "flathub",
-      "versions": [], "available": "1.2", "installed": "", "pinned": false, "fetched": "",
-      "runnable": false, "processors": "x86_64", "awaiting_developer": false, "featured": 0,
-      "updated": "", "publisher": "", "digest": "", "bot": false,
-      "bot_triggers": [], "bot_apps": [], "bot_connectors": [], "bot_appearance": false,
-      "runtime": "", "updatable": false,
-      "trouble": "Not available for this computer: Spotify is only built for x86_64."
+      "app_id": "com.spotify.Client", "name": "Spotify", "summary": "Music for everyone",
+      "description": "Music for everyone.", "developer_name": "Spotify",
+      "project_license": "proprietary", "main_categories": "AudioVideo",
+      "icon": "https://artwork.invalid/spotify.png", "arches": ["aarch64"]
     }"#;
+
+    /// A Flathub app this computer runs, as Flathub's own catalogue names it.
+    const GLADE: &str = r#"{
+      "app_id": "org.gnome.Glade", "name": "Glade", "summary": "Build GTK interfaces",
+      "description": "Build GTK interfaces.", "developer_name": "The GNOME Project",
+      "project_license": "GPL-2.0-or-later", "main_categories": ["Development", "Graphics"],
+      "icon": "https://artwork.invalid/glade.png", "arches": ["x86_64", "aarch64"]
+    }"#;
+
+    /// A Flathub app of a Tilo app's own name: the Tilo app is the one a person gets.
+    const OTHER_NOTES: &str = r#"{
+      "app_id": "org.example.Notes", "name": "Notes", "summary": "Notes, elsewhere",
+      "description": "Notes, elsewhere.", "developer_name": "Somebody",
+      "project_license": "MIT", "main_categories": "Office",
+      "icon": "https://artwork.invalid/notes.png", "arches": ["x86_64"]
+    }"#;
+
+    /// What Flathub's search answers for its one page of apps.
+    fn search() -> String {
+        let hit = |text: &str| serde_json::from_str::<serde_json::Value>(text).expect("a hit");
+        serde_json::json!({
+            "hits": [hit(SPOTIFY), hit(GLADE), hit(OTHER_NOTES)],
+            "query": "", "processingTimeMs": 1, "hitsPerPage": 500, "page": 1,
+            "totalPages": 1, "totalHits": 3
+        })
+        .to_string()
+    }
+
+    /// What Flathub says of one app: its AppStream document.
+    const APPSTREAM: &str = r#"{
+      "description": "Build GTK interfaces quickly.",
+      "developer_name": "The GNOME Project",
+      "project_license": "GPL-2.0-or-later",
+      "urls": {"homepage": "https://glade.gnome.org"},
+      "screenshots": [{"imgDesktopUrl": "https://artwork.invalid/glade-1.png"},
+                      {"url": "https://artwork.invalid/glade-2.png"},
+                      {"url": "http://insecure.invalid/no.png"}],
+      "releases": [{"version": "3.40.0", "description": "Faster loading"},
+                   {"version": "3.38.2", "description": "Fixes"}]
+    }"#;
+
+    /// What Flatpak says one of Flathub's apps asks for.
+    const SUMMARY: &str = r#"{"arches": ["x86_64", "aarch64"], "installed_size": 12582912,
+        "metadata": {"permissions": {"filesystems": ["home"], "shared": ["network", "ipc"],
+                                     "sockets": ["x11"]}}}"#;
 
     /// A package a person handed the Store.
     const LOCAL: &str = r#"{
@@ -86,7 +124,7 @@ action open_app(app_name: Text) {
 
     fn catalogue() -> String {
         serde_json::json!({
-            "items": [NOTES, SPOTIFY],
+            "items": [NOTES],
             "remotes": [],
             "status": "Store refreshed.", "trouble": "", "flatpak": true, "flatpak_trouble": "",
             "unanswered": [], "expired": []
@@ -225,6 +263,33 @@ action open_app(app_name: Text) {
         }
     }
 
+    /// Flathub, as the app reads it over the web: its catalogue and one app's page.
+    #[derive(Clone, Default)]
+    struct Flathub {
+        asked: Rc<RefCell<Vec<WebRequest>>>,
+    }
+
+    impl WebTransport for Flathub {
+        fn fetch(&self, request: &WebRequest) -> WebReply {
+            self.asked.borrow_mut().push(request.clone());
+            let body = if request.url.contains("/api/v2/search") {
+                search()
+            } else if request.url.contains("/api/v2/appstream/") {
+                APPSTREAM.to_owned()
+            } else if request.url.contains("/api/v2/summary/") {
+                SUMMARY.to_owned()
+            } else {
+                "{}".to_owned()
+            };
+            WebReply {
+                status: 200,
+                status_text: "OK".to_owned(),
+                headers: Vec::new(),
+                body: body.into_bytes(),
+            }
+        }
+    }
+
     /// The device's files: what an action saved, and what a chosen file holds.
     #[derive(Clone, Default)]
     struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
@@ -261,28 +326,72 @@ action open_app(app_name: Text) {
         app: App,
         root: ResourceRef,
         engine: Engine,
+        flathub: Flathub,
     }
 
     impl Market {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let authority = TestAuthority::new();
+            let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let engine = Engine::default();
             // The device answers every job as done at once: what the app does with an ending is
             // this test's subject, not a wait.
             *engine.done.borrow_mut() = true;
             rt.set_engine(engine.clone());
+            let flathub = Flathub::default();
+            rt.set_web(flathub.clone());
+            rt.set_clock(|| "2026-11-24T09:30:00Z".to_owned());
             let device = Device::default();
             rt.set_blobs(device.clone());
+            // The platform's own packages: the session the app opens, the device whose language
+            // and processor it reads, and the settings its catalogue is read in.
+            let platform = tilolang_tilo::platform_apps::platform_packages()
+                .expect("the platform packages read");
+            let package = |app: &str| {
+                platform
+                    .iter()
+                    .find(|package| package.app == app)
+                    .unwrap_or_else(|| panic!("{app} is a platform package"))
+                    .clone()
+            };
+            let device_package = package("so.tilo.device");
+            let settings = package("so.tilo.settings.sections");
+            rt.load_foreign(device_package.clone())
+                .expect("the device loads");
+            rt.load_foreign(settings.clone()).expect("settings loads");
+            rt.set_reading(
+                &ResourceRef::parse_id("host-info", "so.tilo.device#HostInfo")
+                    .expect("the host's address"),
+                r#"{"hostname":"Laptop","arch":"x86_64"}"#,
+            )
+            .expect("the host's facts read");
+            rt.set_reading(
+                &ResourceRef::parse_id(
+                    "settings/appearance",
+                    "so.tilo.settings.sections#Appearance",
+                )
+                .expect("the appearance's address"),
+                r#"{"language":"en-US"}"#,
+            )
+            .expect("the language reads");
             let session = App::compile(SESSION_SOURCE, &[]);
             session.load(&rt);
-            let app = App::compile(&format!("{SOURCE}\n{VIEWS}"), &[session.meta().clone()]);
-            app.load(&rt);
+            let app = App::compile(
+                &format!("{SOURCE}\n{VIEWS}"),
+                &[
+                    session.meta().clone(),
+                    device_package.clone(),
+                    settings.clone(),
+                ],
+            );
+            authority.trust(&app.load(&rt));
             let root = rt.create_root("Store").unwrap();
             Self {
                 rt,
                 app,
                 root,
                 engine,
+                flathub,
             }
         }
 
@@ -334,6 +443,17 @@ action open_app(app_name: Text) {
                 .into_iter()
                 .find(|a| self.text(a, "identity") == identity)
                 .unwrap_or_else(|| panic!("no app {identity}"))
+        }
+
+        /// The texts a set or a list field holds.
+        fn texts(&self, r: &ResourceRef, field: &str) -> Vec<String> {
+            match self.rt.read(r, field).unwrap() {
+                Value::List(items) => items
+                    .into_iter()
+                    .filter_map(|v| v.as_text().map(str::to_owned))
+                    .collect(),
+                other => panic!("{field} reads {other:?}"),
+            }
         }
 
         fn text(&self, r: &ResourceRef, field: &str) -> String {
@@ -401,18 +521,34 @@ action open_app(app_name: Text) {
             let apps = m.apps();
             assert_eq!(
                 apps.len(),
-                2,
-                "the Tilo app and the Flathub one; trouble: {}",
-                m.text(&m.root, "trouble")
+                3,
+                "the Tilo app and two of Flathub's, never a second Notes; trouble: {:?}, status: {:?}, web requests: {}",
+                m.text(&m.root, "trouble"),
+                m.text(&m.root, "status"),
+                m.flathub.asked.borrow().len()
             );
             let notes = m.app("so.tilo.notes");
             assert_eq!(m.text(&notes, "name"), "Notes");
             assert_eq!(m.text(&notes, "available"), "0.2.0");
             assert_eq!(m.text(&notes, "installed"), "0.1.0");
             assert!(m.flag(&notes, "updatable"), "a newer version is offered");
+            // Flathub's catalogue is read over the web, one page asked for by a POST.
+            let asked = m.flathub.asked.borrow().clone();
+            assert_eq!(asked.len(), 1, "one page of Flathub's catalogue");
+            assert!(asked[0].url.starts_with("https://flathub.org/api/v2/search?locale=en"));
+            let page: serde_json::Value =
+                serde_json::from_str(asked[0].body.as_deref().expect("a body")).unwrap();
+            assert_eq!(page["page"], 1);
+            assert_eq!(page["hits_per_page"], 500);
+            let glade = m.app("org.gnome.Glade");
+            assert_eq!(m.text(&glade, "origin"), "flathub");
+            assert_eq!(m.text(&glade, "registry"), "Flathub");
+            assert_eq!(m.text(&glade, "summary"), "Build GTK interfaces");
+            assert!(m.flag(&glade, "runnable"), "built for x86_64");
+            assert_eq!(m.texts(&glade, "categories"), ["Development", "Graphics"]);
             let spotify = m.app("com.spotify.Client");
             assert!(!m.flag(&spotify, "runnable"), "built for other processors");
-            assert!(m.text(&spotify, "trouble").contains("only built for x86_64"));
+            assert!(m.text(&spotify, "trouble").contains("only built for aarch64"));
             assert!(m.flag(&m.root, "flatpak"), "this computer has Flatpak");
         }
 
@@ -437,6 +573,45 @@ action open_app(app_name: Text) {
             assert_eq!(m.text(&permissions[0], "what"), "network");
             let releases = m.list(&notes, "releases");
             assert_eq!(m.text(&releases[0], "version"), "0.2.0");
+        }
+
+        phase a_flathub_app_s_page_reads_its_own_documents;
+        {
+            let m = Market::new();
+            m.read();
+            let glade = m.app("org.gnome.Glade");
+            m.call("show_details", vec![Value::resource(&m.root), Value::resource(&glade)]);
+            assert!(m.flag(&glade, "details_read"), "the page read its documents");
+            assert_eq!(m.text(&glade, "description"), "Build GTK interfaces quickly.");
+            assert_eq!(m.text(&glade, "developer"), "The GNOME Project");
+            assert_eq!(m.text(&glade, "license"), "GPL-2.0-or-later");
+            assert_eq!(m.text(&glade, "homepage"), "https://glade.gnome.org");
+            assert_eq!(
+                m.texts(&glade, "screenshots"),
+                [
+                    "https://artwork.invalid/glade-1.png",
+                    "https://artwork.invalid/glade-2.png"
+                ],
+                "the screenshots an https address names"
+            );
+            match m.rt.read(&glade, "size").unwrap() {
+                Value::Int(size) => assert_eq!(size, 12582912),
+                other => panic!("size reads {other:?}"),
+            }
+            let permissions: Vec<String> = m
+                .list(&glade, "permissions")
+                .iter()
+                .map(|p| m.text(p, "what"))
+                .collect();
+            assert_eq!(
+                permissions,
+                ["home", "network", "system"],
+                "what the build asks for, each once"
+            );
+            let releases = m.list(&glade, "releases");
+            assert_eq!(releases.len(), 2);
+            assert_eq!(m.text(&releases[0], "version"), "3.40.0");
+            assert_eq!(m.text(&releases[0], "notes"), "Faster loading");
         }
 
         phase a_change_is_the_exact_signed_offer_and_runs_as_a_job;
@@ -601,8 +776,10 @@ action open_app(app_name: Text) {
             );
             let titles = rows(tree);
             assert!(titles.contains(&"Notes".to_owned()), "{titles:?}");
+            assert!(titles.contains(&"Glade".to_owned()), "a Flathub app is listed: {titles:?}");
             // An app this computer cannot run is found by search, never listed among apps.
             assert!(!titles.contains(&"Spotify".to_owned()), "{titles:?}");
+            assert!(!titles.contains(&"Notes, elsewhere".to_owned()), "{titles:?}");
             let notes = m.app("so.tilo.notes");
             m.call("show_details", vec![Value::resource(&m.root), Value::resource(&notes)]);
             let page = m.page(&notes);

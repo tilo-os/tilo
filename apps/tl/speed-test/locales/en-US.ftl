@@ -66,9 +66,6 @@ d-ylzbkpat = Run
 d-fbbyyume = Phase
     .doc = Where the run stands: `ping`, `download`, `upload`, `complete` or `error`.
 
-d-376ly3mp = Job
-    .doc = The device job measuring, while one runs; empty between runs.
-
 d-vufvfoij = Live
     .doc = The reading of the stage in progress: milliseconds while pinging, megabits per second after.
 
@@ -78,6 +75,14 @@ d-stw2oyj6 = Bytes
 d-nwtvekek = Server
     .doc = The server that answered.
 
+d-t3padrs4 = Ping
+    .doc = What the ping stage measured, for the run's record.
+
+d-vejad7bv = Jitter
+
+d-2kviwxr6 = Download
+    .doc = What the download stage measured.
+
 d-wkhwlknc = Error
     .doc = Why the run stopped early, in the words of the stage that failed.
 
@@ -85,68 +90,35 @@ d-ylzbkpat-filter-live = Live
 
 d-ylzbkpat-filter-bytes = Bytes
 
-d-bofeq5tj = Run state
-    .doc = What the device answers about a run (`engine.status`).
-    .noun = { $count ->
-        [one] run state
-       *[other] run states
-    }
+d-ylzbkpat-filter-ping = Ping
 
-d-4xzztkvp = State
+d-ylzbkpat-filter-jitter = Jitter
 
-d-os4ndogp = Phase
-
-d-7eyrzvhi = Live
-
-d-phil2ezm = Bytes
-
-d-5szkqkfk = Server
-
-d-hcm22tea = Ping
-
-d-esi4hzhw = Jitter
-
-d-gmjsrtmo = Download
-
-d-q4qvdsia = Upload
-
-d-eyu5ljwd = Device
-
-d-c6eopm2r = Failure
-
-d-bofeq5tj-filter-live = Live
-
-d-bofeq5tj-filter-bytes = Bytes
-
-d-bofeq5tj-filter-ping = Ping
-
-d-bofeq5tj-filter-jitter = Jitter
-
-d-bofeq5tj-filter-download = Download
-
-d-bofeq5tj-filter-upload = Upload
-
-d-divjfr4m = Started
-    .doc = What the device answers when a run starts (`engine.start`).
-    .noun = { $count ->
-        [one] started
-       *[other] starteds
-    }
-
-d-fltipwm6 = Job
+d-ylzbkpat-filter-download = Download
 
 d-gs3ocynq = Run speed test
-    .doc = Starts a run: the device measures latency, download and upload against the nearest Cloudflare test server, and the window follows it as it goes.
+    .doc = Starts a run: the window measures latency against the nearest Cloudflare test server, then the download and the upload on the seconds after, and shows the dial moving as it goes.
     .did = ran a speed test
     .w-a-test-is-running = A test is running
 
 d-eoox4ss7 = Stop the test
-    .doc = Stops the run in flight: the device stops measuring and the dial goes back to ready.
+    .doc = Stops the run in flight: the measurement stops and the dial goes back to ready.
     .did = stopped a speed test
     .w-no-test-is-running = No test is running
 
 d-crsodmy5 = Ask how far the test has got
-    .doc = Asks the device how far the run has got: the dial follows the reading of the stage, and what the run measured is kept when it ends.
+    .doc = Measures the next stage of the run on the page: the download, then the upload, which records what the run measured.
+
+d-2gbg3cfn = Ping stage
+    .doc = Times a few round trips and keeps the server the first one found.
+
+d-u32aogr2 = Download stage
+    .doc = Downloads a run's bytes in chunks of a reply the language holds whole, timing them together, and keeps the rate they came at.
+
+d-m7rzekuz = Upload stage
+    .doc = Uploads a run's bytes and records what the whole run measured.
+
+d-m7rzekuz-run = Run
 
 d-zpm53plh = Record a measurement
     .doc = Records a finished measurement, newest first, and lets the oldest go beyond what the workspace keeps: an agent or a script may record one too.
@@ -168,6 +140,10 @@ d-7joaum2r = Clear results
     .doc = Forgets every measurement.
     .did = cleared the measurements
     .w-no-test-has-been-measured = No test has been measured
+
+d-y5lrri6f = Trouble of
+    .w-failed = { $stage } failed: { $status_text }
+    .w-failed-the-server-refused-the-request = { $stage } failed: the server refused the request (HTTP { $status })
 
 d-apn5jyhr = Speed test
     .w-idle = idle

@@ -747,7 +747,6 @@ impl Platform for HostPlatform {
                 return tilo_network_client::call(app, op, input);
             }
             crate::feed_engine::register();
-            crate::weather_engine::register();
         }
         if app == crate::containers_engine::APP {
             return crate::containers_engine::call(self, app, op, input);
@@ -782,7 +781,6 @@ impl Platform for HostPlatform {
             }
             crate::backups_engine::register();
             crate::feed_engine::register();
-            crate::weather_engine::register();
         }
         if app == crate::containers_engine::APP {
             return crate::containers_engine::start(self, app, op, input);
@@ -818,7 +816,6 @@ impl Platform for HostPlatform {
         {
             crate::backups_engine::register();
             crate::feed_engine::register();
-            crate::weather_engine::register();
             if let Ok(status) = tilo_network_client::status(job)
                 .or_else(|_| crate::video_engine::status(self, job))
                 .or_else(|_| crate::print_centre_engine::status(self, job))
@@ -840,7 +837,6 @@ impl Platform for HostPlatform {
         {
             crate::backups_engine::register();
             crate::feed_engine::register();
-            crate::weather_engine::register();
             if tilo_network_client::cancel(job)
                 || crate::video_engine::cancel(job)
                 || crate::print_centre_engine::cancel(job)

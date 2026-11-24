@@ -6,6 +6,8 @@ app so.tilo.speed-test "Speed Test" (
     web: ["speed.cloudflare.com"],
 )
 
+use so.tilo.device as device
+
 /// The connections this workspace measured: one entry for every finished run, newest first, and
 /// the run the window shows, while it measures and after it ends.
 type SpeedTest {
@@ -42,37 +44,20 @@ type Measurement {
 type Run {
     /// Where the run stands: `ping`, `download`, `upload`, `complete` or `error`.
     phase: Text = "ping"
-    /// The device job measuring, while one runs; empty between runs.
-    job: Text = ""
     /// The reading of the stage in progress: milliseconds while pinging, megabits per second
     /// after.
     live: Float = 0.0
     /// The bytes the run moved so far.
-    bytes: Int = 0
+    bytes: Int merge counter = 0
     /// The server that answered.
     server: Text = ""
-    /// Why the run stopped early, in the words of the stage that failed.
-    error: Text = ""
-}
-
-/// What the device answers about a run (`engine.status`).
-type RunState {
-    state: Text = ""
-    phase: Text = ""
-    live: Float = 0.0
-    bytes: Int = 0
-    server: Text = ""
+    /// What the ping stage measured, for the run's record.
     ping: Float = 0.0
     jitter: Float = 0.0
+    /// What the download stage measured.
     download: Float = 0.0
-    upload: Float = 0.0
-    device: Text = ""
-    failure: Text = ""
-}
-
-/// What the device answers when a run starts (`engine.start`).
-type Started {
-    job: Text
+    /// Why the run stopped early, in the words of the stage that failed.
+    error: Text = ""
 }
 
 /// The most runs the workspace keeps: the newest ones, and the oldest go first.
@@ -80,35 +65,100 @@ fn kept() -> Int {
     20
 }
 
-/// Starts a run: the device measures latency, download and upload against the nearest
-/// Cloudflare test server, and the window follows it as it goes.
-primary action start(st: SpeedTest) uses time (
+/// The server every run measures against: Cloudflare's test endpoint.
+fn server_address() -> Text {
+    "https://speed.cloudflare.com"
+}
+
+/// The bytes one reply carries: the language holds a reply whole, so a run asks for its
+/// download in chunks of this size.
+fn chunk_bytes() -> Int {
+    2000000
+}
+
+/// The bytes one run uploads.
+fn upload_bytes() -> Int {
+    2000000
+}
+
+/// Megabits per second, from a byte count and how long it took.
+fn mbps(bytes: Int, milliseconds: Float) -> Float {
+    if milliseconds <= 0.0 {
+        0.0
+    } else {
+        bytes.to_float() * 8.0 / (milliseconds / 1000.0) / 1000000.0
+    }
+}
+
+/// The median of a run's samples: what a round trip usually takes.
+fn median(samples: List<Float>) -> Float {
+    let sorted = samples.sort_by(x -> x)
+    let count = sorted.len()
+    if count == 0 {
+        0.0
+    } else {
+        let mid = count / 2
+        if count % 2 == 0 {
+            ((sorted.at(mid - 1) ?? 0.0) + (sorted.at(mid) ?? 0.0)) / 2.0
+        } else { sorted.at(mid) ?? 0.0 }
+    }
+}
+
+/// How much the round trip varies: the mean step between samples, in the order they came.
+fn jitter(samples: List<Float>) -> Float {
+    let count = samples.len()
+    if count < 2 {
+        0.0
+    } else {
+        let total = 0.0
+        for i in samples.map((x, i) -> i) {
+            if i > 0 {
+                total = total + ((samples.at(i) ?? 0.0) - (samples.at(i - 1) ?? 0.0)).abs()
+            }
+        }
+        total / (count - 1).to_float()
+    }
+}
+
+/// The server that answered, by the Cloudflare location its answer names.
+fn colo_of(answer: Response) -> Text {
+    let line = answer.headers.find(h -> h.lower().starts_with("cf-meta-colo:")) ?? ""
+    if line == "" {
+        "Cloudflare"
+    } else {
+        let colo = (line.split(":").last() ?? "").trim()
+        if colo == "" { "Cloudflare" } else { "Cloudflare at {colo}" }
+    }
+}
+
+/// Why a stage could not measure, in the words the banner shows.
+fn trouble_of(answer: Response, stage: Text) -> Text {
+    if answer.status == 0 {
+        std.say("{stage} failed: {answer.status_text}")
+    } else {
+        std.say("{stage} failed: the server refused the request (HTTP {answer.status})")
+    }
+}
+
+/// Starts a run: the window measures latency against the nearest Cloudflare test server, then
+/// the download and the upload on the seconds after, and shows the dial moving as it goes.
+primary action start(st: SpeedTest) uses time, web (
     icon: .play,
     label: "Run speed test",
     did: "ran a speed test",
 ) {
     applies st.runs.is_empty() "A test is running"
     let run = st.runs.insert(Run())
-    match engine.start("run", "") {
-        .ok(answer) => match json.decode<Started>(answer) {
-            .ok(started) => {
-                run.job = started.job
-                st.next_poll = .some(now + 1s)
-            }
-            .err(why) => {
-                run.phase = "error"
-                run.error = why
-            }
-        },
-        .err(why) => {
-            run.phase = "error"
-            run.error = why
-        }
+    st.next_poll = .none
+    if ping_stage(run) {
+        run.phase = "download"
+        run.live = 0.0
+        st.next_poll = .some(now + 1s)
     }
 }
 
-/// Stops the run in flight: the device stops measuring and the dial goes back to ready. Nothing
-/// of a stopped run is kept.
+/// Stops the run in flight: the measurement stops and the dial goes back to ready. Nothing of a
+/// stopped run is kept.
 action stop(st: SpeedTest) uses time (
     icon: .square,
     label: "Stop the test",
@@ -117,62 +167,90 @@ action stop(st: SpeedTest) uses time (
     applies not st.runs.is_empty() "No test is running"
     st.next_poll = .none
     for run in st.runs {
-        engine.cancel(run.job)
         st.runs.remove(run)
     }
 }
 
-/// Asks the device how far the run has got: the dial follows the reading of the stage, and what
-/// the run measured is kept when it ends. A device that no longer answers the run ends it without
-/// a measurement, as closing the app used to.
-action poll(st: SpeedTest) uses time (label: "Ask how far the test has got") {
+/// Measures the next stage of the run on the page: the download, then the upload, which records
+/// what the run measured. A stage that fails ends the run with its words.
+action poll(st: SpeedTest) uses time, web (label: "Ask how far the test has got") {
     let current = st.runs.first()
     if let run = current {
         st.next_poll = .none
-        if run.job != "" {
-            if run.job == "" {
-                return
+        if run.phase == "download" {
+            if download_stage(run) {
+                run.phase = "upload"
+                st.next_poll = .some(now + 1s)
             }
-            match engine.status(run.job) {
-                .err(_) => { st.runs.remove(run) }
-                .ok(answer) => match json.decode<RunState>(answer) {
-                    .err(why) => {
-                        run.phase = "error"
-                        run.error = why
-                        run.job = ""
-                    }
-                    .ok(state) => {
-                        if state.state == "done" {
-                            run.phase = "complete"
-                            run.job = ""
-                            run.live = state.upload
-                            run.bytes = state.bytes
-                            run.server = state.server
-                            record(
-                                st,
-                                state.ping,
-                                state.jitter,
-                                state.download,
-                                state.upload,
-                                state.server,
-                                state.device,
-                            )
-                        } else if state.state == "failed" {
-                            run.phase = "error"
-                            run.error = state.failure
-                            run.job = ""
-                        } else {
-                            run.phase = state.phase
-                            run.live = state.live
-                            run.bytes = state.bytes
-                            run.server = state.server
-                            st.next_poll = .some(now + 1s)
-                        }
-                    }
-                },
-            }
+        } else if run.phase == "upload" { upload_stage(st, run) }
+    }
+}
+
+/// Times a few round trips and keeps the server the first one found. The dial shows the last
+/// reading while the run measures.
+action ping_stage(run: Run) -> Bool uses web {
+    let server = server_address()
+    let samples: List<Float> = []
+    for i in [1, 2, 3, 4, 5, 6] {
+        let answer = web.get("{server}/__down?bytes=1")
+        if not answer.ok {
+            run.phase = "error"
+            run.error = trouble_of(answer, "Ping")
+            return false
+        }
+        if i == 1 {
+            run.server = colo_of(answer)
+        } else {
+            let took = answer.duration_ms.to_float()
+            samples = samples + [took]
+            run.live = took
         }
     }
+    let measured = median(samples)
+    run.ping = measured
+    run.jitter = jitter(samples)
+    run.live = measured
+    true
+}
+
+/// Downloads a run's bytes in chunks of a reply the language holds whole, timing them together,
+/// and keeps the rate they came at.
+action download_stage(run: Run) -> Bool uses web {
+    let server = server_address()
+    let bytes = 0
+    let took = 0.0
+    for i in [1, 2, 3, 4, 5] {
+        let answer = web.get("{server}/__down?bytes={chunk_bytes()}")
+        if not answer.ok {
+            run.phase = "error"
+            run.error = trouble_of(answer, "Download test")
+            return false
+        }
+        let chunk = answer.body.len()
+        bytes = bytes + chunk
+        run.bytes += chunk
+        took = took + answer.duration_ms.to_float()
+        run.live = mbps(bytes, took)
+    }
+    run.download = mbps(bytes, took)
+    run.live = run.download
+    true
+}
+
+/// Uploads a run's bytes and records what the whole run measured. A refusal fails the stage.
+action upload_stage(st: SpeedTest, run: Run) uses web {
+    let server = server_address()
+    let answer = web.post("{server}/__up", bytes: upload_bytes())
+    if not answer.ok {
+        run.phase = "error"
+        run.error = trouble_of(answer, "Upload test")
+        return
+    }
+    let measured = mbps(upload_bytes(), answer.duration_ms.to_float())
+    run.live = measured
+    run.bytes += upload_bytes()
+    run.phase = "complete"
+    record(st, run.ping, run.jitter, run.download, measured, run.server, device.host_info.hostname)
 }
 
 /// Records a finished measurement, newest first, and lets the oldest go beyond what the

@@ -32,7 +32,6 @@ app-launch = [
     "dep:tilo-chip-design-engine",
     "dep:tilolang-calendar",
     "dep:tilo-feeds",
-    "dep:tilo-weather",
     "dep:video-edit",
     "dep:video-picture",
     "dep:passwords-engine",
@@ -120,8 +119,7 @@ tilolang-calendar = { path = "../../integrations/tilolang-calendar", optional = 
 tilo-content = { version = "0.1.0", path = "../../core/content" }
 # The device's drawing engine: a Canvas artwork drawn, carried and brought over its file.
 tilo-canvas-engine = { version = "0.1.0", path = "../../engines/canvas-engine" }
-# The speed test's device work: its one run measuring latency, download and upload.
-speed-engine = { version = "0.1.0", path = "../../engines/speed-engine" }
+# Diff & Merge's device work: the merge a package asks for with no window.
 diffmerge-engine = { path = "../../engines/diffmerge-engine" }
 # The one PDF reader: what the device's PDF engine answers a package's `pdf.*` with.
 tilo-pdf-reader = { version = "0.1.0", path = "../../engines/pdf" }
@@ -231,8 +229,6 @@ tilo-backups-engine = { version = "0.1.0", path = "../../engines/tilo-backups-en
 tilo-chip-design-engine = { version = "0.1.0", path = "../../engines/tilo-chip-design-engine", optional = true }
 # The Feeds app's engine: its feeds read away from the frame, and OPML read and written.
 tilo-feeds = { path = "../../engines/feeds", optional = true }
-# The Weather app's engine: its forecasts, air quality and place search read away from the frame.
-tilo-weather = { path = "../../engines/weather", optional = true }
 video-edit = { package = "tilo-video-edit", path = "../../engines/video-edit", default-features = false, optional = true }
 video-picture = { package = "tilo-video-picture", path = "../../engines/video-picture", default-features = false, features = ["decode", "gst"], optional = true }
 # The Print Centre's printers and print jobs, through the system's print service.

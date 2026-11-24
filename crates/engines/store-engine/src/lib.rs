@@ -140,9 +140,7 @@ struct CatalogueAnswer {
 /// The catalogue the app reads: the last read, or a fresh one. The app starts a read as a job and
 /// then asks for its answer, which is the same one the job kept.
 fn catalogue(force: bool) -> Result<String, String> {
-    if !force
-        && let Some(kept) = cache().lock().ok().and_then(|kept| kept.clone())
-    {
+    if !force && let Some(kept) = cache().lock().ok().and_then(|kept| kept.clone()) {
         return Ok(kept);
     }
     let answer = read_catalogue()?;
@@ -158,10 +156,6 @@ fn cache() -> &'static Mutex<Option<String>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
-fn locale() -> String {
-    settings_store::appearance::preferred_language().unwrap_or_else(|| "en".into())
-}
-
 fn read_catalogue() -> Result<CatalogueAnswer, String> {
     let mut answer = CatalogueAnswer {
         status: "Store refreshed.".to_owned(),
@@ -170,9 +164,6 @@ fn read_catalogue() -> Result<CatalogueAnswer, String> {
     };
     let mut items = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    // A Tilo app and a Flathub app of the same name are one app to a person: the Tilo one wins,
-    // so a source's listing never shows the same name twice.
-    let mut tilo_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     // What a person's own list hides, and what this device's administrator or their workspace
     // hides, is hidden everywhere in the Store.
@@ -188,7 +179,6 @@ fn read_catalogue() -> Result<CatalogueAnswer, String> {
             continue;
         }
         seen.insert(offer.package_id.clone());
-        tilo_names.insert(offer.display_name.trim().to_ascii_lowercase());
         items.push(record(&tilo_item(offer, &installed))?);
     }
     // A directory bot has no version to fetch on this computer: adding it saves its program as
@@ -198,20 +188,6 @@ fn read_catalogue() -> Result<CatalogueAnswer, String> {
             continue;
         }
         items.push(record(&tilo_bot_item(bot))?);
-    }
-
-    let language = locale();
-    for entry in app_catalogue::appstream::load_cached(&language) {
-        if !matches!(&entry.source, app_catalogue::Source::Flathub { .. }) {
-            continue;
-        }
-        if blocks.is_blocked(&entry.id)
-            || !seen.insert(entry.id.clone())
-            || tilo_names.contains(&entry.name.trim().to_ascii_lowercase())
-        {
-            continue;
-        }
-        items.push(record(&flathub_item(&entry, &installed))?);
     }
 
     let flatpak = package_actions::flatpak::Flatpak::from_env();
@@ -248,8 +224,7 @@ fn installed_rows() -> Installed {
     let mut rows = Installed::default();
     if let Ok(listed) = package_store::list_installed() {
         for entry in listed {
-            rows.version
-                .insert(entry.id.clone(), entry.version.clone());
+            rows.version.insert(entry.id.clone(), entry.version.clone());
             rows.pinned.insert(entry.id, entry.pinned);
         }
     }
@@ -258,7 +233,11 @@ fn installed_rows() -> Installed {
 
 fn tilo_item(offer: &app_cli::CatalogueApp, installed: &Installed) -> Item {
     let version = offer.version.clone();
-    let installed_version = installed.version.get(&offer.package_id).cloned().unwrap_or_default();
+    let installed_version = installed
+        .version
+        .get(&offer.package_id)
+        .cloned()
+        .unwrap_or_default();
     let pinned = installed
         .pinned
         .get(&offer.package_id)
@@ -305,16 +284,18 @@ fn tilo_item(offer: &app_cli::CatalogueApp, installed: &Installed) -> Item {
         branch: "stable".to_owned(),
         user_managed: true,
         trust: "publisher_signed".to_owned(),
-        versions: vec![record(&Version {
-            version: version.clone(),
-            released: String::new(),
-            root: offer.tapp_root_hash_hex.clone(),
-            surface: offer.tapp_surface_hex.clone(),
-            size: offer.tapp_size_bytes,
-            runtime: offer.runtime.clone().unwrap_or_default(),
-            download: offer.download_url.clone(),
-        })
-        .unwrap_or_default()],
+        versions: vec![
+            record(&Version {
+                version: version.clone(),
+                released: String::new(),
+                root: offer.tapp_root_hash_hex.clone(),
+                surface: offer.tapp_surface_hex.clone(),
+                size: offer.tapp_size_bytes,
+                runtime: offer.runtime.clone().unwrap_or_default(),
+                download: offer.download_url.clone(),
+            })
+            .unwrap_or_default(),
+        ],
         available: version,
         fetched: installed_version.clone(),
         installed: installed_version,
@@ -336,7 +317,10 @@ fn tilo_item(offer: &app_cli::CatalogueApp, installed: &Installed) -> Item {
         trouble: if runnable {
             String::new()
         } else {
-            format!("Not available for this computer: built for {}.", offer.architecture)
+            format!(
+                "Not available for this computer: built for {}.",
+                offer.architecture
+            )
         },
     }
 }
@@ -365,11 +349,13 @@ fn tilo_bot_item(bot: &app_cli::bots::CatalogueBot) -> Item {
         branch: "stable".to_owned(),
         user_managed: true,
         trust: "publisher_signed".to_owned(),
-        versions: vec![record(&Version {
-            version: bot.version.clone(),
-            ..Version::default()
-        })
-        .unwrap_or_default()],
+        versions: vec![
+            record(&Version {
+                version: bot.version.clone(),
+                ..Version::default()
+            })
+            .unwrap_or_default(),
+        ],
         available: bot.version.clone(),
         runnable: true,
         publisher: bot.publisher_pubkey_hex.clone(),
@@ -388,56 +374,6 @@ fn tilo_bot_item(bot: &app_cli::bots::CatalogueBot) -> Item {
     }
 }
 
-fn flathub_item(entry: &app_catalogue::CatalogueEntry, installed: &Installed) -> Item {
-    let installed_version = installed.version.get(&entry.id).cloned().unwrap_or_default();
-    Item {
-        identity: entry.id.clone(),
-        name: if entry.name.is_empty() {
-            entry.id.clone()
-        } else {
-            entry.name.clone()
-        },
-        summary: if entry.tagline.is_empty() {
-            entry.description.clone()
-        } else {
-            entry.tagline.clone()
-        },
-        description: entry.description.clone(),
-        developer: String::new(),
-        license: String::new(),
-        categories: entry.category.iter().cloned().collect(),
-        icon: entry.icon_url.clone().unwrap_or_default(),
-        screenshots: Vec::new(),
-        homepage: String::new(),
-        source_code: String::new(),
-        origin: "flathub".to_owned(),
-        registry: "Flathub".to_owned(),
-        branch: "stable".to_owned(),
-        user_managed: true,
-        trust: "flathub".to_owned(),
-        versions: vec![record(&Version::default()).unwrap_or_default()],
-        available: String::new(),
-        installed: installed_version.clone(),
-        pinned: false,
-        fetched: installed_version,
-        runnable: !entry.not_built_for_this_device,
-        processors: String::new(),
-        awaiting_developer: false,
-        featured: 0,
-        updated: String::new(),
-        publisher: String::new(),
-        digest: String::new(),
-        bot: false,
-        bot_triggers: Vec::new(),
-        bot_apps: Vec::new(),
-        bot_connectors: Vec::new(),
-        bot_appearance: false,
-        runtime: String::new(),
-        updatable: false,
-        trouble: String::new(),
-    }
-}
-
 fn installed_flatpak_item(app: &package_actions::flatpak::Installed) -> Item {
     Item {
         identity: app.app.clone(),
@@ -448,11 +384,13 @@ fn installed_flatpak_item(app: &package_actions::flatpak::Installed) -> Item {
         registry: "Flathub".to_owned(),
         branch: app.branch.clone(),
         trust: "flathub".to_owned(),
-        versions: vec![record(&Version {
-            version: app.version.clone(),
-            ..Version::default()
-        })
-        .unwrap_or_default()],
+        versions: vec![
+            record(&Version {
+                version: app.version.clone(),
+                ..Version::default()
+            })
+            .unwrap_or_default(),
+        ],
         available: app.version.clone(),
         installed: app.version.clone(),
         fetched: app.version.clone(),
@@ -516,12 +454,6 @@ fn one(input: &str) -> Result<String, String> {
     {
         return writes(&json!({ "item": record(&tilo_bot_item(&bot))? }));
     }
-    if let Some(entry) = app_catalogue::appstream::load_cached(&locale())
-        .into_iter()
-        .find(|entry| entry.id == ask.identity)
-    {
-        return writes(&json!({ "item": record(&flathub_item(&entry, &installed))? }));
-    }
     Ok(r#"{"item":null}"#.to_owned())
 }
 
@@ -578,180 +510,23 @@ fn details(input: &str) -> Result<String, String> {
             "digest": item.digest,
         }));
     }
-    let appstream = flathub_document(&ask.identity, "appstream")?;
-    let summary = flathub_document(&ask.identity, "summary")?;
-    writes(&flathub_details(&appstream, &summary)?)
-}
-
-fn flathub_document(app: &str, kind: &str) -> Result<Value, String> {
-    let base = std::env::var("FLATHUB_API_BASE")
-        .unwrap_or_else(|_| "https://flathub.org/api/v2".to_owned());
-    let url = if kind == "appstream" {
-        format!("{base}/appstream/{app}?locale={}", locale_parameter())
-    } else {
-        format!("{base}/summary/{app}")
-    };
-    let client = tilo_net::http::blocking_client()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .map_err(|error| format!("http client: {error}"))?;
-    let text = client
-        .get(url)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::text)
-        .map_err(|error| format!("Flathub did not answer: {error}"))?;
-    serde_json::from_str(&text).map_err(|error| format!("Flathub's answer does not read: {error}"))
-}
-
-fn locale_parameter() -> String {
-    let locale = locale();
-    locale.split(['-', '_']).next().unwrap_or("en").to_owned()
-}
-
-fn flathub_details(appstream: &Value, summary: &Value) -> Result<Value, String> {
-    let text = |names: &[&str]| {
-        names.iter().find_map(|name| {
-            appstream
-                .get(*name)
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-    };
-    let description = text(&["description"]).unwrap_or_default();
-    let developer = text(&["developer_name"])
-        .or_else(|| {
-            appstream
-                .get("developer")
-                .and_then(|developer| developer.get("name"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_default();
-    let license = text(&["project_license", "license"]).unwrap_or_default();
-    let homepage = appstream
-        .get("urls")
-        .and_then(|urls| urls.get("homepage"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_default();
-    let screenshots = appstream
-        .get("screenshots")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|shot| {
-            ["imgDesktopUrl", "url", "src"]
-                .iter()
-                .find_map(|name| shot.get(*name).and_then(Value::as_str))
-                .filter(|url| url.starts_with("https://"))
-                .map(str::to_owned)
-        })
-        .take(8)
-        .collect::<Vec<_>>();
-    let releases = appstream
-        .get("releases")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|release| {
-            let version = release.get("version").and_then(Value::as_str)?;
-            record(&json!({
-                "version": version,
-                "notes": release.get("description").and_then(Value::as_str).unwrap_or(""),
-            }))
-            .ok()
-        })
-        .take(6)
-        .collect::<Vec<_>>();
-    let size = summary
-        .get("installed_size")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let permissions = flathub_permissions(summary)
-        .into_iter()
-        .map(|(what, broad)| {
-            record(&json!({ "what": what, "broad": broad }))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(json!({
-        "description": description,
-        "developer": developer,
-        "license": license,
-        "homepage": homepage,
+    // A Flathub app's page reads Flathub itself, in the app.
+    writes(&json!({
+        "description": "",
+        "developer": "",
+        "license": "",
+        "homepage": "",
         "source_code": "",
-        "size": size,
-        "screenshots": screenshots,
-        "permissions": permissions,
-        "releases": releases,
+        "size": 0,
+        "screenshots": [],
+        "permissions": [],
+        "releases": [],
         "runtime": "",
         "runtime_registry": "",
         "digest": "",
     }))
 }
 
-/// The permissions a Flatpak asks for, as the app can read them: what it reaches and whether
-/// that reaches everything.
-fn flathub_permissions(summary: &Value) -> Vec<(&'static str, bool)> {
-    let permissions = summary
-        .get("metadata")
-        .and_then(|metadata| metadata.get("permissions"))
-        .or_else(|| summary.get("permissions"));
-    let Some(permissions) = permissions else {
-        return Vec::new();
-    };
-    let filesystems = permissions
-        .get("filesystems")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>();
-    let mut found = Vec::new();
-    if filesystems.contains(&"host") || filesystems.contains(&"host:ro") {
-        found.push(("files:all", true));
-    } else if filesystems.contains(&"home") || filesystems.contains(&"home:ro") {
-        found.push(("home", true));
-    }
-    if permissions.get("network").is_some_and(|network| !network.is_null()) {
-        found.push(("network", false));
-    }
-    if permissions
-        .get("devices")
-        .and_then(Value::as_array)
-        .is_some_and(|devices| devices.iter().any(|device| device == "all"))
-    {
-        found.push(("devices", true));
-    }
-    if let Some(shared) = permissions.get("shared").and_then(Value::as_array) {
-        for name in shared.iter().filter_map(Value::as_str) {
-            match name {
-                "network" => found.push(("network", false)),
-                "ipc" => found.push(("system", false)),
-                _ => {}
-            }
-        }
-    }
-    if permissions
-        .get("sockets")
-        .and_then(Value::as_array)
-        .is_some_and(|sockets| sockets.iter().any(|socket| socket == "x11"))
-    {
-        found.push(("system", false));
-    }
-    if permissions
-        .get("talk-name")
-        .and_then(Value::as_array)
-        .is_some_and(|names| !names.is_empty())
-    {
-        found.push(("system", false));
-    }
-    found.sort_unstable();
-    found.dedup();
-    found
-}
-
-/// What a repository offers, as app rows of its own.
 fn browse(input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
@@ -794,7 +569,10 @@ fn browse(input: &str) -> Result<String, String> {
             trouble: String::new(),
             ..Item::default()
         };
-        if let Some(version) = columns.get(3).map(|version| version.trim()).filter(|v| !v.is_empty())
+        if let Some(version) = columns
+            .get(3)
+            .map(|version| version.trim())
+            .filter(|v| !v.is_empty())
         {
             let text = record(&Version {
                 version: version.to_owned(),
@@ -863,7 +641,7 @@ fn runtime(input: &str) -> Result<String, String> {
             return writes(&json!({
                 "item": Value::Null,
                 "trouble": "More than one repository offers this runtime. Choose one repository before installing.",
-            }))
+            }));
         }
     }
     let installed = installed_rows();
@@ -936,7 +714,9 @@ fn review(input: &str) -> Result<String, String> {
     };
     let package = &tapp.meta.manifest.package;
     if !matches!(package.kind, tilo_app_package::Kind::App) {
-        return review_trouble("Choose an app package. System components and runtimes use the system updater.");
+        return review_trouble(
+            "Choose an app package. System components and runtimes use the system updater.",
+        );
     }
     if tapp.meta.root.signature.is_none() {
         return review_trouble("This package is not signed by a publisher.");
@@ -1096,7 +876,8 @@ fn change(change: &Change, update: bool) -> Result<String, String> {
                 .into_iter()
                 .find(|offer| offer.package_id == change.identity)
                 .ok_or_else(|| {
-                    "No enabled repository offers the required runtime for this computer.".to_owned()
+                    "No enabled repository offers the required runtime for this computer."
+                        .to_owned()
                 })?;
             app_cli::device::install_offered(&app_cli::device::release_of(&offer))
                 .map(|_| format!("Installed {}.", offer.display_name))
@@ -1301,7 +1082,7 @@ fn prepare_report(input: &str) -> Result<String, String> {
         }
         let evidence =
             registry_types::report_evidence_digest(&ask.identity, "Not submitted", &ask.note, None)
-        .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())?;
         registry_types::ModerationMutation::FileReport {
             package_id: ask.identity.clone(),
             category: "policy".to_owned(),
@@ -1322,8 +1103,8 @@ fn prepare_report(input: &str) -> Result<String, String> {
         mutation,
     };
     operation.validate()?;
-    let operation =
-        serde_json::to_string(&operation).map_err(|error| format!("the report does not write: {error}"))?;
+    let operation = serde_json::to_string(&operation)
+        .map_err(|error| format!("the report does not write: {error}"))?;
     writes(&json!({
         "operation": operation,
         "registry": registry.name,
@@ -1396,7 +1177,9 @@ fn verified_case(
         }
         match page.next_sequence {
             Some(next) if next > from => from = next,
-            Some(_) => return Err("the registry returned an invalid moderation response".to_owned()),
+            Some(_) => {
+                return Err("the registry returned an invalid moderation response".to_owned());
+            }
             None => break,
         }
     }
@@ -1409,10 +1192,7 @@ fn verified_case(
     .map_err(|error| error.to_string())
 }
 
-fn transparency(
-    base_url: &str,
-    from: u64,
-) -> Result<registry_types::TransparencyPage, String> {
+fn transparency(base_url: &str, from: u64) -> Result<registry_types::TransparencyPage, String> {
     let mut url = moderation_url(base_url, "moderation/transparency")?;
     url.query_pairs_mut()
         .append_pair("from", &from.max(1).to_string())
@@ -1428,11 +1208,13 @@ fn transparency(
         .and_then(reqwest::blocking::Response::error_for_status)
         .and_then(reqwest::blocking::Response::text)
         .map_err(|error| format!("registry moderation service is offline: {error}"))?;
-    serde_json::from_str(&text).map_err(|_| "the registry returned an invalid moderation response".to_owned())
+    serde_json::from_str(&text)
+        .map_err(|_| "the registry returned an invalid moderation response".to_owned())
 }
 
 fn moderation_url(base_url: &str, suffix: &str) -> Result<reqwest::Url, String> {
-    let mut url = reqwest::Url::parse(base_url).map_err(|_| "invalid registry address".to_owned())?;
+    let mut url =
+        reqwest::Url::parse(base_url).map_err(|_| "invalid registry address".to_owned())?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return Err("registry URL must be credential-free HTTPS".to_owned());
     }
@@ -1543,7 +1325,12 @@ mod jobs {
     }
 
     /// Runs `work` after the answer, keeping what it came to.
-    fn spawn(op: &'static str, work: impl FnOnce(&AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<String, String> + Send + 'static) -> String {
+    fn spawn(
+        op: &'static str,
+        work: impl FnOnce(&AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<String, String>
+        + Send
+        + 'static,
+    ) -> String {
         let id = next();
         let job = Arc::new(Job {
             state: Mutex::new(JobState {
@@ -1764,14 +1551,24 @@ fn reference(input: &str) -> Result<String, String> {
         registry: "Flathub".to_owned(),
         branch: found.branch.clone(),
         trust: "flathub".to_owned(),
-        versions: vec![record(&Version {
-            version: found.branch.clone(),
-            ..Version::default()
-        })
-        .unwrap_or_default()],
+        versions: vec![
+            record(&Version {
+                version: found.branch.clone(),
+                ..Version::default()
+            })
+            .unwrap_or_default(),
+        ],
         available: found.branch.clone(),
-        installed: installed.version.get(&found.app_id).cloned().unwrap_or_default(),
-        fetched: installed.version.get(&found.app_id).cloned().unwrap_or_default(),
+        installed: installed
+            .version
+            .get(&found.app_id)
+            .cloned()
+            .unwrap_or_default(),
+        fetched: installed
+            .version
+            .get(&found.app_id)
+            .cloned()
+            .unwrap_or_default(),
         runnable: true,
         homepage: found.url.clone(),
         publisher: String::new(),
@@ -1844,7 +1641,6 @@ fn flatpak_ref(content: &str) -> Option<FlatpakRef> {
     })
 }
 
-
 #[cfg(test)]
 mod bot_tests {
     use super::*;
@@ -1882,7 +1678,10 @@ mod bot_tests {
         assert_eq!(item.bot_triggers, ["schedule", "resource_changed"]);
         assert_eq!(item.bot_apps, ["so.tilo.chat"]);
         assert!(item.bot_appearance, "it may post under other names");
-        assert!(item.installed.is_empty(), "nothing is fetched on this computer");
+        assert!(
+            item.installed.is_empty(),
+            "nothing is fetched on this computer"
+        );
         assert!(item.runnable, "a bot is always added, never built here");
     }
 }

@@ -9,7 +9,7 @@ opened action read_sources(s: Store) {
 }
 
 /// Opening an app's page reads what its source says about it, once.
-opened action read_details(a: App) {
+opened action read_details(a: App) uses web {
     if not a.details_read { show_details(root Store, a) }
 }
 

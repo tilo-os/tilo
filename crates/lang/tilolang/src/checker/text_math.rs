@@ -182,6 +182,14 @@ impl Checker<'_> {
                 let to = self.expr_as(&to.value, &Ty::Text);
                 Ex::host(Imp::StrReplace, vec![r, from, to], Ty::Text)
             }
+            // The text escaped so it travels in a URL's query: everything outside the unreserved
+            // letters, digits and `-._~` written as its percent escape.
+            "url_encode" => {
+                if !self.arity(name, args, 0, span) {
+                    return None;
+                }
+                Ex::host(Imp::StrUrlEncode, vec![r], Ty::Text)
+            }
             // The number a text writes: an id another app gave as text, passed where its action takes the
             // number.
             "to_int" => Ex::host(Imp::StrToInt, vec![r], Ty::Option(Box::new(Ty::Int))),

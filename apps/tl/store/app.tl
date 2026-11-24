@@ -3,9 +3,12 @@ app so.tilo.store "App Store" (
     category: .system,
     tagline: "The apps of your workspace, and what they run on this computer",
     keywords: ["store", "apps", "install", "update", "uninstall", "get", "flatpak", "registry", "repositories", "bots"],
+    web: ["flathub.org"],
 )
 
 use so.tilo.session as session
+use so.tilo.device as device
+use so.tilo.settings.sections as settings
 
 /// Where an app in the catalogue comes from.
 enum Origin {
@@ -627,7 +630,7 @@ action refresh(s: Store) (icon: .refresh) {
 
 /// Asks how far the read or the change running has got, and puts what it found into the
 /// workspace. Runs while the window is open.
-action poll(s: Store) {
+action poll(s: Store) uses web {
     if s.reading != "" {
         match engine.status(s.reading) {
             .err(why) => {
@@ -743,6 +746,10 @@ action begin(s: Store, a: App, op: Text, ask: Text) {
 /// Reads one app as it stands now: what the workspace runs, what the computer fetched, and the
 /// newest offer its source makes.
 action read_app(s: Store, a: App) {
+    if a.origin == "flathub" {
+        // Flathub's catalogue is read here, so its row is what the app already holds.
+        return
+    }
     match engine.call("one", json.encode(OneAsk(identity: a.identity))) {
         .err(why) => {
             s.trouble = why
@@ -760,7 +767,11 @@ action read_app(s: Store, a: App) {
 }
 
 /// Reads one app's page: what its source says about it.
-action show_details(s: Store, a: App) {
+action show_details(s: Store, a: App) uses web {
+    if a.origin == "flathub" {
+        read_flathub_details(s, a)
+        return
+    }
     match engine.call("details", json.encode(OneAsk(identity: a.identity))) {
         .err(why) => {
             s.trouble = why
@@ -810,7 +821,7 @@ action show_details(s: Store, a: App) {
 
 /// The catalogue one read found, put into the workspace: apps in the order the sources gave
 /// them, each replaced where it stands, and the ones its sources stopped listing taken out.
-action take_catalogue(s: Store, status: Text) {
+action take_catalogue(s: Store, status: Text) uses web {
     match engine.call("catalogue", json.encode(Ask(force: false))) {
         .err(why) => {
             s.trouble = why
@@ -845,6 +856,369 @@ action take_catalogue(s: Store, status: Text) {
             }
         },
     }
+    // Flathub's catalogue is read after the registries', so a Tilo app of the same name is the
+    // one a person gets.
+    read_flathub(s)
+}
+
+/// Reads Flathub's catalogue over its own search API, a page at a time, and keeps every app
+/// beside the registry's. A person's language names the rows, as every other source's does.
+// ---------------------------------------------------------------- Flathub
+action read_flathub(s: Store) uses web {
+    let language = locale_language()
+    let last = 1
+    for page in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] {
+        if page > last {
+            return
+        }
+        let ask = json.encode(FlathubAsk(page: page))
+        let answer = web.post(
+            "https://flathub.org/api/v2/search?locale={language}",
+            body: ask,
+            headers: ["Content-Type: application/json"],
+        )
+        if not answer.ok {
+            if page == 1 {
+                s.status = "The apps of your workspace are read; Flathub could not be reached."
+            }
+            return
+        }
+        match json.parse(answer.text()) {
+            .err(why) => {
+                s.trouble = std.say("Flathub's catalogue could not be read: {why}")
+                return
+            }
+            .ok(root) => {
+                last = number_at(root, "totalPages").to_int()
+                for hit in list_at(root, "hits") {
+                    if let item = flathub_item(s, hit) { absorb_text(s, json.encode(item)) }
+                }
+            }
+        }
+    }
+}
+
+/// One app of Flathub's catalogue, as the app keeps it: nothing for a hit of no app, or one a
+/// Tilo app of the same name stands in for.
+fn flathub_item(s: Store, hit: json.Value) -> Option<Item> {
+    let identity = text_of(hit, "app_id")
+    if identity == "" {
+        return .none
+    }
+    let name = text_of(hit, "name")
+    if name == "" {
+        name = identity
+    }
+    if s.apps.any(a -> a.origin == "tilo" and a.name.lower() == name.lower()) {
+        return .none
+    }
+    let known = s.apps.find(a -> a.identity == identity)
+    let installed = if let a = known { a.installed } else { "" }
+    let fetched = if let a = known { a.fetched } else { "" }
+    let arches = strings_of(list_at(hit, "arches"))
+    let built = arches.is_empty() or arches.contains(device.host_info.arch)
+    return .some(
+        Item(
+            identity: identity,
+            name: name,
+            summary: if text_of(hit, "summary") != "" {
+                text_of(hit, "summary")
+            } else { text_of(hit, "description") },
+            description: text_of(hit, "description"),
+            developer: text_of(hit, "developer_name"),
+            license: text_of(hit, "project_license"),
+            categories: flathub_categories(hit),
+            icon: text_of(hit, "icon"),
+            screenshots: [],
+            bot_triggers: [],
+            bot_apps: [],
+            bot_connectors: [],
+            origin: "flathub",
+            registry: "Flathub",
+            versions: [json.encode(Version(version: ""))],
+            installed: installed,
+            fetched: fetched,
+            runnable: installed != "" or built,
+            processors: processors_of(arches),
+            trouble: if built or installed != "" {
+                ""
+            } else {
+                "Not available for this computer: {name} is only built for {processors_of(arches)}."
+            },
+            trust: "flathub",
+        ),
+    )
+}
+
+/// What one Flathub app's page reads: its own AppStream document and what its build asks for.
+action read_flathub_details(s: Store, a: App) uses web {
+    let language = locale_language()
+    let appstream = web.get("https://flathub.org/api/v2/appstream/{a.identity}?locale={language}")
+    if not appstream.ok {
+        s.trouble = std.say("Flathub did not answer for {a.name}")
+        return
+    }
+    let summary = web.get("https://flathub.org/api/v2/summary/{a.identity}")
+    let root = object_of(appstream.text())
+    if let root = root {
+        let build = if summary.ok { object_of(summary.text()) } else { .none }
+        a.description = text_of(root, "description")
+        let developer = text_of(root, "developer_name")
+        a.developer = if developer != "" {
+            developer
+        } else { nested_text(root, "developer", "name") }
+        let license = text_of(root, "project_license")
+        a.license = if license != "" { license } else { text_of(root, "license") }
+        a.homepage = nested_text(root, "urls", "homepage")
+        a.screenshots = screenshots_of(root)
+        if let build = build {
+            a.size = number_at(build, "installed_size").to_int()
+        }
+        for p in a.permissions {
+            a.permissions.remove(p)
+        }
+        for text in permissions_of(build) {
+            match json.decode<Permission>(text) {
+                .ok(p) => { a.permissions.insert(p) }
+                .err(why) => {
+                    s.trouble = why
+                }
+            }
+        }
+        for r in a.releases {
+            a.releases.remove(r)
+        }
+        for text in releases_of(root) {
+            match json.decode<Release>(text) {
+                .ok(r) => { a.releases.insert(r) }
+                .err(why) => {
+                    s.trouble = why
+                }
+            }
+        }
+        a.details_read = true
+    } else {
+        s.trouble = std.say("Flathub's answer for {a.name} could not be read")
+    }
+}
+
+/// The language Flathub is read in: the person's own, without its region.
+fn locale_language() -> Text {
+    let language = settings.appearance.language ?? "en"
+    let base = language.split("-").first() ?? "en"
+    if base == "" { "en" } else { base }
+}
+
+/// The value at `key` of a JSON object, and nothing for anything else.
+fn field_of(value: json.Value, key: Text) -> Option<json.Value> {
+    match value {
+        .object(fields) => fields.get(key),
+        .array(items) => .none,
+        .string(text) => .none,
+        .number(number) => .none,
+        .bool(flag) => .none,
+        .null => .none,
+    }
+}
+
+/// The text at `key` of a JSON object, or empty.
+fn text_of(value: json.Value, key: Text) -> Text {
+    match field_of(value, key) {
+        .some(held) => match held {
+            .string(text) => text,
+            .object(fields) => "",
+            .array(items) => "",
+            .number(number) => "",
+            .bool(flag) => "",
+            .null => "",
+        },
+        .none => "",
+    }
+}
+
+/// The number at `key` of a JSON object, or zero.
+fn number_at(value: json.Value, key: Text) -> Float {
+    match field_of(value, key) {
+        .some(held) => match held {
+            .number(number) => number,
+            .string(text) => text.to_float() ?? 0.0,
+            .object(fields) => 0.0,
+            .array(items) => 0.0,
+            .bool(flag) => 0.0,
+            .null => 0.0,
+        },
+        .none => 0.0,
+    }
+}
+
+/// The text inside a JSON object's object, as `urls.homepage` reads.
+fn nested_text(value: json.Value, key: Text, name: Text) -> Text {
+    match field_of(value, key) {
+        .some(held) => text_of(held, name),
+        .none => "",
+    }
+}
+
+/// The array at `key` of a JSON object, or nothing.
+fn list_at(value: json.Value, key: Text) -> List<json.Value> {
+    match field_of(value, key) {
+        .some(held) => match held {
+            .array(items) => items,
+            .object(fields) => [],
+            .string(text) => [],
+            .number(number) => [],
+            .bool(flag) => [],
+            .null => [],
+        },
+        .none => [],
+    }
+}
+
+/// The texts a JSON array holds, a value that is no text reading as empty.
+fn strings_of(items: List<json.Value>) -> List<Text> {
+    items.map(
+        item -> match item {
+            .string(text) => text,
+            .object(fields) => "",
+            .array(inside) => "",
+            .number(number) => "",
+            .bool(flag) => "",
+            .null => "",
+        },
+    )
+}
+
+/// A body as the JSON object it holds, when it holds one.
+fn object_of(body: Text) -> Option<json.Value> {
+    match json.parse(body) {
+        .ok(value) => .some(value),
+        .err(why) => .none,
+    }
+}
+
+/// The categories an app is listed under: Flathub names an app's main category as a text when it
+/// has one and as a list when it has more.
+fn flathub_categories(hit: json.Value) -> List<Text> {
+    match field_of(hit, "main_categories") {
+        .some(held) => match held {
+            .string(text) => if text == "" { [] } else { [text] },
+            .array(items) => strings_of(items),
+            .object(fields) => [],
+            .number(number) => [],
+            .bool(flag) => [],
+            .null => [],
+        },
+        .none => [],
+    }
+}
+
+/// The processors an app is built for, as people read them.
+fn processors_of(arches: List<Text>) -> Text {
+    arches.join(", ")
+}
+
+/// Whether a value a document holds is there at all: a permission written as `null` is not.
+fn present(value: Option<json.Value>) -> Bool {
+    match value {
+        .none => false,
+        .some(held) => match held {
+            .null => false,
+            .object(fields) => true,
+            .array(items) => true,
+            .string(text) => true,
+            .number(number) => true,
+            .bool(flag) => true,
+        },
+    }
+}
+
+/// The screenshots an app's page shows, at most eight, each a web address.
+fn screenshots_of(root: json.Value) -> List<Text> {
+    let out: List<Text> = []
+    for shot in list_at(root, "screenshots") {
+        let url = first_text(shot, ["imgDesktopUrl", "url", "src"])
+        if url.starts_with("https://") and out.len() < 8 {
+            out = out + [url]
+        }
+    }
+    out
+}
+
+/// The first of `names` an object holds as text, or empty.
+fn first_text(value: json.Value, names: List<Text>) -> Text {
+    for name in names {
+        let held = text_of(value, name)
+        if held != "" {
+            return held
+        }
+    }
+    ""
+}
+
+/// The newest releases an app's page lists, at most six, each as JSON the app reads.
+fn releases_of(root: json.Value) -> List<Text> {
+    let out: List<Text> = []
+    for release in list_at(root, "releases") {
+        let version = text_of(release, "version")
+        if version != "" and out.len() < 6 {
+            out = out
+                + [json.encode(Release(version: version, notes: text_of(release, "description")))]
+        }
+    }
+    out
+}
+
+/// What a build asks for, each as JSON a permission reads: what it reaches and whether that
+/// reaches everything.
+fn permissions_of(build: Option<json.Value>) -> List<Text> {
+    let out: List<Text> = []
+    if let root = build {
+        let permissions = match field_of(root, "metadata") {
+            .some(metadata) => field_of(metadata, "permissions") ?? field_of(root, "permissions"),
+            .none => field_of(root, "permissions"),
+        }
+        if let p = permissions {
+            let filesystems = strings_of(list_at(p, "filesystems"))
+            if filesystems.contains("host") or filesystems.contains("host:ro") {
+                out = out + [permission_text("files:all", true)]
+            } else if filesystems.contains("home") or filesystems.contains("home:ro") {
+                out = out + [permission_text("home", true)]
+            }
+            if present(field_of(p, "network")) {
+                out = out + [permission_text("network", false)]
+            }
+            if strings_of(list_at(p, "devices")).contains("all") {
+                out = out + [permission_text("devices", true)]
+            }
+            for name in strings_of(list_at(p, "shared")) {
+                if name == "network" {
+                    out = out + [permission_text("network", false)]
+                } else if name == "ipc" {
+                    out = out + [permission_text("system", false)]
+                }
+            }
+            if strings_of(list_at(p, "sockets")).contains("x11") {
+                out = out + [permission_text("system", false)]
+            }
+            if not strings_of(list_at(p, "talk-name")).is_empty() {
+                out = out + [permission_text("system", false)]
+            }
+        }
+    }
+    let seen: List<Text> = []
+    let kept: List<Text> = []
+    for text in out.sort_by(x -> x) {
+        if not seen.contains(text) {
+            seen = seen + [text]
+            kept = kept + [text]
+        }
+    }
+    kept
+}
+
+/// One permission, as JSON a permission reads.
+fn permission_text(what: Text, broad: Bool) -> Text {
+    json.encode(Permission(what: what, broad: broad))
 }
 
 /// One app as a source wrote it, read and kept where it stands: an app this workspace already
@@ -1484,6 +1858,13 @@ action refresh_status(s: Store, r: Report) (label: "Refresh status", icon: .refr
 /// A read of the sources, as the engine takes it.
 type Ask {
     force: Bool = false
+}
+
+/// What a page of Flathub's catalogue is asked for.
+type FlathubAsk {
+    query: Text = ""
+    hits_per_page: Int = 500
+    page: Int = 1
 }
 
 /// The engine's answer when it starts a job.

@@ -83,7 +83,7 @@ pub enum Ty {
     /// field's type.
     Bytes,
     /// What `web.get` and `web.post` answer: `ok`, `status`, `status_text`, `headers`, `body:
-    /// Bytes`, and `.text()`. A value a run holds, not a field's type.
+    /// Bytes`, `duration_ms`, and `.text()`. A value a run holds, not a field's type.
     Response,
     /// `json.Value`: a JSON document before code says what its shape is, with JSON's six cases. A
     /// value a run holds, not a field's type.

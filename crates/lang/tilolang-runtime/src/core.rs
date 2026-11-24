@@ -59,14 +59,14 @@ use Imp::{
     Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt,
     StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen,
     StrLit, StrLower, StrMatches, StrMisspelled, StrReplace, StrSlice, StrSplit, StrStartsWith,
-    StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock,
-    TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan, TimeWall, Today,
-    ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenWith, ToolTerminal, TryInvoke,
-    TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
-    UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild, UiNode, UiOn,
-    UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-    Versions, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText,
-    WebText, Withdraw, Word, Zones,
+    StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper, StrUrlEncode, StrWords, Suggest, Take,
+    TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan,
+    TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenWith, ToolTerminal,
+    TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+    UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild,
+    UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+    VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost,
+    WebPostBytes, WebStatus, WebStatusText, WebText, Withdraw, Word, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -594,9 +594,9 @@ impl Core {
         use Imp::Delivery;
         match imp {
             StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | StrToFloat
-            | FloatToStr | StrCmp | StrFind | StrSlice | StrReplace | StrTrim | StrLower
-            | StrUpper | StrStartsWith | StrEndsWith | StrContains | StrSplit | StrJoin
-            | StrMatches | StrMisspelled | StrSuggestions | DurationText => {
+            | FloatToStr | StrCmp | StrFind | StrSlice | StrReplace | StrUrlEncode | StrTrim
+            | StrLower | StrUpper | StrStartsWith | StrEndsWith | StrContains | StrSplit
+            | StrJoin | StrMatches | StrMisspelled | StrSuggestions | DurationText => {
                 self.text_import(imp, mem, a)
             }
             IntMin | IntMax | IntClamp | IntAbs | FloatMin | FloatMax | FloatClamp | FloatAbs
@@ -643,8 +643,10 @@ impl Core {
             | OutsideAt | Withdraw | ModelCall | Notify | Invoker | MadeFrom | ActorEq
             | ActorName | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed
             | InvocationPush | InvocationPop => self.effect_import(imp, a),
-            WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
-            | WebText | BytesLength | Base64Decode => self.web_import(imp, a),
+            WebGet | WebPost | WebPostBytes | WebOk | WebStatus | WebDurationMs | WebStatusText
+            | WebHeaders | WebBody | WebText | BytesLength | Base64Decode => {
+                self.web_import(imp, a)
+            }
             PageCall => self.page_import(a),
             FilePart | FileSize | FileText | FileData | FileFiles | FileBook | FileBookInfo
             | FileBookCover | SheetFile => self.file_import(imp, a),

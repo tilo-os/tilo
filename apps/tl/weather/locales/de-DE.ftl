@@ -228,9 +228,6 @@ d-goqo6yd3 = Aktualisierung
        *[other] refreshes
     }
 
-d-j4qvmrkj = Auftrag
-    .doc = Der Auftrag, den das Gerät ausführt, nach seiner Kennung; leer, solange nichts läuft.
-
 d-6a665z7q = Zustand
     .doc = `running`, während das Gerät die Orte liest, und `done`, sobald es fertig ist.
 
@@ -288,18 +285,10 @@ d-fmhvvp6l = Getippt
 d-o4whnz6t = Gefragt
     .doc = Wonach das Gerät zuletzt gefragt wurde: ein Auftrag beginnt, wenn beide sich unterscheiden.
 
-d-xx2oi6v5 = Auftrag
-    .doc = Der Suchauftrag, den das Gerät ausführt, nach seiner Kennung; leer, solange nichts läuft.
-
-d-cqmaksmt = Suche
-    .doc = Das Gerät sucht jetzt.
-
 d-5o5rohu5 = Gefunden
 
 d-wgepvfwu = Hinweis
     .doc = Warum die Suche nicht gelesen werden konnte, in Worten; sonst leer.
-
-d-ibg56elx-filter-searching = Suche
 
 d-sevkk4o7 = Orte
     .doc = Die Orte, denen eine Person folgt, der, den ein Fenster zuerst zeigt, und wie es um jede Messung steht.
@@ -327,310 +316,6 @@ d-rusdri25 = Morgen
 d-sevkk4o7-filter-default = Zuerst
 
 d-sevkk4o7-filter-refresh = Aktualisierung
-
-d-dctjhygi = Frage
-    .doc = Die Orte, nach denen eine Aktualisierung fragt.
-    .noun = { $count ->
-        [one] Frage
-       *[other] asks
-    }
-
-d-wf3zmolm = Orte
-
-d-f3wnxzqx = Frageort
-    .noun = { $count ->
-        [one] Frageort
-       *[other] ask places
-    }
-
-d-gdy7duy6 = Ortskennung
-
-d-5btxbecx = Breite
-
-d-dcshjxzm = Länge
-
-d-f3wnxzqx-filter-latitude = Breite
-
-d-f3wnxzqx-filter-longitude = Länge
-
-d-lfx3p224 = Suchfrage
-    .doc = Die Suche, nach der ein Auftrag fragt.
-    .noun = { $count ->
-        [one] Suchfrage
-       *[other] search asks
-    }
-
-d-4opjitfa = Abfrage
-
-d-elznullt = Abholfrage
-    .doc = Der Auftrag, den ein Abholen nennt.
-    .noun = { $count ->
-        [one] Abholfrage
-       *[other] take asks
-    }
-
-d-6vnqzh4l = Auftrag
-
-d-otchvpgk = Auftrag
-    .doc = Wie weit ein Auftrag gekommen ist.
-    .noun = { $count ->
-        [one] Auftrag
-       *[other] jobs
-    }
-
-d-lwhvatgx = Zustand
-
-d-ka2h5wk7 = Fertig
-
-d-lbqaguom = Gesamt
-
-d-otchvpgk-filter-done = Fertig
-
-d-otchvpgk-filter-total = Gesamt
-
-d-hhwkcala = Abgeholt
-    .doc = Was ein Auftrag seit dem letzten Abholen fertiggestellt hat.
-    .noun = { $count ->
-        [one] Abgeholtes
-       *[other] takens
-    }
-
-d-gbqubsmc = Antworten
-    .doc = Die Antwort jedes Ortes als eigener JSON-Text: eine Liste von Datensätzen ist in dieser Sprache eine Liste von Ressourcen, und JSON-Text macht keine, also wird jede hier in ihren Datensatz gelesen.
-
-d-d4onixyo = Orte
-    .doc = Jeder Ort, den eine Suche fand, als eigener JSON-Text.
-
-d-ra4o5i2z = Fehler
-    .doc = Warum eine Suche nicht gelesen werden konnte, in den Worten der Engine.
-
-d-sx243l4e = Antwort
-    .doc = Die Antwort eines Ortes: seine Messung, die Stunden und Tage daneben als parallele Listen und seine Luftmessung.
-    .noun = { $count ->
-        [one] Antwort
-       *[other] answers
-    }
-
-d-5prprzwo = Ortskennung
-    .doc = Der Ort, um den es in der Antwort geht, nach seiner Kennung; nicht `id`, die jeder Datensatz selbst ist.
-
-d-papzs3jy = In Ordnung
-
-d-2t7oi34p = Grund
-
-d-opdrm37r = Status
-
-d-oh3swlwe = Meldung
-
-d-szxryqtq = Gelesen
-    .doc = Wann das Gerät sie gelesen hat, in Sekunden seit der Epoche.
-
-d-udln4y7a = Zeit
-
-d-bt4m22bz = Temperatur
-
-d-5wz5vx2n = Gefühlt
-
-d-kk67hrwa = Luftfeuchte
-
-d-wssxi3hh = Niederschlag
-
-d-z2xmdn5s = Code
-
-d-45ln3j6b = Wind
-
-d-7sdt6b3s = Wind aus
-
-d-6pbvus4v = Luftdruck
-
-d-7twngswb = UV
-
-d-gfeyv7li = Ist Tag
-
-d-do7cloel = Stunde um
-
-d-adqc7myi = Stunde Temp.
-
-d-m4tdmh3g = Stunde Regen
-
-d-6w6giapb = Stunde Code
-
-d-ercv5gi6 = Stunde Tag
-
-d-6vlbpjn2 = Tag Datum
-
-d-xpkpnifa = Tag Wochentag
-
-d-7mza74v3 = Tag Hoch
-
-d-v5etkrnq = Tag Tief
-
-d-lsdyx245 = Tag Regen
-
-d-hw7afts4 = Tag Code
-
-d-rv4jwm5h = Tag Wind
-
-d-eksw2wiu = Tag UV
-
-d-cl5k7le3 = Tag Aufgang
-
-d-zjervfc5 = Tag Untergang
-
-d-4kcw2w6l = Luft in Ordnung
-
-d-clhldsl6 = Luft um
-
-d-fxpfimss = Luft europäisch
-
-d-zhjhkay7 = Luft US
-
-d-55ge75je = Luft PM2,5
-
-d-363wfecw = Luft PM10
-
-d-w77tgu5z = Luft NO₂
-
-d-qo2ngnib = Luft Ozon
-
-d-sx243l4e-filter-ok = In Ordnung
-
-d-sx243l4e-filter-status = Status
-
-d-sx243l4e-filter-fetched = Gelesen
-
-d-sx243l4e-filter-temperature = Temperatur
-
-d-sx243l4e-filter-apparent = Gefühlt
-
-d-sx243l4e-filter-humidity = Luftfeuchte
-
-d-sx243l4e-filter-precipitation = Niederschlag
-
-d-sx243l4e-filter-code = Code
-
-d-sx243l4e-filter-wind = Wind
-
-d-sx243l4e-filter-wind_from = Wind aus
-
-d-sx243l4e-filter-pressure = Luftdruck
-
-d-sx243l4e-filter-uv = UV
-
-d-sx243l4e-filter-is_day = Ist Tag
-
-d-sx243l4e-filter-air_ok = Luft in Ordnung
-
-d-sx243l4e-filter-air_european = Luft europäisch
-
-d-sx243l4e-filter-air_us = Luft US
-
-d-sx243l4e-filter-air_pm2_5 = Luft PM2,5
-
-d-sx243l4e-filter-air_pm10 = Luft PM10
-
-d-sx243l4e-filter-air_no2 = Luft NO₂
-
-d-sx243l4e-filter-air_ozone = Luft Ozon
-
-d-f3sknmsd = Ort speichern
-    .doc = Speichert einen Ort, dem eine Person folgt.
-    .did = speicherte einen Ort
-    .w-a-place-needs-a-name = Ein Ort braucht einen Namen
-    .w-a-place-lies-between-latitudes-90 = Ein Ort liegt zwischen den Breiten -90 und 90
-    .w-a-place-lies-between-longitudes-180 = Ein Ort liegt zwischen den Längen -180 und 180
-
-d-f3sknmsd-name = Name
-
-d-f3sknmsd-latitude = Breite
-
-d-f3sknmsd-longitude = Länge
-
-d-f3sknmsd-region = Region
-
-d-f3sknmsd-country = Land
-
-d-f3sknmsd-country_code = Ländercode
-
-d-f3sknmsd-timezone = Zeitzone
-
-d-xp2ceo5y = Zuerst zeigen
-    .doc = Zeigt die Vorhersage eines Ortes zuerst, wann immer die App öffnet.
-    .did = wählte den zuerst gezeigten Ort
-
-d-xp2ceo5y-place = Ort
-
-d-cirfp6lv = Nach oben
-    .doc = Schiebt einen Ort an den Anfang der Liste.
-    .w-this-place-is-already-at-the = Dieser Ort steht schon ganz oben
-
-d-cirfp6lv-place = Ort
-
-d-wqobjlmz = Ort entfernen
-    .doc = Entfernt einen Ort aus der Liste; was von ihm gelesen war, geht mit.
-    .did = entfernte einen Ort
-
-d-wqobjlmz-place = Ort
-
-d-kl6crcze = Vorhersagen aktualisieren
-    .doc = Liest die Vorhersagen erneut: jeden Ort, oder den, den `place` nennt.
-    .did = aktualisierte die Vorhersagen
-    .w-there-are-no-places-to-update = Es gibt keine Orte zu aktualisieren
-    .w-an-update-is-already-running = Eine Aktualisierung läuft bereits
-    .w-couldn-t-start-updating = Aktualisieren konnte nicht starten: { $why }
-
-d-kl6crcze-place = Ort
-
-d-7muahxxg = Aktualisieren beenden
-    .doc = Beendet eine laufende Aktualisierung.
-
-d-ryiczm2w = Erneut versuchen
-    .doc = Aktualisiert einen Ort, dessen letztes Lesen scheiterte, sobald die Person erneut fragt.
-    .did = fragte erneut nach einer Vorhersage
-
-d-ryiczm2w-place = Ort
-
-d-yajyk4wl = Wetter abholen
-    .doc = Holt, was das Gerät bisher gelesen hat: die Antwort jedes Ortes, wie sie eintrifft, und was der Dienst dazu sagt.
-    .w-the-update-stopped = Die Aktualisierung endete: { $why }
-    .w-the-update-s-answer-did-not = Die Antwort der Aktualisierung ließ sich nicht lesen: { $why }
-    .w-a-place-s-answer-did-not = Die Antwort eines Ortes ließ sich nicht lesen: { $why }
-    .w-couldn-t-look-for-places = Orte konnten nicht gesucht werden: { $why }
-    .w-the-place-search-stopped = Die Ortssuche endete: { $why }
-
-d-ig7wjove = Ankommen
-    .doc = Das Öffnen des Fensters liest die Orte, deren Vorhersage fehlt oder nicht mehr aktuell ist.
-
-d-lxgnovv7 = Nach einem Ort suchen
-    .doc = Sucht Orte nach Namen.
-
-d-muewds7a = Suche beenden
-    .doc = Leert das Feld und beendet die Suche.
-
-d-muewds7a-reader = Suchender
-
-d-6vszu5un = Gefundenen hinzufügen
-    .doc = Speichert den Ort, den eine Suche fand, nach seinem Platz in der Liste des Gefundenen, und zeigt ihn.
-
-d-6vszu5un-reader = Suchender
-
-d-6vszu5un-at = Um
-
-d-7zdozvog = Gefundenen übernehmen
-    .doc = Nimmt die Zeile, die eine Person aus der Suche wählte: speichert den Ort und leert die Suche.
-
-d-7zdozvog-reader = Suchender
-
-d-7zdozvog-choice = Auswahl
-
-d-hbcsago3 = Warum-Antwort
-    .w-the-weather-service-refused-the-request = Der Wetterdienst hat die Anfrage abgelehnt (HTTP { $status })
-
-d-muq4w6r3 = Ort speichern
-
-d-o45nvib3 = Nach oben
-
-d-imdl6rzh = Aktualisieren
 
 d-46yntdob = Stundenkachel
     .w-now = Jetzt
@@ -699,3 +384,161 @@ d-b52eh6m4 = Wetterfenster
     .w-search-for-a-city-or-town = Suche eine Stadt nach Namen
     .w-cancel = Abbrechen
     .w-a-city-or-town = Eine Stadt
+
+d-beqyw3ws = Ort speichern
+    .doc = Speichert einen Ort, dem eine Person folgt.
+    .did = speicherte einen Ort
+    .w-a-place-needs-a-name = Ein Ort braucht einen Namen
+    .w-a-place-lies-between-latitudes-90 = Ein Ort liegt zwischen den Breiten -90 und 90
+    .w-a-place-lies-between-longitudes-180 = Ein Ort liegt zwischen den Längen -180 und 180
+
+d-beqyw3ws.doc = Speichert einen Ort, dem eine Person folgt.
+
+d-beqyw3ws.did = speicherte einen Ort
+
+d-beqyw3ws.w-a-place-needs-a-name = Ein Ort braucht einen Namen
+
+d-beqyw3ws.w-a-place-lies-between-latitudes-90 = Ein Ort liegt zwischen den Breiten -90 und 90
+
+d-beqyw3ws.w-a-place-lies-between-longitudes-180 = Ein Ort liegt zwischen den Längen -180 und 180
+
+d-beqyw3ws-name = Name
+
+d-beqyw3ws-latitude = Breite
+
+d-beqyw3ws-longitude = Länge
+
+d-beqyw3ws-region = Region
+
+d-beqyw3ws-country = Land
+
+d-beqyw3ws-country_code = Ländercode
+
+d-beqyw3ws-timezone = Zeitzone
+
+d-sqjw6zx2 = Zuerst zeigen
+    .doc = Zeigt die Vorhersage eines Ortes zuerst, wann immer die App geöffnet wird.
+    .did = wählte den zuerst gezeigten Ort
+
+d-sqjw6zx2.doc = Zeigt die Vorhersage eines Ortes zuerst, wann immer die App öffnet.
+
+d-sqjw6zx2.did = wählte den zuerst gezeigten Ort
+
+d-sqjw6zx2-place = Ort
+
+d-nf7ixh7u = Nach oben
+    .doc = Schiebt einen Ort an die Spitze der Liste.
+    .w-this-place-is-already-at-the = Dieser Ort steht schon ganz oben
+
+d-nf7ixh7u.doc = Schiebt einen Ort an den Anfang der Liste.
+
+d-nf7ixh7u.w-this-place-is-already-at-the = Dieser Ort steht schon ganz oben
+
+d-nf7ixh7u-place = Ort
+
+d-3a546tol = Ort entfernen
+    .doc = Entfernt einen Ort aus der Liste; was davon gelesen wurde, geht mit ihm.
+    .did = entfernte einen Ort
+
+d-3a546tol.doc = Entfernt einen Ort aus der Liste; was von ihm gelesen war, geht mit.
+
+d-3a546tol.did = entfernte einen Ort
+
+d-3a546tol-place = Ort
+
+d-ndqwjxtw = Vorhersagen aktualisieren
+    .doc = Liest die Vorhersagen erneut: jeden Ort oder den, den `place` nennt.
+    .did = aktualisierte die Vorhersagen
+    .w-there-are-no-places-to-update = Es gibt keine Orte zu aktualisieren
+    .w-an-update-is-already-running = Eine Aktualisierung läuft bereits
+
+d-ndqwjxtw.doc = Liest die Vorhersagen erneut: jeden Ort, oder den, den `place` nennt.
+
+d-ndqwjxtw.did = aktualisierte die Vorhersagen
+
+d-ndqwjxtw.w-there-are-no-places-to-update = Es gibt keine Orte zu aktualisieren
+
+d-ndqwjxtw.w-an-update-is-already-running = Eine Aktualisierung läuft bereits
+
+d-ndqwjxtw-place = Ort
+
+d-ebjgu5ua = Aktualisieren beenden
+    .doc = Stoppt eine laufende Aktualisierung; die Orte, die sie noch nicht gelesen hatte, behalten, was sie hatten.
+
+d-ebjgu5ua.doc = Beendet eine laufende Aktualisierung.
+
+d-ctbwrcxw = Erneut versuchen
+    .doc = Aktualisiert einen Ort, dessen letztes Lesen scheiterte, sobald die Person erneut fragt.
+    .did = fragte erneut nach einer Vorhersage
+
+d-ctbwrcxw.doc = Aktualisiert einen Ort, dessen letztes Lesen scheiterte, sobald die Person erneut fragt.
+
+d-ctbwrcxw.did = fragte erneut nach einer Vorhersage
+
+d-ctbwrcxw-place = Ort
+
+d-np2uffp7 = Wetter abholen
+    .w-the-place-search-could-not-be = Die Ortssuche ließ sich nicht lesen: { $why }
+    .doc = Nimmt, was das letzte Lesen fand: die Messung eines Ortes und seine Stunden und Tage landen zusammen, und die Zeilen der Suche neben dem Feld.
+
+d-np2uffp7.doc = Holt, was das Gerät bisher gelesen hat: die Antwort jedes Ortes, wie sie eintrifft, und was der Dienst dazu sagt.
+
+d-fiih6vhd = Ankommen
+    .doc = Das Öffnen des Fensters liest die Orte, deren Vorhersage fehlt oder nicht mehr aktuell ist.
+
+d-fiih6vhd.doc = Das Öffnen des Fensters liest die Orte, deren Vorhersage fehlt oder nicht mehr aktuell ist.
+
+d-cevyiepd = Nach einem Ort suchen
+    .doc = Sucht Orte nach Namen: das Fenster fragt den Dienst einmal pro Tippvorgang.
+
+d-cevyiepd.doc = Sucht Orte nach Namen.
+
+d-jblkootf = Suche beenden
+    .doc = Leert das Feld und hört auf zu suchen.
+
+d-jblkootf.doc = Leert das Feld und beendet die Suche.
+
+d-jblkootf-reader = Suchender
+
+d-bplcjqoa = Gefundenen hinzufügen
+    .doc = Speichert den Ort, den eine Suche fand, an seiner Stelle in der Liste des Gefundenen und zeigt ihn an.
+
+d-bplcjqoa.doc = Speichert den Ort, den eine Suche fand, nach seinem Platz in der Liste des Gefundenen, und zeigt ihn.
+
+d-bplcjqoa-reader = Suchender
+
+d-bplcjqoa-at = Um
+
+d-uekzr2wm = Gefundenen übernehmen
+    .doc = Nimmt die Zeile, die eine Person aus der Suche wählte: speichert den Ort und leert die Suche.
+
+d-uekzr2wm.doc = Nimmt die Zeile, die eine Person aus der Suche wählte: speichert den Ort und leert die Suche.
+
+d-uekzr2wm-reader = Suchender
+
+d-uekzr2wm-choice = Auswahl
+
+d-cnvt7jm5.w-the-weather-service-refused-the-request = Der Wetterdienst hat die Anfrage abgelehnt (HTTP { $status })
+
+d-lh3eadxk = Ort speichern
+
+d-q62lxozz = Nach oben
+
+d-b7ir6734 = Aktualisieren
+
+d-vawmqqsv = Wartend
+    .doc = Die Orte, die diese Aktualisierung noch lesen muss.
+
+d-mubgbm45 = Nächsten Ort lesen
+    .doc = Liest einen Ort, den eine Aktualisierung noch lesen muss, und sagt, wenn alle gelesen sind.
+
+d-mjt2zbkr = Ort lesen
+    .doc = Liest die Vorhersage und die Luftqualität eines Ortes.
+
+d-wm5pv5it = Vorhersage übernehmen
+    .doc = Die Vorhersage eines Dienstes, in den Ort geschrieben: die aktuelle Messung, ein Tag Stunden und eine Woche Tage.
+
+d-wm5pv5it-body = Inhalt
+
+d-cnvt7jm5 = Ablehnung
+    .w-the-weather-service-refused-the-request = Der Wetterdienst hat die Anfrage abgelehnt (HTTP { $status })

@@ -10,7 +10,7 @@ mod cases {
     use serde_json::json;
 
     use crate::common::*;
-    use tilolang_runtime::run::{JournalEntry, RunOutcome, WebRequest, WebResponse};
+    use tilolang_runtime::run::{JournalEntry, RunOutcome, WebRequest};
     use tilolang_runtime::web::{WebReply, WebTransport};
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Store, Value,
@@ -47,6 +47,21 @@ action post_to(f: Feed) uses web {
     f.text = "{r.status} {r.status_text}"
 }
 
+action post_bytes_to(f: Feed) uses web {
+    let r = web.post("https://example.com/upload", bytes: 4096)
+    f.text = "{r.status} {r.status_text}"
+}
+
+action post_too_much(f: Feed) uses web {
+    let r = web.post("https://example.com/upload", bytes: 100000000)
+    f.text = "{r.status} {r.status_text}"
+}
+
+action timed(f: Feed) uses web {
+    let r = web.get("https://example.com/feed")
+    f.text = "{r.duration_ms}"
+}
+
 action ask_elsewhere(f: Feed) uses web {
     let r = web.get("https://evil.example/x")
     f.text = "{r.status} {r.status_text}"
@@ -64,6 +79,8 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
     struct FakeWeb {
         requests: Rc<RefCell<Vec<WebRequest>>>,
         reply: Rc<RefCell<Option<WebReply>>>,
+        /// How long the device's network takes to answer, for a test that reads the time.
+        delay: Rc<RefCell<Option<std::time::Duration>>>,
     }
 
     impl FakeWeb {
@@ -71,7 +88,14 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
             Self {
                 requests: Rc::new(RefCell::new(Vec::new())),
                 reply: Rc::new(RefCell::new(Some(reply))),
+                delay: Rc::new(RefCell::new(None)),
             }
+        }
+
+        fn after(delay: std::time::Duration, reply: WebReply) -> Self {
+            let web = Self::answering(reply);
+            *web.delay.borrow_mut() = Some(delay);
+            web
         }
 
         fn requests(&self) -> Vec<WebRequest> {
@@ -82,6 +106,9 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
     impl WebTransport for FakeWeb {
         fn fetch(&self, request: &WebRequest) -> WebReply {
             self.requests.borrow_mut().push(request.clone());
+            if let Some(delay) = *self.delay.borrow() {
+                std::thread::sleep(delay);
+            }
             self.reply
                 .borrow()
                 .clone()
@@ -170,19 +197,15 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
             assert_eq!(seen[0].url, "https://example.com/feed");
             assert_eq!(seen[0].headers, ["Accept: text/plain"]);
             assert_eq!(seen[0].if_none_match.as_deref(), Some("v1"));
-            assert_eq!(
-                effects(&world.rt, &world.feed),
-                [JournalEntry::Web {
-                    request: seen[0].clone(),
-                    response: WebResponse {
-                        status: 200,
-                        status_text: "OK".to_owned(),
-                        headers: vec!["ETag: \"v2\"".to_owned()],
-                        body: Some(json!("hello")),
-                    },
-                }],
-                "the answer is recorded beside the change"
-            );
+            let recorded = effects(&world.rt, &world.feed);
+            let [JournalEntry::Web { request, response }] = recorded.as_slice() else {
+                panic!("the answer is recorded beside the change: {recorded:?}");
+            };
+            assert_eq!(request, &seen[0]);
+            assert_eq!(response.status, 200);
+            assert_eq!(response.status_text, "OK");
+            assert_eq!(response.headers, ["ETag: \"v2\""]);
+            assert_eq!(response.body, Some(json!("hello")));
         }
 
         phase a_run_resumed_answers_from_its_journal;
@@ -280,6 +303,88 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
                 "0 no answer within 30 seconds",
                 "a timeout is the value the action reads, not a trap"
             );
+        }
+
+        phase a_body_of_zero_bytes_is_sent_as_its_size;
+        {
+            let web = FakeWeb::answering(hello());
+            let world = world(&web);
+            world
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        world.reader.action("post_bytes_to").as_str(),
+                        vec![Value::resource(&world.feed)],
+                    ),
+                )
+                .unwrap();
+            let seen = web.requests();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].method, "POST");
+            assert_eq!(seen[0].body, None, "the body is no text");
+            assert_eq!(seen[0].bytes, Some(4096));
+            assert_eq!(
+                seen[0].body_bytes(),
+                Some(vec![0; 4096]),
+                "the network client sends the zeroes"
+            );
+            assert_eq!(feed(&world.rt, &world.feed), "200 OK");
+        }
+
+        phase a_body_larger_than_a_request_may_send_is_refused_as_a_value;
+        {
+            let web = FakeWeb::answering(hello());
+            let world = world(&web);
+            world
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        world.reader.action("post_too_much").as_str(),
+                        vec![Value::resource(&world.feed)],
+                    ),
+                )
+                .unwrap();
+            assert!(web.requests().is_empty(), "nothing was sent");
+            assert!(
+                feed(&world.rt, &world.feed).contains("larger than"),
+                "the value says why: {}",
+                feed(&world.rt, &world.feed)
+            );
+        }
+
+        phase a_reply_carries_how_long_the_request_took;
+        {
+            let web = FakeWeb::after(
+                std::time::Duration::from_millis(20),
+                WebReply {
+                    status: 200,
+                    status_text: "OK".to_owned(),
+                    headers: Vec::new(),
+                    body: b"hello".to_vec(),
+                },
+            );
+            let world = world(&web);
+            world
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        world.reader.action("timed").as_str(),
+                        vec![Value::resource(&world.feed)],
+                    ),
+                )
+                .unwrap();
+            let took: u64 = feed(&world.rt, &world.feed)
+                .parse()
+                .expect("the time reads as milliseconds");
+            assert!(took >= 20, "the request took {took} ms");
+            let recorded = effects(&world.rt, &world.feed);
+            let [JournalEntry::Web { response, .. }] = recorded.as_slice() else {
+                panic!("the answer is recorded");
+            };
+            assert_eq!(response.duration_ms, took, "the journal keeps the time it took");
         }
     }
 }

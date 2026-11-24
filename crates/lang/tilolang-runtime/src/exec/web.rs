@@ -38,7 +38,29 @@ impl Core {
                     url,
                     headers,
                     body: None,
+                    bytes: None,
                     if_none_match,
+                };
+                let response = self.web(request)?;
+                self.ret_h(Value::Response(Rc::new(response)))
+            }
+            Imp::WebPostBytes => {
+                let url = self.text(a.h(0)?)?;
+                let count = a.long(1)?;
+                let bytes = match u64::try_from(count) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        return trap(format!("bytes takes a whole count of bytes, got {count}"));
+                    }
+                };
+                let headers = self.web_headers(a.h(2)?)?;
+                let request = crate::run::WebRequest {
+                    method: "POST".to_owned(),
+                    url,
+                    headers,
+                    body: None,
+                    bytes: Some(bytes),
+                    if_none_match: None,
                 };
                 let response = self.web(request)?;
                 self.ret_h(Value::Response(Rc::new(response)))
@@ -52,6 +74,7 @@ impl Core {
                     url,
                     headers,
                     body: Some(body),
+                    bytes: None,
                     if_none_match: None,
                 };
                 let response = self.web(request)?;
@@ -68,6 +91,10 @@ impl Core {
             Imp::WebStatusText => {
                 let response = self.response_arg(a.h(0)?)?;
                 self.ret_h(Value::text(response.status_text.clone()))
+            }
+            Imp::WebDurationMs => {
+                let response = self.response_arg(a.h(0)?)?;
+                crate::core::ret_i64(i64::try_from(response.duration_ms).unwrap_or(i64::MAX))
             }
             Imp::WebHeaders => {
                 let response = self.response_arg(a.h(0)?)?;
@@ -183,41 +210,44 @@ impl Core {
         Ok(response)
     }
 
-    /// The answer `request` gets now: the transport's, or why it was not made.
+    /// The answer `request` gets now: the transport's, or why it was not made. The request's
+    /// round trip is timed here, so what a run reads as the answer's time is the one it made.
     fn web_response(&self, request: &crate::run::WebRequest) -> crate::run::WebResponse {
+        let refused =
+            |reason: String| crate::run::WebResponse::of(crate::web::WebReply::failed(reason), 0);
         let Ok(module) = self.module_of_frame() else {
-            return crate::run::WebResponse::of(crate::web::WebReply::failed(
-                "web is only available in actions",
-            ));
+            return refused("web is only available in actions".to_owned());
         };
         let package = self.registry.borrow().package(&module);
         let Some(package) = package else {
-            return crate::run::WebResponse::of(crate::web::WebReply::failed(format!(
-                "no package wrote the code at {}",
-                module.0
-            )));
+            return refused(format!("no package wrote the code at {}", module.0));
         };
         let app = package.meta.app.clone();
         let Some(host) = crate::web::host_of(&request.url) else {
-            return crate::run::WebResponse::of(crate::web::WebReply::failed(
-                "only http and https requests are made",
-            ));
+            return refused("only http and https requests are made".to_owned());
         };
         if !crate::web::granted(&package.meta.web, &host) {
-            return crate::run::WebResponse::of(crate::web::WebReply::failed(format!(
+            return refused(format!(
                 "`{app}` may not reach `{host}`: it declares web: [{}]",
                 package.meta.web.join(", ")
-            )));
+            ));
         }
         if !self.authority.may_fetch(&app, &host) {
-            return crate::run::WebResponse::of(crate::web::WebReply::failed(format!(
-                "the workspace revoked `{host}` for `{app}`"
-            )));
+            return refused(format!("the workspace revoked `{host}` for `{app}`"));
         }
+        let most = u64::try_from(crate::web::MAX_UPLOAD).unwrap_or(u64::MAX);
+        if request.bytes.is_some_and(|bytes| bytes > most) {
+            return refused(format!(
+                "the body is larger than {} bytes",
+                crate::web::MAX_UPLOAD
+            ));
+        }
+        let started = std::time::Instant::now();
         let reply = self.web.borrow().as_ref().map_or_else(
             || crate::web::WebReply::failed("this host reaches no services"),
             |transport| transport.fetch(request),
         );
-        crate::run::WebResponse::of(reply)
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        crate::run::WebResponse::of(reply, elapsed)
     }
 }

@@ -66,21 +66,16 @@ pub mod print_centre_engine;
 pub mod shell_page;
 pub mod stop;
 pub mod task;
-#[cfg(feature = "app-launch")]
-pub mod typst_engine;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+#[cfg(feature = "app-launch")]
+pub mod typst_engine;
 #[cfg(all(
     feature = "app-launch",
     any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
 ))]
 pub mod video_engine;
 pub mod wait;
-#[cfg(all(
-    feature = "app-launch",
-    any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
-))]
-pub mod weather_engine;
 pub mod web;
 #[cfg(feature = "app-launch")]
 pub mod window;

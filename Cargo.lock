@@ -13947,19 +13947,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea06cc588e43c632923a55450401b8f25e628131571d4e1baea1bdfdb2b5ed06"
 
 [[package]]
-name = "speed-engine"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-net",
- "tilo-paths",
- "tilo-rt",
- "tilolang-tilo",
- "workspace-hack",
-]
-
-[[package]]
 name = "spellbook"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20188,7 +20175,6 @@ dependencies = [
  "settings-sections",
  "sha2 0.11.0",
  "smithay-client-toolkit",
- "speed-engine",
  "tempfile",
  "test-server",
  "tilo-accessibility-settings",
@@ -20739,7 +20725,6 @@ dependencies = [
 name = "tilo-store-engine"
 version = "0.1.0"
 dependencies = [
- "app-catalogue",
  "app-cli",
  "blake3",
  "getrandom 0.4.3",
@@ -20757,7 +20742,6 @@ dependencies = [
  "tilo-net",
  "tilo-package-store",
  "tilo-registry-types",
- "tilo-settings-store",
  "tilolang-tilo",
  "tracing",
  "workspace-hack",
@@ -21540,17 +21524,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-weather"
-version = "0.1.0"
-dependencies = [
- "percent-encoding",
- "serde",
- "serde_json",
- "tilo-net",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-web-search"
 version = "0.1.0"
 dependencies = [
@@ -22155,7 +22128,6 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
- "speed-engine",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-account-probe",
@@ -22215,7 +22187,6 @@ dependencies = [
  "tilo-video-edit",
  "tilo-video-picture",
  "tilo-wake",
- "tilo-weather",
  "tilo-workspace-service",
  "tilolang",
  "tilolang-calendar",
@@ -27220,7 +27191,6 @@ dependencies = [
  "socket-pktinfo",
  "socket2",
  "sorted-index-buffer",
- "speed-engine",
  "spellbook",
  "spez",
  "spin 0.10.1",
@@ -27392,6 +27362,7 @@ dependencies = [
  "tilo-device-identity",
  "tilo-device-protocol",
  "tilo-device-steps",
+ "tilo-device-surfaces",
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-dictation",
@@ -27595,7 +27566,6 @@ dependencies = [
  "tilo-wallpapers",
  "tilo-wasm-host",
  "tilo-wayland-ext",
- "tilo-weather",
  "tilo-web-search",
  "tilo-webview",
  "tilo-wet-media",

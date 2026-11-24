@@ -228,11 +228,11 @@ d-goqo6yd3 = Refresh
        *[other] refreshes
     }
 
-d-j4qvmrkj = Job
-    .doc = The job the device runs, by its id; empty while nothing runs.
-
 d-6a665z7q = State
     .doc = `running` while the device reads the places, and `done` once it has.
+
+d-vawmqqsv = Waiting
+    .doc = The places this update has still to read, by their ids.
 
 d-umztfj5e = Done
 
@@ -276,7 +276,7 @@ d-wsn652ix-filter-latitude = Latitude
 d-wsn652ix-filter-longitude = Longitude
 
 d-ibg56elx = Searching
-    .doc = A person's own place search: what they typed, what the device found, and the job it runs.
+    .doc = A person's own place search: what they typed, what the device found, and what it was asked for.
     .noun = { $count ->
         [one] searching
        *[other] searchings
@@ -286,20 +286,12 @@ d-fmhvvp6l = Wanted
     .doc = What is in the field.
 
 d-o4whnz6t = Asked
-    .doc = What the device was last asked for: a job starts when the two differ.
-
-d-xx2oi6v5 = Job
-    .doc = The search job the device runs, by its id; empty while nothing runs.
-
-d-cqmaksmt = Searching
-    .doc = The device is looking now.
+    .doc = What the device was last asked for: it looks when the two differ.
 
 d-5o5rohu5 = Found
 
 d-wgepvfwu = Note
     .doc = Why the search could not be read, in words; empty otherwise.
-
-d-ibg56elx-filter-searching = Searching
 
 d-sevkk4o7 = Locations
     .doc = The places a person follows, the one a window shows first, and how each read stands.
@@ -328,309 +320,110 @@ d-sevkk4o7-filter-default = Default
 
 d-sevkk4o7-filter-refresh = Refresh
 
-d-dctjhygi = Ask
-    .doc = The places one update is asked for.
-    .noun = { $count ->
-        [one] ask
-       *[other] asks
-    }
-
-d-wf3zmolm = Places
-
-d-f3wnxzqx = Ask place
-    .noun = { $count ->
-        [one] ask place
-       *[other] ask places
-    }
-
-d-gdy7duy6 = Place id
-
-d-5btxbecx = Latitude
-
-d-dcshjxzm = Longitude
-
-d-f3wnxzqx-filter-latitude = Latitude
-
-d-f3wnxzqx-filter-longitude = Longitude
-
-d-lfx3p224 = Search ask
-    .doc = The search one job is asked for.
-    .noun = { $count ->
-        [one] search ask
-       *[other] search asks
-    }
-
-d-4opjitfa = Query
-
-d-elznullt = Take ask
-    .doc = The job a take names.
-    .noun = { $count ->
-        [one] take ask
-       *[other] take asks
-    }
-
-d-6vnqzh4l = Job
-
-d-otchvpgk = Job
-    .doc = How far a job has got.
-    .noun = { $count ->
-        [one] job
-       *[other] jobs
-    }
-
-d-lwhvatgx = State
-
-d-ka2h5wk7 = Done
-
-d-lbqaguom = Total
-
-d-otchvpgk-filter-done = Done
-
-d-otchvpgk-filter-total = Total
-
-d-hhwkcala = Taken
-    .doc = What a job finished since it was last taken.
-    .noun = { $count ->
-        [one] taken
-       *[other] takens
-    }
-
-d-gbqubsmc = Answers
-    .doc = Each place's answer, as its own JSON text: a list of records is a list of resources in this language, and JSON text makes none, so each is read into its record here.
-
-d-d4onixyo = Places
-    .doc = Each place a search found, as its own JSON text.
-
-d-ra4o5i2z = Error
-    .doc = Why a search could not be read, in the engine's words.
-
-d-sx243l4e = Answer
-    .doc = One place's answer: its reading, the hours and days beside it as parallel lists, and its air reading.
-    .noun = { $count ->
-        [one] answer
-       *[other] answers
-    }
-
-d-5prprzwo = Place id
-    .doc = The place the answer is about, by its id; not `id`, which every record's is its own.
-
-d-papzs3jy = Ok
-
-d-2t7oi34p = Reason
-
-d-opdrm37r = Status
-
-d-oh3swlwe = Message
-
-d-szxryqtq = Fetched
-    .doc = When the device read it, in epoch seconds.
-
-d-udln4y7a = Time
-
-d-bt4m22bz = Temperature
-
-d-5wz5vx2n = Apparent
-
-d-kk67hrwa = Humidity
-
-d-wssxi3hh = Precipitation
-
-d-z2xmdn5s = Code
-
-d-45ln3j6b = Wind
-
-d-7sdt6b3s = Wind from
-
-d-6pbvus4v = Pressure
-
-d-7twngswb = Uv
-
-d-gfeyv7li = Is day
-
-d-do7cloel = Hour at
-
-d-adqc7myi = Hour temp
-
-d-m4tdmh3g = Hour chance
-
-d-6w6giapb = Hour code
-
-d-ercv5gi6 = Hour day
-
-d-6vlbpjn2 = Day date
-
-d-xpkpnifa = Day weekday
-
-d-7mza74v3 = Day high
-
-d-v5etkrnq = Day low
-
-d-lsdyx245 = Day chance
-
-d-hw7afts4 = Day code
-
-d-rv4jwm5h = Day wind
-
-d-eksw2wiu = Day uv
-
-d-cl5k7le3 = Day rise
-
-d-zjervfc5 = Day set
-
-d-4kcw2w6l = Air ok
-
-d-clhldsl6 = Air at
-
-d-fxpfimss = Air european
-
-d-zhjhkay7 = Air us
-
-d-55ge75je = Air pm2 5
-
-d-363wfecw = Air pm10
-
-d-w77tgu5z = Air no2
-
-d-qo2ngnib = Air ozone
-
-d-sx243l4e-filter-ok = Ok
-
-d-sx243l4e-filter-status = Status
-
-d-sx243l4e-filter-fetched = Fetched
-
-d-sx243l4e-filter-temperature = Temperature
-
-d-sx243l4e-filter-apparent = Apparent
-
-d-sx243l4e-filter-humidity = Humidity
-
-d-sx243l4e-filter-precipitation = Precipitation
-
-d-sx243l4e-filter-code = Code
-
-d-sx243l4e-filter-wind = Wind
-
-d-sx243l4e-filter-wind_from = Wind from
-
-d-sx243l4e-filter-pressure = Pressure
-
-d-sx243l4e-filter-uv = Uv
-
-d-sx243l4e-filter-is_day = Is day
-
-d-sx243l4e-filter-air_ok = Air ok
-
-d-sx243l4e-filter-air_european = Air european
-
-d-sx243l4e-filter-air_us = Air us
-
-d-sx243l4e-filter-air_pm2_5 = Air pm2 5
-
-d-sx243l4e-filter-air_pm10 = Air pm10
-
-d-sx243l4e-filter-air_no2 = Air no2
-
-d-sx243l4e-filter-air_ozone = Air ozone
-
-d-f3sknmsd = Save a place
+d-beqyw3ws = Save a place
     .doc = Saves a place a person follows.
     .did = saved a place
     .w-a-place-needs-a-name = A place needs a name
     .w-a-place-lies-between-latitudes-90 = A place lies between latitudes -90 and 90
     .w-a-place-lies-between-longitudes-180 = A place lies between longitudes -180 and 180
 
-d-f3sknmsd-name = Name
+d-beqyw3ws-name = Name
 
-d-f3sknmsd-latitude = Latitude
+d-beqyw3ws-latitude = Latitude
 
-d-f3sknmsd-longitude = Longitude
+d-beqyw3ws-longitude = Longitude
 
-d-f3sknmsd-region = Region
+d-beqyw3ws-region = Region
 
-d-f3sknmsd-country = Country
+d-beqyw3ws-country = Country
 
-d-f3sknmsd-country_code = Country code
+d-beqyw3ws-country_code = Country code
 
-d-f3sknmsd-timezone = Timezone
+d-beqyw3ws-timezone = Timezone
 
-d-xp2ceo5y = Show first
+d-sqjw6zx2 = Show first
     .doc = Shows a place's forecast first whenever the app opens.
     .did = chose the place shown first
 
-d-xp2ceo5y-place = Place
+d-sqjw6zx2-place = Place
 
-d-cirfp6lv = Move to top
+d-nf7ixh7u = Move to top
     .doc = Moves a place to the top of the list.
     .w-this-place-is-already-at-the = This place is already at the top
 
-d-cirfp6lv-place = Place
+d-nf7ixh7u-place = Place
 
-d-wqobjlmz = Remove place
+d-3a546tol = Remove place
     .doc = Removes a place from the list; what was read of it goes with it.
     .did = removed a place
 
-d-wqobjlmz-place = Place
+d-3a546tol-place = Place
 
-d-kl6crcze = Refresh forecasts
+d-ndqwjxtw = Refresh forecasts
     .doc = Reads the forecasts again: every place, or the one `place` names.
     .did = updated the forecasts
     .w-there-are-no-places-to-update = There are no places to update
     .w-an-update-is-already-running = An update is already running
-    .w-couldn-t-start-updating = Couldn't start updating: { $why }
 
-d-kl6crcze-place = Place
+d-ndqwjxtw-place = Place
 
-d-7muahxxg = Stop updating
-    .doc = Stops an update that is running.
+d-ebjgu5ua = Stop updating
+    .doc = Stops an update that is running; the places it had not read keep what they had.
 
-d-ryiczm2w = Try again
+d-ctbwrcxw = Try again
     .doc = Updates a place whose last read failed, once the person asks again.
     .did = asked for a forecast again
 
-d-ryiczm2w-place = Place
+d-ctbwrcxw-place = Place
 
-d-yajyk4wl = Poll weather
-    .doc = Takes what the device has read so far: each place's answer as it lands, and what the service says of it.
-    .w-the-update-stopped = The update stopped: { $why }
-    .w-the-update-s-answer-did-not = The update's answer did not read: { $why }
-    .w-a-place-s-answer-did-not = A place's answer did not read: { $why }
-    .w-couldn-t-look-for-places = Couldn't look for places: { $why }
-    .w-the-place-search-stopped = The place search stopped: { $why }
+d-mubgbm45 = Read next
+    .doc = Reads one place an update has still to read, and says when the update has read them all.
 
-d-ig7wjove = Arrive
+d-mjt2zbkr = Read place
+    .doc = Reads one place's forecast and air quality.
+
+d-wm5pv5it = Apply forecast
+    .doc = The forecast a service answered, written into the place: its current reading, a day of hours and a week of days.
+
+d-wm5pv5it-body = Body
+
+d-np2uffp7 = Poll weather
+    .doc = Takes what the last read found: a place's reading and its hours and days land together, and the search's rows beside the field.
+    .w-the-place-search-could-not-be = The place search could not be read: { $why }
+
+d-fiih6vhd = Arrive
     .doc = Opening the window reads the places whose forecast is missing or no longer current.
 
-d-lxgnovv7 = Look for a place
-    .doc = Looks for places by name.
+d-cevyiepd = Look for a place
+    .doc = Looks for places by name: the window asks the service once per query as it is typed.
 
-d-muewds7a = End search
+d-jblkootf = End search
     .doc = Empties the field and stops looking.
 
-d-muewds7a-reader = Reader
+d-jblkootf-reader = Reader
 
-d-6vszu5un = Add found
+d-bplcjqoa = Add found
     .doc = Saves the place a search found, by its place in the list of what it found, and shows it.
 
-d-6vszu5un-reader = Reader
+d-bplcjqoa-reader = Reader
 
-d-6vszu5un-at = At
+d-bplcjqoa-at = At
 
-d-7zdozvog = Accept found
+d-uekzr2wm = Accept found
     .doc = Takes the row a person picked from the search: saves the place and empties the search.
 
-d-7zdozvog-reader = Reader
+d-uekzr2wm-reader = Reader
 
-d-7zdozvog-choice = Choice
+d-uekzr2wm-choice = Choice
 
-d-hbcsago3 = Why answer
+d-cnvt7jm5 = Refusal
     .w-the-weather-service-refused-the-request = The weather service refused the request (HTTP { $status })
 
-d-muq4w6r3 = Save place~present
+d-lh3eadxk = Save place~present
 
-d-o45nvib3 = Move to top~present
+d-q62lxozz = Move to top~present
 
-d-imdl6rzh = Refresh~present
+d-b7ir6734 = Refresh~present
 
 d-46yntdob = Hour tile
     .w-now = Now

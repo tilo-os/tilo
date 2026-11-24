@@ -2309,6 +2309,7 @@ impl Checker<'_> {
         let mut headers_arg = None;
         let mut if_none_match = None;
         let mut body = None;
+        let mut bytes = None;
         for arg in &args[1..] {
             let Some(named) = &arg.name else {
                 self.err(
@@ -2319,7 +2320,7 @@ impl Checker<'_> {
                         if get {
                             "`headers:`, `if_none_match:`"
                         } else {
-                            "`body:`, `headers:`"
+                            "`body:` or `bytes:`, `headers:`"
                         }
                     ),
                 );
@@ -2351,6 +2352,9 @@ impl Checker<'_> {
                 (false, "body") => {
                     body = Some(self.expr_as(&arg.value, &Ty::Text));
                 }
+                (false, "bytes") => {
+                    bytes = Some(self.expr_as(&arg.value, &Ty::Int));
+                }
                 (_, other) => {
                     self.err(
                         "E022",
@@ -2375,15 +2379,32 @@ impl Checker<'_> {
                 Ty::Response,
             )
         } else {
-            let Some(body) = body else {
-                self.err(
-                    "E022",
-                    span,
-                    "`web.post` sends a body, named `body:`: `web.post(\"https://example.com/\", body: text)`",
-                );
-                return Ex::error();
-            };
-            Ex::host(Imp::WebPost, vec![url, body, headers_arg], Ty::Response)
+            match (body, bytes) {
+                (Some(body), None) => {
+                    Ex::host(Imp::WebPost, vec![url, body, headers_arg], Ty::Response)
+                }
+                (None, Some(bytes)) => Ex::host(
+                    Imp::WebPostBytes,
+                    vec![url, bytes, headers_arg],
+                    Ty::Response,
+                ),
+                (Some(_), Some(_)) => {
+                    self.err(
+                        "E022",
+                        span,
+                        "`web.post` sends one body: `body:` its text, or `bytes:` how many zero bytes, not both",
+                    );
+                    Ex::error()
+                }
+                (None, None) => {
+                    self.err(
+                        "E022",
+                        span,
+                        "`web.post` sends a body, named `body:` (its text) or `bytes:` (how many zero bytes): `web.post(\"https://example.com/\", body: text)`",
+                    );
+                    Ex::error()
+                }
+            }
         }
     }
 

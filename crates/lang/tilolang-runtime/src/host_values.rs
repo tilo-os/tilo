@@ -128,6 +128,10 @@ impl Core {
                 };
                 self.ret_h(Value::Text(replaced))
             }
+            Imp::StrUrlEncode => {
+                let text = self.text(a.h(0)?)?;
+                self.ret_h(Value::Text(tilolang::text::url_encode(&text)))
+            }
             _ => trap("not a text import"),
         }
     }
