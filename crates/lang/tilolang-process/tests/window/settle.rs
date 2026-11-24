@@ -92,7 +92,7 @@ pub fn until<T>(
             motion = 0;
             if !changed {
                 // Work off the frame, which wakes the host when its result waits.
-                woken.wait(LIMIT.saturating_sub(began.elapsed()));
+                woken.wait(Some(LIMIT.saturating_sub(began.elapsed())));
             }
             continue;
         }
