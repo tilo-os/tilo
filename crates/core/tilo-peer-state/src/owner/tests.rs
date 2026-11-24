@@ -140,7 +140,8 @@ fn edit_from_view(
     let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
     let before = chat.get_heads();
     chat.put(ROOT, "topic", topic).unwrap();
-    chat.commit_edit("fixture", "topic", &view.peer().owner());
+    // The member's device writes as its own person, never as the workspace's owner.
+    chat.commit_edit("fixture", "topic", &crate::owner::testing::member_person());
     let message = view.peer().clone().publication_mut().publish_incremental(
         APP,
         "",
@@ -352,7 +353,7 @@ tilo_test_env::scenario! {
             panic!("a member reads what the workspace admitted");
         };
         let doc = AutoCommit::load(&document.bytes).unwrap();
-        assert!(doc.get(ROOT, "tl").unwrap().is_some());
+        assert!(doc.get(ROOT, "channels").unwrap().is_some());
         assert!(matches!(
             read(member, "", Some(document.revision), usize::MAX),
             Ok(DocumentRead::Unchanged(revision)) if revision == document.revision
