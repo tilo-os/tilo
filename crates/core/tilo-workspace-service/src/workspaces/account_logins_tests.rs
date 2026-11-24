@@ -1372,7 +1372,7 @@ fn the_account_actions_declare_steps_the_accounts_record_takes() {
         }
     }
     assert_eq!(
-        declared, 9,
+        declared, 10,
         "every account action that writes the record declares its step"
     );
     assert!(

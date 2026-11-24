@@ -440,10 +440,9 @@ pub fn verify_carried(
         .all(|action| action.action == statement.target.address.action);
     let declared = kept
         && !verbs.is_empty()
-        && verbs.iter().all(|action| {
-            (action.app.is_empty() || action.app == record.app)
-                && declares(&statement.target, record.app, &action.kind, &action.action)
-        });
+        && verbs
+            .iter()
+            .all(|action| declares(&statement.target, record.app, &action.kind, &action.action));
     let named = (in_record && names_verb) || declared;
     if !named {
         return Err(StatementMismatch::Target.into());

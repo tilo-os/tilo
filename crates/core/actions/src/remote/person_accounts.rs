@@ -179,7 +179,7 @@ pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
     use super::person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED, vault_step};
     let (vault, accounts): (&[&str], &[&str]) = match (resource, action) {
         (RESOURCE, ADD_MAIL | BEGIN_SIGN_IN) | (calendars::RESOURCE, calendars::ADD) => {
-            (&[KEEP_SEALED, KEEP_USES], &[SAVE_ACCOUNT])
+            (&[KEEP_SEALED, KEEP_USES, REMOVE_SEALED], &[SAVE_ACCOUNT])
         }
         (RESOURCE, REPLACE_PASSWORD) => (&[KEEP_SEALED], &[]),
         (RESOURCE, REMOVE) | (calendars::RESOURCE, calendars::REMOVE) => {
@@ -187,10 +187,12 @@ pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
         }
         (RESOURCE, ADD_MAIL_WITH_ITEM | DISCOVER_CALENDARS)
         | (calendars::RESOURCE, calendars::ADD_WITH_ITEM | calendars::CONNECT) => {
-            (&[KEEP_USES], &[SAVE_ACCOUNT])
+            (&[KEEP_USES, REMOVE_SEALED], &[SAVE_ACCOUNT])
         }
         (RESOURCE, RECONNECT | CHECK) => (&[KEEP_USES], &[REPORT_SYNC]),
-        (RESOURCE, SET_SERVICES | SET_CALENDARS) => (&[], &[SAVE_ACCOUNT]),
+        (RESOURCE, SET_SERVICES | SET_CALENDARS) => {
+            (&[REMOVE_SEALED], &[SAVE_ACCOUNT, REMOVE_ACCOUNT])
+        }
         (RESOURCE, FETCH | READ | SEARCH | SEND | MARK | SAVE_DRAFT | ARRIVED)
         | (
             calendars::RESOURCE,
