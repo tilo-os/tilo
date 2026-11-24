@@ -190,10 +190,14 @@ impl Daemon {
             &json!({"path": path, "wait_ms": CHANGE_WAIT_MS, "args": arguments}),
         )
         .map_err(|error| {
-            format!(
-                "{error}\nAn app is installed in a workspace: log this computer in first \
-                 (`tilo login`) when it is not."
-            )
+            if error.contains("serves no workspace") {
+                format!(
+                    "{error}\nAn app is installed in a workspace: log this computer in first \
+                     (`tilo login`) when it is not."
+                )
+            } else {
+                error
+            }
         })
     }
 
