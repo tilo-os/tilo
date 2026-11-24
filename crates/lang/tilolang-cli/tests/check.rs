@@ -5,9 +5,6 @@
 use std::path::Path;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
-use tilolang::ids::SeededEntropy;
-use tilolang::source::{compile_dirs, dependency_order_with};
-use tilolang_tilo::catalogue;
 
 use crate::support::{copy_package, packages};
 
