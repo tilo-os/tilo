@@ -175,11 +175,20 @@ impl AdmittedJoinIdentity {
     ) -> tilo_actions::remote::Caller {
         let verified = &self.verified;
         match &self.agent_id {
-            Some(agent) => tilo_actions::remote::Caller::delegated_agent(
-                agent.clone(),
-                verified.user_public_key,
-                verified.device_public_key,
-            ),
+            Some(agent) => {
+                let caller = tilo_actions::remote::Caller::delegated_agent(
+                    agent.clone(),
+                    verified.user_public_key,
+                    verified.device_public_key,
+                );
+                // A member's own session runs this listed agent: that device handed it the
+                // session, so the certificate's delegation reaches it.
+                if self.session_delegated {
+                    caller.session_handed()
+                } else {
+                    caller
+                }
+            }
             None => tilo_actions::remote::Caller::authenticated(
                 verified.user_public_key,
                 verified.device_public_key,
@@ -424,9 +433,16 @@ pub(super) fn admit_join_presentation(
     let cert: tilo_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
-    admit_device(route, cert, membership, trusted_devices, authority, |expected, now, revoked, enrolled| {
-        verify_join_presentation(route, presentation, expected, now, revoked, enrolled)
-    })
+    admit_device(
+        route,
+        cert,
+        membership,
+        trusted_devices,
+        authority,
+        |expected, now, revoked, enrolled| {
+            verify_join_presentation(route, presentation, expected, now, revoked, enrolled)
+        },
+    )
 }
 
 /// Admit `cert`, the certificate of this device's own person in `route`'s workspace, which an
@@ -440,10 +456,20 @@ pub(super) fn admit_device_certificate(
     authority: Option<&dyn crate::apps::certificate_authority::CertificateAuthority>,
 ) -> Result<AdmittedJoinIdentity, String> {
     let checked = cert.clone();
-    admit_device(route, cert, membership, trusted_devices, authority, |expected, now, revoked, enrolled| {
-        verify_certificate(&checked, expected, now, revoked, enrolled)?;
-        Ok(VerifiedJoinIdentity::of(&checked, checked.capabilities.foreign))
-    })
+    admit_device(
+        route,
+        cert,
+        membership,
+        trusted_devices,
+        authority,
+        |expected, now, revoked, enrolled| {
+            verify_certificate(&checked, expected, now, revoked, enrolled)?;
+            Ok(VerifiedJoinIdentity::of(
+                &checked,
+                checked.capabilities.foreign,
+            ))
+        },
+    )
 }
 
 /// Admit `cert` into `route`'s workspace once `verify` accepts it, given the root expected to

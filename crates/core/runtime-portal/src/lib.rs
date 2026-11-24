@@ -71,7 +71,7 @@ pub mod workspace_terminal;
 /// current one or any since [`OLDEST_RUNTIME_INTERFACE_VERSION`]
 /// (docs/architecture/compatibility.md). `interface.toml` holds the schema,
 /// and the repository policy fails a change to it that keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 42;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 43;
 
 /// The oldest runtime interface version this build still works with. An app
 /// built against any version from it to [`RUNTIME_INTERFACE_VERSION`] runs.
