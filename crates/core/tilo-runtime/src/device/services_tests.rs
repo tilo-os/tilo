@@ -912,13 +912,13 @@ fn a_logins_device_is_what_this_computers_apps_sign_as() {
         ))
     });
 
-    let identity = Identity::here().unwrap();
+    let identity = Identity::here(&dir).unwrap();
     assert_eq!(identity.cert, cert);
     let (signer, signed_for) = tilo_identity::trusted_device::current("").unwrap();
     assert_eq!(signed_for, cert, "apps sign as the login's device");
     assert_eq!(signer.verifying_key(), key.verifying_key());
     // A second start finds it enrolled and changes nothing.
-    assert_eq!(Identity::here().unwrap().cert, cert);
+    assert_eq!(Identity::here(&dir).unwrap().cert, cert);
 }
 
 /// A device reached through a forward to a fixed UDP port (a local VM's host forward) binds the

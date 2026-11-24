@@ -197,7 +197,7 @@ impl Identity {
     ///
     /// # Errors
     /// This computer has no identity its person's services can start as ([`SET_UP_FIRST`]).
-    fn here() -> io::Result<Self> {
+    fn here(profile: &Path) -> io::Result<Self> {
         let keys = tilo_api::calls::device_keys();
         let place =
             tilo_device_identity::login::Place::here(keys.clone()).map_err(io::Error::other)?;
@@ -205,11 +205,13 @@ impl Identity {
         // person this device holds a certificate for. This daemon lists its own device with the
         // person's once it holds their record, so it starts from its certificate before any host
         // lists it.
-        let (key, cert) =
-            tilo_identity::trusted_device::serving_in(&device_identity_dir(&keys)?, &keys)
-                .map_err(|error| {
-                    io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
-                })?;
+        let (key, cert) = tilo_identity::trusted_device::serving_in(
+            &device_identity_dir(profile, this_account_uid(), &keys)?,
+            &keys,
+        )
+        .map_err(|error| {
+            io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
+        })?;
         Ok(Self { key, cert, place })
     }
 
@@ -402,33 +404,82 @@ pub fn this_accounts_root_dir() -> io::Result<std::path::PathBuf> {
     account_identity_dir(this_account_uid())
 }
 
-/// The identity store of the account this device acts as its person: the account's own store
-/// when its identity names the person this device's certificate does, else, for a daemon that
-/// serves every account, the account whose store names that person, else this account's, whose
-/// answer then says what it lacks.
+/// The identity store of the account this device acts as its person, with this device's key and
+/// certificates kept in `keys`: the daemon's own account `own` when its identity names the person
+/// this device's certificate does; else the account recorded at founding in the daemon's
+/// `profile` ([`tilo_api::daemon::admission::person_record`]), when that account's identity names
+/// them.
+///
+/// Another account on the computer whose identity names the same person is never taken for it:
+/// only the account founding recorded is the one the device's services start as.
 ///
 /// # Errors
-/// This computer keeps no identity store.
+/// This computer keeps no identity store, the profile records no account that made its person,
+/// that account keeps no identity record here or one that cannot be read, or its identity names
+/// another person than this device's certificate does. Each says what to run.
 pub(crate) fn device_identity_dir(
+    profile: &Path,
+    own: u32,
     keys: &tilo_device_identity::IdentityPaths,
 ) -> io::Result<std::path::PathBuf> {
-    let own = this_accounts_root_dir()?;
+    let own_store = account_identity_dir(own)?;
     let Some(person) =
         tilo_device_identity::login::served_cert(keys).map(|cert| cert.user_public_key)
     else {
-        return Ok(own);
+        return Ok(own_store);
     };
-    if store_names(&own, person) {
-        return Ok(own);
+    if store_names(&own_store, person) {
+        return Ok(own_store);
     }
-    let accounts = tilo_identity::store::identity_dir_from_env()?.join("accounts");
-    for entry in std::fs::read_dir(&accounts).into_iter().flatten().flatten() {
-        let dir = entry.path();
-        if store_names(&dir, person) {
-            return Ok(dir);
-        }
+    let recorded = tilo_api::daemon::admission::recorded_accounts(profile)?;
+    let Some((uid, _)) = recorded.iter().find(|(_, record)| record.device) else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "this computer's Tilo profile ({}) records no account that made its person, so \
+                 this device cannot tell whose identity to start: set its person up with `tilo \
+                 login --new-identity`, or log in with a ticket from one of the person's devices \
+                 (`tilo login <ticket>`).",
+                profile.display()
+            ),
+        ));
+    };
+    let dir = account_identity_dir(*uid)?;
+    let Some(record) = tilo_identity::store::resolve_active_identity(&dir) else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "this computer's Tilo profile records account {uid} as the one that made its \
+                 person, but that account keeps no identity record here: log in with a ticket \
+                 from one of the person's devices (`tilo login <ticket>`), or set a new identity \
+                 up here with `tilo login --new-identity`."
+            ),
+        ));
+    };
+    let metadata = tilo_identity::store::load_metadata_from_path(&record).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "this computer's Tilo profile records account {uid} as the one that made its \
+                 person, but that account's identity record here cannot be read: log in with a \
+                 ticket from one of the person's devices (`tilo login <ticket>`), or set a new \
+                 identity up here with `tilo login --new-identity`."
+            ),
+        )
+    })?;
+    if metadata.group_public_key != person {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "this computer's Tilo profile records account {uid} as the one that made its \
+                 person, but that account's identity names another person than this device's \
+                 certificate does: log in with a ticket from the certificate's person's devices \
+                 (`tilo login <ticket>`), or set a new identity up here with `tilo login \
+                 --new-identity`."
+            ),
+        ));
     }
-    Ok(own)
+    Ok(dir)
 }
 
 /// Whether the identity store at `dir` names `person` as the account's own.
@@ -1217,7 +1268,7 @@ impl Daemon {
         if let Some(keeping) = keeping.as_ref() {
             keeping.enroll()?;
         }
-        let identity = Identity::here()?;
+        let identity = Identity::here(root)?;
         tilo_files::native::private::directory(identity.place.dir())?;
         let place = tilo_api::daemon::this_computer().map_err(io::Error::other)?;
         let lock = match locked {

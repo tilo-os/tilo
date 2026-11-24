@@ -55,6 +55,10 @@ pub(crate) struct ThisDevice {
     /// The device's key, taken by this daemon alone: let go of before the lock beside it, so the
     /// daemon that takes the device over finds the key free once it has the lock.
     _key: tilo_device_identity::persist::DeviceKeyLock,
+    /// The daemon's profile, where founding records the account that made its person.
+    profile: PathBuf,
+    /// The account the daemon runs as: its own identity names the person first.
+    own: u32,
     lock: advisory_lock::FileLock,
     /// The device a ticket made of this computer, once one did: kept in memory for the person's
     /// services to enter through, as nothing of it is written down.
@@ -142,12 +146,12 @@ pub(crate) fn take_key(
 type Entered = Arc<std::sync::Mutex<Option<Device>>>;
 
 impl ThisDevice {
-    /// Take this computer's device, its key made here on the first start of a computer whose
-    /// system made none.
+    /// Take this computer's device over `profile`, its key made here on the first start of a
+    /// computer whose system made none.
     ///
     /// # Errors
     /// The key cannot be read or made, or another daemon keeps the device.
-    pub(crate) fn lock() -> io::Result<Self> {
+    pub(crate) fn lock(profile: PathBuf) -> io::Result<Self> {
         let keys = tilo_api::calls::device_keys();
         let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys)
             .map_err(|error| io::Error::other(format!("this computer's device key: {error}")))?;
@@ -160,6 +164,8 @@ impl ThisDevice {
             key,
             place,
             _key: taken,
+            profile,
+            own: crate::device::services::this_account_uid(),
             lock,
             entered: Entered::default(),
             founding: Arc::default(),
@@ -175,7 +181,7 @@ impl ThisDevice {
     /// certificate names this device's key and the account's identity store names that person
     /// ([`claimed`]).
     pub(crate) fn claimed(&self) -> bool {
-        claimed(&self.place, &self.key)
+        claimed(&self.place, &self.key, &self.profile, self.own)
     }
 
     /// The device's own actions, as its endpoints answer them before its person's services run:
@@ -185,6 +191,8 @@ impl ThisDevice {
             Arc::new(Answering {
                 key: self.key.clone(),
                 place: self.place.clone(),
+                profile: self.profile.clone(),
+                own: self.own,
                 entered: Arc::clone(&self.entered),
                 founding: Arc::clone(&self.founding),
                 calls: std::sync::Mutex::default(),
@@ -230,6 +238,8 @@ impl ThisDevice {
         let taken = tilo_rt::app().handle().block_on(take_handed_ticket(
             &self.place,
             &self.key,
+            &self.profile,
+            self.own,
             credentials.as_deref(),
         ));
         match taken {
@@ -269,8 +279,8 @@ impl ThisDevice {
 /// identity names and an identity no certificate backs both leave the daemon serving its device
 /// alone.
 #[must_use]
-pub(crate) fn claimed(place: &Place, key: &SigningKey) -> bool {
-    let serving = crate::device::services::device_identity_dir(place.keys())
+pub(crate) fn claimed(place: &Place, key: &SigningKey, profile: &Path, own: u32) -> bool {
+    let serving = crate::device::services::device_identity_dir(profile, own, place.keys())
         .and_then(|dir| tilo_identity::trusted_device::serving_in(&dir, place.keys()));
     serving.is_ok_and(|(device, _)| device.verifying_key() == key.verifying_key())
 }
@@ -278,13 +288,15 @@ pub(crate) fn claimed(place: &Place, key: &SigningKey) -> bool {
 /// Spend the ticket in `credentials`' [`TICKET_CREDENTIAL`] to make this computer, whose device
 /// key is `key`, one of the person's devices, its certificate kept in `place`: `None` when no
 /// ticket was handed, or when this computer's identity is already one its person's services can
-/// start as, where the ticket is left unspent.
+/// start as, where the ticket is left unspent. The daemon runs over `profile` as `own`.
 pub(crate) async fn take_handed_ticket(
     place: &Place,
     key: &SigningKey,
+    profile: &Path,
+    own: u32,
     credentials: Option<&Path>,
 ) -> Option<anyhow::Result<Device>> {
-    if claimed(place, key) {
+    if claimed(place, key, profile, own) {
         return None;
     }
     let ticket = std::fs::read_to_string(credentials?.join(TICKET_CREDENTIAL)).ok()?;
@@ -311,6 +323,10 @@ pub(crate) struct DeviceOnly(Arc<Answering>, Option<crate::seats::Seated>);
 struct Answering {
     key: SigningKey,
     place: Place,
+    /// The daemon's profile, where founding records the account that made its person.
+    profile: PathBuf,
+    /// The account the daemon runs as: its own identity names the person first.
+    own: u32,
     /// Where the device a ticket made of this computer is kept for its person's services.
     entered: Entered,
     /// What the person's services issue a founding's tickets through, once they run.
@@ -326,9 +342,23 @@ struct Answering {
 }
 
 impl DeviceOnly {
-    /// The device actions of the device whose key is `key`, its certificates kept in `place`.
+    /// The device actions of the device whose key is `key`, its certificates kept in `place`:
+    /// no profile and this process's own account, for a test that asks the device's own actions
+    /// alone.
     #[cfg(test)]
     pub(crate) fn new(key: SigningKey, place: Place) -> Self {
+        Self::at(
+            key,
+            place,
+            PathBuf::new(),
+            crate::device::services::this_account_uid(),
+        )
+    }
+
+    /// The device actions of a device whose daemon runs over `profile` as `own`: the identity
+    /// store its person is read from, and the profile founding records that account in.
+    #[cfg(test)]
+    pub(crate) fn at(key: SigningKey, place: Place, profile: PathBuf, own: u32) -> Self {
         let records = Arc::new(super::records::DeviceRecords::at(
             place.dir(),
             key.verifying_key().to_bytes(),
@@ -337,6 +367,8 @@ impl DeviceOnly {
             Arc::new(Answering {
                 key,
                 place,
+                profile,
+                own,
                 entered: Entered::default(),
                 founding: Arc::default(),
                 calls: std::sync::Mutex::default(),
@@ -374,7 +406,7 @@ impl DeviceOnly {
 
     /// Whether a person's certificate names this device's key.
     pub(crate) fn claimed(&self) -> bool {
-        claimed(&self.0.place, &self.0.key)
+        claimed(&self.0.place, &self.0.key, &self.0.profile, self.0.own)
     }
 
     /// This device's key and certificates.

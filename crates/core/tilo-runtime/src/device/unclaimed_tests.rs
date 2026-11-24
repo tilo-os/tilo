@@ -68,21 +68,25 @@ async fn a_handed_ticket_is_spent_once_and_files_the_persons_certificate() {
         format!("{}\n", printed["ticket"].as_str().unwrap()),
     )
     .unwrap();
-    assert!(!claimed(&place, &key), "no identity names the key yet");
+    let own = crate::device::services::this_account_uid();
+    assert!(
+        !claimed(&place, &key, &root, own),
+        "no identity names the key yet"
+    );
     let machine_endpoint = endpoint(&key).await;
     let machine_service = tilo_peer_state::actions::ActionService::new(
         key.clone(),
         Arc::new(tilo_peer_state::actions::NoActions),
     );
     assert_eq!(
-        take_handed_ticket(&place, &key, None)
+        take_handed_ticket(&place, &key, &root, own, None)
             .await
             .map(|taken| taken.is_ok()),
         None,
         "a start handed no ticket spends none"
     );
 
-    let device = take_handed_ticket(&place, &key, Some(&credentials))
+    let device = take_handed_ticket(&place, &key, &root, own, Some(&credentials))
         .await
         .expect("an unclaimed machine spends the ticket it was handed")
         .unwrap_or_else(|why| panic!("the issuer certifies the machine: {why:#}"));
@@ -97,14 +101,14 @@ async fn a_handed_ticket_is_spent_once_and_files_the_persons_certificate() {
             .expect("the certificate is filed under the person it names");
     assert_eq!(filed, device.cert);
     assert!(
-        claimed(&place, &key),
+        claimed(&place, &key, &root, own),
         "the person's certificate names the key now"
     );
 
     // A second start: the ticket beside the certificate is left unspent, so its being spent
     // already says nothing.
     assert!(
-        take_handed_ticket(&place, &key, Some(&credentials))
+        take_handed_ticket(&place, &key, &root, own, Some(&credentials))
             .await
             .is_none(),
         "a claimed machine leaves a handed ticket alone"

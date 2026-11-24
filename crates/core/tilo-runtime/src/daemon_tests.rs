@@ -889,7 +889,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     let admission: &'static tilo_api::daemon::admission::Admission = Box::leak(Box::new(
         tilo_api::daemon::admission::Admission::new(OWN, false),
     ));
-    let answers = crate::device::unclaimed::DeviceOnly::new(key, place);
+    let answers = crate::device::unclaimed::DeviceOnly::at(key, place, root.clone(), OWN);
     let native = std::sync::Arc::new(super::Native::new(
         answers.clone(),
         founding_peer,
@@ -1070,6 +1070,7 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     const BOB: u32 = 1001;
 
     // A device bound to Ada: her root certified its key.
+    let home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
     keys.ensure_directories().unwrap();
@@ -1090,11 +1091,31 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     };
     tilo_user_identity::sign_device_cert(&mut cert, &ada).unwrap();
     tilo_device_identity::persist::write_device_cert(&keys.device_cert, &cert).unwrap();
+    // Ada's account keeps what its identity store names, and the profile records that account as
+    // the one the device was set up from: whose identity the device's own actions start as.
+    let profile = home.root().to_owned();
+    tilo_identity::provisioning::complete_enrolled_device(
+        &crate::device::services::account_identity_dir(ADA).unwrap(),
+        &keys,
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    let record = tilo_api::daemon::admission::person_record(&profile, ADA);
+    std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+    std::fs::write(
+        &record,
+        serde_json::json!({"person": hex::encode(person), "device": true}).to_string(),
+    )
+    .unwrap();
 
-    let answers = crate::device::unclaimed::DeviceOnly::new(
+    let answers = crate::device::unclaimed::DeviceOnly::at(
         key,
         tilo_device_identity::login::Place::at(dir.path().join("login"), keys),
+        profile.clone(),
+        DAEMON,
     );
+    // The profile records that account for the identity check; this daemon's own admission
+    // has not recorded it yet, which the sign-in section below asks about.
     let admission: &'static Admission = Box::leak(Box::new(Admission::new(DAEMON, true)));
     let native = std::sync::Arc::new(super::Native::new(answers.clone(), test_peer, admission));
     // The person's services run, answering as the workspace `home`.

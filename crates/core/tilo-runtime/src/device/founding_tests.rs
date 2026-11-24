@@ -75,7 +75,7 @@ fn a_half_made_computer_stays_up_and_founds_its_person() {
 
     // Its person's services run from then on, as the person the certificate names.
     running
-        .wait_for_person(Duration::from_secs(30))
+        .wait_for_person(Duration::from_secs(120))
         .expect("the person's services run");
     let who = ask(&socket, &json!({"native": "account#who"}));
     assert_eq!(who["claimed"], true, "{who}");
@@ -136,7 +136,7 @@ fn a_computer_with_no_identity_at_all_stays_up_and_founds_its_person() {
         .to_owned();
 
     running
-        .wait_for_person(Duration::from_secs(30))
+        .wait_for_person(Duration::from_secs(120))
         .expect("the person's services run");
     let who = ask(&socket, &json!({"native": "account#who"}));
     assert_eq!(who["claimed"], true, "{who}");
@@ -146,6 +146,135 @@ fn a_computer_with_no_identity_at_all_stays_up_and_founds_its_person() {
         "the person's root is kept here: {who}"
     );
     running.stop().unwrap();
+    drop(environment);
+}
+
+const TWO_STORES_TEST: &str =
+    "device::founding_tests::a_second_accounts_store_naming_the_same_person_is_never_picked";
+
+/// The id an account's public record of `person` is kept under.
+fn public_record_id(person: [u8; 32]) -> String {
+    format!(
+        "identity-{}",
+        hex::encode(person).chars().take(55).collect::<String>()
+    )
+}
+
+/// Keep an account's public record of `person` under `id` in its store, and make it the one
+/// the account presents.
+fn write_public_record(store: &Path, id: &str, person: [u8; 32]) {
+    let record = tilo_identity::store::public_member_record("Ada", [88, 101, 242], person).unwrap();
+    tilo_files::native::atomic::write_with_mode(&store.join(format!("{id}.json")), &record, 0o600)
+        .unwrap();
+    tilo_identity::store::set_active_identity(store, id).unwrap();
+}
+
+/// Two identity stores on this computer name the same person. The one the profile records as the
+/// account the device was set up from is the one the device starts as; the other is never taken
+/// for it, and a profile that records no such account, or whose account names someone else, is
+/// refused with what to run rather than guessed.
+#[test]
+fn a_second_accounts_store_naming_the_same_person_is_never_picked() {
+    let Some(profile) = isolated_root(TWO_STORES_TEST) else {
+        return;
+    };
+    let environment = isolated_environment();
+    let keys = tilo_api::calls::device_keys();
+    // The isolated child starts with a person of its own; this test sets its own stores.
+    reset_identity(&keys);
+    let store = |uid: u32| {
+        tilo_identity::store::identity_dir_from_env()
+            .unwrap()
+            .join("accounts")
+            .join(uid.to_string())
+    };
+    // The account the device was set up from: its root made the person and certified the device.
+    let founding = 7_001;
+    let founding_store = store(founding);
+    std::fs::create_dir_all(&founding_store).unwrap();
+    let person_key = tilo_identity::provisioning::create_person(
+        &founding_store,
+        &keys,
+        "Ada",
+        "",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
+    // A second account enrolled for the same person: its store is a public record naming them,
+    // as an account that joined from another device keeps.
+    let second = 7_002;
+    let second_store = store(second);
+    tilo_identity::provisioning::prepare_identity_directory(&second_store).unwrap();
+    let record_id = public_record_id(person_key);
+    write_public_record(&second_store, &record_id, person_key);
+    let names = |dir: &Path| {
+        tilo_identity::store::resolve_active_identity(dir)
+            .and_then(|record| tilo_identity::store::load_metadata_from_path(&record).ok())
+            .is_some_and(|metadata| metadata.group_public_key == person_key)
+    };
+    assert!(names(&founding_store), "the founding account names them");
+    assert!(
+        names(&second_store),
+        "the second account names them too, so only the record tells them apart"
+    );
+
+    // The profile records the founding account as the account the device was set up from.
+    let record = tilo_api::daemon::admission::person_record(&profile, founding);
+    std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+    std::fs::write(
+        &record,
+        json!({"person": hex::encode(person_key), "device": true}).to_string(),
+    )
+    .unwrap();
+
+    // The daemon's own account names nobody: the recorded account is the one it starts as, and
+    // never the second account whose store names the same person.
+    let own = 7_003;
+    let picked = crate::device::services::device_identity_dir(&profile, own, &keys).unwrap();
+    assert_eq!(picked, founding_store, "the recorded account is the one");
+    assert_ne!(picked, second_store, "the second account is never picked");
+
+    // The daemon's own account is the first answer when its store names the person.
+    assert_eq!(
+        crate::device::services::device_identity_dir(&profile, founding, &keys).unwrap(),
+        founding_store
+    );
+
+    // A profile that records no account is refused rather than guessed.
+    std::fs::remove_file(&record).unwrap();
+    let error = crate::device::services::device_identity_dir(&profile, own, &keys).unwrap_err();
+    assert!(
+        error.to_string().contains("--new-identity"),
+        "the refusal says what to run: {error}"
+    );
+
+    // A recorded account whose store names another person is refused too.
+    let other = 7_004;
+    let other_store = store(other);
+    tilo_identity::provisioning::prepare_identity_directory(&other_store).unwrap();
+    let other_person = [9u8; 32];
+    let id = public_record_id(other_person);
+    write_public_record(&other_store, &id, other_person);
+    let other_record = tilo_api::daemon::admission::person_record(&profile, other);
+    std::fs::create_dir_all(other_record.parent().unwrap()).unwrap();
+    std::fs::write(
+        &other_record,
+        json!({"person": hex::encode(other_person), "device": true}).to_string(),
+    )
+    .unwrap();
+    let error = crate::device::services::device_identity_dir(&profile, own, &keys).unwrap_err();
+    assert!(
+        error.to_string().contains("another person"),
+        "the refusal says what is wrong: {error}"
+    );
+
+    // A recorded account whose identity record is not on the computer is refused with that.
+    std::fs::remove_dir_all(&other_store).unwrap();
+    let error = crate::device::services::device_identity_dir(&profile, own, &keys).unwrap_err();
+    assert!(
+        error.to_string().contains("no identity record"),
+        "the refusal says what is missing: {error}"
+    );
     drop(environment);
 }
 

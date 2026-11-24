@@ -217,7 +217,7 @@ impl Running {
     /// [`Self::start`], serving builds under development too when `dev`.
     fn start_serving(profile: &Path, dev: bool) -> io::Result<Self> {
         validate_profile(profile)?;
-        let device = crate::device::unclaimed::ThisDevice::lock()?;
+        let device = crate::device::unclaimed::ThisDevice::lock(profile.to_path_buf())?;
         // Who each connection is: root and this daemon's own account act as the device, and
         // under the system unit the account that made the device's person, kept in the profile,
         // and the people signed in act as themselves.
