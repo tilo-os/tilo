@@ -29,6 +29,10 @@ tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 app-fleet = { package = "tilo-app-fleet", version = "0.1.0", path = "../../desktop/app-fleet" }
 uuid.workspace = true
 
+# A conversation id is a v4 id, which needs a source of randomness where the page reads JS.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
+
 [dev-dependencies]
 postcard = { workspace = true, features = ["use-std"] }
 tilo-test-env = { path = "../../../tools/test-env" }
