@@ -77,6 +77,8 @@ d-q3io7nnf = Area
 
 d-e4notqqc = Data
 
+d-d46t4e64 = Currency
+
 d-qh2jrzar = Calculate
     .doc = Works out an expression and keeps the result in the record.
     .w-that-expression-is-not-one-this = That expression is not one this calculator can work out
@@ -163,6 +165,7 @@ d-3ppmgyve = Calculator
     .w-mod = mod
     .w-earlier = Earlier
     .w-quantity = Quantity
+    .w-a-rate-has-to-come-from = A rate has to come from somewhere: Tilo has no exchange-rate source here, so this page converts units and not money.
     .w-amount = Amount
     .w-from = From
     .w-swap = Swap
@@ -227,6 +230,7 @@ d-ef6s7d6m = Calculation
     .w-mod = mod
     .w-earlier = Earlier
     .w-quantity = Quantity
+    .w-a-rate-has-to-come-from = A rate has to come from somewhere: Tilo has no exchange-rate source here, so this page converts units and not money.
     .w-amount = Amount
     .w-from = From
     .w-swap = Swap

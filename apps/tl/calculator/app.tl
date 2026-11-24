@@ -34,6 +34,8 @@ enum Quantity {
     speed
     area
     data
+    /// Currency
+    currency
 }
 
 /// The workspace's calculator: what it worked out, oldest first, and the curves and surfaces its
@@ -589,27 +591,35 @@ view convert_face(
                 }
             }
         }
-        stack(gap: .related) {
-            ui.TextInput(bind: amount, placeholder: "Amount", autofocus: true)
-            row(gap: .related) {
-                ui.Dropdown(options: units, bind: from, caption: "From", fill)
-                ui.Button("Swap", icon: .arrow_up_down, icon_only: true) {
-                    on press: set(from, dst).then(set(to, src))
-                }
-                ui.Dropdown(options: units, bind: to, caption: "To", fill)
-            }
-        }
-        ui.TextInput(
-            text: if converted.is_nan() { "" } else { said(converted) },
-            read_only: true,
-            placeholder: "Result",
-        )
-        if not converted.is_nan() {
+        if quantity == .currency {
             ui.Text(
-                "{said(value)} {src} = {said(converted)} {dst}",
-                role: .caption,
+                "A rate has to come from somewhere: Tilo has no exchange-rate source here, so this page converts units and not money.",
+                role: .body,
                 secondary: true,
             )
+        } else {
+            stack(gap: .related) {
+                ui.TextInput(bind: amount, placeholder: "Amount", autofocus: true)
+                row(gap: .related) {
+                    ui.Dropdown(options: units, bind: from, caption: "From", fill)
+                    ui.Button("Swap", icon: .arrow_up_down, icon_only: true) {
+                        on press: set(from, dst).then(set(to, src))
+                    }
+                    ui.Dropdown(options: units, bind: to, caption: "To", fill)
+                }
+            }
+            ui.TextInput(
+                text: if converted.is_nan() { "" } else { said(converted) },
+                read_only: true,
+                placeholder: "Result",
+            )
+            if not converted.is_nan() {
+                ui.Text(
+                    "{said(value)} {src} = {said(converted)} {dst}",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
         }
     }
 }
@@ -939,6 +949,30 @@ fn eval(text: Text, degrees: Bool, answer: Float, memory: Float) -> Float {
 
 /// The same, with `x` and `y` bound: what a plotted function is sampled at.
 fn eval_at(text: Text, degrees: Bool, answer: Float, memory: Float, x: Float, y: Float) -> Float {
+    eval_with(text, degrees, answer, memory, x, y, "x")
+}
+
+/// The same, sampling `var` instead: what an integral reads at each point.
+fn eval_in(
+    text: Text,
+    degrees: Bool,
+    answer: Float,
+    memory: Float,
+    var: Text,
+    value: Float,
+) -> Float {
+    eval_with(text, degrees, answer, memory, value, 0.0, var)
+}
+
+fn eval_with(
+    text: Text,
+    degrees: Bool,
+    answer: Float,
+    memory: Float,
+    x: Float,
+    y: Float,
+    var: Text,
+) -> Float {
     let cs = normalize(text).split("")
     let st = Map<Float>()
     st.put("i", 0.0)
@@ -947,6 +981,7 @@ fn eval_at(text: Text, degrees: Bool, answer: Float, memory: Float, x: Float, y:
     st.put("deg", if degrees { 1.0 } else { 0.0 })
     st.put("x", x)
     st.put("y", y)
+    st.put(var, x)
     let value = sum(cs, st)
     if peek(cs, st) != "" {
         return bad()
@@ -1133,16 +1168,37 @@ fn named(cs: List<Text>, st: Map<Float>) -> Float {
         let integrand = cs
             .map((c, i) -> if i >= from.to_int() and i < to.to_int() { c } else { "" })
             .join("")
-        let second_given = peek(cs, st) == ","
-        if second_given { take(cs, st) }
-        let first = if second_given { sum(cs, st) } else { 0.0 }
-        let third_given = peek(cs, st) == ","
-        if third_given { take(cs, st) }
-        let second = if third_given { sum(cs, st) } else { 0.0 }
-        if not third_given or take(cs, st) != ")" {
+        if peek(cs, st) != "," {
             return bad()
         }
-        return integrate(integrand, first, second, st)
+        take(cs, st)
+        // `int(f, x, a, b)` names the variable it binds; `int(f, a, b)` binds `x`.
+        let bounds = index(st)
+        let maybe = read_name(cs, st)
+        let named = (maybe == "x" or maybe == "y") and peek(cs, st) == ","
+        if named { take(cs, st) } else { st.put("i", bounds) }
+        let var = if named { maybe } else { "x" }
+        let first = sum(cs, st)
+        if take(cs, st) != "," {
+            return bad()
+        }
+        let second = sum(cs, st)
+        if take(cs, st) != ")" {
+            return bad()
+        }
+        return integrate(integrand, first, second, var, st)
+    }
+    // A minimum or maximum takes as many numbers as it is given.
+    if name == "min" or name == "max" {
+        let values = arguments(cs, st)
+        if values.is_empty() or take(cs, st) != ")" {
+            return bad()
+        }
+        return if name == "min" {
+            least(values, 1, values.first() ?? 0.0)
+        } else {
+            greatest(values, 1, values.first() ?? 0.0)
+        }
     }
     let first = sum(cs, st)
     let second_given = peek(cs, st) == ","
@@ -1154,9 +1210,41 @@ fn named(cs: List<Text>, st: Map<Float>) -> Float {
     apply(name, first, second, second_given, st)
 }
 
-/// The definite integral of `text` over `[a, b]`, Simpson's rule on 512 intervals: enough for a
-/// plotted or typed function, and bounded work however wrong the bounds are.
-fn integrate(text: Text, a: Float, b: Float, st: Map<Float>) -> Float {
+/// Every argument of a call, in order.
+fn arguments(cs: List<Text>, st: Map<Float>) -> List<Float> {
+    arguments_rest(cs, st, [sum(cs, st)])
+}
+
+fn arguments_rest(cs: List<Text>, st: Map<Float>, so_far: List<Float>) -> List<Float> {
+    if peek(cs, st) != "," {
+        return so_far
+    }
+    take(cs, st)
+    arguments_rest(cs, st, so_far + [sum(cs, st)])
+}
+
+fn least(values: List<Float>, at: Int, low: Float) -> Float {
+    let value = values.at(at) ?? low
+    let low = if value < low { value } else { low }
+    if at + 1 >= values.len() {
+        return low
+    }
+    least(values, at + 1, low)
+}
+
+fn greatest(values: List<Float>, at: Int, high: Float) -> Float {
+    let value = values.at(at) ?? high
+    let high = if value > high { value } else { high }
+    if at + 1 >= values.len() {
+        return high
+    }
+    greatest(values, at + 1, high)
+}
+
+/// The definite integral of `text` over `[a, b]` in its variable, Simpson's rule on 512
+/// intervals: enough for a plotted or typed function, and bounded work however wrong the bounds
+/// are.
+fn integrate(text: Text, a: Float, b: Float, var: Text, st: Map<Float>) -> Float {
     if a.is_nan() or b.is_nan() or not a.is_finite() or not b.is_finite() {
         return bad()
     }
@@ -1165,10 +1253,10 @@ fn integrate(text: Text, a: Float, b: Float, st: Map<Float>) -> Float {
     let memory = st.get("mem") ?? 0.0
     let h = (b - a) / 512.0
     // The ends count once, the odd points four times and the even ones twice.
-    let ends = eval_at(text, degrees, answer, memory, a, 0.0)
-        + eval_at(text, degrees, answer, memory, b, 0.0)
-    let odds = odd_points(text, degrees, answer, memory, a, h, 1.0)
-    let evens = even_points(text, degrees, answer, memory, a, h, 2.0)
+    let ends = eval_in(text, degrees, answer, memory, var, a)
+        + eval_in(text, degrees, answer, memory, var, b)
+    let odds = odd_points(text, degrees, answer, memory, a, h, 1.0, var)
+    let evens = even_points(text, degrees, answer, memory, a, h, 2.0, var)
     h / 3.0 * (ends + 4.0 * odds + 2.0 * evens)
 }
 
@@ -1180,12 +1268,13 @@ fn odd_points(
     a: Float,
     h: Float,
     i: Float,
+    var: Text,
 ) -> Float {
     if i >= 512.0 {
         return 0.0
     }
-    eval_at(text, degrees, answer, memory, a + h * i, 0.0)
-        + odd_points(text, degrees, answer, memory, a, h, i + 2.0)
+    eval_in(text, degrees, answer, memory, var, a + h * i)
+        + odd_points(text, degrees, answer, memory, a, h, i + 2.0, var)
 }
 
 fn even_points(
@@ -1196,12 +1285,13 @@ fn even_points(
     a: Float,
     h: Float,
     i: Float,
+    var: Text,
 ) -> Float {
     if i >= 512.0 {
         return 0.0
     }
-    eval_at(text, degrees, answer, memory, a + h * i, 0.0)
-        + even_points(text, degrees, answer, memory, a, h, i + 2.0)
+    eval_in(text, degrees, answer, memory, var, a + h * i)
+        + even_points(text, degrees, answer, memory, a, h, i + 2.0, var)
 }
 
 fn read_name(cs: List<Text>, st: Map<Float>) -> Text {
@@ -1282,6 +1372,24 @@ fn apply(name: Text, a: Float, b: Float, second_given: Bool, st: Map<Float>) -> 
     if name == "tanh" {
         return a.tanh()
     }
+    if name == "asinh" {
+        return asinh(a)
+    }
+    if name == "acosh" {
+        return acosh(a)
+    }
+    if name == "atanh" {
+        return atanh(a)
+    }
+    if name == "rad" {
+        return a.to_radians()
+    }
+    if name == "deg" {
+        return a.to_degrees()
+    }
+    if name == "atan2" and second_given {
+        return atan2(a, b) * back
+    }
     if name == "ln" {
         return a.ln()
     }
@@ -1338,7 +1446,12 @@ fn apply(name: Text, a: Float, b: Float, second_given: Bool, st: Map<Float>) -> 
         return nth_root(a, b)
     }
     if name == "mod" and second_given {
-        return a - (a / b).trunc() * b
+        // The remainder mathematics takes: never negative, as `rem_euclid` gives it.
+        if b == 0.0 {
+            return bad()
+        }
+        let m = a - (a / b).trunc() * b
+        return if m < 0.0 { m + b.abs() } else { m }
     }
     if name == "hypot" and second_given {
         return (a * a + b * b).sqrt()
@@ -1379,6 +1492,51 @@ fn factorial_up(n: Float, acc: Float) -> Float {
         return acc
     }
     factorial_up(n - 1.0, acc * n)
+}
+
+/// The inverse hyperbolic sine: any number.
+fn asinh(x: Float) -> Float {
+    (x + (x * x + 1.0).sqrt()).ln()
+}
+
+/// The inverse hyperbolic cosine: only one and above.
+fn acosh(x: Float) -> Float {
+    if x < 1.0 {
+        return bad()
+    }
+    (x + (x * x - 1.0).sqrt()).ln()
+}
+
+/// The inverse hyperbolic tangent: between -1 and 1, and infinite at either end.
+fn atanh(x: Float) -> Float {
+    if x == 1.0 {
+        return 1.0 / 0.0
+    }
+    if x == -1.0 {
+        return -1.0 / 0.0
+    }
+    if x.abs() > 1.0 {
+        return bad()
+    }
+    0.5 * ((1.0 + x) / (1.0 - x)).ln()
+}
+
+/// The angle of the point `(x, y)` from the positive x axis, in radians: `atan2(y, x)`.
+fn atan2(y: Float, x: Float) -> Float {
+    let pi = 3.141592653589793
+    if x > 0.0 {
+        return (y / x).atan()
+    }
+    if x < 0.0 {
+        return if y >= 0.0 { (y / x).atan() + pi } else { (y / x).atan() - pi }
+    }
+    if y > 0.0 {
+        return pi / 2.0
+    }
+    if y < 0.0 {
+        return -pi / 2.0
+    }
+    0.0
 }
 
 /// A number as the display reads it: about ten places, and none past that. A number too large

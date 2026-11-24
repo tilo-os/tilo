@@ -220,8 +220,17 @@ mod cases {
             assert_eq!(c.worked_out("root(3,27)"), "3");
             assert_eq!(c.worked_out("hypot(3,4)"), "5");
             assert_eq!(c.worked_out("mod(7,3)"), "1");
+            assert_eq!(c.worked_out("mod(-1,3)"), "2", "a remainder is never negative");
             assert_eq!(c.worked_out("min(3,8)"), "3");
             assert_eq!(c.worked_out("max(3,8)"), "8");
+            assert_eq!(c.worked_out("min(3,8,5)"), "3", "a minimum takes any count");
+            assert_eq!(c.worked_out("max(3,8,5)"), "8");
+            assert_eq!(c.worked_out("asinh(0)"), "0");
+            assert_eq!(c.worked_out("acosh(1)"), "0");
+            assert_eq!(c.worked_out("atanh(0)"), "0");
+            assert_eq!(c.worked_out("rad(180)"), "3.1415926536");
+            assert_eq!(c.worked_out("deg(pi)"), "180");
+            assert_eq!(c.worked_out("atan2(1,1)"), "0.7853981634");
         }
 
         phase degrees_work_the_trigonometric_functions_in_degrees;
@@ -238,6 +247,8 @@ mod cases {
             let c = Calc::new();
             assert_eq!(c.worked_out("int(x^2,0,3)"), "9");
             assert_eq!(c.worked_out("int(sin(x),0,pi)"), "2");
+            assert_eq!(c.worked_out("int(x^2,x,0,3)"), "9", "the variable may be named");
+            assert_eq!(c.worked_out("int(y^2,y,0,3)"), "9", "either of the graphs' variables");
         }
 
         phase an_expression_with_no_value_is_refused_and_not_recorded;
@@ -401,6 +412,16 @@ mod cases {
                 texts(warm.tree()).iter().any(|t| t.as_str() == "1 °C = 33.8 °F"),
                 "temperature's units do not share a zero:\n{}",
                 dump(warm.tree())
+            );
+            // Money is refused in words, not converted from a rate nobody asked.
+            c.press_segment("Currency");
+            let money = c.window();
+            assert!(
+                texts(money.tree())
+                    .iter()
+                    .any(|t| t.starts_with("A rate has to come from somewhere")),
+                "money says why it is not converted:\n{}",
+                dump(money.tree())
             );
         }
 
