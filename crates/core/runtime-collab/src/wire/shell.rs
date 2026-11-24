@@ -42,10 +42,10 @@ pub const SHELL_FD_ENV: &str = "TILO_SHELL_FD";
 
 /// What a connection the shell opens to hand the device's tilolang processes an instance begins
 /// with, followed by the one-use secret the daemon answered the shell's [`ShellCall::Processes`]
-/// with: both written in one message that carries the shell's end of a packet socket pair
-/// (`runtime_portal::packet::pair`) as `SCM_RIGHTS`. The daemon's processes then take the
-/// hand-over on that packet socket (`runtime_portal::device_processes`). As long as
-/// [`SHELL_MAGIC`].
+/// with, then the number the connection's descriptor stream (`runtime_portal::descriptors`) hands
+/// the daemon's end of a packet socket pair (`runtime_portal::packet::pair`) by, as four
+/// little-endian bytes. The daemon's processes then take the hand-over on that packet socket
+/// (`runtime_portal::device_processes`). As long as [`SHELL_MAGIC`].
 pub const PROCESSES_MAGIC: &[u8; 4] = b"QSP1";
 
 /// A connection the shell hands the daemon ([`ShellCall::Vouch`]), made on the shell's app

@@ -497,6 +497,16 @@ impl Stream {
     }
 }
 
+/// A pipe handed to this process, as [`Stream::from_handle`] takes it: one conversion with Unix,
+/// where a handed descriptor is the stream.
+impl TryFrom<OwnedHandle> for Stream {
+    type Error = io::Error;
+
+    fn try_from(handle: OwnedHandle) -> io::Result<Self> {
+        Self::from_handle(handle)
+    }
+}
+
 impl AsHandle for Stream {
     fn as_handle(&self) -> BorrowedHandle<'_> {
         self.pipe.as_handle()

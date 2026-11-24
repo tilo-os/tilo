@@ -99,53 +99,36 @@ pub(super) async fn serve(
 }
 
 /// Hand the device's tilolang processes the packet socket `stream` carries, when it opened with
-/// [`PROCESSES_MAGIC`] and the secret the daemon answered a shell's [`ShellCall::Processes`] with
-/// on its own link. Marker, secret and descriptor come as one message. Any other connection, one
-/// that dialed the socket itself above all, is closed before anything reaches the processes:
+/// [`PROCESSES_MAGIC`], the secret the daemon answered a shell's [`ShellCall::Processes`] with on
+/// its own link, and the number its descriptor stream hands the socket by. Any other connection,
+/// one that dialed the socket itself above all, is closed before anything reaches the processes:
 /// only the shell the daemon started hands them an instance.
 pub(super) async fn processes(
     stream: tilo_socket::tokio::Stream,
     services: Arc<ShellServices>,
 ) -> Result<(), crate::apps::BrokerError> {
+    use runtime_collab::wire::shell::SHELL_SECRET_BYTES;
+    use tokio::io::AsyncReadExt as _;
     let refused = |why: String| {
         tracing::warn!(%why, "refused a hand-over to the device's tilolang processes");
         Ok(())
     };
-    #[cfg(windows)]
-    {
-        drop((stream, services));
-        refused("a pipe carries no packet socket to hand over".to_owned())
+    let received = runtime_portal::descriptors::ReceivedDescriptors::new(1);
+    let mut stream =
+        runtime_portal::descriptors::DescriptorStream::receiving(stream, received.clone());
+    let mut opening = [0_u8; PROCESSES_MAGIC.len() + SHELL_SECRET_BYTES + 4];
+    if let Err(error) = stream.read_exact(&mut opening).await {
+        return refused(format!("its opening does not read: {error}"));
     }
-    #[cfg(unix)]
-    processes_handed(stream, services, refused).await
-}
-
-#[cfg(unix)]
-async fn processes_handed(
-    stream: tilo_socket::tokio::Stream,
-    services: Arc<ShellServices>,
-    refused: impl Fn(String) -> Result<(), crate::apps::BrokerError>,
-) -> Result<(), crate::apps::BrokerError> {
-    use runtime_collab::wire::shell::SHELL_SECRET_BYTES;
-    let (opening, packets) = loop {
-        if let Err(error) = stream.readable().await {
-            return refused(format!("its connection does not read: {error}"));
-        }
-        match stream.try_io(tokio::io::Interest::READABLE, || {
-            runtime_portal::fd_transport::recv_with_fd(&stream)
-        }) {
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => return refused(format!("its opening does not read: {error}")),
-            Ok(received) => break received,
-        }
-    };
-    let secret = opening
-        .strip_prefix(PROCESSES_MAGIC.as_slice())
-        .and_then(|secret| <[u8; SHELL_SECRET_BYTES]>::try_from(secret).ok());
-    let (Some(secret), Some(packets)) = (secret, packets) else {
+    let (marker, rest) = opening.split_at(PROCESSES_MAGIC.len());
+    let (secret, number) = rest.split_at(SHELL_SECRET_BYTES);
+    let (Ok(secret), Ok(number)) = (
+        <[u8; SHELL_SECRET_BYTES]>::try_from(secret),
+        <[u8; 4]>::try_from(number),
+    ) else {
         return refused("its opening is no marker, secret and packet socket".to_owned());
     };
-    if !services.links.take_processes(&secret) {
+    if marker != PROCESSES_MAGIC.as_slice() || !services.links.take_processes(&secret) {
         return refused(
             "only the person's shell hands over, with a secret its link asked for".to_owned(),
         );
@@ -153,7 +136,13 @@ async fn processes_handed(
     let Some(processes) = services.processes.as_ref() else {
         return refused("no tilolang process can start on this device".to_owned());
     };
-    processes(packets);
+    let Some(packets) = received.take(u32::from_le_bytes(number)) else {
+        return refused("its opening hands no packet socket".to_owned());
+    };
+    match runtime_portal::packet::Descriptor::try_from(packets) {
+        Ok(packets) => processes(packets),
+        Err(error) => return refused(format!("what it handed is no packet socket: {error}")),
+    }
     Ok(())
 }
 
@@ -284,24 +273,11 @@ fn vouch_for(
 }
 
 /// The connection a shell handed over as a descriptor.
-#[cfg(unix)]
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "one signature on every host: a Windows pipe hands over none"
-)]
 fn handed_stream(
     connection: runtime_portal::descriptors::Owned,
 ) -> Result<tilo_socket::Stream, String> {
-    Ok(tilo_socket::Stream::from(connection))
-}
-
-/// Nothing is handed over a pipe (`runtime_portal::descriptors`), so there is no connection.
-#[cfg(windows)]
-fn handed_stream(
-    connection: runtime_portal::descriptors::Owned,
-) -> Result<tilo_socket::Stream, String> {
-    drop(connection);
-    Err("a pipe hands over no connection".to_owned())
+    tilo_socket::Stream::try_from(connection)
+        .map_err(|error| format!("what the shell handed is no connection: {error}"))
 }
 
 /// Answer `call` for `shell`; a connection that is no shell is refused.

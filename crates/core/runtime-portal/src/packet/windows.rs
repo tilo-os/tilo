@@ -182,6 +182,16 @@ impl Descriptor {
     }
 }
 
+/// A handle handed to this process, as [`Descriptor::from_handle`] takes it: one conversion with
+/// Unix, where a handed descriptor is the packet socket.
+impl TryFrom<OwnedHandle> for Descriptor {
+    type Error = io::Error;
+
+    fn try_from(handle: OwnedHandle) -> io::Result<Self> {
+        Self::from_handle(handle)
+    }
+}
+
 /// `handle` as what it is: a pipe, or any other handle.
 fn held(handle: OwnedHandle) -> io::Result<Held> {
     // SAFETY: a live handle, only asked its type.

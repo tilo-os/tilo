@@ -635,11 +635,18 @@ async fn only_the_shell_hands_the_device_processes_an_instance() {
     };
     // A process that is not the shell, with a secret no link asked for.
     let (ours, theirs) = runtime_portal::packet::pair().unwrap();
-    let dialed = std::os::unix::net::UnixStream::connect(&device.daemon_socket).unwrap();
+    let dialed = tokio::net::UnixStream::connect(&device.daemon_socket)
+        .await
+        .unwrap();
+    let sender = runtime_portal::descriptors::DescriptorSender::new();
+    let mut dialed = runtime_portal::descriptors::DescriptorStream::sending(dialed, sender.clone());
+    let number = sender.send(theirs).unwrap();
     let mut opening = runtime_collab::wire::shell::PROCESSES_MAGIC.to_vec();
     opening.extend_from_slice(&[9; runtime_collab::wire::shell::SHELL_SECRET_BYTES]);
-    runtime_portal::fd_transport::send_with_fd(&dialed, &opening, &theirs).unwrap();
-    drop(theirs);
+    opening.extend_from_slice(&number.to_le_bytes());
+    tokio::io::AsyncWriteExt::write_all(&mut dialed, &opening)
+        .await
+        .unwrap();
     let refused = ask(ours).await.unwrap();
     assert!(
         matches!(refused, Ok(None) | Err(_)),
