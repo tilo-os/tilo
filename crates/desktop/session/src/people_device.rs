@@ -650,6 +650,7 @@ impl PeopleDevice {
                         who: person.trim().to_owned(),
                         following: true,
                     });
+                self.taken_elsewhere();
             }
             PeopleEffect::Unfollow => {
                 self.asks
@@ -658,6 +659,7 @@ impl PeopleDevice {
                         who: String::new(),
                         following: false,
                     });
+                self.taken_elsewhere();
             }
             PeopleEffect::Wave { person } => {
                 let who = person.trim().to_owned();
@@ -672,11 +674,13 @@ impl PeopleDevice {
                     .push(crate::people::PeopleAsk::Message {
                         key: person.trim().to_owned(),
                     });
+                self.taken_elsewhere();
             }
             PeopleEffect::GoTo { person } => {
                 self.asks.borrow_mut().push(crate::people::PeopleAsk::GoTo {
                     who: person.trim().to_owned(),
                 });
+                self.taken_elsewhere();
             }
             PeopleEffect::SetName { name } => {
                 // Enter keeps what is in the field: the pause that was coming is answered here
@@ -713,6 +717,7 @@ impl PeopleDevice {
                 self.asks
                     .borrow_mut()
                     .push(crate::people::PeopleAsk::PairDevice);
+                self.taken_elsewhere();
             }
             PeopleEffect::OpenSettings { link } => {
                 let link = link
@@ -723,6 +728,7 @@ impl PeopleDevice {
                 self.asks
                     .borrow_mut()
                     .push(crate::people::PeopleAsk::Settings(link.to_owned()));
+                self.taken_elsewhere();
             }
             PeopleEffect::Agent {
                 person,
@@ -749,6 +755,7 @@ impl PeopleDevice {
                         client: client.trim().to_owned(),
                         ask,
                     });
+                self.taken_elsewhere();
             }
             PeopleEffect::Colour { slot } => {
                 let hue = usize::try_from(*slot)
@@ -781,6 +788,7 @@ impl PeopleDevice {
                     self.asks
                         .borrow_mut()
                         .push(crate::people::PeopleAsk::HostAction(id.to_owned()));
+                    self.taken_elsewhere();
                 }
             }
             PeopleEffect::ControlHints { on } => {
@@ -826,6 +834,15 @@ impl PeopleDevice {
                 .map(|status| status.text.trim().to_owned())
                 .unwrap_or_default()
         })
+    }
+
+    /// A choice took the person away from who is here — to a conversation, a window, a page, an
+    /// agent's card — so the card and the panel leave with them, as the person was taken to what
+    /// they chose. What they typed there is kept first.
+    fn taken_elsewhere(&self) {
+        self.keep_typed(true);
+        self.surfaces.person.borrow_mut().clear();
+        self.surfaces.close("people");
     }
 
     /// Keep what the person's card holds, where it says something the card has not already kept:
