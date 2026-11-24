@@ -19,7 +19,7 @@ use tilolang_tilo::names::{Installed, Told};
 use tilolang_tilo::runtime::ids::MemberId;
 use ui::headless::FrameHarness;
 
-const CHAT: &str = "so.tilo.lang.chat";
+const CHAT: &str = "so.tilo.chat";
 const SOURCE: &str = concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl"));
 const IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 /// A member's picture, and the agent's persona.
@@ -169,8 +169,17 @@ fn a_chat_reply_by_an_agent_with_a_persona_and_a_members_face_in_both_themes() {
         ui::Theme::dark(),
     );
     harness.relayout();
-    let out =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".claude/scratch/chat-persona-shot");
+    // The captures stand beside the build, as the other shots do: a source tree read from a
+    // test may be read-only.
+    let out = std::env::current_exe()
+        .expect("the test's binary")
+        .parent()
+        .expect("its directory")
+        .parent()
+        .expect("the profile's directory")
+        .parent()
+        .expect("the build's directory")
+        .join("chat-persona-shot");
     std::fs::create_dir_all(&out).expect("the captures' directory");
     harness.render_png(&out.join("chat-persona-dark.png"));
     harness

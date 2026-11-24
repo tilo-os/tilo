@@ -30,9 +30,14 @@ fn access(name: &str) -> MemberAccess {
 
 /// A replica of `doc` for `name`, running the client with its effects allowed.
 fn replica(name: &str, doc: Workspace) -> (Replica, Meta) {
-    let (replica, packages) =
-        Replica::access(name, doc, &[(SOURCE, IDS), (PLAYBACK_SOURCE, PLAYBACK_IDS)], Some(access(name)));
-    (replica, packages[0].meta.clone())
+    // The shared player comes first: a package compiles against the ones loaded before it.
+    let (replica, packages) = Replica::access(
+        name,
+        doc,
+        &[(PLAYBACK_SOURCE, PLAYBACK_IDS), (SOURCE, IDS)],
+        Some(access(name)),
+    );
+    (replica, packages.last().unwrap().meta.clone())
 }
 
 const TUBE: &str = "so.tilo.tube";
@@ -815,6 +820,7 @@ struct TubeWindow;
 
 impl Platform for TubeWindow {
     fn load(&self, host: &Host) -> u64 {
+        host.load_builtin(PLAYBACK_SOURCE, PLAYBACK_IDS).unwrap();
         host.load_builtin(SOURCE, IDS).unwrap();
         0
     }

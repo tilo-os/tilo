@@ -10,6 +10,7 @@ use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const SOURCE: &str = include_str!("../../../../apps/tl/disks/app.tl");
+const APP: &str = "so.tilo.disks";
 
 fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
@@ -118,17 +119,7 @@ impl Installed {
         host.runtime()
             .set_reading(&reading(), READING)
             .expect("the reading is set");
-        // The device publishes a `Disks` too (its drives' reading), so the app's own is named by
-        // its id.
-        let disks = package
-            .meta
-            .types
-            .iter()
-            .find(|ty| ty.name == "Disks")
-            .expect("the app's root type")
-            .id
-            .clone();
-        let root = host.runtime().create_root(&disks).expect("the app's root");
+        let root = host.root_of(APP).expect("the app's root");
         Self {
             host,
             root,
@@ -157,10 +148,25 @@ impl Installed {
     }
 
     fn window(&self) -> ViewInstance {
-        self.host
+        self.window_showing(&[])
+    }
+
+    /// The window with the view state `states` names, drawn with every row: what a person sees
+    /// rather than what a scroll would have to reach.
+    fn window_showing(&self, states: &[(&str, &str)]) -> ViewInstance {
+        let mut window = self
+            .host
             .runtime()
             .open_view(&me(), &self.view, vec![Value::resource(&self.root)])
-            .expect("the window opens")
+            .expect("the window opens");
+        window
+            .set_lazy_rows(false)
+            .expect("the window draws its rows");
+        for (state, value) in states {
+            window.set_view_state(state, Value::text(*value));
+        }
+        window.poll_patches().expect("the window answers");
+        window
     }
 
     fn root_value(&self) -> Value {
@@ -168,12 +174,12 @@ impl Installed {
     }
 }
 
+/// Every text under `node` that the window shows, in order.
 fn words(node: &UiNode, into: &mut Vec<String>) {
-    if let Some(Value::Text(text)) = node.props.get("value") {
-        into.push(text.clone());
-    }
-    if let Some(Value::Text(title)) = node.props.get("title") {
-        into.push(title.clone());
+    for prop in ["value", "title", "label", "message", "action"] {
+        if let Some(Value::Text(text)) = node.props.get(prop) {
+            into.push(text.clone());
+        }
     }
     for child in &node.children {
         words(child, into);
@@ -206,8 +212,7 @@ fn the_drive_list_names_the_drives_and_their_health() {
 #[test]
 fn a_chosen_drive_shows_its_partitions_and_unallocated_space() {
     let app = Installed::new();
-    let window = app.window();
-    window.set_view_state("chosen", Value::text("nvme0n1"));
+    let window = app.window_showing(&[("chosen", "nvme0n1")]);
     for wanted in [
         "How it is divided",
         "nvme0n1p1 boot",
@@ -225,9 +230,7 @@ fn a_chosen_drive_shows_its_partitions_and_unallocated_space() {
 #[test]
 fn the_health_tab_shows_what_the_drive_reports() {
     let app = Installed::new();
-    let window = app.window();
-    window.set_view_state("chosen", Value::text("nvme0n1"));
-    window.set_view_state("tab", Value::text("health"));
+    let window = app.window_showing(&[("chosen", "nvme0n1"), ("tab", "health")]);
     for wanted in [
         "Verdict",
         "Temperature",
@@ -245,9 +248,7 @@ fn the_health_tab_shows_what_the_drive_reports() {
 #[test]
 fn the_partitions_tab_offers_each_partition_its_verbs() {
     let app = Installed::new();
-    let window = app.window();
-    window.set_view_state("chosen", Value::text("nvme0n1"));
-    window.set_view_state("tab", Value::text("partitions"));
+    let window = app.window_showing(&[("chosen", "nvme0n1"), ("tab", "partitions")]);
     let words = shown(&window);
     for wanted in ["nvme0n1p1", "nvme0n1p2", "Close", "Erase…"] {
         assert!(
@@ -297,8 +298,7 @@ fn erasing_asks_for_the_filesystem_and_then_asks_the_device() {
 #[test]
 fn a_failing_drive_says_so_and_offers_its_eject() {
     let app = Installed::new();
-    let window = app.window();
-    window.set_view_state("chosen", Value::text("sda"));
+    let window = app.window_showing(&[("chosen", "sda")]);
     for wanted in ["Eject", "Measure", "Erase…", "Predicted to fail"] {
         assert!(
             has(&window, wanted) || contains(&window, wanted),

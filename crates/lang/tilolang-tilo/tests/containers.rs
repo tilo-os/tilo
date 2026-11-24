@@ -12,6 +12,7 @@ use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const SOURCE: &str = include_str!("../../../../apps/tl/containers/app.tl");
+const APP: &str = "so.tilo.containers";
 
 /// What the device publishes: one running container with logs, one stopped, an image, a volume
 /// and a distrobox.
@@ -242,7 +243,7 @@ impl Installed {
         let sent = Sent::default();
         host.runtime().set_invoker(sent.clone());
         host.runtime().set_reading(&reading(), reading_json).expect("the reading is set");
-        let root = host.runtime().create_root("Containers").expect("the app's root");
+        let root = host.root_of(APP).expect("the app's root");
         Self {
             host,
             root,
@@ -279,10 +280,25 @@ impl Installed {
     }
 
     fn window(&self) -> ViewInstance {
-        self.host
+        self.window_showing(&[])
+    }
+
+    /// The window with the view state `states` names, drawn with every row: what a person sees
+    /// rather than what a scroll would have to reach.
+    fn window_showing(&self, states: &[(&str, &str)]) -> ViewInstance {
+        let mut window = self
+            .host
             .runtime()
             .open_view(&me(), &self.view, vec![Value::resource(&self.root)])
-            .expect("the window opens")
+            .expect("the window opens");
+        window
+            .set_lazy_rows(false)
+            .expect("the window draws its rows");
+        for (state, value) in states {
+            window.set_view_state(state, Value::text(*value));
+        }
+        window.poll_patches().expect("the window answers");
+        window
     }
 
     fn root_value(&self) -> Value {
@@ -290,13 +306,12 @@ impl Installed {
     }
 }
 
-/// Every `ui.Text` and row title under `node`, in order.
+/// Every text under `node` that the window shows, in order.
 fn words(node: &UiNode, into: &mut Vec<String>) {
-    if let Some(Value::Text(text)) = node.props.get("value") {
-        into.push(text.clone());
-    }
-    if let Some(Value::Text(title)) = node.props.get("title") {
-        into.push(title.clone());
+    for prop in ["value", "title", "label", "message", "action"] {
+        if let Some(Value::Text(text)) = node.props.get(prop) {
+            into.push(text.clone());
+        }
     }
     for child in &node.children {
         words(child, into);
@@ -331,8 +346,7 @@ fn the_window_lists_the_places_and_what_the_engine_holds() {
 #[test]
 fn a_chosen_container_shows_its_logs_with_their_severity() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("chosen", Value::text("9f3c1a7be4d2c0118af26b5d4e9f01a2"));
+    let window = app.window_showing(&[("chosen", "9f3c1a7be4d2c0118af26b5d4e9f01a2")]);
     let words = shown(&window);
     for wanted in ["GET / 200", "WARN upstream slow", "ERROR upstream gone", "Error", "Warning"] {
         assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
@@ -342,8 +356,7 @@ fn a_chosen_container_shows_its_logs_with_their_severity() {
 #[test]
 fn a_running_container_offers_stop_restart_and_pause() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("chosen", Value::text("9f3c1a7be4d2c0118af26b5d4e9f01a2"));
+    let window = app.window_showing(&[("chosen", "9f3c1a7be4d2c0118af26b5d4e9f01a2")]);
     for wanted in ["Stop", "Restart", "Pause", "Remove"] {
         assert!(has(&window, wanted), "{wanted} shows");
     }
@@ -352,8 +365,7 @@ fn a_running_container_offers_stop_restart_and_pause() {
 #[test]
 fn a_stopped_container_offers_start() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("chosen", Value::text("e0b3a7c9f2d14e6b8c0a3f5d7e9b1c2d"));
+    let window = app.window_showing(&[("chosen", "e0b3a7c9f2d14e6b8c0a3f5d7e9b1c2d")]);
     assert!(has(&window, "Start"));
     assert!(!has(&window, "Stop"));
 }
@@ -361,9 +373,10 @@ fn a_stopped_container_offers_start() {
 #[test]
 fn the_usage_tab_shows_what_the_container_used() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("chosen", Value::text("9f3c1a7be4d2c0118af26b5d4e9f01a2"));
-    window.set_view_state("tab", Value::text("stats"));
+    let window = app.window_showing(&[
+        ("chosen", "9f3c1a7be4d2c0118af26b5d4e9f01a2"),
+        ("tab", "stats"),
+    ]);
     let words = shown(&window);
     assert!(words.iter().any(|text| text == "Processor"), "{words:?}");
     assert!(words.iter().any(|text| text == "Received"), "{words:?}");
@@ -373,9 +386,10 @@ fn the_usage_tab_shows_what_the_container_used() {
 #[test]
 fn the_details_tab_shows_ports_mounts_environment_and_labels() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("chosen", Value::text("9f3c1a7be4d2c0118af26b5d4e9f01a2"));
-    window.set_view_state("tab", Value::text("inspect"));
+    let window = app.window_showing(&[
+        ("chosen", "9f3c1a7be4d2c0118af26b5d4e9f01a2"),
+        ("tab", "inspect"),
+    ]);
     let words = shown(&window);
     for wanted in ["80/tcp", "8080", "/usr/share/nginx/html", "TZ", "io.tilo.cluster"] {
         assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
@@ -385,8 +399,7 @@ fn the_details_tab_shows_ports_mounts_environment_and_labels() {
 #[test]
 fn the_images_place_shows_the_images_and_their_verbs() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("place", Value::text("images"));
+    let window = app.window_showing(&[("place", "images")]);
     let words = shown(&window);
     for wanted in ["docker.io/library/nginx:1.27-alpine", "Pull again", "Add a tag", "Pull an image"] {
         assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
@@ -396,8 +409,7 @@ fn the_images_place_shows_the_images_and_their_verbs() {
 #[test]
 fn the_volumes_place_shows_the_volumes() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("place", Value::text("volumes"));
+    let window = app.window_showing(&[("place", "volumes")]);
     assert!(has(&window, "pgdata"));
     assert!(has(&window, "New volume"));
 }
@@ -405,8 +417,7 @@ fn the_volumes_place_shows_the_volumes() {
 #[test]
 fn the_distrobox_place_offers_each_box_its_shell() {
     let app = Installed::new(READING);
-    let window = app.window();
-    window.set_view_state("place", Value::text("distrobox"));
+    let window = app.window_showing(&[("place", "distrobox")]);
     assert!(has(&window, "toolbox"));
     assert!(has(&window, "Enter"));
 }
@@ -435,7 +446,10 @@ fn the_draft_is_filled_a_field_at_a_time_and_creates_the_container() {
     }
     app.call("create_container", vec![app.root_value()]);
     let asked = app.sent.asked("create");
-    assert_eq!(asked[0], Value::resource(&reading()), "the verb is the reading's");
+    let Value::Ref(on) = &asked[0] else {
+        panic!("the verb is called on a resource: {asked:?}")
+    };
+    assert_eq!(&*on.target, &reading(), "the verb is the reading's");
     let words: Vec<String> = asked[1..]
         .iter()
         .map(|value| match value {
