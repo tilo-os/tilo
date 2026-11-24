@@ -1783,9 +1783,17 @@ t_build() {
   run=$(cd "$repo" && t --json test "${rev[@]}" --detach "$@" \
     | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["run"])') \
     || die "t did not start a run of $*"
-  # Its results as they come, without the advice about other checks t ends on.
-  (cd "$repo" && t follow "$run" 2>&1 | sed -u '/^opt-in checks/,$d' >&2; exit "${PIPESTATUS[0]}") \
+  # Its results as they come, without the advice about other checks t ends on. A run whose
+  # checks t skipped (a newer run of this session asked them at another tree) built nothing
+  # here, though it fails none: what would be fetched is an earlier build's.
+  local followed=$state/logs/t-follow-$run.log
+  mkdir -p "$state/logs"
+  (cd "$repo" && t follow "$run" 2>&1 | sed -u '/^opt-in checks/,$d' | tee "$followed" >&2
+    exit "${PIPESTATUS[0]}") \
     || die "t could not build $what (run $run; t log CHECK says why)"
+  ! grep -Eq '[1-9][0-9]* cancelled or skipped' "$followed" \
+    || die "t skipped some of $what's checks in run $run, so nothing was built here ($followed says why)"
+  rm -f "$followed"
   say "$what built on t ($((SECONDS - began))s)"
   began=$SECONDS
   mkdir -p "$t_fetched" "$state/logs"
