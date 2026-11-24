@@ -220,7 +220,7 @@ view state(m: desktop.MenuState) {
 
         phase a_row_reads_the_reading_as_it_is_now;
         {
-            let (rt, _view) = workspace(READING);
+            let (rt, mut view) = workspace(READING);
             let Value::List(rows) = rt.read(&menu(), "rows").unwrap() else {
                 panic!("the menu's rows are a list");
             };
@@ -241,11 +241,32 @@ view state(m: desktop.MenuState) {
                 rt.read(&row.target, "reason").unwrap(),
                 Value::some(Value::text("Full"))
             );
-            // A row the reading no longer lists has no fields, rather than the old ones.
+            // A row the reading no longer lists reads as its type starts, not as it last did: the
+            // empty text, off, and none.
             let gone = r#"{"tab": null, "anchor": null, "rows": []}"#;
             rt.set_reading(&menu(), gone).expect("a reading");
-            let why = rt.read(&row.target, "label").unwrap_err().to_string();
-            assert!(why.contains("no reading of `window-normal`"), "{why}");
+            assert_eq!(
+                rt.read(&row.target, "label").unwrap(),
+                Value::text(""),
+                "a row the reading left out reads its text as the empty text"
+            );
+            assert_eq!(
+                rt.read(&row.target, "enabled").unwrap(),
+                Value::Bool(false),
+                "and its switch as off"
+            );
+            assert_eq!(
+                rt.read(&row.target, "reason").unwrap(),
+                Value::none(),
+                "and its reason as none"
+            );
+            view.poll_patches().unwrap_or_else(|why| panic!("{why}"));
+            assert_eq!(
+                drawn(&view),
+                Vec::<String>::new(),
+                "the view draws the empty state it draws for a menu with no rows: {}",
+                dump(view.tree())
+            );
         }
     }
 
