@@ -144,8 +144,11 @@ d-omzv6cq5 = Previewed
 
 d-l1bciwln = Words
 
+d-wduoe4ej = Chosen
+    .doc = The entries the person chose, by their paths, the entry the inspector shows last among them; empty while nothing is chosen.
+
 d-zgzedmq4 = Selected
-    .doc = The entry the person chose, by its path; empty while nothing is chosen.
+    .doc = The entry the inspector shows, by its path; empty while nothing is chosen.
 
 d-kljwn54u = Templates
     .doc = The templates the person keeps in `~/Templates`, offered when a new file is named.
@@ -240,7 +243,7 @@ d-52nrdgom = Up
     .w-this-is-already-the-top-folder = This is already the top folder
 
 d-mam33h3b = Send nearby
-    .doc = Sends the entry the person chose to the nearby device `nearby`, as Nearby Send offers it.
+    .doc = Sends the entries the person chose to the nearby device `nearby`, as Nearby Send offers it.
     .w-choose-a-file-to-send-first = Choose a file to send first
 
 d-mam33h3b-nearby = Nearby
@@ -321,6 +324,17 @@ d-0ibyyurl = Touch entry
 
 d-0ibyyurl-e = E
 
+d-7olvoh4d = Choose
+    .doc = The entries the list reports as chosen, in the order they stand there.
+
+d-7olvoh4d-paths = Paths
+
+d-looqx3t6 = Select all
+    .doc = Chooses every entry the folder shown places: what a press on "Select all" does.
+
+d-vebysqsc = Clear selection
+    .doc = Chooses nothing.
+
 d-3nuuco40 = Note recent
     .doc = Notes that the file `path` was opened, so it stands under Recent.
 
@@ -387,17 +401,45 @@ d-tfg0v0s6-paths = Paths
 
 d-tfg0v0s6-cut = Cut
 
+d-vwm5tvry = Carry selection
+    .doc = Remembers the entries the person chose as what a paste copies.
+
+d-vwm5tvry-cut = Cut
+
+d-yqujma3j = Compress selection
+    .doc = Packs the entries the person chose into one archive beside them: `zip` picks a ZIP, and TAR.ZST otherwise.
+    .w-select-files-first = Select files first
+
+d-yqujma3j-zip = Zip
+
 d-241p3hv1 = Paste
     .doc = Pastes what the person carries into the place shown.
 
-d-q2qhukz6 = Key on
-    .doc = A key pressed on the row `focused` while the entries `paths` are chosen: what Files does with a copy, a cut or a delete.
+d-xivcyffh = Free name
+    .doc = A name `folder` does not hold yet, for an entry that would land as `name`: the name itself, or “name (2)”, “name (3)” before the extension, so a paste or a drop never replaces a file.
 
-d-q2qhukz6-paths = Paths
+d-xivcyffh-folder = Folder
+
+d-xivcyffh-name = Name
+
+d-q2qhukz6 = Key on
+    .doc = A key pressed on the row `focused`: what Files does with a copy, a cut or a delete over the entries the person chose, or over that row when it is not among them.
 
 d-q2qhukz6-focused = Focused
 
 d-q2qhukz6-key = Key
+
+d-nhz5r32y = Carry row
+    .doc = Remembers what a copy from the row at `path` takes: the entries the person chose when that row is one of them, and the row alone otherwise.
+
+d-nhz5r32y-path = Path
+
+d-nhz5r32y-cut = Cut
+
+d-g3zfg53a = Trash row
+    .doc = Moves to Trash what a delete from the row at `path` takes: the entries the person chose when that row is one of them, and the row alone otherwise.
+
+d-g3zfg53a-path = Path
 
 d-a5nwzp2a = Add to Favorites
     .doc = Marks the place `place` in the sidebar.
@@ -436,6 +478,8 @@ d-ed3fdxi3 = Rename entry~present
 
 d-x6q5wlkw = Trash entries~present
 
+d-dpvi52wp = Compress selection~present
+
 d-dkeycb6f = Add favorite~present
 
 d-n9jkqy4o = Files
@@ -456,9 +500,13 @@ d-n9jkqy4o = Files
     .w-show-hidden-files = Show hidden files
     .w-new-file = New file
     .w-refresh = Refresh
+    .w-select-all = Select all
+    .w-clear-selection = Clear selection
     .w-copy = Copy
     .w-cut = Cut
     .w-paste = Paste
+    .w-compress-to-zip = Compress to ZIP
+    .w-compress-to-tar-zst = Compress to TAR.ZST
     .w-move-to-trash = Move to Trash
     .w-empty-trash = Empty Trash
     .w-type-a-path-e-g-documents = Type a path, e.g. ~/Documents
@@ -489,8 +537,6 @@ d-n9jkqy4o = Files
     .w-open-in-terminal = Open in Terminal
     .w-extract = Extract
     .w-open-with = Open with…
-    .w-compress-to-zip = Compress to ZIP
-    .w-compress-to-tar-zst = Compress to TAR.ZST
     .w-rename = Rename
     .w-files-is-starting = Files is starting…
 
@@ -518,6 +564,7 @@ d-wsk8uwkt = Recent files
     .w-recent-files = Recent files
 
 d-qfj1tkgq = Inspected
+    .w-selected = { $len } selected
     .w-type = Type
     .w-size = Size
     .w-modified = Modified

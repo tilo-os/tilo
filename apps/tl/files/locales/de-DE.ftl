@@ -352,8 +352,6 @@ d-241p3hv1 = Einfügen
 d-q2qhukz6 = Taste auf
     .doc = Eine Taste, gedrückt auf der Zeile `focused`, während die Einträge `paths` gewählt sind: was Dateien mit einem Kopieren, einem Ausschneiden oder einem Löschen tut.
 
-d-q2qhukz6-paths = Pfade
-
 d-q2qhukz6-focused = Fokussiert
 
 d-q2qhukz6-key = Taste
@@ -460,6 +458,8 @@ d-n9jkqy4o = Dateien
     .w-show-hidden-files = Versteckte Dateien zeigen
     .w-new-file = Neue Datei
     .w-refresh = Aktualisieren
+    .w-select-all = Alles auswählen
+    .w-clear-selection = Auswahl aufheben
     .w-copy = Kopieren
     .w-cut = Ausschneiden
     .w-paste = Einfügen
@@ -518,9 +518,57 @@ d-wsk8uwkt = Zuletzt geöffnete Dateien
     .w-recent-files = Zuletzt geöffnete Dateien
 
 d-qfj1tkgq = Geprüft
+    .w-selected = { $len } ausgewählt
     .w-type = Art
     .w-size = Größe
     .w-modified = Geändert
     .w-location = Ort
     .w-came-from = Kam von
     .w-select-a-file-to-see-what = Wähle eine Datei, um zu sehen, was sie ist.
+
+d-wduoe4ej = Ausgewählt
+    .doc = Die Einträge, die die Person gewählt hat, nach ihren Pfaden; der Eintrag, den die Inspektion zuletzt unter ihnen zeigt; leer, solange nichts gewählt ist.
+
+d-7olvoh4d = Auswählen
+    .doc = Die Einträge, die die Liste als gewählt meldet, in der Reihenfolge, in der sie stehen.
+
+d-7olvoh4d-paths = Pfade
+
+d-looqx3t6 = Alles auswählen
+    .doc = Wählt jeden Eintrag, den der gezeigte Ordner zeigt: was ein Druck auf „Alles auswählen“ tut.
+
+d-vebysqsc = Auswahl aufheben
+    .doc = Wählt nichts.
+
+d-vwm5tvry = Auswahl kopieren
+    .doc = Merkt sich die Einträge, die die Person gewählt hat, als das, was ein Einfügen kopiert.
+
+d-vwm5tvry-cut = Ausschneiden
+
+d-yqujma3j = Auswahl komprimieren
+    .doc = Packt die Einträge, die die Person gewählt hat, in ein Archiv daneben: `zip` wählt ein ZIP, sonst TAR.ZST.
+    .w-select-files-first = Wähle zuerst Dateien
+
+d-yqujma3j-zip = Zip
+
+d-xivcyffh = Freier Name
+    .doc = Ein Name, den `folder` noch nicht enthält, für einen Eintrag, der als `name` landen würde: der Name selbst oder „name (2)“, „name (3)“ vor der Endung, damit ein Einfügen oder Ablegen nie eine Datei ersetzt.
+
+d-xivcyffh-folder = Ordner
+
+d-xivcyffh-name = Name
+
+d-nhz5r32y = Zeile kopieren
+    .doc = Merkt sich, was ein Kopieren aus der Zeile unter `path` mitnimmt: die Einträge, die die Person gewählt hat, wenn diese Zeile einer von ihnen ist, sonst die Zeile allein.
+
+d-nhz5r32y-path = Pfad
+
+d-nhz5r32y-cut = Ausschneiden
+
+d-g3zfg53a = Zeile in den Papierkorb
+    .doc = Verschiebt in den Papierkorb, was ein Löschen aus der Zeile unter `path` mitnimmt: die Einträge, die die Person gewählt hat, wenn diese Zeile einer von ihnen ist, sonst die Zeile allein.
+
+d-g3zfg53a-path = Pfad
+
+d-dpvi52wp = Auswahl komprimieren~present
+

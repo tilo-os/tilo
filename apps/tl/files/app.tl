@@ -98,7 +98,10 @@ type Session (readers: author) {
     preview: Option<File> = .none
     previewed: Text = ""
     words: Text = ""
-    /// The entry the person chose, by its path; empty while nothing is chosen.
+    /// The entries the person chose, by their paths, the entry the inspector shows last among
+    /// them; empty while nothing is chosen.
+    chosen: List<Text>
+    /// The entry the inspector shows, by its path; empty while nothing is chosen.
     selected: Text = ""
     /// The templates the person keeps in `~/Templates`, offered when a new file is named.
     templates: List<Text>
@@ -219,6 +222,7 @@ action go(f: Files, place: Text) uses files, time {
     }
     s.here = place
     s.selected = ""
+    s.chosen = []
     s.opening = ""
     s.openers = []
     s.preview = .none
@@ -258,11 +262,13 @@ action up(f: Files) uses files, time {
     go(f, if folder_place(s.here) { parent_of(s.here) } else { "~" })
 }
 
-/// Sends the entry the person chose to the nearby device `nearby`, as Nearby Send offers it.
+/// Sends the entries the person chose to the nearby device `nearby`, as Nearby Send offers it.
 action send_nearby(f: Files, nearby: Text) uses files {
-    require has_selection(f) "Choose a file to send first"
+    require not acted_on(f).is_empty() "Choose a file to send first"
+    let sending = acted_on(f)
     let s = f.sessions.first() ?? f.sessions.insert(Session())
-    device.send(device.nearby_send, items: [s.selected], device: nearby)
+    device.send(device.nearby_send, items: sending, device: nearby)
+    s.notice = ""
 }
 
 /// Dismisses what the window last said went wrong.
@@ -410,9 +416,53 @@ action touch_entry(f: Files, e: Entry) uses files, time {
     if e.folder {
         go(f, e.path)
     } else {
+        s.chosen = [e.path]
         s.selected = e.path
         inspect(f, e)
     }
+}
+
+/// The entries the list reports as chosen, in the order they stand there.
+action choose(f: Files, paths: List<Text>) uses files {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    s.chosen = paths
+    s.selected = paths.last() ?? ""
+    if let last = paths.last() {
+        if let e = place_entry(f, last) { inspect(f, e) }
+    }
+}
+
+/// Chooses every entry the folder shown places: what a press on "Select all" does.
+action select_all(f: Files) uses files {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if let l = place_listing(s) {
+        s.chosen = l.entries.filter(e -> not e.hidden or s.hidden).map(e -> e.path)
+        s.selected = s.chosen.last() ?? ""
+    }
+}
+
+/// Chooses nothing.
+action clear_selection(f: Files) {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    s.chosen = []
+    s.selected = ""
+}
+
+/// The entry at `path` in the folder shown, when that is the place it lists.
+fn place_entry(f: Files, path: Text) -> Option<Entry> {
+    if let s = f.sessions.first() {
+        if let l = place_listing(s) { l.entries.find(e -> e.path == path) } else { .none }
+    } else { .none }
+}
+
+/// The entries an action runs on: what the person chose, or the one the inspector shows when the
+/// list holds no selection of its own.
+fn acted_on(f: Files) -> List<Text> {
+    if let s = f.sessions.first() {
+        if not s.chosen.is_empty() {
+            s.chosen
+        } else if s.selected != "" { [s.selected] } else { [] }
+    } else { [] }
 }
 
 /// Notes that the file `path` was opened, so it stands under Recent.
@@ -613,7 +663,32 @@ action carry(f: Files, paths: List<Text>, cut: Bool) {
     s.cutting = cut
 }
 
-/// Pastes what the person carries into the place shown.
+/// Remembers the entries the person chose as what a paste copies.
+action carry_selection(f: Files, cut: Bool) {
+    carry(f, acted_on(f), cut)
+}
+
+/// Packs the entries the person chose into one archive beside them: `zip` picks a ZIP, and TAR.ZST
+/// otherwise. The archive is named after the entry alone, or after its folder when several go in.
+action compress_selection(f: Files, zip: Bool) uses files, time {
+    require not acted_on(f).is_empty() "Select files first"
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    let paths = acted_on(f)
+    let ext = if zip { ".zip" } else { ".tar.zst" }
+    let named = if paths.len() == 1 { name_of(paths.at(0) ?? "") } else { name_of(s.here) }
+    let to = free_name(f, parent_of(paths.at(0) ?? s.here), named + ext)
+    let folder = parent_of(paths.at(0) ?? s.here)
+    match File.compress(paths, join(folder, to)) {
+        .ok(_) => { read_listing(f, s.here) }
+        .err(why) => {
+            s.notice = "Couldn’t compress them: {why}"
+        }
+    }
+}
+
+/// Pastes what the person carries into the place shown. A name the folder already holds is kept
+/// both: the copy lands as “name (2)”, and a cut entry is renamed before it moves, so nothing is
+/// overwritten.
 action paste(f: Files) uses files, time (icon: .clipboard_paste, label: "Paste", key: "Ctrl+V") {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if not folder_place(s.here) or s.carrying.is_empty() {
@@ -624,11 +699,25 @@ action paste(f: Files) uses files, time (icon: .clipboard_paste, label: "Paste",
     }
     let moving = s.cutting
     for path in s.carrying {
-        let outcome = if moving { File.move(path, s.here) } else { File.copy(path, s.here) }
-        match outcome {
-            .ok(_) => {}
-            .err(why) => {
-                s.notice = "Couldn’t paste “{name_of(path)}”: {why}"
+        if moving and parent_of(path) == s.here {
+            // A cut entry is already here: there is nothing to do.
+        } else {
+            let name = free_name(f, s.here, name_of(path))
+            let source = if moving and name != name_of(path) {
+                match File.rename(path, name) {
+                    .ok(moved) => moved.path,
+                    .err(why) => {
+                        s.notice = "Couldn’t rename “{name_of(path)}”: {why}"
+                        path
+                    }
+                }
+            } else { path }
+            let outcome = if moving { File.move(source, s.here) } else { File.copy(path, s.here) }
+            match outcome {
+                .ok(_) => {}
+                .err(why) => {
+                    s.notice = "Couldn’t paste “{name_of(path)}”: {why}"
+                }
             }
         }
     }
@@ -639,15 +728,48 @@ action paste(f: Files) uses files, time (icon: .clipboard_paste, label: "Paste",
     read_listing(f, s.here)
 }
 
-/// A key pressed on the row `focused` while the entries `paths` are chosen: what Files does with
-/// a copy, a cut or a delete.
-action key_on(f: Files, paths: List<Text>, focused: Text, key: Text) uses files, time {
-    let chosen = if paths.contains(focused) { paths } else { [focused] }
+/// A name `folder` does not hold yet, for an entry that would land as `name`: the name itself, or
+/// “name (2)”, “name (3)” before the extension, so a paste or a drop never replaces a file.
+action free_name(f: Files, folder: Text, name: Text) -> Text uses files {
+    match File.list(folder) {
+        .err(_) => name,
+        .ok(found) => {
+            if not found.any(e -> e.name == name) {
+                return name
+            }
+            let parts = name.split(".")
+            let stem = if parts.len() < 2 { name } else { parts.take(parts.len() - 1).join(".") }
+            let ext = if parts.len() < 2 { "" } else { "." + (parts.last() ?? "") }
+            let numbers = found.map((e, i) -> i + 2)
+            let asked = numbers.map(i -> "{stem} ({i}){ext}")
+            asked.find(c -> not found.any(e -> e.name == c)) ?? "{stem} (copy){ext}"
+        }
+    }
+}
+
+/// A key pressed on the row `focused`: what Files does with a copy, a cut or a delete over the
+/// entries the person chose, or over that row when it is not among them.
+action key_on(f: Files, focused: Text, key: Text) uses files, time {
+    let chosen = if acted_on(f).contains(focused) { acted_on(f) } else { [focused] }
     if key == "Ctrl+C" {
         carry(f, chosen, false)
     } else if key == "Ctrl+X" {
         carry(f, chosen, true)
     } else if key == "Delete" { trash_entries(f, chosen) }
+}
+
+/// Remembers what a copy from the row at `path` takes: the entries the person chose when that row
+/// is one of them, and the row alone otherwise.
+action carry_row(f: Files, path: Text, cut: Bool) {
+    if acted_on(f).contains(path) { carry(f, acted_on(f), cut) } else { carry(f, [path], cut) }
+}
+
+/// Moves to Trash what a delete from the row at `path` takes: the entries the person chose when
+/// that row is one of them, and the row alone otherwise.
+action trash_row(f: Files, path: Text) uses files, time {
+    if acted_on(f).contains(path) {
+        trash_entries(f, acted_on(f))
+    } else { trash_entries(f, [path]) }
 }
 
 /// Marks the place `place` in the sidebar.
@@ -700,11 +822,6 @@ fn can_go_back(f: Files) -> Bool {
 /// Whether this window has a place ahead of it.
 fn can_go_forward(f: Files) -> Bool {
     if let s = f.sessions.first() { not s.ahead.is_empty() } else { false }
-}
-
-/// Whether this window has an entry chosen.
-fn has_selection(f: Files) -> Bool {
-    if let s = f.sessions.first() { s.selected != "" } else { false }
 }
 
 /// Whether this window shows the top folder.
@@ -936,7 +1053,9 @@ view files(f: Files) {
             title: name_of(s.here),
             count: if s.here == "recent" {
                 f.recent.len()
-            } else if s.here == "applications" { 0 } else { visible.len() },
+            } else if s.here == "applications" {
+                device.apps.installed.len()
+            } else { visible.len() },
         ) {
             on search(t: Text): set(found, t)
             sidebar_actions: {
@@ -1257,23 +1376,39 @@ view view_options(f: Files, s: Session, naming: State<Text>, name: State<Text>) 
             ui.MenuItem("Refresh", icon: .refresh) {
                 on choose: refresh(f)
             }
-            ui.MenuItem("Copy", icon: .copy, key: "Ctrl+C", disabled: s.selected == "") {
-                on choose: carry(f, [s.selected], false)
+            ui.MenuItem("Select all", icon: .check, key: "Ctrl+A") {
+                on choose: select_all(f)
             }
-            ui.MenuItem("Cut", icon: .scissors, key: "Ctrl+X", disabled: s.selected == "") {
-                on choose: carry(f, [s.selected], true)
+            ui.MenuItem("Clear selection", icon: .x, disabled: acted_on(f).is_empty()) {
+                on choose: clear_selection(f)
+            }
+            ui.MenuItem("Copy", icon: .copy, key: "Ctrl+C", disabled: acted_on(f).is_empty()) {
+                on choose: carry_selection(f, false)
+            }
+            ui.MenuItem("Cut", icon: .scissors, key: "Ctrl+X", disabled: acted_on(f).is_empty()) {
+                on choose: carry_selection(f, true)
             }
             ui.MenuItem("Paste", icon: .clipboard_paste, key: "Ctrl+V") {
                 on choose: paste(f)
+            }
+            ui.MenuItem("Compress to ZIP", icon: .file_archive, disabled: acted_on(f).is_empty()) {
+                on choose: compress_selection(f, true)
+            }
+            ui.MenuItem(
+                "Compress to TAR.ZST",
+                icon: .file_archive,
+                disabled: acted_on(f).is_empty(),
+            ) {
+                on choose: compress_selection(f, false)
             }
             ui.MenuItem(
                 "Move to Trash",
                 icon: .trash_2,
                 destructive: true,
                 key: "Delete",
-                disabled: s.selected == "",
+                disabled: acted_on(f).is_empty(),
             ) {
-                on choose: trash_entries(f, [s.selected])
+                on choose: trash_entries(f, acted_on(f))
             }
             if s.here == "trash" {
                 ui.MenuItem("Empty Trash", icon: .trash, destructive: true) {
@@ -1342,12 +1477,18 @@ view entry_list(
     naming: State<Text>,
     name: State<Text>,
 ) {
-    ui.VirtualList(name: "Files", multi_select: true, in_column: true) {
+    ui.VirtualList(
+        name: "Files",
+        multi_select: true,
+        in_column: true,
+        chosen_values: if s.chosen.is_empty() { .none } else { .some(s.chosen) },
+    ) {
         on activate(e: Entry): open_entry(f, e)
         on select(e: Entry): touch_entry(f, e)
+        on selected_values(paths: List<Text>): choose(f, paths)
         for e in entries {
-            ui.ListItem(item: e, keys: ["Ctrl+C", "Ctrl+X", "Delete"]) {
-                on shortcut(k): key_on(f, [s.selected], e.path, k)
+            ui.ListItem(item: e, value: e.path, keys: ["Ctrl+C", "Ctrl+X", "Delete"]) {
+                on shortcut(k): key_on(f, e.path, k)
                 menu: {
                     if e.folder {
                         ui.MenuItem("Open", icon: .folder_open) {
@@ -1384,19 +1525,23 @@ view entry_list(
                             }
                         }
                         ui.MenuItem("Compress to ZIP", icon: .file_archive) {
-                            on choose: compress_entry(f, e.path, true)
+                            on choose: if acted_on(f).contains(e.path) {
+                                compress_selection(f, true)
+                            } else { compress_entry(f, e.path, true) }
                         }
                         ui.MenuItem("Compress to TAR.ZST", icon: .file_archive) {
-                            on choose: compress_entry(f, e.path, false)
+                            on choose: if acted_on(f).contains(e.path) {
+                                compress_selection(f, false)
+                            } else { compress_entry(f, e.path, false) }
                         }
                         ui.MenuItem("Rename", icon: .pencil) {
                             on choose: set(naming, e.path).then(set(name, e.name))
                         }
                         ui.MenuItem("Copy", icon: .copy, key: "Ctrl+C") {
-                            on choose: carry(f, [e.path], false)
+                            on choose: carry_row(f, e.path, false)
                         }
                         ui.MenuItem("Cut", icon: .scissors, key: "Ctrl+X") {
-                            on choose: carry(f, [e.path], true)
+                            on choose: carry_row(f, e.path, true)
                         }
                         ui.MenuItem(
                             "Move to Trash",
@@ -1404,7 +1549,7 @@ view entry_list(
                             destructive: true,
                             key: "Delete",
                         ) {
-                            on choose: trash_entries(f, [e.path])
+                            on choose: trash_row(f, e.path)
                         }
                     }
                 }
@@ -1484,12 +1629,16 @@ view recent_files(f: Files, s: Session) {
 }
 
 /// What is chosen: its kind, its size, when it changed and where it stands, and the picture or
-/// the first words a file holds.
+/// the first words a file holds. Several chosen show how many, and the entry the inspector shows
+/// last.
 view inspected(f: Files, s: Session, entries: List<Entry>) {
     let picked = entries.find(e -> e.path == s.selected)
     if let e = picked {
         stack(gap: .group) {
             text(e.name, role: .title)
+            if s.chosen.len() > 1 {
+                text("{s.chosen.len()} selected", role: .caption, secondary: true)
+            }
             ui.PropertyList {
                 ui.Property("Type", kind_of(e))
                 if not e.folder {
