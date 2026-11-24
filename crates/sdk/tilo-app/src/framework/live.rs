@@ -131,6 +131,24 @@ impl Landings {
         }
     }
 
+    /// Where each presence was last placed, by presence.
+    #[inline(never)]
+    fn by_presence(&self) -> Vec<Landing> {
+        let mut landed: Vec<_> = self.at.values().cloned().collect();
+        landed.sort_by(|a, b| a.presence.cmp(&b.presence));
+        landed
+    }
+
+    #[inline(never)]
+    fn place_of(&self, presence: &tilo_actions::PresenceId) -> Option<Place> {
+        Some(self.at.get(presence)?.place.clone())
+    }
+
+    #[inline(never)]
+    fn forget(&mut self, presence: &tilo_actions::PresenceId) {
+        self.at.remove(presence);
+    }
+
     #[inline(never)]
     fn since(&self, from: u64) -> (Vec<(tilo_actions::PresenceId, Place)>, u64) {
         let landed = self
@@ -263,21 +281,18 @@ impl<R: Resource> Live<R> {
     /// it ([`Resource::lands`]): the paragraph an agent appended, the table
     /// it inserted. `None` before they did anything that lands somewhere.
     pub fn place_of(&self, presence: &tilo_actions::PresenceId) -> Option<Place> {
-        let places = self.places.borrow();
-        Some(places.landed.at.get(presence)?.place.clone())
+        self.places.borrow().landed.place_of(presence)
     }
 
     /// Where each presence was last placed, by presence: what a view draws
     /// to show who is where.
     pub fn landings(&self) -> Vec<Landing> {
-        let mut landed: Vec<_> = self.places.borrow().landed.at.values().cloned().collect();
-        landed.sort_by(|a, b| a.presence.cmp(&b.presence));
-        landed
+        self.places.borrow().landed.by_presence()
     }
 
     /// Forget where `presence` was: its view closed.
     pub(crate) fn forget(&self, presence: &tilo_actions::PresenceId) {
-        self.places.borrow_mut().landed.at.remove(presence);
+        self.places.borrow_mut().landed.forget(presence);
     }
 
     /// The landings numbered `from` on, and the number to ask from next.

@@ -325,6 +325,30 @@ fn foreign_state(kind: &'static str) {
 
 /// The resource's own actions `encoded` applies: itself, or each member of
 /// a group of them, last landing last.
+/// What a window draws of `landings` on a resource of `kind`: every presence where it
+/// was placed. Apart from [`TypedRoot::landed_presences`] because it names no resource
+/// type, so it is compiled once in the runtime rather than in every app.
+#[inline(never)]
+fn presences_of(
+    landings: Vec<crate::framework::Landing>,
+    kind: &str,
+    app_id: &str,
+) -> Vec<ui_core::widget::ViewPresence> {
+    landings
+        .into_iter()
+        .map(|landing| {
+            let (key, payload) =
+                crate::framework::ResourceSelection::from(landing.place).presence_of(kind, app_id);
+            ui_core::widget::ViewPresence {
+                presence: landing.presence,
+                label: landing.name,
+                key,
+                payload,
+            }
+        })
+        .collect()
+}
+
 fn own_actions<R: Resource>(encoded: &tilo_actions::EncodedAction) -> Vec<R::Action> {
     if encoded.type_id == R::ACTION_TYPE {
         return match tilo_actions::decode_json(&encoded.payload) {
@@ -427,20 +451,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
     }
 
     fn landed_presences(&self, app_id: &str) -> Vec<ui_core::widget::ViewPresence> {
-        self.live
-            .landings()
-            .into_iter()
-            .map(|landing| {
-                let (key, payload) = crate::framework::ResourceSelection::from(landing.place)
-                    .presence_of(R::KIND, app_id);
-                ui_core::widget::ViewPresence {
-                    presence: landing.presence,
-                    label: landing.name,
-                    key,
-                    payload,
-                }
-            })
-            .collect()
+        presences_of(self.live.landings(), R::KIND, app_id)
     }
 
     fn forget(&self, presence: &tilo_actions::PresenceId) {
