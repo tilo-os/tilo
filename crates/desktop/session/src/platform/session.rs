@@ -1620,10 +1620,13 @@ impl Session {
         // dimmed in software follows at once.
         displays_service.watch(&options.wake.handle());
         // The keyboards, pointers and drawing tablets attached now, each by the identity its
-        // settings are kept under: what a pane lists to change one.
+        // settings are kept under: what a pane lists to change one, and which keyboard typed last,
+        // read on a worker so neither the pane nor the chord that switches source waits on the
+        // disk.
+        let inputs = crate::input_devices::Inputs::new();
         services
             .borrow_mut()
-            .add(Box::new(crate::input_devices::Served::new()));
+            .add(Box::new(crate::input_devices::Served::new(inputs.clone())));
         // What the workspaces' apps, people and agents were given beyond their own documents, as
         // the workspace settings list them: Settings reads one summary, and changes nothing here.
         services
@@ -1781,6 +1784,8 @@ impl Session {
             apps: action_apps,
             restore: RefCell::new(restore),
             drives: options.drives,
+            #[cfg(target_os = "linux")]
+            inputs,
             asks,
             box_ask: Cell::default(),
             feedback,

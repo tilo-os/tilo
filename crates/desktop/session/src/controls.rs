@@ -529,7 +529,8 @@ impl crate::Session {
                 Ok(())
             }
             SessionCommand::NextInputSource => {
-                let Some((sources, name)) = input_sources::next() else {
+                let scope = self.shared.inputs.scope();
+                let Some((sources, name)) = input_sources::next(&scope) else {
                     return Ok(());
                 };
                 self.sources = sources;

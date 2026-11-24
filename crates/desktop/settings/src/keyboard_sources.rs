@@ -110,17 +110,30 @@ pub fn effective(input: &RichInputConfig, scope: &str) -> RichInputConfig {
     profile.effective(input)
 }
 
+/// The list a keyboard's own sources are kept under: that of the keyboard last typed on
+/// (`active`) when it is one of the `keyboards` present, else the shared list (`all`).
+#[must_use]
+pub fn scope_of<'a>(active: Option<&str>, keyboards: impl IntoIterator<Item = &'a str>) -> String {
+    active
+        .filter(|key| keyboards.into_iter().any(|keyboard| keyboard == *key))
+        .map_or_else(|| ALL.into(), str::to_owned)
+}
+
 #[must_use]
 pub fn active_scope() -> String {
-    crate::hardware::InputHardwareSnapshot::load()
-        .and_then(|snapshot| {
-            snapshot.active_keyboard.filter(|key| {
-                snapshot.devices.iter().any(|device| {
-                    device.kind == crate::hardware::InputDeviceKind::Keyboard && &device.key == key
-                })
-            })
-        })
-        .unwrap_or_else(|| ALL.into())
+    crate::hardware::InputHardwareSnapshot::load().map_or_else(
+        || ALL.into(),
+        |snapshot| {
+            scope_of(
+                snapshot.active_keyboard.as_deref(),
+                snapshot
+                    .devices
+                    .iter()
+                    .filter(|device| device.kind == crate::hardware::InputDeviceKind::Keyboard)
+                    .map(|device| device.key.as_str()),
+            )
+        },
+    )
 }
 
 #[must_use]
