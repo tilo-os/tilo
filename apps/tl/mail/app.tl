@@ -597,7 +597,7 @@ fn rank_messages(
     shown: Map<Text>,
     weights: Map<Int>,
     latest: Map<Time>,
-) {
+) -> () {
     for msg in messages {
         if msg.mailbox == "sent" {
             for person in people_in(msg.to) {
@@ -652,7 +652,7 @@ fn rank_person(
     shown: Map<Text>,
     weights: Map<Int>,
     latest: Map<Time>,
-) {
+) -> () {
     let mail = address.trim().lower()
     if mail == "" or not mail.contains("@") or own.any(o -> o == mail) {
         return
@@ -2717,49 +2717,6 @@ scenario "a reply with no account to send it" -> Draft {
 /// No account yet: what a first start shows.
 scenario "no account yet" {
     root Mail
-}
-
-/// A conversation in the trash, and its window: the offer to delete it for good stands over it.
-scenario "a conversation in the trash" -> Account {
-    let m = root Mail
-    let a = m.accounts.insert(
-        Account(
-            key: "sam@rivera.example",
-            address: "sam@rivera.example",
-            name: "Sam Rivera",
-            online: true,
-        ),
-    )
-    a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox"))
-    a.mailboxes.insert(Mailbox(key: "trash", name: "Trash", role: "trash", total: 1))
-    let t = a.threads.insert(
-        Thread(
-            key: "offer@deals.example",
-            account: a.key,
-            subject: "You have won a cruise",
-            latest: 2026-06-26T03:12,
-            snippet: "Claim your prize within 24 hours.",
-            senders: "Prize Draw",
-            count: 1,
-        ),
-    )
-    t.boxes.add("trash")
-    t.messages.insert(
-        Message(
-            key: "offer@deals.example",
-            account: a.key,
-            subject: "You have won a cruise",
-            from: "win@deals.example",
-            from_name: "Prize Draw",
-            to: "sam@rivera.example",
-            received: 2026-06-26T03:12,
-            snippet: "Claim your prize.",
-            body: "Claim your prize within 24 hours of confirming your card details.",
-            message_id: "offer@deals.example",
-            mailbox: "trash",
-        ),
-    )
-    a
 }
 
 /// Messages waiting to go, and the window's Outbox place over them.

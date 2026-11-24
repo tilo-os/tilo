@@ -115,8 +115,8 @@ action named_or_new(book: Book, name: Text) -> Contact (
     label: "Find or add a contact",
     did: "found a contact",
 ) {
+    require not name.trim().is_empty() "Name the contact"
     let trimmed = name.trim()
-    require not trimmed.is_empty() "Name the contact"
     if let found = book.contacts.find(c -> c.name.lower() == trimmed.lower()) {
         found
     } else {

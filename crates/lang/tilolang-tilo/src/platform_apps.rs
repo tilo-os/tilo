@@ -416,13 +416,32 @@ pub fn listing_of(ty: &str) -> Option<(&'static str, &'static str)> {
 /// The surfaces are this build's own, so they are read once: every build of a package reads
 /// them, a development loop included.
 pub fn platform_packages() -> Result<Vec<PackageMeta>, String> {
-    static PACKAGES: std::sync::OnceLock<Result<Vec<PackageMeta>, String>> =
-        std::sync::OnceLock::new();
-    PACKAGES.get_or_init(read_packages).clone()
+    packages().iter().cloned().collect()
 }
 
-fn read_packages() -> Result<Vec<PackageMeta>, String> {
-    PUBLISHED.iter().map(package).collect()
+/// The packages of the platform's apps among `apps`, each read from the surface it publishes:
+/// what a package whose `use`s name them compiles against. An app whose surface does not read
+/// stops only a package that names it.
+///
+/// # Errors
+/// A surface of one of `apps` does not read.
+pub fn platform_packages_of<'a>(
+    apps: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<PackageMeta>, String> {
+    let named: std::collections::BTreeSet<&str> = apps.into_iter().collect();
+    PUBLISHED
+        .iter()
+        .zip(packages())
+        .filter(|(published, _)| named.contains(published.app))
+        .map(|(_, package)| package.clone())
+        .collect()
+}
+
+/// Each platform app's package, or why its surface does not read, read once for the build.
+fn packages() -> &'static [Result<PackageMeta, String>] {
+    static PACKAGES: std::sync::OnceLock<Vec<Result<PackageMeta, String>>> =
+        std::sync::OnceLock::new();
+    PACKAGES.get_or_init(|| PUBLISHED.iter().map(package).collect())
 }
 
 /// The package of the platform's app `app` alone ([`platform_packages`]): what a view that uses

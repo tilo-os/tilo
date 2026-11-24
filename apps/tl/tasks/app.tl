@@ -878,7 +878,7 @@ action open_attachment(t: Task, attachment: File) uses files (
     label: "Open attachment",
 ) {
     match File.open(attachment) {
-        .ok(_) => {}
+        .ok => {}
         .err(_) => {}
     }
 }
@@ -1298,7 +1298,6 @@ fn copied(t: Task, parent: Option<Task>) -> Task {
         waiting_for: t.waiting_for,
         waiting_until: t.waiting_until,
         waiting_on: t.waiting_on,
-        related: t.related,
     )
     copy
 }
@@ -1311,6 +1310,9 @@ action share_with(to: Task, from: Task) (did: "copied a task") {
     }
     for a in from.attachments {
         to.attachments.insert(a)
+    }
+    for r in from.related {
+        to.related.insert(r)
     }
 }
 

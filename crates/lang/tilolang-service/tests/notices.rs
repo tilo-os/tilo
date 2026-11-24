@@ -17,10 +17,27 @@ const DISCUSSION: (&str, &str) = (
     include_str!("../../../../apps/tl/discussion/app.tl"),
     include_str!("../../../../apps/tl/discussion/app.ids"),
 );
+/// The contacts' book, with its account-association panel: the people Tasks hands work to who
+/// are not members of the workspace.
+const CONTACTS: (&str, &str) = (
+    concat!(
+        include_str!("../../../../apps/tl/contacts/app.tl"),
+        "\n",
+        include_str!("../../../../apps/tl/contacts/identities.tl")
+    ),
+    include_str!("../../../../apps/tl/contacts/app.ids"),
+);
+const NOTES: (&str, &str) = (
+    include_str!("../../../../apps/tl/notes/app.tl"),
+    include_str!("../../../../apps/tl/notes/app.ids"),
+);
 const TASKS: (&str, &str) = (
     crate::fixtures::TASKS_SOURCE,
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
+/// The packages Tasks runs against: its own, after the apps whose types and actions it uses. A
+/// built-in package is compiled against the ones before it, so each comes earlier.
+const TASKS_SET: &[(&str, &str)] = &[DISCUSSION, CONTACTS, NOTES, TASKS];
 const TASKS_APP: &str = "so.tilo.tasks";
 const CLOCKS: (&str, &str) = (
     include_str!("../../../../apps/tl/clocks/app.tl"),
@@ -105,7 +122,7 @@ impl Device {
 /// A session's service over a copy of `base`, for `person`, telling what it shows to a recorder.
 /// Its clock stands before the reminder, so its own turn runs nothing until it is told to.
 fn service(name: &str, person: &str, base: &Workspace) -> (Device, Recorder) {
-    let (replica, _) = Replica::new(name, base.fork(), &[DISCUSSION, TASKS]);
+    let (replica, _) = Replica::new(name, base.fork(), TASKS_SET);
     let (mut service, doc) = replica.into_service_with_workspace(person);
     service.set_clock(|| "2026-10-27T09:00:00Z".to_owned());
     let recorder = Recorder::default();
@@ -130,7 +147,7 @@ fn clocks_service(person: &str, device: &str, base: &Workspace) -> (Device, Reco
 /// triggers read.
 fn ada_workspace() -> (Device, Recorder, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
-    let (ada, _) = Replica::new("ada", Workspace::new(), &[DISCUSSION, TASKS]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), TASKS_SET);
     ada.host.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -227,7 +244,7 @@ fn invoke(replica: &Replica, meta: &Meta, name: &str, args: Vec<Value>) -> Value
 /// nine, with the clock at nine as the actions were made.
 fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
-    let (ada, packages) = Replica::new("ada", Workspace::new(), &[DISCUSSION, TASKS]);
+    let (ada, packages) = Replica::new("ada", Workspace::new(), TASKS_SET);
     ada.host.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -283,7 +300,7 @@ tilo_test_env::scenario! {
 
         // Another device of the workspace, which has not heard from ada's yet: both come to run the
         // reminder at its moment, as they do when the origin moves between them.
-        let bo = ada.fork("bo", &[DISCUSSION, TASKS]);
+        let bo = ada.fork("bo", TASKS_SET);
         bo.host.set_clock({
             let clock = std::rc::Rc::clone(&clock);
             move || clock.borrow().clone()

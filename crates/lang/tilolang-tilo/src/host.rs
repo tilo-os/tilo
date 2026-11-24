@@ -1281,17 +1281,35 @@ impl Host {
         &self.inner.viewer
     }
 
-    /// Compile `source` against the packages already loaded, register its schemas, load its
-    /// module and trust it (a built-in package).
+    /// Compile `source` against the packages already loaded and the platform's packages it names,
+    /// register its schemas, load its module and trust it (a built-in package). A package names
+    /// another app's published types (Contacts' directory, a device's roots) without that app
+    /// being loaded here, as it does when the workspace compiles a built-in one.
     pub fn load_builtin(&self, source: &str, ids: &str) -> Result<Package, HostError> {
         let lock = IdsLock::parse(ids).map_err(|error| HostError::Compile(error.to_string()))?;
-        let imports: Vec<PackageMeta> = self
-            .inner
-            .packages
-            .borrow()
-            .iter()
-            .map(|package| package.meta.clone())
-            .collect();
+        let named: Vec<String> = tilolang::parser::parse_module(source)
+            .0
+            .map(|module| {
+                module
+                    .items
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        tilolang::ast::Item::Use(used) => Some(used.app),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut imports =
+            crate::platform_apps::platform_packages_of(named.iter().map(String::as_str))
+                .map_err(HostError::Compile)?;
+        imports.extend(
+            self.inner
+                .packages
+                .borrow()
+                .iter()
+                .map(|package| package.meta.clone()),
+        );
         let compiled =
             tilolang::compile_package(source, &lock, &imports).map_err(|diagnostics| {
                 HostError::Compile(

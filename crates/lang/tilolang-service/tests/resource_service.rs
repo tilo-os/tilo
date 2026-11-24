@@ -20,6 +20,16 @@ const DISCUSSION: (&str, &str) = (
     include_str!("../../../../apps/tl/discussion/app.tl"),
     include_str!("../../../../apps/tl/discussion/app.ids"),
 );
+/// The contacts' book, with its account-association panel: the people Tasks hands work to who
+/// are not members of the workspace, and the addresses Mail reads a sender as.
+const CONTACTS: (&str, &str) = (
+    concat!(
+        include_str!("../../../../apps/tl/contacts/app.tl"),
+        "\n",
+        include_str!("../../../../apps/tl/contacts/identities.tl")
+    ),
+    include_str!("../../../../apps/tl/contacts/app.ids"),
+);
 const NOTES: (&str, &str) = (
     include_str!("../../../../apps/tl/notes/app.tl"),
     include_str!("../../../../apps/tl/notes/app.ids"),
@@ -28,6 +38,9 @@ const TASKS: (&str, &str) = (
     crate::fixtures::TASKS_SOURCE,
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
+/// The packages Tasks runs against: its own, after the apps whose types and actions it uses. A
+/// built-in package is compiled against the ones before it, so each comes earlier.
+const TASKS_SET: &[(&str, &str)] = &[DISCUSSION, CONTACTS, NOTES, TASKS];
 const APP: &str = "so.tilo.notes";
 const TASKS_APP: &str = "so.tilo.tasks";
 
@@ -265,7 +278,7 @@ tilo_test_env::scenario! {
 /// with no window of the app open, and the clock its app and its triggers read.
 fn tasks() -> (ResourceService, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
-    let (ada, _) = Replica::new("ada", Workspace::new(), &[DISCUSSION, TASKS]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), TASKS_SET);
     ada.host.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -447,7 +460,7 @@ const MAIL_APP: &str = "so.tilo.mail";
 /// Ada's workspace with Mail's inbox a week in, as the session keeps it: a `ResourceService`
 /// over the document, and its first conversation's published id.
 fn mail_inbox() -> (ResourceService, String) {
-    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[MAIL]);
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[CONTACTS, MAIL]);
     let meta = loaded.last().unwrap().meta.clone();
     ada.host.root_of(MAIL_APP).unwrap();
     // The account and its mail are its server's: they come in through the mail origin, from the

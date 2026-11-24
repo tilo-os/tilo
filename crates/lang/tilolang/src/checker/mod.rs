@@ -647,7 +647,8 @@ fn always_returns(stmts: &[Stmt]) -> bool {
 /// How a typed list element is read back from a host list, and converted.
 pub(crate) fn load_op(ty: &Ty, i: Imp, f: Imp, h: Imp) -> (Imp, Option<Conv>) {
     match ty {
-        Ty::Int | Ty::Duration => (i, None),
+        // A choice is its variant's number in wasm, as an `Int` is.
+        Ty::Int | Ty::Duration | Ty::Choice(_) => (i, None),
         Ty::Float => (f, None),
         Ty::Bool => (i, Some(Conv::IntToBool)),
         _ => (h, None),
@@ -657,7 +658,7 @@ pub(crate) fn load_op(ty: &Ty, i: Imp, f: Imp, h: Imp) -> (Imp, Option<Conv>) {
 /// How a typed value is passed to a host store, and converted.
 pub(crate) fn store_op(ty: &Ty, i: Imp, f: Imp, h: Imp) -> (Imp, Option<Conv>) {
     match ty {
-        Ty::Int | Ty::Duration => (i, None),
+        Ty::Int | Ty::Duration | Ty::Choice(_) => (i, None),
         Ty::Float => (f, None),
         Ty::Bool => (i, Some(Conv::BoolToInt)),
         _ => (h, None),
