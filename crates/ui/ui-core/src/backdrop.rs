@@ -2166,7 +2166,7 @@ fn plan(region: &BackdropRegion, target: Rect, max_edge: u32) -> Option<Plan> {
     let sigma = region_sigma(region);
     if !sigma.is_finite()
         || sigma < 0.0
-        || (sigma == 0.0 && !region.refraction.shows_through())
+        || (sigma == 0.0 && !region.refraction.shows_through() && region.stage.is_none())
         || region.image.width == 0
         || region.image.height == 0
     {

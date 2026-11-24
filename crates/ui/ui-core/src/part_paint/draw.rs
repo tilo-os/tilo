@@ -109,7 +109,19 @@ pub fn paint_part(
         role,
         SurfaceRole::Window | SurfaceRole::Floating | SurfaceRole::Bar
     );
-    if sampled && painted.scene.samples_backdrop() {
+    // A material stage samples what lies below only where the backdrop pass records this part; elsewhere
+    // it is evaluated on the CPU once and replayed from the cache like any settled part.
+    let staged = tokens.backdrop
+        && painted.scene.ops.iter().any(|op| {
+            matches!(
+                op,
+                Op::Fill {
+                    brush: Brush::Shader { .. },
+                    ..
+                }
+            )
+        });
+    if sampled && (painted.scene.samples_backdrop() || staged) {
         encode(scene, placed, (&painted.scene.ops, true), theme, &tokens);
         return Some(Painted { hit });
     }
