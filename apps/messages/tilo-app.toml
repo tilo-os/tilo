@@ -37,7 +37,7 @@ splash-segments = ["bin/messages[0x0:0x400000]"]
 splash-budget = 250
 
 [resources]
-kinds = ["tilo.messages", "tilo.contacts.identities", "messages.drafts"]
+kinds = ["tilo.messages", "tilo.contacts.identities", "tilo.accounts", "messages.drafts"]
 # Each member's unsent messages: only they read and change theirs.
 private = ["messages.drafts"]
 
