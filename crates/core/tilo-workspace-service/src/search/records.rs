@@ -13,6 +13,14 @@
 //! sealed record whose keys are not here, and a record it may not read are all nothing to index —
 //! the device's appetite decides, not a list of apps.
 //!
+//! A tilolang app keeps its resources in the workspace's resource store, which places them in
+//! whichever of the app's documents it chooses. A write to any of them has the app's resources
+//! read once from that store, through the app's package on this device and as the device's
+//! person reads them ([`StoreReader`]): the entries a window of the app publishes, under the key
+//! that window publishes to, so a window and this index replace each other's entries rather than
+//! adding to them. Notes, Tasks and Chat are found on a device that never opened them, and what is
+//! deleted goes from search with no window open either.
+//!
 //! Writes are batched per record, and the worker reads each record once per pass on its own
 //! thread, so a burst of changes to one conversation costs one reading of it.
 
@@ -77,6 +85,20 @@ pub trait RecordReader: Send + Sync + 'static {
     fn entries(&self, app: &str, doc: &[u8]) -> Result<Vec<IndexEntry>, Unread>;
 }
 
+/// What a tilolang app's resources in a workspace say to search, read from the workspace's
+/// resource store: what a window of the app publishes.
+pub trait StoreReader: Send + Sync + 'static {
+    /// Whether `app` keeps its resources in the workspace's store and is read here through a
+    /// package of it this device installed or this build carries: a tilolang app.
+    fn reads(&self, app: &str) -> bool;
+
+    /// Every entry `app`'s resources in `workspace` publish now.
+    ///
+    /// # Errors
+    /// The app's package does not load, or the store does not read now.
+    fn entries(&self, workspace: &str, app: &str) -> Result<Vec<IndexEntry>, String>;
+}
+
 /// Why an app's reader did not say what a record of its holds.
 #[derive(Debug)]
 pub enum Unread {
@@ -94,6 +116,8 @@ type Record = (String, String, String);
 pub struct RecordIndex {
     source: Arc<dyn DocumentSource>,
     reader: Arc<dyn RecordReader>,
+    /// What the tilolang apps' resources say, read from the workspace's store.
+    stores: Arc<dyn StoreReader>,
     content: Arc<AppContentIndex>,
     /// The records to read, each once however often it changed.
     queued: Mutex<BTreeSet<Record>>,
@@ -107,18 +131,20 @@ pub struct RecordIndex {
 }
 
 impl RecordIndex {
-    /// Index what `source` holds, reading each record through `reader` and publishing to
-    /// `content`, from a worker of its own: what this device holds is read at once, and each
-    /// record [`Self::changed`] names after.
+    /// Index what `source` holds, reading each record through `reader` (a tilolang app's
+    /// resources through `stores`) and publishing to `content`, from a worker of its own: what
+    /// this device holds is read at once, and each record [`Self::changed`] names after.
     pub fn start(
         source: Arc<dyn DocumentSource>,
         reader: Arc<dyn RecordReader>,
+        stores: Arc<dyn StoreReader>,
         content: Arc<AppContentIndex>,
     ) -> Arc<Self> {
         let (wake, woken) = std::sync::mpsc::channel();
         let index = Arc::new(Self {
             source,
             reader,
+            stores,
             content,
             queued: Mutex::new(BTreeSet::new()),
             sealed: Mutex::new(BTreeSet::new()),
@@ -157,7 +183,7 @@ impl RecordIndex {
                 Ok(records) => {
                     self.swept.lock_recover().insert(workspace.clone());
                     let mut queued = self.queued.lock_recover();
-                    for (app, record) in records.into_iter().filter(|(_, r)| !r.is_empty()) {
+                    for (app, record) in records {
                         queued.insert((workspace.clone(), app, record));
                     }
                 }
@@ -171,9 +197,9 @@ impl RecordIndex {
     }
 
     /// `record` of `app` changed in `workspace`: read it on the next pass, once however often it
-    /// changed, and what of the workspace had no keys here again with it. An app's own document of
-    /// the workspace (an empty route, a tilolang app's) publishes from its windows, and is read for
-    /// nothing here.
+    /// changed, and what of the workspace had no keys here again with it. Any document of a
+    /// tilolang app, its own document of the workspace (an empty route) among them, has the app's
+    /// resources read from the store.
     pub fn changed(&self, workspace: &str, app: &str, record: &str) {
         let mut queued = self.queued.lock_recover();
         let mut sealed = self.sealed.lock_recover();
@@ -186,9 +212,7 @@ impl RecordIndex {
             sealed.remove(&record);
             queued.insert(record);
         }
-        if !record.is_empty() {
-            queued.insert((workspace.to_owned(), app.to_owned(), record.to_owned()));
-        }
+        queued.insert((workspace.to_owned(), app.to_owned(), record.to_owned()));
         drop((queued, sealed));
         let _ = self.wake.send(());
     }
@@ -198,7 +222,19 @@ impl RecordIndex {
         let queued: Vec<Record> = std::mem::take(&mut *self.queued.lock_recover())
             .into_iter()
             .collect();
+        // A tilolang app's resources are read once a pass, whichever of its documents changed:
+        // the store placed them, and reads them whole.
+        let mut stored = BTreeSet::new();
         for (workspace, app, record) in queued {
+            if self.stores.reads(&app) {
+                stored.insert((workspace, app));
+                continue;
+            }
+            // An app's own document of the workspace that no installed package of the language
+            // reads holds nothing search reads.
+            if record.is_empty() {
+                continue;
+            }
             let doc = match self.source.record(&workspace, &app, &record) {
                 Ok(Some(doc)) => doc,
                 // Its keys are not here yet: it is read again with the next write there.
@@ -224,19 +260,37 @@ impl RecordIndex {
                     continue;
                 }
             };
-            // The record is the whole of what its app publishes from it: what it no longer holds,
-            // deleted messages included, goes with it.
-            let deltas = Publisher::default().publish(
-                IndexState {
-                    generation: 0,
-                    secrets_unlocked: None,
-                },
-                entries,
-            );
-            let slot = IndexKey::new(&app, &workspace, &record);
-            for delta in deltas {
-                self.content.apply(&slot, delta);
+            self.publish(&IndexKey::new(&app, &workspace, &record), entries);
+        }
+        for (workspace, app) in stored {
+            match self.stores.entries(&workspace, &app) {
+                // Under the key a window of the app publishes to (its route: the app's own
+                // document of the workspace), so the two replace each other's entries.
+                Ok(entries) => self.publish(&IndexKey::new(&app, &workspace, ""), entries),
+                // Read again with the next write there, which may be the keys or the policy
+                // arriving.
+                Err(error) => {
+                    tracing::warn!(%error, %workspace, %app, "an app's resources are not indexed");
+                    self.sealed
+                        .lock_recover()
+                        .insert((workspace, app, String::new()));
+                }
             }
+        }
+    }
+
+    /// Publish `entries` as the whole of what `slot` holds: what it no longer holds, deleted
+    /// messages included, goes with it.
+    fn publish(&self, slot: &IndexKey, entries: Vec<IndexEntry>) {
+        let deltas = Publisher::default().publish(
+            IndexState {
+                generation: 0,
+                secrets_unlocked: None,
+            },
+            entries,
+        );
+        for delta in deltas {
+            self.content.apply(slot, delta);
         }
     }
 }

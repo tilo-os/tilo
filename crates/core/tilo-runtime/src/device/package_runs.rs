@@ -118,7 +118,7 @@ pub fn origin_of(app: &str) -> Result<Option<(String, bool)>, String> {
 }
 
 /// `app`, installed here, verified as a launch verifies it.
-fn verified_package(app: &str) -> Result<VerifiedInstance, String> {
+pub(super) fn verified_package(app: &str) -> Result<VerifiedInstance, String> {
     let installed = package_store::find_installed(app)
         .map_err(|error| format!("the package store cannot be read: {error}"))?
         .ok_or_else(|| format!("{app} is not installed"))?;

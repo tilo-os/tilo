@@ -998,6 +998,7 @@ impl Daemon {
             root,
             workspaces.copies(),
             Arc::clone(&apps) as Arc<dyn tilo_workspace_service::search::records::RecordReader>,
+            &actor,
         );
         workspaces.keep_search(Arc::clone(&search));
         stage("starting the collaboration broker");

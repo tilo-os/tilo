@@ -24,7 +24,9 @@
 //! its resources published as every tilolang resource is ([`Opened::rows`]), each step a call of
 //! a published action ([`Opened::invoke_published`]), each read the core read. Only the packages
 //! built into this build ([`built_in`]) run here; an app a workspace installed is untrusted code
-//! and runs only on a device that has it open.
+//! and runs only on a device that installed it: its windows there, and what search reads of it
+//! with none open ([`crate::workspaces::Workspaces::record_entries`], given that device's verified
+//! package).
 //!
 //! Who may do what is decided by the host's authority, from the workspace's policy as the
 //! acting member holds it: an agent within its delegation, a bot within its grants
@@ -461,23 +463,42 @@ impl Opened {
         access: Option<std::sync::Arc<tilo_action_policy::MemberAccess>>,
         members: Option<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
     ) -> Result<Self, String> {
+        Self::open_loading(store, (viewer, access, members), packages.app(), |host| {
+            // The platform's packages the app uses are the session's, held here by the types
+            // they publish, as a window holds them.
+            for meta in packages.1.iter() {
+                host.runtime()
+                    .load_foreign(meta.clone())
+                    .map_err(|error| format!("{} does not load: {error:?}", meta.app))?;
+            }
+            for package in packages.0.iter() {
+                host.load_compiled(package)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+    }
+
+    /// [`Self::open_with`] for `app`'s record, its packages loaded by `load`: the built-in ones,
+    /// or the package a device installed
+    /// ([`crate::workspaces::Workspaces::record_entries`]).
+    fn open_loading(
+        store: ResourceStore,
+        (viewer, access, members): (
+            Actor,
+            Option<std::sync::Arc<tilo_action_policy::MemberAccess>>,
+            Option<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
+        ),
+        app: &str,
+        load: impl FnOnce(&Host) -> Result<(), String>,
+    ) -> Result<Self, String> {
         // What the host's own authority decides invocations by: without an access it knows no
         // grants, and leaves every action to the caller.
         let host = Host::open(store, viewer, None, move || {
             access.as_ref().map(|access| (**access).clone())
         })
         .map_err(|error| error.to_string())?;
-        // The platform's packages the app uses are the session's, held here by the types they
-        // publish, as a window holds them.
-        for meta in packages.1.iter() {
-            host.runtime()
-                .load_foreign(meta.clone())
-                .map_err(|error| format!("{} does not load: {error:?}", meta.app))?;
-        }
-        for package in packages.0.iter() {
-            host.load_compiled(package)
-                .map_err(|error| error.to_string())?;
-        }
+        load(&host)?;
         if let Some(policy) = members
             && let Some(owner) = policy.owner.clone()
         {
@@ -504,7 +525,7 @@ impl Opened {
         }
         Ok(Self {
             host,
-            app: packages.app().to_owned(),
+            app: app.to_owned(),
             run_of: None,
         })
     }
@@ -1155,21 +1176,60 @@ impl crate::workspaces::Workspaces {
         })
     }
 
-    /// What `route`'s record of `workspace` publishes to search, read as `person` reads it: the
-    /// entries its app tells search about, one per resource, or `None` for an app this build
-    /// runs no package of (a compiled-in app, whose entries an app worker reads instead).
+    /// What `app` keeps in `workspace` publishes to search, read from the workspace's resource
+    /// store as `person` reads it: every entry a window of the app publishes
+    /// ([`tilolang_tilo::search::whole`]), so search finds the app's resources on a device that
+    /// never opened a window of it. The app is read through `installed`, its package as this
+    /// device installed it and verified as a launch verifies it (what its windows run here), and
+    /// without one through the package built into this build ([`built_in`]).
     ///
-    /// The record is opened through its app's built-in package as that person, so what a direct
-    /// conversation keeps is found only by the people it is between. Nothing is written: what a
-    /// search reads leaves the record as it was.
+    /// The record is opened as that person, under the workspace's policy as this device reads
+    /// it, so what a direct conversation keeps is found only by the people it is between.
+    /// Nothing is written: what a search reads leaves the record as it was.
+    ///
+    /// # Errors
+    /// No package of `app` is installed or built in, the package does not load, the workspace's
+    /// policy does not read here, or the record does not open.
     pub fn record_entries(
         &self,
         workspace: &str,
-        route: &tilo_peer_state::document_frame::DocumentRoute,
+        app: &str,
+        installed: Option<&runtime_portal::process_link::Module>,
         person: &str,
-    ) -> Option<Arc<[ui::search::index_publication::IndexEntry]>> {
-        let opened = self.opened_to_read(workspace, route, person)?;
-        Some(tilolang_tilo::search::entries(opened.host()).into())
+    ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, String> {
+        let record = self.record_to_read(workspace, app).store();
+        let viewer = Actor::Member(tilo_actions::MemberId::person(person.to_owned()));
+        // Without the policy nobody's reads are known, and every resource would read as anyone's.
+        let policy = self
+            .policy_now(workspace)
+            .map(Arc::new)
+            .ok_or_else(|| format!("{workspace}'s policy does not read here"))?;
+        let opened = match installed {
+            Some(module) => {
+                let bundle = tilolang_tilo::bundle::Bundle::from_parts(
+                    module.wasm.clone(),
+                    module.ids.clone(),
+                    &module.imports,
+                )
+                .map_err(|error| format!("{app}'s package does not read: {error}"))?;
+                if bundle.meta.app != app {
+                    return Err(format!(
+                        "{app} is installed as the package of {}",
+                        bundle.meta.app
+                    ));
+                }
+                Opened::open_loading(record, (viewer, None, Some(policy)), app, |host| {
+                    host.load_bundle(&bundle)
+                        .map(drop)
+                        .map_err(|error| format!("{app} does not load: {error}"))
+                })?
+            }
+            None => {
+                let packages = built_in(app)?.ok_or_else(|| runs_elsewhere(app))?;
+                Opened::open_with(record, &packages, viewer, None, Some(policy))?
+            }
+        };
+        Ok(tilolang_tilo::search::whole(opened.host()))
     }
 
     /// What `route`'s record of `workspace` publishes, each action in the row of the resource

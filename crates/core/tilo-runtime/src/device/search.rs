@@ -1,8 +1,10 @@
 //! The device's one search index, kept by its daemon.
 //!
 //! An app publishes what it holds on its connection here ([`Publications`]), and the records the
-//! device's workspaces hold are read by their apps in record mode as writes land in them
-//! ([`RecordIndex`]); both go into one persistent index under the daemon's state. Every caller
+//! device's workspaces hold are read as writes land in them ([`RecordIndex`]): a Rust app's by the
+//! app in its record mode, a tilolang app's resources from the workspace's resource store through
+//! the app's installed package ([`InstalledPackages`]). Both go into one persistent index under the
+//! daemon's state. Every caller
 //! the daemon answers (the person's shell, `tilo do`, an agent's `find`) searches that index
 //! ([`IndexSearch`]), and is answered only what it may read: each result's record is decided by
 //! the broker as every read of it is.
@@ -14,7 +16,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_workspace_service::apps::collab_broker::AppActionBroker;
 use tilo_workspace_service::apps::services::SearchIndexServices;
 use tilo_workspace_service::device_documents::ServiceDocuments;
-use tilo_workspace_service::search::records::{RecordIndex, RecordReader};
+use tilo_workspace_service::search::records::{RecordIndex, RecordReader, StoreReader};
 use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 use tilo_workspace_service::workspaces::Workspaces;
 
@@ -30,17 +32,20 @@ pub(crate) struct DeviceSearch {
 }
 
 impl DeviceSearch {
-    /// The index kept under `root`, filled with what `copies` hold as `reader` reads it, and with
-    /// every write they take from now on.
+    /// The index kept under `root`, filled with what `copies` hold as `reader` reads it (a
+    /// tilolang app's resources as `person` reads them), and with every write they take from now
+    /// on.
     pub(crate) fn open(
         root: &Path,
         copies: &Workspaces,
         reader: Arc<dyn RecordReader>,
+        person: &str,
     ) -> Arc<Self> {
         let index = AppContentIndex::persistent(root.join(INDEX_DIR));
         let records = RecordIndex::start(
             Arc::new(ServiceDocuments::of(copies.clone())),
             reader,
+            Arc::new(InstalledPackages::new(copies, person)),
             Arc::clone(&index),
         );
         let mut writes = copies.document_writes();
@@ -88,6 +93,80 @@ impl DeviceSearch {
     /// The search of the index, once the broker serves.
     pub(crate) fn search(&self) -> Option<Arc<IndexSearch>> {
         self.search.get().cloned()
+    }
+}
+
+/// The tilolang apps' resources, read from the workspaces' stores through each app's package as
+/// this device installed it, verified as a launch verifies it (else as this build carries it),
+/// as the device's person reads them: the entries a window of the app publishes, with no window
+/// open.
+#[cfg(target_os = "linux")]
+struct InstalledPackages {
+    copies: Workspaces,
+    person: String,
+}
+
+#[cfg(target_os = "linux")]
+impl InstalledPackages {
+    fn new(copies: &Workspaces, person: &str) -> Self {
+        Self {
+            copies: copies.clone(),
+            person: person.to_owned(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl StoreReader for InstalledPackages {
+    /// An installed tilolang app, or one built into this build that the daemon runs for a
+    /// workspace with no package of it installed.
+    fn reads(&self, app: &str) -> bool {
+        super::package_runs::runs_in_process(app)
+            || matches!(
+                tilo_workspace_service::tl_records::built_in(app),
+                Ok(Some(_))
+            )
+    }
+
+    fn entries(
+        &self,
+        workspace: &str,
+        app: &str,
+    ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, String> {
+        let installed = if super::package_runs::runs_in_process(app) {
+            Some(super::package_runs::verified_package(app)?.module)
+        } else {
+            None
+        };
+        self.copies
+            .record_entries(workspace, app, installed.as_ref(), &self.person)
+    }
+}
+
+/// Where no tilolang host runs, no tilolang app's resources are read: search holds what its
+/// windows publish.
+#[cfg(not(target_os = "linux"))]
+struct InstalledPackages;
+
+#[cfg(not(target_os = "linux"))]
+impl InstalledPackages {
+    const fn new(_copies: &Workspaces, _person: &str) -> Self {
+        Self
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl StoreReader for InstalledPackages {
+    fn reads(&self, _app: &str) -> bool {
+        false
+    }
+
+    fn entries(
+        &self,
+        _workspace: &str,
+        app: &str,
+    ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, String> {
+        Err(format!("{app} is read by no tilolang host here"))
     }
 }
 

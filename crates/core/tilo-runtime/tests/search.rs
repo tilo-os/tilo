@@ -144,3 +144,100 @@ fn what_an_app_publishes_is_found_through_the_daemon_by_whoever_may_read_it() {
         drop(opened);
     });
 }
+
+/// What the person's palette finds of `word` now, by title.
+async fn palette_finds(
+    palette: &DaemonSearch,
+    caller: &tilo_actions::remote::Caller,
+    word: &str,
+) -> Vec<String> {
+    titles(
+        &palette
+            .find_within(caller, word, &Within::default())
+            .await
+            .and_then(Result::ok)
+            .unwrap_or_default(),
+    )
+}
+
+/// A task written into the workspace's resource store with no window of Tasks open, as the
+/// daemon's own roles write one (an agent's turn, a program's step), is found by the person's
+/// palette: the daemon reads the app's resources from the store as the person reads them, through
+/// the same code a window publishes with. Once the task is deleted, search loses it.
+#[test]
+fn a_task_no_window_wrote_is_found_from_the_store_and_lost_once_deleted() {
+    use tilo_workspace_service::tl_records::{self, runtime::ResourceRef, runtime::Value};
+
+    const TASKS: &str = "so.tilo.tasks";
+    const WRITTEN: &str = "Quokka census";
+
+    host::run(|host| async move {
+        let (caller, workspace) = (host.caller(), host.workspace().to_owned());
+        let workspaces = host.daemon().workspaces().clone();
+        let tasks = tl_records::built_in(TASKS)
+            .unwrap()
+            .expect("Tasks is built in");
+        let person = tl_records::member(tilo_actions::MemberId::person(host.person()));
+
+        // The task is written through Tasks' own action over the workspace's store: no window of
+        // Tasks runs, so nothing publishes it to search but the daemon reading the store.
+        let who = person.clone();
+        let (id, ty) = workspaces
+            .with_tl_record(&workspace, &tasks, person.clone(), move |opened| {
+                opened.open_root()?;
+                let made = opened.invoke(
+                    &who,
+                    (TASKS, "new_tasks"),
+                    vec![
+                        Value::List(vec![Value::Text(WRITTEN.to_owned())]),
+                        Value::Opt(None),
+                    ],
+                    None,
+                )?;
+                match made {
+                    Value::List(made) => match made.first() {
+                        Some(Value::Ref(task)) => {
+                            Ok((task.target.id_string(), task.target.ty.clone()))
+                        }
+                        other => Err(format!("new_tasks made {other:?}")),
+                    },
+                    other => Err(format!("new_tasks made {other:?}")),
+                }
+            })
+            .await
+            .expect("the task is written");
+
+        let palette = palette(&host);
+        tilo_test_env::within("the task is found", async {
+            while !palette_finds(&palette, &caller, "quokka")
+                .await
+                .iter()
+                .any(|title| title == WRITTEN)
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+
+        let who = person.clone();
+        workspaces
+            .with_tl_record(&workspace, &tasks, person, move |opened| {
+                let task = ResourceRef::parse_id(&id, ty).ok_or("the task's id parses")?;
+                opened
+                    .invoke(&who, (TASKS, "remove"), vec![Value::resource(&task)], None)
+                    .map(drop)
+            })
+            .await
+            .expect("the task is deleted");
+        tilo_test_env::within("the deleted task is gone from search", async {
+            while palette_finds(&palette, &caller, "quokka")
+                .await
+                .iter()
+                .any(|title| title == WRITTEN)
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+    });
+}
