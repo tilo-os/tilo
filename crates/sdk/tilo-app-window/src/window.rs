@@ -362,6 +362,10 @@ pub struct AppWindow {
     /// `""`; the view calls that read their space are the keys the app declared (`ToUi::Spaces`).
     root_space: HashMap<String, (f32, f32, f32)>,
     detail_space: HashMap<String, (f32, f32, f32)>,
+    /// The layout node of each keyed widget of the body, as its last build made them, and the
+    /// body's own node: what the room each view call is offered is read from
+    /// ([`ui::widget::offered_room`]).
+    laid_nodes: Option<(ui::taffy::NodeId, HashMap<String, ui::taffy::NodeId>)>,
     /// The view calls of each level that read the space layout gives them, by key in that level's
     /// tree, as the app declared them: what the window measures after every layout.
     root_readers: Vec<String>,
@@ -537,6 +541,7 @@ impl AppWindow {
             rem: 16.0,
             root_space: HashMap::new(),
             detail_space: HashMap::new(),
+            laid_nodes: None,
             root_readers: Vec::new(),
             detail_readers: Vec::new(),
             front: None,
@@ -3099,12 +3104,16 @@ pub fn show_bound<S: std::hash::BuildHasher>(
 const SPACE_STEP_REM: f32 = 0.125;
 
 impl AppWindow {
-    /// Tell the app the space each view has where layout placed it, when it changed: a view reads
-    /// `space` from its own container (layout.md, "Responding to space"). The app decides the
-    /// classes, with their hysteresis, and runs a view again only when what it read of it changed.
-    /// A level's own view is measured every layout; each view call the app declared as reading
-    /// its space ([`ToUi::Spaces`]) is measured too, by the space it takes in the window.
-    fn follow_spaces(&mut self) {
+    /// Tell the app the space each view is offered where layout placed it, when it changed: a view
+    /// reads `space` from its own container (layout.md, "Responding to space"). The app decides
+    /// the classes, with their hysteresis, and runs a view again only when what it read of it
+    /// changed. A level's own view is measured every layout; each view call the app declared as
+    /// reading its space ([`ToUi::Spaces`]) is measured too.
+    ///
+    /// The space is the room layout offers the call ([`ui::widget::offered_room`]), never the size
+    /// of what it drew: a call packed by its content (a part in a bar) reads the room its parent
+    /// has, so drawing less never makes it read less and draw less again.
+    fn follow_spaces(&mut self, taffy: &ui::taffy::TaffyTree<()>, body: ui::taffy::NodeId) {
         if self.rem <= 0.0 {
             return;
         }
@@ -3133,6 +3142,28 @@ impl AppWindow {
         }
         let rects = widget_rects(self.body.as_ref());
         let covered = self.call_nodes(&wanted);
+        // The nodes of the build this layout solved: another build's are not this tree's.
+        let nodes = self
+            .laid_nodes
+            .as_ref()
+            .filter(|(built, _)| *built == body)
+            .map(|(_, nodes)| nodes);
+        let offered = |key: &str| {
+            let node = *nodes?.get(key)?;
+            // Only a widget this tree placed is offered its room here: a list places its rows
+            // itself, and the size their nodes were solved to is not where they stand.
+            let solved = taffy.layout(node).ok()?.size;
+            let placed = rects
+                .get(key)
+                .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)?;
+            if (f64::from(solved.width) - placed.width()).abs() > 1.0
+                || (f64::from(solved.height) - placed.height()).abs() > 1.0
+            {
+                return None;
+            }
+            let room = ui::widget::offered_room(taffy, node);
+            Some((f64::from(room.width), f64::from(room.height)))
+        };
         let mut told: Vec<(Level, String, (f32, f32, f32))> = Vec::new();
         for (level, slots) in [Level::Root, Level::Detail].into_iter().zip(&wanted) {
             let spaces = match level {
@@ -3156,11 +3187,18 @@ impl AppWindow {
                     // A view call layout has not placed yet: measured again after the next one.
                     continue;
                 };
-                let space = (
-                    rect.width() as f32 / self.rem,
-                    rect.height() as f32 / self.rem,
-                    self.rem,
-                );
+                // The room offered the call's own box, or, where its nodes are a row's or a
+                // part's, the most room any of them is offered. A node no build of this tree
+                // made (a list's row, laid out in a tree of its own) is offered what it was given.
+                let room = offered(in_tree).or_else(|| {
+                    covered
+                        .get(in_tree)?
+                        .iter()
+                        .filter_map(|node| offered(node))
+                        .reduce(|a, b| (a.0.max(b.0), a.1.max(b.1)))
+                });
+                let (width, height) = room.unwrap_or((rect.width(), rect.height()));
+                let space = (width as f32 / self.rem, height as f32 / self.rem, self.rem);
                 let moved = spaces.get(key).is_none_or(|before| {
                     (before.0 - space.0).abs() >= SPACE_STEP_REM
                         || (before.1 - space.1).abs() >= SPACE_STEP_REM
@@ -3247,8 +3285,41 @@ impl AppWindow {
     }
 }
 
-/// Every widget of `window` that answers to a key, with the rect layout gave it: what a view call's
-/// size is, read from the layout that placed it.
+/// The layout node of every widget of `window` that answers to a key, among the nodes `build_layout`
+/// just made under `root` (`node_map` names the widget each stands for): where the room a view call
+/// is offered is read from. Widgets are matched by address, never read through the map.
+fn keyed_nodes(
+    window: &dyn Widget,
+    taffy: &ui::taffy::TaffyTree<()>,
+    root: ui::taffy::NodeId,
+    node_map: &HashMap<ui::taffy::NodeId, *mut dyn Widget>,
+) -> HashMap<String, ui::taffy::NodeId> {
+    fn keys<'a>(widget: &'a dyn Widget, out: &mut HashMap<*const (), &'a str>) {
+        if let Some(id) = widget.test_id() {
+            out.entry(std::ptr::from_ref(widget).cast::<()>())
+                .or_insert(id);
+        }
+        for child in widget.children() {
+            keys(child, out);
+        }
+    }
+    let mut by_address = HashMap::new();
+    keys(window, &mut by_address);
+    let mut out = HashMap::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if let Some(widget) = node_map.get(&node)
+            && let Some(key) = by_address.get(&widget.cast_const().cast::<()>())
+        {
+            out.entry((*key).to_owned()).or_insert(node);
+        }
+        stack.extend(taffy.children(node).unwrap_or_default());
+    }
+    out
+}
+
+/// Every widget of `window` that answers to a key, with the rect layout gave it: where a view call
+/// is placed, read from the layout that placed it.
 fn widget_rects(window: &dyn Widget) -> HashMap<String, ui::vello::kurbo::Rect> {
     fn walk(widget: &dyn Widget, out: &mut HashMap<String, ui::vello::kurbo::Rect>) {
         if let Some(id) = widget.test_id() {
@@ -3764,7 +3835,9 @@ impl ui::widget::Decorator for AppWindow {
             self.compose();
         }
         self.rem = ui::widget::arrange::rem_of(theme);
-        self.body.build_layout(taffy, theme, node_map)
+        let node = self.body.build_layout(taffy, theme, node_map);
+        self.laid_nodes = Some((node, keyed_nodes(self.body.as_ref(), taffy, node, node_map)));
+        node
     }
 
     fn apply_layout(
@@ -3774,7 +3847,7 @@ impl ui::widget::Decorator for AppWindow {
         origin: ui::kurbo::Point,
     ) {
         self.body.apply_layout(taffy, node, origin);
-        self.follow_spaces();
+        self.follow_spaces(taffy, node);
         // Where the person is stays the window's across the shell being built anew: the column the
         // narrow stack has in front, as they left it (Back, a place, a row).
         if let Some(shell) = self.shell() {

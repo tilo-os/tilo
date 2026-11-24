@@ -2133,6 +2133,8 @@ pub use document_offers::{DocumentOffer, PaintedOffers};
 pub use identity::Identified;
 
 pub(crate) mod layout;
+mod offered;
+pub use offered::offered_room;
 pub mod remount;
 pub use remount::Remount;
 mod reach;
