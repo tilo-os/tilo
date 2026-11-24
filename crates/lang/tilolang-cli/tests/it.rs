@@ -18,7 +18,6 @@ mod check;
 mod command;
 mod dev;
 mod json_output;
-mod layout_check;
 mod native_types;
 mod outside_repo;
 mod package_platform;

@@ -421,7 +421,7 @@ t test layout-check/390x844            # one size, one run
 
 The sizes are 320x568 and 390x844 (a phone's) and 1280x800 (a laptop's). What the run finds is
 the check's verdict: a finding the allow-list
-(`crates/lang/tilolang-cli/tests/layout_check/allowed`) does not name fails it, as does an
+(`tools/layout-check/tests/layout_check/allowed`) does not name fails it, as does an
 allow-list line whose finding no longer shows or a view no scenario reaches. The job's log
 (`t log layout-check/390x844`) lists every finding with its app, view, node and source line.
 

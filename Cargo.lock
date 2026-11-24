@@ -17829,6 +17829,8 @@ dependencies = [
 name = "tilo-layout-check"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
+ "tilo-test-env",
  "tilolang-cli",
  "tilolang-mail",
  "tilolang-youtube",

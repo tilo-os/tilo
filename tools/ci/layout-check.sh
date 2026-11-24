@@ -95,7 +95,7 @@ verdict=(--strict)
 
 status=0
 "$target/debug/tilo-layout-check" "${apps[@]}" \
-    --allow crates/lang/tilolang-cli/tests/layout_check/allowed \
+    --allow tools/layout-check/tests/layout_check/allowed \
     "${verdict[@]}" "${read_frames[@]}" "${presses[@]}" "${pointing[@]}" "${tall[@]}" --shots "$out" >"$out/report.txt" 2>"$out/dump.txt" || status=$?
 cat -- "$out/report.txt"
 if [[ ! -s $out/report.txt ]]; then

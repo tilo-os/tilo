@@ -17,6 +17,11 @@ tilolang-cli = { path = "../../crates/lang/tilolang-cli" }
 tilolang-mail = { path = "../../crates/integrations/tilolang-mail", default-features = false }
 tilolang-youtube = { path = "../../crates/integrations/tilolang-youtube", default-features = false }
 
+[dev-dependencies]
+tempfile.workspace = true
+# The command runs under the test environment's lock, as every test that spawns one does.
+tilo-test-env = { path = "../test-env" }
+
 [lints]
 workspace = true
 

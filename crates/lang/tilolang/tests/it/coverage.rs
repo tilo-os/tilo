@@ -11,7 +11,7 @@
 //! says where each host, root and part sits outside a view (`#[not_a_component(kind, "why")]` at the widget).
 //!
 //! That every *described* component lays out from a view is held by the gallery
-//! (`crates/lang/tilolang-cli/tests/layout_check.rs`); this holds the components the toolkit has
+//! (`tools/layout-check/tests/layout_check.rs`); this holds the components the toolkit has
 //! not described yet to a reason.
 
 use std::collections::BTreeSet;
