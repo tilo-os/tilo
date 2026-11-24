@@ -226,6 +226,89 @@ view bigs(b: lib.Bag) {
         assert_eq!(textual(view.tree()), "big");
     }
 
+    /// A library whose fn takes a JSON document, and a caller that hands it one it parsed.
+    const DOCS: &str = "app so.tilo.docs \"Docs\"
+
+fn write(value: json.Value) -> Text {
+    json.encode(value)
+}
+
+fn at(value: json.Value, key: Text) -> Text {
+    match value {
+        .object(fields) => match fields.get(key) {
+            .none => \"\",
+            .some(held) => match held {
+                .string(text) => text,
+                .object(fields) => \"\",
+                .array(items) => \"\",
+                .number(number) => \"\",
+                .bool(flag) => \"\",
+                .null => \"\",
+            },
+        },
+        .array(items) => \"\",
+        .string(text) => \"\",
+        .number(number) => \"\",
+        .bool(flag) => \"\",
+        .null => \"\",
+    }
+}
+";
+
+    const DOC_CALLER: &str = "app so.tilo.doc-caller \"Doc Caller\"
+
+use so.tilo.docs as docs
+
+action round(value: Text) -> Text {
+    match json.parse(value) {
+        .err(why) => why
+        .ok(parsed) => docs.write(parsed)
+    }
+}
+
+action name(value: Text) -> Text {
+    match json.parse(value) {
+        .err(why) => why
+        .ok(parsed) => docs.at(parsed, \"name\")
+    }
+}
+";
+
+    #[test]
+    fn a_json_document_crosses_a_call_into_another_package() {
+        let docs = App::compile(DOCS, &[]);
+        let caller = App::compile(DOC_CALLER, &[docs.meta().clone()]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        docs.load(&rt);
+        caller.load(&rt);
+        let InvokeOutcome::Done(Value::Text(written)) = rt
+            .invoke_action(
+                &me(),
+                (
+                    caller.action("round").as_str(),
+                    vec![Value::text(r#"{"name":"chip"}"#)],
+                ),
+            )
+            .unwrap()
+        else {
+            panic!("round");
+        };
+        assert_eq!(written, r#"{"name":"chip"}"#);
+        let InvokeOutcome::Done(Value::Text(named)) = rt
+            .invoke_action(
+                &me(),
+                (
+                    caller.action("name").as_str(),
+                    vec![Value::text(r#"{"name":"chip"}"#)],
+                ),
+            )
+            .unwrap()
+        else {
+            panic!("name");
+        };
+        assert_eq!(named, "chip");
+    }
+
     /// A resource, as a call takes it.
     fn res(r: &ResourceRef) -> Value {
         Value::resource(r)

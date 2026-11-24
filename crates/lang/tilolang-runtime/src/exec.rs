@@ -234,6 +234,10 @@ impl Core {
     fn check_param(&self, ty: &Ty, v: &Value, into_action: bool) -> Result<(), String> {
         debug_assert_eq!(ty.abi_repr(), Some(Repr::Handle));
         let ok = match (ty, v) {
+            // A library's parameter that asks for a JSON document takes the one a caller parsed
+            // or built: `std.json_text(value, key)` is reached from another package, so the
+            // document crosses the call boundary as the value it already is.
+            (Ty::Json, Value::Json(_)) => true,
             // A program's `host.Resource` is any resource.
             (Ty::Record(key), Value::Ref(_)) if *key == tilolang::resource_key() => true,
             (Ty::Record(key), Value::Ref(r)) => self.ref_fits(key, r),
