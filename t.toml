@@ -1204,6 +1204,9 @@ name = "published-crates-proof"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "python3 -I tools/sdk/published_crates_proof.py"
 requires = ["arch=x86_64"]
+# `tilolang check` reads the new app's public surface in a network namespace of its own, as
+# app-surfaces does: a user namespace the job's own sandbox gives only nested.
+isolation = "nested"
 timeout_secs = 7200
 on = ["dispatch", "idle"]
 
