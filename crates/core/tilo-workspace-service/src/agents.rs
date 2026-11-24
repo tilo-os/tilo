@@ -2491,6 +2491,13 @@ async fn work(
     let mut own_tools = learned::with_tools(Vec::new(), keeping);
     own_tools.extend(shares::tools(turn));
     own_tools.extend(web_search::definitions());
+    // What this server keeps of what was learned about the person, where the turn is their own
+    // keeper's conversation with the agent: the newest facts, as data, beside its instructions.
+    let known = learned::learned_for(&self.workspaces, workspace, turn).await;
+    let instructions = match &known {
+        Some(known) => format!("{}{}", instructions::for_turn(turn), learned::told(known)),
+        None => instructions::for_turn(turn),
+    };
     let asked = tilo_agent_turn::Asked {
         history: instructions::history(&turn.history),
         own_tools,
@@ -2502,7 +2509,7 @@ async fn work(
         result_bytes: MOST_RESULT_BYTES,
         round_time: TURN_TIME,
         key: format!("{}:{}", turn.agent.id.0, turn.cause),
-        ..tilo_agent_turn::Asked::new(instructions::for_turn(turn), turn.request.clone())
+        ..tilo_agent_turn::Asked::new(instructions, turn.request.clone())
     };
     let agent = turn.agent.id.0.clone();
     let usage = Arc::new(Mutex::new(TurnUsage::default()));
