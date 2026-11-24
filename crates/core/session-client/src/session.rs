@@ -4370,6 +4370,25 @@ impl TicketLink {
         }
     }
 
+    /// Dial the link without asking an action, so a page's next ask only waits
+    /// for its answer. A dial that fails is the caller's to keep quiet: [`Self::ask`]
+    /// dials again.
+    ///
+    /// # Errors
+    ///
+    /// As [`tilo_server_client::link::Dialer::link`].
+    pub async fn warm(&self) -> Result<(), tilo_server_client::LinkError> {
+        let mut kept = self.link.lock().await;
+        if kept.is_none() {
+            *kept = Some(
+                self.dialer
+                    .link(tilo_server_client::link::Purpose::Actions)
+                    .await?,
+            );
+        }
+        Ok(())
+    }
+
     /// [`ask_ticket`] over the link kept here, dialling it first when there is none.
     ///
     /// # Errors
