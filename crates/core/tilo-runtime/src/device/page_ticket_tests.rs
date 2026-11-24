@@ -393,6 +393,7 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
         laptop_key,
         laptop_cert,
         login,
+        ..
     } = studio(&root, state.path()).await;
     let identity = tempfile::tempdir().unwrap();
     tilo_identity::provisioning::import_single_device_root(

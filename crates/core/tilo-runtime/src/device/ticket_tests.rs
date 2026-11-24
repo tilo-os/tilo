@@ -61,7 +61,7 @@ pub(super) async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
 
 /// The computer's login, naming `server`'s address: the device whose certificate is `laptop`, in
 /// `workspace`.
-fn login_to(
+pub(super) fn login_to(
     server: &tilo_server::daemon::Server,
     workspace: &str,
     (laptop_cert, server_cert): (&DeviceCert, &DeviceCert),
@@ -198,6 +198,9 @@ pub(super) struct Studio {
     pub(super) laptop_key: SigningKey,
     pub(super) laptop_cert: DeviceCert,
     pub(super) login: tilo_device_identity::login::Device,
+    /// The server's own key and certificate, to start it again in its place.
+    pub(super) server_key: SigningKey,
+    pub(super) server_cert: DeviceCert,
 }
 
 /// [`Studio`], for the person whose root is `root`, the server keeping its state in `state`.
@@ -208,7 +211,7 @@ pub(super) async fn studio(root: &SigningKey, state: &std::path::Path) -> Studio
         tilo_server::ServerConfig::loopback(state.join("server")),
         tilo_server::daemon::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: server_key,
+            device_signing_key: server_key.clone(),
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
@@ -233,6 +236,8 @@ pub(super) async fn studio(root: &SigningKey, state: &std::path::Path) -> Studio
         laptop_key,
         laptop_cert,
         login,
+        server_key,
+        server_cert,
     }
 }
 
@@ -251,6 +256,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
         laptop_key,
         laptop_cert,
         login: laptop_login,
+        ..
     } = studio(&root, state.path()).await;
     // The server keeps the person's own workspace too, where their list of workspaces is.
     let own = tilo_workspace_service::workspaces::person_workspace::found(&hosted)
@@ -458,6 +464,7 @@ async fn a_ticket_logged_in_device_lists_the_persons_workspaces_before_it_holds_
         laptop_key,
         laptop_cert,
         login: laptop_login,
+        ..
     } = studio(&root, state.path()).await;
     // The server keeps the person's own workspace too, where their list of workspaces is.
     let own = tilo_workspace_service::workspaces::person_workspace::found(&hosted)
