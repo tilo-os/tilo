@@ -359,7 +359,8 @@ is a grant on that item alone), hands the item only to a process of that app's
 own, sandboxed and placed by `work::takes_turn` on a device that may read it: its
 held connection, or engine work that needs the secret run as such a process. A
 process several apps share never receives a secret. The process's egress, fixed
-at its launch, is the hosts of the items it may release, and a new grant
+at its launch, is the network its package was granted, which may name every host
+under a domain when the person is shown that domain as such, and a new grant
 restarts it. Passwords an app keeps are vault items, never
 fields of its own records.
 The secret lives in that process's memory alone, never in a record, an argument,
