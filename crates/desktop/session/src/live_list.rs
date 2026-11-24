@@ -54,7 +54,7 @@ pub(crate) fn follow_daemon(
                 Ok(revision) if revision.is_some() && revision != after => after = revision,
                 Ok(_) => tokio::time::sleep(ASK_AGAIN).await,
                 Err(error) => {
-                    tracing::debug!(%error, "what is live in the workspaces did not read");
+                    tracing::warn!(%error, "what is live in the workspaces did not read; asking again");
                     after = None;
                     tokio::time::sleep(ASK_AGAIN).await;
                 }
@@ -573,12 +573,7 @@ fn along(at: f64, length: f64) -> (Option<f64>, String, String) {
 )]
 fn clock(seconds: f64) -> String {
     let whole = seconds.max(0.0).floor() as u64;
-    let (hours, minutes, seconds) = (whole / 3600, whole / 60 % 60, whole % 60);
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes}:{seconds:02}")
-    }
+    ui::format::timecode(whole)
 }
 
 /// The name a kind of activity goes by in the reading.

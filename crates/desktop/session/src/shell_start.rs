@@ -8,7 +8,6 @@
 
 use std::io::{BufRead, BufReader, Write as _};
 use std::os::fd::RawFd;
-use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
@@ -105,7 +104,7 @@ fn start_and_wait(args: &[String]) -> Result<ExitCode, String> {
     // does (`devices#found`).
     place.wait_for_native(SERVICE_START)?;
     let socket = place.native();
-    let stream = UnixStream::connect(&socket).map_err(|error| {
+    let stream = tilo_files::native::socket::connect(&socket).map_err(|error| {
         format!(
             "Tilo's service is not answering at {}: {error}",
             socket.display()

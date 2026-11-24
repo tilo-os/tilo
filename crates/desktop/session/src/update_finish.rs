@@ -282,7 +282,9 @@ fn followed(records: &DeviceRecords, name: &str) -> DeviceRecord {
     let record = records.record(name);
     record
         .follow(|_| {})
-        .inspect_err(|error| tracing::warn!(%error, record = name, "an update's record is not followed"))
+        .inspect_err(
+            |error| tracing::warn!(%error, record = name, "an update's record is not followed"),
+        )
         .unwrap_or(record)
 }
 
@@ -308,9 +310,14 @@ fn record_asked_at(asked: &DeviceRecord, now: SystemTime) {
 /// What the person was told of, as recorded in `heard` : the ids.
 fn heard_ids(heard: &DeviceRecord) -> Vec<String> {
     match heard.read() {
-        Ok(record) => record
-            .and_then(|record| serde_json::from_value(record).ok())
-            .unwrap_or_default(),
+        Ok(Some(record)) => match serde_json::from_value(record) {
+            Ok(ids) => ids,
+            Err(error) => {
+                tracing::warn!(%error, "the fallbacks the person was told about do not read back");
+                Vec::new()
+            }
+        },
+        Ok(None) => Vec::new(),
         Err(error) => {
             tracing::warn!(%error, "the fallbacks the person was told about do not read back");
             Vec::new()

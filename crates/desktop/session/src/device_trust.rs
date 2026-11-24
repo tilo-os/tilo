@@ -173,7 +173,7 @@ async fn follow(
                 }
             }
             Err(error) => {
-                tracing::debug!(%error, "the person's devices record did not read");
+                tracing::warn!(%error, "the person's devices record did not read; asking again");
                 cache.lock_recover().seen = None;
                 after = None;
                 tokio::time::sleep(ASK_AGAIN).await;
@@ -210,7 +210,11 @@ fn seen_of_readings(person: [u8; 32], readings: &Value) -> Option<DevicesSeen> {
             Some(seen_of_record(person, reader.state()))
         }
         Ok(DocumentRead::Absent) => Some(DevicesSeen::of_host(person, [], [])),
-        Ok(_) | Err(_) => None,
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(%error, "the person's devices record does not read");
+            None
+        }
     }
 }
 

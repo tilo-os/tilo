@@ -14,9 +14,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tilo_system_resources::windows_apps::{
-    Access, Appliance, AppliancePhase, AppStatus, Confidence, EndedProgram, License, PendingInstall,
-    PowerState, Route, SharedSession, Source, TemporaryConnection, WindowsApp, WindowsApps,
-    WindowsAppsAction,
+    Access, AppStatus, Appliance, AppliancePhase, Confidence, EndedProgram, License,
+    PendingInstall, PowerState, Route, SharedSession, Source, TemporaryConnection, WindowsApp,
+    WindowsApps, WindowsAppsAction,
 };
 
 use compat_service::RouteKind;
@@ -127,10 +127,9 @@ impl tilo_system_service::windows_apps::WindowsManager for SessionWindows {
             .applications
             .iter()
             .map(|application| {
-                let installation = list
-                    .installations
-                    .iter()
-                    .find(|item| application.capsule_id.as_deref() == Some(item.capsule_id.as_str()));
+                let installation = list.installations.iter().find(|item| {
+                    application.capsule_id.as_deref() == Some(item.capsule_id.as_str())
+                });
                 app_of(application, installation)
             })
             .collect();
@@ -172,8 +171,8 @@ impl tilo_system_service::windows_apps::WindowsManager for SessionWindows {
                 let Some(path) = path else {
                     return Err("choose an installer first".to_owned());
                 };
-                let source = File::open(path)
-                    .map_err(|error| format!("could not open {path}: {error}"))?;
+                let source =
+                    File::open(path).map_err(|error| format!("could not open {path}: {error}"))?;
                 let name = std::path::Path::new(path)
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -185,8 +184,8 @@ impl tilo_system_service::windows_apps::WindowsManager for SessionWindows {
                 let Some(path) = path else {
                     return Err("choose a Windows ISO first".to_owned());
                 };
-                let source = File::open(path)
-                    .map_err(|error| format!("could not open {path}: {error}"))?;
+                let source =
+                    File::open(path).map_err(|error| format!("could not open {path}: {error}"))?;
                 self.appliance.import_iso(source)
             }
             WindowsAppsAction::Recovery => self.appliance.recovery(),
@@ -224,8 +223,12 @@ impl tilo_system_service::windows_apps::WindowsManager for SessionWindows {
             WindowsAppsAction::EscalateInstall { capsule } => {
                 self.manager()?.escalate(workspace, capsule)
             }
-            WindowsAppsAction::RemoveLauncher { program } => self.manager()?.remove_launcher(program),
-            WindowsAppsAction::Uninstall { program } => self.manager()?.uninstall(workspace, program),
+            WindowsAppsAction::RemoveLauncher { program } => {
+                self.manager()?.remove_launcher(program)
+            }
+            WindowsAppsAction::Uninstall { program } => {
+                self.manager()?.uninstall(workspace, program)
+            }
             WindowsAppsAction::DeleteData { capsule } => self.manager()?.delete_data(capsule),
             WindowsAppsAction::SetRoute { program, route } => self.manager()?.set_route(
                 workspace,
@@ -242,9 +245,9 @@ impl tilo_system_service::windows_apps::WindowsManager for SessionWindows {
 
 impl SessionWindows {
     fn manager(&self) -> Result<Arc<dyn compat_service::SessionManager>, String> {
-        self.manager
-            .get()
-            .ok_or_else(|| "This computer's Windows compatibility service is not running.".to_owned())
+        self.manager.get().ok_or_else(|| {
+            "This computer's Windows compatibility service is not running.".to_owned()
+        })
     }
 }
 
@@ -257,8 +260,7 @@ fn app_of(
     let route = route_of(explanation.route);
     let recommended_route = route_of(application.recommended_route);
     let launch_available = route != Route::Vm || application.vm_launch_available;
-    let portal_file_open_available =
-        application.portal_file_open_available && launch_available;
+    let portal_file_open_available = application.portal_file_open_available && launch_available;
     WindowsApp {
         id: application.id.clone(),
         name: application.display_name.clone(),
@@ -284,9 +286,8 @@ fn app_of(
         },
         confidence: match explanation.match_reason {
             compat_service::MatchReason::DefaultWine => Confidence::Fallback,
-            compat_service::MatchReason::Executable | compat_service::MatchReason::ProductPublisher => {
-                Confidence::Heuristic
-            }
+            compat_service::MatchReason::Executable
+            | compat_service::MatchReason::ProductPublisher => Confidence::Heuristic,
             _ => Confidence::Verified,
         },
         reason: explanation.summary.clone(),
@@ -323,7 +324,7 @@ fn app_of(
         can_remove_launcher: application.remove_launcher_available.into(),
         can_vendor_uninstall: (application.vendor_uninstall_available
             || installation.is_some_and(|item| item.can_vendor_uninstall))
-            .into(),
+        .into(),
         can_delete_data: installation.is_some_and(|item| item.can_delete_data).into(),
         can_publish_vm_candidate: false.into(),
         installation: installation.map(|item| item.detail.clone()),
@@ -350,9 +351,7 @@ fn app_of_installation(installation: &compat_service::ManagedInstallation) -> Wi
         access: Access::default(),
         fallback_detail: installation.detail.clone(),
         launch_available: false.into(),
-        launch_unavailable_reason: Some(
-            "This setup hasn't added an app to open yet.".to_owned(),
-        ),
+        launch_unavailable_reason: Some("This setup hasn't added an app to open yet.".to_owned()),
         portal_file_open_available: false.into(),
         portal_file_open_unavailable_reason: Some(
             "This setup hasn't added an app to open yet.".to_owned(),
@@ -402,9 +401,7 @@ fn app_of_candidate(candidate: &compat_service::VmInstallCandidate) -> WindowsAp
         launch_available: false.into(),
         launch_unavailable_reason: Some("Add this app to Windows Apps first.".to_owned()),
         portal_file_open_available: false.into(),
-        portal_file_open_unavailable_reason: Some(
-            "Add this app to Windows Apps first.".to_owned(),
-        ),
+        portal_file_open_unavailable_reason: Some("Add this app to Windows Apps first.".to_owned()),
         route_override_available: false.into(),
         route_override_unavailable_reason: None,
         can_retry_install: false.into(),
@@ -422,14 +419,12 @@ fn app_of_candidate(candidate: &compat_service::VmInstallCandidate) -> WindowsAp
 /// Only a setup that did not finish needs the appliance: an installed one offers nothing to
 /// continue there.
 fn escalates_to_vm(installation: &compat_service::ManagedInstallation) -> bool {
-    matches!(
-        installation.route,
-        RouteKind::Wine | RouteKind::Proton
-    ) && matches!(
-        installation.status,
-        compat_service::InstallationStatus::NeedsAttention
-            | compat_service::InstallationStatus::Failed
-    )
+    matches!(installation.route, RouteKind::Wine | RouteKind::Proton)
+        && matches!(
+            installation.status,
+            compat_service::InstallationStatus::NeedsAttention
+                | compat_service::InstallationStatus::Failed
+        )
 }
 
 fn status_of(status: compat_service::InstallationStatus) -> AppStatus {
@@ -464,7 +459,7 @@ impl ApplianceOwner {
         if let Some(wake) = wake {
             // The owner leaves its status in a file; reading it again needs no command. This
             // wakes the session's loop so a reading that moved is sent to the apps watching it.
-            std::thread::Builder::new()
+            if let Err(error) = std::thread::Builder::new()
                 .name("tilo-windows-status".to_owned())
                 .spawn(move || {
                     loop {
@@ -472,7 +467,9 @@ impl ApplianceOwner {
                         wake();
                     }
                 })
-                .ok();
+            {
+                tracing::warn!(%error, "the thread that wakes the session as the owner's status moves does not start; the page reads it on each request instead");
+            }
         }
         owner
     }
@@ -482,10 +479,7 @@ impl ApplianceOwner {
             .status
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if status
-            .0
-            .is_none_or(|at| at.elapsed() >= STATUS_FRESH)
-        {
+        if status.0.is_none_or(|at| at.elapsed() >= STATUS_FRESH) {
             status.1 = read_status();
             status.0 = Some(Instant::now());
         }
@@ -572,7 +566,8 @@ fn command_with_stdin(mut command: Command, source: File) -> Result<(), String> 
 
 /// The cell's value, whatever a panicking caller left behind.
 fn lock<T>(cell: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    cell.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Seconds since the Unix epoch, as the clock reads it.
@@ -652,4 +647,3 @@ fn read_status() -> Appliance {
             .map(str::to_owned),
     }
 }
-
