@@ -145,7 +145,14 @@ pub(super) fn launch(
             .as_deref()
             .unwrap_or(&app.payload_root)
             .join(executable),
-        args: open.map(str::to_owned).into_iter().collect(),
+        // The script the runtime's binary runs comes first, from the payload, then what to open.
+        args: manifest
+            .entrypoint
+            .script
+            .iter()
+            .map(|script| app.payload_root.join(script).display().to_string())
+            .chain(open.map(str::to_owned))
+            .collect(),
         payload_dir: app.payload_root.clone(),
         runtime_dir: runtime,
         container_dir: container,

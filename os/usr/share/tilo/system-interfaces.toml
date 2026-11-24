@@ -48,6 +48,7 @@ services = [
     "identity",
     "model-gateway",
     "models",
+    "native",
     "tilo-fs",
     "tools",
     "ush",

@@ -92,6 +92,7 @@ pub fn desktop_manifest(
             .as_ref()
             .map_or(100, |entry| entry.splash_budget_ms),
         runtime: None,
+        script: None,
         origins: Vec::new(),
         connection: authored
             .entrypoint

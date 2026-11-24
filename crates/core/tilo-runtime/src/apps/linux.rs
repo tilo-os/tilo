@@ -181,8 +181,8 @@ fn wayland_socket() -> Result<PathBuf, String> {
 }
 
 /// Prepare `<root>/run/tilo/services` with the profile's collaboration and
-/// identity sockets under the names the launcher looks for; the runtime
-/// directory to hand it.
+/// identity sockets and the daemon's native endpoint under the names the
+/// launcher looks for; the runtime directory to hand it.
 fn service_directory(root: &Path, sockets: &Sockets) -> io::Result<PathBuf> {
     let runtime_dir = root.join(LAUNCH_RUNTIME_DIR);
     let services = runtime_dir.join("tilo/services");
@@ -192,6 +192,7 @@ fn service_directory(root: &Path, sockets: &Sockets) -> io::Result<PathBuf> {
     for (name, target) in [
         (launcher::services::COLLAB_SERVICE, &sockets.collab),
         (launcher::services::IDENTITY_SERVICE, &sockets.identity),
+        (launcher::services::NATIVE_SERVICE, &sockets.native),
     ] {
         let link = services.join(format!("{name}.sock"));
         if link.as_os_str().len() > MAX_SOCKET_PATH {
@@ -259,9 +260,11 @@ mod tests {
                 collab: root.join("collab.sock"),
                 identity: root.join("identity.sock"),
                 blobs: root.join("blobs.sock"),
+                native: root.join("native.sock"),
             };
             let _collab = std::os::unix::net::UnixListener::bind(&sockets.collab).unwrap();
             let _identity = std::os::unix::net::UnixListener::bind(&sockets.identity).unwrap();
+            let _native = std::os::unix::net::UnixListener::bind(&sockets.native).unwrap();
             let runtime_dir = service_directory(&root, &sockets).unwrap();
             assert_eq!(service_directory(&root, &sockets).unwrap(), runtime_dir);
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -272,6 +275,11 @@ mod tests {
             );
             std::os::unix::net::UnixStream::connect(launcher::services::collab_socket()).unwrap();
             std::os::unix::net::UnixStream::connect(launcher::services::identity_socket()).unwrap();
+            // The daemon's native endpoint, which the launcher connects for an app that names it.
+            std::os::unix::net::UnixStream::connect(launcher::services::socket_for(
+                launcher::services::NATIVE_SERVICE,
+            ))
+            .unwrap();
             let mode = std::fs::metadata(runtime_dir.join("tilo/services"))
                 .unwrap()
                 .permissions()

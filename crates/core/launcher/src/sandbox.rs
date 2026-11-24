@@ -962,6 +962,7 @@ mod tests {
                 gui_bin: None,
                 cli_bin: None,
                 runtime: None,
+                script: None,
                 origins: Vec::new(),
             },
             sandbox: crate::manifest::Sandbox {

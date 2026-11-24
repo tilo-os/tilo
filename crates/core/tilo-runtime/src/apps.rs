@@ -560,6 +560,7 @@ impl Apps {
                 collab: self.sockets.join(COLLAB_SOCKET),
                 identity: self.sockets.join(IDENTITY_SOCKET),
                 blobs: self.sockets.join(BLOB_SOCKET),
+                native: self.sockets.join(tilo_paths::machine::DAEMON_NATIVE),
             };
             let original = self.original_launch(&app)?;
             let child = linux::connector(
@@ -683,6 +684,7 @@ impl Apps {
             collab: self.sockets.join(COLLAB_SOCKET),
             identity: self.sockets.join(IDENTITY_SOCKET),
             blobs: self.sockets.join(BLOB_SOCKET),
+            native: self.sockets.join(tilo_paths::machine::DAEMON_NATIVE),
         };
         #[cfg(target_os = "linux")]
         let original = self.original_launch(&app)?;
@@ -1017,6 +1019,8 @@ struct Sockets {
     collab: PathBuf,
     identity: PathBuf,
     blobs: PathBuf,
+    /// The daemon's native endpoint, which an app's process calls actions on as that app.
+    native: PathBuf,
 }
 
 /// One launched app: the process the runtime started, which is the one the

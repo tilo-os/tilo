@@ -102,6 +102,7 @@ roots = ["Manifest", "Header", "SignedRegistrySnapshot", "CompactRegistrySnapsho
 "Entrypoint.gui-bin" = "Option<PathBuf> optional"
 "Entrypoint.origins" = "Vec<String> optional"
 "Entrypoint.runtime" = "Option<String> optional"
+"Entrypoint.script" = "Option<PathBuf> optional"
 "Entrypoint.splash-budget" = "u32 optional"
 "Entrypoint.splash-segments" = "Vec<SplashSegment> optional"
 "Entrypoint.type" = "EntrypointType optional"

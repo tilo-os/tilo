@@ -174,6 +174,11 @@ pub(crate) const TABLE: &[Row] = &[
         owner: Owner::Session(Service::Accounts),
     },
     Row {
+        name: launcher::services::NATIVE_SERVICE,
+        reach: Reach::Launcher,
+        owner: Owner::Elsewhere("the device daemon (tilo-runtime)"),
+    },
+    Row {
         name: launcher::services::MESSAGING_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Elsewhere("tilo-messaging"),

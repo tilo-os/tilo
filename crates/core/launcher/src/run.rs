@@ -2532,7 +2532,39 @@ fn preflight_runtime_libraries(
         })
 }
 
+/// The entrypoint's arguments before any the launch adds: the script its runtime's binary runs
+/// (`[entrypoint] script`), where the sandbox mounts the package's payload.
+fn script_args(manifest: &ManifestView) -> Vec<String> {
+    manifest
+        .entrypoint
+        .script
+        .iter()
+        .map(|script| {
+            crate::sandbox::payload_mount_for(&manifest.package_id)
+                .join(script)
+                .display()
+                .to_string()
+        })
+        .collect()
+}
+
 fn build_initial_argv(
+    manifest: &ManifestView,
+    payload_root: &Path,
+    opts: &LaunchOptions,
+    runtime_arg: Option<(&Path, &str)>,
+    binds: &[crate::sandbox::ServiceBind],
+    dbus_plan: Option<&DBusBindPlan>,
+    capabilities: &CapabilityPlan,
+) -> Result<BuiltArgv, LaunchError> {
+    let (argv, setenv, tail) =
+        build_entry_argv(manifest, payload_root, opts, runtime_arg, binds, dbus_plan, capabilities)?;
+    let mut args = script_args(manifest);
+    args.extend(tail);
+    Ok((argv, setenv, args))
+}
+
+fn build_entry_argv(
     manifest: &ManifestView,
     payload_root: &Path,
     opts: &LaunchOptions,

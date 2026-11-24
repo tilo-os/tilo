@@ -81,6 +81,7 @@ pub fn manifest(package_id: &str, bin: &str, net: &str) -> ManifestView {
             gui_bin: None,
             cli_bin: None,
             runtime: None,
+            script: None,
             origins: Vec::new(),
         },
         sandbox: Sandbox {

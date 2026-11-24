@@ -19,6 +19,9 @@ mod egress_proxy;
 mod launcher_smoke;
 #[path = "sandbox_environment.rs"]
 mod sandbox_environment;
+#[cfg(target_os = "linux")]
+#[path = "script_entrypoint.rs"]
+mod script_entrypoint;
 #[path = "support.rs"]
 mod support;
 #[cfg(target_os = "linux")]

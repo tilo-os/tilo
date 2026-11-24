@@ -82,6 +82,8 @@ pub enum ManifestError {
     RuntimeKindHasRuntime,
     #[error("runtime entrypoint {0:?} must name a safe relative payload file")]
     RuntimeEntrypoint(String),
+    #[error("entrypoint.script {0:?} needs entrypoint.runtime, the runtime whose binary runs it")]
+    ScriptWithoutRuntime(String),
     #[error("only kind=runtime packages declare `package.provides`")]
     ProvidesOnNonRuntime,
     #[error(
@@ -597,7 +599,12 @@ fn validate_entrypoint_runtime(m: &Manifest) -> Result<(), ManifestError> {
         return Ok(());
     };
     let Some(runtime) = &entrypoint.runtime else {
-        return Ok(());
+        return match &entrypoint.script {
+            Some(script) => Err(ManifestError::ScriptWithoutRuntime(
+                script.display().to_string(),
+            )),
+            None => Ok(()),
+        };
     };
     if m.package.kind != Kind::App {
         return Err(ManifestError::EntrypointRuntimeOnNonApp);
@@ -615,6 +622,7 @@ fn validate_entrypoint_runtime(m: &Manifest) -> Result<(), ManifestError> {
         Some(&entrypoint.bin),
         entrypoint.gui_bin.as_ref(),
         entrypoint.cli_bin.as_ref(),
+        entrypoint.script.as_ref(),
     ]
     .into_iter()
     .flatten()
@@ -1579,6 +1587,7 @@ mode = "off"
                 splash_segments: Vec::new(),
                 splash_budget_ms: 400,
                 runtime: None,
+                script: None,
                 origins: Vec::new(),
                 connection: false,
                 window: crate::manifest::WindowKind::default(),

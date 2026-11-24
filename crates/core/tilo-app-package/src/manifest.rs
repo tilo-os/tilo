@@ -868,6 +868,12 @@ pub struct Entrypoint {
     /// other one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
+    /// The program the runtime's binary runs, a file of the package's own payload: a JavaScript
+    /// file for `bun`, a Python one for `python`. The launcher hands it to the binary as its first
+    /// argument, at the payload's place in the sandbox. Only for an entrypoint that names a
+    /// `runtime`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<PathBuf>,
     /// The outside services whose resources the app's types hold, by origin (`imap`): the
     /// system runs a connector process for each, in the app's sandbox, whether or not a window
     /// of the app is open. Only for an entrypoint that names a `runtime`.

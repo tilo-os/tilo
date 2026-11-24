@@ -209,6 +209,8 @@ pub struct Entrypoint {
     /// `r#type = "both"`.
     pub cli_bin: Option<String>,
     pub runtime: Option<String>,
+    /// The payload file the runtime's binary runs ([`crate::manifest::Entrypoint::script`]).
+    pub script: Option<String>,
     pub origins: Vec<String>,
 }
 
@@ -220,6 +222,7 @@ impl From<crate::manifest::Entrypoint> for Entrypoint {
             gui_bin: entrypoint.gui_bin.as_deref().map(path_string),
             cli_bin: entrypoint.cli_bin.as_deref().map(path_string),
             runtime: entrypoint.runtime,
+            script: entrypoint.script.as_deref().map(path_string),
             origins: entrypoint.origins,
         }
     }

@@ -23,6 +23,10 @@ pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 
 /// Manifest name of the CRDT fan-out service (`[sandbox.services] collab`).
 pub const COLLAB_SERVICE: &str = "collab";
+/// The daemon's native endpoint: action frames, one JSON line each. The launcher connects it from
+/// its own process before the sandbox starts, so the daemon reads the launch it recorded from the
+/// connection's peer and admits it as the app it started, in its workspace, and as nothing else.
+pub const NATIVE_SERVICE: &str = "native";
 pub const IDENTITY_SERVICE: &str = "identity";
 pub const SHELL_UI_SERVICE: &str = "shell-ui";
 /// Version of the launcher-written shell-UI authentication envelope.
@@ -76,6 +80,7 @@ const RENDER_CHILD_FD: i32 = 34;
 /// launch that fails.
 pub const HANDED_SERVICES: &[&str] = &[
     COLLAB_SERVICE,
+    NATIVE_SERVICE,
     IDENTITY_SERVICE,
     SHELL_UI_SERVICE,
     CHOOSER_SERVICE,
