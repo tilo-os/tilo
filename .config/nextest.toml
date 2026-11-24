@@ -245,12 +245,12 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-runtime) and binary(it) and test(app_views::)"
+filter = "package(tilo-runtime) and binary(it) and (test(app_views::) or test(keeping_pages::))"
 setup = "view-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-runtime) and binary(it) and test(app_views::)"
+filter = "package(tilo-runtime) and binary(it) and (test(app_views::) or test(keeping_pages::))"
 setup = "view-siblings"
 
 # The native NTFS images the helper's integration tests read are generated once
