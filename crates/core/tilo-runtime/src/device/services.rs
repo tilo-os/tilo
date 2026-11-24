@@ -1020,8 +1020,43 @@ impl Daemon {
         self: &Arc<Self>,
         workspace: &str,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
-        let caller = Caller::own_person(&self.actor).in_workspace(workspace);
+        let caller = self.connection_caller(Some(workspace));
         self.tree_in(workspace, caller)
+    }
+
+    /// The tree `workspace` reaches for a program of this device that acts as its person without
+    /// being a connection of theirs (a migration walking what their desktop kept), and the
+    /// caller it is there. Such a program is no connection's own answer to what a workspace asks
+    /// of the person: its calls ask.
+    ///
+    /// # Errors
+    /// The workspace cannot be admitted to now.
+    pub(crate) fn program_tree_in(
+        self: &Arc<Self>,
+        workspace: &str,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let caller = Caller::local_person(&self.actor).in_workspace(workspace);
+        self.tree_in(workspace, caller)
+    }
+
+    /// The caller a plain connection to this daemon's own socket is, in `workspace` (none: the
+    /// account's own list): the person, where the kernel said the peer is this device's own
+    /// account (the seats admit it before a connection reaches here) and this device is one of
+    /// theirs that reaches every workspace.
+    ///
+    /// A device this person's root confined to one record (a workspace's VM, a hosted browser's
+    /// environment) is that record's tenant, never the person's own connection: a same-account
+    /// peer there is no more their own act than a program is, so its calls ask.
+    fn connection_caller(&self, workspace: Option<&str>) -> Caller {
+        let person = if self.cert.capabilities.workspace.is_none() {
+            Caller::own_person(&self.actor)
+        } else {
+            Caller::local_person(&self.actor)
+        };
+        match workspace {
+            Some(workspace) => person.in_workspace(workspace),
+            None => person,
+        }
     }
 
     /// The tree a plain connection from the person's own account reaches in `workspace` (none:
@@ -1069,13 +1104,38 @@ impl Daemon {
         }
     }
 
+    /// The tree a program of this device reaches in `workspace` (none: the person's own list),
+    /// acting as the person but never as a plain connection's own act
+    /// ([`Self::program_tree_in`]).
+    ///
+    /// # Errors
+    /// The workspace cannot be admitted to now, or the account's list cannot be answered.
+    pub(crate) fn program_tree(
+        self: &Arc<Self>,
+        workspace: Option<&str>,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        match workspace {
+            Some(workspace) => self.program_tree_in(workspace),
+            None => self.account_tree_for(Caller::local_person(&self.actor)),
+        }
+    }
+
     /// The tree `account` reaches alone: the person's own list, and nothing of a workspace. It is
     /// never admitted into one: a device that holds none yet still lists them.
     fn account_tree(self: &Arc<Self>) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let caller = self.connection_caller(None);
+        self.account_tree_for(caller)
+    }
+
+    /// [`Self::account_tree`] for `caller`, whose calls the list answers as.
+    fn account_tree_for(
+        self: &Arc<Self>,
+        caller: Caller,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
         let api = self.api()?;
         let tree =
             block_on_owned(async move { api.account_tree().await }).map_err(io::Error::other)?;
-        Ok((tree, Caller::own_person(&self.actor)))
+        Ok((tree, caller))
     }
 
     /// The tree a connection reaches in the workspace it names: the person, admitted from who is

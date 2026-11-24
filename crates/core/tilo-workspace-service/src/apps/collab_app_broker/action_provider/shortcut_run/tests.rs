@@ -93,7 +93,9 @@ impl Fixture {
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity::sources::test_trust::install();
         tilo_identity::provisioning::ensure_collaboration_identity(
-            &tilo_identity::store::account_identity_dir(&scratch.path().join("config/tilo/identity")),
+            &tilo_identity::store::account_identity_dir(
+                &scratch.path().join("config/tilo/identity"),
+            ),
             &tilo_device_identity::IdentityPaths::under(scratch.path().join("identity")),
             tilo_identity::provisioning::IdentityStorage::Files,
         )
@@ -1122,6 +1124,111 @@ async fn a_step_the_grant_leaves_to_the_person_asks_before_the_run_starts() {
         asked.facts.facts
     );
     asked.ran_nothing();
+}
+
+/// One guarded shortcut, one call, four callers: the person's own connection to their device's
+/// daemon is their own act, so their call answers the ask and the run starts; a program of
+/// theirs on the device, a request another device forwarded for them, and an agent acting for
+/// them are each held as the ask, and nothing of the run starts.
+/// One action the workspace's grants leave to the person, answered once: the person's own
+/// connection to their device's daemon is their own act, so their call answers the ask; a
+/// program of theirs on the device, a call another device forwarded for them and an agent
+/// acting for them are each held as the ask.
+#[tokio::test(flavor = "current_thread")]
+async fn a_workspace_ask_is_held_only_for_anyone_but_the_persons_own_connection() {
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Role};
+
+    let person = hex::encode([0xaa; 32]);
+    let owner = hex::encode([0xbb; 32]);
+    let shortcut = guarded_shortcut();
+    let mut descriptor = crate::apps::automation::run_descriptor(&shortcut);
+    // What the run reaches outside: what an editor's workspace, and an agent's own delegation,
+    // leave to the person.
+    descriptor.contract.kind = tilo_actions::ActionKind::Outside;
+    let address = shortcut.action_address();
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(71), "Guarded");
+    workspace.policy.set_owner(owner.clone());
+    workspace.policy.add_member(person.clone(), Role::Editor);
+    // The workspace asks of the person before this run: an outside step of their shortcut.
+    workspace.policy.grant(Grant::new(
+        "fixture:the-run-asks",
+        Grantee::person(person.clone()),
+        tilo_actions::action_node(
+            &workspace.policy.node(),
+            tilo_automation::SHORTCUTS_APP_ID,
+            tilo_automation::SHORTCUT_RESOURCE_KIND,
+            &address.resource,
+            None,
+            &address.action,
+        ),
+        KindSet::ALL,
+        Answer::Ask,
+        Grantee::person(owner.clone()),
+    ));
+    // The agent acts for the person under its own delegation, and the person's grants reach it
+    // through theirs: an outside step of theirs asks it too.
+    workspace.policy.grant(Grant::new(
+        "fixture:scout-reads",
+        Grantee::agent("scout"),
+        workspace.policy.node(),
+        KindSet::READ,
+        Answer::Allow,
+        Grantee::person(owner.clone()),
+    ));
+    workspace.policy.grant(Grant::new(
+        "fixture:scout-asks",
+        Grantee::agent("scout"),
+        tilo_actions::action_node(
+            &workspace.policy.node(),
+            tilo_automation::SHORTCUTS_APP_ID,
+            tilo_automation::SHORTCUT_RESOURCE_KIND,
+            &address.resource,
+            None,
+            &address.action,
+        ),
+        KindSet::ALL,
+        Answer::Ask,
+        Grantee::person(owner),
+    ));
+    let (state, _bridge) = AppBrokerState::test_state(None, ProcessServices::default());
+    let now = tilo_clock::unix_now_ns() / 1_000_000_000;
+    let workspace_id = workspace.id().to_string();
+    let answer = |caller: &Caller| {
+        let actor = BrokerActor::for_caller(caller);
+        state.framework_policy(
+            (&workspace, &actor, now),
+            (tilo_automation::SHORTCUTS_APP_ID, &descriptor),
+            None,
+            false,
+            false,
+        )
+    };
+
+    let here = Caller::own_person(&person).in_workspace(&workspace_id);
+    let answered = answer(&here);
+    assert!(
+        answered.is_ok(),
+        "the person's own connection answers the ask with their call: {answered:?}"
+    );
+
+    let elsewhere = || Caller::local_person(person.clone()).in_workspace(&workspace_id);
+    for (how, caller) in [
+        ("a program of the person's", elsewhere()),
+        (
+            "a request another device forwarded for the person",
+            elsewhere().forwarded_by([9; 32]),
+        ),
+        (
+            "an agent acting for the person",
+            Caller::delegated_agent("scout", [0xaa; 32], [8; 32]).in_workspace(&workspace_id),
+        ),
+    ] {
+        let refused = answer(&caller);
+        assert!(
+            matches!(refused, Err(ActionCallError::ConfirmationRequired(_))),
+            "{how} is held as the ask: {refused:?}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

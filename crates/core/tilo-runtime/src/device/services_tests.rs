@@ -1590,6 +1590,10 @@ fn a_plain_connection_is_the_person_the_daemon_serves() {
         "a plain connection needs no certificate: {:?}",
         caller.certified(&workspace)
     );
+    assert!(
+        caller.is_own_connection(),
+        "the person's own connection answers what the workspace asks of them: {caller:?}"
+    );
 
     // Only a connection the daemon admitted as the person gets this far: a caller that only
     // claims to be an agent for the person, on the person's device key, is named by no session
@@ -1616,6 +1620,60 @@ fn a_plain_connection_is_the_person_the_daemon_serves() {
         MemberAccess::person(policy, person.as_str()).answer(&rename, kind, &cx),
         Answer::Allow,
         "the person the account is may rename their workspace"
+    );
+}
+
+const CONFINED_CONNECTION_TEST: &str =
+    "device::services::tests::a_confined_daemons_connection_is_no_person";
+
+/// A device the person's root confined to one record (a workspace's VM, a hosted browser's
+/// environment) is that record's tenant, never the person's own connection: a connection from
+/// the same account, which the kernel says is theirs, is no more their own act there than a
+/// program is, so what a workspace asks of them is put to them rather than answered by the call.
+#[test]
+fn a_confined_daemons_connection_is_no_person() {
+    let Some(root) = isolated_root(CONFINED_CONNECTION_TEST) else {
+        return;
+    };
+    // The identity this account founded, whose root signs the confined certificate, and the
+    // device key this computer holds.
+    let dir = super::this_accounts_root_dir().unwrap();
+    let record = tilo_identity::store::resolve_active_identity(&dir).unwrap();
+    let identity = tilo_identity::store::load_from_path(record).unwrap();
+    let keys = tilo_api::calls::device_keys();
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let now = tilo_clock::unix_now_ns();
+    let mut confined = tilo_user_identity::DeviceCert {
+        user_public_key: identity.group_public_key(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "Confined".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::workspace_device(
+            *uuid::Uuid::new_v4().as_bytes(),
+        ),
+        issued_at_ns: now.saturating_sub(60_000_000_000),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut confined, &identity).unwrap();
+    let place = tilo_device_identity::login::Place::here(keys).unwrap();
+    tilo_device_identity::login::file_certificate(&place, &confined).unwrap();
+    tilo_api::daemon::enter::adopt(&place, &confined).unwrap();
+
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    assert_eq!(
+        daemon.cert.capabilities.workspace, confined.capabilities.workspace,
+        "this daemon is its record's tenant"
+    );
+    let (_, caller) = daemon.connection_tree_in(None).unwrap();
+    assert!(
+        !caller.is_own_connection(),
+        "the same account's connection is no person's own act here: {caller:?}"
+    );
+    assert_eq!(
+        caller.acting().person_id(),
+        Some(hex::encode(confined.user_public_key).as_str()),
+        "it still acts for the person it is the tenant of"
     );
 }
 

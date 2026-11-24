@@ -1089,7 +1089,9 @@ pub(crate) fn agents_endpoint(
         media: daemon.media(),
         other_devices: daemon.other_devices(),
         agents: Some(agents),
-        frames: Frames::of_the_person(daemon),
+        // An agent's connection is its own run, never the person's own act: an action frame it
+        // sends acts as its person and what a workspace asks of them is put to them.
+        frames: Frames::of_a_persons_program(daemon),
         to_agents: None,
     }
 }
