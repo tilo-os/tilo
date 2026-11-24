@@ -753,7 +753,12 @@ for attempt in $(seq 1 60); do
   fi
   sleep 5
 done
-[ "$oobe_started" -eq 1 ] || die "first installed boot did not reach direct OOBE"
+if [ "$oobe_started" -ne 1 ]; then
+  # What the installed system showed instead: the last screen and its words.
+  [ ! -f "$run/target-observe.png" ] || cp -f "$run/target-observe.png" "$out/07-first-boot-timeout.png"
+  [ ! -f "$out/target-observe.txt" ] || cp -f "$out/target-observe.txt" "$out/07-first-boot-timeout.txt"
+  die "first installed boot did not reach direct OOBE"
+fi
 wait_screen 08-oobe-intro 'Create[[:space:]]+your[[:space:]]+local' 10 1 \
   || die "first installed boot did not preserve the OOBE introduction"
 
