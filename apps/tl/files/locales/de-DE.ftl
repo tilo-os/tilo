@@ -730,31 +730,18 @@ d-3ebinaph = Verschieben
 
 d-wwz64bpe-filter-moving = Verschieben
 
-d-ipsiyxex = Gestartete Übertragung
-    .doc = Der Auftrag, den das Gerät gestartet hat.
-    .noun = { $count ->
-        [one] gestartete Übertragung
-       *[other] gestartete Übertragungen
-    }
-
-d-l4hyxvom = Auftrag
-
 d-gwl4xhmy = Übertragungsstand
-    .doc = Wie eine Übertragung steht, wie das Gerät sie meldet.
+    .doc = Wie weit eine Übertragung ist, wie das Gerät sie festhält.
     .noun = { $count ->
         [one] Übertragungsstand
        *[other] Übertragungsstände
     }
-
-d-cjszmwp5 = Zustand
 
 d-xy4h2hjf = Erledigt
 
 d-xqn7tfzw = Gesamt
 
 d-mfmf4wlj = Aktuell
-
-d-xxm5zyoq = Fehler
 
 d-gwl4xhmy-filter-done = Erledigt
 
@@ -763,8 +750,21 @@ d-gwl4xhmy-filter-total = Gesamt
 d-3jhnrnyu = Übertragungen
     .doc = Die Kopien und Verschiebungen, die von diesem Fenster aus laufen, und die, die vorzeitig aufhörten.
 
-d-bon3vr35 = Übertragungen abfragen
-    .doc = Fragt, wie weit jede laufende Übertragung ist.
+d-ub75cc7h = Übertragung ist vorangekommen
+    .doc = Wie weit die Übertragung `t` ist, wie das Gerät jeden Schritt festhält.
+
+d-ub75cc7h-t = Übertragung
+
+d-ub75cc7h-j = Auftrag
+
+d-zwuzfjsv = Übertragung ist zu Ende
+    .doc = Die Übertragung `t` ist zu Ende: eine fertige verlässt das Fenster und der Ordner wird neu gelesen; eine fehlgeschlagene bleibt und sagt warum, bis sie geschlossen wird.
+
+d-zwuzfjsv-f = Dateien
+
+d-zwuzfjsv-t = Übertragung
+
+d-zwuzfjsv-j = Auftrag
 
 d-ik5gn7tg = Übertragung anhalten
     .doc = Hält die Übertragung `transfer` an: der Eintrag, an dem sie war, wird entfernt, und was sie fertig hat, bleibt.

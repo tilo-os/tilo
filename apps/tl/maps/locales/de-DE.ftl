@@ -781,34 +781,6 @@ d-dpkpvjwm = Löschanfrage
 
 d-atq5mwsp = Kennung
 
-d-uhzshugn = Speicherstart
-    .doc = Was die Kachel-Engine antwortet, wenn der Download eines Bereichs beginnt.
-    .noun = { $count ->
-        [one] Speicherstart
-       *[other] Speicherstarts
-    }
-
-d-kix2eeda = Auftrag
-
-d-j7jfssav = Speicherstand
-    .doc = Wie weit das Behalten eines Bereichs gekommen ist oder warum es endete, wie sein Auftrag sagt.
-    .noun = { $count ->
-        [one] Speicherstand
-       *[other] Speicherstände
-    }
-
-d-sbuvlugc = Zustand
-
-d-krb5phdh = Behalten
-
-d-j6wtgiqo = Gesamt
-
-d-nsfzbnns = Fehler
-
-d-j7jfssav-filter-saved = Behalten
-
-d-j7jfssav-filter-total = Gesamt
-
 d-dwnai5f7 = Maßstab
     .doc = Die Anzeige eines Entfernungsbalkens: wie weit er steht und wie viele logische Pixel er breit ist.
     .noun = { $count ->
@@ -848,7 +820,7 @@ d-l4j52bmq = Bereich gespeichert
 
 d-l4j52bmq-area = Bereich
 
-d-l4j52bmq-outcome = Ergebnis
+d-l4j52bmq-j = Auftrag
 
 d-oeeojlox = Karte
     .w-search-places = Search places

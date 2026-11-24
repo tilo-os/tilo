@@ -88,8 +88,6 @@ d-e57w5mgi-filter-elapsed_ms = Dauer in ms
 
 d-bpgwkoxz = Ergebnis
 
-d-gacluwxm = Fehler
-
 d-yheverkf = Verbindung
 
 d-42j5lhrh-filter-connection = Verbindung
@@ -376,9 +374,6 @@ d-dvf3rvyn = Fortschritt
         [one] Fortschritt
        *[other] Fortschritte
     }
-
-d-dday2ali = Zustand
-    .doc = `running`, `done`, `failed`, `cancelled` oder `unknown` für einen Auftrag, den dieses Gerät nicht ausführt.
 
 d-42j5lhrh = Geöffnet
     .doc = Was eine Verbindung beim Öffnen geantwortet hat: die Kennung, die die Engine dieses Geräts ihr gibt.
