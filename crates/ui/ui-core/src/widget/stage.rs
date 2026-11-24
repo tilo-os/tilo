@@ -595,18 +595,42 @@ impl Stage {
                 let Some(place) = places.get(index) else {
                     continue;
                 };
-                let size = cx
+                // Words that wrap to more lines than the place was given grow it: the place is
+                // laid out at the height its view asks for, never less than the height the
+                // element keeps on the slide. Anything that fits stands at its stored height, as
+                // it stands on the page.
+                let natural = cx
                     .measure_child(
+                        index,
+                        Size {
+                            width: MeasureConstraint::Exact(f32_of(place.w)),
+                            height: MeasureConstraint::Intrinsic,
+                        },
+                    )?
+                    .size;
+                let wants = f64::from(natural.height);
+                let height = if wants > place.h + 0.5 {
+                    cx.measure_child(
+                        index,
+                        Size {
+                            width: MeasureConstraint::Exact(f32_of(place.w)),
+                            height: MeasureConstraint::Exact(f32_of(wants)),
+                        },
+                    )?;
+                    wants
+                } else {
+                    cx.measure_child(
                         index,
                         Size {
                             width: MeasureConstraint::Exact(f32_of(place.w)),
                             height: MeasureConstraint::Exact(f32_of(place.h)),
                         },
-                    )?
-                    .size;
+                    )?;
+                    place.h
+                };
                 let rect = Rect::from_origin_size(
                     (place.x, place.y),
-                    (place.w, place.h.max(f64::from(size.height)).max(LEAST_SIDE)),
+                    (place.w, height.max(LEAST_SIDE)),
                 );
                 cx.place(index, rect)?;
                 out.push(rect);
@@ -696,13 +720,6 @@ impl Stage {
         )]
         let (x, y) = (at.x.round() as i64, at.y.round() as i64);
         Value::List(vec![Value::Int(x), Value::Int(y)])
-    }
-
-    /// Whether the place at `index` offers a context menu.
-    fn offers_menu(&self, index: usize) -> bool {
-        self.pins.get(index).is_some_and(|(key, _, _)| {
-            self.menus.get(key).is_some_and(|parts| !parts.is_empty())
-        })
     }
 
     /// Open the menu the place at `index` offers, built anew from what the view placed there,

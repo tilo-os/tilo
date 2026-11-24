@@ -498,3 +498,67 @@ fn a_finger_held_on_a_place_opens_its_menu() {
         "a held finger is the right press that opens the place's menu"
     );
 }
+
+// USER REQUIREMENT: words that wrap inside a text box grow the box: a slide's text is never
+// cut off because the element's stored height was measured for fewer words.
+#[test]
+fn a_box_grows_to_hold_the_words_that_wrap_past_it() {
+    let stage = Stage::from_props(
+        "stage",
+        StageProps {
+            canvas: vec![1280, 720],
+            pins: vec![StagePinProps {
+                key: "pin-0".into(),
+                item: Some("box-0".into()),
+                x: Some(96),
+                y: Some(90),
+                width: Some(200),
+                height: Some(40),
+                moves: true,
+                body: vec![Box::new(crate::widget::Text::new(
+                    "A sentence long enough to wrap onto several lines inside a box two \
+                     hundred points wide, which its stored height never made room for.",
+                ))],
+                ..StagePinProps::default()
+            }],
+            ..StageProps::default()
+        },
+    );
+    let mut host = FrameHarness::new(crate::State::new(), Box::new(stage), (800, 600));
+    let laid = shown(&mut host).laid.borrow();
+    let height = laid.first().expect("the place is laid out").height();
+    assert!(
+        height > 40.0,
+        "the place grows to its words rather than cutting them: {height}"
+    );
+}
+
+// A place whose view fits its stored height stands at exactly that height.
+#[test]
+fn a_box_whose_words_fit_stands_at_its_stored_height() {
+    let stage = Stage::from_props(
+        "stage",
+        StageProps {
+            canvas: vec![1280, 720],
+            pins: vec![StagePinProps {
+                key: "pin-0".into(),
+                item: Some("box-0".into()),
+                x: Some(96),
+                y: Some(90),
+                width: Some(400),
+                height: Some(120),
+                moves: true,
+                body: vec![Box::new(crate::widget::Text::new("Short"))],
+                ..StagePinProps::default()
+            }],
+            ..StageProps::default()
+        },
+    );
+    let mut host = FrameHarness::new(crate::State::new(), Box::new(stage), (800, 600));
+    let laid = shown(&mut host).laid.borrow();
+    let height = laid.first().expect("the place is laid out").height();
+    assert!(
+        (height - 120.0).abs() < 0.5,
+        "a place that fits stands where the element put it: {height}"
+    );
+}
