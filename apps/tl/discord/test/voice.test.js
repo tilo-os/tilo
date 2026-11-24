@@ -145,7 +145,7 @@ test("a call identifies, discovers its address, and seals both directions", asyn
   try {
     await until(() => fake.seen.some((frame) => frame.op === 1), "select protocol");
     const identify = fake.seen.find((frame) => frame.op === 0);
-    expect(identify.d.max_dave_protocol_version).toBe(0);
+    expect(identify.d.max_dave_protocol_version).toBe(1);
     expect(identify.d.channel_id).toBeUndefined();
     expect(identify.d.server_id).toBe("123");
     expect(identify.d.user_id).toBe("900");

@@ -7,12 +7,14 @@
 // time; what the workspace says reaches Discord as one Opus stream. The two never meet, so
 // nothing the Tilo call heard is sent back to Discord.
 //
-// Discord now closes a call that speaks no end-to-end encryption protocol with code 4017 unless
-// the channel allows transport-only media. This program offers `max_dave_protocol_version: 0`,
-// and a call Discord refuses for want of DAVE ends with that reason in the Discord record.
+// What a Discord user says reaches the workspace as their Opus frames, sealed with Discord's
+// end-to-end encryption (DAVE) once the call speaks it: the gateway's MLS group and the frame
+// transforms live in `dave.js`. Before the call's first transition, and when the gateway
+// selects protocol version 0, frames cross unsealed.
 
 import { createSocket } from "node:dgram";
 import { Cipher, Sender, chooseMode, open } from "./rtp.js";
+import { DAVE_VERSION, DaveSession } from "./dave.js";
 
 /// Opus silence, sent before a pause so receivers do not interpolate across it.
 export const SILENCE = Buffer.from([0xf8, 0xff, 0xfe]);
@@ -135,6 +137,21 @@ export class Voice {
     /// Opus frames the workspace said, waiting for their 20 ms.
     this.queue = [];
     this.attempt = 0;
+    this.dave = this.#makeDave();
+    /// The chain that keeps what this call hears in the order it arrived.
+    this.hearing = Promise.resolve();
+  }
+
+  /// The end-to-end encryption session of this call. A session that is resumed keeps the one
+  /// it had; identifying afresh builds a new one.
+  #makeDave() {
+    return new DaveSession({
+      userId: this.user,
+      channelId: this.channel,
+      send: (op, payload) => this.#sendDave(op, payload),
+      ready: (transitionId) => this.#send({ op: 23, d: { transition_id: transitionId } }),
+      log: this.log,
+    });
   }
 
   start() {
@@ -145,6 +162,8 @@ export class Voice {
   /// already a second deep is dropped, not queued: the outside call is live audio.
   say(opus) {
     if (this.closed || this.muted) return;
+    // A call that speaks DAVE has no clear media to send until its keys are in place.
+    if (this.dave.needsKeys()) return;
     if (this.queue.length > 50) return;
     this.queue.push(Buffer.from(opus));
   }
@@ -191,6 +210,18 @@ export class Voice {
     } catch {}
   }
 
+  /// One DAVE client frame: a binary opcode and payload, or the JSON a ready announcement is.
+  #sendDave(op, payload) {
+    const message = Buffer.isBuffer(payload) || payload instanceof Uint8Array
+      ? Buffer.concat([Buffer.from([op]), Buffer.from(payload)])
+      : payload;
+    try {
+      this.socket?.send(typeof message === "string" ? message : message);
+    } catch (error) {
+      this.log(`a DAVE message did not reach the voice server: ${error?.message ?? error}`);
+    }
+  }
+
   #open(resume) {
     if (this.closed) return;
     let socket;
@@ -223,7 +254,7 @@ export class Voice {
               user_id: this.user,
               session_id: this.session,
               token: this.token,
-              max_dave_protocol_version: 0,
+              max_dave_protocol_version: DAVE_VERSION,
             },
           };
       this.#send(opening);
@@ -257,6 +288,7 @@ export class Voice {
       this.joined = false;
       this.users.clear();
       this.sequenceAck = -1;
+      this.dave = this.#makeDave();
       try {
         this.udp?.close();
       } catch {}
@@ -277,7 +309,7 @@ export class Voice {
 
   #heard(raw) {
     if (typeof raw !== "string") {
-      // A DAVE opcode frame: protocol version 0 speaks none of them.
+      this.#inTurn(() => this.#binary(raw));
       return;
     }
     let message;
@@ -314,8 +346,89 @@ export class Voice {
         // Session described: live from here.
         this.#live();
         return;
+      case 21:
+        this.#inTurn(() =>
+          this.#action({ kind: "prepare-transition", version: data.protocol_version, transitionId: data.transition_id }),
+        );
+        return;
+      case 22:
+        this.#inTurn(() => this.#action({ kind: "execute-transition", transitionId: data.transition_id }));
+        return;
+      case 23:
+        return;
+      case 24:
+        this.#inTurn(() =>
+          this.#action({ kind: "prepare-epoch", version: data.protocol_version, epoch: data.epoch, transitionId: data.transition_id }),
+        );
+        return;
+      case 11:
+      case 13:
+        // Who the gateway says is connected; its add and remove proposals are what the group
+        // follows, so nothing here needs the list.
+        return;
       default:
         return;
+    }
+  }
+
+  /// Run `work` after everything this call already has in hand: frames, commits and the
+  /// transitions they belong to are one order. A failure is logged and does not break the
+  /// order for what follows.
+  #turned(work) {
+    this.hearing = this.hearing
+      .then(work, work)
+      .catch((error) => this.log(`the call's stream stalled: ${error?.message ?? error}`));
+    return this.hearing;
+  }
+
+  #inTurn(work) {
+    this.#turned(work);
+  }
+
+  /// A server binary frame: a two-byte sequence number, the opcode, then the DAVE payload.
+  async #binary(raw) {
+    const bytes = Buffer.from(raw instanceof ArrayBuffer ? new Uint8Array(raw) : raw);
+    if (bytes.length < 3) return;
+    const seq = bytes.readUInt16BE(0);
+    this.sequenceAck = Math.max(this.sequenceAck, seq);
+    const op = bytes[2];
+    const payload = bytes.subarray(3);
+    try {
+      if (op === 25) {
+        await this.dave.setExternalSender(payload);
+      } else if (op === 27) {
+        const committed = await this.dave.processProposals(payload);
+        if (committed) {
+          const welcome = committed.welcome ? [committed.welcome] : [];
+          this.#sendDave(28, Buffer.concat([committed.commit, ...welcome]));
+        }
+      } else if (op === 29) {
+        const transitionId = payload.readUInt16BE(0);
+        await this.dave.processCommit(transitionId, payload.subarray(2));
+      } else if (op === 30) {
+        const transitionId = payload.readUInt16BE(0);
+        await this.dave.processWelcome(transitionId, payload.subarray(2));
+      }
+    } catch (error) {
+      const reason = `${error?.message ?? error}`;
+      this.log(`the call's encryption could not follow Discord: ${reason}`);
+      await this.dave.recover(op === 29 || op === 30 ? payload.readUInt16BE(0) : undefined);
+    }
+  }
+
+  /// One of the session's own transitions.
+  async #action(action) {
+    try {
+      if (action.kind === "prepare-transition") {
+        await this.dave.prepareTransition(action);
+      } else if (action.kind === "execute-transition") {
+        await this.dave.executeTransition(action.transitionId);
+      } else if (action.kind === "prepare-epoch") {
+        await this.dave.prepareEpoch(action);
+      }
+    } catch (error) {
+      this.log(`the call's encryption could not follow Discord: ${error?.message ?? error}`);
+      await this.dave.recover(action.transitionId);
     }
   }
 
@@ -372,7 +485,8 @@ export class Voice {
     });
   }
 
-  /// Session Description: the key the call's media is sealed with.
+  /// Session Description: the key the call's media is sealed with, and the DAVE protocol
+  /// version the call speaks.
   async #description(data) {
     const mode = String(data.mode ?? "");
     if (mode !== this.mode) {
@@ -381,6 +495,7 @@ export class Voice {
     const key = Buffer.from(Array.isArray(data.secret_key) ? data.secret_key : []);
     this.cipher = new Cipher(mode, key);
     this.sender = new Sender(this.ssrc);
+    await this.#turned(() => this.dave.setVersion(Number(data.dave_protocol_version ?? 0)));
     this.#live();
   }
 
@@ -392,20 +507,25 @@ export class Voice {
     this.tick = setInterval(() => this.#tick(), FRAME_MS);
   }
 
-  /// One packet on the UDP socket: a Discord user's audio for the workspace.
+  /// One packet on the UDP socket: a Discord user's audio for the workspace, decrypted when
+  /// the call speaks DAVE. Frames run in the order they arrived, so a nonce is seen once.
   #packet(packet) {
     if (!this.cipher || this.muted) return;
     const received = open(this.cipher, packet);
     if (!received) return;
     const who = this.users.get(received.ssrc);
     if (!who) return;
-    if (received.frame.length === SILENCE.length && received.frame.equals(SILENCE)) return;
-    this.onAudio({ speaker: who, opus: received.frame });
+    this.#inTurn(async () => {
+      const opus = await this.dave.decrypt(who, received.frame);
+      if (!opus || opus.length === 0) return;
+      if (opus.length === SILENCE.length && opus.equals(Buffer.from(SILENCE))) return;
+      this.onAudio({ speaker: who, opus });
+    });
   }
 
   /// Send the next 20 ms of the workspace's call, or the silence that ends it, with the Speaking
   /// op ahead of the first packet and after the last.
-  #tick() {
+  async #tick() {
     if (this.muted) return;
     const frame = this.queue.shift() ?? null;
     if (frame) {
@@ -425,9 +545,10 @@ export class Voice {
     this.#send({ op: 5, d: { speaking: 0, delay: 0, ssrc: this.ssrc } });
   }
 
-  #packetOut(frame) {
+  async #packetOut(frame) {
     if (!this.cipher || !this.sender || !this.udp) return;
-    const packet = this.sender.packet(this.cipher, frame);
+    const sealed = await this.dave.encrypt(frame);
+    const packet = this.sender.packet(this.cipher, sealed);
     if (!packet) return;
     this.udp.send(packet, (error) => {
       if (error) this.log(`a voice packet did not reach the server: ${error.message}`);

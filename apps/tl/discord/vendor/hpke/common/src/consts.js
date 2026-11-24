@@ -1,0 +1,26 @@
+// The input length limit (psk, psk_id, info, exporter_context, ikm).
+export const INPUT_LENGTH_LIMIT = 8192;
+export const INFO_LENGTH_LIMIT = 65536;
+// The minimum length of a PSK.
+export const MINIMUM_PSK_LENGTH = 32;
+// b""
+export const EMPTY = /* @__PURE__ */ new Uint8Array(0);
+// Common BigInt constants
+export const N_0 = 0n;
+export const N_1 = 1n;
+export const N_2 = 2n;
+export const N_7 = 7n;
+export const N_32 = 32n;
+export const N_256 = 256n;
+export const N_0x71 = 0x71n;
+export const BYTE_TO_BIGINT_256 = /* @__PURE__ */ (() => {
+    const out = new Array(256);
+    let i = 0;
+    let value = 0n;
+    while (i < 256) {
+        out[i] = value;
+        i++;
+        value += 1n;
+    }
+    return out;
+})();
