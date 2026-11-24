@@ -130,7 +130,7 @@ impl Layout {
     pub fn from_str(s: &str) -> Self {
         match s {
             "title" => Self::Title,
-            "two-column" | "two_column" => Self::TwoColumn,
+            "two_column" => Self::TwoColumn,
             "section" => Self::Section,
             "blank" => Self::Blank,
             _ => Self::TitleContent,
@@ -141,8 +141,8 @@ impl Layout {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Title => "title",
-            Self::TitleContent => "title-content",
-            Self::TwoColumn => "two-column",
+            Self::TitleContent => "title_content",
+            Self::TwoColumn => "two_column",
             Self::Section => "section",
             Self::Blank => "blank",
         }

@@ -710,7 +710,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
             b"draw:page" => {
                 let id = attr(&e, b"draw:name").unwrap_or_else(crate::model::new_id);
                 let layout = Layout::from_str(
-                    &attr(&e, b"qslides:layout").unwrap_or_else(|| "title-content".into()),
+                    &attr(&e, b"qslides:layout").unwrap_or_else(|| "title_content".into()),
                 );
                 let background = Background::from_str(
                     &attr(&e, b"qslides:background").unwrap_or_else(|| "surface".into()),

@@ -208,7 +208,8 @@ primary action add_slide(
     layout: Layout = .title_content,
     after: Option<Slide> = .none,
 ) -> Slide (icon: .plus, label: "Add slide") {
-    add_authored_slide(d, title, body, .some(layout), .none, layout, after)
+    let made = add_authored_slide(d, title, body, .some(layout), .none, layout, after)
+    return made
 }
 
 /// Adds a slide from the template its layout names, and answers it.
@@ -435,7 +436,7 @@ action add_element(
     require kind == .image or (src ?? "") == "" "Only a picture takes a source"
     require kind == .text or (text ?? RichText("")).is_empty() "Only text takes words"
     require kind != .image or (src ?? "") != "" "A picture needs its source"
-    s.elements.insert(
+    let made = s.elements.insert(
         Element(
             kind: kind,
             x: x,
@@ -463,6 +464,7 @@ action add_element(
                 ?? if kind == .rect { 16.0 } else if kind == .image { 12.0 } else { 0.0 },
         ),
     )
+    return made
 }
 
 /// Inserts an element given whole, as the JSON another deck copied: a paste from anywhere.
@@ -1020,8 +1022,8 @@ fn element_label(e: Element) -> Text {
 fn layout_code(l: Layout) -> Text {
     match l {
         .title => "title",
-        .title_content => "title-content",
-        .two_column => "two-column",
+        .title_content => "title_content",
+        .two_column => "two_column",
         .section => "section",
         .blank => "blank",
     }
@@ -1030,7 +1032,7 @@ fn layout_code(l: Layout) -> Text {
 fn layout_of(code: Text) -> Layout {
     if code == "title" {
         .title
-    } else if code == "two-column" or code == "two_column" {
+    } else if code == "two_column" {
         .two_column
     } else if code == "section" {
         .section
