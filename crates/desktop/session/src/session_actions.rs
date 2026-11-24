@@ -364,9 +364,9 @@ impl SessionActions {
 mod tests {
     use std::time::Duration;
 
-    use tilo_actions::remote::{
-        ActionCallError, ActionProvider as _, Caller, PendingPoll, ReceiptStatus,
-    };
+    use tilo_actions::remote::{ActionCallError, Caller, PendingPoll};
+    #[cfg(target_os = "linux")]
+    use tilo_actions::remote::{ActionProvider as _, ReceiptStatus};
 
     /// The device's daemon, started over a profile of the test's own, and the session running in
     /// this process as its shell on the link the daemon made
@@ -420,8 +420,8 @@ mod tests {
         }
     }
 
-    /// A headless session serving the session's own actions on the device's daemon: the catalogue
-    /// every caller of the desktop is offered.
+    /// A headless session serving the session's own actions on the device's daemon, with a
+    /// workspace in front: where the daemon is asked for the session's own steps.
     #[cfg(target_os = "linux")]
     fn serving(
         state: &std::path::Path,

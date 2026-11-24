@@ -1071,6 +1071,7 @@ fn provisioned_identity(
 
 /// A directory for the session's app wire that only this user reaches: it refuses to serve one
 /// anybody else could open.
+#[cfg(target_os = "linux")]
 fn private_directory() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt as _;
     let root = tempfile::tempdir().expect("a directory to serve the actions in");
@@ -1293,6 +1294,7 @@ fn change_people(session: &Served, workspace_id: WorkspaceId, change: &Change) {
 }
 
 /// Run frames until the session shows `person` in `expected` 's part of the workspace.
+#[cfg(target_os = "linux")]
 #[track_caller]
 fn the_shell_shows(session: &mut crate::Session, person: &str, expected: Option<Role>) {
     let deadline = tilo_test_env::hang_deadline();
