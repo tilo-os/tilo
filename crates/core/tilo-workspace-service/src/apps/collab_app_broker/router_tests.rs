@@ -526,3 +526,46 @@ async fn a_shell_without_its_daemon_refuses_an_apps_join_saying_why() {
         Ok(Reply::Opened(_))
     ));
 }
+
+/// A resource the device's services publish is answered on the person's shell link alone: a
+/// connection that speaks no shell (an app's own at the daemon) is refused it, whichever app the
+/// frame names.
+#[tokio::test(flavor = "current_thread")]
+async fn an_apps_connection_is_refused_the_persons_shell() {
+    use tilo_actions::remote::{
+        ActionAddress, InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage,
+    };
+    let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: "record:so.tilo.settings:device:server".to_owned(),
+            address: ActionAddress::new("device:server", "set-work"),
+        },
+        argument: InvokeArgument::Json(serde_json::Map::from_iter([(
+            "work".to_owned(),
+            serde_json::Value::from("anyone"),
+        )])),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }))
+    .encode()
+    .unwrap();
+    let refused = super::shell::answer(
+        None,
+        runtime_collab::wire::shell::ShellCall::Action {
+            workspace: None,
+            frame,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused.contains("not the person's shell"),
+        "an app's connection speaks no shell: {refused}"
+    );
+}

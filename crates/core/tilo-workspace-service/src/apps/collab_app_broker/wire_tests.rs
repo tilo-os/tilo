@@ -8,6 +8,7 @@ use crate::apps::collab_outbound::recording::{RecordingSink, Sent};
 use crate::apps::test_support::WorkspaceTree;
 use collab_types::{PeerPresence, PeerPresencePayload, sign_op};
 use ed25519_dalek::SigningKey;
+use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
 struct Workspace {
@@ -1009,6 +1010,175 @@ async fn a_shown_action_is_decided_by_the_workspace_holding_it_and_again_when_it
                 endpoint.frame().await,
                 decided([ActionVerdict::Allowed, not_held, ActionVerdict::Allowed]),
                 "the holding workspace's change reaches the window while it shows the record"
+            );
+        })
+        .await;
+}
+
+/// What the device's own services publish (`device:server`), as the shell link reads it: a
+/// reading and an action only for the Settings app, and a count of what asked it.
+#[derive(Default)]
+struct DeviceServer {
+    readings: std::sync::atomic::AtomicUsize,
+    actions: std::sync::atomic::AtomicUsize,
+}
+
+impl crate::apps::services::PublishedResources for DeviceServer {
+    fn snapshot(
+        &self,
+        caller: &crate::apps::services::Caller,
+        resource: &str,
+    ) -> oneshot::Receiver<Result<crate::apps::services::Reading, String>> {
+        let (reply, answered) = oneshot::channel();
+        let answer = if resource != "device:server" {
+            Ok((0, None))
+        } else if caller.app_id == "so.tilo.settings" {
+            self.readings.fetch_add(1, Ordering::Relaxed);
+            Ok((1, Some(br#"{"work":{"from":"nobody"}}"#.to_vec())))
+        } else {
+            Err("this device's server settings are Settings' to show".to_owned())
+        };
+        let _ = reply.send(answer);
+        answered
+    }
+
+    fn watch(
+        &self,
+        _: &crate::apps::services::Caller,
+        _: &str,
+        _: mpsc::UnboundedSender<runtime_collab::wire::Event>,
+    ) -> Result<crate::apps::services::ResourceWatch, String> {
+        Err("nothing watches the device's own resources here".to_owned())
+    }
+
+    fn unwatch(&self, _: crate::apps::services::ResourceWatch) {}
+
+    fn invoke(
+        &self,
+        caller: &crate::apps::services::Caller,
+        resource: &str,
+        _: &str,
+        _: Vec<u8>,
+    ) -> oneshot::Receiver<runtime_collab::wire::Receipt> {
+        let (reply, answered) = oneshot::channel();
+        let receipt = if resource == "device:server" && caller.app_id == "so.tilo.settings" {
+            self.actions.fetch_add(1, Ordering::Relaxed);
+            runtime_collab::wire::Receipt::Done(Vec::new())
+        } else {
+            runtime_collab::wire::Receipt::Refused {
+                code: "refused".to_owned(),
+                message: "this device's server settings are Settings' to show".to_owned(),
+            }
+        };
+        let _ = reply.send(receipt);
+        answered
+    }
+}
+
+/// An app's own connection names another app's id in a read and in an action: the device's own
+/// services publish `device:server`, and answer it only for Settings there. The app's connection
+/// is decided as the app it was admitted as, and the device's published resource is never asked.
+#[tokio::test(flavor = "current_thread")]
+async fn an_apps_own_connection_is_never_answered_as_another_app() {
+    use tilo_actions::remote::{
+        ActionAddress, InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage,
+        ResourceReadRequest,
+    };
+
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let device = Arc::new(DeviceServer::default());
+            let workspace = Workspace::serving(&[9], {
+                let device = Arc::clone(&device);
+                move |services| ProcessServices {
+                    published: Some(
+                        Arc::clone(&device) as Arc<dyn crate::apps::services::PublishedResources>
+                    ),
+                    ..services
+                }
+            });
+            let mut endpoint = workspace.endpoint(9);
+            let channel = endpoint.channel;
+
+            let read = RemoteActionMessage::ResourceRead {
+                correlation: 1,
+                on_behalf_of: None,
+                read: ResourceReadRequest {
+                    workspace: workspace.route.cluster_id.clone(),
+                    app: "so.tilo.settings".to_owned(),
+                    record: "device:server".to_owned(),
+                    joined: false,
+                    after: None,
+                    wait_ms: None,
+                    document: false,
+                    listing: false,
+                },
+            };
+            let answered = endpoint
+                .call(Operation::Command {
+                    channel,
+                    service: Service::RemoteAction,
+                    body: RemoteActionFrame::new(read).encode().unwrap(),
+                    on_behalf_of: Vec::new(),
+                })
+                .await;
+            if let Ok(Reply::Answer(bytes)) = answered
+                && let Ok(frame) = RemoteActionFrame::decode(&bytes)
+                && let RemoteActionMessage::ResourceReading { result, .. } = frame.message
+            {
+                assert!(
+                    result.is_err()
+                        || result
+                            .as_deref()
+                            .is_none_or(|reading| !reading.contains("nobody")),
+                    "an app's read names Settings, and is decided as the app: {result:?}"
+                );
+            }
+            assert_eq!(
+                device.readings.load(Ordering::Relaxed),
+                0,
+                "the device's published reading answers no app's connection on its own"
+            );
+
+            let invoke = RemoteActionMessage::Invoke(InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: "record:so.tilo.settings:device:server".to_owned(),
+                    address: ActionAddress::new("device:server", "set-work"),
+                },
+                argument: InvokeArgument::Json(serde_json::Map::from_iter([(
+                    "work".to_owned(),
+                    serde_json::Value::from("anyone"),
+                )])),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            });
+            let answered = endpoint
+                .call(Operation::Command {
+                    channel,
+                    service: Service::RemoteAction,
+                    body: RemoteActionFrame::new(invoke).encode().unwrap(),
+                    on_behalf_of: Vec::new(),
+                })
+                .await;
+            if let Ok(Reply::Answer(bytes)) = answered
+                && let Ok(frame) = RemoteActionFrame::decode(&bytes)
+                && let RemoteActionMessage::Receipt(receipt) = frame.message
+            {
+                assert!(
+                    !matches!(receipt, runtime_collab::wire::Receipt::Done(_)),
+                    "an app's action names Settings, and is decided as the app: {receipt:?}"
+                );
+            }
+            assert_eq!(
+                device.actions.load(Ordering::Relaxed),
+                0,
+                "the device's published action answers no app's connection on its own"
             );
         })
         .await;

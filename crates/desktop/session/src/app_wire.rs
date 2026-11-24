@@ -167,7 +167,9 @@ impl Link {
     }
 
     /// Read `resource` at the device's daemon, as `caller`'s app, and answer `reply` with the
-    /// reading there: what a resource no service here publishes reads.
+    /// reading there: what a resource no service here publishes reads. The app is the one the
+    /// broker admitted this connection as (`publishing()`, from the launch it attested), never
+    /// one a request of the app's names.
     fn read_at_device(
         &self,
         caller: Caller,
@@ -194,7 +196,7 @@ impl Link {
     }
 
     /// Invoke `action` of `resource`, which no service here publishes, at the device's daemon as
-    /// `caller`'s app.
+    /// `caller`'s app: the admitted one, as [`Self::read_at_device`] says.
     fn invoke_at_device(
         &self,
         caller: Caller,
@@ -1667,7 +1669,8 @@ fn broker_services(
 }
 
 /// A read of `resource` at the device's daemon, as `caller`'s app: `after` is the revision it was
-/// last shown, and `wait_ms` how long the daemon may hold the answer for the next one.
+/// last shown, and `wait_ms` how long the daemon may hold the answer for the next one. `app` is
+/// the app the broker admitted the connection as, which the daemon decides the reading for.
 fn read_at(
     caller: &Caller,
     resource: &str,
