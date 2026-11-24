@@ -280,10 +280,6 @@ impl LiveActivityServer {
 
     /// The controls pressed after `after`, once there is one, as a JSON
     /// array, and the serial of the last.
-    #[expect(
-        clippy::future_not_send,
-        reason = "the host answers each app on its single-threaded broker task"
-    )]
     pub async fn controls(&self, after: u64) -> Result<(u64, Vec<u8>), String> {
         (self.revalidate)()?;
         let (serial, controls) = self.board.controls(&self.app_id, after).await;

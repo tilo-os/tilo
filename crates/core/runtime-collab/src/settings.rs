@@ -417,10 +417,6 @@ pub mod host {
     impl AppSettingsServer {
         /// The view, as its revision and JSON, once its revision differs
         /// from `after`; at once for 0.
-        #[expect(
-            clippy::future_not_send,
-            reason = "the host answers each app on its single-threaded broker task"
-        )]
         pub async fn read(&self, after: u64) -> Result<(u64, Vec<u8>), String> {
             loop {
                 (self.revalidate)()?;
