@@ -354,12 +354,16 @@ limits are the workspace's; a limit for a member or an agent is a grant.
 An app whose protocol needs the raw secret in its own process (a gateway
 login, voice, an SSH or VNC handshake, a database login) holds a read grant on
 that one item, which its person grants once as an asked record. The vault's
-release action hands the item only to the app's code that speaks that protocol,
-its held connection or an engine action it calls, on a device that may read it,
-placed there by `work::takes_turn`. Passwords an app keeps are vault items, never
+release action, addressed at the item (`vault.item:<id>#release`, so a grant on it
+is a grant on that item alone), hands the item only to a process of that app's
+own, sandboxed and placed by `work::takes_turn` on a device that may read it: its
+held connection, or engine work that needs the secret run as such a process. A
+process several apps share never receives a secret. The process's egress, fixed
+at its launch, is the hosts of the items it may release, and a new grant
+restarts it. Passwords an app keeps are vault items, never
 fields of its own records.
 The secret lives in that process's memory alone, never in a record, an argument,
-a log or history, and the app's sandbox reaches only the hosts the item names.
+a log or history.
 Every other use stays a call the vault makes itself, such as a web call with the
 secret added where the vault is.
 
