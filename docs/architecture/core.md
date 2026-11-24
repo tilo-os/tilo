@@ -139,6 +139,10 @@ never changes an id that grants and records already name.
   certified as one of their devices, so what they did is already theirs.
 - An automation, like a wait list's confirmation mail, runs as the member who
   set it up, within that member's grants.
+- Who belongs to a channel, a shared folder or any resource is who may read
+  it: the permission system publishes a resource's readers as a set any app
+  reads, with typed actions to grant and revoke. No app keeps a membership list
+  of its own.
 
 ### Apps
 
