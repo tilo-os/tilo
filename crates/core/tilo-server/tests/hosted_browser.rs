@@ -258,7 +258,7 @@ async fn questions(
             read,
         })
         .await
-        .flatten();
+        .and_then(Result::ok);
     let Some(RemoteActionMessage::ResourceReading { result, .. }) = answer else {
         panic!("the host reads its invocations: {answer:?}");
     };
@@ -999,6 +999,7 @@ async fn a_page_action_past_the_allowance_is_refused_and_says_how_to_continue() 
                 "fill-page",
             )))
             .await
+            .and_then(Result::ok)
             .expect("the host answers"),
     );
     assert_eq!(receipt.invocation, id);
@@ -1582,7 +1583,7 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
             .await;
         assert!(
             matches!(
-                receipt_of(answer.flatten()).status,
+                receipt_of(answer.and_then(Result::ok)).status,
                 ReceiptStatus::Rejected {
                     error: ActionCallError::NotPermitted
                 }
@@ -1604,7 +1605,7 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
         .await;
     assert!(
         matches!(
-            receipt_of(elsewhere.flatten()).status,
+            receipt_of(elsewhere.and_then(Result::ok)).status,
             ReceiptStatus::Rejected { .. }
         ),
         "the host's word for another workspace is no answer at this window"
@@ -1618,7 +1619,7 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
         .await;
     assert!(
         matches!(
-            receipt_of(ran.flatten()).status,
+            receipt_of(ran.and_then(Result::ok)).status,
             ReceiptStatus::Completed { .. }
         ),
         "the placing host's word runs it"

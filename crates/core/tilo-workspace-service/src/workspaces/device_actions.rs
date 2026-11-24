@@ -1501,13 +1501,12 @@ async fn serves_live(
             on_behalf_of: None,
             read,
         })
-        .await
-        .flatten();
+        .await;
     let status = match reading {
-        Some(tilo_actions::remote::RemoteActionMessage::ResourceReading {
+        Some(Ok(tilo_actions::remote::RemoteActionMessage::ResourceReading {
             result: Ok(text),
             ..
-        }) => tilo_failure::ignored!(
+        })) => tilo_failure::ignored!(
             "a reading that holds no status proves nothing, and is refused below",
             serde_json::from_str::<serde_json::Value>(&text).ok()
         )
@@ -1521,10 +1520,11 @@ async fn serves_live(
                 .ok()
             )
         }),
-        Some(tilo_actions::remote::RemoteActionMessage::ResourceReading {
+        Some(Ok(tilo_actions::remote::RemoteActionMessage::ResourceReading {
             result: Err(error),
             ..
-        }) => return Err(error),
+        })) => return Err(error),
+        Some(Err(error)) => return Err(error),
         _ => {
             return Err(unavailable(
                 "the device that runs the app did not answer for the invocation".into(),

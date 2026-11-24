@@ -39,11 +39,13 @@ const RETIRE: &str = "retire";
 /// its entry, which the server keeps or lets go of the workspace by.
 const KEEP: &str = "keep";
 
-/// How long an action that asks a server waits for its answer: longer than a
-/// server waits for its own root helper to carry a restart out, so a slow
-/// restart still answers, and short of leaving a caller hanging on a server
-/// that is away.
-const SERVER_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+/// How long an action that asks a server waits for its answer: longer than the
+/// 20 s a server waits for its own root helper to carry a restart out, so a
+/// slow restart still answers, and short of the 30 s within which a device
+/// reads its caller's answer. A longer wait could never reach a caller off this
+/// device: the read would time out first, and the caller would never hear what
+/// its retire came to.
+const SERVER_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(25);
 
 /// How often a waiting action reads the Servers document again: an answer can
 /// reach this device's copy without its write watch hearing it.

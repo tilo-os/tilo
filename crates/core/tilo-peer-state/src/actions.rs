@@ -1887,18 +1887,16 @@ impl RemoteDevice {
 
     /// Send one message to the device and hand back its one answer, as the
     /// provider's calls build it: what a page, or a host handing a request on,
-    /// asks with.
+    /// asks with. An answer that did not come says why — a device that did not
+    /// answer in time, or a link that closed — never as no answer at all.
     #[must_use]
     pub fn ask_message(
         &self,
         message: RemoteActionMessage,
-    ) -> tilo_actions::remote::Pending<Option<RemoteActionMessage>> {
-        let (completer, result) = tilo_actions::remote::pending();
-        let device = Arc::clone(&self.0);
-        self.0.runtime.spawn(async move {
-            completer.complete(device.request(message).await.ok());
-        });
-        result
+    ) -> tilo_actions::remote::Pending<
+        Result<RemoteActionMessage, tilo_actions::remote::ActionCallError>,
+    > {
+        self.ask(message, Ok)
     }
 
     /// Send one message and hand back what `answer` makes of its reply.

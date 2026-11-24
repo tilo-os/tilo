@@ -392,14 +392,22 @@ impl Hand {
         let (completer, answered) = tilo_actions::remote::pending();
         let reporter = self.served.clone();
         remote.ask_message(message).then(move |answer| {
-            if let (Some(reporter), Some(Some(reply))) = (reporter.as_ref(), answer.as_ref())
+            let answer = match answer {
+                Some(Ok(reply)) => Some(reply),
+                Some(Err(error)) => {
+                    tracing::warn!(workspace_id = %workspace_id, device = %hex::encode(to), %error, "a request handed to a device that holds a window was not answered");
+                    None
+                }
+                None => None,
+            };
+            if let (Some(reporter), Some(reply)) = (reporter.as_ref(), answer.as_ref())
                 && let Some(server) = reporter.upgrade()
             {
                 // What the device holding the window answered, as the app action server reads
                 // it: it counts the run, and answers the caller that follows it.
                 let _ = server.relayed(workspace_id, to, reply);
             }
-            completer.complete(answer.flatten());
+            completer.complete(answer);
         });
         answered
     }
@@ -480,8 +488,14 @@ impl Served {
         };
         let server = self.0.server.upgrade();
         let (completer, answer) = tilo_actions::remote::pending();
+        let asked = message.clone();
         remote.ask_message(message).then(move |answer| {
-            let Some(Some(mut answer)) = answer else {
+            let Some(mut answer) = answer.and_then(|answer| match answer {
+                Ok(answer) => Some(answer),
+                // The device that holds the window did not answer: the caller hears why it did
+                // not, in its own message's form.
+                Err(error) => tilo_actions::remote::refuse(&asked, error),
+            }) else {
                 return;
             };
             // What the device holding the window answered, as the app action server reads it: a
