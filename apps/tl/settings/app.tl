@@ -642,6 +642,18 @@ view displays_pane() {
             on press: device.open_sheet(device.displays)
         }
     }
+    let change = settings.display_change
+    if let deadline = change.deadline_unix_ms {
+        ui.Section("A change being tried") {
+            ui.Text(
+                "The desktop is trying new display settings. Keep them, or let the previous ones come back, on the confirmation that appeared.",
+                role: .body,
+            )
+            if let said = change.message {
+                ui.StatusLine(said, status: .warning)
+            }
+        }
+    }
     ui.Section("This device") {
         setting("Automatic brightness", "Follow the light in the room") {
             ui.Toggle(bind: d.auto_brightness)

@@ -298,6 +298,8 @@ d-utmybuy7 = Displays pane
     .w-subtle = Dezent
     .w-warm = Warm
     .w-very-warm = Sehr warm
+    .w-a-change-being-tried = Eine Änderung wird ausprobiert
+    .w-the-desktop-is-trying-new-display = Der Desktop probiert neue Bildschirmeinstellungen aus. Behalten Sie sie, oder lassen Sie die vorherigen zurückkommen, auf der erschienenen Bestätigung.
 
 d-o7rqadc5 = Sound pane
     .w-output = Ausgabe
