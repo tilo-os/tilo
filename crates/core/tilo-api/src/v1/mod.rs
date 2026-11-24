@@ -689,12 +689,11 @@ impl<'a> Caller<'a> {
         }
         let path = self.params.get("path");
         if tilo_actions::remote::settings_resources::is_section(path) {
-            // A section of the settings is typed by the surface the sections publish, which
-            // every device compiles in, whichever app shows it.
+            // A section of the settings is typed by the surface the sections publish, whichever
+            // app shows it: the workspace names it among the surfaces every holder declares.
             let app = tilo_actions::remote::settings_resources::SURFACE_APP;
-            let published = app_fleet::surface(app)
-                .and_then(|file| collab_types::surface::SurfaceFile::kept(file.as_bytes()).ok())
-                .map(|(_, kept)| surface_version(app, &kept))
+            let published = collab_types::app_surface::bytes_of(app)
+                .map(|kept| surface_version(app, &String::from_utf8_lossy(kept)))
                 .unwrap_or_default();
             return changed(sent, &published, workspace);
         }
