@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use collab_types::caps::CapOverride;
 
 use super::{
-    CapabilityAuthority, CLOSE_BEFORE_DELETE, InstallOutcome, ManagedApplication,
+    CLOSE_BEFORE_DELETE, CapabilityAuthority, InstallOutcome, ManagedApplication,
     ManagedCompatibility, ManagedInstallation, ProgramKind, RouteKind, SessionError,
 };
 use crate::{VmAvailability, VmInstallConfirmation, VmInstallation, VmInstallerInput};
@@ -73,12 +73,7 @@ pub trait SessionManager: Send + Sync {
     ///
     /// # Errors
     /// Why it did not open.
-    fn launch_vm(
-        &self,
-        workspace: &str,
-        entry_id: &str,
-        file: Option<File>,
-    ) -> Result<(), String>;
+    fn launch_vm(&self, workspace: &str, entry_id: &str, file: Option<File>) -> Result<(), String>;
     /// End a program of a private capsule that is open in `workspace`.
     ///
     /// # Errors
@@ -179,7 +174,8 @@ impl ManagerOut {
 
 /// The cell's value, whatever a panicking caller left behind.
 fn lock<T>(cell: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    cell.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The manager over one assembled service.
@@ -216,14 +212,8 @@ where
         }
     }
 
-    fn capabilities(
-        &self,
-        workspace: &str,
-        app: &str,
-    ) -> Result<Vec<CapOverride>, String> {
-        self.authority
-            .capabilities_for(workspace, app)
-            .map_err(|error| error.to_string())
+    fn capabilities(&self, workspace: &str, app: &str) -> Result<Vec<CapOverride>, String> {
+        self.authority.capabilities_for(workspace, app)
     }
 
     fn entry(&self, entry_id: &str) -> Result<super::RegisteredProgram, String> {
@@ -260,6 +250,10 @@ where
     E: super::SandboxExecutor + 'static,
     V: super::VmDelegate + 'static,
 {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one field after another of the list the app reads"
+    )]
     fn list(&self, workspace: &str) -> Result<ManagerList, String> {
         let managed = &self.managed;
         let entries = managed.entries().map_err(|error| error.to_string())?;
@@ -269,6 +263,7 @@ where
             let mut ends = lock(&self.ends);
             let read = ends.entry(workspace.to_owned()).or_default();
             let ended = managed.programs.ends_for(workspace, read);
+            drop(ends);
             if let Some(end) = ended.into_iter().next_back() {
                 *lock(&self.last_end) = Some(EndedProgram {
                     program: end.entry_id,
@@ -306,7 +301,7 @@ where
                     .query
                     .publisher
                     .clone()
-                    .or(entry.query.store.clone())
+                    .or_else(|| entry.query.store.clone())
                     .unwrap_or_else(|| "Windows application".to_string()),
                 capsule_id: Some(entry.capsule_id.clone()),
                 program_id: entry.program.id.clone(),
@@ -382,9 +377,10 @@ where
                     .values()
                     .filter(|program| program.kind == ProgramKind::Application)
                     .count();
-                let detail = installation.last_error.clone().unwrap_or_else(|| {
-                    installation_words(installation.status, program_count)
-                });
+                let detail = installation
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| installation_words(installation.status, program_count));
                 Some(ManagedInstallation {
                     capsule_id: state.id,
                     display_name: installation.display_name,
@@ -435,12 +431,7 @@ where
             .map_err(|error| error.to_string())
     }
 
-    fn launch_vm(
-        &self,
-        workspace: &str,
-        entry_id: &str,
-        file: Option<File>,
-    ) -> Result<(), String> {
+    fn launch_vm(&self, workspace: &str, entry_id: &str, file: Option<File>) -> Result<(), String> {
         let application = self
             .application(entry_id)
             .ok_or_else(|| SessionError::UnknownEntry.to_string())?;
@@ -471,7 +462,10 @@ where
         let kept = source
             .try_clone()
             .map_err(|error| format!("could not keep the installer open: {error}"))?;
-        let InstallOutcome::Confirmation { confirmation, input } = self
+        let InstallOutcome::Confirmation {
+            confirmation,
+            input,
+        } = self
             .managed
             .install(source, source_name, workspace, &capabilities)
             .map_err(|error| error.to_string())?;
@@ -586,7 +580,10 @@ where
             .iter()
             .map(|entry| entry.entry_id.clone())
             .collect();
-        let still_open = self.managed.programs.close_entries(&entries, CLOSE_BEFORE_DELETE);
+        let still_open = self
+            .managed
+            .programs
+            .close_entries(&entries, CLOSE_BEFORE_DELETE);
         if !still_open.is_empty() {
             let names: Vec<&str> = retiring
                 .iter()
