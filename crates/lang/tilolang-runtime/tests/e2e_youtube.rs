@@ -317,7 +317,9 @@ mod cases {
 
         fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
             assert_eq!(app, "so.tilo.tube", "only YouTube asks this bridge");
-            self.0.start(op, input)
+            let job = "grayjay-1";
+            self.0.start(job, op, input)?;
+            Ok(serde_json::json!({ "job": job }).to_string())
         }
 
         fn status(&self, job: &str) -> Result<String, String> {
