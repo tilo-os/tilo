@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import fnmatch
+import functools
 import re
 import sys
 import subprocess
@@ -17,6 +18,59 @@ import app_release  # noqa: E402
 
 CATALOG = {name: {} for name in ("files", "notes", "settings")}
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@functools.cache
+def replaced_native_ids(root: Path) -> set[str]:
+    """The ids of native app manifests Git history deleted.
+
+    `*` publishes every native app, so an app whose manifest this history deleted was a
+    default app; the tilolang package that took its id keeps that place. Reading the ids
+    from history, rather than a list kept beside the collection, is what makes a port's
+    place survive the change that deletes the native app it replaces.
+    """
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=root, capture_output=True, text=True,
+    )
+    if shallow.stdout.strip() == "true":
+        raise unittest.SkipTest("a shallow clone has no deleted app manifests to read")
+    log = subprocess.run(
+        ["git", "log", "--all", "--diff-filter=D", "--format=@%H", "--name-only",
+         "--", ":(glob)apps/*/tilo-app.toml"],
+        cwd=root, capture_output=True, text=True,
+    )
+    if log.returncode != 0:
+        raise unittest.SkipTest(f"no Git history to read deleted apps from: {log.stderr.strip()}")
+    ids: set[str] = set()
+    commit = None
+    seen: set[str] = set()
+    for line in log.stdout.splitlines():
+        if line.startswith("@"):
+            commit = line[1:].strip()
+            continue
+        path = line.strip()
+        if not path or not path.endswith("/tilo-app.toml") or path in seen:
+            continue
+        seen.add(path)
+        before = subprocess.run(
+            ["git", "show", f"{commit}^:{path}"], cwd=root, capture_output=True, text=True
+        )
+        if before.returncode != 0:
+            continue
+        ids.add(tomllib.loads(before.stdout)["package"]["id"])
+    return ids
+
+
+@functools.cache
+def ports_of_replaced_apps(root: Path) -> dict[str, str]:
+    """Every tilolang package of `apps/tl` that took a deleted native app's id, by catalog name."""
+    replaced = replaced_native_ids(root)
+    return {
+        name: app["id"]
+        for name, app in app_release.app_catalog(root).items()
+        if app.get("kind") == "tilolang" and app["id"] in replaced
+    }
 
 
 class AppReleaseTests(unittest.TestCase):
@@ -87,17 +141,15 @@ class AppReleaseTests(unittest.TestCase):
         with self.subTest(phase='default collection is the complete publication boundary'):
             catalog = app_release.app_catalog(ROOT)
             # The default collection publishes every native app and the tilolang packages
-            # that replaced one: a package joins it by name, in the change that retires the
-            # native app it replaces, and the catalog refuses two apps that claim one id.
-            self.assertEqual(
-                app_release.resolve_collection(
-                    "default", catalog, app_release.config(ROOT / "dist/apps/app-collections.toml")
-                ),
-                sorted(
-                    name for name, app in catalog.items()
-                    if app["kind"] == "native" or name in ("tl-notes", "tl-tube", "tl-photos")
-                ),
+            # that replaced one: `*` takes the native apps, and a package that kept the id
+            # of a native app takes the place the native app had.
+            default = set(app_release.resolve_collection(
+                "default", catalog, app_release.config(ROOT / "dist/apps/app-collections.toml")
+            ))
+            self.assertLessEqual(
+                {name for name, app in catalog.items() if app["kind"] == "native"}, default
             )
+            self.assertLessEqual(set(ports_of_replaced_apps(ROOT)), default)
             # YouTube is the package that retired the native Tube, under the id it had.
             self.assertEqual(catalog["tl-tube"]["kind"], "tilolang")
             self.assertEqual(catalog["tl-tube"]["id"], "so.tilo.tube")
@@ -112,6 +164,23 @@ class AppReleaseTests(unittest.TestCase):
                 app_release.resolve_collection("default", catalog, config),
             )
             self.assertEqual(catalog["tl-notes"]["kind"], "tilolang")
+
+    def test_a_port_keeps_its_default_place(self):
+        """A package that took a deleted native app's id stays a default app."""
+        catalog = app_release.app_catalog(ROOT)
+        default = set(app_release.resolve_collection(
+            "default", catalog, app_release.config(ROOT / "dist/apps/app-collections.toml")
+        ))
+        ports = ports_of_replaced_apps(ROOT)
+        self.assertTrue(ports, "no tilolang package took a deleted native app's id")
+        missing = sorted(name for name in ports if name not in default)
+        self.assertEqual(
+            missing, [],
+            "these tilolang packages kept a deleted native app's id, which `*` published, "
+            "and are not in the default collection: add them beside `*` in "
+            "dist/apps/app-collections.toml",
+        )
+
     def test_app_manifest_changes_rebuild_the_shared_runtime_collection(self):
         catalog = app_release.app_catalog(ROOT)
         # An app's dependency change can alter the shared runtime's hashes while
