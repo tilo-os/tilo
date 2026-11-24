@@ -42,8 +42,8 @@ use tilo_api::v1::routing::{encode_path, encode_query};
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_service::{Service as _, Started};
 use tilo_session::{AppSocket, Options, Session};
+use tilolang_service::ResourceService;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::resource_service::ResourceService;
 
 /// The canvas, as assistive technology names it: the map the framed style draws its places
 /// on. What a test waits for to know the canvas is up, since nothing else stands on an empty one.

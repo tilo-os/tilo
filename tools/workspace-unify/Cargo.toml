@@ -1350,6 +1350,7 @@ doc = false
 "tilolang-music" = { path = "../../crates/integrations/tilolang-music", default-features = false, features = ["connector", "default", "live"] }
 "tilolang-process" = { path = "../../crates/lang/tilolang-process", default-features = false, features = ["app-launch", "test-support"] }
 "tilolang-runtime" = { path = "../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
+"tilolang-service" = { path = "../../crates/lang/tilolang-service", default-features = false, features = [] }
 "tilolang-tilo" = { path = "../../crates/lang/tilolang-tilo", default-features = false, features = ["test-support"] }
 "tilolang-web" = { path = "../../crates/lang/tilolang-web", default-features = false, features = [] }
 "tilolang-youtube" = { path = "../../crates/integrations/tilolang-youtube", default-features = false, features = ["connector", "default", "live"] }
@@ -2616,6 +2617,7 @@ doc = false
 "tilolang-lex" = { path = "../../crates/lang/tilolang-lex", default-features = false, features = [] }
 "tilolang-mail" = { path = "../../crates/integrations/tilolang-mail", default-features = false, features = ["engine"] }
 "tilolang-runtime" = { path = "../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
+"tilolang-service" = { path = "../../crates/lang/tilolang-service", default-features = false, features = [] }
 "tilolang-tilo" = { path = "../../crates/lang/tilolang-tilo", default-features = false, features = ["test-support"] }
 "tilolang-web" = { path = "../../crates/lang/tilolang-web", default-features = false, features = [] }
 "tilolang-youtube" = { path = "../../crates/integrations/tilolang-youtube", default-features = false, features = ["connector", "default", "live"] }
@@ -4119,6 +4121,7 @@ doc = false
 "tilolang-music" = { path = "../../crates/integrations/tilolang-music", default-features = false, features = ["connector", "default", "live"] }
 "tilolang-process" = { path = "../../crates/lang/tilolang-process", default-features = false, features = ["test-support"] }
 "tilolang-runtime" = { path = "../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
+"tilolang-service" = { path = "../../crates/lang/tilolang-service", default-features = false, features = [] }
 "tilolang-tilo" = { path = "../../crates/lang/tilolang-tilo", default-features = false, features = ["test-support"] }
 "tilolang-web" = { path = "../../crates/lang/tilolang-web", default-features = false, features = [] }
 "tilolang-youtube" = { path = "../../crates/integrations/tilolang-youtube", default-features = false, features = ["connector", "default", "live"] }

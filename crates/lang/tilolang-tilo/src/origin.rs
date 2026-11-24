@@ -147,7 +147,7 @@ pub fn uses_origin(meta: &Meta, origin: &str) -> bool {
 /// connector, the `YouTube` origin's over the `YouTube` one).
 ///
 /// An origin's own crate registers one as it loads ([`register_remote`]), so the crate that
-/// keeps a package's documents (a session's [`crate::resource_service::ResourceService`], a tilolang
+/// keeps a package's documents (a session's `tilolang_service::ResourceService`, a tilolang
 /// host's instance) reaches a connector without naming the origin's crate or the service it
 /// speaks.
 #[cfg(any(unix, windows))]

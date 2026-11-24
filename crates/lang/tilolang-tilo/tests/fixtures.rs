@@ -359,25 +359,6 @@ impl Replica {
     pub fn read(&self, at: &ResourceRef, field: &str) -> Value {
         self.host.runtime().read(at, field).unwrap()
     }
-
-    /// The service a session keeps in the workspace over this replica's host, for `person`, with
-    /// the workspace still reachable as the other devices' sync takes it in.
-    pub fn into_service_with_workspace(
-        self,
-        person: &str,
-    ) -> (tilolang_tilo::resource_service::ResourceService, Workspace) {
-        let Self { host, doc, .. } = self;
-        (
-            tilolang_tilo::resource_service::ResourceService::new(host, person),
-            doc,
-        )
-    }
-
-    /// The service a session keeps in the workspace over this replica's host, for `person`.
-    pub fn into_service(self, person: &str) -> tilolang_tilo::resource_service::ResourceService {
-        let Self { host, .. } = self;
-        tilolang_tilo::resource_service::ResourceService::new(host, person)
-    }
 }
 
 impl Replica {
@@ -572,4 +553,31 @@ pub fn button_key(view: &ViewInstance) -> String {
     plus(view.tree())
         .or_else(|| find(view.tree()))
         .expect("the view has a button")
+}
+
+/// Run the action named `action` of `app` as `who`, with `args`, and answer what it returned.
+pub fn call(
+    r: &Replica,
+    who: &(impl AsActor + ?Sized),
+    app: &str,
+    action: &str,
+    args: Vec<Value>,
+) -> Value {
+    let meta = r.host.package(app).unwrap().meta;
+    let id = meta
+        .actions
+        .iter()
+        .find(|a| a.name == action)
+        .unwrap_or_else(|| panic!("no action {action}"))
+        .id
+        .clone();
+    match r
+        .host
+        .runtime()
+        .invoke_action(&who.actor(), (id.as_str(), args))
+        .unwrap()
+    {
+        tilolang_runtime::InvokeOutcome::Done(v) => v,
+        other => panic!("{action}: {other:?}"),
+    }
 }

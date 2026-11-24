@@ -11,7 +11,7 @@ use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Store as _, Value};
 
 use tilolang_tilo::host::Host;
 
-use crate::fixtures::{Replica, target};
+use crate::fixtures::{Replica, call, target};
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
@@ -42,32 +42,6 @@ pub(crate) fn in_run(replica: &Replica, title: &str) {
             id: RUN.to_owned(),
             title: title.to_owned(),
         }));
-}
-
-pub(crate) fn call(
-    r: &Replica,
-    who: &(impl crate::fixtures::AsActor + ?Sized),
-    app: &str,
-    action: &str,
-    args: Vec<Value>,
-) -> Value {
-    let meta = r.host.package(app).unwrap().meta;
-    let id = meta
-        .actions
-        .iter()
-        .find(|a| a.name == action)
-        .unwrap_or_else(|| panic!("no action {action}"))
-        .id
-        .clone();
-    match r
-        .host
-        .runtime()
-        .invoke_action(&who.actor(), (id.as_str(), args))
-        .unwrap()
-    {
-        InvokeOutcome::Done(v) => v,
-        other => panic!("{action}: {other:?}"),
-    }
 }
 
 fn field(r: &Replica, app: &str, ty: &str, name: &str) -> String {

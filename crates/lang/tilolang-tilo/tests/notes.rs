@@ -5,8 +5,8 @@
 use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, ResourceRef, Value, ViewInstance};
 
+use crate::fixtures::call;
 use crate::fixtures::{Replica, target};
-use crate::legibility::call;
 
 const NOTES_APP: &str = "so.tilo.notes";
 const DISCUSSION: (&str, &str) = (

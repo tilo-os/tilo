@@ -46,8 +46,8 @@ use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_desktop_model::Layout;
 use tilo_service::{Service as _, Started};
 use tilo_session::{Options, Session};
+use tilolang_service::ResourceService;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::resource_service::ResourceService;
 use ui::headless::fixture_runner_inputs;
 use ui::live_activity::{Control, ControlKind, Kind, Published, Summary};
 

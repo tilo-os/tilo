@@ -6,7 +6,7 @@
 //! session reads each app's payload from its store row, and the app runs through the launcher
 //! like any other. Loading it here publishes the record it keeps: the app's root made and filled
 //! by its first scenario (the seed data its shots and tests start from), published as the session
-//! publishes a room's records ([`tilolang_tilo::resource_service::ResourceService`]), so every note,
+//! publishes a room's records ([`tilolang_service::ResourceService`]), so every note,
 //! task, channel and mailbox is a resource the session's `find` finds, a layout places and
 //! an agent reads and changes through its actions.
 //!
@@ -21,10 +21,10 @@
 //! scenario data is the only fixture here, and a person's session starts its apps empty.
 
 use app_catalogue::apps::InstalledApp;
+use tilolang_service::ResourceService;
+use tilolang_service::notices::NOTICE_TAGS;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::notices::NOTICE_TAGS;
-use tilolang_tilo::resource_service::ResourceService;
 
 use crate::platform::notice::Toolkit;
 

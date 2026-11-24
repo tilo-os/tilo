@@ -1,11 +1,12 @@
 //! The system's copy link on a package's resources: every resource that shows a view offers it,
 //! and the host answers it with a URL that names the resource again, under the workspace's page.
 
+use crate::IntoService as _;
 use crate::fixtures::{Replica, Workspace};
 use serde_json::Map;
 use tilo_reference::link::{Link, WebEntries, WebEntry};
 use tilo_service::{Service, Started};
-use tilolang_tilo::resource_service::ResourceService;
+use tilolang_service::ResourceService;
 use tilolang_tilo::share::LinkHome;
 
 const NOTES_APP: &str = "so.tilo.notes";

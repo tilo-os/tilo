@@ -313,6 +313,8 @@ tilo-presentation = { path = "../../platform/tilo-presentation" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
 # action vocabulary.
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+# Each workspace's tilolang records, served to the session as its service, and their notices.
+tilolang-service = { path = "../../lang/tilolang-service" }
 tilo-store-engine = { path = "../../engines/store-engine" }
 # The database engine the Database Client asks by name: the drivers, kept off the app's side.
 tilo-db = { version = "0.1.0", path = "../../engines/tilo-db" }

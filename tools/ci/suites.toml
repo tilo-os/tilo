@@ -875,16 +875,13 @@ readers = [
   "crates/lang/tilolang-tilo/tests/notebook_order.rs",
   "crates/lang/tilolang-tilo/tests/notes.rs",
   "crates/lang/tilolang-tilo/tests/notes_checklist.rs",
-  "crates/lang/tilolang-tilo/tests/notices.rs",
   "crates/lang/tilolang-tilo/tests/outbox.rs",
   "crates/lang/tilolang-tilo/tests/outcomes.rs",
   "crates/lang/tilolang-tilo/tests/policy.rs",
   "crates/lang/tilolang-tilo/tests/removed.rs",
-  "crates/lang/tilolang-tilo/tests/resource_service.rs",
   "crates/lang/tilolang-tilo/tests/resource_store.rs",
   "crates/lang/tilolang-tilo/tests/rich_text.rs",
   "crates/lang/tilolang-tilo/tests/scenarios.rs",
-  "crates/lang/tilolang-tilo/tests/share.rs",
   "crates/lang/tilolang-tilo/tests/suggest.rs",
   "crates/lang/tilolang-tilo/tests/surface.rs",
   "crates/lang/tilolang-tilo/tests/task.rs",
@@ -892,10 +889,22 @@ readers = [
   "crates/lang/tilolang-tilo/tests/tube.rs",
   "crates/lang/tilolang-tilo/tests/words.rs",
   "crates/lang/tilolang-tilo/tests/written_views.rs",
-  "crates/lang/tilolang-tilo/tests/block_edit.rs",
   "crates/lang/tilolang-tilo/tests/contacts.rs",
-  "crates/lang/tilolang-tilo/tests/direct_readers.rs",
   "crates/lang/tilolang-tilo/tests/native_chat_skills.rs",
+]
+
+[[cargo]]
+package = "tilolang-service"
+# The service's tests compile the built-in packages from their sources, over the replicas of
+# tilolang-tilo's test fixtures.
+inputs = ["apps/tl/", "crates/lang/tilolang-tilo/tests/fixtures.rs"]
+readers = [
+  "crates/lang/tilolang-service/tests/block_edit.rs",
+  "crates/lang/tilolang-service/tests/direct_readers.rs",
+  "crates/lang/tilolang-service/tests/it.rs",
+  "crates/lang/tilolang-service/tests/notices.rs",
+  "crates/lang/tilolang-service/tests/resource_service.rs",
+  "crates/lang/tilolang-service/tests/share.rs",
 ]
 
 [[cargo]]

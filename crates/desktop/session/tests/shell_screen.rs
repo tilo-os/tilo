@@ -22,7 +22,7 @@ use serde_json::{Map, Value, json};
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_desktop_model::{Layout, Strip, StripId, Workspace, WorkspaceId};
 use tilo_session::{Options, Session};
-use tilolang_tilo::resource_service::ResourceService;
+use tilolang_service::ResourceService;
 use ui::kurbo::Rect;
 
 use crate::common::switcher;

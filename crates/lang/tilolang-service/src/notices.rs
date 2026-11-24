@@ -20,11 +20,11 @@ use tilolang::{
 use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::{ResourceRef, Value};
 
-use crate::host::Host;
+use tilolang_tilo::host::Host;
 
 /// The action a notice's `seen` flag is set by: an edit of one of its fields, as any bound
 /// control's edit of a field is.
-pub const SEEN_ACTION: &str = crate::action::EDIT_FLAG_ACTION;
+pub const SEEN_ACTION: &str = tilolang_tilo::action::EDIT_FLAG_ACTION;
 
 /// What a notice's notification tag starts with, so a host knows which of its closings are the
 /// document's.
@@ -131,9 +131,9 @@ impl Notices {
     /// seen, so every device of theirs takes it back.
     pub fn seen(&mut self, host: &Host, id: &str) -> Result<(), String> {
         let at = ResourceRef::root(id.to_owned(), NOTICE_TYPE.to_owned());
-        let by = crate::runtime::Actor::Member(crate::runtime::ids::MemberId::person(
-            self.person.as_str(),
-        ));
+        let by = tilolang_tilo::runtime::Actor::Member(
+            tilolang_tilo::runtime::ids::MemberId::person(self.person.as_str()),
+        );
         host.store()
             .set_register(
                 &at,
@@ -186,15 +186,15 @@ impl Held {
     /// opens, the workspace's document of the app, and the resource itself, published as the
     /// session names it.
     fn shown(&self, host: &Host, person: &str) -> Option<Notice> {
-        let schema = crate::schema::lookup(&self.opens.ty)?;
+        let schema = tilolang_tilo::schema::lookup(&self.opens.ty)?;
         let package = host.package(&schema.app);
         let record = String::new();
         let app = package.as_ref().map_or_else(
             || schema.app.clone(),
-            |package| crate::publish::app_name(&*host.runtime().words(), &package.meta),
+            |package| tilolang_tilo::publish::app_name(&*host.runtime().words(), &package.meta),
         );
         // Every published resource opens itself, at itself, as its search hit does.
-        let resource = crate::publish::resource_id(&schema.app, &self.opens.id_string());
+        let resource = tilolang_tilo::publish::resource_id(&schema.app, &self.opens.id_string());
         let place = Place {
             app: schema.app.clone(),
             record,

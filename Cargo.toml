@@ -328,6 +328,7 @@ members = [
     "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
     "crates/lang/tilolang-tilo",
+    "crates/lang/tilolang-service",
     "crates/lang/tilolang-process",
     "crates/integrations/tilolang-mail",
     "crates/integrations/tilolang-music",

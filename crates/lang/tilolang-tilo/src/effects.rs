@@ -96,7 +96,7 @@ pub enum OpenEffect {
 }
 
 /// The operation type every [`OpenEffect`] travels under: what a host that answers openings
-/// recognises an invocation by (`crate::resource_service::ResourceService`).
+/// recognises an invocation by (a session's `tilolang_service::ResourceService`).
 pub const OPEN_OPERATION: &str = "tilolang.open";
 
 impl OpenEffect {

@@ -11,7 +11,7 @@
 
 use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service as _, Started};
-use tilolang_tilo::resource_service::ResourceService;
+use tilolang_service::ResourceService;
 use tilolang_tilo::runtime::ids::MemberId;
 use tilolang_tilo::runtime::{Actor, ResourceRef, Value};
 
@@ -463,7 +463,12 @@ fn room() -> Room {
         &host,
         &chat.meta,
         "new_channel",
-        vec![all, Value::text("design"), Value::text(""), Value::some(team)],
+        vec![
+            all,
+            Value::text("design"),
+            Value::text(""),
+            Value::some(team),
+        ],
     );
     let said = Value::Rich(tilolang_tilo::runtime::rich::RichValue::from_text(SAID));
     let message = call(
@@ -601,13 +606,13 @@ fn session_turn(link: &SessionLink, layout: &LayoutReading, room: &mut Room) -> 
     needed.extend(link.take_wanted_packages().into_keys());
     let mut apps = needed.clone();
     room.needed = needed;
-    for ty in tilolang_tilo::resource_service::placed_documents(
+    for ty in tilolang_service::placed_documents(
         layout.places.iter().map(|place| place.resource.as_str()),
         &room.service.resources(),
     )
     .values()
     {
-        if let Some(app) = tilolang_tilo::resource_service::app_of(ty) {
+        if let Some(app) = tilolang_tilo::readings::app_of(ty) {
             apps.insert(app.to_owned());
         }
     }

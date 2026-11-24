@@ -26,7 +26,6 @@ pub mod members;
 pub mod meta;
 pub mod names;
 pub mod native;
-pub mod notices;
 pub mod origin;
 pub mod page;
 pub mod personal;
@@ -34,8 +33,8 @@ pub mod platform_apps;
 pub mod publish;
 pub mod published;
 pub mod reading;
+pub mod readings;
 
-pub mod resource_service;
 pub mod resources;
 pub mod schema;
 pub mod search;

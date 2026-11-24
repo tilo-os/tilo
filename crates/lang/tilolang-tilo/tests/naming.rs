@@ -146,7 +146,7 @@ fn a_new_note() -> (Replica, ResourceRef, ResourceRef) {
         ],
     );
     let root = ada.host.root_of(NOTES_APP).unwrap();
-    let made = crate::legibility::call(
+    let made = crate::fixtures::call(
         &ada,
         "ada",
         NOTES_APP,
@@ -198,7 +198,7 @@ tilo_test_env::scenario! {
             "its notebook reads as the app's title"
         );
 
-        crate::legibility::call(
+        crate::fixtures::call(
             &ada,
             "ada",
             NOTES_APP,
@@ -238,7 +238,7 @@ tilo_test_env::scenario! {
     {
         let (ada, _) = mail_staged("a busy inbox");
         let root = ada.host.root_of(MAIL_APP).unwrap();
-        let Value::Ref(draft) = crate::legibility::call(
+        let Value::Ref(draft) = crate::fixtures::call(
             &ada,
             "ada",
             MAIL_APP,

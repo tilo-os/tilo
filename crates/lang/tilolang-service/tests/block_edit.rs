@@ -6,11 +6,12 @@ use serde_json::{Map, Value as Json, json};
 use tilo_service::Service as _;
 use tilolang_runtime::store::{Store as _, VersionKind};
 use tilolang_runtime::{ResourceRef, Value};
+use tilolang_service::ResourceService;
 use tilolang_tilo::publish::resource_id;
-use tilolang_tilo::resource_service::ResourceService;
 
+use crate::IntoService as _;
+use crate::fixtures::call;
 use crate::fixtures::{Replica, Workspace, field_id, target};
-use crate::legibility::call;
 
 const DISCUSSION: (&str, &str) = (
     include_str!("../../../../apps/tl/discussion/app.tl"),

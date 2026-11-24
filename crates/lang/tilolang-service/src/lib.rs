@@ -13,7 +13,7 @@
 //! note's reading, and the reading is the resource the notes app shows.
 //!
 //! Every resource lives in the device's one resource store, which the host's runtime reads and
-//! writes ([`crate::resources::ResourceStore`]). An invocation is the published action's own:
+//! writes ([`tilolang_tilo::resources::ResourceStore`]). An invocation is the published action's own:
 //! the API builds it through the action's spec, which runs it in the runtime as the invoker's
 //! step, and what it wrote is sent to the store when the run ends. What the workspace wrote
 //! elsewhere reaches the store, which tells this service through its watch.
@@ -33,9 +33,14 @@ use tilolang_runtime::InvokeOutcome;
 use tilolang_runtime::store::{ChangeNote, Mutation, Scalar, Store as _, Version};
 use tilolang_runtime::value::{ResourceRef, Value};
 
-use crate::action::{ACTION_TYPE, DynAction, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
-use crate::host::Host;
-use crate::publish::{Planner, Publications, publish_package, resource_id};
+use tilolang_tilo::action::{ACTION_TYPE, DynAction, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
+use tilolang_tilo::host::Host;
+use tilolang_tilo::publish::{
+    Planner, Publications, publish_package, resource_id, split_published,
+};
+use tilolang_tilo::readings::{reading_of, resource_at};
+
+pub mod notices;
 
 /// The history verbs a published root answers here: undo and redo through the store's undo, and
 /// its versions as the store keeps them.
@@ -55,7 +60,7 @@ pub struct ResourceService {
     publications: Publications,
     /// What moved in the store since the last poll: a reading moves with any field of its
     /// resource, also one no published tree shows (a note's body).
-    watch: crate::resources::Watch,
+    watch: tilolang_tilo::resources::Watch,
     /// Who the changes made here are steps of.
     person: String,
     /// What `now` reads: the system time, or what a test fixes.
@@ -72,9 +77,9 @@ pub struct ResourceService {
     /// The outside services its packages' types with an origin are kept in step with, by
     /// origin (`imap`, `youtube`): each native code this service runs beside the resources,
     /// reached through the connection the session hands it ([`Service::connect`]).
-    origins: crate::origin::Origins,
+    origins: tilolang_tilo::origin::Origins,
     /// What wakes the session's loop when an origin has an answer and work waits.
-    origin_waker: Option<crate::background::Waker>,
+    origin_waker: Option<tilolang_tilo::background::Waker>,
     /// The notices this device shows its person, and what it told already
     /// ([`crate::notices::Notices`]).
     notices: crate::notices::Notices,
@@ -92,7 +97,7 @@ pub struct ResourceService {
     only: Option<String>,
     /// The words its host reads in, kept for a host opened again over another store
     /// ([`Self::share`]).
-    words: Option<std::rc::Rc<dyn crate::runtime::Words>>,
+    words: Option<std::rc::Rc<dyn tilolang_tilo::runtime::Words>>,
     /// Whether this service is the session's own ([`Self::session_document`]): the one that
     /// publishes the packages the session runs itself (the shell), started whether or not the
     /// session seeds any app, so a program names the shell the session shows.
@@ -104,8 +109,8 @@ pub struct ResourceService {
     /// ([`Service::keep_in_workspace`]).
     in_workspace: bool,
     /// Where the app's resources open on the web, where this host mints their links
-    /// ([`crate::share`]): set by the session that knows the workspace's entry.
-    link_home: Option<crate::share::LinkHome>,
+    /// ([`tilolang_tilo::share`]): set by the session that knows the workspace's entry.
+    link_home: Option<tilolang_tilo::share::LinkHome>,
 }
 
 impl ResourceService {
@@ -124,11 +129,11 @@ impl ResourceService {
             notices: crate::notices::Notices::new(person.clone()),
             tell: None,
             person,
-            clock: Box::new(crate::host::system_time),
+            clock: Box::new(tilolang_tilo::host::system_time),
             moved: BTreeSet::new(),
             moved_unsaid: false,
             shared: BTreeMap::new(),
-            origins: crate::origin::Origins::default(),
+            origins: tilolang_tilo::origin::Origins::default(),
             origin_waker: None,
             opens: Vec::new(),
             beside: String::new(),
@@ -168,9 +173,9 @@ impl ResourceService {
     }
 
     /// Mint the links this service answers for its resources under `home`, where the workspace's
-    /// host announces a page ([`crate::share`]); without one `share-link` is refused, as an
+    /// host announces a page ([`tilolang_tilo::share`]); without one `share-link` is refused, as an
     /// app's root refuses it.
-    pub fn set_link_home(&mut self, home: Option<crate::share::LinkHome>) {
+    pub fn set_link_home(&mut self, home: Option<tilolang_tilo::share::LinkHome>) {
         self.link_home = home;
     }
 
@@ -181,14 +186,14 @@ impl ResourceService {
     }
 
     /// Read and write `store` from now on, with every package the host runs loaded again over it.
-    fn rehost(&mut self, store: crate::resources::ResourceStore) -> Result<(), String> {
+    fn rehost(&mut self, store: tilolang_tilo::resources::ResourceStore) -> Result<(), String> {
         let host = self.host_over(store)?;
         self.install(host);
         Ok(())
     }
 
     /// A host over `store` with every package this service's host runs loaded again over it.
-    fn host_over(&self, store: crate::resources::ResourceStore) -> Result<Host, String> {
+    fn host_over(&self, store: tilolang_tilo::resources::ResourceStore) -> Result<Host, String> {
         let host = Host::open(store, self.host.viewer().clone(), None, || None)
             .map_err(|error| error.to_string())?;
         if let Some(words) = &self.words {
@@ -210,7 +215,7 @@ impl ResourceService {
     }
 
     /// Read the resources in `words`.
-    pub fn set_words(&mut self, words: std::rc::Rc<dyn crate::runtime::Words>) {
+    pub fn set_words(&mut self, words: std::rc::Rc<dyn tilolang_tilo::runtime::Words>) {
         self.host.set_words(std::rc::Rc::clone(&words));
         self.words = Some(words);
     }
@@ -253,14 +258,14 @@ impl ResourceService {
         if !self.session_document || self.only.is_some() {
             return Ok(());
         }
-        let Some(meta) = crate::runtime::Meta::from_wasm(share.wasm) else {
+        let Some(meta) = tilolang_tilo::runtime::Meta::from_wasm(share.wasm) else {
             return Err(format!("{} carries no description", share.app));
         };
         // The package's resources are in the store its parts write into: the service reads that
         // one from now on.
         if let Some(store) = share
             .store
-            .downcast_ref::<crate::resources::ResourceStore>()
+            .downcast_ref::<tilolang_tilo::resources::ResourceStore>()
             && !store.same(self.host.store())
         {
             self.rehost(store.clone())?;
@@ -300,21 +305,23 @@ impl ResourceService {
     ) -> Result<(), String> {
         let wake = self.origin_waker.clone().unwrap_or_else(|| Arc::new(|| {}));
         let stream = tilo_socket::Stream::from(connection);
-        let shared = crate::origin::remote(origin, stream, wake)?;
+        let shared = tilolang_tilo::origin::remote(origin, stream, wake)?;
         self.origins.borrow_mut().push(shared);
         // What an effect of a package's action hands an origin goes to that origin; anything
         // this service does not carry out itself (the development log's `post`) goes to the
         // log, as a window without a sink does.
-        self.host.runtime().set_sink(crate::origin::RoutingSink {
-            origins: std::rc::Rc::clone(&self.origins),
-            rest: Box::new(crate::sink::LogSink::dev()),
-        });
+        self.host
+            .runtime()
+            .set_sink(tilolang_tilo::origin::RoutingSink {
+                origins: std::rc::Rc::clone(&self.origins),
+                rest: Box::new(tilolang_tilo::sink::LogSink::dev()),
+            });
         Ok(())
     }
 
     /// Have `wake` called when an origin has something for the next [`Service::poll`]: an
     /// answer from the service it asked.
-    pub fn set_origin_waker(&mut self, wake: crate::background::Waker) {
+    pub fn set_origin_waker(&mut self, wake: tilolang_tilo::background::Waker) {
         self.origin_waker = Some(wake);
     }
 
@@ -325,9 +332,9 @@ impl ResourceService {
         if self.origins.borrow().is_empty() {
             return false;
         }
-        let now = crate::host::system_time();
+        let now = tilolang_tilo::host::system_time();
         let waker = self.origin_waker.clone().unwrap_or_else(|| Arc::new(|| {}));
-        let origins: Vec<crate::origin::SharedOrigin> = self.origins.borrow().clone();
+        let origins: Vec<tilolang_tilo::origin::SharedOrigin> = self.origins.borrow().clone();
         let mut wrote = false;
         // The outside effects a package's action queued, handed to the origin that carries
         // them out: an effect queued since the last pass goes now, whether or not any origin is
@@ -359,7 +366,7 @@ impl ResourceService {
                 })
                 .map(|package| package.meta.app.clone())
                 .unwrap_or_default();
-            let cx = crate::origin::OriginCx {
+            let cx = tilolang_tilo::origin::OriginCx {
                 host: &self.host,
                 app: &app,
                 waker: &waker,
@@ -418,7 +425,7 @@ impl ResourceService {
         resource: &str,
         flag: bool,
         arguments: &Map<String, Json>,
-        by: &crate::runtime::Actor,
+        by: &tilolang_tilo::runtime::Actor,
     ) -> Option<Result<(), String>> {
         let (app, path) = split_published(resource)?;
         let package = self.host.package(app)?;
@@ -442,12 +449,12 @@ impl ResourceService {
     /// `at`, a resource of the type `declared` of `meta`, to `value`, as `by`'s change.
     fn edit_field(
         &self,
-        meta: &crate::runtime::Meta,
+        meta: &tilolang_tilo::runtime::Meta,
         declared: &tilolang::meta::TypeMeta,
         at: &ResourceRef,
         field: &str,
         value: &Json,
-        by: &crate::runtime::Actor,
+        by: &tilolang_tilo::runtime::Actor,
     ) -> Result<(), String> {
         use tilolang::types::MergeKind;
         let declared_field = declared
@@ -538,7 +545,7 @@ impl ResourceService {
                 ApiError::InvalidArguments("open-link needs the link to open".to_owned())
             })?
             .to_owned();
-        let app = crate::publish::app_of(&address.resource)
+        let app = tilolang_tilo::publish::app_of(&address.resource)
             .ok_or_else(|| ApiError::Unknown(address.clone()))?
             .to_owned();
         let made = self
@@ -574,7 +581,7 @@ impl ResourceService {
         invoker: &tilo_actions::ActionInvoker,
     ) -> Result<Started, ApiError> {
         let address = ActionAddress::new(resource, action);
-        if crate::publish::app_of(resource).is_some_and(|app| self.each_members_own(app)) {
+        if tilolang_tilo::publish::app_of(resource).is_some_and(|app| self.each_members_own(app)) {
             return Err(ApiError::Unknown(address));
         }
         // The place this invocation is asked in, taken as this one's: a note from the step that
@@ -595,7 +602,7 @@ impl ResourceService {
             let encoded = self.host.carrying_out(by, || {
                 tilo_actions::api::encode_json(&resources, &address, arguments)
             })?;
-            if encoded.type_id == crate::effects::OPEN_OPERATION {
+            if encoded.type_id == tilolang_tilo::effects::OPEN_OPERATION {
                 let mut open =
                     open_asked(&encoded.payload, resource).map_err(ApiError::InvalidArguments)?;
                 open.beside = beside;
@@ -606,10 +613,11 @@ impl ResourceService {
                 // A link is the workspace's to mint, under the page its host announces: this
                 // service answers for the resources it publishes, as an app's root does for its
                 // own.
-                let app = crate::publish::app_of(resource)
+                let app = tilolang_tilo::publish::app_of(resource)
                     .ok_or_else(|| ApiError::Unknown(address.clone()))?;
-                let output = crate::share::answer(&encoded.payload, app, self.link_home.as_ref())
-                    .map_err(ApiError::Failed)?;
+                let output =
+                    tilolang_tilo::share::answer(&encoded.payload, app, self.link_home.as_ref())
+                        .map_err(ApiError::Failed)?;
                 return Ok(Started::Done(output));
             }
             if encoded.type_id == tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE {
@@ -642,8 +650,8 @@ impl ResourceService {
         // reaches it.
         // The answer names the characters it wrote: the window draws them in the writer's
         // colour, ending at the writer's caret.
-        let wrote =
-            crate::publish::app_of(resource).and_then(|app| self.host.store().take_wrote(app));
+        let wrote = tilolang_tilo::publish::app_of(resource)
+            .and_then(|app| self.host.store().take_wrote(app));
         self.publications.update(&self.host, &self.planner);
         self.told();
         let mut output = returned.unwrap_or_default();
@@ -658,7 +666,7 @@ impl ResourceService {
         type_id: &str,
         payload: &[u8],
         resource: &str,
-        by: &crate::runtime::Actor,
+        by: &tilolang_tilo::runtime::Actor,
     ) -> Option<Result<Started, ApiError>> {
         let value = if type_id == EDIT_TYPE {
             serde_json::from_slice::<HistoryEdit>(payload)
@@ -698,13 +706,13 @@ impl ResourceService {
             .host
             .package(app)
             .ok_or_else(|| format!("`{app}` is not loaded here"))?;
-        let target = crate::meta::open_link_root(&package.meta)
+        let target = tilolang_tilo::meta::open_link_root(&package.meta)
             .ok_or_else(|| format!("`{app}` does not open links"))?;
         let action = package
             .meta
             .actions
             .iter()
-            .find(|action| !action.scenario && action.name == crate::meta::OPEN_LINK_ACTION)
+            .find(|action| !action.scenario && action.name == tilolang_tilo::meta::OPEN_LINK_ACTION)
             .ok_or_else(|| format!("`{app}` does not open links"))?
             .clone();
         let root = self
@@ -735,7 +743,7 @@ impl ResourceService {
         &self,
         edit: &HistoryEdit,
         resource: &str,
-        by: &crate::runtime::Actor,
+        by: &tilolang_tilo::runtime::Actor,
     ) -> Result<Json, String> {
         let store = self.host.store();
         let failed = |error: tilolang_runtime::store::StoreError| error.to_string();
@@ -799,8 +807,9 @@ impl ResourceService {
     /// of every resource published in it, oldest first, the last ones it asks for, each as this
     /// service's person reads it.
     fn history_view(&self, view: &HistoryView, resource: &str) -> Result<Json, String> {
-        let reader =
-            crate::runtime::Actor::Member(crate::runtime::ids::MemberId::person(&self.person));
+        let reader = tilolang_tilo::runtime::Actor::Member(
+            tilolang_tilo::runtime::ids::MemberId::person(&self.person),
+        );
         history(&self.host, &[self.tree(resource)?], view, &reader)
     }
 
@@ -833,7 +842,7 @@ pub fn history(
     host: &Host,
     trees: &[&ResourceSpec],
     view: &HistoryView,
-    reader: &crate::runtime::Actor,
+    reader: &tilolang_tilo::runtime::Actor,
 ) -> Result<Json, String> {
     let HistoryView::History { last } = view else {
         return Err("only the history of a resource is offered here".to_owned());
@@ -841,7 +850,7 @@ pub fn history(
     let reads = host.reads_for(reader);
     let mut versions = Vec::new();
     for tree in trees {
-        let app = crate::publish::app_of(tree.id.as_str()).unwrap_or_default();
+        let app = tilolang_tilo::publish::app_of(tree.id.as_str()).unwrap_or_default();
         versions.extend(
             self::versions(host, tree)?
                 .into_iter()
@@ -891,7 +900,7 @@ fn history_label(host: &Host, id: &str) -> String {
     else {
         return String::new();
     };
-    match (&at.item, crate::schema::lookup(&at.ty)) {
+    match (&at.item, tilolang_tilo::schema::lookup(&at.ty)) {
         (None, Some(schema)) => schema.spoken_name(),
         _ => host.label_at(&at),
     }
@@ -943,11 +952,6 @@ fn scalar_of(value: &Value) -> Result<Scalar, String> {
     })
 }
 
-/// The app and the path in it of the published id `resource` (`tl:<app>:<path>`).
-fn split_published(resource: &str) -> Option<(&str, &str)> {
-    resource.strip_prefix("tl:")?.split_once(':')
-}
-
 /// Call `visit` with `spec` and every resource published in it, depth first.
 fn each_published(spec: &ResourceSpec, visit: &mut dyn FnMut(&ResourceSpec)) {
     visit(spec);
@@ -956,136 +960,18 @@ fn each_published(spec: &ResourceSpec, visit: &mut dyn FnMut(&ResourceSpec)) {
     }
 }
 
-/// The resource `path` of the app `app` that `host`'s store holds, typed as the type of `app`
-/// it is of: a package's root not made yet counts as held, as it reads as it would start.
-/// `None` for a path that names none of the app's resources.
-fn resource_at(host: &Host, app: &str, path: &str) -> Option<ResourceRef> {
-    let kinds = host.store().kinds();
-    let mut types = kinds
-        .types()
-        .filter(|entry| entry.app == app)
-        .map(|entry| entry.id.clone());
-    types.find_map(|ty| {
-        let at = ResourceRef::parse_id(path, ty)?;
-        let unmade_root = at.is_unmade_root() && at.doc == format!("root-{}", at.ty);
-        (unmade_root || host.store().contains(&at)).then_some(at)
-    })
-}
-
 /// The place the `open` effect `payload` names: the resource the invocation addresses — the
 /// published id of the root or item whose `open` ran — and the view it shows, empty for the
 /// type's primary one.
 fn open_asked(payload: &[u8], resource: &str) -> Result<tilo_service::Open, String> {
     use tilo_resource::Effect as _;
-    let open =
-        crate::effects::OpenEffect::from_payload(payload).map_err(|error| error.to_string())?;
+    let open = tilolang_tilo::effects::OpenEffect::from_payload(payload)
+        .map_err(|error| error.to_string())?;
     Ok(tilo_service::Open {
         resource: resource.to_owned(),
         view: open.view().unwrap_or_default().to_owned(),
         beside: String::new(),
     })
-}
-
-/// The pseudo-field of a reading of an item that names what holds it, as a link names what links
-/// to it (`{"ref": <published id>, "ty": "<app>#<Type>"}`): the conversation a message is in, the
-/// notebook a note is in. An item moved elsewhere reads as held where it is now.
-pub const HELD_IN: &str = "$in";
-
-/// The reading of the root or item `resource` (its published id, `tl:<app>:<id>`) that `host`
-/// reads: its fields as the runtime reads them, each by its field id, what holds it ([`HELD_IN`]),
-/// and what links to it. What a runtime that loads its package as another app's reads back
-/// ([`tilolang_runtime::Runtime::set_reading`]). `None` for a resource `host` holds none of.
-#[must_use]
-pub fn reading_of(host: &Host, resource: &str) -> Option<Json> {
-    let (app, path) = split_published(resource)?;
-    host.package(app)?;
-    let at = resource_at(host, app, path)?;
-    let schema = crate::schema::lookup(&at.ty)?;
-    let runtime = host.runtime();
-    let mut fields = Map::new();
-    for field in &schema.fields {
-        let Ok(value) = runtime.read(&at, &field.id) else {
-            continue;
-        };
-        let Ok(mut json) = tilolang_runtime::value::to_json(&value) else {
-            continue;
-        };
-        published_refs(&mut json);
-        fields.insert(field.id.clone(), json);
-    }
-    // What the person it is read for has not seen of its items: a view composed elsewhere
-    // counts it as this app's own views do ([`tilolang_runtime::store::UNSEEN`]).
-    if let Some(unseen) = runtime.unseen_reading(host.viewer(), &at) {
-        fields.insert(tilolang_runtime::store::UNSEEN.to_owned(), unseen);
-    }
-    if let Ok(Some((holder, _))) = host.store().container(&at)
-        && let Some(schema) = crate::schema::lookup(&holder.ty)
-    {
-        fields.insert(
-            HELD_IN.to_owned(),
-            serde_json::json!({
-                "ref": resource_id(&schema.app, &holder.id_string()),
-                "ty": format!("{}#{}", schema.app, schema.name),
-            }),
-        );
-    }
-    // What links to it, each with how: a view composed elsewhere draws them as this app's
-    // own views do ([`tilolang_runtime::store::LINKS`]), and runs again when they move.
-    if let Ok(links) = host.store().linked(&at) {
-        let links: Vec<Json> = links
-            .into_iter()
-            .filter_map(|link| {
-                let schema = crate::schema::lookup(&link.of.ty)?;
-                Some(Json::Object(Map::from_iter([
-                    (
-                        "ref".to_owned(),
-                        Json::String(resource_id(&schema.app, &link.of.id_string())),
-                    ),
-                    (
-                        "ty".to_owned(),
-                        Json::String(format!("{}#{}", schema.app, schema.name)),
-                    ),
-                    ("how".to_owned(), Json::String(link.how.word().to_owned())),
-                ])))
-            })
-            .collect();
-        if !links.is_empty() {
-            fields.insert(
-                tilolang_runtime::store::LINKS.to_owned(),
-                Json::Array(links),
-            );
-        }
-    }
-    Some(Json::Object(fields))
-}
-
-/// Each reference in `json` named as the session publishes it: by its published id, and its
-/// type as `<app>#<Type>`.
-fn published_refs(json: &mut Json) {
-    match json {
-        Json::Object(fields) => {
-            let named = fields
-                .get("ref")
-                .and_then(Json::as_str)
-                .zip(fields.get("ty").and_then(Json::as_str))
-                .and_then(|(id, ty)| {
-                    let schema = crate::schema::lookup(ty)?;
-                    Some((
-                        resource_id(&schema.app, id),
-                        format!("{}#{}", schema.app, schema.name),
-                    ))
-                });
-            if let Some((id, ty)) = named {
-                fields.insert("ref".into(), Json::String(id));
-                fields.insert("ty".into(), Json::String(ty));
-            }
-            for nested in fields.values_mut() {
-                published_refs(nested);
-            }
-        }
-        Json::Array(items) => items.iter_mut().for_each(published_refs),
-        _ => {}
-    }
 }
 
 impl ResourceService {
@@ -1189,7 +1075,7 @@ impl ResourceService {
             Ok(Value::Ref(reference)) => ResourceRef::clone(&reference.target),
             other => return Err(format!("the notice opens nothing it can run: {other:?}")),
         };
-        let schema = crate::schema::lookup(&opens.ty)
+        let schema = tilolang_tilo::schema::lookup(&opens.ty)
             .ok_or_else(|| format!("no app keeps `{}`", opens.ty))?;
         let package = self
             .host
@@ -1201,9 +1087,9 @@ impl ResourceService {
             .iter()
             .find(|declared| declared.name == action)
             .ok_or_else(|| format!("{} declares no action `{action}`", schema.app))?;
-        let by = crate::runtime::Actor::Member(crate::runtime::ids::MemberId::person(
-            self.person.as_str(),
-        ));
+        let by = tilolang_tilo::runtime::Actor::Member(
+            tilolang_tilo::runtime::ids::MemberId::person(self.person.as_str()),
+        );
         self.host
             .runtime()
             .invoke_action(&by, (named.id.as_str(), vec![Value::resource(&opens)]))
@@ -1251,13 +1137,14 @@ impl Service for ResourceService {
         if self.in_workspace {
             return Ok(false);
         }
-        let port: std::rc::Rc<dyn crate::resources::Port> = std::rc::Rc::new(WorkspacePort {
-            store: std::rc::Rc::clone(store),
-            app: app.clone(),
-        });
+        let port: std::rc::Rc<dyn tilolang_tilo::resources::Port> =
+            std::rc::Rc::new(WorkspacePort {
+                store: std::rc::Rc::clone(store),
+                app: app.clone(),
+            });
         // The service moves only once the workspace took the seed: one it refused leaves the
         // service reading the resources it held, and the move is asked again.
-        let host = self.host_over(crate::resources::ResourceStore::new(port))?;
+        let host = self.host_over(tilolang_tilo::resources::ResourceStore::new(port))?;
         // Seeded once something besides the app's root is kept: a root alone is what a seed the
         // workspace refused partway left (its keys were not here yet), and it is seeded again.
         let held = match host.package(&app) {
@@ -1329,7 +1216,7 @@ impl Service for ResourceService {
             .trees()
             .values()
             .filter(|tree| {
-                crate::publish::app_of(tree.id.as_str())
+                tilolang_tilo::publish::app_of(tree.id.as_str())
                     .is_none_or(|app| !self.each_members_own(app))
             })
             .map(|tree| {
@@ -1353,7 +1240,7 @@ impl Service for ResourceService {
     }
 
     fn read(&self, resource: &str) -> Option<Json> {
-        let app = crate::publish::app_of(resource)?;
+        let app = tilolang_tilo::publish::app_of(resource)?;
         if self.each_members_own(app) {
             return None;
         }
@@ -1450,7 +1337,7 @@ impl Service for ResourceService {
     fn connectors(&self) -> Vec<tilo_service::Connector> {
         // A package's types that hold an outside service's resources: the origins the session
         // runs a connector process for, for the app whose manifest the package is
-        // (`crate::origin::origin_types`). Only an origin a crate registered a connector's
+        // (`tilolang_tilo::origin::origin_types`). Only an origin a crate registered a connector's
         // client for gets one.
         let mut connectors: Vec<tilo_service::Connector> = Vec::new();
         for package in self.host.packages() {
@@ -1459,7 +1346,7 @@ impl Service for ResourceService {
                 else {
                     continue;
                 };
-                if !crate::origin::served(origin) {
+                if !tilolang_tilo::origin::served(origin) {
                     continue;
                 }
                 let connector = tilo_service::Connector {
@@ -1494,7 +1381,7 @@ struct WorkspacePort {
     app: String,
 }
 
-impl crate::resources::Port for WorkspacePort {
+impl tilolang_tilo::resources::Port for WorkspacePort {
     fn command(
         &self,
         command: tilo_resource_store::wire::Command,
@@ -1541,12 +1428,6 @@ fn kept_by_its_app(resource: &mut ResourceSpec) {
 pub fn reading_type(kind: &str) -> Option<String> {
     let (app, ty) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
     Some(format!("{app}#{ty}"))
-}
-
-/// The app of a resource whose type the shell's runtime names `<app>#<Type>`.
-#[must_use]
-pub fn app_of(ty: &str) -> Option<&str> {
-    ty.split_once('#').map(|(app, _)| app)
 }
 
 /// Each resource `records` (the ids a shell's places name) that `resources`, the session's

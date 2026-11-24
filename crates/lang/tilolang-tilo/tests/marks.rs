@@ -7,7 +7,8 @@ use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewEvent, ViewInstance};
 
 use crate::fixtures::Replica;
-use crate::legibility::{AGENT, NOTES_APP, Tidied, an_agent_tidies_notes_and_tasks, call, helper};
+use crate::fixtures::call;
+use crate::legibility::{AGENT, NOTES_APP, Tidied, an_agent_tidies_notes_and_tasks, helper};
 
 /// Every row of the view's list, as the list builds them.
 fn rows(view: &mut ViewInstance) -> Vec<UiNode> {

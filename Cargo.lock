@@ -20731,6 +20731,7 @@ dependencies = [
  "tilolang-mail",
  "tilolang-music",
  "tilolang-process",
+ "tilolang-service",
  "tilolang-tilo",
  "tilolang-youtube",
  "tokio",
@@ -22266,6 +22267,7 @@ dependencies = [
  "tilo-workspace-emoji",
  "tilo-workspace-keys",
  "tilolang-calendar",
+ "tilolang-service",
  "tilolang-tilo",
  "tokio",
  "tokio-rustls",
@@ -22533,6 +22535,7 @@ dependencies = [
  "tilolang-mail",
  "tilolang-music",
  "tilolang-process",
+ "tilolang-service",
  "tilolang-tilo",
  "tilolang-youtube",
  "tokio",
@@ -22590,6 +22593,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilolang-service"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "collaboration",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-reference",
+ "tilo-resource",
+ "tilo-resource-store",
+ "tilo-service",
+ "tilo-socket",
+ "tilo-test-env",
+ "tilolang",
+ "tilolang-mail",
+ "tilolang-runtime",
+ "tilolang-tilo",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilolang-tilo"
 version = "0.1.0"
 dependencies = [
@@ -22616,7 +22642,6 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-resource-store",
- "tilo-service",
  "tilo-socket",
  "tilo-test-env",
  "tilo-ui",
@@ -27970,6 +27995,7 @@ dependencies = [
  "tilolang-music",
  "tilolang-process",
  "tilolang-runtime",
+ "tilolang-service",
  "tilolang-tilo",
  "tilolang-web",
  "tilolang-youtube",

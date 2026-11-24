@@ -2,13 +2,14 @@
 //! shows it and no one else's does, what one of them does with it is what all of them see, and
 //! what it opens resolves from any of them.
 
+use crate::IntoService as _;
 use crate::fixtures::Workspace;
 use serde_json::{Map, Value as Json, json};
 use tilo_service::notice::{Closed, Notice};
 use tilo_service::{Service, Started};
 use tilolang_runtime::{Actor, InvokeOutcome, Meta, Value};
+use tilolang_service::ResourceService;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::resource_service::ResourceService;
 
 use crate::fixtures::{Replica, action_id};
 

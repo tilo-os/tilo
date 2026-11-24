@@ -81,8 +81,8 @@ fn the_notebook_lists_its_notes_in_the_order_the_store_keeps_them() {
 
     // A note made stands after the ones the notebook holds.
     let notes = Value::resource(&replica.host.root_of(NOTES).unwrap());
-    let made = crate::legibility::call(&replica, "ada", NOTES, "new_note", vec![notes]);
-    crate::legibility::call(
+    let made = crate::fixtures::call(&replica, "ada", NOTES, "new_note", vec![notes]);
+    crate::fixtures::call(
         &replica,
         "ada",
         NOTES,

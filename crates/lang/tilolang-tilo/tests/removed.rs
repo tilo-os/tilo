@@ -16,8 +16,8 @@ use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::runtime::ids::MemberId;
 use tilolang_tilo::runtime::{Actor, ResourceRef, Value};
 
+use crate::fixtures::call;
 use crate::fixtures::{Replica, Workspace, action_id, target};
-use crate::legibility::call;
 
 const MAIL_APP: &str = "so.tilo.mail";
 const MAIL: (&str, &str) = (

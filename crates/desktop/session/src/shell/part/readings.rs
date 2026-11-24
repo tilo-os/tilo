@@ -7,8 +7,9 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use tilolang_service::placed_documents;
 use tilolang_tilo::origin::OriginCx;
-use tilolang_tilo::resource_service::{app_of, placed_documents};
+use tilolang_tilo::readings::app_of;
 use tilolang_tilo::runtime::{ResourceRef, Value};
 
 use super::{Ask, LayoutReading, SessionLink, SessionOrigin};

@@ -1,0 +1,47 @@
+[package]
+autotests = false
+name = "tilolang-service"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "A tilolang app as a session service: its resources and actions served to the session, its notices, opens and shares."
+
+[dependencies]
+tilolang-tilo = { path = "../tilolang-tilo" }
+# The session service this is, as the session hosts it.
+tilo-service = { path = "../../desktop/service" }
+tilolang = { path = "../tilolang" }
+tilolang-runtime = { path = "../tilolang-runtime", default-features = false }
+# The history verbs a published root answers.
+collaboration = { version = "0.1.0", path = "../../core/collaboration" }
+serde_json.workspace = true
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+# The commands a workspace's store answers, which the service's port hands on.
+tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
+tracing.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+# An origin's connection to its connector: Unix sockets.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
+
+[dev-dependencies]
+tilolang-tilo = { path = "../tilolang-tilo", features = ["test-support"] }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
+collab-types = { version = "0.1.0", path = "../../core/collab-types" }
+collaboration = { version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }
+# The one link grammar a resource's `share-link` renders, which the page reads back.
+tilo-reference = { version = "0.1.0", path = "../../core/reference" }
+tilo-test-env = { path = "../../../tools/test-env" }
+# The sample mail server Mail's seed stands on, taken in through the real mail origin.
+tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

@@ -11,7 +11,7 @@
 //! and the shell for it beyond those records.
 
 use serde_json::Value;
-use tilolang_tilo::resource_service::HELD_IN;
+use tilolang_tilo::readings::HELD_IN;
 use tilolang_tilo::runtime::store::LINKS;
 
 /// The app and record id a published id (`tl:<app>:<id>`) names.

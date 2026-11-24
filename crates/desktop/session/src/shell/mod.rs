@@ -643,7 +643,7 @@ impl Shell {
             // Every app a place shows is published with this pass, however this pass was asked for:
             // a package a view asked for arrives beside them, and none of them goes with it.
             let resources = services.resources();
-            let placed = tilolang_tilo::resource_service::placed_documents(
+            let placed = tilolang_service::placed_documents(
                 layout
                     .places
                     .iter()
@@ -652,7 +652,7 @@ impl Shell {
                 &resources,
             );
             let mut packages = std::collections::BTreeMap::new();
-            let app_of = tilolang_tilo::resource_service::app_of;
+            let app_of = tilolang_tilo::readings::app_of;
             let mut apps: std::collections::BTreeSet<&str> =
                 self.needed.iter().map(String::as_str).collect();
             apps.extend(placed.values().filter_map(|ty| app_of(ty)));
@@ -696,7 +696,7 @@ impl Shell {
             }
         }
         for (id, ty) in wanted {
-            let app = tilolang_tilo::resource_service::app_of(&ty);
+            let app = tilolang_tilo::readings::app_of(&ty);
             let shown = app.is_some_and(|app| {
                 self.link.package_apps().iter().any(|held| held == app) || rust_views.contains(&app)
             });

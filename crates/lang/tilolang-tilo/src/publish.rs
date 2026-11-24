@@ -148,6 +148,12 @@ pub fn app_of(resource: &str) -> Option<&str> {
     Some(rest.split_once(':').map_or(rest, |(app, _)| app))
 }
 
+/// The app and the path in it of the published id `resource` (`tl:<app>:<path>`).
+#[must_use]
+pub fn split_published(resource: &str) -> Option<(&str, &str)> {
+    resource.strip_prefix("tl:")?.split_once(':')
+}
+
 /// What a resource of `schema` in the package `meta` is called while none of its own text names
 /// it: what its type declares (`(untitled: "Untitled")`, in the reader's words), else a
 /// package's root by the app's name ("Notes", "Notizen"), anything else by its type ("Todo
@@ -184,7 +190,8 @@ fn untitled_of(meta: &Meta, declared: &tilolang::meta::TypeMeta, words: &dyn Wor
 
 /// What the app `meta` is called in the reader's language: its title, in the words the package's
 /// own catalogue writes for it.
-pub(crate) fn app_name(words: &dyn Words, meta: &Meta) -> String {
+#[must_use]
+pub fn app_name(words: &dyn Words, meta: &Meta) -> String {
     label_of(words, &meta.app, &meta.title)
 }
 

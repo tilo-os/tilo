@@ -482,7 +482,7 @@ fn history_of(r: &Replica, who: &str, at: &[&ResourceRef]) -> Vec<serde_json::Va
         })
         .collect();
     let trees: Vec<&ResourceSpec> = trees.iter().collect();
-    let listed = tilolang_tilo::resource_service::history(
+    let listed = tilolang_service::history(
         &r.host,
         &trees,
         &HistoryView::History { last: Some(1000) },

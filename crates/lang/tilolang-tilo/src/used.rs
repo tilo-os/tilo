@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use crate::host::{Host, HostError};
-use crate::resource_service::{app_of, reading_of};
+use crate::readings::{app_of, reading_of};
 use crate::resources::ResourceStore;
 use crate::runtime::{Actor, Meta, ResourceRef, Runtime};
 

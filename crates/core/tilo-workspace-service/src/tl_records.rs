@@ -553,7 +553,7 @@ impl Opened {
     }
 
     /// Every version of the record's resources, oldest first, each as its history lists it
-    /// ([`tilolang_tilo::resource_service::version_entry`]). A version of a resource not every
+    /// ([`tilolang_service::version_entry`]). A version of a resource not every
     /// member may read names the members who may as `readers`, the way a change only some
     /// members read is listed, so that what passes it on tells it to them alone: the store's
     /// versions as a feed of the workspace's changes reads them.
@@ -569,7 +569,7 @@ impl Opened {
                 .unwrap_or(&self.app)
                 .to_owned();
             versions.extend(
-                tilolang_tilo::resource_service::versions(&self.host, tree)?
+                tilolang_service::versions(&self.host, tree)?
                     .into_iter()
                     .map(|version| (app.clone(), version)),
             );
@@ -580,8 +580,7 @@ impl Opened {
         Ok(versions
             .into_iter()
             .map(|(app, version)| {
-                let mut entry =
-                    tilolang_tilo::resource_service::version_entry(&self.host, &app, &version);
+                let mut entry = tilolang_service::version_entry(&self.host, &app, &version);
                 let readers = store
                     .type_of_id(&version.resource)
                     .and_then(|ty| ResourceRef::parse_id(&version.resource, ty))

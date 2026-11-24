@@ -2,16 +2,17 @@
 //! action is published, its reading is what a runtime loading notes as another app's package
 //! reads back, and a change to the note moves the reading.
 
+use crate::IntoService as _;
 use crate::fixtures::Workspace;
 use serde_json::{Map, Value as Json, json};
 use tilo_service::notice::Notice;
 use tilo_service::{Service, Started};
 use tilolang::IdsLock;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value};
+use tilolang_service::notices::Notices;
+use tilolang_service::{ResourceService, reading_type};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::notices::Notices;
 use tilolang_tilo::publish::resource_id;
-use tilolang_tilo::resource_service::{ResourceService, reading_type};
 
 use crate::fixtures::{Replica, field_id};
 

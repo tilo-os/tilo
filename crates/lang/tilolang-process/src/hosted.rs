@@ -477,7 +477,7 @@ fn with_app_actions(
     resource: ResourceSpec,
     activate: Option<&tilo_actions::ActionSpec>,
 ) -> ResourceSpec {
-    let mut resource = tilolang_tilo::resource_service::with_history(resource);
+    let mut resource = tilolang_service::with_history(resource);
     for spec in std::iter::once(tilo_resource::read::spec(None)).chain(activate.cloned()) {
         if !resource
             .actions
@@ -3484,7 +3484,7 @@ impl Hosted {
             vec![tree]
         };
         let reader = tilolang_tilo::runtime::Actor::Member(MemberId::person(person));
-        let mut value = tilolang_tilo::resource_service::history(host, &trees, &view, &reader)
+        let mut value = tilolang_service::history(host, &trees, &view, &reader)
             .map_err(|error| Refused::new("action_failed", error))?;
         say_versions(&mut value, &resources, locale);
         Ok(tilo_actions::ActionOutput {
