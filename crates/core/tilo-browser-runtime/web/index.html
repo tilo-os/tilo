@@ -14,7 +14,7 @@
        fetch would otherwise wait for every page module to load and run
        (host.mjs calls init). Asked for here, it streams from the first
        moment; init's own fetch (cors, same-origin credentials) takes it. -->
-  <link rel="preload" href="./pkg/tilo_browser_runtime_bg.wasm" as="fetch" crossorigin>
+  <link rel="preload" href="./pkg/tilo_browser_runtime_bg.wasm" as="fetch" crossorigin fetchpriority="high">
   <!-- The live session's library, which joining a workspace imports once the
        runtime is in: fetched now, it is not a round trip on that path. -->
   <!-- The entry page's own module, for the same reason. Without this it is
@@ -22,7 +22,14 @@
        imports then arrive in waves, each waiting on the module that imports
        it: with it, the entry page's graph loads beside the runtime rather
        than after it. -->
-  <link rel="modulepreload" href="./entry-page.mjs">
+  <link rel="modulepreload" fetchpriority="low" href="./entry-page.mjs">
+  <!-- What the first screen's buttons reach, fetched beside it rather than in
+       waves behind it: each of these is imported by a module that is itself
+       imported, so without a hint every one waits a round trip for the module
+       before it. -->
+  <link rel="modulepreload" fetchpriority="low" href="./host.mjs">
+  <link rel="modulepreload" fetchpriority="low" href="./peer.mjs">
+  <link rel="modulepreload" fetchpriority="low" href="./entry.mjs">
 <script>
 (()=>{
 // The entry pages' first script, inlined verbatim into each so it runs
