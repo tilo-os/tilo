@@ -311,30 +311,36 @@ fn power_section(
     // action the shell and Settings call. The people here are kept when nothing has chosen.
     let (widgets, published) = root("so.tilo.settings.sections#Widgets");
     assert_eq!(published, format!("devices/{DEVICE}/settings/widgets"));
-    publish(&host, &services, &widgets, &published);
-    let mut kept = host
+    publish(host, services, &widgets, &published);
+    let kept = host
         .open_resource(&widgets, Some(&declared("widgets")))
-        .unwrap();
+        .expect("the view opens on the widgets");
     assert_eq!(shown(&kept), Value::text("true"), "{:?}", kept.tree());
     kept.press(&anchor("off"))
         .expect("the button calls set-widget-enabled");
     assert_eq!(
-        services.borrow().read(&published).unwrap()["team"]["enabled"],
-        false,
+        reading(services, &published)
+            .pointer("/team/enabled")
+            .and_then(Json::as_bool),
+        Some(false),
         "the session's settings no longer keep the people here"
     );
     kept.press(&anchor("always"))
         .expect("the button calls set-widget-show");
     assert_eq!(
-        services.borrow().read(&published).unwrap()["music"]["show"],
-        "always"
+        reading(services, &published)
+            .pointer("/music/show")
+            .and_then(Json::as_str),
+        Some("always")
     );
     kept.press(&anchor("corner"))
         .expect("the button calls place-widget");
-    let placed = services.borrow().read(&published).unwrap()["team"]["places"].clone();
+    let placed = reading(services, &published)
+        .pointer("/team/places")
+        .cloned();
     assert_eq!(
         placed,
-        serde_json::json!([{ "display": "output:1", "x": 1.0, "y": 0.5 }]),
+        Some(serde_json::json!([{ "display": "output:1", "x": 1.0, "y": 0.5 }])),
         "the display it was dropped on and the fractions it rests at"
     );
 
