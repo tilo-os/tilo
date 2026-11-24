@@ -1297,7 +1297,7 @@ doc = false
 "tilo-vm" = { path = "../../tools/tilo-vm", default-features = false, features = [] }
 "tilo-wake" = { path = "../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../crates/desktop/tilo-wallpapers", default-features = false, features = [] }
-"tilo-wasm-host" = { path = "../../crates/core/tilo-wasm-host", default-features = false, features = ["wasmtime"] }
+"tilo-wasm-host" = { path = "../../crates/core/tilo-wasm-host", default-features = false, features = [] }
 "tilo-wayland-ext" = { path = "../../crates/desktop/wayland-ext", default-features = false, features = ["test-support"] }
 "tilo-web-search" = { path = "../../crates/integrations/tilo-web-search", default-features = false, features = ["fixture-servers"] }
 "tilo-webview" = { path = "../../crates/engines/tilo-webview", default-features = false, features = ["local-daemons", "webview-adblock"] }
@@ -2342,7 +2342,7 @@ doc = false
 "tilo-view" = { path = "../../crates/sdk/tilo-view", default-features = false, features = [] }
 "tilo-view-macros" = { path = "../../crates/sdk/view-macros", default-features = false, features = [] }
 "tilo-wake" = { path = "../../crates/platform/tilo-wake", default-features = false, features = [] }
-"tilo-wasm-host" = { path = "../../crates/core/tilo-wasm-host", default-features = false, features = ["wasmtime"] }
+"tilo-wasm-host" = { path = "../../crates/core/tilo-wasm-host", default-features = false, features = [] }
 "tilo-wgpu-29_0_3" = { package = "tilo-wgpu", path = "../../vendor/wgpu", default-features = false, features = ["custom", "default", "dx12", "gles", "metal", "noop", "parking_lot", "std", "vulkan", "web", "webgpu", "wgpu-core", "wgsl"] }
 "tilo-wire-frame" = { path = "../../crates/platform/wire-frame", default-features = false, features = ["postcard", "tokio"] }
 "tilo-words" = { path = "../../crates/core/tilo-words", default-features = false, features = [] }
@@ -3767,7 +3767,7 @@ doc = false
 "tilo-vm" = { path = "../../tools/tilo-vm", default-features = false, features = [] }
 "tilo-wake" = { path = "../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../crates/desktop/tilo-wallpapers", default-features = false, features = [] }
-"tilo-wasm-host" = { path = "../../crates/core/tilo-wasm-host", default-features = false, features = ["wasmtime"] }
+"tilo-wasm-host" = { path = "../../crates/core/tilo-wasm-host", default-features = false, features = [] }
 "tilo-wayland-ext" = { path = "../../crates/desktop/wayland-ext", default-features = false, features = ["test-support"] }
 "tilo-web-search" = { path = "../../crates/integrations/tilo-web-search", default-features = false, features = ["fixture-servers"] }
 "tilo-webview" = { path = "../../crates/engines/tilo-webview", default-features = false, features = ["local-daemons", "webview-adblock"] }

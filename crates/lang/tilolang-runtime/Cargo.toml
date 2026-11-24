@@ -102,7 +102,7 @@ workspace-hack = { version = "0.1" }
 [features]
 # Every shipped build runs the tiered engine; without the feature, wasmi alone.
 default = ["wasmtime"]
-wasmtime = ["dep:wasmtime", "tilo-wasm-host/wasmtime"]
+wasmtime = ["dep:wasmtime"]
 
 [dev-dependencies]
 # The database engine the Database Client asks by name, driven end to end by its test. No version:

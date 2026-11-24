@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 
 use wasmtime::{Instance, Linker, TypedFunc};
 
-use crate::wasmtime as host;
-use crate::{DEADLINE_EXCEEDED, Failure, ImportPolicy, Limits, reusable};
+use tilo_wasm_host::{DEADLINE_EXCEEDED, Failure, ImportPolicy, Limits, reusable};
+
+use super as host;
 
 fn limits() -> Limits {
     Limits {

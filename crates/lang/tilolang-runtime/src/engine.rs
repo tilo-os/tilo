@@ -39,6 +39,8 @@ mod tiering;
 mod wasmi_backend;
 #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 mod wasmtime_backend;
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
+mod wasmtime_host;
 
 use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashMap;
