@@ -503,6 +503,11 @@ impl Workspaces {
         let device = self.device_keys();
         let workspaces = self.downgrade();
         runtime.spawn(async move {
+            // A build without the device keys keeps no group keys to wait for: the keys and the
+            // deadline they are waited on come from that module, so it writes in the clear.
+            #[cfg(not(all(feature = "device-keys", not(target_arch = "wasm32"))))]
+            let _ = (device, &workspace);
+            #[cfg(all(feature = "device-keys", not(target_arch = "wasm32")))]
             if let Some(device) = device {
                 let keys_here = tokio::time::timeout(
                     super::sealed_documents::OPEN_WAIT,
