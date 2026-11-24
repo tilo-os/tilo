@@ -67,34 +67,6 @@ type ImportRow {
     skip: Bool
 }
 
-/// One app's permission to an item, as this device's secret service records it.
-type Grant {
-    /// The row the permission is revoked by.
-    grant: Text
-    app_name: Text
-    item: Text
-    origin: Text
-    /// `session`, or `persistent` until the person revokes it.
-    lifetime: Text
-    service: Text
-    account: Text
-    generation: Int
-}
-
-/// An app's request for one item's secret, waiting for the person's answer.
-type Ask {
-    request_id: Text
-    app_name: Text
-    item: Text
-    purpose: Text
-    origin: Text
-    service: Text
-    account: Text
-    generation: Int
-    person: Text
-    device: Text
-}
-
 /// The workspace's vault: every secret its members share, and what the window learned from the
 /// device of what it tried to do.
 type Vault {
@@ -104,9 +76,6 @@ type Vault {
     converted: Set<Text>
     /// The rows the person is deciding about, before an import.
     pending: Collection<ImportRow>
-    /// The apps this device lets use an item, and the requests waiting for an answer.
-    grants: Collection<Grant>
-    asks: Collection<Ask>
     /// What the last import, export or backup did, as a line the transfer page reads.
     notice: Text
 }
@@ -659,14 +628,12 @@ view vault_window(v: Vault) {
         "Other secrets"
     } else if place == "review" {
         "Password review"
-    } else if place == "access" {
-        "App access"
     } else if place == "transfer" { "Import and export" } else { "All items" }
     ui.NavShell(
         content_kind: .page,
         sidebar_title: "Passwords",
         overview_title: title,
-        overview_count: if place == "review" or place == "access" or place == "transfer" {
+        overview_count: if place == "review" or place == "transfer" {
             .none
         } else { .some(found.len()) },
     ) {
@@ -730,16 +697,6 @@ view vault_window(v: Vault) {
                             .then(set(opened, .none))
                             .then(set(in_editor, false))
                     }
-                    ui.NavItem(
-                        "access",
-                        "App access",
-                        icon: .monitor,
-                        count: v.grants.len() + v.asks.len(),
-                    ) {
-                        on select: set(place, "access")
-                            .then(set(opened, .none))
-                            .then(set(in_editor, false))
-                    }
                     ui.NavItem("transfer", "Import and export", icon: .arrow_up_down) {
                         on select: set(place, "transfer")
                             .then(set(opened, .none))
@@ -776,7 +733,7 @@ view vault_window(v: Vault) {
                         std.add_entry("New item", new_item(v))
                     }
                 }
-                if place == "review" or place == "access" or place == "transfer" {
+                if place == "review" or place == "transfer" {
                     text(
                         "The tool you chose is in the content beside the list.",
                         role: .caption,
@@ -822,8 +779,6 @@ view vault_window(v: Vault) {
         content: {
             if place == "review" {
                 review_page(v)
-            } else if place == "access" {
-                access_page(v)
             } else if place == "transfer" {
                 transfer_page(
                     v,
@@ -1210,87 +1165,6 @@ view review_page(v: Vault) {
     }
 }
 
-/// The apps this device lets use the vault, and the requests waiting for an answer.
-// ---------------------------------------------------------------- app access
-view access_page(v: Vault) {
-    ui.Scroll {
-        page {
-            stack(gap: .group) {
-                text("App access", role: .title)
-                text(
-                    "Each app below can fill the item beside it without asking you first.",
-                    role: .body,
-                )
-                row(gap: .related) {
-                    ui.Button("Refresh", icon: .refresh) {
-                        on press: refresh_access(v)
-                    }
-                }
-                if not v.asks.is_empty() {
-                    ui.Section("Waiting for your decision") {
-                        for ask in v.asks {
-                            stack(gap: .tight) {
-                                text(ask_details(v, ask), role: .body)
-                                row(gap: .related, wrap: true) {
-                                    ui.Button("Allow for this session", role: .primary) {
-                                        on press: decide_access(v, ask.request_id, "session")
-                                    }
-                                    ui.Button("Allow until revoked") {
-                                        on press: decide_access(v, ask.request_id, "persistent")
-                                    }
-                                    ui.Button("Decline") {
-                                        on press: decide_access(v, ask.request_id, "deny")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if v.grants.is_empty() and v.asks.is_empty() {
-                    ui.EmptyState(
-                        "No app can use your vault without asking",
-                        icon: .shield,
-                        inline: true,
-                    )
-                } else if not v.grants.is_empty() {
-                    ui.Section("Allowed apps") {
-                        for grant in v.grants {
-                            row(gap: .related, align: .center) {
-                                text(grant.app_name, role: .label, min: 10rem)
-                                text(grant_details(v, grant), role: .caption, secondary: true)
-                                spacer
-                                ui.Button("Revoke access", icon: .ban, role: .destructive) {
-                                    on press: revoke_access(v, grant)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// What granting an app access to an item says, in words the person reads.
-fn ask_details(v: Vault, ask: Ask) -> Text {
-    let item = if ask.item == "" { "a saved item" } else { ask.item }
-    "{ask.app_name} requests access to {item}. Purpose: {ask.purpose}. Origin: {ask.origin}. Account {ask.account}. Person: {ask.person}. Device: {ask.device}."
-}
-
-/// What a permission says: the item and where the app reaches it.
-fn grant_details(v: Vault, grant: Grant) -> Text {
-    let scope = if grant.account == "" {
-        grant.lifetime
-    } else {
-        "{grant.lifetime} · {grant.service} account {grant.account}"
-    }
-    if grant.origin == "" {
-        "{grant.item} · {scope}"
-    } else {
-        "{grant.item} · {host_of(grant.origin)} · {scope}"
-    }
-}
-
 /// The transfer page: an encrypted backup, the browser's CSV, and what this device's own vault
 /// holds.
 // ---------------------------------------------------------------- import and export
@@ -1660,93 +1534,6 @@ fn holds_device_login(v: Vault, one: DeviceItem) -> Bool {
     )
 }
 
-/// Reads what this device's secret service lets apps do with the vault, and what they ask.
-action refresh_access(v: Vault) (icon: .refresh, label: "Refresh app access") {
-    clear_access(v)
-    match engine.call("access", "") {
-        .ok(text) => match json.decode<AccessAnswer>(text) {
-            .ok(answer) => {
-                for one in answer.grants {
-                    v.grants.insert(
-                        Grant(
-                            grant: one.grant,
-                            app_name: one.app_name,
-                            item: one.item,
-                            origin: one.origin,
-                            lifetime: one.lifetime,
-                            service: one.service,
-                            account: one.account,
-                            generation: one.generation,
-                        ),
-                    )
-                }
-                for one in answer.asks {
-                    v.asks.insert(
-                        Ask(
-                            request_id: one.request_id,
-                            app_name: one.app_name,
-                            item: one.item,
-                            purpose: one.purpose,
-                            origin: one.origin,
-                            service: one.service,
-                            account: one.account,
-                            generation: one.generation,
-                            person: one.person,
-                            device: one.device,
-                        ),
-                    )
-                }
-            }
-            .err(why) => {
-                v.notice = why
-            }
-        },
-        .err(why) => {
-            v.notice = why
-        }
-    }
-}
-
-/// Answers an app's request: this session, until revoked, or no.
-action decide_access(v: Vault, request_id: Text, decision: Text) (
-    icon: .check,
-    label: "Answer an app's request",
-) {
-    match engine.call("decide", json.encode(DecideAsk(request: request_id, decision: decision))) {
-        .ok(seen) => { refresh_access(v) }
-        .err(why) => {
-            v.notice = why
-        }
-    }
-}
-
-/// Takes a permission back.
-destructive action revoke_access(v: Vault, grant: Grant) (
-    icon: .ban,
-    label: "Revoke app access",
-    did: "revoked an app's access",
-) {
-    match engine.call("revoke", json.encode(RevokeAsk(grant: grant.grant))) {
-        .ok(seen) => { refresh_access(v) }
-        .err(why) => {
-            v.notice = why
-        }
-    }
-}
-
-/// Empties what the window read of the device's permissions.
-action clear_access(v: Vault) -> Bool (icon: .x, label: "Clear the read permissions") {
-    let grants = v.grants.map(g -> g)
-    for grant in grants {
-        v.grants.remove(grant)
-    }
-    let asks = v.asks.map(a -> a)
-    for ask in asks {
-        v.asks.remove(ask)
-    }
-    true
-}
-
 /// The questions the window asks over its page: revealing a secret, deleting an item, writing its
 /// password or notes, and the backup and restore forms.
 // ---------------------------------------------------------------- the window's dialogs
@@ -1951,16 +1738,6 @@ type RemoveAsk {
     ids: List<Text>
 }
 
-/// What the device is asked to decide about an app's request, and to take back.
-type DecideAsk {
-    request: Text
-    decision: Text
-}
-
-type RevokeAsk {
-    grant: Text
-}
-
 /// One item as a device or a backup hands it over.
 type DeviceItem {
     id: Text
@@ -1997,37 +1774,6 @@ type RowsAnswer {
 /// Where an engine kept what it made.
 type UrlAnswer {
     url: Text
-}
-
-/// One permission a device's secret service records, and one request waiting for an answer.
-type GrantAnswer {
-    grant: Text
-    app_name: Text
-    item: Text
-    origin: Text
-    lifetime: Text
-    service: Text
-    account: Text
-    generation: Int
-}
-
-type AskAnswer {
-    request_id: Text
-    app_name: Text
-    item: Text
-    purpose: Text
-    origin: Text
-    service: Text
-    account: Text
-    generation: Int
-    person: Text
-    device: Text
-}
-
-/// What the device says of the apps it lets use the vault, and of those asking.
-type AccessAnswer {
-    grants: List<GrantAnswer>
-    asks: List<AskAnswer>
 }
 
 /// A vault of eight items: a bank, a mailbox, a code host, a cloud console key, a streaming

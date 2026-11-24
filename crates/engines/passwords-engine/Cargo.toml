@@ -4,17 +4,15 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license.workspace = true
-description = "The Passwords app's own engine: this device's secret vault, the permissions apps hold on it, browser CSV files and passphrase-encrypted backups. No UI."
+description = "The Passwords app's own engine: this device's secret vault, browser CSV files and passphrase-encrypted backups. No UI."
 
 [lib]
 name = "passwords_engine"
 path = "src/lib.rs"
 
 [dependencies]
-# The device's secret vault: the entries a workspace may take in, and the permissions apps hold.
+# The device's secret vault: the entries a workspace may take in.
 accounts = { path = "../../integrations/accounts" }
-# The permission requests the messaging service asks the person about.
-tilo-messaging = { path = "../../integrations/tilo-messaging", features = ["service-client"] }
 # The passphrase envelope a backup is written in.
 tilo-seal = { path = "../../core/tilo-seal" }
 serde.workspace = true

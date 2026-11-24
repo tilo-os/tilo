@@ -2,8 +2,8 @@
 //! `so.tilo.passwords` by the pieces this device already holds.
 //!
 //! The app runs sandboxed and keeps the workspace's vault as records. What belongs to this
-//! device alone is here: the secret service's own vault and the permissions apps hold on it, the
-//! browser CSV a person moves logins through, and the passphrase-encrypted backup. A request
+//! device alone is here: the secret service's own vault, whose entries move into the workspace's,
+//! the browser CSV a person moves logins through, and the passphrase-encrypted backup. A request
 //! carries JSON the app wrote; the answer is JSON the app reads back into its own records.
 //!
 //! Reading and keeping a file's bytes is the host's: [`Device`] is the platform's content store,
@@ -11,10 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use accounts::{
-    AccessDecision, CredentialBroker, CredentialGrant, CredentialScope, GrantLifetime, SecretId,
-    SecretItem, SecretItemKind, SecretStore,
-};
+use accounts::{SecretId, SecretItem, SecretItemKind, SecretStore};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use tilo_seal::envelope::{self, Envelope, KeySource};
@@ -51,9 +48,6 @@ pub fn call(device: &dyn Device, app: &str, op: &str, input: &str) -> Result<Str
     match op {
         "device-items" => Ok(device_items()),
         "device-remove" => device_remove(input),
-        "access" => access(),
-        "decide" => decide(input),
-        "revoke" => revoke(input),
         "csv-import" => csv_import(device, input),
         "csv-export" => csv_export(device, input),
         "backup-export" => backup_export(device, input),
@@ -80,10 +74,10 @@ fn device_items() -> String {
     json!({"items": items, "error": ""}).to_string()
 }
 
-/// Whether an item of the device vault belongs in the workspace: what a workspace may share,
-/// which leaves the device's authentication material and the Wi-Fi networks the device joined.
+/// Whether an item of the device vault belongs in the workspace: everything but the Wi-Fi
+/// networks the device joined.
 fn travels_to_workspace(item: &SecretItem) -> bool {
-    item.may_share_with_workspace() && item.kind != SecretItemKind::Wifi
+    item.kind != SecretItemKind::Wifi
 }
 
 /// One item as the app reads it.
@@ -143,114 +137,6 @@ fn device_remove(input: &str) -> Result<String, String> {
         .flush()
         .map_err(|error| format!("could not keep the device vault: {error}"))?;
     Ok(json!({ "removed": removed }).to_string())
-}
-
-// ---------------------------------------------------------------- app access
-
-/// What apps may do with this device's vault, and what they ask.
-fn access() -> Result<String, String> {
-    let store = SecretStore::open();
-    if let Some(error) = store.recovery_error() {
-        return Err(error.to_owned());
-    }
-    let titles: BTreeMap<String, String> = store
-        .list()
-        .into_iter()
-        .map(|item| (item.id.0.clone(), item.title))
-        .collect();
-    let broker = CredentialBroker::new(store);
-    let grants: Vec<Json> = broker
-        .current_grants()
-        .iter()
-        .map(|grant| grant_json(grant, &titles))
-        .collect();
-    let asks: Vec<Json> = tilo_messaging::service::proposals()
-        .iter()
-        .map(|proposal| {
-            json!({
-                "request_id": proposal.id,
-                "app_name": app_name(&proposal.request.app_id),
-                "item": titles.get(&proposal.request.item_id.0).cloned().unwrap_or_default(),
-                "purpose": proposal.request.purpose,
-                "origin": proposal.request.origin.clone().unwrap_or_default(),
-                "service": proposal.scope.service,
-                "account": proposal.scope.account,
-                "generation": proposal.scope.generation,
-                "person": proposal.scope.actor,
-                "device": proposal.scope.device,
-            })
-        })
-        .collect();
-    Ok(json!({ "grants": grants, "asks": asks }).to_string())
-}
-
-/// One permission as the app reads it.
-fn grant_json(grant: &CredentialGrant, titles: &BTreeMap<String, String>) -> Json {
-    let scope: Option<&CredentialScope> = grant.scope.as_ref();
-    json!({
-        "grant": grant.id(),
-        "app_name": app_name(&grant.app_id),
-        "item": titles.get(&grant.item_id.0).cloned().unwrap_or_default(),
-        "origin": grant.origin.clone().unwrap_or_default(),
-        "lifetime": match grant.lifetime {
-            GrantLifetime::Session => "session",
-            GrantLifetime::Persistent => "persistent",
-        },
-        "service": scope.map(|scope| scope.service.clone()).unwrap_or_default(),
-        "account": scope.map(|scope| scope.account.clone()).unwrap_or_default(),
-        "generation": scope.map_or(0, |scope| scope.generation),
-    })
-}
-
-/// "Browser" for `so.tilo.browser`, "Code editor" for `so.tilo.code-editor`.
-fn app_name(app_id: &str) -> String {
-    let last = app_id.rsplit('.').next().unwrap_or(app_id).replace('-', " ");
-    let mut chars = last.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
-}
-
-/// Answers an app's request: this session, until revoked, or no.
-fn decide(input: &str) -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct Decide {
-        request: String,
-        decision: String,
-    }
-    let ask: Decide = read(input, "the request to answer")?;
-    let decision = match ask.decision.as_str() {
-        "session" => AccessDecision::AllowForSession,
-        "persistent" => AccessDecision::AllowAlways,
-        "deny" => AccessDecision::Deny,
-        other => return Err(format!("`{other}` is no answer to an app's request")),
-    };
-    tilo_messaging::service::decide(&ask.request, decision)
-        .map_err(|error| format!("the request could not be answered: {error:?}"))?;
-    Ok("{}".to_owned())
-}
-
-/// Takes one permission back.
-fn revoke(input: &str) -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct Revoke {
-        grant: String,
-    }
-    let ask: Revoke = read(input, "the permission to take back")?;
-    let store = SecretStore::open();
-    if let Some(error) = store.recovery_error() {
-        return Err(error.to_owned());
-    }
-    let mut broker = CredentialBroker::new(store);
-    let held = broker
-        .current_grants()
-        .into_iter()
-        .find(|grant| grant.id() == ask.grant)
-        .ok_or_else(|| "that permission is no longer active".to_owned())?;
-    let revoked = broker
-        .revoke_grant(&held)
-        .map_err(|error| format!("could not take the permission back: {error}"))?;
-    Ok(json!({ "revoked": revoked }).to_string())
 }
 
 // ---------------------------------------------------------------- browser CSV files
@@ -535,10 +421,7 @@ pub fn export_encrypted_backup(
 /// # Errors
 ///
 /// The file is no backup, uses another version, the password is wrong, or it was changed.
-pub fn import_encrypted_backup(
-    backup: &[u8],
-    passphrase: &str,
-) -> Result<Vec<SecretItem>, String> {
+pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<SecretItem>, String> {
     validate_backup_passphrase(passphrase)?;
     if backup.len() as u64 > MAX_BACKUP_BYTES {
         return Err("This is not a valid Passwords backup".into());
@@ -646,8 +529,11 @@ fn items_of(asked: &[AskedItem]) -> Vec<SecretItem> {
     asked
         .iter()
         .map(|asked| {
-            let mut item =
-                SecretItem::login(asked.title.clone(), asked.username.clone(), asked.password.clone());
+            let mut item = SecretItem::login(
+                asked.title.clone(),
+                asked.username.clone(),
+                asked.password.clone(),
+            );
             item.kind = kind_of(&asked.kind);
             item.notes.clone_from(&asked.notes);
             for origin in &asked.origins {

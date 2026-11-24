@@ -35,7 +35,7 @@ app did and where each thing is now, so nothing went with it.
 | Copy the secret, the identity and the addresses | `action copy_secret`, `copy_identity`, `copy_origins` | `the_secret_and_what_identifies_a_person_copy` |
 | Reveal a secret, then hide it | `item_page`'s reveal dialog and `showing` state | `a_revealed_secret_shows_and_hides` |
 | Password review: reused, weak, not changed in a year | `view review_page`, `fn is_reused`, `is_weak`, `is_old` | `the_review_finds_reused_weak_and_old_passwords` |
-| App access: permissions and requests, allow, decline, revoke | `view access_page`, `action refresh_access`, `decide_access`, `revoke_access` | `app_access_lists_grants_and_answers_requests` |
+| App access: permissions and requests, allow, decline, revoke | the system's grants: the vault is a workspace document, and an app reads an entry only through a grant the system asks for and revokes | `crates/core/tilo-workspace-service` vault tests |
 | This device's vault taken into the workspace once | `action absorb_device` | `the_devices_vault_comes_in_once_and_leaves_the_device` |
 | Browser CSV import with a preview and skipped logins | `preview_csv`, `apply_import`, `view import_preview` | `a_csv_import_previews_and_skips_what_the_vault_holds` |
 | Browser CSV export | `action export_csv` | `a_csv_export_hands_the_browser_format` |
@@ -43,7 +43,7 @@ app did and where each thing is now, so nothing went with it.
 | Restore from a backup | `action restore_backup`, `import_encrypted_backup` | `a_backup_restores_its_items` |
 | The vault searches by name, username and tags, never by a secret | `Item.search` with `conceal` | `a_password_never_enters_search` (compiler) and `search` in `crates/lang/tilolang-tilo` |
 | Window: sidebar places with counts, the item list, the content | `view vault_window`, `item_page`, `item_editor` | `the_window_lists_places_and_the_open_item` |
-| The tools' pages: import and export, app access, review | `view transfer_page`, `access_page`, `review_page` | the rows' own tests |
+| The tools' pages: import and export, review | `view transfer_page`, `review_page` | the rows' own tests |
 | Toasts, the empty states and the unreachable notice | banners and empty states in the views | `an_empty_vault_says_so_and_offers_a_new_item` |
 | Captures' fixture vault | `scenario "a vault"` | staged by `tilolang layout-check` |
 
@@ -56,5 +56,5 @@ app did and where each thing is now, so nothing went with it.
   it, hidden when another item opens: the ten-second timer is the window's, not a state.
 - The clipboard copy is the platform's own. Its prompt clear after 30 seconds is not yet in the
   clipboard the engine now uses; noted as a shared gap.
-- App access is read by a Refresh on the page and kept in the vault's `grants` and `asks` until it
-  is read again: a window reads records, and the device's secret service is the engine's.
+- App access is no longer a page of Passwords: the vault is the workspace's, and who reads an entry
+  is decided by the system's grants, asked and revoked where every other grant is.
