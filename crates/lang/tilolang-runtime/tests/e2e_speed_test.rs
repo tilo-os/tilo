@@ -506,6 +506,24 @@ mod cases {
                 .map(str::to_owned)
                 .collect();
             assert_eq!(badges, ["Limited", "Limited", "Limited"], "a slow connection");
+
+            let fair = Speed::new();
+            fair.record(40.0, 10.0, 30.0, 5.0, "Cloudflare");
+            fair.start();
+            fair.engine
+                .answer(&done(40.0, 10.0, 30.0, 5.0, 12000000));
+            fair.poll();
+            let window = fair.window();
+            let badges: Vec<String> = of_kind(window.tree(), "ui.Badge")
+                .iter()
+                .filter_map(|b| b.props.get("text").and_then(Value::as_text))
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(
+                badges,
+                ["Good", "Good", "Good"],
+                "a connection that carries each use adequately reads as good, not excellent"
+            );
         }
 
         phase recent_tests_read_newest_first_without_the_one_on_the_dial;

@@ -186,6 +186,7 @@ d-qy655f3m = Results column
 
 d-ergxoae7 = Quality row
     .w-excellent = Excellent
+    .w-good = Good
     .w-limited = Limited
 
 d-l4t3t7cr = Recent row

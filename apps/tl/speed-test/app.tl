@@ -434,12 +434,15 @@ view results_column(st: SpeedTest, run: Option<Run>, phase: Text) {
     }
 }
 
-/// One kind of use and how well the connection carries it, as a status the toolkit colours.
+/// One kind of use and how well the connection carries it, as a status the toolkit colours: a
+/// connection that carries it well, adequately, or not at all.
 view quality_row(use_case: Text, excellent: Bool, good: Bool) {
     row(distribute: .between, align: .center) {
         text(use_case)
-        if excellent or good {
+        if excellent {
             ui.Badge("Excellent", tone: .success)
+        } else if good {
+            ui.Badge("Good", tone: .neutral)
         } else {
             ui.Badge("Limited", tone: .warning)
         }
