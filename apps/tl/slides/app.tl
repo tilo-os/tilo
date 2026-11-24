@@ -247,7 +247,7 @@ action add_authored_slide(
     }
     // A deck that only held the empty starter keeps the slide someone made instead of it.
     if let old = gives_way { d.slides.remove(old) }
-    made
+    return made
 }
 
 /// Adds several slides in one step, in the order given: a deck written from an outline, as the
@@ -996,7 +996,7 @@ fn outline_of(d: Deck) -> Text {
             out = "{out}Notes: {notes.replace("\n", "↵")}\n"
         }
     }
-    out
+    return out
 }
 
 /// The heading a slide shows in a list: its largest words, or its number.
