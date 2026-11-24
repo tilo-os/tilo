@@ -49,5 +49,11 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
+[features]
+# The thin screenshot and image builds enable every runtime engine's `thin`.
+# This engine is linked into the process that answers a package's canvas
+# calls, never mapped as a dylib of its own, so the name changes nothing here.
+thin = []
+
 [lints]
 workspace = true

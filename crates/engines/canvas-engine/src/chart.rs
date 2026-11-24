@@ -421,7 +421,6 @@ mod tests {
     use super::Chart;
     use crate::actions::{Draw, NewMark};
     use crate::model::{Artwork, Shape};
-    use serde_json::Value;
     use tilo_resource::Replica;
 
     fn rect_of(art: &Artwork, id: &str) -> [f64; 4] {
@@ -437,16 +436,16 @@ mod tests {
         }
     }
 
-    fn chart(art: &mut Replica<Artwork>, chart: Chart) -> Result<Value, String> {
+    fn chart(art: &mut Replica<Artwork>, chart: Chart) -> Result<(), String> {
         art.apply(Artwork::CHART.with(chart))
-            .map(|answer| answer.unwrap_or_default())
+            .map(|_| ())
             .map_err(|error| error.to_string())
     }
 
     #[test]
     fn bars_are_proportional_equal_and_stand_on_one_baseline() {
         let mut art = Replica::<Artwork>::new();
-        let answer = chart(
+        chart(
             &mut art,
             Chart {
                 labels: vec!["North".into(), "South".into(), "East".into()],
@@ -458,17 +457,12 @@ mod tests {
             },
         )
         .unwrap();
-        let added: Vec<&str> = answer["added"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(Value::as_str)
-            .collect();
-        assert!(
-            added.contains(&"chart-bar-1") && added.contains(&"chart-title"),
-            "{answer}"
-        );
         let art = art.state().unwrap();
+        let grouped: Vec<&str> = art.members("chart").map(|mark| mark.id.as_str()).collect();
+        assert!(
+            grouped.contains(&"chart-bar-1") && grouped.contains(&"chart-title"),
+            "{grouped:?}"
+        );
         let bars: Vec<[f64; 4]> = (1..=3)
             .map(|n| rect_of(&art, &format!("chart-bar-{n}")))
             .collect();
@@ -480,9 +474,11 @@ mod tests {
             "one baseline"
         );
         assert!(bars.iter().all(|bar| bar[2] == bars[0][2]), "equal widths");
-        assert_eq!(
-            art.members("chart").count(),
-            answer["added"].as_array().unwrap().len()
+        assert!(
+            art.marks
+                .iter()
+                .all(|mark| grouped.contains(&mark.id.as_str())),
+            "a chart is one group: every mark it made is in it"
         );
     }
 

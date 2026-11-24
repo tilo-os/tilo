@@ -323,11 +323,7 @@ pub struct SaveArtwork {
 /// file of it. Each takes its fields as named arguments, as its schema
 /// describes them, and answers with JSON.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(
-    operation = "canvas.view",
-    app = "so.tilo.canvas",
-    catalogue = "../../../apps/tl/canvas/locales"
-)]
+#[effect(operation = "canvas.view", app = "so.tilo.canvas")]
 pub enum ViewOp {
     /// Look at the artwork.
     ///
@@ -701,7 +697,6 @@ impl Artwork {
 /// Each takes its documented argument struct flat, applies to the artwork
 /// as read, and is refused whole when any part of it is.
 #[resource(
-    catalogue = "../../../apps/tl/canvas/locales",
     kind = "canvas.artwork",
     app = "so.tilo.canvas",
     initialize = Artwork::genesis,

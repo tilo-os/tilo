@@ -172,6 +172,7 @@ fn f32_of_f64(value: f64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_ui::kurbo::Shape as _;
 
     fn stroke(brush: &str, forks: Option<u32>, dabs: Option<u32>) -> Mark {
         Mark {

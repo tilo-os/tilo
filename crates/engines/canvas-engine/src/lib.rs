@@ -6,8 +6,8 @@
 //! plain layer draws its marks as vector art; an oil or watercolour layer
 //! paints them through [`tilo_wet_media`], re-simulated from the marks on
 //! every machine. Every gesture, agent and script is one of the actions here;
-//! their words are the app's catalogue, which this crate names rather than
-//! keeps. A window, a connector or a test drives them.
+//! their words are the engine's own catalogue. A window, a connector or a
+//! test drives them.
 
 pub mod actions;
 pub mod adjust;
@@ -21,6 +21,7 @@ pub mod content_geometry;
 pub mod detail;
 pub mod document;
 pub mod host;
+mod locales;
 pub mod fonts;
 pub mod media;
 pub mod model;

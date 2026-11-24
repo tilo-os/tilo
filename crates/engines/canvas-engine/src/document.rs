@@ -384,11 +384,7 @@ pub fn file_name(title: &str, extension: &str) -> String {
         .collect();
     let words = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let stem = if words.is_empty() {
-        tilo_resource::word!(
-            "canvas-untitled",
-            catalogue = "../../../apps/tl/canvas/locales"
-        )
-        .read()
+        crate::locales::CATALOG.t("canvas-untitled")
     } else {
         words
     };
