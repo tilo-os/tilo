@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
     os::unix::net::UnixStream,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -19,6 +19,23 @@ fn runtime_binary() -> std::path::PathBuf {
 }
 /// How long a daemon this test started has to answer on its native endpoint.
 const LAUNCHER_START_CAP: Duration = Duration::from_secs(120);
+
+/// The first call a person's own client makes on the daemon's native endpoint: an MCP
+/// `initialize`, which the daemon admits in the person's workspace.
+const FIRST_CALL: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"tilo","version":"1"}}}"#;
+
+/// Point `command` at the profile's own identity and state, where [`set_up`] keeps them: the
+/// device's key, certificates and account are kept per account rather than under the profile's
+/// sockets, so setting the profile up and starting its daemon read the same directories.
+fn in_profile(command: &mut Command, profile: &Path) {
+    command
+        .env("XDG_CONFIG_HOME", profile.join("config"))
+        .env("XDG_DATA_HOME", profile.join("data"))
+        .env("XDG_CACHE_HOME", profile.join("cache"))
+        .env("XDG_STATE_HOME", profile.join("state"))
+        .env("TILO_IDENTITY_ROOT", profile.join("identity"))
+        .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+}
 
 fn host(profile: &Path) -> Command {
     let mut command = Command::new(runtime_binary());
@@ -290,73 +307,111 @@ fn app_starts(profile: &Path, app: &str) -> Result<()> {
     );
     Ok(())
 }
-/// A helper app's collaboration manager once it has joined the broker.
-/// Construction returns while the connection is still being made; the
-/// helper polls until it settles.
-fn connected_manager() -> Result<ui::collaboration::CollaborationManager> {
-    let mut manager = ui::collaboration::CollaborationManager::new();
-    let started = Instant::now();
-    while manager.state() == ui::collaboration::CollaborationState::Connecting
-        && started.elapsed() < tilo_test_env::hang_bound()
-    {
-        let _ = manager.poll();
-        std::thread::sleep(Duration::from_millis(10));
-    }
+/// The person's first call over `profile`'s native endpoint, answered by the session the daemon
+/// admits them to: an `initialize` as their own client sends it. A connection that comes before
+/// their services run waits for them. The session is left open for what the caller asks next,
+/// with its `initialize` answer.
+fn first_call(profile: &Path) -> Result<(UnixStream, Value)> {
+    let mut stream = UnixStream::connect(profile.join("native.sock"))
+        .context("connecting to the runtime's profile socket")?;
+    stream
+        .set_read_timeout(Some(LAUNCHER_START_CAP))
+        .context("bounding the session's replies")?;
+    stream
+        .write_all(FIRST_CALL.as_bytes())
+        .context("making the person's first call")?;
+    stream
+        .write_all(b"\n")
+        .context("ending the person's first call")?;
+    let reply = reply(&stream)?;
     ensure!(
-        manager.is_connected(),
-        "the helper app never connected: {:?}",
-        manager.state()
+        reply.get("error").is_none(),
+        "the person's session was refused: {reply}"
     );
-    Ok(manager)
+    Ok((stream, reply))
 }
-/// The app instances MCP `resources/list` reports, once: each as its
-/// `app_id` and the `uri` of its own connection.
-fn apps_once(stream: &mut UnixStream) -> Result<Vec<Value>> {
-    let mut reader = BufReader::new(stream.try_clone()?);
-    writeln!(
-        stream,
-        "{}",
-        json!({"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}})
-    )?;
+/// The next line `stream` answers.
+fn reply(stream: &UnixStream) -> Result<Value> {
     let mut line = String::new();
-    reader.read_line(&mut line)?;
-    let reply: Value =
-        serde_json::from_str(&line).with_context(|| format!("the apps reply: {line:?}"))?;
-    let resources = reply
-        .get("result")
-        .and_then(|result| result.get("resources"))
-        .and_then(Value::as_array)
-        .with_context(|| format!("the reply reports no apps: {reply}"))?;
-    // Each is named `<app id> (<instance>)`.
-    Ok(resources
-        .iter()
-        .map(|resource| {
-            let name = resource["name"].as_str().unwrap_or_default();
-            let app_id = name.split_once(" (").map_or(name, |(app, _)| app);
-            json!({"app_id": app_id, "peer_id": resource["uri"]})
-        })
-        .collect())
+    BufReader::new(stream.try_clone()?).read_line(&mut line)?;
+    serde_json::from_str(&line).with_context(|| format!("the reply: {line:?}"))
 }
-/// The app instances `resources/list` reports, once `count` of them run.
-fn listed_apps(stream: &mut UnixStream, count: usize) -> Result<Vec<Value>> {
-    let deadline = tilo_test_env::hang_deadline();
+/// An SDK program's session with the daemon at `profile`: its own connection to the native
+/// endpoint, admitted as the person, and the name that connection's session goes by.
+fn sdk_session(profile: &Path) -> Result<(UnixStream, String)> {
+    let (stream, reply) = first_call(profile)?;
+    let name = reply
+        .pointer("/result/capabilities/experimental/so.tilo.mcp/session")
+        .and_then(Value::as_str)
+        .with_context(|| format!("the session names itself nothing: {reply}"))?
+        .to_owned();
+    Ok((stream, name))
+}
+/// Keep `stream`'s session open, asking the daemon its status and recording each answer in
+/// `file`, as an SDK program that stays connected does.
+fn keep_session(mut stream: UnixStream, file: &Path) -> Result<()> {
+    let mut told = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(file)?;
     loop {
-        let apps = apps_once(stream)?;
-        if apps.len() == count {
-            return Ok(apps);
+        stream
+            .write_all(b"{\"native\":\"status\"}\n")
+            .context("asking the session's daemon its status")?;
+        let reply = reply(&stream)?;
+        ensure!(
+            reply.get("pid").is_some(),
+            "the daemon answered no status: {reply}"
+        );
+        writeln!(told, "ping")?;
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+/// The session name `file` records on line `line`, once the program `program` reported it.
+fn recorded_session(file: &Path, line: usize, program: &mut Child, log: &Path) -> Result<String> {
+    let deadline = Instant::now()
+        .checked_add(LAUNCHER_START_CAP)
+        .context("the program's deadline")?;
+    loop {
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        if let Some(name) = text
+            .lines()
+            .nth(line.saturating_sub(1))
+            .filter(|name| !name.is_empty())
+        {
+            return Ok(name.to_owned());
         }
         ensure!(
-            Instant::now() < deadline,
-            "expected {count} apps, got {apps:?}"
+            program.try_wait()?.is_none() && Instant::now() < deadline,
+            "the program recorded no session:\n{}",
+            std::fs::read_to_string(log)
+                .unwrap_or_else(|error| format!("{} unreadable: {error}", log.display()))
         );
         std::thread::sleep(Duration::from_millis(25));
     }
 }
-/// The app ids of `apps`, in the order they were listed.
-fn app_ids(apps: &[Value]) -> Vec<&str> {
-    apps.iter()
-        .filter_map(|app| app.get("app_id").and_then(Value::as_str))
-        .collect()
+/// The pings `file` records so far: a session that stays open answers more of them.
+fn pings(file: &Path) -> usize {
+    std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| *line == "ping")
+        .count()
+}
+/// Wait until `file` records `at_least` answered pings, or the program `program` ends.
+fn wait_for_pings(file: &Path, at_least: usize, program: &mut Child, log: &Path) -> Result<()> {
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(20))
+        .context("the pings' deadline")?;
+    while pings(file) < at_least {
+        ensure!(
+            program.try_wait()?.is_none() && Instant::now() < deadline,
+            "the program answered no ping:\n{}",
+            std::fs::read_to_string(log).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Ok(())
 }
 
 #[test]
@@ -494,7 +549,7 @@ fn unsafe_profile_and_relative_override_are_rejected() -> Result<()> {
 }
 
 #[test]
-fn independent_sdk_apps_late_join_and_survive_another_app_exit() -> Result<()> {
+fn independent_sdk_programs_late_join_and_survive_another_exit() -> Result<()> {
     struct Children(Vec<Child>);
     impl Drop for Children {
         fn drop(&mut self) {
@@ -506,88 +561,120 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() -> Result<()> {
     }
     // As libtest names it: a module of `tests/it.rs`.
     const TEST: &str =
-        "runtime_daemon_process::independent_sdk_apps_late_join_and_survive_another_app_exit";
-    if let Ok(app_id) = std::env::var("TILO_NATIVE_SDK_HELPER") {
-        runtime_portal::native::ensure_attached(&app_id)?;
-        let mut manager = connected_manager()?;
-        manager.publish_action_directory(ui::collaboration::local_app_id());
-        loop {
-            let _ = manager.poll();
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        "runtime_daemon_process::independent_sdk_programs_late_join_and_survive_another_exit";
+    // One of the test's SDK programs: its own connection to the daemon, pinged until it ends.
+    if let Ok(file) = std::env::var("TILO_SDK_PROGRAM_FILE") {
+        let profile = PathBuf::from(
+            std::env::var_os("TILO_RUNTIME_PROFILE").context("the profile is named")?,
+        );
+        let (stream, session) = sdk_session(&profile)?;
+        std::fs::write(&file, format!("{session}\n"))?;
+        return keep_session(stream, Path::new(&file));
     }
     let profile = DaemonProfile::new()?;
-    let mut apps = Children(Vec::new());
-    let start_app = |id: &str| -> Result<Child> {
-        let log = std::fs::File::create(profile.path().join(format!("{id}.log")))?;
-        Ok(Command::new(std::env::current_exe()?)
-            .args(["--exact", TEST, "--nocapture"])
-            .env("TILO_NATIVE_SDK_HELPER", id)
+    profile.found()?;
+    let before = daemon(profile.path())?;
+    let mut programs = Children(Vec::new());
+    let start = |id: &str| -> Result<(PathBuf, PathBuf, Child)> {
+        let file = profile.path().join(format!("{id}.session"));
+        let log_path = profile.path().join(format!("{id}.log"));
+        let log = std::fs::File::create(&log_path)?;
+        let mut command = Command::new(std::env::current_exe()?);
+        in_profile(&mut command, profile.path());
+        let child = command
+            .args(["--exact", TEST, "--nocapture", "--test-threads", "1"])
+            .env("TILO_SDK_PROGRAM_FILE", &file)
             .env("TILO_RUNTIME_PROFILE", profile.path())
-            .env("TILO_RUNTIME_BINARY", runtime_binary())
-            .env_remove("TILO_SVC_COLLAB_FD")
-            .env_remove("TILO_SVC_IDENTITY_FD")
-            .env_remove("TILO_RUNTIME_STANDALONE")
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log))
-            .spawn_locked()?)
+            .spawn_locked()?;
+        Ok((file, log_path, child))
     };
-    apps.0.push(start_app("dev.tilo.independent-first")?);
-    // The app's own launcher bounds the daemon start and exits with the
-    // reason when it fails, so wait as long as that launcher is alive.
-    let deadline = Instant::now()
-        .checked_add(LAUNCHER_START_CAP)
-        .context("the launcher's bound is past the clock's range")?;
-    while UnixStream::connect(profile.path().join("native.sock")).is_err() {
-        let first = apps.0.first_mut().context("the first app is gone")?;
-        ensure!(
-            first.try_wait()?.is_none() && Instant::now() < deadline,
-            "first SDK process did not start daemon; child log: {}",
-            std::fs::read_to_string(profile.path().join("dev.tilo.independent-first.log"))
-                .unwrap_or_else(|error| format!("child log unavailable: {error}"))
-                .chars()
-                .take(8192)
-                .collect::<String>()
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    let mut stream = UnixStream::connect(profile.path().join("native.sock"))?;
-    stream.set_read_timeout(Some(tilo_test_env::hang_bound()))?;
-    let only = listed_apps(&mut stream, 1)?;
+    let (first_file, first_log, first) = start("first")?;
+    programs.0.push(first);
+    let first_session = recorded_session(
+        &first_file,
+        1,
+        programs
+            .0
+            .first_mut()
+            .context("the first program is gone")?,
+        &first_log,
+    )?;
+    // The second joins the daemon the first already reached.
+    let (second_file, second_log, second) = start("second")?;
+    programs.0.push(second);
+    let second_session = recorded_session(
+        &second_file,
+        1,
+        programs
+            .0
+            .get_mut(1)
+            .context("the second program is gone")?,
+        &second_log,
+    )?;
     ensure!(
-        app_ids(&only) == ["dev.tilo.independent-first"],
-        "the first app is not the only one listed: {only:?}"
-    );
-    let before = daemon(profile.path())?;
-    apps.0.push(start_app("dev.tilo.independent-second")?);
-    let both = listed_apps(&mut stream, 2)?;
-    let [one, two] = both.as_slice() else {
-        bail!("expected two apps, got {both:?}");
-    };
-    ensure!(
-        one.get("peer_id") != two.get("peer_id"),
-        "both apps hold the same connection: {both:?}"
+        first_session != second_session,
+        "both programs share one session: {first_session}"
     );
     ensure!(
         daemon(profile.path())? == before,
-        "the second app restarted the daemon"
+        "the second program restarted the daemon"
     );
-    let first = apps.0.first_mut().context("the first app is gone")?;
+    // Both sessions answer before anything ends.
+    wait_for_pings(
+        &first_file,
+        1,
+        programs
+            .0
+            .first_mut()
+            .context("the first program is gone")?,
+        &first_log,
+    )?;
+    wait_for_pings(
+        &second_file,
+        1,
+        programs
+            .0
+            .get_mut(1)
+            .context("the second program is gone")?,
+        &second_log,
+    )?;
+    // The first ends: the second keeps the session it opened, on the daemon it reached.
+    let first = programs
+        .0
+        .first_mut()
+        .context("the first program is gone")?;
     first.kill()?;
     first.wait()?;
-    let survivor = listed_apps(&mut stream, 1)?;
-    ensure!(
-        app_ids(&survivor) == ["dev.tilo.independent-second"],
-        "the app that stayed is not the one listed: {survivor:?}"
-    );
-    ensure!(
-        apps.0
+    let answered = pings(&second_file);
+    let deadline = Instant::now()
+        .checked_add(LAUNCHER_START_CAP)
+        .context("the survivor's deadline")?;
+    while pings(&second_file) <= answered.saturating_add(2) {
+        let second = programs
+            .0
             .get_mut(1)
-            .context("the second app is gone")?
-            .try_wait()?
-            .is_none(),
-        "the second app died with the first"
+            .context("the second program is gone")?;
+        ensure!(
+            second.try_wait()?.is_none(),
+            "the second program ended ({} pings):\n{}",
+            pings(&second_file),
+            std::fs::read_to_string(&second_log).unwrap_or_default()
+        );
+        ensure!(
+            Instant::now() < deadline,
+            "the second program answered no more pings ({answered} then {}; daemon {:?}):\n{}",
+            pings(&second_file),
+            status(profile.path()),
+            std::fs::read_to_string(&second_log).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    ensure!(
+        daemon(profile.path())? == before,
+        "the survivor's daemon changed"
     );
     Ok(())
 }
@@ -647,76 +734,63 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() -> Result
     // As libtest names it: a module of `tests/it.rs`.
     const TEST: &str =
         "runtime_daemon_process::ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime";
-    const APP: &str = "dev.tilo.parent-child";
     if let Ok(stage) = std::env::var("TILO_SDK_FAMILY_STAGE") {
-        runtime_portal::native::ensure_attached(APP)?;
-        let mut manager = connected_manager()?;
-        manager.publish_action_directory(ui::collaboration::local_app_id());
-        let _child = if stage == "parent" {
-            // No service-environment clearing: this is ordinary Command spawn
-            // after the SDK has adopted both parent's service descriptors.
-            Some(
-                Command::new(std::env::current_exe()?)
-                    .args(["--exact", TEST, "--nocapture"])
-                    .env("TILO_SDK_FAMILY_STAGE", "child")
-                    .spawn_locked()?,
-            )
-        } else {
-            None
-        };
-        loop {
-            let _ = manager.poll();
-            std::thread::sleep(Duration::from_millis(10));
+        let profile = PathBuf::from(
+            std::env::var_os("TILO_RUNTIME_PROFILE").context("the profile is named")?,
+        );
+        let file =
+            PathBuf::from(std::env::var_os("TILO_SDK_PROGRAM_FILE").context("a file is named")?);
+        let (stream, session) = sdk_session(&profile)?;
+        std::fs::write(&file, format!("{session}\n"))?;
+        if stage == "parent" {
+            // An ordinary spawn of the same program: the child inherits the environment this
+            // process runs with, and opens a connection of its own.
+            let child_file = PathBuf::from(
+                std::env::var_os("TILO_SDK_CHILD_FILE").context("a child file is named")?,
+            );
+            Command::new(std::env::current_exe()?)
+                .args(["--exact", TEST, "--nocapture", "--test-threads", "1"])
+                .env("TILO_SDK_FAMILY_STAGE", "child")
+                .env("TILO_SDK_PROGRAM_FILE", &child_file)
+                .spawn_locked()?;
         }
+        return keep_session(stream, &file);
     }
     let profile = DaemonProfile::new()?;
+    profile.found()?;
+    let before = daemon(profile.path())?;
+    let parent_file = profile.path().join("parent.session");
+    let child_file = profile.path().join("child.session");
     let log_path = profile.path().join("family.log");
     let log = std::fs::File::create(&log_path)?;
-    let mut command = host(profile.path());
+    let mut command = Command::new(std::env::current_exe()?);
+    in_profile(&mut command, profile.path());
     command
-        .args(["--run-app", APP, "--"])
-        .arg(std::env::current_exe()?)
-        .args(["--exact", TEST, "--nocapture"])
+        .args(["--exact", TEST, "--nocapture", "--test-threads", "1"])
         .env("TILO_SDK_FAMILY_STAGE", "parent")
-        .env("TILO_RUNTIME_BINARY", runtime_binary())
+        .env("TILO_SDK_PROGRAM_FILE", &parent_file)
+        .env("TILO_SDK_CHILD_FILE", &child_file)
+        .env("TILO_RUNTIME_PROFILE", profile.path())
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
     let mut family = Family(command.spawn_locked()?);
-    // The launcher bounds the daemon start itself and exits with the reason
-    // when it fails, which the loop reports at once.
-    let deadline = Instant::now()
-        .checked_add(LAUNCHER_START_CAP)
-        .context("the launcher's bound is past the clock's range")?;
-    loop {
-        ensure!(
-            family.0.try_wait()?.is_none(),
-            "{}",
-            std::fs::read_to_string(&log_path)?
-        );
-        if let Ok(mut stream) = UnixStream::connect(profile.path().join("native.sock")) {
-            stream.set_read_timeout(Some(tilo_test_env::hang_bound()))?;
-            let apps = apps_once(&mut stream)?;
-            if let [one, two] = apps.as_slice() {
-                ensure!(
-                    app_ids(&apps).iter().all(|app| *app == APP),
-                    "another app was reported: {apps:?}"
-                );
-                ensure!(
-                    one.get("peer_id") != two.get("peer_id"),
-                    "the parent and child share a connection: {apps:?}"
-                );
-                break;
-            }
-        }
-        ensure!(
-            Instant::now() < deadline,
-            "parent/child did not both register: {}",
-            std::fs::read_to_string(&log_path)?
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    let parent_session = recorded_session(&parent_file, 1, &mut family.0, &log_path)?;
+    let child_session = recorded_session(&child_file, 1, &mut family.0, &log_path)?;
+    ensure!(
+        parent_session != child_session,
+        "the parent and child share a session: {parent_session}"
+    );
+    ensure!(
+        family.0.try_wait()?.is_none(),
+        "{}",
+        std::fs::read_to_string(&log_path)?
+    );
+    ensure!(
+        daemon(profile.path())? == before,
+        "the child restarted the daemon"
+    );
     Ok(())
 }
 
