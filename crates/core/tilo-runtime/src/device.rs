@@ -51,6 +51,7 @@ mod hosts;
 mod keep;
 pub(crate) mod layout;
 mod live;
+mod live_call;
 mod live_relay;
 pub(crate) mod local;
 mod mcp_server;

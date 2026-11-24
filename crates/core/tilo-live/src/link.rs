@@ -110,6 +110,9 @@ pub enum Toward {
     Here,
     /// On to the relay of another device, at this address.
     Relay(iroh::EndpointAddr),
+    /// Into the device's own live session, which the daemon holds for `workspace`: what a
+    /// person's desktop captures and plays out through.
+    Call { workspace: String },
 }
 
 /// Write `toward` to `writer`: the opening of a link.
@@ -1255,6 +1258,17 @@ impl Dial for Daemon {
 /// told it was not reached, and dials again.
 pub const REACH: Duration = Duration::from_secs(4);
 
+/// What takes a desktop's link into the device's own live session for a workspace: the daemon,
+/// which holds that live session.
+pub trait Calls: Send + Sync {
+    /// Carry `session`, a link the desktop opened for `workspace`, until it ends.
+    fn carry<'a>(
+        &'a self,
+        workspace: String,
+        session: Session,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
 /// Carry one link a session opened on its daemon: read where it goes ([`Toward`]), then serve it
 /// in `relay` as `own`'s session, or dial the relay it names from `endpoint`, this device's own,
 /// and [`splice`] the two until either ends.
@@ -1268,6 +1282,7 @@ pub async fn carry<R, W>(
     relay: &crate::relay::Relay,
     endpoint: &iroh::Endpoint,
     own: [u8; 32],
+    calls: Option<&dyn Calls>,
 ) -> std::io::Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -1276,6 +1291,10 @@ where
     let toward = read_route(&mut reader).await?;
     let session = Session::new(reader, writer, End::Listener);
     match toward {
+        Toward::Call { workspace } => match calls {
+            Some(calls) => calls.carry(workspace, session).await,
+            None => session.close(0, "this device holds no live session"),
+        },
         Toward::Relay(addr) if *addr.id.as_bytes() != own => {
             let reached =
                 n0_future::time::timeout(REACH, endpoint.connect(addr, crate::native::ALPN)).await;

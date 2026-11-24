@@ -1388,7 +1388,9 @@ impl Tickets {
     pub(crate) fn only_waits(request: &InvokeRequest) -> bool {
         Self::asks_for_a_ticket(request)
             && match &request.argument {
-                InvokeArgument::Json(args) => args.get("wait").and_then(Value::as_bool) == Some(true),
+                InvokeArgument::Json(args) => {
+                    args.get("wait").and_then(Value::as_bool) == Some(true)
+                }
                 _ => false,
             }
     }

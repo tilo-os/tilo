@@ -42,6 +42,7 @@ use tilo_live::native;
 use tilo_live::relay::{
     Admission, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
 };
+use tilo_live::roster::Roster;
 use tilo_lock::MutexRecover as _;
 use tilo_session_client::workspace_keys::{Device, admitted_devices};
 use tilo_user_identity::{DeviceCert, EndpointDelegation};
@@ -704,6 +705,9 @@ pub(crate) struct Live {
     /// Whether this daemon serves the relay on its endpoint itself; a server's relay is the one
     /// its keeping serves.
     serves: bool,
+    /// This device's own place in each workspace's live session, as this daemon holds it: what
+    /// an app's call lane joins through, and what the person's desktop drives over its link.
+    calls: Mutex<BTreeMap<WorkspaceId, Arc<super::live_call::CallSession>>>,
 }
 
 impl Live {
@@ -739,6 +743,7 @@ impl Live {
             relay,
             endpoint: workspaces.endpoint(),
             serves,
+            calls: Mutex::default(),
         });
         live.follow();
         live
@@ -779,38 +784,126 @@ impl Live {
     }
 
     /// Read every workspace's membership, keys and calls again whenever the key service says one
-    /// moved, and at least every [`REREAD`].
+    /// moved, and at least every [`REREAD`]; the relay's judgement follows them, and so does this
+    /// device's own place in each workspace's live session.
     fn follow(self: &Arc<Self>) {
-        if !self.serves {
-            return;
-        }
-        let shared = Arc::downgrade(&self.shared);
+        let live = Arc::downgrade(self);
         let keys = self.shared.workspaces.keys();
         tilo_rt::app().spawn(async move {
             let mut after = keys.generation();
             loop {
-                let Some(shared) = shared.upgrade() else {
+                let Some(live) = live.upgrade() else {
                     return;
                 };
-                let held = shared.workspaces.copies().ids().await;
-                let observing = Arc::clone(&shared);
-                // The reads wait on the workspaces' own locks: off the runtime's workers.
-                let observed = tokio::task::spawn_blocking(move || {
-                    for workspace in held {
-                        observing.observe(workspace);
+                let held = live.shared.workspaces.copies().ids().await;
+                if live.serves {
+                    let observing = Arc::clone(&live.shared);
+                    let workspaces = held.clone();
+                    // The reads wait on the workspaces' own locks: off the runtime's workers.
+                    let observed = tokio::task::spawn_blocking(move || {
+                        for workspace in workspaces {
+                            observing.observe(workspace);
+                        }
+                    })
+                    .await;
+                    if observed.is_err() {
+                        return;
                     }
-                })
-                .await;
-                drop(shared);
-                if observed.is_err() {
-                    return;
                 }
+                // This device's own place in each workspace's live session: a server's daemon
+                // holds it as a desktop's session does, so a call carries with no session.
+                for workspace in held {
+                    live.reconcile_call(workspace).await;
+                }
+                drop(live);
                 tokio::select! {
                     changed = keys.changed(after) => after = changed,
                     () = tokio::time::sleep(REREAD) => {}
                 }
             }
         });
+    }
+
+    /// This device's place in `workspace`'s live session as its state is now: joined while this
+    /// device serves the workspace and holds its keys, kept and moved with it, and closed when
+    /// either is no longer so. A workspace another device serves is left to the person's desktop
+    /// until this daemon is the one that carries its devices.
+    async fn reconcile_call(self: &Arc<Self>, workspace: WorkspaceId) {
+        let Some((held, devices)) = read(&self.shared.workspaces, workspace) else {
+            self.drop_call(workspace);
+            return;
+        };
+        let Ok(devices) = devices else {
+            self.drop_call(workspace);
+            return;
+        };
+        if !matches!(held, Held::Governs) {
+            self.drop_call(workspace);
+            return;
+        }
+        let Some(keys) = super::live_call::channel_keys(&self.shared.workspaces, workspace) else {
+            self.drop_call(workspace);
+            return;
+        };
+        let gate = self
+            .shared
+            .workspaces
+            .copies()
+            .read_now(&workspace.to_string(), |peer| {
+                peer.governance().call_gate(tilo_clock::wall())
+            })
+            .and_then(|(_, gate)| gate.ok())
+            .unwrap_or_default();
+        let kept = self
+            .calls
+            .lock_recover()
+            .get(&workspace)
+            .filter(|call| !call.ended())
+            .cloned();
+        if let Some(call) = kept {
+            call.refresh(keys, &devices, gate);
+            call.hand_call_keys(self.shared.workspaces.copies()).await;
+            return;
+        }
+        self.drop_call(workspace);
+        let roster = Roster::new(devices.iter().map(|device| device.device));
+        match super::live_call::CallSession::join(
+            &self.relay,
+            self.shared.device,
+            workspace,
+            keys,
+            roster,
+        ) {
+            Ok(call) => {
+                let call = Arc::new(call);
+                let (rules, persons) = gate;
+                call.session().set_calls(rules, persons);
+                self.calls
+                    .lock_recover()
+                    .insert(workspace, Arc::clone(&call));
+                call.hand_call_keys(self.shared.workspaces.copies()).await;
+                tracing::debug!(%workspace, "the device's live session is held by its daemon");
+            }
+            Err(error) => {
+                tracing::warn!(%workspace, %error,
+                    "this device took no part in its workspace's live session");
+            }
+        }
+    }
+
+    /// Stop taking part in `workspace`'s live session here: the session's readers and carrier
+    /// end with the last handle to it.
+    fn drop_call(&self, workspace: WorkspaceId) {
+        self.calls.lock_recover().remove(&workspace);
+    }
+
+    /// This device's place in `workspace`'s live session, while its daemon holds one: what an
+    /// app's call lane joins through.
+    pub(crate) fn call_session(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<Arc<super::live_call::CallSession>> {
+        self.calls.lock_recover().get(&workspace).cloned()
     }
 
     /// Carry one link of the person's desktop session, opened on the daemon's socket, until it
@@ -823,11 +916,36 @@ impl Live {
             &self.relay,
             &self.endpoint,
             self.shared.device,
+            Some(self),
         )
         .await
         {
             tracing::debug!(%error, "a live link of the desktop session ended unserved");
         }
+    }
+}
+
+impl link::Calls for Live {
+    fn carry<'a>(
+        &'a self,
+        workspace: String,
+        session: link::Session,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        let call =
+            WorkspaceId::parse(&workspace).and_then(|workspace| self.call_session(workspace));
+        Box::pin(async move {
+            let Some(call) = call else {
+                session.close(0, "this device holds no live session for that workspace");
+                return;
+            };
+            if tilo_live::link_call::serve(session, call.shared())
+                .await
+                .is_err()
+            {
+                tracing::debug!(%workspace,
+                    "a desktop's link into the workspace's live session ended unserved");
+            }
+        })
     }
 }
 

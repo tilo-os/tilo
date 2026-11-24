@@ -20,10 +20,10 @@ pub mod frame;
 pub mod preface;
 
 pub mod page;
-/// What a shared window's viewers and its host say to each other.
-pub mod share;
 /// The devices whose frames a scope opens.
 pub mod roster;
+/// What a shared window's viewers and its host say to each other.
+pub mod share;
 pub mod video;
 pub mod voice;
 
@@ -57,6 +57,11 @@ pub mod live;
 /// takes it into the relay it runs or on to another device's.
 #[cfg(all(feature = "relay", feature = "iroh", not(target_arch = "wasm32")))]
 pub mod link;
+
+/// What a person's desktop sends to, and hears from, the live session its device's daemon
+/// holds: its capture unsealed one way, and opened what the session heard the other.
+#[cfg(all(feature = "relay", feature = "iroh", not(target_arch = "wasm32")))]
+pub mod link_call;
 
 #[cfg(feature = "relay")]
 mod mirror;

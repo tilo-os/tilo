@@ -23,10 +23,10 @@ use std::time::Duration;
 
 use collab_types::caps::{Access as Granted, CapOverride, Scope};
 use ed25519_dalek::SigningKey;
+use tilo_action_policy::Grantee;
 use tilo_actions::remote::{
     ActionCallError, Caller, ResourceAddress, ResourceCopy, ResourceReads as _,
 };
-use tilo_action_policy::Grantee;
 use tilo_fs::Access;
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_server_protocol::workspaces::{RemoveMemberRequest, Role};
@@ -748,7 +748,13 @@ async fn a_member_removed_while_their_link_is_down_finds_no_workspace_when_it_re
     // He comes back with the copy his device kept, which still has him as its editor, and the
     // device serving the workspace answers that he is no member of it: the copy is let go, and
     // with it the access a mount here would enforce.
-    let bob_laptop = daemon(&state.path().join("bob"), (&bob_key, &bob_cert), &site, false).await;
+    let bob_laptop = daemon(
+        &state.path().join("bob"),
+        (&bob_key, &bob_cert),
+        &site,
+        false,
+    )
+    .await;
     let kept = bob_laptop.own.copies();
     tilo_test_env::within("the copy Bob's device kept is let go", async {
         while kept.copy_now(own).is_some() {
@@ -781,6 +787,7 @@ fn released_under(dir: &Path) -> bool {
         if path.is_dir() {
             return released_under(&path);
         }
-        path.extension().is_some_and(|extension| extension == "released")
+        path.extension()
+            .is_some_and(|extension| extension == "released")
     })
 }

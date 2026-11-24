@@ -105,8 +105,7 @@ impl Founding {
         })
         .await
         .map_err(|_| {
-            "this device's person's services did not start in time to issue the tickets"
-                .to_owned()
+            "this device's person's services did not start in time to issue the tickets".to_owned()
         })?;
         let mut issued = Vec::with_capacity(kinds.len());
         for kind in kinds {
@@ -782,12 +781,10 @@ impl ActionProvider for DeviceOnly {
                     Ok(person) if !kinds.is_empty() => {
                         self.founding_tickets(invocation, person, kinds)
                     }
-                    Ok(person) => {
-                        Pending::ready(Ok(self.keep(
-                            invocation,
-                            succeeded(invocation, serde_json::json!({ "person": person })),
-                        )))
-                    }
+                    Ok(person) => Pending::ready(Ok(self.keep(
+                        invocation,
+                        succeeded(invocation, serde_json::json!({ "person": person })),
+                    ))),
                     Err(refusal) => Pending::ready(Ok(self.keep(
                         invocation,
                         failed_as(invocation, refusal.code, &refusal.message),
