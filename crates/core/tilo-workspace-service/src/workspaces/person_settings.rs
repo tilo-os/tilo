@@ -293,6 +293,31 @@ impl Workspaces {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(server_url.to_owned());
     }
 
+    /// Sign drives in through `store` from now on: a test's stand-in provider
+    /// stands in for Google's, Microsoft's or Dropbox's.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn cloud_sign_in_through(&self, store: account_credentials::CredentialStore) {
+        *self
+            .inner
+            .cloud_sign_in
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(store);
+    }
+
+    /// Sign an `Apple ID` in through `auth` from now on: a test's stand-in
+    /// stands in for Apple's own.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn icloud_sign_in_through(
+        &self,
+        auth: Arc<dyn account_credentials::icloud::ICloudAuth>,
+    ) {
+        *self
+            .inner
+            .icloud_sign_in
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(auth);
+    }
+
     /// The person `caller` asks for, on the device `certificate` certifies,
     /// from a workspace `workspace_id` names: what a request that keeps a
     /// person's own secrets needs before it runs. Unknown and forbidden are
@@ -355,7 +380,10 @@ impl Workspaces {
         // accounts as they are.
         if matches!(
             action,
-            person_accounts::BEGIN_SIGN_IN | person_accounts::CANCEL_SIGN_IN
+            person_accounts::BEGIN_SIGN_IN
+                | person_accounts::BEGIN_CLOUD_SIGN_IN
+                | person_accounts::SUBMIT_SIGN_IN_CODE
+                | person_accounts::CANCEL_SIGN_IN
         ) {
             return sign_in::accounts_sign_in(self, reach.person, &here, request).await;
         }
@@ -598,6 +626,11 @@ pub(crate) fn provider_key(account: &accounts::Account) -> String {
         .ok()
         .and_then(|provider| provider.as_str().map(str::to_owned))
         .unwrap_or_default()
+}
+
+/// The services `account` feeds, as its row reads them.
+pub(crate) fn services_of(account: &accounts::Account) -> person_accounts::Services {
+    person_mail::services_of(account, person_mail::provider_of_account(account))
 }
 
 /// The `provider` a removing action names.

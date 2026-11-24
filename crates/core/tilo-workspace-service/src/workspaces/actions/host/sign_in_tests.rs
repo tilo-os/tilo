@@ -255,3 +255,288 @@ async fn a_nextcloud_sign_in_to_an_inside_address_is_refused_and_touches_nobody(
     }
     silent.assert_untouched();
 }
+
+/// A stand-in Apple sign-in: it accepts one made-up `Apple ID` and password,
+/// asks for the code Apple sends, and takes one made-up code.
+struct StandInApple;
+
+impl account_credentials::icloud::ICloudAuth for StandInApple {
+    fn sign_in(
+        &self,
+        apple_id: &str,
+        password: &str,
+    ) -> Result<account_credentials::icloud::ICloudSignIn, account_credentials::icloud::ICloudAuthError>
+    {
+        use account_credentials::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
+        if apple_id.trim().is_empty() || password.is_empty() {
+            return Err(ICloudAuthError::InvalidCredentials);
+        }
+        Ok(ICloudSignIn::NeedsCode(ICloudChallenge(
+            zeroize::Zeroizing::new("standing-in".to_owned()),
+        )))
+    }
+
+    fn verify_code(
+        &self,
+        _challenge: &account_credentials::icloud::ICloudChallenge,
+        code: &str,
+    ) -> Result<
+        account_credentials::icloud::ICloudSessionState,
+        account_credentials::icloud::ICloudAuthError,
+    > {
+        use account_credentials::icloud::{ICloudAuthError, ICloudSessionState};
+        if code.trim() != "123456" {
+            return Err(ICloudAuthError::InvalidCode);
+        }
+        Ok(ICloudSessionState(zeroize::Zeroizing::new(
+            "apple-web-session".to_owned(),
+        )))
+    }
+
+    fn resume(
+        &self,
+        _session: &account_credentials::icloud::ICloudSessionState,
+    ) -> Result<
+        (
+            account_credentials::icloud::ICloudSessionState,
+            account_credentials::icloud::ICloudHeaders,
+        ),
+        account_credentials::icloud::ICloudAuthError,
+    > {
+        Err(account_credentials::icloud::ICloudAuthError::Unavailable)
+    }
+}
+
+/// The accounts `workspace` keeps, as its apps read them.
+async fn kept_reading(workspaces: &Workspaces, workspace: &WorkspaceId) -> Value {
+    workspaces
+        .accounts_reading(&workspace.to_string())
+        .await
+}
+
+/// An `Apple ID`'s sign-in keeps no account until the code Apple sent is
+/// entered, the wrong code is refused in words, and the right one keeps the
+/// drive with its session in the workspace's vault.
+#[tokio::test]
+async fn an_icloud_drive_waits_for_the_code_apple_sends() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
+    let ada = caller(&device);
+    workspaces.icloud_sign_in_through(std::sync::Arc::new(StandInApple));
+
+    let step: SignInStep = answered(
+        settled(page.invoke(
+            &ada,
+            asking(
+                person_accounts::BEGIN_CLOUD_SIGN_IN,
+                json!({
+                    "kind": "icloud-drive",
+                    "name": "My iCloud",
+                    "username": "ada@icloud.example",
+                    "password": "made-up-password",
+                }),
+            ),
+        ))
+        .await
+        .unwrap(),
+    );
+    assert!(!step.id.is_empty(), "the sign-in is named");
+    assert!(
+        step.code.contains("verification code"),
+        "the step says what it waits for: {}",
+        step.code
+    );
+
+    // Nothing is kept while no code was entered.
+    let reading = kept_reading(workspaces, &workspace_id).await;
+    assert_eq!(reading["accounts"], json!([]), "{reading}");
+
+    // A wrong code is refused and the sign-in stays open.
+    let wrong = settled(page.invoke(
+        &ada,
+        asking(
+            person_accounts::SUBMIT_SIGN_IN_CODE,
+            json!({"signIn": step.id, "code": "000000"}),
+        ),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&wrong, tilo_actions::remote::ActionCallError::Refused { reason } if reason.contains("verification code")),
+        "{wrong:?}"
+    );
+
+    let submitted = settled(page.invoke(
+        &ada,
+        asking(
+            person_accounts::SUBMIT_SIGN_IN_CODE,
+            json!({"signIn": step.id, "code": "123456"}),
+        ),
+    ))
+    .await;
+    assert!(submitted.is_ok(), "{submitted:?}");
+
+    let reading = kept_reading(workspaces, &workspace_id).await;
+    let account = reading["accounts"]
+        .as_array()
+        .and_then(|accounts| accounts.first())
+        .expect("her drive reads");
+    assert_eq!(account["kind"], json!("cloud"), "{reading}");
+    assert_eq!(account["name"], json!("My iCloud"), "{reading}");
+    assert_eq!(
+        account["services"],
+        json!({"mail": false, "calendar": false, "files": true}),
+        "its files are what it feeds"
+    );
+
+    // Its session is the workspace's vault's, not read back anywhere.
+    let id = account["id"].as_str().expect("an id").to_owned();
+    let kept = workspaces
+        .workspace_accounts(&workspace_id.to_string())
+        .await
+        .unwrap()
+        .account(&id)
+        .map(|account| account.config)
+        .expect("the drive is kept");
+    assert_eq!(kept["identity"], json!("ada@icloud.example"));
+    let reference = accounts::email::password_item(&kept).expect("its sign-in is named");
+    let entry = tilo_actions::remote::person_vault::ItemRef::parse(&reference)
+        .expect("a reference to a vault item")
+        .id()
+        .to_owned();
+    let sealed = workspaces.open_vault(&workspace_id.to_string()).await.unwrap();
+    let secret = sealed
+        .entries()
+        .iter()
+        .find(|(kept_entry, _)| kept_entry.id.0 == entry)
+        .map(|(entry, _)| entry.password.clone());
+    assert!(
+        secret.is_some_and(|secret| secret.contains("apple-web-session")),
+        "the session is sealed in the workspace's vault"
+    );
+}
+
+/// A drive is kept once its provider's own page approved it: the sign-in
+/// answers the page, the browser approves there, and the account arrives
+/// with its mount.
+#[tokio::test]
+async fn a_drive_is_kept_once_its_provider_page_approves_it() {
+    use account_credentials::{CredentialStore, OAuthCloud};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
+    let ada = caller(&device);
+
+    let provider = tilo_oauth::fake::FakeAuthorizationServer::start();
+    workspaces.cloud_sign_in_through(
+        CredentialStore::for_root(None).with_provider(
+            OAuthCloud::GoogleDrive,
+            provider.provider(),
+            "test-client",
+        ),
+    );
+
+    let step: SignInStep = answered(
+        settled(page.invoke(
+            &ada,
+            asking(
+                person_accounts::BEGIN_CLOUD_SIGN_IN,
+                json!({"kind": "google-drive", "name": "My Drive"}),
+            ),
+        ))
+        .await
+        .unwrap(),
+    );
+    assert!(!step.id.is_empty());
+    assert!(step.code.is_empty(), "the loopback waits for the browser");
+    let open = step.open.clone();
+
+    // The person's browser approves the sign-in on the provider's page.
+    tokio::task::spawn_blocking(move || tilo_oauth::fake::browse(&open))
+        .await
+        .unwrap()
+        .expect("the browser approves the sign-in");
+    kept_soon(workspaces, workspace_id, accounts::cloud_types::GOOGLE_DRIVE).await;
+
+    let reading = kept_reading(workspaces, &workspace_id).await;
+    let account = reading["accounts"]
+        .as_array()
+        .and_then(|accounts| accounts.first())
+        .expect("the drive reads");
+    assert_eq!(account["kind"], json!("cloud"), "{reading}");
+    assert_eq!(account["name"], json!("My Drive"));
+    assert_eq!(
+        account["services"],
+        json!({"mail": false, "calendar": false, "files": true})
+    );
+}
+
+/// A `WebDAV` server is connected from the address and sign-in the person
+/// typed, with no browser, and its files are what the account feeds.
+#[tokio::test]
+async fn a_webdav_server_is_kept_from_what_its_person_typed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
+    let ada = caller(&device);
+
+    let step: SignInStep = answered(
+        settled(page.invoke(
+            &ada,
+            asking(
+                person_accounts::BEGIN_CLOUD_SIGN_IN,
+                json!({
+                    "kind": "webdav",
+                    "name": "Work files",
+                    "server": "https://dav.example.test/files/ada",
+                    "username": "ada",
+                    "password": "made-up-password",
+                }),
+            ),
+        ))
+        .await
+        .unwrap(),
+    );
+    assert!(step.id.is_empty(), "nothing waits for a browser: {}", step.open);
+
+    let reading = kept_reading(workspaces, &workspace_id).await;
+    let account = reading["accounts"]
+        .as_array()
+        .and_then(|accounts| accounts.first())
+        .expect("the server reads");
+    assert_eq!(account["kind"], json!("cloud"), "{reading}");
+    assert_eq!(account["name"], json!("Work files"));
+    assert_eq!(
+        account["services"],
+        json!({"mail": false, "calendar": false, "files": true})
+    );
+
+    // A server that names no address is refused before anything is kept.
+    let refused = settled(page.invoke(
+        &ada,
+        asking(
+            person_accounts::BEGIN_CLOUD_SIGN_IN,
+            json!({"kind": "webdav", "server": "not an address", "username": "ada", "password": "x"}),
+        ),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&refused, tilo_actions::remote::ActionCallError::Refused { reason } if reason.contains("server address")),
+        "{refused:?}"
+    );
+}

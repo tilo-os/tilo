@@ -401,13 +401,21 @@ impl Workspaces {
             .account(&saying.account)
             .ok_or_else(|| "That account is not kept here".to_owned())?;
         let provider = provider_of_account(&account);
+        // A file account's services are its mount's own choice, which its
+        // provider list does not limit: `Nextcloud` offers files and
+        // calendars, a drive its files.
+        let chosen = if is_file_account(&account) {
+            saying.services()
+        } else {
+            saying.services().within(provider)
+        };
         #[cfg(feature = "agents")]
-        let mut services = saying.services.within(provider);
+        let mut services = chosen;
         // A build without the calendar module keeps no calendar account.
         #[cfg(not(feature = "agents"))]
         let services = Services {
             calendar: false,
-            ..saying.services.within(provider)
+            ..chosen
         };
         // An iCloud account's calendars go with its sign-in: kept where they
         // are turned on, removed with what was kept of them where they are
@@ -459,7 +467,7 @@ impl Workspaces {
                 ));
             }
         }
-        set_services_in_config(signing.vault, &saying.account, services).await?;
+        set_services_in_config(signing.vault, &account, services).await?;
         Ok(mail_accounts(
             &signing.vault.accounts().await?,
             signing.root,
@@ -777,7 +785,37 @@ fn linked_calendar(
 /// The services `account` feeds: the ones its settings name, else mail alone
 /// for an account kept before it said, and what its provider offers for one
 /// that never had mail.
-fn services_of(account: &accounts::Account, provider: Provider) -> Services {
+/// Whether `account` is one a cloud mount serves: its files and, for
+/// `Nextcloud`, its calendars are chosen in the words its mount reads.
+fn is_file_account(account: &accounts::Account) -> bool {
+    matches!(
+        account.type_id.as_str(),
+        accounts::cloud_types::GOOGLE_DRIVE
+            | accounts::cloud_types::ONEDRIVE
+            | accounts::cloud_types::DROPBOX
+            | accounts::cloud_types::ICLOUD_DRIVE
+            | accounts::cloud_types::NEXTCLOUD
+            | accounts::cloud_types::WEBDAV
+    )
+}
+
+pub(super) fn services_of(account: &accounts::Account, provider: Provider) -> Services {
+    // A file account says what it feeds in the words the cloud service reads
+    // (`use_files`, `use_calendar`), so its choice stays where its mount does.
+    if is_file_account(account) {
+        let flag = |key: &str, usual: bool| {
+            account
+                .config
+                .get(key)
+                .and_then(Value::as_bool)
+                .unwrap_or(usual)
+        };
+        return Services {
+            mail: flag("use_mail", false),
+            calendar: flag("use_calendar", false),
+            files: flag("use_files", true),
+        };
+    }
     let default = if account.type_id.as_str() == accounts::email::TYPE_ID {
         Services::default()
     } else {
@@ -885,17 +923,25 @@ async fn change_config(
     Ok(account)
 }
 
-/// Keep `services` as the ones the account `id` feeds.
+/// Keep `services` as the ones `account` feeds: the account's own words,
+/// and for a file account the `use_files` and `use_calendar` its cloud mount
+/// reads, so what it feeds and what it mounts never disagree.
 async fn set_services_in_config(
     vault: VaultAt<'_>,
-    id: &str,
+    account: &accounts::Account,
     services: Services,
 ) -> Result<(), String> {
-    change_config(vault, id, |config| {
+    let file_account = is_file_account(account);
+    change_config(vault, account.id.as_str(), |config| {
         config.insert(
             "services".into(),
             serde_json::to_value(services).map_err(|error| error.to_string())?,
         );
+        if file_account {
+            config.insert("use_files".into(), services.files.into());
+            config.insert("use_calendar".into(), services.calendar.into());
+            config.insert("use_mail".into(), services.mail.into());
+        }
         Ok(())
     })
     .await

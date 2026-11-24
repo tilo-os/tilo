@@ -78,6 +78,17 @@ struct View {
     identities: Vec<String>,
     /// A calendar account's calendars and which of them show.
     calendars: Vec<CalendarView>,
+    /// Which of its services the account feeds.
+    services: ServicesView,
+}
+
+/// Which of an account's services its person uses, as its row reads them.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServicesView {
+    mail: bool,
+    calendar: bool,
+    files: bool,
 }
 
 /// One of a calendar account's calendars, as its person chooses which show.
@@ -174,6 +185,7 @@ fn view_of(held: &accounts::person::AccountList, account: &accounts::Account) ->
         .map(|sync| sync.message.trim())
         .filter(|message| !message.is_empty())
         .map_or_else(|| health.summary().to_owned(), str::to_owned);
+    let services = person_settings::services_of(account);
     Some(View {
         id: account.id.to_string(),
         kind,
@@ -232,6 +244,11 @@ fn view_of(held: &accounts::person::AccountList, account: &accounts::Account) ->
                     .collect()
             })
             .unwrap_or_default(),
+        services: ServicesView {
+            mail: services.mail,
+            calendar: services.calendar,
+            files: services.files,
+        },
     })
 }
 

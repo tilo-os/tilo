@@ -1152,6 +1152,17 @@ struct WorkspacesInner {
     /// calendar server of its own in ([`Workspaces::keep_icloud_calendars_at`]).
     #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
     icloud_calendars_at: std::sync::RwLock<Option<String>>,
+    /// The credential store a test signs drives in through
+    /// ([`Workspaces::cloud_sign_in_through`]); the committed registrations
+    /// otherwise.
+    #[cfg(any(test, feature = "test-support"))]
+    cloud_sign_in: std::sync::RwLock<Option<account_credentials::CredentialStore>>,
+    /// What signs an `Apple ID` in, when a test stands a provider of its own
+    /// in ([`Workspaces::icloud_sign_in_through`]); Apple's otherwise.
+    #[cfg(any(test, feature = "test-support"))]
+    icloud_sign_in: std::sync::RwLock<
+        Option<std::sync::Arc<dyn account_credentials::icloud::ICloudAuth>>,
+    >,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
@@ -1588,6 +1599,10 @@ impl Workspaces {
                 cursors_per_answer: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
                 icloud_calendars_at: std::sync::RwLock::new(None),
+                #[cfg(any(test, feature = "test-support"))]
+                cloud_sign_in: std::sync::RwLock::new(None),
+                #[cfg(any(test, feature = "test-support"))]
+                icloud_sign_in: std::sync::RwLock::new(None),
                 draining: std::sync::atomic::AtomicBool::new(false),
                 mode: std::sync::RwLock::new(None),
                 store,

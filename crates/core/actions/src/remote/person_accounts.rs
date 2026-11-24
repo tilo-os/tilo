@@ -84,6 +84,16 @@ pub const CANCEL_SIGN_IN: &str = "cancel-sign-in";
 /// Say which of an account's services the person uses ([`SetServices`]),
 /// answering the accounts as [`MailAccounts`].
 pub const SET_SERVICES: &str = "set-services";
+/// Begin connecting a cloud-storage account ([`BeginCloudSignIn`]),
+/// answering where the person's browser goes ([`SignInStep`]). A sign-in
+/// the provider shows a code for, or iCloud's, is finished with
+/// [`SUBMIT_SIGN_IN_CODE`]; one approved on the provider's page finishes
+/// itself and the accounts reading shows the account arrive.
+pub const BEGIN_CLOUD_SIGN_IN: &str = "begin-cloud-sign-in";
+/// Finish a sign-in that waits for a code ([`SubmitSignInCode`]): iCloud's
+/// verification code, or the code a provider showed instead of redirecting
+/// back. Answers the accounts as [`MailAccounts`] once the account is kept.
+pub const SUBMIT_SIGN_IN_CODE: &str = "submit-sign-in-code";
 /// Fetch one folder of one account ([`FetchMail`]), answering what the
 /// server holds as a [`FetchedMail`].
 pub const FETCH: &str = "fetch";
@@ -191,9 +201,63 @@ impl Provider {
             Self::Nextcloud => Services {
                 mail: false,
                 calendar: true,
-                files: false,
+                files: true,
             },
         }
+    }
+}
+
+/// The provider a cloud-storage account belongs to, named by the sign-in
+/// that connects it ([`BEGIN_CLOUD_SIGN_IN`]). Its account type is the one
+/// its files mount with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CloudKind {
+    /// Google Drive.
+    GoogleDrive,
+    /// OneDrive.
+    OneDrive,
+    /// Dropbox.
+    Dropbox,
+    /// iCloud Drive, signed in with an Apple ID and a verification code.
+    IcloudDrive,
+    /// Any server speaking `WebDAV`, signed in with its own user name and
+    /// password.
+    Webdav,
+}
+
+impl CloudKind {
+    /// The account type id its files mount as
+    /// ([`accounts::cloud_types`]).
+    #[must_use]
+    pub const fn type_id(self) -> &'static str {
+        match self {
+            Self::GoogleDrive => "google-drive",
+            Self::OneDrive => "onedrive",
+            Self::Dropbox => "dropbox",
+            Self::IcloudDrive => "icloud-drive",
+            Self::Webdav => "webdav",
+        }
+    }
+
+    /// What people read it as.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::GoogleDrive => "Google Drive",
+            Self::OneDrive => "OneDrive",
+            Self::Dropbox => "Dropbox",
+            Self::IcloudDrive => "iCloud Drive",
+            Self::Webdav => "WebDAV",
+        }
+    }
+
+    /// Whether the person approves the sign-in on the provider's own page,
+    /// in their browser ([`BEGIN_CLOUD_SIGN_IN`] answers where), rather than
+    /// typing a password here.
+    #[must_use]
+    pub const fn signs_in_on_its_page(self) -> bool {
+        matches!(self, Self::GoogleDrive | Self::OneDrive | Self::Dropbox)
     }
 }
 
@@ -344,13 +408,67 @@ pub struct BeginSignIn {
     /// The Nextcloud server's address; empty for the others.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub server: String,
-    /// What the account is used for: the provider is asked for only that.
+    /// What the account is used for, said one service at a time: the
+    /// provider is asked for only what it offers of them.
     #[serde(default)]
-    pub services: Services,
+    pub mail: bool,
+    #[serde(default)]
+    pub calendar: bool,
+    #[serde(default)]
+    pub files: bool,
+    /// The name the account is shown under; its server's or its address
+    /// where it is empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     /// The account this signs in to again, when its sign-in stopped working;
     /// empty for a new account.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub account: String,
+}
+
+impl BeginSignIn {
+    /// What it says the account feeds.
+    #[must_use]
+    pub const fn services(&self) -> Services {
+        Services {
+            mail: self.mail,
+            calendar: self.calendar,
+            files: self.files,
+        }
+    }
+}
+
+/// A cloud-storage account to connect ([`BEGIN_CLOUD_SIGN_IN`]).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BeginCloudSignIn {
+    pub kind: CloudKind,
+    /// The name the account is shown under; the provider's where it is empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// A `WebDAV` server's address; empty for the providers whose own page
+    /// is opened.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub server: String,
+    /// The sign-in name: a `WebDAV` server's or the `Apple ID`. Empty for the
+    /// providers whose own page is opened.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub username: String,
+    /// Its password or app password, used once for this request and never
+    /// kept here: sealed in the workspace's vault once the sign-in holds.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub password: String,
+}
+
+impl std::fmt::Debug for BeginCloudSignIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BeginCloudSignIn")
+            .field("kind", &self.kind)
+            .field("name", &self.name)
+            .field("server", &self.server)
+            .field("username", &self.username)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Where the person's browser goes to sign in.
@@ -362,6 +480,19 @@ pub struct SignInStep {
     pub id: String,
     /// The provider's page to open.
     pub open: String,
+    /// What the sign-in waits for beyond the browser, in words the person
+    /// reads: a verification code Apple sent them, or the code a provider
+    /// showed instead of redirecting back. Empty when it needs none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
+}
+
+/// A sign-in that waits for a code ([`SUBMIT_SIGN_IN_CODE`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitSignInCode {
+    pub sign_in: String,
+    pub code: String,
 }
 
 /// A sign-in to stop waiting for ([`CANCEL_SIGN_IN`]).
@@ -371,12 +502,31 @@ pub struct CancelSignIn {
     pub sign_in: String,
 }
 
-/// The services one account feeds ([`SET_SERVICES`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The services one account feeds ([`SET_SERVICES`]), said one by one: a
+/// view passes what its person chose for each, and the host keeps only what
+/// the account's provider offers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetServices {
     pub account: String,
-    pub services: Services,
+    #[serde(default)]
+    pub mail: bool,
+    #[serde(default)]
+    pub calendar: bool,
+    #[serde(default)]
+    pub files: bool,
+}
+
+impl SetServices {
+    /// What it says the account feeds.
+    #[must_use]
+    pub const fn services(&self) -> Services {
+        Services {
+            mail: self.mail,
+            calendar: self.calendar,
+            files: self.files,
+        }
+    }
 }
 
 /// A mail account to add. The password travels here and nowhere back: the
