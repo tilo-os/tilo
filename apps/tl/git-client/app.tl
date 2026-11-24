@@ -192,6 +192,43 @@ type Repository {
     /// records it draws.
     snapshot: Text = ""
     sessions: Collection<Session>
+    /// The last check the project's host ran for it, which every member sees.
+    check: ApprovedCheck
+}
+
+/// Where the last approved check stands: none ran yet (or it was put away), the host runs it now,
+/// the host observed how its commands ended, it was stopped, or the workspace or the host
+/// refused it.
+enum CheckState {
+    idle
+    running
+    observed
+    stopped
+    refused
+}
+
+/// A check the project's host approved, as it last ran here: what the host reports while it runs,
+/// and what it observed once it ended. The host picks the commands, the sources and the bounds;
+/// the app names the check by its id and nothing else.
+type ApprovedCheck {
+    check_id: Text = ""
+    /// The device's job while it runs; empty otherwise.
+    job: Text = ""
+    state: CheckState = .idle
+    /// The newest phase the host reported, with how much of how much it has done.
+    phase: Text = ""
+    completed: Int = 0
+    total: Int = 0
+    /// How the commands ended, as the host observed it: `exited`, `cancelled`, `timed_out`,
+    /// `output_limit` or `failed`.
+    outcome: Text = ""
+    exit_code: Option<Int> = .none
+    elapsed_ms: Int = 0
+    /// The start of what the commands printed, and of what they printed as errors.
+    output: Text = ""
+    errors: Text = ""
+    /// Why it did not run, or why the host could not supervise it.
+    refusal: Text = ""
 }
 
 root git: Repository
@@ -372,6 +409,22 @@ type ResolveAsk {
     path: Text
     file: Text
     ours: Bool
+}
+
+/// How a check stands, as the device answers `engine.status`: once it is done, what the host
+/// observed of its commands.
+type CheckStatus {
+    state: Text = ""
+    phase: Text = ""
+    completed: Option<Int> = .none
+    total: Option<Int> = .none
+    error: Text = ""
+    outcome: Text = ""
+    exit_code: Option<Int> = .none
+    elapsed_ms: Int = 0
+    output: Text = ""
+    errors: Text = ""
+    failure: Text = ""
 }
 
 type RemoteAsk {
@@ -857,6 +910,97 @@ action push(g: Repository, remote: Text = "") (icon: .arrow_up, label: "Push to 
     }
 }
 
+/// Runs a check this project's host approved, by its id: the host picks the commands, the sources
+/// and the bounds, reports how far it has got, and says what it observed once it ends.
+// ---------------------------------------------------------------- approved project checks
+action run_approved_check(
+    g: Repository,
+    check_id: Text (label: "Check ID approved by this exact project host"),
+) uses check (icon: .list_checks, label: "Run approved project check") {
+    require g.check.state != .running "A check is already running"
+    g.check.check_id = check_id
+    g.check.phase = ""
+    g.check.completed = 0
+    g.check.total = 0
+    g.check.outcome = ""
+    g.check.exit_code = .none
+    g.check.elapsed_ms = 0
+    g.check.output = ""
+    g.check.errors = ""
+    g.check.refusal = ""
+    match engine.check(check_id) {
+        .err(why) => {
+            g.check.job = ""
+            g.check.state = .refused
+            g.check.refusal = why
+        }
+        .ok(job) => {
+            g.check.job = job
+            g.check.state = .running
+        }
+    }
+}
+
+/// Asks the device how the running check is doing, and keeps what the host reported.
+action poll_check(g: Repository) {
+    if g.check.state != .running or g.check.job == "" {
+        return
+    }
+    match engine.status(g.check.job) {
+        .err(why) => {
+            g.check.job = ""
+            g.check.state = .refused
+            g.check.refusal = why
+        }
+        .ok(text) => match json.decode<CheckStatus>(text) {
+            .err(why) => {
+                g.check.job = ""
+                g.check.state = .refused
+                g.check.refusal = why
+            }
+            .ok(status) => {
+                g.check.phase = status.phase
+                g.check.completed = status.completed ?? 0
+                g.check.total = status.total ?? 0
+                if status.state == "done" {
+                    g.check.job = ""
+                    g.check.state = .observed
+                    g.check.outcome = status.outcome
+                    g.check.exit_code = status.exit_code
+                    g.check.elapsed_ms = status.elapsed_ms
+                    g.check.output = status.output
+                    g.check.errors = status.errors
+                    g.check.refusal = status.failure
+                } else if status.state == "failed" {
+                    g.check.job = ""
+                    g.check.state = .refused
+                    g.check.refusal = status.error
+                } else if status.state == "cancelled" {
+                    g.check.job = ""
+                    g.check.state = .stopped
+                }
+            }
+        },
+    }
+}
+
+/// A running check is followed once a second, so what the host reports reaches the window
+/// without anything polling by hand.
+trigger watch_check(g: Repository) every 1s: poll_check(g)
+
+/// Stops the running check; the host ends its commands.
+action cancel_check(g: Repository) (icon: .square, label: "Stop check") {
+    require g.check.state == .running "No check is running"
+    if g.check.job != "" { engine.cancel(g.check.job) }
+    g.check.job = ""
+    g.check.state = .stopped
+}
+
+/// Puts the last check's result away.
+action clear_check(g: Repository) {
+    g.check.state = .idle
+}
+
 /// Reads a commit's changed files and their diffs when it is opened.
 // ---------------------------------------------------------------- history
 action read_commit(g: Repository, id: Text) {
@@ -965,6 +1109,55 @@ action asks(g: Repository, s: Session, op: Text, ask: Text) {
             }
         },
     }
+}
+
+/// A duration as a person reads it: `840 ms`, `12.40 s`.
+fn took(ms: Int) -> Text {
+    if ms < 1000 {
+        return "{ms} ms"
+    }
+    let hundredths = ms / 10
+    let part = hundredths % 100
+    if part < 10 {
+        return "{hundredths / 100}.0{part} s"
+    }
+    "{hundredths / 100}.{part} s"
+}
+
+/// What the host observed of the last check, in a few words.
+fn check_title(c: ApprovedCheck) -> Text {
+    if c.outcome == "exited" {
+        if let code = c.exit_code {
+            if code == 0 {
+                return "{c.check_id} passed"
+            }
+            return "{c.check_id} failed with exit code {code}"
+        }
+        return "{c.check_id} ended on a signal"
+    }
+    if c.outcome == "timed_out" {
+        return "{c.check_id} ran out of time"
+    }
+    if c.outcome == "output_limit" {
+        return "{c.check_id} printed more than the host keeps"
+    }
+    if c.outcome == "cancelled" {
+        return "{c.check_id} was stopped by the host"
+    }
+    "The host could not run {c.check_id}"
+}
+
+/// Whether the last check's commands ended well.
+fn check_passed(c: ApprovedCheck) -> Bool {
+    c.outcome == "exited" and c.exit_code == .some(0)
+}
+
+/// The share of the running check the host reported done, when it said how much there is.
+fn check_share(c: ApprovedCheck) -> Option<Float> {
+    if c.total <= 0 {
+        return .none
+    }
+    .some(c.completed.to_float() / c.total.to_float())
 }
 
 /// Whether this person's working tree has something staged for the next commit.
@@ -1108,6 +1301,9 @@ view changes(g: Repository) {
                 ui.Button("Stash changes", icon: .archive) {
                     on press: save_stash(g, "")
                 }
+                ui.Button("Run approved project check", icon: .list_checks) {
+                    on press: run_approved_check(g)
+                }
             }
             overview_actions: {
                 if s.changes.any(c -> c.area != .staged) {
@@ -1142,6 +1338,7 @@ view changes(g: Repository) {
                                     on dismiss: clear_notice(g)
                                 }
                             }
+                            check_card(g)
                             changes_list(g, s, chosen)
                         }
                     }
@@ -1173,6 +1370,63 @@ view changes(g: Repository) {
         }
     } else {
         open_page(g)
+    }
+}
+
+/// The last approved check: its phase and progress while the host runs it, with a way to stop
+/// it, then what the host observed, or why it did not run.
+view check_card(g: Repository) {
+    let c = g.check
+    if c.state == .running {
+        stack(gap: .related) {
+            ui.Banner(
+                title: "Running {c.check_id}",
+                message: if c.phase == "" { "Waiting for the project's host" } else { c.phase },
+                kind: .info,
+                icon: .list_checks,
+                action: "Stop",
+            ) {
+                on act: cancel_check(g)
+            }
+            ui.ProgressBar(check_share(c), label: "Check under way")
+        }
+    } else if c.state == .observed {
+        stack(gap: .related) {
+            ui.Banner(
+                title: check_title(c),
+                message: "Took {took(c.elapsed_ms)}",
+                kind: if check_passed(c) { .success } else { .warning },
+                icon: if check_passed(c) { .circle_check } else { .list_checks },
+            ) {
+                on dismiss: clear_check(g)
+            }
+            if c.output != "" or c.errors != "" or c.refusal != "" {
+                ui.Section("What the check printed", collapsible: true) {
+                    for line in c.output.split("\n") {
+                        ui.Text(line, role: .code)
+                    }
+                    for line in c.errors.split("\n") {
+                        ui.Text(line, role: .code)
+                    }
+                    for line in c.refusal.split("\n") {
+                        ui.Text(line, role: .code)
+                    }
+                }
+            }
+        }
+    } else if c.state == .stopped {
+        ui.Banner(title: "{c.check_id} was stopped", kind: .neutral, icon: .square) {
+            on dismiss: clear_check(g)
+        }
+    } else if c.state == .refused {
+        ui.Banner(
+            title: "No project's approved check ran",
+            message: c.refusal,
+            kind: .error,
+            icon: .circle_alert,
+        ) {
+            on dismiss: clear_check(g)
+        }
     }
 }
 

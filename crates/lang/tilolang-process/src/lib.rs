@@ -31,6 +31,7 @@
     feature = "app-launch",
     any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
 ))]
+pub mod approved_checks;
 pub mod backups_engine;
 pub mod call;
 #[cfg(feature = "app-launch")]

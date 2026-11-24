@@ -697,6 +697,19 @@ pub trait Platform {
         crate::engine::stop(job)
     }
 
+    /// One check the project's host approved, started by its id for `app` as a job
+    /// [`Self::engine_status`] and [`Self::engine_cancel`] follow: run for the invocation the
+    /// workspace dispatched to the action asking, through the broker connection the instance
+    /// joined. A platform with no such connection runs none.
+    ///
+    /// # Errors
+    ///
+    /// Why no check starts.
+    fn approved_check(&self, app: &str, check_id: &str) -> Result<String, String> {
+        let _ = (app, check_id);
+        Err(tilolang_runtime::host_work::NO_APPROVED_CHECKS.to_owned())
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -805,6 +818,10 @@ impl tilolang_runtime::host_work::EngineHost for PlatformEngine {
 
     fn cancel(&self, job: &str) -> bool {
         self.0.engine_cancel(job)
+    }
+
+    fn check(&self, app: &str, check_id: &str) -> Result<String, String> {
+        self.0.approved_check(app, check_id)
     }
 }
 

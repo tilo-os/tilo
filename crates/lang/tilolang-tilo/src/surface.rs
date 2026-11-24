@@ -324,7 +324,7 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet, targeted: bool) -
         id: action.id.clone(),
         // And the name the API offers it by ([`crate::publish::action_type`]): what a caller
         // outside the app's code — a script, an agent, the SDK's typed method — invokes it as.
-        name: action.name.clone(),
+        name: crate::meta::published_name(action).to_owned(),
         label: tilolang_runtime::platform::label_of(action),
         description: (!action.doc.is_empty()).then(|| action.doc.clone()),
         kind: action_kind(action.class),

@@ -36,6 +36,10 @@ pub enum Effect {
     /// The code of this moment from a vault item's seed (`vault.code`): a reading of the clock
     /// taken where the seed is, which a view shows and never records.
     Secret,
+    /// A check the project's host approved, run by its id (`engine.check`): what the commands
+    /// observed is the host's, which no replay can compute again. An action that runs one is the
+    /// app's `run-approved-check`, and runs as a job its invoker can follow and stop.
+    Check,
 }
 
 impl Effect {
@@ -49,6 +53,7 @@ impl Effect {
         Self::Page,
         Self::Files,
         Self::Secret,
+        Self::Check,
     ];
 
     pub const fn word(self) -> &'static str {
@@ -62,6 +67,7 @@ impl Effect {
             Self::Page => "page",
             Self::Files => "files",
             Self::Secret => "secret",
+            Self::Check => "check",
         }
     }
 
@@ -76,6 +82,7 @@ impl Effect {
             Self::Page => "the page this window shows",
             Self::Files => "the files on this device",
             Self::Secret => "the code a vault item's seed makes now",
+            Self::Check => "a check the project's host approved",
         }
     }
 

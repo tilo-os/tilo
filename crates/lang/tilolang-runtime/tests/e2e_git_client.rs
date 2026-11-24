@@ -1,11 +1,12 @@
 //! The Git app (`apps/tl/git-client/app.tl`) end to end: a repository read through the device's
 //! engine and kept in the app's records, its changes staged, committed and discarded hunk by
-//! hunk, its branches, stashes, working directories and remotes worked, and its views drawn.
+//! hunk, its branches, stashes, working directories and remotes worked, a check its project's
+//! host approved run, followed, stopped and refused, and its views drawn.
 
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::rc::Rc;
 
     use crate::common::*;
@@ -44,11 +45,23 @@ mod cases {
         diff_reads: u32,
     }
 
+    /// The project's host as the device reaches it: the checks it was asked for, why it refuses
+    /// one, how the running check stands each time the app asks, and the checks it was told to
+    /// stop.
+    #[derive(Default)]
+    struct Host {
+        asked: Vec<String>,
+        refusal: Option<String>,
+        statuses: VecDeque<serde_json::Value>,
+        stopped: Vec<String>,
+    }
+
     /// The device's engine: what it was asked, and the answers it gives.
     #[derive(Clone, Default)]
     struct Engine {
         asked: Rc<RefCell<Vec<(String, String)>>>,
         repo: Rc<RefCell<Repo>>,
+        host: Rc<RefCell<Host>>,
     }
 
     impl Engine {
@@ -403,13 +416,58 @@ mod cases {
             Err("this device answers transfers now".to_owned())
         }
 
-        fn status(&self, _job: &str) -> Result<String, String> {
-            Err("no job".to_owned())
+        fn check(&self, _app: &str, check_id: &str) -> Result<String, String> {
+            let mut host = self.host.borrow_mut();
+            host.asked.push(check_id.to_owned());
+            match &host.refusal {
+                Some(why) => Err(why.clone()),
+                None => Ok(CHECK_JOB.to_owned()),
+            }
         }
 
-        fn cancel(&self, _job: &str) -> bool {
-            false
+        fn status(&self, job: &str) -> Result<String, String> {
+            if job != CHECK_JOB {
+                return Err("no job".to_owned());
+            }
+            let mut host = self.host.borrow_mut();
+            let status = host
+                .statuses
+                .pop_front()
+                .expect("the app asks how the check stands only while the host has an answer");
+            Ok(status.to_string())
         }
+
+        fn cancel(&self, job: &str) -> bool {
+            self.host.borrow_mut().stopped.push(job.to_owned());
+            job == CHECK_JOB
+        }
+    }
+
+    /// The job the device gives the check it runs.
+    const CHECK_JOB: &str = "approved-check-1";
+
+    /// How a running check stands after the host reported `phase`, `completed` of `total`.
+    fn reported(phase: &str, completed: u64, total: u64) -> serde_json::Value {
+        serde_json::json!({
+            "state": "running",
+            "phase": phase,
+            "completed": completed,
+            "total": total,
+        })
+    }
+
+    /// How a check stands once the host observed its commands exit with `code`.
+    fn exited(code: i64, elapsed_ms: u64, stdout: &str) -> serde_json::Value {
+        serde_json::json!({
+            "state": "done",
+            "phase": "Finished",
+            "outcome": "exited",
+            "exit_code": code,
+            "elapsed_ms": elapsed_ms,
+            "output": stdout,
+            "errors": "",
+            "failure": "",
+        })
     }
 
     struct Site {
@@ -535,6 +593,28 @@ mod cases {
             }
         }
 
+        /// The repository's last check, as an agent reading the app sees it.
+        fn check(&self) -> serde_json::Value {
+            self.rt.project(&self.rt.read(&self.root, "check").unwrap())["fields"].clone()
+        }
+
+        /// Run the check `check_id`, as the window's button or an agent does.
+        fn run_check(&self, check_id: &str) -> Result<tilolang_runtime::InvokeOutcome, String> {
+            let ran = self.try_call(
+                "run_approved_check",
+                vec![Value::resource(&self.root), Value::text(check_id)],
+            );
+            let _ = self.rt.settle();
+            ran
+        }
+
+        /// Every label the changes window draws now.
+        fn labels(&self) -> Vec<String> {
+            let mut labels = Vec::new();
+            collect_labels(self.window().tree(), &mut labels);
+            labels
+        }
+
         fn enum_arg(&self, ty: &str, variant: &str) -> Value {
             let ids = &self.app.compiled.ids;
             Value::Enum(tilolang_runtime::EnumValue {
@@ -554,6 +634,9 @@ mod cases {
             out.push(label.clone());
         }
         if let Some(Value::Text(label)) = node.props.get("value") {
+            out.push(label.clone());
+        }
+        if let Some(Value::Text(label)) = node.props.get("message") {
             out.push(label.clone());
         }
         for child in &node.children {
@@ -912,5 +995,172 @@ mod cases {
                 "the changed file stands in the window: {labels:?}"
             );
         }
+
+        phase an_approved_check_runs_reports_how_far_it_got_and_says_what_the_host_observed;
+        {
+            let s = Site::new();
+            s.open(REPO);
+            s.engine.host.borrow_mut().statuses.extend([
+                reported("Compiling", 3, 10),
+                exited(0, 12_340, "running 42 tests\ntest result: ok"),
+            ]);
+            s.run_check("unit-tests").unwrap();
+            assert_eq!(s.engine.host.borrow().asked, ["unit-tests"], "the host was asked by id");
+            assert_eq!(s.check()["state"]["variant"], "running");
+            let labels = s.labels();
+            assert!(
+                labels.iter().any(|label| label == "Running unit-tests"),
+                "the window says the check runs: {labels:?}"
+            );
+            assert!(
+                labels.iter().any(|label| label == "Waiting for the project's host"),
+                "before the host reports, the window says it waits for it: {labels:?}"
+            );
+            assert!(
+                s.try_call(
+                    "run_approved_check",
+                    vec![Value::resource(&s.root), Value::text("lint")]
+                )
+                .map(|_| ())
+                .unwrap_err()
+                .contains("A check is already running"),
+                "a second check waits for the first"
+            );
+            assert_eq!(s.engine.host.borrow().asked, ["unit-tests"]);
+
+            s.call("poll_check", vec![Value::resource(&s.root)]);
+            let check = s.check();
+            assert_eq!(check["phase"], "Compiling");
+            assert_eq!((check["completed"].as_i64(), check["total"].as_i64()), (Some(3), Some(10)));
+            assert!(
+                s.labels().iter().any(|label| label == "Compiling"),
+                "the host's phase stands in the window: {:?}",
+                s.labels()
+            );
+
+            s.call("poll_check", vec![Value::resource(&s.root)]);
+            let check = s.check();
+            assert_eq!(check["state"]["variant"], "observed");
+            assert_eq!(check["outcome"], "exited");
+            assert_eq!(check["exit_code"], 0);
+            assert_eq!(check["elapsed_ms"], 12_340);
+            let labels = s.labels();
+            assert!(
+                labels.iter().any(|label| label == "unit-tests passed"),
+                "the receipt's outcome stands in the window: {labels:?}"
+            );
+            assert!(labels.iter().any(|label| label == "Took 12.34 s"), "{labels:?}");
+            assert!(
+                labels.iter().any(|label| label == "What the check printed"),
+                "what the commands printed is one section away: {labels:?}"
+            );
+            assert!(s.engine.host.borrow().statuses.is_empty(), "every answer was read");
+        }
+
+        phase a_check_that_failed_says_its_exit_code;
+        {
+            let s = Site::new();
+            s.open(REPO);
+            s.engine
+                .host
+                .borrow_mut()
+                .statuses
+                .push_back(exited(101, 800, "test beds::sow ... FAILED"));
+            s.run_check("unit-tests").unwrap();
+            s.call("poll_check", vec![Value::resource(&s.root)]);
+            let labels = s.labels();
+            assert!(
+                labels.iter().any(|label| label == "unit-tests failed with exit code 101"),
+                "{labels:?}"
+            );
+            assert!(labels.iter().any(|label| label == "Took 800 ms"), "{labels:?}");
+        }
+
+        phase a_running_check_is_stopped_from_its_banner;
+        {
+            let s = Site::new();
+            s.open(REPO);
+            s.run_check("slow-suite").unwrap();
+            let window = s.window();
+            let banner = descendants(window.tree())
+                .into_iter()
+                .find(|node| {
+                    node.kind.ends_with("Banner")
+                        && node.props.get("title") == Some(&Value::text("Running slow-suite"))
+                })
+                .map(|node| node.key.clone())
+                .expect("the running check's banner stands in the window");
+            window.fire(&banner, "act").unwrap();
+            let _ = s.rt.settle();
+            assert_eq!(s.engine.host.borrow().stopped, [CHECK_JOB], "the device stopped the job");
+            assert_eq!(s.check()["state"]["variant"], "stopped");
+            assert!(
+                s.labels().iter().any(|label| label == "slow-suite was stopped"),
+                "{:?}",
+                s.labels()
+            );
+            assert!(
+                s.try_call("cancel_check", vec![Value::resource(&s.root)])
+                    .unwrap_err()
+                    .contains("No check is running"),
+                "a stopped check is not stopped twice"
+            );
+        }
+
+        phase a_device_with_no_check_service_refuses_in_words_the_window_shows;
+        {
+            let s = Site::new();
+            s.open(REPO);
+            s.engine.host.borrow_mut().refusal =
+                Some(tilolang_runtime::host_work::NO_APPROVED_CHECKS.to_owned());
+            s.run_check("unit-tests").unwrap();
+            assert_eq!(s.check()["state"]["variant"], "refused");
+            let labels = s.labels();
+            assert!(
+                labels.iter().any(|label| label == "No project's approved check ran"),
+                "{labels:?}"
+            );
+            assert!(
+                labels
+                    .iter()
+                    .any(|label| label == tilolang_runtime::host_work::NO_APPROVED_CHECKS),
+                "the refusal says why: {labels:?}"
+            );
+            s.engine.host.borrow_mut().refusal = None;
+            s.run_check("unit-tests").unwrap();
+            assert_eq!(
+                s.check()["state"]["variant"],
+                "running",
+                "a refused check can be asked again"
+            );
+        }
+
+        phase a_host_that_turns_a_running_check_down_says_so;
+        {
+            let s = Site::new();
+            s.open(REPO);
+            s.engine.host.borrow_mut().statuses.push_back(serde_json::json!({
+                "state": "failed",
+                "error": "The project's host does not approve `deploy`",
+            }));
+            s.run_check("deploy").unwrap();
+            s.call("poll_check", vec![Value::resource(&s.root)]);
+            assert_eq!(s.check()["state"]["variant"], "refused");
+            assert!(
+                s.labels()
+                    .iter()
+                    .any(|label| label == "The project's host does not approve `deploy`"),
+                "{:?}",
+                s.labels()
+            );
+        }
+    }
+
+    /// Every node under `node`, depth first.
+    fn descendants(node: &tilolang_runtime::UiNode) -> Vec<&tilolang_runtime::UiNode> {
+        node.children
+            .iter()
+            .flat_map(|child| std::iter::once(child).chain(descendants(child)))
+            .collect()
     }
 }

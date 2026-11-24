@@ -1254,7 +1254,9 @@ impl Host {
                 .meta
                 .actions
                 .iter()
-                .filter(|declared| !declared.scenario && declared.name == action)
+                .filter(|declared| {
+                    !declared.scenario && crate::meta::published_name(declared) == action
+                })
                 .collect();
             if named.len() < 2 {
                 return package.meta.action_published_as(action).cloned();

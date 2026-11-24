@@ -445,7 +445,7 @@ pub(crate) fn invokes(
                 };
                 (
                     action.unbound(given).next().is_some(),
-                    action.name.clone(),
+                    crate::meta::published_name(action).to_owned(),
                     on,
                 )
             })

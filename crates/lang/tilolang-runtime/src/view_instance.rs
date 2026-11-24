@@ -598,6 +598,29 @@ impl ViewInstance {
         );
     }
 
+    /// The action the event `event` of the node `key` applies, with its arguments read now, as
+    /// firing it would run it: what a host sends through the dispatch instead of running it here.
+    /// `None` when the event applies no action.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::fire_with`] reading the event's arguments.
+    pub fn fired_action(
+        &self,
+        key: &str,
+        event: &str,
+        value: Option<&Value>,
+    ) -> Result<Option<ActionRef>, RuntimeError> {
+        let Some(mut aref) = self.event_action(key, event) else {
+            return Ok(None);
+        };
+        fill_event(&mut aref, value).map_err(|()| {
+            RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
+        })?;
+        self.read_states(&mut aref)?;
+        Ok(Some(aref))
+    }
+
     /// The action the event `event` of the node `key` applies, with its arguments read now,
     /// when it still lacks some it has no default for: an action waiting for its arguments,
     /// whose form the window shows instead of running it (`share(n)` from a menu, which needs

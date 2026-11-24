@@ -564,6 +564,9 @@ imports! {
     EnginePicture = "engine_picture" ([H, H, H] -> [H]);
     EngineStatus = "engine_status" ([H] -> [H]);
     EngineCancel = "engine_cancel" ([H] -> [I32]);
+    // A check the project's host approved, started by its id as a job `engine_status` and
+    // `engine_cancel` follow; the app asking is the first argument.
+    EngineCheck = "engine_check" ([H, H] -> [H]);
 
     // The code of this moment from a vault item's seed, read where the seed is: the item's
     // reference in, an `Option` of the code and its countdown out. The vault computes it and

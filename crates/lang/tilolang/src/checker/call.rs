@@ -3095,23 +3095,27 @@ impl Checker<'_> {
     /// says of itself — connecting, running, or why it ended — is `engine.state`, a reading a
     /// view shows and runs again for when the stream says something new. A picture is the same
     /// work answered as a picture the device keeps: the answer names its bytes, and the app
-    /// shows them in `ui.Image` and `ui.Drawing` by the address it gets. An action asks; a view
-    /// is drawn again from what it is shown, so it never does.
+    /// shows them in `ui.Image` and `ui.Drawing` by the address it gets. `engine.check(check_id)`
+    /// starts a check the project's host approved, by its id, as a job the same `status` and
+    /// `cancel` follow and stop: the host picks the commands, the sources and the bounds, and the
+    /// action that asks declares `uses check`. An action asks; a view is drawn again from what it
+    /// is shown, so it never does.
     fn builtin_engine(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let result = || Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text));
         let asks_input = match name.name.as_str() {
             "call" | "start" | "run" | "stream" | "picture" => true,
-            "state" | "status" | "cancel" => false,
+            "state" | "status" | "cancel" | "check" => false,
             other => {
                 self.err(
                     "E022",
                     name.span,
                     format!(
-                        "`engine` has `call`, `start`, `run`, `stream`, `state`, `picture`, \
+                        "`engine` has `call`, `start`, `run`, `stream`, `state`, `picture`, `check`, \
                          `status` and `cancel`, not `{other}`: `engine.call(op, input)`, \
                          `engine.start(op, input)`, `engine.run(op, input)`, \
                          `engine.stream(op, input)`, `engine.state(job)`, \
-                         `engine.picture(op, input)`, `engine.status(job)` and \
+                         `engine.picture(op, input)`, `engine.check(check_id)`, \
+                         `engine.status(job)` and \
                          `engine.cancel(job)`"
                     ),
                 );
@@ -3164,6 +3168,11 @@ impl Checker<'_> {
                                 "decode"
                             }
                         )
+                    } else if name.name == "check" {
+                        format!(
+                            "{what} takes the id of the check the project's host approved, and \
+                             nothing else: `engine.check(check_id)`"
+                        )
                     } else {
                         format!(
                             "{what} takes the job, and nothing else: `engine.{}(job)",
@@ -3183,6 +3192,8 @@ impl Checker<'_> {
                         "{what} takes the op it asks for: `engine.{}(op, input)",
                         name.name
                     )
+                } else if name.name == "check" {
+                    format!("{what} takes the id of the check: `engine.check(check_id)`")
                 } else {
                     format!("{what} takes the job: `engine.{}(job)", name.name)
                 },
@@ -3228,6 +3239,11 @@ impl Checker<'_> {
                 )
             }
             "state" => Ex::host(Imp::EngineState, vec![held], Ty::Text),
+            "check" => {
+                // What the check observed is the host's, which a replay cannot compute again.
+                self.reads(crate::effects::Effect::Check, span, &what);
+                Ex::host(Imp::EngineCheck, vec![app, held], result())
+            }
             "status" => Ex::host(Imp::EngineStatus, vec![held], result()),
             _ => Ex::host(Imp::EngineCancel, vec![held], Ty::Bool),
         }

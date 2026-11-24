@@ -397,9 +397,10 @@ fn spec_of(
     // Published by its name, as a native verb is: what an agent at the API lists and calls. The
     // build above plans it by the id the declaration keeps, which is also what a change of it
     // says in the document (and its words are keyed by).
+    let published = crate::meta::published_name(action).to_owned();
     let spec = if no_params {
         ActionSpec::deferred_on(
-            action.name.clone(),
+            published,
             label,
             ExecutionLocus::ClientLocal,
             crate::action::ACTION_TYPE,
@@ -407,7 +408,7 @@ fn spec_of(
         )
     } else {
         ActionSpec::typed_on(
-            action.name.clone(),
+            published,
             label,
             placeholder,
             ExecutionLocus::ClientLocal,
@@ -529,6 +530,20 @@ fn described(
             chord: false,
         })
         .collect();
+    // A check its project's host approved runs as a job its invoker follows and can stop, and
+    // what it answers is what the commands printed, which no one vetted: the contract the broker
+    // runs a check for.
+    if crate::meta::runs_approved_check(action) {
+        let contract = &mut spec.type_mut().contract;
+        contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
+        if matches!(contract.result, tilo_actions::ResultSpec::None) {
+            contract.result = tilo_actions::ResultSpec::Job;
+        }
+        let untrusted = tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned();
+        if !contract.tags.contains(&untrusted) {
+            contract.tags.push(untrusted);
+        }
+    }
     spec.type_mut().contract.settle_confirmation();
     spec
 }

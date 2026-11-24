@@ -213,6 +213,21 @@ pub trait EngineHost {
 
     /// Stop a job. False when the host does not know it or it had already finished.
     fn cancel(&self, job: &str) -> bool;
+
+    /// One check the project's host approved, started by its id as a job for the invocation the
+    /// app's action runs for: answered with the job's id, which [`Self::status`] and
+    /// [`Self::cancel`] are asked about. Its status says how far the host reports it has got,
+    /// and once it ends, the receipt of what the host observed (`receipt`), why it did not run
+    /// (`failed`), or that it was stopped (`cancelled`).
+    ///
+    /// # Errors
+    ///
+    /// Why no check starts: a device where no project's approved checks run, an action the
+    /// workspace did not dispatch, an id the host does not take.
+    fn check(&self, app: &str, check_id: &str) -> Result<String, String> {
+        let _ = (app, check_id);
+        Err(NO_APPROVED_CHECKS.to_owned())
+    }
 }
 
 /// The code of this moment from a vault item's seed, as the host that holds the vault answers it.
@@ -239,6 +254,9 @@ pub trait VaultHost {
     fn code(&self, reference: &str) -> Option<VaultCode>;
 }
 
+/// What a device that runs no project's approved checks answers `engine.check`.
+pub const NO_APPROVED_CHECKS: &str = "No project's approved checks run on this device";
+
 impl Core {
     /// `vault.code(reference)`: the code of this moment, as the vault answers it.
     pub(crate) fn vault_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
@@ -260,7 +278,7 @@ impl Core {
         self.ret_h(Value::some(code))
     }
 
-    /// `engine.call`, `engine.start`, `engine.status` and `engine.cancel`.
+    /// `engine.call`, `engine.start`, `engine.check`, `engine.status` and `engine.cancel`.
     pub(crate) fn engine_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::EngineCall => {
@@ -305,6 +323,11 @@ impl Core {
                 let job = self.text(a.h(0)?)?;
                 ret_i32(i32::from(self.engine_stop(&job)))
             }
+            Imp::EngineCheck => {
+                let app = self.text(a.h(0)?)?;
+                let check_id = self.text(a.h(1)?)?;
+                self.result(self.engine_check(&app, &check_id).map(Value::text))
+            }
             _ => trap("not an engine import"),
         }
     }
@@ -335,6 +358,19 @@ impl Core {
             match self.engine_work.borrow().as_ref() {
                 Some(host) => answered(host.start(app, op, input)),
                 None => Value::Error(no_engine()),
+            }
+        })?;
+        text_answer(answer)
+    }
+
+    /// One check the project's host approved, started as a job: asked of the host once, so a
+    /// run that runs again after a call it made follows the job it started rather than starting
+    /// the check twice.
+    fn engine_check(&self, app: &str, check_id: &str) -> Result<String, String> {
+        let answer = self.device_work("check", check_id, "", || {
+            match self.engine_work.borrow().as_ref() {
+                Some(host) => answered(host.check(app, check_id)),
+                None => Value::Error(NO_APPROVED_CHECKS.to_owned()),
             }
         })?;
         text_answer(answer)

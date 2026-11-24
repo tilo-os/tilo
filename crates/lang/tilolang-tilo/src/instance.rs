@@ -2044,6 +2044,19 @@ impl Instance {
             return Ok(());
         }
         let action = view.borrow().event_action(key, name);
+        // A check the project's host approved runs only for an invocation the workspace
+        // dispatched, which its invoker can follow and stop: a press of it goes through the
+        // dispatch, as the palette's does, rather than running here.
+        if let Some((address, argument)) = view
+            .borrow()
+            .fired_action(key, name, value.as_ref())
+            .ok()
+            .flatten()
+            .and_then(|aref| self.dispatched_check(&aref))
+        {
+            self.chosen.push_back((self.fired, address, Some(argument)));
+            return Ok(());
+        }
         // What the action is run on is read before it runs: a destructive one takes it away.
         let target = self
             .host()
@@ -2065,6 +2078,40 @@ impl Instance {
             Ok(InvokeOutcome::Denied) => Err(Words::phrase("tilolang-ask-denied")),
             Err(error) => Err(Words::Plain(error.to_string())),
         }
+    }
+
+    /// The address and the arguments a press of `aref` asks for when it runs a check the
+    /// project's host approved (`uses check`): the app's `run-approved-check` on the resource it
+    /// runs on, with the check's id. `None` for any other action, which runs here.
+    fn dispatched_check(
+        &self,
+        aref: &crate::runtime::ActionRef,
+    ) -> Option<(ActionAddress, String)> {
+        let host = self.host()?;
+        let app = host.find_in_packages(|package| {
+            package
+                .meta
+                .actions
+                .iter()
+                .find(|action| action.id == aref.action)
+                .filter(|action| crate::meta::runs_approved_check(action))
+                .map(|_| package.meta.app.clone())
+        })?;
+        let (Some(Value::Ref(target)), Some(Value::Text(check_id))) =
+            (aref.args.first(), aref.args.get(1))
+        else {
+            return None;
+        };
+        let address = ActionAddress::new(
+            crate::publish::resource_id(&app, &target.target.id_string()),
+            collaboration::APPROVED_CHECK_ACTION,
+        );
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({ "check_id": check_id })
+        );
+        Some((address, argument))
     }
 
     /// `value` with every reference in it naming its type: a resource a drag from another view
@@ -2222,6 +2269,18 @@ impl Instance {
                 ))));
                 return Ok(());
             }
+        };
+        // A check the project's host approved goes through the dispatch, as a press of it does.
+        if let Some((address, argument)) = self.dispatched_check(&aref) {
+            if let Some(pending) = self.form.take() {
+                pending.forget();
+            }
+            self.out.push(ToUi::Form(None));
+            self.chosen.push_back((self.fired, address, Some(argument)));
+            return Ok(());
+        }
+        let Some(pending) = self.form.as_mut().filter(|open| open.id == id) else {
+            return Ok(());
         };
         let target = target_title(&host, &aref);
         let outcome = pending.view.borrow().invoke(&aref);

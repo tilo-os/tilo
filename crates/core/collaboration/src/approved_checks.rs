@@ -1,5 +1,8 @@
 //! Typed bounded jobs on an existing acknowledged record channel.
-use runtime_collab::approved_checks::{Receipt, Report, ReportedProgressUpdate, Request};
+use runtime_collab::approved_checks::ReportedProgressUpdate;
+pub use runtime_collab::approved_checks::{
+    Binding, Diagnostic, Outcome, Receipt, Report, ReportObservation, Request,
+};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 

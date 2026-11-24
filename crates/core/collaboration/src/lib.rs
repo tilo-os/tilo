@@ -252,6 +252,9 @@ mod portable_committed {
 pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 
 pub use collab_types::{CommitAuthor, CommitPart, DocumentMutation, UnitMutation, WorkspaceCommit};
+/// The verb an app publishes a check its project's host approved under, whatever language the
+/// app is written in: the broker runs a check only for an invocation of it.
+pub use runtime_collab::approved_checks::ACTION_ID as APPROVED_CHECK_ACTION;
 pub use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneInfo,
     CalibrationMicrophoneRun, CalibrationMicrophoneState, CalibrationPhaseInfo,

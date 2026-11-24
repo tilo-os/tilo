@@ -89,6 +89,9 @@ struct Serving {
     invocation: tilo_actions::InvocationId,
     /// The person the served invocation acts for, when the broker named one.
     person: Option<String>,
+    /// The action it names, as the app publishes it; empty for a run that goes on after a call
+    /// it waited on.
+    action: String,
 }
 
 /// What one instance is: the app, the workspace, the window and who is at it, as the session named
@@ -568,6 +571,8 @@ struct HostPlatform {
     /// The vault items this window shows the code of, each followed from where the session
     /// publishes it: the code reaches the view as a reading, never as a record or a change.
     vaults: Rc<RefCell<BTreeMap<String, VaultWatch>>>,
+    /// The checks the project's host runs for this instance's served invocations.
+    checks: Rc<crate::approved_checks::Checks>,
 }
 
 /// One vault item this window follows: its reading, and the code last read from it.
@@ -705,16 +710,14 @@ impl Platform for HostPlatform {
     fn vault_code(&self, reference: &str) -> Option<tilolang_tilo::runtime::host_work::VaultCode> {
         let mut vaults = self.vaults.borrow_mut();
         if !vaults.contains_key(reference) {
-            let item = match collaboration::SessionResource::follow(
-                reference,
-                self.root_wake.clone(),
-            ) {
-                Ok(item) => item,
-                Err(error) => {
-                    tracing::debug!(%reference, %error, "the vault item is not followed");
-                    return None;
-                }
-            };
+            let item =
+                match collaboration::SessionResource::follow(reference, self.root_wake.clone()) {
+                    Ok(item) => item,
+                    Err(error) => {
+                        tracing::debug!(%reference, %error, "the vault item is not followed");
+                        return None;
+                    }
+                };
             vaults.insert(
                 reference.to_owned(),
                 VaultWatch {
@@ -870,8 +873,39 @@ impl Platform for HostPlatform {
         tilolang_tilo::engine::stream(app, op, input, frames)
     }
 
+    /// A check the project's host approved, for the invocation the broker is serving on this
+    /// thread, on the route the instance joined: the same queue a Rust app's check goes through.
+    fn approved_check(&self, _app: &str, check_id: &str) -> Result<String, String> {
+        let served = SERVING.with(|served| served.borrow().clone());
+        self.checks.start(
+            served
+                .as_ref()
+                .map(|served| crate::approved_checks::Served {
+                    invocation: served.invocation,
+                    action: &served.action,
+                }),
+            check_id,
+        )
+    }
+
+    #[cfg(not(feature = "app-launch"))]
+    fn engine_status(&self, job: &str) -> Result<String, String> {
+        match self.checks.status(job) {
+            Some(status) => Ok(status),
+            None => tilolang_tilo::engine::progress(job),
+        }
+    }
+
+    #[cfg(not(feature = "app-launch"))]
+    fn engine_cancel(&self, job: &str) -> bool {
+        self.checks.cancel(job) || tilolang_tilo::engine::stop(job)
+    }
+
     #[cfg(feature = "app-launch")]
     fn engine_status(&self, job: &str) -> Result<String, String> {
+        if let Some(status) = self.checks.status(job) {
+            return Ok(status);
+        }
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
             crate::backups_engine::register();
@@ -893,6 +927,9 @@ impl Platform for HostPlatform {
 
     #[cfg(feature = "app-launch")]
     fn engine_cancel(&self, job: &str) -> bool {
+        if self.checks.cancel(job) {
+            return true;
+        }
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
             crate::backups_engine::register();
@@ -1489,6 +1526,9 @@ pub struct Hosted {
     /// The folders this instance watches for `File.watch`, shared with the platform that
     /// registered them: each turn runs the action of a folder that changed.
     watches: Rc<crate::files::Watches>,
+    /// The checks the project's host runs for the invocations the broker served, shared with the
+    /// platform that starts them.
+    checks: Rc<crate::approved_checks::Checks>,
 }
 
 /// What invoking one action came to.
@@ -1558,6 +1598,8 @@ struct Opened {
     watches: Rc<crate::files::Watches>,
     used: Vec<Used>,
     personal: PersonalDocument,
+    /// The checks the project's host runs for the instance's served invocations.
+    checks: Rc<crate::approved_checks::Checks>,
 }
 
 /// One invocation the broker delivered: its id, the invocation's own id, the resource and action
@@ -1633,6 +1675,12 @@ fn open_instance(
     let personal = PersonalDocument::open(&spec.app, &spec.person, store);
     let watches = Rc::new(crate::files::Watches::new(Arc::clone(wake)));
     let roots = Rc::new(RefCell::new(Roots::default()));
+    // A check goes out on the route the instance joined, the one its invocations arrive on; an
+    // instance with no broker runs none.
+    let checks = Rc::new(crate::approved_checks::Checks::new(
+        (!connection.is_local()).then(|| connection.route().channel_id()),
+        Arc::clone(wake),
+    ));
     let platform = HostPlatform {
         bundle: Arc::clone(bundle),
         installed: spec.installed.clone(),
@@ -1654,6 +1702,7 @@ fn open_instance(
         platform: Rc::clone(&roots),
         root_wake: scope.0.handle(),
         vaults: Rc::default(),
+        checks: Rc::clone(&checks),
     };
     let mut instance = Instance::new(
         Config {
@@ -1689,6 +1738,7 @@ fn open_instance(
         watches,
         used,
         personal,
+        checks,
     }
 }
 
@@ -1723,6 +1773,7 @@ impl Hosted {
             watches,
             used,
             personal,
+            checks,
         } = open_instance(
             &spec,
             &bundle,
@@ -1795,6 +1846,7 @@ impl Hosted {
             outputs_sent: None,
             media_said: MediaSaid::Untold,
             watches,
+            checks,
         }
     }
 
@@ -2112,6 +2164,12 @@ impl Hosted {
             .collect();
         for event in events {
             changed |= self.delivered(event, &cancelled);
+        }
+        // What the checks the project's host runs for served invocations reported, and how the
+        // ones that ended ended, as those invocations' progress and answers.
+        for (id, update) in self.checks.owed() {
+            self.answer_invocation(id, update);
+            changed = true;
         }
         changed |= self.records_moved();
         changed |= self.read_used();
@@ -3041,9 +3099,10 @@ impl Hosted {
             CollabEvent::InvocationCancellation { id } => {
                 // A run that waits on a call stops that call, by the call's own cancel through
                 // the dispatch: its answer ends the run, and the run answers the invocation.
-                // Any other invocation ran to its end in the frame it arrived in and was answered
-                // there: a cancellation that was not in that frame stops nothing.
-                if !self.stop_calls_of(id) {
+                // A check the run started stops, and the invocation is answered as stopped once
+                // it has. Any other invocation ran to its end in the frame it arrived in and was
+                // answered there: a cancellation that was not in that frame stops nothing.
+                if !self.checks.cancel_delivery(id) && !self.stop_calls_of(id) {
                     tracing::debug!(id, "a cancellation of an invocation already answered");
                 }
                 return false;
@@ -3130,6 +3189,7 @@ impl Hosted {
         let serving = Serving {
             invocation,
             person: person.map(str::to_owned),
+            action: address.action.clone(),
         };
         SERVING.with(|slot| *slot.borrow_mut() = Some(serving));
         // The person's approve it came back with, what they typed included: a sign-in its action
@@ -3143,13 +3203,19 @@ impl Hosted {
         SERVING.with(|slot| *slot.borrow_mut() = None);
         self.store.serve(None);
         let answer = match outcome {
+            // A check the project's host approved that the run started is the invocation's
+            // work: it stays open until the check ends, and is answered then.
+            Ok(Ran::Done(output)) if self.checks.continues(id, invocation, &output) => None,
             Ok(Ran::Done(output)) => Some(InvocationUpdate::Succeeded { invocation, output }),
             // What it calls answers later: the invocation ends with the run, not now.
             Ok(Ran::Waits { call, run }) => {
                 self.waiting(call, run, Some((id, invocation)), person.map(str::to_owned));
                 None
             }
-            Err(error) => Some(failed(invocation, error)),
+            Err(error) => {
+                self.checks.abandon(invocation);
+                Some(failed(invocation, error))
+            }
         };
         // The action's writes reached the store as it ran: what it queued outside the workspace
         // waits in the outbox, and the instance settles it on its next frame, as it does what a
@@ -3451,6 +3517,7 @@ impl Hosted {
                 *slot.borrow_mut() = Some(Serving {
                     invocation,
                     person: person.clone(),
+                    action: String::new(),
                 });
             });
         }
@@ -3461,17 +3528,19 @@ impl Hosted {
             Ok(RunOutcome::Done(value)) => {
                 self.instance.commit_planned();
                 if let Some((id, invocation)) = served {
-                    let update = InvocationUpdate::Succeeded {
-                        invocation,
-                        output: output_of(&self.spec.app, &value),
-                    };
-                    self.answer_invocation(id, update);
+                    let output = output_of(&self.spec.app, &value);
+                    // A check the run started before it waited is still the invocation's work.
+                    if !self.checks.continues(id, invocation, &output) {
+                        let update = InvocationUpdate::Succeeded { invocation, output };
+                        self.answer_invocation(id, update);
+                    }
                 }
             }
             Ok(RunOutcome::Waits { run, call }) => self.waiting(call, Some(run), served, person),
             Err(error) => {
                 self.instance.commit_planned();
                 if let Some((id, invocation)) = served {
+                    self.checks.abandon(invocation);
                     let update =
                         failed(invocation, Refused::new("action_failed", error.to_string()));
                     self.answer_invocation(id, update);
@@ -4030,6 +4099,14 @@ impl Hosted {
         let Some((press, address, argument)) = self.instance.take_chosen() else {
             return false;
         };
+        // A check the project's host approved runs for an invocation the workspace holds, which
+        // its invoker can follow and stop: the press goes through the dispatch, and the check
+        // runs when the broker delivers it back.
+        if address.action == collaboration::APPROVED_CHECK_ACTION {
+            self.dispatch_press(&address, argument.as_deref());
+            self.instance.press_ran(press);
+            return true;
+        }
         let invoker = ActionInvoker::person(self.spec.person.clone());
         let opens_what_it_made = self.is_primary(&address);
         match self.invoke(&address, argument.as_deref(), &invoker, None) {
@@ -4059,6 +4136,57 @@ impl Hosted {
         // the window it ran, so what the person typed after it goes there.
         self.instance.press_ran(press);
         true
+    }
+
+    /// Send the person's press of `address` with `argument` through the dispatch, as the app's
+    /// call of its own action: the broker admits it as theirs and delivers it back to run.
+    fn dispatch_press(&mut self, address: &ActionAddress, argument: Option<&str>) {
+        use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionMessage};
+        let given = argument.map_or("{}", |given| {
+            given
+                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                .unwrap_or(given)
+        });
+        let arguments = match serde_json::from_str::<serde_json::Value>(given) {
+            Ok(serde_json::Value::Object(arguments)) => arguments,
+            Ok(other) => {
+                self.instance.failed(format!(
+                    "The check's arguments are not named values: {other}"
+                ));
+                return;
+            }
+            Err(error) => {
+                self.instance
+                    .failed(format!("The check's arguments could not be read: {error}"));
+                return;
+            }
+        };
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::application_action_target(
+                &self.spec.workspace,
+                &self.spec.app,
+                address.resource.clone(),
+                address.action.clone(),
+            ),
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let message = RemoteActionMessage::Invoke(request);
+        if !self
+            .connection
+            .manager()
+            .send(CollabRequest::RemoteAction { message })
+        {
+            self.instance
+                .failed("The workspace could not be reached to run the check".to_owned());
+        }
     }
 
     /// Whether the app declares the action `address` names `primary`: what it made opens as a

@@ -69,6 +69,26 @@ pub fn unreadable_types(meta: &Meta) -> Vec<String> {
 /// delivers a link of a scheme the app claims through, whether the app is open or not.
 pub const OPEN_LINK_ACTION: &str = "open_link";
 
+/// Whether `action` runs a check its project's host approved (`uses check`): the app's
+/// `run-approved-check`, which runs as a job its invoker follows and can stop.
+#[must_use]
+pub fn runs_approved_check(action: &ActionMeta) -> bool {
+    action.uses.iter().any(|used| used == "check")
+}
+
+/// The name the app's action API offers `action` by: its own, except for the action that runs a
+/// check its project's host approved, which every app offers as the workspace's one
+/// `run-approved-check` (`collaboration::APPROVED_CHECK_ACTION`), the verb the broker runs a
+/// check for, whatever language the app is written in.
+#[must_use]
+pub fn published_name(action: &ActionMeta) -> &str {
+    if runs_approved_check(action) {
+        collaboration::APPROVED_CHECK_ACTION
+    } else {
+        &action.name
+    }
+}
+
 /// The root type whose resources an app opens links on: it declares `open_link` on a root, with
 /// the link as its one text argument. `None` for an app that opens no links, and then no
 /// `open-link` is offered and its manifest carries none.
@@ -241,7 +261,7 @@ impl MetaExt for Meta {
     fn action_published_as(&self, action: &str) -> Option<&ActionMeta> {
         self.actions
             .iter()
-            .find(|declared| !declared.scenario && declared.name == action)
+            .find(|declared| !declared.scenario && published_name(declared) == action)
     }
 
     fn kind_of(&self, type_name: &str) -> String {

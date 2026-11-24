@@ -42,6 +42,34 @@ impl Resolver<'_> {
                 }
             }
         }
+        if let Item::Action(a) = item
+            && out.contains(&Effect::Check)
+            && !takes_a_check_id(a)
+            && let Some(u) = written.iter().find(|u| u.name == Effect::Check.word())
+        {
+            self.err(
+                "E121",
+                u.span,
+                format!(
+                    "`{}` runs a check the project's host approved, so it is the app's \
+                     `run-approved-check`: it takes the resource it runs on and the check's id, \
+                     and nothing else: `action {}(r: Repository, check_id: Text) uses check`",
+                    a.name.name, a.name.name
+                ),
+            );
+        }
         out
     }
+}
+
+/// Whether `a` takes what the workspace's `run-approved-check` takes: the resource it runs on,
+/// then the check's id as text, which the project's host reads by that name.
+fn takes_a_check_id(a: &crate::ast::ActionDecl) -> bool {
+    let [_, id] = a.params.as_slice() else {
+        return false;
+    };
+    id.name.name == "check_id"
+        && id.default.is_none()
+        && matches!(&id.ty.kind, crate::ast::TypeExprKind::Named(path)
+            if path.len() == 1 && path.first().is_some_and(|ty| ty.name == "Text"))
 }

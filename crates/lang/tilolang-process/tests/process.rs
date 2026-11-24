@@ -29,6 +29,9 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::resources::ResourceStore;
 use tilolang_tilo::runtime::Value;
 
+/// A check the project's host approved, run for the invocation the broker served.
+#[path = "process/approved_checks.rs"]
+mod approved_checks;
 /// The native Notes app's notebook, carried over once by the tilolang Notes a session starts.
 #[path = "process/chat.rs"]
 mod chat;

@@ -992,6 +992,7 @@ d-464a2hax = Änderungen
     .w-show-whitespace = Show whitespace
     .w-wrap-long-lines = Wrap long lines
     .w-stash-changes = Stash changes
+    .w-run-approved-project-check = Freigegebene Projektprüfung ausführen
     .w-stage-all = Stage all
     .w-unstage-all = Unstage all
     .w-commit-message = Commit message
@@ -1087,3 +1088,134 @@ d-m4t7437c = Zweige
 d-kz5j2n5t = Zweigzeile
     .w-delete = Delete
     .w-delete-2 = Delete { $name }
+
+d-6lsikkhk = Prüfung
+    .doc = Die letzte Prüfung, die der Host des Projekts dafür ausgeführt hat; jedes Mitglied sieht sie.
+
+d-3peaa3l5-filter-check = Prüfung
+
+d-vnshbilp = Freigegebene Prüfung
+    .doc = Eine Prüfung, die der Host des Projekts freigegeben hat, wie sie zuletzt hier lief: was der Host meldet, während sie läuft, und was er beobachtet hat, als sie endete.
+    .noun = { $count ->
+        [one] freigegebene Prüfung
+       *[other] freigegebene Prüfungen
+    }
+
+d-rmw3ex57 = Prüfungs-ID
+
+d-nsdsyb5s = Auftrag
+    .doc = Der Auftrag des Geräts, solange sie läuft; sonst leer.
+
+d-ui5llo7z = Stand
+
+d-d5rqal3v = Phase
+    .doc = Die neueste Phase, die der Host gemeldet hat, und wie viel davon erledigt ist.
+
+d-poxyr3cm = Erledigt
+
+d-eezoev2x = Gesamt
+
+d-u3i4t7tf = Ergebnis
+    .doc = Wie die Befehle endeten, wie der Host es beobachtet hat: `exited`, `cancelled`, `timed_out`, `output_limit` oder `failed`.
+
+d-dl6kn2wc = Exit-Code
+
+d-pllfspge = Dauer in ms
+
+d-vmj5rkri = Ausgabe
+    .doc = Der Anfang dessen, was die Befehle ausgegeben haben, und dessen, was sie als Fehler ausgegeben haben.
+
+d-qmhx4rnw = Fehlerausgabe
+
+d-rclt3d5w = Ablehnung
+    .doc = Warum sie nicht lief, oder warum der Host sie nicht überwachen konnte.
+
+d-vnshbilp-filter-state = Stand
+
+d-vnshbilp-filter-completed = Erledigt
+
+d-vnshbilp-filter-total = Gesamt
+
+d-vnshbilp-filter-exit_code = Exit-Code
+
+d-vnshbilp-filter-elapsed_ms = Dauer in ms
+
+d-j6kggm43 = Prüfungsstand
+    .doc = Wie eine Prüfung steht, wie das Gerät `engine.status` beantwortet: sobald sie fertig ist, was der Host von ihren Befehlen beobachtet hat.
+    .noun = { $count ->
+        [one] Prüfungsstand
+       *[other] Prüfungsstände
+    }
+
+d-uygk57xo = Stand
+
+d-55lyz5up = Phase
+
+d-pl44hgyv = Erledigt
+
+d-5qgxxmf2 = Gesamt
+
+d-jdbite5b = Fehler
+
+d-lseynsql = Ergebnis
+
+d-unt7o3nt = Exit-Code
+
+d-oo44f2s2 = Dauer in ms
+
+d-phjhwilm = Ausgabe
+
+d-hmbphto7 = Fehlerausgabe
+
+d-z5xx44zw = Störung
+
+d-j6kggm43-filter-completed = Erledigt
+
+d-j6kggm43-filter-total = Gesamt
+
+d-j6kggm43-filter-exit_code = Exit-Code
+
+d-j6kggm43-filter-elapsed_ms = Dauer in ms
+
+d-ulbv3hii = Prüfungsstand
+    .doc = Wo die letzte freigegebene Prüfung steht: noch keine lief (oder sie wurde weggelegt), der Host führt sie gerade aus, der Host hat beobachtet, wie ihre Befehle endeten, sie wurde angehalten, oder der Arbeitsbereich oder der Host hat sie abgelehnt.
+
+d-gayd4ikj = Freigegebene Projektprüfung ausführen
+    .doc = Führt eine Prüfung aus, die der Host dieses Projekts freigegeben hat, anhand ihrer ID: Der Host wählt Befehle, Quellen und Grenzen, meldet, wie weit er ist, und sagt, was er beobachtet hat, sobald sie endet.
+    .w-a-check-is-already-running = Es läuft bereits eine Prüfung
+
+d-gayd4ikj-check_id = Prüfungs-ID, die genau dieser Projekt-Host freigegeben hat
+
+d-4m6s256h = Prüfung abfragen
+    .doc = Fragt das Gerät, wie die laufende Prüfung vorankommt, und behält, was der Host gemeldet hat.
+
+d-ci2kg6kc = Prüfung anhalten
+    .doc = Hält die laufende Prüfung an; der Host beendet ihre Befehle.
+    .w-no-check-is-running = Es läuft keine Prüfung
+
+d-jehaiy7d = Prüfung wegräumen
+    .doc = Legt das Ergebnis der letzten Prüfung weg.
+
+d-suwn2nn2 = Freigegebene Prüfung ausführen~present
+
+d-3eb4vxiy = Prüfung anhalten~present
+
+d-kqs6l2ft = Prüfungskarte
+    .w-running = { $check_id } läuft
+    .w-waiting-for-the-project-s-host = Warte auf den Host des Projekts
+    .w-stop = Anhalten
+    .w-check-under-way = Prüfung läuft
+    .w-took = Dauerte { $took }
+    .w-what-the-check-printed = Was die Prüfung ausgegeben hat
+    .w-was-stopped = { $check_id } wurde angehalten
+    .w-no-project-s-approved-check-ran = Keine freigegebene Projektprüfung lief
+
+d-7pbhnztg = Bereit
+
+d-jciacddk = Läuft
+
+d-kkgzl4i7 = Beobachtet
+
+d-yj3fdk54 = Angehalten
+
+d-kjqu7kvq = Abgelehnt
