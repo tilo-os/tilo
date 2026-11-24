@@ -163,10 +163,7 @@ d-mycnv7ws-paused = Pausiert
 
 
 d-syvxuusz-filter-cpu = CPU
-d-syvxuusz-filter-depth = Tiefe
-d-syvxuusz-filter-has_children = Hat Unterprozesse
 d-syvxuusz-filter-memory_bytes = Speicher
-d-syvxuusz-filter-process = Prozess
 d-syvxuusz-filter-threads = Threads
 
 d-u6hj324t = Speicher
