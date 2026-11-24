@@ -235,7 +235,17 @@ view overview_pane(d: Disks, disks: device.Disks, drive: device.Drive, formattin
         }
     }
     row(gap: .tight, wrap: true) {
-        if let mounted = drive.mountpoint {
+        // Where the drive is open: a filesystem written on the whole drive is the drive's own
+        // `mountpoint`, and one on a partition is that partition's, which is the one to close.
+        let open_part = drive.partitions.find(part -> part.mountpoint != .none)
+        if let part = open_part {
+            if let mounted = part.mountpoint {
+                ui.Button("Close", icon: .log_out) {
+                    on press: device.unmount(device.disks, device: part.name)
+                }
+                ui.Text("Open at {mounted}", role: .caption, secondary: true)
+            }
+        } else if let mounted = drive.mountpoint {
             ui.Button("Close", icon: .log_out) {
                 on press: device.unmount(device.disks, device: drive.name)
             }
