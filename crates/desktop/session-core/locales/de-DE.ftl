@@ -1289,8 +1289,6 @@ so-tilo-chrome-leave-workspace = Einen Arbeitsbereich verlassen
 so-tilo-chrome-maximize = Ein Fenster maximieren
 so-tilo-chrome-delete-strip = Eine Leiste löschen
 so-tilo-chrome-move-to-new-strip = Ein Fenster in eine eigene Leiste verschieben
-so-tilo-chrome-reopen-ended = Die App erneut öffnen, deren Fenster endete
-so-tilo-chrome-dismiss-ended = Verwerfen, was das Fenster sagt
 so-tilo-chrome-rename-in-bar = Das Fenster umbenennen
 so-tilo-chrome-bar-action = Eine eigene Schaltfläche des Fensters drücken
 so-tilo-chrome-bar-sidebar = Die Seitenleiste des Fensters umschalten
@@ -1341,6 +1339,7 @@ so-tilo-layout-launchpad = Eine Karte wählen
 so-tilo-layout-move-to-display = Auf eine andere Anzeige verschieben
 so-tilo-layout-search = Den Desktop durchsuchen
 so-tilo-layout-step-focus = Durch die Fenster wechseln
+so-tilo-layout-reopen-window = Die App erneut öffnen
 so-tilo-layout-wait-window = Weiter warten
 
 # Parameterbeschreibungen der deklarierten Vokabulare, als `<Label>-<Argument>` gelesen.

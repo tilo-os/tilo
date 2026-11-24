@@ -351,23 +351,7 @@ name = "tab"
 required = true
 type = "text"
 
-[[resources.verbs]]
-id = "reopen-ended"
-kind = "outside"
 
-[[resources.verbs.params]]
-name = "tab"
-required = true
-type = "text"
-
-[[resources.verbs]]
-id = "dismiss-ended"
-kind = "outside"
-
-[[resources.verbs.params]]
-name = "tab"
-required = true
-type = "text"
 
 [[resources.verbs]]
 id = "move-strip"
@@ -1048,6 +1032,11 @@ params = []
 
 [[resources.verbs]]
 id = "force-quit-app"
+kind = "outside"
+params = []
+
+[[resources.verbs]]
+id = "reopen-window"
 kind = "outside"
 params = []
 

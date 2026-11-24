@@ -194,6 +194,12 @@ impl ShellVerbs {
                 };
                 ask(&self.handle, &self.asks, DesktopAsk::ForceQuitApp(tab));
             }
+            LayoutEffect::ReopenWindow { tab } => {
+                let Ok(tab) = tab.parse() else {
+                    return false;
+                };
+                ask(&self.handle, &self.asks, DesktopAsk::ReopenEnded(tab));
+            }
         }
         true
     }

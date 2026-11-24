@@ -1253,8 +1253,6 @@ so-tilo-chrome-leave-workspace = Leave a workspace
 so-tilo-chrome-maximize = Maximize a window
 so-tilo-chrome-delete-strip = Delete a strip
 so-tilo-chrome-move-to-new-strip = Move a window to a strip of its own
-so-tilo-chrome-reopen-ended = Reopen the app whose window ended
-so-tilo-chrome-dismiss-ended = Dismiss what the window says
 so-tilo-chrome-rename-in-bar = Rename the window
 so-tilo-chrome-bar-action = Press the window's own control
 so-tilo-chrome-bar-sidebar = Toggle the window's sidebar
@@ -1305,6 +1303,7 @@ so-tilo-layout-launchpad = Choose a card
 so-tilo-layout-move-to-display = Move to another display
 so-tilo-layout-search = Search the desktop
 so-tilo-layout-step-focus = Step through the windows
+so-tilo-layout-reopen-window = Reopen the app
 so-tilo-layout-wait-window = Keep waiting
 
 # Parameter descriptions of the declared vocabularies, read as `<label>-<argument>`.

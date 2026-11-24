@@ -263,6 +263,16 @@ pub enum LayoutEffect {
         #[param(decimal, "The tab whose app to end")]
         tab: String,
     },
+
+    /// Ask for the app again
+    /// The app whose window ended, asked for again in the same tab: what the card's Reopen does.
+    #[effect(on = Window, kind = "outside")]
+    #[effect(own_device)]
+    ReopenWindow {
+        /// The tab's id.
+        #[param(decimal, "The tab whose app to ask for again")]
+        tab: String,
+    },
 }
 
 /// A window the shell shows, as a declared type: what its own verbs act on.
@@ -619,25 +629,6 @@ pub enum ChromeEffect {
     #[effect(kind = "outside")]
     #[effect(own_device)]
     BarForward {
-        /// The window, by its tab.
-        #[param(decimal, "The window, by its tab")]
-        tab: String,
-    },
-    /// Ask again for the app whose window ended
-    /// The same app, in the same tab, as the card's Reopen does.
-    #[effect(kind = "outside")]
-    #[effect(own_device)]
-    ReopenEnded {
-        /// The window, by its tab.
-        #[param(decimal, "The window, by its tab")]
-        tab: String,
-    },
-
-    /// Dismiss what a window says in place of its app
-    /// The tab goes with it: nothing comes into it.
-    #[effect(kind = "outside")]
-    #[effect(own_device)]
-    DismissEnded {
         /// The window, by its tab.
         #[param(decimal, "The window, by its tab")]
         tab: String,
@@ -1316,6 +1307,7 @@ fn admit_layout(verb: &LayoutEffect, tree: &Layout) -> Result<Admitted, String> 
         | LayoutEffect::ChooseSearchRow { .. }
         | LayoutEffect::Launchpad { .. }
         | LayoutEffect::WaitWindow { .. }
+        | LayoutEffect::ReopenWindow { .. }
         | LayoutEffect::ForceQuitApp { .. } => Err("The shell carries this out itself".into()),
     }
 }
@@ -1489,8 +1481,6 @@ fn admit_chrome(
         | ChromeEffect::BarSidebar { .. }
         | ChromeEffect::BarBack { .. }
         | ChromeEffect::BarForward { .. }
-        | ChromeEffect::ReopenEnded { .. }
-        | ChromeEffect::DismissEnded { .. }
         | ChromeEffect::MoveStrip { .. }
         | ChromeEffect::StepStrip { .. }
         | ChromeEffect::NewWorkspace { .. }
