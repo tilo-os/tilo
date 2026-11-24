@@ -691,6 +691,9 @@ pub(crate) fn follow(
     let cache = Arc::clone(cache);
     tilo_rt::app().spawn(async move {
         let mut changes = workspaces.copies().governance_changes();
+        // A workspace this device enters after it started is read as soon as it is held: what it
+        // installs is fetched then, as any later change to what it names is.
+        let mut holds = workspaces.copies().holds_changed();
         loop {
             let mut flatpaks = std::collections::BTreeSet::new();
             let mut apps = std::collections::BTreeSet::new();
@@ -709,8 +712,22 @@ pub(crate) fn follow(
                     cache.drop_followed_not_named(&apps);
                 });
             }
-            if let Err(tokio::sync::broadcast::error::RecvError::Closed) = changes.recv().await {
-                return;
+            tokio::select! {
+                closed = async {
+                    matches!(
+                        changes.recv().await,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed)
+                    )
+                } => {
+                    if closed {
+                        return;
+                    }
+                }
+                held = holds.changed() => {
+                    if held.is_err() {
+                        return;
+                    }
+                }
             }
         }
     });

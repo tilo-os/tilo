@@ -47,7 +47,6 @@ mod commit;
 mod content;
 /// The records of the content a host stopped keeping, which its members read.
 pub use refused::Refusal as ContentRefusalRecord;
-mod refused;
 mod creating;
 mod default_apps;
 mod delete;
@@ -56,6 +55,7 @@ pub mod fixtures;
 mod genesis;
 mod machines;
 mod mcp_server;
+mod refused;
 pub use machines::WorkspaceMachines;
 mod names;
 pub use names::PersonNames;
@@ -2088,6 +2088,14 @@ impl Workspaces {
     #[must_use]
     pub fn governance_changes(&self) -> tokio::sync::broadcast::Receiver<String> {
         self.inner.changes.subscribe()
+    }
+
+    /// What moves whenever a workspace is held here that was not before: what a follower of what
+    /// the workspaces name reads again on, a device that enters its person's workspace after it
+    /// started among them.
+    #[must_use]
+    pub fn holds_changed(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.readings.holds()
     }
 
     /// Each write to a record a workspace held here took in: a member's write to

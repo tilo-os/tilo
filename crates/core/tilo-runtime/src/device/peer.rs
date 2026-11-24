@@ -248,7 +248,22 @@ impl Peer {
         login: &super::home::Home,
         key: &SigningKey,
     ) {
-        let (listed, complete) = self.listed(own).await;
+        let (mut listed, complete) = self.listed(own).await;
+        // The workspace this computer's login names is entered even when the person's list
+        // does not name it yet: the login entry alone says where it is kept, as it says where to
+        // enter before any copy of the person's own workspace names the same server.
+        if let Some(entered) = login.get().await
+            && let Some(workspace) = WorkspaceId::parse(&entered.workspace)
+            && !listed.iter().any(|entry| entry.workspace == workspace)
+            && !own.keeps(workspace).await
+        {
+            listed.push(Listed {
+                workspace,
+                name: entered.workspace_name.clone(),
+                role: None,
+                entered_at: None,
+            });
+        }
         let mut wanted = match folders::Folders::load(&self.device_dir) {
             Ok(wanted) => wanted,
             Err(error) => {
