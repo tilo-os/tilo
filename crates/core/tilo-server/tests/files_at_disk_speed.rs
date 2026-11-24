@@ -21,9 +21,8 @@ use std::time::{Duration, Instant};
 
 use tilo_server::WorkspaceId;
 use tilo_user_identity::DeviceCapabilities;
-use tilo_workspace_service::own_device;
 
-use crate::common::{TestDevice, TestUser, device_endpoint, spawn_server};
+use crate::common::{TestUser, own_service, spawn_server};
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(0x6669_6c65_7370_6565_64);
 
@@ -82,41 +81,6 @@ fn bytes_of(index: usize, len: usize) -> Vec<u8> {
         .finalize_xof()
         .fill(&mut bytes);
     bytes
-}
-
-/// The laptop's own service under `state`, opened as a device opens its own, with its key
-/// service beside it.
-async fn own_service(
-    state: &Path,
-    laptop: &TestDevice,
-) -> (
-    tilo_server::service::WorkspaceService,
-    own_device::KeyService,
-) {
-    let signer: Arc<dyn collab_types::signer::DeviceSigner> = Arc::new(laptop.sk.clone());
-    let keys = own_device::KeyService::open(
-        "laptop-groups",
-        &state.join("groups"),
-        key_group::VaultKey::new([3; 32]),
-        Arc::clone(&signer),
-        Arc::new(tilo_workspace_keys::NoSealChecks),
-    )
-    .expect("the laptop's key service opens");
-    let service = own_device::open(
-        state.join("service"),
-        own_device::Device {
-            cert: &laptop.cert,
-            signer: &signer,
-            itself: None,
-        },
-        device_endpoint(laptop).await,
-        keys.groups(),
-        |config| config,
-    )
-    .await
-    .expect("the laptop's own service opens");
-    keys.attach(service.workspaces());
-    (service, keys)
 }
 
 /// Copy every file under `from` into `to` the plain way: each is read, streamed over a loopback
