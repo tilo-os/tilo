@@ -2,7 +2,7 @@
 //! a deny-default Seatbelt profile for everything else.
 //!
 //! The launcher's contract is that its caller has verified the payload
-//! against the package's signed root first ([`verify_installed`]);
+//! against the package's signed root first ([`super::verified::verify_installed`]);
 //! an unverifiable payload is refused before it reaches the launcher. A
 //! package whose entrypoint is a runtime's binary (a tilolang app on the
 //! tilolang runtime) runs that binary from the installed runtime package,
@@ -17,7 +17,7 @@
 //! call its actions. The window takes its patch connection on its process link and holds none of
 //! the app's data (no collaboration connection), exactly as a Linux session's window.
 
-use super::verified::{installed_runtime, verify_package};
+use super::verified::{installed_runtime, verify_installed, verify_package};
 use super::{Apps, Launch, Sockets};
 use crate::host::{ServiceConnections, ServiceSockets};
 use app_catalogue::apps::InstalledApp;
@@ -262,8 +262,7 @@ struct HostedWindow {
 /// Start the instance of a window of `app` in `workspace` in the app's tilolang process, and put
 /// its patch connection on the window's link before the window starts to read it.
 fn hosted_window(apps: &Apps, app: &InstalledApp, workspace: &str) -> Result<HostedWindow, String> {
-    let origin = apps.origin_connection(&app.app_id, workspace)?;
-    let window = apps.instances.open_window(&app.app_id, workspace, origin)?;
+    let window = apps.hosted_window(&app.app_id, workspace)?;
     let (link, window_link) = runtime_portal::process_link::pair()
         .map_err(|error| format!("{}'s window link: {error}", app.app_id))?;
     runtime_portal::process_link::ToProcess::Patch {
@@ -277,72 +276,6 @@ fn hosted_window(apps: &Apps, app: &InstalledApp, workspace: &str) -> Result<Hos
         link,
         window_link,
     })
-}
-
-/// Install the runtime packages the running Tilo.app carries (`Contents/Resources/runtimes/<package
-/// root>.tapp`, the tilolang runtime among them) that this profile does not have yet, through the
-/// one installer, as the Store installs any package: each must be the exact package its sealed
-/// name says and its bundle signed by a publisher the app lists. Once installed, a runtime updates
-/// from the registry like every package; a later Tilo.app does not put back an older one.
-pub(super) fn install_carried_runtimes(catalog: &package_store::Catalog) {
-    use package_store::installer;
-    let Some(carried) = std::env::current_exe()
-        .and_then(std::fs::canonicalize)
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.parent()?.join("Resources/runtimes")))
-        .filter(|dir| dir.is_dir())
-    else {
-        return;
-    };
-    let Ok(entries) = std::fs::read_dir(&carried) else {
-        return;
-    };
-    let installed: Vec<String> = catalog
-        .list()
-        .map(|packages| packages.into_iter().map(|p| p.package_id_hex).collect())
-        .unwrap_or_default();
-    let store = match package_store::PackageStore::from_env() {
-        Ok(store) => store,
-        Err(error) => {
-            tracing::warn!(%error, "no package store for the runtimes Tilo.app carries");
-            return;
-        }
-    };
-    for path in entries.flatten().map(|entry| entry.path()) {
-        let Some(root) = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .filter(|stem| path.extension().is_some_and(|ext| ext == "tapp"))
-            .filter(|stem| stem.len() == 64 && stem.bytes().all(|b| b.is_ascii_hexdigit()))
-        else {
-            continue;
-        };
-        if installed.iter().any(|id| id.eq_ignore_ascii_case(root)) {
-            continue;
-        }
-        let request = installer::Request {
-            trust: installer::Trust {
-                require_package_root: Some(root.to_owned()),
-                // No attestor vouches for the app's own publisher: the package root, sealed in the
-                // app's signature, is what this trusts.
-                allow_self_signed: true,
-                ..installer::Trust::default()
-            },
-            ..installer::Request::default()
-        };
-        match installer::install(
-            &store,
-            catalog,
-            &installer::Candidate::staged(&path, "Tilo.app"),
-            &request,
-            None,
-        ) {
-            Ok(_) | Err(installer::Error::AlreadyInstalled(_)) => {}
-            Err(error) => {
-                tracing::warn!(%error, package = %root, "a runtime Tilo.app carries did not install")
-            }
-        }
-    }
 }
 
 /// Where the GStreamer a runtime package carries beside its binaries (`lib/gstreamer`, the tilolang
@@ -495,28 +428,6 @@ impl tilo_capture::broker::Answers for DeviceAnswers {
         );
         Ok(())
     }
-}
-
-/// Prove the installed package behind `app` is still the one that was
-/// installed: its record's signature by its publisher, the manifest and
-/// every payload file against the signed hashes, no file the package did
-/// not ship, and a publisher key this profile has not revoked.
-///
-/// # Errors
-///
-/// Names the first check that failed; the launch is refused.
-pub(super) fn verify_installed(
-    catalog: &package_store::Catalog,
-    app: &InstalledApp,
-) -> Result<(), String> {
-    let refuse = |why: String| format!("refusing to launch {}: {why}", app.app_id);
-    let package = catalog
-        .list()
-        .map_err(|error| refuse(error.to_string()))?
-        .into_iter()
-        .find(|package| package.manifest_path == app.manifest_path)
-        .ok_or_else(|| refuse("it is no longer installed".into()))?;
-    verify_package(&package).map_err(refuse)
 }
 
 /// The payload of the installed runtime package that provides `runtime` (`<name>/<version>`,

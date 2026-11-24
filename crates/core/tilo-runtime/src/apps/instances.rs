@@ -1,8 +1,8 @@
 //! The tilolang app instances this daemon starts itself, with no desktop session: an instance
 //! that shows nothing, for a call the device's dispatch delivers to an app with no instance
 //! running, an instance whose view the daemon opened for a caller (a page at
-//! `/w/<workspace>/<app>`), and the instance of a window the daemon launched itself (on macOS,
-//! where the daemon launches apps' windows).
+//! `/w/<workspace>/<app>`), and the instance of a window the daemon launched itself (on macOS
+//! and Windows, where the daemon launches apps' windows).
 //!
 //! Each starts in the app's tilolang process, through the platform's launcher, in the sandbox
 //! every tilolang process runs in ([`crate::device::processes`]), exactly as a session's window
@@ -37,7 +37,7 @@ pub(super) enum Shows {
     Nothing,
     /// A window the daemon launched, for the member the device acts as.
     #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
+        all(not(any(target_os = "macos", windows)), not(test)),
         expect(
             dead_code,
             reason = "the desktop session launches a Linux device's windows"
@@ -61,7 +61,7 @@ pub(crate) type FindsLauncher = Box<dyn Fn() -> Result<Launcher, String> + Send 
 
 /// A window's instance, started in its app's process: the window takes the window's end of its
 /// patch connection on its link, as the window `instance`.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) struct HostedWindow {
     pub instance: u64,
     pub patch: Descriptor,
@@ -395,7 +395,7 @@ impl Instances {
     /// # Errors
     /// The device is no one's yet, the app is no tilolang app installed here, or its instance
     /// could not be started.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(crate) fn open_window(
         &self,
         app: &str,

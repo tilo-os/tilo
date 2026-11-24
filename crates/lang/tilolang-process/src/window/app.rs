@@ -128,23 +128,10 @@ impl ResourceApp for TlApp {
     }
 }
 
-/// A window on Windows shows only an instance a host runs, which a session starts: one started
-/// without a session has nothing to show.
-#[cfg(windows)]
-fn in_process(
-    _me: &str,
-    _workspace: &str,
-    _files: &ui::storage::AppFiles,
-) -> Option<super::hosted::HostedWindow> {
-    tracing::error!("a tilolang window on Windows shows an instance its session's host runs");
-    None
-}
-
 /// The window of the installed package for `me` in `workspace`, running its instance in this
 /// process over the app's document on this device, kept in the app's data area (`files`): a
 /// window without a session (`tilolang dev`, a capture). `None` when nothing is installed, or
 /// the instance does not start.
-#[cfg(unix)]
 fn in_process(
     me: &str,
     workspace: &str,

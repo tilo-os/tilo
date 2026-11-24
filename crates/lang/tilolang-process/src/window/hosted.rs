@@ -10,9 +10,8 @@
 //!
 //! Without a session (`tilolang dev`, a capture), there is no host to run the instance: the
 //! window runs one in its own process ([`start`]), over the app's document on this device alone,
-//! and turns it on its own frames. The instance runs the same either way. On Windows a window
-//! shows only an instance a host runs: its patch connection is a pipe, carried down to it by the
-//! daemon that started it.
+//! and turns it on its own frames. The instance runs the same either way. On Windows its patch
+//! connection is a pipe, carried down to it by the daemon that started it.
 
 use std::cell::RefCell;
 #[cfg(unix)]
@@ -28,10 +27,6 @@ use media::playback_bridge::{CollectionOutput, PlaybackBridge};
 use media::playback_cast::transport::ProjectorTransport;
 use media::playback_sink::SystemSinkFactory;
 use tilo_app_window::AppWindow;
-#[cfg(unix)]
-use tilo_render_protocol::channel::Channel;
-#[cfg(unix)]
-use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_tilo::bundle::Bundle;
 use ui::widget::DrawChild;
 use ui::widget::{AppModel, ModelPath, Widget};
@@ -345,7 +340,6 @@ impl Woken {
 ///
 /// # Errors
 /// The app's data cannot be kept, or the patch connection cannot be made.
-#[cfg(unix)]
 pub fn start(
     spec: Spec,
     route: crate::connection::Route,
@@ -353,7 +347,7 @@ pub fn start(
     phrases: &Rc<Phrases>,
     mut storage: Option<std::path::PathBuf>,
     wake: tilolang_tilo::background::Waker,
-) -> Result<(TilolangProcess, Channel), StartError> {
+) -> Result<(TilolangProcess, PatchConnection), StartError> {
     let port = match storage.take() {
         Some(storage) => {
             tilolang_tilo::resources::LocalPort::at(storage.join(&spec.app).join("resources"))
@@ -363,8 +357,8 @@ pub fn start(
     };
     let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(port));
     let mut host = TilolangProcess::new(Arc::clone(&wake));
-    let (ours, theirs) = Channel::pair()?;
-    let watched = ours.as_fd().try_clone_to_owned()?;
+    let (ours, theirs) = crate::patch_pair()?;
+    let (transport, watched) = crate::patch_transport(ours)?;
     super::updates::start(&spec.app);
     host.follow_builds(&spec.app, super::updates::builds());
     let hosted = Hosted::new(
@@ -373,7 +367,7 @@ pub fn start(
         (store, crate::hosted::memory_content()),
         bundle,
         &crate::hosted::Kept::default(),
-        Box::new(ChannelTransport::new(ours)?),
+        transport,
         (phrases, host.formats()),
         wake,
     );
@@ -393,12 +387,7 @@ pub enum StartError {
 /// The longest a capture waits for the instance it runs to show what it stages.
 const STAGE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// The host a window runs in its own process ([`start`]), and what wakes it. Unix's alone: a
-/// window on Windows shows only an instance a host runs.
-#[cfg_attr(
-    windows,
-    allow(dead_code, reason = "a window on Windows runs no instance of its own")
-)]
+/// The host a window runs in its own process ([`start`]), and what wakes it.
 struct InProcess {
     host: TilolangProcess,
     /// The app the instance runs.
@@ -415,10 +404,6 @@ struct InProcess {
 /// Where a window running its instance in this process reads the person's access from.
 type AccessSource = Box<dyn Fn() -> Option<ui::permissions::MemberAccess>>;
 
-#[cfg_attr(
-    windows,
-    allow(dead_code, reason = "a window on Windows runs no instance of its own")
-)]
 impl InProcess {
     /// The host's turns until it has nothing more to take in now. Whether anything changed.
     fn turn(&mut self) -> bool {
@@ -653,7 +638,6 @@ impl HostedWindow {
     ///
     /// # Errors
     /// As [`start`].
-    #[cfg(unix)]
     pub fn in_process(
         spec: Spec,
         route: crate::connection::Route,

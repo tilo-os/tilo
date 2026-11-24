@@ -285,6 +285,21 @@ pub fn patch_connection(handed: Descriptor) -> std::io::Result<PatchConnection> 
     }
 }
 
+/// A patch connection's two ends: a window's and its instance's.
+///
+/// # Errors
+/// The system could not make the pair.
+pub(crate) fn patch_pair() -> std::io::Result<(PatchConnection, PatchConnection)> {
+    #[cfg(unix)]
+    {
+        tilo_render_protocol::channel::Channel::pair()
+    }
+    #[cfg(windows)]
+    {
+        tilo_socket::pair()
+    }
+}
+
 /// The transport over `connection`, and a second handle on it to watch for what arrives and for
 /// its other end going.
 ///
@@ -316,6 +331,13 @@ pub(crate) fn patch_transport(
 /// not hold leaves the instance running without one, as a launched app runs without media. The
 /// device content store has no Windows client yet: an instance there keeps its files in the
 /// store of its own machine.
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::needless_pass_by_value,
+        reason = "the connection is dropped unused until Windows has a device content client"
+    )
+)]
 fn store_of(fd: Option<Descriptor>) -> Option<tilo_content::ContentStore> {
     #[cfg(unix)]
     {

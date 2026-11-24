@@ -71,7 +71,9 @@ const PLAYBACK_APP: &str = "so.tilo.playback";
 use crate::phrases::Phrases;
 use crate::presence::Presence;
 
-/// The API Tester's app id: the one app the general network client answers its requests for.
+/// The API Tester's app id: the one app the general network client answers its requests for, on
+/// the platforms its engine builds for.
+#[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
 const API_TESTER_APP: &str = "so.tilo.api-tester";
 
 thread_local! {
@@ -1614,7 +1616,7 @@ pub struct Hosted {
         dead_code,
         reason = "held open, never read: the connection signs through it"
     )]
-    identity: Option<std::os::fd::OwnedFd>,
+    identity: Option<runtime_portal::process_link::Descriptor>,
     /// The scope the instance's code runs in, its document's content store registered for it.
     scope: DocumentScope,
     /// What the person may do in the app now: the launch's, until the session says it changed
@@ -2050,7 +2052,7 @@ impl Hosted {
     /// Keep the identity-service connection the instance's connection signs through for as long
     /// as the instance runs.
     #[must_use]
-    pub fn holding_identity(mut self, identity: std::os::fd::OwnedFd) -> Self {
+    pub fn holding_identity(mut self, identity: runtime_portal::process_link::Descriptor) -> Self {
         self.identity = Some(identity);
         self
     }

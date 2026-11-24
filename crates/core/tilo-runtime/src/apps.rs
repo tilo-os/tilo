@@ -33,6 +33,8 @@ use tilo_workspace_service::apps::{
     },
 };
 
+#[cfg(any(target_os = "macos", windows))]
+mod carried;
 mod connection;
 pub(crate) mod connectors;
 mod instances;
@@ -42,6 +44,8 @@ mod linux;
 mod macos;
 #[cfg(any(target_os = "macos", windows))]
 mod verified;
+#[cfg(windows)]
+mod windows;
 #[cfg(any(target_os = "macos", windows))]
 pub(crate) use verified::{installed_runtime, verified_tilolang};
 #[cfg(target_os = "linux")]
@@ -146,9 +150,9 @@ impl Apps {
             launcher_candidates(),
         );
         sockets.clone_into(&mut apps.sockets);
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(catalog) = apps.catalog.as_ref() {
-            macos::install_carried_runtimes(catalog);
+            carried::install_carried_runtimes(catalog);
         }
         apps.register_installed_surfaces();
         apps
@@ -487,6 +491,18 @@ impl Apps {
         }
     }
 
+    /// Start the instance of a window of `app` in `workspace` that this daemon launches, in the
+    /// app's tilolang process and reaching its origin's connector when its app has one: the
+    /// window takes its patch connection on its link ([`instances::Instances::open_window`]).
+    ///
+    /// # Errors
+    /// As [`Self::origin_connection`] and [`instances::Instances::open_window`].
+    #[cfg(any(target_os = "macos", windows))]
+    fn hosted_window(&self, app: &str, workspace: &str) -> Result<instances::HostedWindow, String> {
+        let origin = self.origin_connection(app, workspace)?;
+        self.instances.open_window(app, workspace, origin)
+    }
+
     /// The connection an instance of `app` in `workspace` reaches its origin's connector over,
     /// starting the connector when none runs: `None` for an app whose types hold no outside
     /// service's resources, or that is no tilolang app.
@@ -724,7 +740,7 @@ impl Apps {
     /// # Errors
     /// As [`Self::start`].
     #[cfg_attr(
-        not(any(target_os = "linux", target_os = "macos")),
+        target_os = "android",
         expect(
             unreachable_code,
             unused_variables,
@@ -784,7 +800,12 @@ impl Apps {
         #[cfg(target_os = "macos")]
         let mut launch =
             macos::launch(self, &app, workspace, &sockets, shows, open_uri.as_deref())?;
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(windows)]
+        let mut launch = {
+            let _ = &sockets;
+            windows::launch(self, &app, workspace, shows, open_uri.as_deref())?
+        };
+        #[cfg(target_os = "android")]
         let mut launch: Launch = {
             let _ = (&app, &sockets, shows, open_uri);
             return Err("refusing to launch: no app sandbox on this platform".into());
@@ -1126,6 +1147,12 @@ pub struct Launch {
     /// A tilolang window's link, which its patch connection came on: held while the window runs.
     #[cfg(target_os = "macos")]
     _link: Option<runtime_portal::process_link::Descriptor>,
+    /// The tilolang window, in its app's container.
+    #[cfg(windows)]
+    app: crate::device::capabilities::Confined,
+    /// The window's link, which its patch connection came on: held while the window runs.
+    #[cfg(windows)]
+    _link: runtime_portal::process_link::Descriptor,
 }
 
 impl Launch {
@@ -1150,7 +1177,7 @@ impl Launch {
 
     /// Wait for the process to exit; its exit code, when it exited normally.
     #[cfg_attr(
-        not(any(target_os = "linux", target_os = "macos")),
+        target_os = "android",
         expect(
             clippy::unused_self,
             reason = "with no app sandbox here, no launched process waits"
@@ -1167,13 +1194,18 @@ impl Launch {
             let mut app = self.app;
             app.wait().ok()
         };
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(windows)]
+        let status = {
+            let mut app = self.app;
+            app.wait().ok()
+        };
+        #[cfg(target_os = "android")]
         let status: Option<std::process::ExitStatus> = None;
         status.and_then(|status| status.code())
     }
 
     #[cfg_attr(
-        not(any(target_os = "linux", target_os = "macos")),
+        target_os = "android",
         expect(
             clippy::unused_self,
             reason = "with no app sandbox here, no launched process is killed"
@@ -1192,6 +1224,8 @@ impl Launch {
             let _ = app.kill();
             let _ = app.wait();
         }
+        #[cfg(windows)]
+        self.app.kill();
     }
 }
 

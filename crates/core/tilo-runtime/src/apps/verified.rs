@@ -95,3 +95,25 @@ pub(super) fn verify_package(
     }
     Ok(())
 }
+
+/// Prove the installed package behind `app` is still the one that was
+/// installed: its record's signature by its publisher, the manifest and
+/// every payload file against the signed hashes, no file the package did
+/// not ship, and a publisher key this profile has not revoked.
+///
+/// # Errors
+///
+/// Names the first check that failed; the launch is refused.
+pub(super) fn verify_installed(
+    catalog: &package_store::Catalog,
+    app: &app_catalogue::apps::InstalledApp,
+) -> Result<(), String> {
+    let refuse = |why: String| format!("refusing to launch {}: {why}", app.app_id);
+    let package = catalog
+        .list()
+        .map_err(|error| refuse(error.to_string()))?
+        .into_iter()
+        .find(|package| package.manifest_path == app.manifest_path)
+        .ok_or_else(|| refuse("it is no longer installed".into()))?;
+    verify_package(&package).map_err(refuse)
+}
