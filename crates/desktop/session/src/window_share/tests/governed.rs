@@ -85,12 +85,8 @@ fn alone(
 
 /// How many grants of the share `share` the governance the daemon holds of `workspace` names.
 fn governed(daemon: &TestDaemon, workspace: WorkspaceId, share: &str) -> usize {
-    let workspaces = daemon.workspaces().clone();
-    tilo_rt::app()
-        .block_on(async move { workspaces.governed_copy(workspace).await })
-        .expect("the runtime runs")
-        .expect("the daemon holds the workspace")
-        .1
+    daemon
+        .copy(workspace)
         .governance()
         .governed_policy()
         .expect("the workspace's governance")

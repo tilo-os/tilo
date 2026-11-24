@@ -324,13 +324,24 @@ impl TestDaemon {
         self.read_standing(workspace);
     }
 
+    /// The daemon's copy of `workspace`: the one it governs, or the one it holds as a member.
+    pub(crate) fn copy(&self, workspace: WorkspaceId) -> tilo_peer_state::StatePeer {
+        let workspaces = self.host.workspaces().clone();
+        tilo_rt::app()
+            .block_on(async move {
+                match workspaces.governed_copy(workspace).await {
+                    Some(governed) => Some(governed),
+                    None => workspaces.member_copy(workspace).await,
+                }
+            })
+            .expect("the runtime runs")
+            .expect("the daemon holds the workspace")
+            .1
+    }
+
     /// Have the session's view read how `workspace` stands here, as the daemon publishes it.
     pub(crate) fn read_standing(&self, workspace: WorkspaceId) {
-        let workspaces = self.host.workspaces().clone();
-        let (_, peer) = tilo_rt::app()
-            .block_on(async move { workspaces.governed_copy(workspace).await })
-            .expect("the runtime runs")
-            .expect("the daemon holds the workspace");
+        let peer = self.copy(workspace);
         let reader = tilo_workspace_service::workspaces::standing::Reader {
             person: self.cert.user_public_key,
             device: self.cert.device_public_key,
