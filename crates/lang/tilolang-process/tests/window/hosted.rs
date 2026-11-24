@@ -458,6 +458,8 @@ pub(crate) struct Session {
     /// The calls of the app's own actions its runs and presses sent the dispatch, kept as the
     /// dispatch keeps them.
     asks: Vec<Asked>,
+    /// How many of the requests the instance sent the dispatch has read.
+    dispatched: usize,
 }
 
 /// A call of the window's own app's action that its code sent through the dispatch: one the
@@ -793,6 +795,7 @@ impl Session {
             broker,
             invoked: 1,
             asks: Vec::new(),
+            dispatched: 0,
         }
     }
 
@@ -877,7 +880,15 @@ impl Session {
             return false;
         };
         let mut told = Vec::new();
-        for request in self.sent.borrow().iter() {
+        let sent = self.sent.borrow();
+        // What the test forgot was read already: the dispatch reads on from what is left.
+        let from = if sent.len() < self.dispatched {
+            0
+        } else {
+            self.dispatched
+        };
+        self.dispatched = sent.len();
+        for request in sent.iter().skip(from) {
             match request {
                 CollabRequest::RemoteAction {
                     message: RemoteActionMessage::Invoke(call),
@@ -925,6 +936,7 @@ impl Session {
                 _ => {}
             }
         }
+        drop(sent);
         let moved = !told.is_empty();
         inbox.borrow_mut().extend(
             told.into_iter()

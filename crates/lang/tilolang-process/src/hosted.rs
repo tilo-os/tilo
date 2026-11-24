@@ -3995,6 +3995,10 @@ impl Hosted {
             Ok(Ran::Waits { call, run }) => self.waiting(call, run, None, None),
             Err(refused) => self.instance.failed(refused.message),
         }
+        // What the press queued outside the workspace waits in the outbox, and the instance
+        // settles it on its next frame, as it does a delivered invocation's: a press that only
+        // reaches outside (Check now) writes nothing else that would wake it.
+        self.instance.commit_planned();
         // The press ran: once it is in the document this frame sends what it opened, then tells
         // the window it ran, so what the person typed after it goes there.
         self.instance.press_ran(press);

@@ -918,6 +918,8 @@ fn junk_the_server_holds_shows_in_its_place() {
 fn an_editors_check_now_is_offered_and_runs_admitted() {
     let _settled = ui::motion::testing::settled();
     let servers = servers();
+    // The server tells no idling connection of new mail: what comes is read when it is checked.
+    servers.imap.without_idle();
     let connector = MailConnector::of(account(&servers));
     let mut session = connector.attach(Session::bo_editing(APP, Window::in_harness));
     synced(&mut session);
@@ -933,16 +935,36 @@ fn an_editors_check_now_is_offered_and_runs_admitted() {
         .availability
         .clone();
     assert_eq!(check, ui::tilo_actions::Availability::Available);
-    let before = servers.imap.logins();
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "lunch@chen.example",
+            "Bo Chen <bo@chen.example>",
+            "Lunch on Monday?",
+            "Shall we meet at noon?",
+            None,
+        ),
+        &[],
+    );
+    let pressed = std::time::Instant::now();
     super::choose(&mut session, "Check now");
     assert_eq!(
         session.asked(),
         Vec::<String>::new(),
         "an admitted call runs without asking again"
     );
-    session.until("the server to be checked", |_| {
-        servers.imap.logins() > before
+    session.until("the server to be checked", |session| {
+        session
+            .threads()
+            .iter()
+            .any(|t| session.text(t, "subject") == "Lunch on Monday?")
     });
+    // The press checks the server at once, not whenever the window next writes something.
+    assert!(
+        pressed.elapsed() < std::time::Duration::from_secs(15),
+        "the check waited {:?} after the press",
+        pressed.elapsed()
+    );
 }
 
 #[test]
