@@ -420,7 +420,7 @@ tempfile.workspace = true
 # Tests whose interface is the process environment (launcher variables such
 # as `TILO_SVC_COLLAB_FD`) set it through `ScopedEnv`, which restores the
 # prior value and serialises every such test in the process.
-tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # Paused-clock tests of the collaboration endpoints' deadlines.
 tokio = { workspace = true, features = ["test-util"] }
 # The scoped chooser and URI fixtures the invocation-scope tests select.

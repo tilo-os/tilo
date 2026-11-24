@@ -66,4 +66,4 @@ hex.workspace = true
 # The tests are a window: they register the store their code records in.
 tilo-wake.workspace = true
 # The scenarios the tests of one subject are folded into.
-tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }

@@ -160,7 +160,7 @@ wasm-bindgen = "=0.2.108"
 js-sys = "=0.3.85"
 
 [dev-dependencies]
-tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # The clip tests encode and decode a real JPEG.
 image = { workspace = true, features = ["jpeg"] }
 tempfile.workspace = true

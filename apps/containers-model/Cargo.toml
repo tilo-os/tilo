@@ -21,7 +21,7 @@ serde_json.workspace = true
 tilo-resource = { path = "../../crates/core/tilo-resource" }
 
 [dev-dependencies]
-tilo-test-env = { version = "0.1.0", path = "../../tools/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

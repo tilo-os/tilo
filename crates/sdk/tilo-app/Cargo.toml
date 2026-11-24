@@ -131,7 +131,7 @@ tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model", 
 [dev-dependencies]
 # The integration tests use the test tools behind `test-support`.
 tilo-app = { path = ".", features = ["test-support"] }
-tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # The workspace a chain test's devices keep their records in.
 uuid.workspace = true
 

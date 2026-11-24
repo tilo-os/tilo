@@ -98,7 +98,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 runtime-collab = { path = "../runtime-collab", features = ["settings-host"] }
 tracing-subscriber.workspace = true
-tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
+tilo-test-env = { path = "../../../tools/test-env" }
 # The tests read the toolkit's host inputs from the process environment.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native"] }
 

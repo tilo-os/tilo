@@ -2,9 +2,11 @@
 name = "tilo-wasm-host"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license = "MIT"
 description = "The wasm host layer every guest in Tilo executes on: per-call fuel, memory and table limits, module loading, one failure type, and the rule that an instance whose call failed is never called again."
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 thiserror.workspace = true

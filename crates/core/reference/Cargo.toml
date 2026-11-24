@@ -2,8 +2,11 @@
 name = "tilo-reference"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license = "MIT"
+description = "Addresses of things in documents: a selection in any app carried as a resource reference beside the text, so whoever reads it knows what \"this\" meant."
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "tilo_reference"
@@ -13,9 +16,9 @@ path = "src/lib.rs"
 # and an out-of-process member can all build on it.
 
 [dependencies]
-tilo-actions = { path = "../actions" }
+tilo-actions = { version = "0.1.0", path = "../actions" }
 # A reference is a stored value of the records that keep one.
-tilo-resource = { path = "../tilo-resource" }
+tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 # The app a link opens, named as every other crate names it.
 tilo-app-id.workspace = true
 automerge = { workspace = true }

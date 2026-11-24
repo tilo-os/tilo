@@ -40,7 +40,7 @@ assistant-model = { path = "../assistant-model" }
 assistant-samples = { package = "assistant", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # The workspace a test's window is in, and Chat as the session's API reaches it.
-tilo-test-env = { version = "0.1.0", path = "../../tools/test-env" }
+tilo-test-env = { path = "../../tools/test-env" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
