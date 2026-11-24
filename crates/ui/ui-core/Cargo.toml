@@ -410,7 +410,7 @@ wat = "1"
 tilo-theme-bauhaus = { path = "../themes/bauhaus" }
 # The compiler that produces the artifact a device's daemon makes for a theme's changed module,
 # so the compiled painter path is measured beside the interpreter's.
-tilo-wasm-aot = { path = "../../core/tilo-wasm-aot", features = ["compile"] }
+tilo-wasm-aot = { path = "../../platform/tilo-wasm-aot", features = ["compile"] }
 # The headless driver's fixtures are behind `test-support`;
 # enabling it here runs the integration tests that drive them whenever the
 # package is tested, not only when a dependant happens to unify the feature in.

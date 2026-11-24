@@ -31,14 +31,14 @@ workspace-hack = { version = "0.1" }
 # code, deserialized here with wasmtime's runtime (no compiler is linked). A set the daemon did
 # not compile, and every browser, runs on the interpreter above.
 wasmtime = { version = "50.0.0", default-features = false, features = ["runtime", "std"] }
-tilo-wasm-aot = { version = "0.1.0", path = "../../core/tilo-wasm-aot" }
+tilo-wasm-aot = { version = "0.1.0", path = "../../platform/tilo-wasm-aot" }
 tracing.workspace = true
 
 [dev-dependencies]
 # The modules the tests refuse and bound, written as WAT.
 wat = "1"
 # The compiler that makes the artifact a device's daemon would, so a set is tested on both.
-tilo-wasm-aot = { path = "../../core/tilo-wasm-aot", features = ["compile"] }
+tilo-wasm-aot = { path = "../../platform/tilo-wasm-aot", features = ["compile"] }
 tempfile.workspace = true
 
 [lints]
