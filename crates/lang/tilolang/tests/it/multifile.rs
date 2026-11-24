@@ -514,7 +514,7 @@ fn the_example_packages_are_in_canonical_form() {
 /// The packages written against a native app's published types (`use so.tilo.session as session`): the
 /// compiler alone has none to compile against. `tilolang-cli`'s tests, which have them, check that what
 /// these write is what is committed beside them.
-const NEEDS_PUBLISHED_APPS: &[&str] = &["activity", "browser", "calendar", "camera", "chat", "clocks", "console", "contacts", "containers", "discord", "discussion", "disk-usage", "disks", "ebook", "files", "firewall", "gallery", "logs", "mail", "migrate", "monitor", "notes", "passwords", "photos", "print-centre", "settings", "sheets", "shell", "shortcuts", "speed-test", "store", "tasks", "today", "tube", "views", "weather", "windows", "word-processor"];
+const NEEDS_PUBLISHED_APPS: &[&str] = &["activity", "browser", "calendar", "camera", "chat", "clocks", "console", "contacts", "containers", "discord", "discussion", "disk-usage", "disks", "ebook", "files", "firewall", "gallery", "logs", "mail", "migrate", "monitor", "notes", "passwords", "photos", "print-centre", "settings", "sheets", "shell", "shortcuts", "speed-test", "store", "tasks", "today", "totp", "tube", "views", "weather", "windows", "word-processor"];
 
 /// The file a package's sources derive — its ids lock — is what the one committed beside them says,
 /// and its source catalogue is not committed at all: the build writes it from its sources into the
