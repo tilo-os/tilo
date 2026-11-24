@@ -64,6 +64,7 @@ pub struct Device {
     >,
     /// The member copies the device's own service lent this session, which take in each
     /// workspace its host lets this device into.
+    #[cfg(not(target_arch = "wasm32"))]
     links: Option<Arc<dyn crate::MemberLinks>>,
 }
 
@@ -141,6 +142,7 @@ impl Device {
             workspace_id: WorkspaceId::from_u128(0),
             label: label.to_owned(),
             hosts: Arc::default(),
+            #[cfg(not(target_arch = "wasm32"))]
             links: None,
         }
     }
@@ -388,6 +390,7 @@ impl Device {
         };
         match postcard::from_bytes::<tilo_peer_state::join::TransportHint>(host) {
             Ok(hint) => {
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(links) = &self.links {
                     links.take_in(admission.workspace_id, hint.clone());
                 }
