@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn the_registry_names_folders_and_nothing_else() {
         let named = parse(
-            br#"[{"kind":"known","path":"D:\\Docs","label":"Personal"},{"kind":"onedrive","path":"C:\\Users\\ada\\OneDrive - Work","label":"Business1"},{"kind":"steam","path":"C:\\Steam","label":"Steam"}]"#,
+            br#"[{"kind":"known","path":"D:\\Docs","label":"Personal"},{"kind":"onedrive","path":"C:\\Users\\you\\OneDrive - Work","label":"Business1"},{"kind":"steam","path":"C:\\Steam","label":"Steam"}]"#,
         )
         .unwrap();
         assert_eq!(named.len(), 3);
