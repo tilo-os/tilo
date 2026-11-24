@@ -137,12 +137,12 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # package .config/nextest-capabilities.toml names first runs the capability probe
 # (tools/ci/capability_filter.py), handed the same way (tools/tests/test_capability_filter.py
 # holds every such package to it).
-# The apps the session opens are built with the `fast` profile, each in an invocation of its own:
-# the app-open budget test times their startup, which only means something for an optimised build.
-# The launcher that starts them is built the same way: its sandbox set-up is part of every open
-# the test counts, and so is the session, with the overrides its tests sign in with: a started
-# build of a package's own binary reaches the tests as T_STARTED_BIN_<bin>_<profile>_<features>
-# (`tilo_test_env::started_variant`), and its other tests keep the plain build they start.
+# Every program is built in this family's own profile, never `fast`: an optimised program is a
+# second build of everything it links, and each with features of its own a third, which a change
+# to a core crate compiled again for every test run (1,678 of one build's 1,776 compiles were the
+# started programs). The one test that is about optimised builds, the app-open budget, is the
+# `app-open-budget` family's, which builds them. The launcher keeps `dev-overrides`, which a debug
+# build honours anyway, so that family's optimised launcher and this one are one declaration.
 # Each device the session's tests start runs the device daemon, built with `test-support` so it
 # starts the session build the test names as its person's shell, which is not installed beside it.
 # The Lounge tests start the server daemon, which `tilo-runtime` has only with `agents`, for both
@@ -151,7 +151,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
 # end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
-starts = { tilo-daemon = ["launcher:tilo-launcher@fast=dev-overrides"], tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-daemon:tilo-runtime@fast=test-support,agents", "example-shared-checklist:example-shared-checklist@fast", "poker:poker@fast", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-daemon:tilo-runtime@fast=test-support,agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher@fast=dev-overrides", "tilolang-process:tilolang-process@fast=app-launch", "messages:messages", "poker:poker", "slides:slides", "terminal:terminal"] }
+starts = { tilo-daemon = ["launcher:tilo-launcher=dev-overrides"], tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher=dev-overrides", "tilo-daemon:tilo-runtime=test-support,agents", "example-shared-checklist:example-shared-checklist", "poker:poker", "tilolang-process:tilolang-process=app-launch"], tilo-session-client = ["tilo-daemon:tilo-runtime=test-support,agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process=app-launch", "messages:messages", "poker:poker", "slides:slides", "terminal:terminal"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -412,6 +412,30 @@ packages = ["tilo-ui"]
 wrapper = ["bash", "-c", "export TILO_FONT_ASSET_CACHE=\"$CARGO_TARGET_DIR/font-artifacts\"; exec bash tools/test-env.sh \"$@\"", "goldens"]
 args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::))"]
 on = ["schedule:0 3 * * *", "idle"]
+
+# The app-open budget: the session opens every installed app and holds each open to the splash
+# budget its manifest declares, counted as the work the session, the launcher and the app run
+# (crates/desktop/session/tests/app_open_budget.rs). That work is a person's only on optimised
+# builds, so the session (with the overrides its tests sign in with), the launcher and the tilolang
+# runtime are built with the `fast` profile, as a dev image builds them. A started build of the
+# session's own binary reaches the test as T_STARTED_BIN_<bin>_<profile>_<features>
+# (`tilo_test_env::started_variant`). Those builds are a second build of everything they link, so
+# this test is not the `test` family's, which leaves it out (`.config/nextest-filters.toml`,
+# `budgets`): it runs on main's newest head when t has room, which bisects a failure to its
+# commit, when dispatched, and by name. `unify` keeps the test binary the `test` family's build.
+[[cargo]]
+name = "app-open-budget"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+tool = "nextest"
+requires = ["arch=x86_64"]
+wrapper = ["bash", "tools/ci/nextest.sh"]
+unify = "workspace-unify"
+packages = ["tilo-session"]
+args = ["--locked", "--profile", "ci", "--tests", "-E", "(package(tilo-session) and binary(it) and test(app_open_budget::))"]
+isolation = { nested = ["tilo-session"] }
+starts = { tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-daemon:tilo-runtime=test-support,agents", "example-shared-checklist:example-shared-checklist", "poker:poker", "tilolang-process:tilolang-process@fast=app-launch"] }
+heavy = true
+on = ["dispatch", "idle"]
 
 # The repository policy suite, one check per step of `tools/policy/steps.toml`: the step's own
 # command, so `t test policy` runs the suite and `t test policy/<step>` one step. That file is the

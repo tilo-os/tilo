@@ -161,6 +161,8 @@ PY
     # still being built stays red without turning the package's own test check red. A tree whose
     # shared filters know none (an older rev) leaves them in, as it did before they existed.
     [[ -z ${FLOWS_FILTER:-} ]] || left_out+=" & not (${FLOWS_FILTER})"
+    # The budgets over optimised builds are the `app-open-budget` check's, which builds them.
+    [[ -z ${BUDGETS_FILTER:-} ]] || left_out+=" & not (${BUDGETS_FILTER})"
     arguments+=(-E "$left_out")
 fi
 # A test whose capability the ci profile's setup promises (tools/test-env-setup.sh sets every
