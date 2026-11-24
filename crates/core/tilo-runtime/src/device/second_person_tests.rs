@@ -191,3 +191,148 @@ fn a_second_person_signs_in_certifies_their_key_and_works_in_the_workspace_as_it
         "a key put content after its account left"
     );
 }
+
+/// Ada's account.
+const ADA: u32 = 1000;
+/// An account nobody signed in.
+const STRANGER: u32 = 1002;
+
+const TWO_ACCOUNTS_TEST: &str = "device::services::second_person_tests::two_accounts_make_their_people_on_one_computer_and_each_certifies_as_itself";
+
+/// One line of JSON in an MCP answer's text, when it is one.
+fn answered_json(answer: &Value) -> Value {
+    answer
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .and_then(|text| serde_json::from_str(text).ok())
+        .unwrap_or(Value::Null)
+}
+
+/// `tilo_do` of `path` with `args`, asked on a connection of `uid`'s.
+fn do_here(socket: &Path, uid: u32, path: &str, args: Value) -> Value {
+    ask(
+        socket,
+        uid,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "tilo_do",
+            "arguments": {"path": path, "args": args},
+        }}),
+    )
+}
+
+/// Root signs `uid` in, saying nothing of a person it holds.
+fn signed_in(socket: &Path, uid: u32) -> Value {
+    ask(
+        socket,
+        tilo_api::daemon::admission::ROOT,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "tilo_do",
+            "arguments": {"path": "seats#signed-in", "args": {"uid": uid}},
+        }}),
+    )
+}
+
+fn who_here(socket: &Path, uid: u32) -> Value {
+    ask(socket, uid, &json!({"native": "account#who"}))
+}
+
+/// Two accounts set up on one computer, each with no identity of its own: each makes its person
+/// here through the one flow (`devices#found`), each certifies the key the daemon made it with
+/// the root kept for that account alone, and each then acts as itself. A stranger reaches none
+/// of it. One account's root signs nothing for the other.
+#[test]
+fn two_accounts_make_their_people_on_one_computer_and_each_certifies_as_itself() {
+    let Some(root) = isolated_root(TWO_ACCOUNTS_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let device_keys = tilo_api::calls::device_keys();
+    let device = DeviceOnly::new(
+        tilo_device_identity::persist::load_device_key(&device_keys).unwrap(),
+        tilo_device_identity::login::Place::here(device_keys).unwrap(),
+    );
+    let admission: &'static tilo_api::daemon::admission::Admission = Box::leak(Box::new(
+        tilo_api::daemon::admission::Admission::new(DAEMON, true),
+    ));
+    let socket = root.join("native.sock");
+    crate::daemon::serve_for_test(&daemon, device, test_peer, admission, &socket).unwrap();
+
+    // Neither account was here before: signing in makes each a seat that may make its person.
+    for uid in [ADA, BO] {
+        let said = signed_in(&socket, uid);
+        assert_ne!(said["result"]["isError"], true, "{said}");
+        assert_eq!(
+            answered_json(&said)["founding"],
+            json!(true),
+            "account {uid} that holds no identity is not told it may make one: {said}"
+        );
+        let before = who_here(&socket, uid);
+        assert_eq!(before["founding"], json!(true), "{before}");
+    }
+
+    // Each makes its person through the daemon, the one way a person is made.
+    let mut people = Vec::new();
+    let mut acting_keys = Vec::new();
+    for uid in [ADA, BO] {
+        let made = do_here(&socket, uid, "devices#found", json!({}));
+        assert_ne!(
+            made["result"]["isError"], true,
+            "account {uid} made no person: {made}"
+        );
+        let person = answered_json(&made)["person"]
+            .as_str()
+            .expect("a person is made")
+            .to_owned();
+        let who = who_here(&socket, uid);
+        assert_eq!(who["founding"], Value::Null, "{who}");
+        assert_eq!(
+            who["certify"]["person"], person,
+            "the daemon does not wait to certify the key it made account {uid}: {who}"
+        );
+
+        // Each certifies with the root the daemon keeps for its own account.
+        let certified = do_here(&socket, uid, "seats#certified", json!({}));
+        assert_ne!(
+            certified["result"]["isError"], true,
+            "account {uid} did not certify its key with its own root here: {certified}"
+        );
+        let after = who_here(&socket, uid);
+        assert_eq!(after["person"], json!(person), "{after}");
+        assert_eq!(after["holds_root"], json!(true), "{after}");
+        let key = after["key"]
+            .as_str()
+            .expect("the account acts as a key")
+            .to_owned();
+        assert_ne!(key, hex::encode(daemon.cert.device_public_key), "{after}");
+        people.push(person);
+        acting_keys.push(key);
+    }
+    assert_ne!(people[0], people[1], "the two accounts are one person");
+    assert_ne!(
+        acting_keys[0], acting_keys[1],
+        "the two accounts act as one key"
+    );
+
+    // A stranger reaches none of it: it may not make a person, and certifies no key.
+    let refused = do_here(&socket, STRANGER, "devices#found", json!({}));
+    assert_eq!(refused["result"]["isError"], json!(true), "{refused}");
+    let refused = do_here(&socket, STRANGER, "seats#certified", json!({}));
+    assert_eq!(refused["result"]["isError"], json!(true), "{refused}");
+    let stranger = who_here(&socket, STRANGER);
+    assert_eq!(stranger["person"], Value::Null, "{stranger}");
+    assert_eq!(stranger["certify"], Value::Null, "{stranger}");
+    assert_eq!(stranger["founding"], Value::Null, "{stranger}");
+
+    // One account's root signs nothing for the other: Ada certifying the key Bert acts as is
+    // refused, because this computer made Ada no such key.
+    let bert_key = acting_keys[1].clone();
+    let refused = ask(
+        &socket,
+        ADA,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "tilo_do",
+            "arguments": {"path": "seats#certified", "args": {"cert": bert_key}},
+        }}),
+    );
+    assert_eq!(refused["result"]["isError"], json!(true), "{refused}");
+}

@@ -619,6 +619,20 @@ fn descriptor(
 /// the person once, and kept nowhere here.
 const SECRET_ANSWERS: [&str; 3] = [RECOVERY_WORDS, BACKUP, RELEASE_HALF];
 
+/// The device actions only the person's root this computer keeps signs: no other account's call
+/// reaches that root.
+const ROOT_SIGNED: [&str; 9] = [
+    RECOVERY_WORDS,
+    BACKUP,
+    CERTIFY_AGENT,
+    RELEASE_HALF,
+    ANSWER_SIGN_IN,
+    ISSUE,
+    APPROVE,
+    RENAME,
+    REVOKE,
+];
+
 /// The device actions as the device's one dispatch runs them: it admitted the caller, recorded the
 /// invocation, and follows it here.
 impl tilo_actions::remote::ActionProvider for Tickets {
@@ -636,10 +650,10 @@ impl tilo_actions::remote::ActionProvider for Tickets {
 
     fn invoke(
         &self,
-        _caller: &tilo_actions::remote::Caller,
+        caller: &tilo_actions::remote::Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        Tickets::invoke(self, &request)
+        Tickets::invoke(self, &request, caller)
     }
 
     fn observe(
@@ -877,6 +891,21 @@ impl Tickets {
         self.0.logged_in.subscribe()
     }
 
+    /// Whether `caller` is the person whose root this computer keeps: what only their root signs
+    /// is answered for them alone.
+    fn the_root_holders(&self, caller: &tilo_actions::remote::Caller) -> bool {
+        if caller.is_system() {
+            return true;
+        }
+        let Some(person) = caller.acting().person_id() else {
+            return false;
+        };
+        match super::services::root() {
+            Ok(Some(root)) => hex::encode(root.group_public_key()) == person,
+            _ => false,
+        }
+    }
+
     /// Where this device enters its person's workspaces, once it knows.
     fn here(&self) -> Option<Device> {
         self.0.home.as_ref().and_then(|home| home.get())
@@ -936,10 +965,11 @@ impl Tickets {
         Self::answers(request) && request.target.address.action == INFO
     }
 
-    /// Take `request`, one of [`Self::answers`]' actions: its receipt.
+    /// Take `request`, one of [`Self::answers`]' actions, from `caller`: its receipt.
     pub(crate) fn invoke(
         &self,
         request: &InvokeRequest,
+        caller: &tilo_actions::remote::Caller,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         if let Some(state) = self.0.calls.lock_recover().get(&invocation) {
@@ -956,6 +986,13 @@ impl Tickets {
         };
         let args = Value::Object(argument.clone());
         let action = request.target.address.action.clone();
+        // What only this computer's person's root signs is never answered for another account's
+        // call: each account's root stays theirs.
+        if ROOT_SIGNED.contains(&action.as_str()) && !self.the_root_holders(caller) {
+            return Pending::ready(Err(refused(
+                "only the person whose root this computer keeps signs this",
+            )));
+        }
         let wait = args.get("wait").and_then(Value::as_bool) == Some(true);
         // A ticket names where the new computer dials this one: made before this device's
         // endpoint reached one of its relays, it would name only the network this device stands
@@ -1041,7 +1078,10 @@ impl Tickets {
     /// Take `request` and wait for it to end: how it ended.
     pub(crate) async fn run_to_end(&self, request: &InvokeRequest) -> InvocationUpdate {
         let invocation = request.invocation;
-        if let Some(Err(error)) = Tickets::invoke(self, request).await {
+        // The call was kept for this device as one that keeps the person's root, and admitted by
+        // the workspace already: it runs here as the device, with the root it keeps.
+        let device = tilo_actions::remote::Caller::local_system();
+        if let Some(Err(error)) = Tickets::invoke(self, request, &device).await {
             return failed(invocation, &error.to_string());
         }
         loop {
@@ -1425,7 +1465,7 @@ impl Tickets {
             .transpose()
             .map_err(|error| anyhow!("the tab the ticket waits with: {error}"))?;
         let cert: Option<tilo_user_identity::DeviceCert> = match &tab {
-            Some(tab) if super::services::root_record().is_ok() => {
+            Some(tab) if super::services::device_root_record().is_ok() => {
                 Some(super::signing::sign_tab(tab)?)
             }
             Some(tab) if tab.agent.is_some() => bail!(

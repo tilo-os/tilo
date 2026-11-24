@@ -534,14 +534,12 @@ pub fn local_person(identity_root: &std::path::Path, passwd: Option<&std::path::
             }),
     };
     // The system daemon's profile is `state` in the device's identity tree.
-    let record = identity_root
-        .join("state")
-        .join(tilo_api::daemon::admission::PERSON_ACCOUNTS);
+    let profile = identity_root.join("state");
     let found = text.and_then(|text| {
-        let people = tilo_api::daemon::admission::person_accounts(&record)?;
+        let people = tilo_api::daemon::admission::recorded_accounts(&profile)?;
         Ok(regular_accounts(&text)
             .into_iter()
-            .filter(|account| people.contains_key(&account.uid))
+            .filter(|account| people.get(&account.uid).is_some_and(|person| person.device))
             .collect::<Vec<_>>())
     });
     match found.as_deref() {

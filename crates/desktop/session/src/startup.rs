@@ -208,9 +208,13 @@ pub fn identity() -> Identity {
         Err(error) => return Identity::Refused(format!("no identity store: {error}")),
     };
     if needs_first_run_flow(&identity_path) {
-        // No record at all, or one that does not even parse: setup asks the person for an identity
-        // and validates what is there before it writes anything, so nothing here has to decide for
-        // them.
+        // An account signed in on this computer with no identity of its own makes one here, the
+        // one way a person is made: the daemon founds them and keeps their root, and this
+        // account takes up their public record. It then certifies the key the daemon made it,
+        // as a person whose identity another device of theirs holds does.
+        if let Some(identity_dir) = identity_path.parent() {
+            found_here(identity_dir);
+        }
         return Identity::Shell;
     }
     let Some(identity_dir) = identity_path.parent() else {
@@ -344,8 +348,10 @@ fn verify(identity_dir: &Path, paths: &IdentityPaths) -> std::io::Result<()> {
 
 /// Certify the key this computer's daemon made for this account when another person than the
 /// device's signed in on it, with the identity at `identity_path`: the account acts as that key
-/// from then on. The device's own person has no key to certify; a daemon that is not running, or
-/// refuses, leaves the account served the device's own actions, and is logged.
+/// from then on. An identity this account holds the root of signs the certificate itself; one it
+/// holds the public record of makes the daemon sign it with the root kept here for the account.
+/// The device's own person has no key to certify; a daemon that is not running, or refuses,
+/// leaves the account served the device's own actions, and is logged.
 fn certify_this_computers_key(identity_path: &Path) {
     let signer = match tilo_identity::store::load_from_path(identity_path.to_path_buf()) {
         Ok(signer) => signer,
@@ -354,13 +360,59 @@ fn certify_this_computers_key(identity_path: &Path) {
             return;
         }
     };
-    match tilo_api::daemon::who::certify_my_key(&signer) {
+    let certified = if signer.is_single_device() {
+        tilo_api::daemon::who::certify_my_key(&signer)
+    } else {
+        // The root stays with the daemon: this account holds only its public record.
+        tilo_api::daemon::who::certify_here()
+    };
+    match certified {
         Ok(true) => tracing::info!("this account acts on this computer as its own certified key"),
         Ok(false) => {}
         Err(error) => {
             tracing::warn!(%error, "this account's key on this computer is not certified")
         }
     }
+}
+
+/// Make this account's person here when it signed in with none: the daemon founds them, the one
+/// way a person is made, and this account takes up their public record; then the key the daemon
+/// made it is certified with the root the daemon keeps for the account. An account that signed
+/// in as a person whose identity another device of theirs holds makes none.
+fn found_here(identity_dir: &Path) {
+    match found_and_certify(identity_dir) {
+        Ok(true) => {
+            tracing::info!("this account made its Tilo identity on this computer");
+        }
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(%error, "this account's identity was not made on this computer")
+        }
+    }
+}
+
+/// [`found_here`], answering whether an identity was made and its key certified, and why not.
+pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
+    if !tilo_api::daemon::who::founding()? {
+        return Ok(false);
+    }
+    tilo_api::daemon::this_computer()?.found(None)?;
+    let who = tilo_api::daemon::who::who()?;
+    let person = who
+        .certify_person
+        .ok_or("this computer's daemon made this account no person")?;
+    let taken = tilo_identity::provisioning::take_up_certified_person(
+        identity_dir,
+        &firstboot::collaboration_identity_paths(),
+        person,
+        tilo_clock::unix_now_ns(),
+        &tilo_identity::provisioning::login_account_display_name(),
+    )
+    .map_err(|error| error.to_string())?;
+    if !taken {
+        return Err("this computer's daemon certified no person for this account".to_owned());
+    }
+    tilo_api::daemon::who::certify_here()
 }
 
 /// Verify the identity `identity_dir` holds at the clock's reading now.

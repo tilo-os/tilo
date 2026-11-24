@@ -44,6 +44,9 @@ pub struct Who {
     /// The device this computer is as it enters its person's workspaces, once the daemon knows
     /// their server.
     pub home: Option<Device>,
+    /// The person this account acts as here once it certifies the key the daemon made it, while
+    /// it waits to: the device's own person has none.
+    pub certify_person: Option<[u8; 32]>,
 }
 
 /// The `home` of an `account#who` answer: where this device enters, as `device` the daemon serves.
@@ -112,6 +115,12 @@ pub fn who() -> Result<Who, String> {
         claimed: answer.get("claimed").and_then(Value::as_bool) == Some(true),
         holds_root: answer.get("holds_root").and_then(Value::as_bool) == Some(true),
         home: answer.get("home").and_then(home_of),
+        certify_person: answer
+            .get("certify")
+            .and_then(|certify| certify.get("person"))
+            .and_then(Value::as_str)
+            .and_then(|person| hex::decode(person).ok())
+            .and_then(|person| <[u8; 32]>::try_from(person).ok()),
     })
 }
 
@@ -242,6 +251,17 @@ fn logging_in(args: &Value) -> Result<Who, String> {
     }
 }
 
+/// Whether this account signed in on this computer with no person yet, and may make one here
+/// ([`crate::daemon::DevicePlace::found`]): the key the daemon made it waits to be certified
+/// once it does.
+///
+/// # Errors
+/// No daemon answers.
+pub fn founding() -> Result<bool, String> {
+    let answer = ask(&json!({"native": WHO}))?;
+    Ok(answer.get("founding").and_then(Value::as_bool) == Some(true))
+}
+
 /// Certify the key this computer's daemon made for this account, when the account signed in as
 /// another person than the device's: their identity `signer` certifies it as a member's device,
 /// and the account acts as that key from then on. Answers whether there was a key to certify;
@@ -252,6 +272,41 @@ fn logging_in(args: &Value) -> Result<Who, String> {
 /// the certificate.
 pub fn certify_my_key(signer: &dyn tilo_user_identity::StatementSigner) -> Result<bool, String> {
     certify_key_at(&super::this_computer()?.native(), signer)
+}
+
+/// Certify the key this computer's daemon made for this account with the root the daemon keeps
+/// for that account alone: the person made their identity on this computer, so its session
+/// holds only their public record and cannot sign for them.
+///
+/// # Errors
+/// No daemon answers, it keeps no root of this person's, or it refused the certificate.
+pub fn certify_here() -> Result<bool, String> {
+    let answer = ask(
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "tilo_do",
+            "arguments": {"path": "seats#certified", "args": {}},
+        }}),
+    )?;
+    Ok(refused(&answer)?.is_some())
+}
+
+/// Whether `answer` to a `seats#certified` call certified a key, refusing with its own words
+/// when it did not.
+fn refused(answer: &Value) -> Result<Option<String>, String> {
+    if let Some(error) = answer.pointer("/error/message").and_then(Value::as_str) {
+        return Err(error.to_owned());
+    }
+    if answer.pointer("/result/isError").and_then(Value::as_bool) == Some(true) {
+        let said = answer
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("the daemon refused the certificate");
+        return Err(said.to_owned());
+    }
+    Ok(answer
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .map(str::to_owned))
 }
 
 /// [`certify_my_key`], at the daemon whose native endpoint is `socket`.

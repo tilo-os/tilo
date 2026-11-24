@@ -192,7 +192,7 @@ impl Identity {
     /// Whether a ticket made this computer a device of its person's, rather than it holding their
     /// root: it keeps their workspaces as a member then, and founds none of its own.
     fn joined(&self) -> bool {
-        !root_record().is_ok_and(|record| {
+        !device_root_record().is_ok_and(|record| {
             tilo_identity::store::load_metadata_from_path(&record)
                 .is_ok_and(|active| active.group_public_key == self.cert.user_public_key)
         })
@@ -212,15 +212,98 @@ impl Identity {
 ///
 /// # Errors
 /// The identity cannot be made or kept.
-pub fn found_a_person(keys: &tilo_device_identity::IdentityPaths, name: &str) -> io::Result<()> {
-    let dir = tilo_identity::store::identity_dir_from_env()?;
-    let storage = tilo_identity::provisioning::IdentityStorage::for_session();
-    if tilo_identity::store::resolve_active_identity(&dir).is_some() {
-        tilo_identity::provisioning::ensure_collaboration_identity(&dir, keys, storage)?;
-    } else {
-        tilo_identity::provisioning::create_person(&dir, keys, name.trim(), "", storage)?;
+pub fn found_a_person(
+    keys: &tilo_device_identity::IdentityPaths,
+    name: &str,
+) -> io::Result<[u8; 32]> {
+    found_a_person_in(&tilo_identity::store::identity_dir_from_env()?, keys, name)
+}
+
+/// Found the person of the account `uid` on this computer ([`found_a_person`]), whose root is
+/// kept for that account alone: a computer serving several accounts keeps each one's apart.
+///
+/// # Errors
+/// As [`found_a_person`].
+pub fn found_account_person(
+    keys: &tilo_device_identity::IdentityPaths,
+    name: &str,
+    uid: u32,
+) -> io::Result<[u8; 32]> {
+    found_a_person_in(&account_identity_dir(uid)?, keys, name)
+}
+
+fn found_a_person_in(
+    dir: &std::path::Path,
+    keys: &tilo_device_identity::IdentityPaths,
+    name: &str,
+) -> io::Result<[u8; 32]> {
+    let storage = tilo_identity::provisioning::IdentityStorage::Files;
+    if let Some(record) = tilo_identity::store::resolve_active_identity(dir) {
+        tilo_identity::provisioning::ensure_collaboration_identity(dir, keys, storage)?;
+        let metadata = tilo_identity::store::load_metadata_from_path(&record)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        return Ok(metadata.group_public_key);
     }
-    Ok(())
+    tilo_identity::provisioning::create_person(dir, keys, name.trim(), "", storage)
+}
+
+/// Where the person the account `uid` made here is kept: a directory of its own under this
+/// computer's identity store, so one account's root is never read for another's.
+///
+/// # Errors
+/// This computer keeps no identity store.
+pub(crate) fn account_identity_dir(uid: u32) -> io::Result<std::path::PathBuf> {
+    Ok(tilo_identity::store::identity_dir_from_env()?
+        .join("accounts")
+        .join(uid.to_string()))
+}
+
+/// The root this computer keeps for the account `uid` alone, when it keeps one.
+///
+/// # Errors
+/// The identity store does not hand it over.
+pub(crate) fn root_record(uid: u32) -> io::Result<std::path::PathBuf> {
+    let dir = account_identity_dir(uid)?;
+    tilo_identity::store::held_root(&dir)
+        .or_else(|| {
+            // A computer set up before each account's person was kept apart keeps the device's
+            // person's root in its one identity store.
+            if Some(uid) == device_person_uid() {
+                let legacy = tilo_identity::store::identity_dir_from_env().ok()?;
+                tilo_identity::store::held_root(&legacy)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "this computer keeps no root of this person's: another of their devices does",
+            )
+        })
+}
+
+/// The account the device itself was set up from, when this process knows it.
+fn device_person_uid() -> Option<u32> {
+    tilo_api::daemon::admission::installed()
+        .and_then(tilo_api::daemon::admission::Admission::device_person_uid)
+}
+
+/// The root this computer keeps for the account `uid`, if it keeps one.
+///
+/// # Errors
+/// The identity store does not hand it over.
+pub(crate) fn root_for(uid: u32) -> anyhow::Result<Option<tilo_identity::store::SigningIdentity>> {
+    match root_record(uid) {
+        Ok(record) => Ok(Some(tilo_identity::store::load_from_path(record)?)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Whether this computer keeps the account `uid`'s person's root.
+#[must_use]
+pub fn holds_a_root(uid: u32) -> bool {
+    root_record(uid).is_ok()
 }
 
 /// Restore this computer's person from what `args` hold: their recovery words (`words`), or a
@@ -233,12 +316,34 @@ pub fn found_a_person(keys: &tilo_device_identity::IdentityPaths, name: &str) ->
 pub fn restore_a_person(
     keys: &tilo_device_identity::IdentityPaths,
     args: &Value,
-) -> io::Result<()> {
-    let dir = tilo_identity::store::identity_dir_from_env()?;
-    let storage = tilo_identity::provisioning::IdentityStorage::for_session();
+) -> io::Result<[u8; 32]> {
+    restore_a_person_in(&tilo_identity::store::identity_dir_from_env()?, keys, args)
+}
+
+/// Bring back the person of the account `uid` on this computer ([`restore_a_person`]), whose
+/// root is kept for that account alone.
+///
+/// # Errors
+/// As [`restore_a_person`].
+pub fn restore_account_person(
+    keys: &tilo_device_identity::IdentityPaths,
+    args: &Value,
+    uid: u32,
+) -> io::Result<[u8; 32]> {
+    restore_a_person_in(&account_identity_dir(uid)?, keys, args)
+}
+
+fn restore_a_person_in(
+    dir: &std::path::Path,
+    keys: &tilo_device_identity::IdentityPaths,
+    args: &Value,
+) -> io::Result<[u8; 32]> {
+    let storage = tilo_identity::provisioning::IdentityStorage::Files;
     if let Some(words) = args.get("words").and_then(Value::as_str) {
-        tilo_identity::provisioning::restore_from_recovery_words(&dir, keys, words, None, storage)?;
-        return Ok(());
+        let profile = tilo_identity::provisioning::restore_from_recovery_words(
+            dir, keys, words, None, storage,
+        )?;
+        return Ok(profile.user_public_key);
     }
     let invalid = |why: &str| io::Error::new(io::ErrorKind::InvalidInput, why.to_owned());
     let backup = args
@@ -251,43 +356,53 @@ pub fn restore_a_person(
         .get("passphrase")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    tilo_identity::provisioning::prepare_identity_directory(&dir)?;
-    let file = passing_through(&dir, "restoring");
+    tilo_identity::provisioning::prepare_identity_directory(dir)?;
+    let file = passing_through(dir, "restoring");
     tilo_files::native::atomic::write_with_mode(&file, &bytes, 0o600)?;
     let restored = tilo_identity::provisioning::restore_from_backup(
-        &dir,
+        dir,
         keys,
         &file,
         passphrase.as_bytes(),
         storage,
     );
     drop(std::fs::remove_file(&file));
-    restored.map(drop)
+    Ok(restored?.user_public_key)
 }
 
-/// The person's root this daemon keeps, if it keeps one: what signs a new computer's certificate,
-/// a revocation, an agent's grant and the mark of the device that keeps it. Reading it makes this
-/// process undumpable, so it is read only when one of those is asked for.
+/// The root this device's person keeps here, if it keeps one: what signs a new computer's
+/// certificate, a revocation, an agent's grant and the mark of the device that keeps it. Reading
+/// it makes this process undumpable, so it is read only when one of those is asked for.
 ///
 /// # Errors
 /// The identity store does not hand it over.
 pub(crate) fn root() -> anyhow::Result<Option<tilo_identity::store::SigningIdentity>> {
-    match root_record() {
+    match device_person_root_record() {
         Ok(record) => Ok(Some(tilo_identity::store::load_from_path(record)?)),
         Err(_) => Ok(None),
     }
 }
 
-/// The record of the person's root this daemon keeps, when it keeps one.
-pub(crate) fn root_record() -> io::Result<std::path::PathBuf> {
-    tilo_identity::store::held_root(&tilo_identity::store::identity_dir_from_env()?).ok_or_else(
-        || {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "this computer keeps no root of its person's: another of their devices does",
-            )
-        },
-    )
+/// The record of the root this device's person keeps here, when they keep one.
+pub(crate) fn device_root_record() -> io::Result<std::path::PathBuf> {
+    device_person_root_record()
+}
+
+/// Where the device's person's root is kept: in the identity store a computer was set up with,
+/// else the account the device was set up from made here.
+fn device_person_root_record() -> io::Result<std::path::PathBuf> {
+    if let Ok(record) = tilo_identity::store::identity_dir_from_env()
+        && let Some(held) = tilo_identity::store::held_root(&record)
+    {
+        return Ok(held);
+    }
+    let uid = device_person_uid().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "this computer keeps no root of its person's: another of their devices does",
+        )
+    })?;
+    root_record(uid)
 }
 
 /// Take identity step `action` (one of the `devices` identity actions) with `args` in the identity
@@ -336,18 +451,12 @@ pub fn identity_step(action: &str, args: &Value) -> io::Result<Value> {
     }
 }
 
-/// Whether this daemon keeps its person's root.
-#[must_use]
-pub fn holds_a_root() -> bool {
-    root_record().is_ok()
-}
-
 /// The 24 recovery words of the person's root this daemon keeps.
 ///
 /// # Errors
 /// It keeps none, or the secret store does not hand it over.
 pub fn recovery_words() -> io::Result<String> {
-    Ok(tilo_identity::store::recovery_words(root_record()?)?
+    Ok(tilo_identity::store::recovery_words(device_root_record()?)?
         .as_str()
         .to_owned())
 }
@@ -357,7 +466,7 @@ pub fn recovery_words() -> io::Result<String> {
 /// # Errors
 /// It keeps none, or the backup cannot be written.
 pub fn backup(passphrase: &str) -> io::Result<Vec<u8>> {
-    let record = root_record()?;
+    let record = device_root_record()?;
     let dir = record
         .parent()
         .ok_or_else(|| io::Error::other("the root's record has no directory"))?;

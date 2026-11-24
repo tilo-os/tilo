@@ -227,7 +227,7 @@ impl Running {
                 rustix::process::geteuid().as_raw(),
                 tilo_api::daemon::system_daemon(),
             )
-            .keeping_accounts_in(profile.join(tilo_api::daemon::admission::PERSON_ACCOUNTS))?,
+            .keeping_accounts_in(profile.to_path_buf())?,
         );
         // The native endpoint answers from boot, before anyone's certificate names this device
         // and while its person's services start: the device's own actions first, the person's

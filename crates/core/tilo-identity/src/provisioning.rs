@@ -690,6 +690,71 @@ fn complete_enrolled(
     Ok(true)
 }
 
+/// Take up the person `user` this computer's daemon certified for this account, as
+/// [`complete_enrolled_device`] takes up the device's own person: the certificate it filed for
+/// `user` is read, and this account's public record naming them is written and made active. One
+/// account of a computer can take up a person of its own, so the certificate is named by its
+/// person rather than being the device's.
+///
+/// Answers whether such a certificate names `user`; an identity this account holds the root of
+/// is left as it is.
+///
+/// # Errors
+/// The certificate cannot be read or verify, or the record cannot be written.
+pub fn take_up_certified_person(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    user: [u8; 32],
+    now_ns: u64,
+    display_name: &str,
+) -> io::Result<bool> {
+    let read = |path: &Path| {
+        persist::read_device_cert(path).map_err(|error| io::Error::other(error.to_string()))
+    };
+    let cert = match read(&paths.device_cert_for_user(&user)) {
+        Ok(cert) => cert,
+        Err(_) => read(&paths.device_cert)?,
+    };
+    if cert.user_public_key != user {
+        return Ok(false);
+    }
+    tilo_user_identity::verify_device_cert_at(&cert, now_ns).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("this computer's device certificate did not verify: {error}"),
+        )
+    })?;
+    prepare_identity_directory(identity_dir)?;
+    let holds_their_root = crate::store::resolve_active_identity(identity_dir)
+        .and_then(|active| crate::store::load_metadata_from_path(&active).ok())
+        .is_some_and(|active| active.single_device && active.group_public_key == user);
+    if holds_their_root {
+        return Ok(true);
+    }
+    let record_id = public_record_id(&hex::encode(user));
+    let record_path = identity_dir.join(format!("{record_id}.json"));
+    if !record_path.exists() {
+        let record = crate::store::public_member_record(
+            if display_name.trim().is_empty() {
+                crate::store::UNNAMED_DISPLAY_NAME
+            } else {
+                display_name
+            },
+            [88, 101, 242],
+            user,
+        )?;
+        tilo_files::native::atomic::write_with_mode(&record_path, &record, 0o600)?;
+    }
+    if crate::store::resolve_active_identity(identity_dir).is_none() {
+        tilo_files::native::atomic::write_with_mode(
+            &identity_dir.join("active"),
+            format!("{record_id}\n").as_bytes(),
+            0o600,
+        )?;
+    }
+    Ok(true)
+}
+
 /// Make the person of `cert`, the certificate a login with a ticket brought, this account's
 /// identity: the device's enrolment becomes theirs, replacing one of another person (the root a
 /// computer made for itself before it logged in, or an earlier login's), since the person just
@@ -699,6 +764,9 @@ fn complete_enrolled(
 ///
 /// # Errors
 /// The certificate is not one this device may take, or the identity cannot be written.
+///
+/// One account of a computer takes up a person of its own by their certificate alone
+/// ([`take_up_certified_person`]).
 pub fn adopt_login_certificate(
     identity_dir: &Path,
     paths: &IdentityPaths,

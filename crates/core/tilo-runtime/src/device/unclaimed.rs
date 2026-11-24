@@ -25,8 +25,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE,
-    RESTORE,
+    ANOTHER_PERSONS_WORDS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE, RESTORE,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -313,8 +312,12 @@ impl DeviceOnly {
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
                 .map_or_else(|| founder_name(seated.seat.uid), str::to_owned);
-            super::services::found_a_person(self.keys(), &name)
-                .map_err(|error| format!("this device could not make a new person: {error}").into())
+            let made = if seated.seats.system() {
+                super::services::found_account_person(self.keys(), &name, seated.seat.uid)
+            } else {
+                super::services::found_a_person(self.keys(), &name)
+            };
+            made.map_err(|error| format!("this device could not make a new person: {error}").into())
         })
     }
 
@@ -336,15 +339,20 @@ impl DeviceOnly {
                 Err(problem) => Err(problem.to_string().into()),
             };
         }
-        self.take_a_person(|_| {
-            super::services::restore_a_person(self.keys(), args).map_err(|error| {
-                match tilo_identity::store::recovery_words_error(&error) {
+        self.take_a_person(|seated| {
+            let restored = if seated.seats.system() {
+                super::services::restore_account_person(self.keys(), args, seated.seat.uid)
+            } else {
+                super::services::restore_a_person(self.keys(), args)
+            };
+            restored.map_err(
+                |error| match tilo_identity::store::recovery_words_error(&error) {
                     Some(tilo_identity::store::RecoveryWordsError::DifferentIdentity {
                         ..
                     }) => another(),
                     _ => format!("this device could not bring the person back: {error}").into(),
-                }
-            })
+                },
+            )
         })
     }
 
@@ -352,26 +360,22 @@ impl DeviceOnly {
     /// it is set up from, which acts as them from then on: the person's id.
     fn take_a_person(
         &self,
-        make: impl FnOnce(&crate::seats::Seated) -> Result<(), Refusal>,
+        make: impl FnOnce(&crate::seats::Seated) -> Result<[u8; 32], Refusal>,
     ) -> Result<String, Refusal> {
-        if self.claimed() {
-            return Err(format!("{ALREADY_A_PERSONS}: it serves them").into());
-        }
+        // A person is made by an account on this computer, one per account: a computer whose
+        // device's person is set up starts another person for the next account that signs in.
         let Some(seated) = self
             .1
             .as_ref()
             .filter(|seated| seated.seats.founds(seated.seat))
         else {
             return Err(
-                "only the account this computer is set up from starts a person on it"
+                "this account already made a person on this computer, or is not signed in to it"
                     .to_owned()
                     .into(),
             );
         };
-        make(seated)?;
-        let person = self
-            .person()
-            .ok_or_else(|| "the person's certificate does not name this device".to_owned())?;
+        let person = make(seated)?;
         seated.seats.founded_by(seated.seat, person)?;
         Ok(hex::encode(person))
     }

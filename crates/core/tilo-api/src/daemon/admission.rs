@@ -53,8 +53,8 @@ pub struct Admission {
     own: u32,
     system: bool,
     seats: Mutex<HashMap<u32, Seat>>,
-    /// The accounts that are the device's person, by uid, and the file that keeps them.
-    accounts: Mutex<HashMap<u32, [u8; 32]>>,
+    /// Each account that made a person here, by uid, and the profile that keeps them.
+    accounts: Mutex<HashMap<u32, AccountPerson>>,
     kept: Option<PathBuf>,
 }
 
@@ -69,42 +69,116 @@ enum Seat {
         key: [u8; 32],
         cert: Option<DeviceCert>,
     },
+    /// An account root signed in that has no person yet, whose key on this device `key` is: it
+    /// may make its person, and then acts as that key.
+    Founding { key: [u8; 32] },
 }
 
-/// Where in its profile the daemon keeps which accounts are the device's person.
-pub const PERSON_ACCOUNTS: &str = "accounts/person.json";
+/// A person an account made here, and whether it is the person the device itself serves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AccountPerson {
+    /// The person, by their root key.
+    pub person: [u8; 32],
+    /// Whether this is the account the device was set up from, which its own services serve.
+    pub device: bool,
+}
 
-/// The accounts the record at `path` names as the device's person, by uid: none while there is
-/// no record.
+/// Where in its profile the daemon keeps each account's person.
+pub const ACCOUNTS: &str = "accounts";
+
+/// The file recording that `uid` made the person `person`, in the profile `profile`.
+#[must_use]
+pub fn person_record(profile: &std::path::Path, uid: u32) -> PathBuf {
+    profile
+        .join(ACCOUNTS)
+        .join(uid.to_string())
+        .join("person.json")
+}
+
+/// The accounts that made a person, from the records in `profile`: none while there are none.
+/// The record each one written before accounts were kept separately is read too.
 ///
 /// # Errors
-/// The file is there and cannot be read, or is not such a record.
-pub fn person_accounts(path: &std::path::Path) -> io::Result<HashMap<u32, [u8; 32]>> {
-    let accounts: HashMap<u32, String> = match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{} names no accounts: {error}", path.display()),
-            )
-        })?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => HashMap::new(),
+/// A record is there and cannot be read, or is not such a record.
+pub fn recorded_accounts(profile: &std::path::Path) -> io::Result<HashMap<u32, AccountPerson>> {
+    let mut accounts = HashMap::new();
+    let dir = profile.join(ACCOUNTS);
+    // The one record a profile kept before each account's person was kept apart.
+    let legacy = dir.join("person.json");
+    match std::fs::read(&legacy) {
+        Ok(bytes) => {
+            let by_uid: HashMap<u32, String> = serde_json::from_slice(&bytes).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{} names no accounts: {error}", legacy.display()),
+                )
+            })?;
+            for (uid, person) in by_uid {
+                accounts.insert(
+                    uid,
+                    AccountPerson {
+                        person: person_key(&legacy, &person)?,
+                        device: true,
+                    },
+                );
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(accounts),
         Err(error) => return Err(error),
     };
-    accounts
-        .into_iter()
-        .map(|(uid, person)| {
-            hex::decode(&person)
-                .ok()
-                .and_then(|person| <[u8; 32]>::try_from(person).ok())
-                .map(|person| (uid, person))
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("{} names account {uid} as no person", path.display()),
-                    )
-                })
+    for entry in entries {
+        let entry = entry?;
+        let Ok(uid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let path = entry.path().join("person.json");
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let record: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} names no account's person: {error}", path.display()),
+            )
+        })?;
+        let person = record
+            .get("person")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{} names no person", path.display()),
+                )
+            })?;
+        let device = record.get("device").and_then(serde_json::Value::as_bool) == Some(true)
+            || !accounts.values().any(|held: &AccountPerson| held.device);
+        accounts.insert(
+            uid,
+            AccountPerson {
+                person: person_key(&path, person)?,
+                device,
+            },
+        );
+    }
+    Ok(accounts)
+}
+
+/// The person a record names, from the hex it keeps.
+fn person_key(path: &std::path::Path, person: &str) -> io::Result<[u8; 32]> {
+    hex::decode(person)
+        .ok()
+        .and_then(|person| <[u8; 32]>::try_from(person).ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} names a person that is no key", path.display()),
+            )
         })
-        .collect()
 }
 
 impl Admission {
@@ -120,43 +194,131 @@ impl Admission {
         }
     }
 
-    /// The same admission, keeping which accounts are the device's person in `path`, and
-    /// admitting those it already names.
+    /// The same admission, keeping each account's person in `profile`, and admitting those it
+    /// already names.
     ///
     /// # Errors
-    /// The file is there and cannot be read, or is not such a record.
-    pub fn keeping_accounts_in(mut self, path: PathBuf) -> io::Result<Self> {
-        self.accounts = Mutex::new(person_accounts(&path)?);
-        self.kept = Some(path);
+    /// A record is there and cannot be read, or is not such a record.
+    pub fn keeping_accounts_in(mut self, profile: PathBuf) -> io::Result<Self> {
+        self.accounts = Mutex::new(recorded_accounts(&profile)?);
+        self.kept = Some(profile);
         Ok(self)
     }
 
-    /// Record that the account `uid` made the device's person `person`: under the system unit
-    /// it acts as them from now on, across the daemon's restarts. A person's own service is
+    /// The person the account `uid` made here, when it made one.
+    #[must_use]
+    pub fn recorded_person(&self, uid: u32) -> Option<AccountPerson> {
+        self.accounts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&uid)
+            .copied()
+    }
+
+    /// Whether the account `uid` made a person here.
+    #[must_use]
+    pub fn has_person(&self, uid: u32) -> bool {
+        self.recorded_person(uid).is_some()
+    }
+
+    /// The account the device itself was set up from, whose person its own services serve.
+    #[must_use]
+    pub fn device_person_uid(&self) -> Option<u32> {
+        self.accounts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(_, held)| held.device)
+            .map(|(uid, _)| *uid)
+    }
+
+    /// Record that the account `uid` made the person `person`: under the system unit it acts as
+    /// a key of theirs from then on, across the daemon's restarts. A person's own service is
     /// theirs already and records nothing.
     ///
+    /// The first person a computer makes is the one the device itself serves; every account
+    /// after it keeps a person of its own, never that one.
+    ///
     /// # Errors
-    /// The record could not be kept, or another account is the device's person already.
+    /// The record could not be kept, or this account made another person already.
     pub fn founded_by(&self, uid: u32, person: [u8; 32]) -> Result<(), String> {
+        let device = self
+            .accounts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .all(|held| !held.device);
+        self.founded_by_as(uid, person, device)
+    }
+
+    /// [`Self::founded_by`], saying whether this is the person the device itself serves: the
+    /// account a certificate already names it for is, and no other.
+    ///
+    /// # Errors
+    /// As [`Self::founded_by`].
+    pub fn founded_by_as(&self, uid: u32, person: [u8; 32], device: bool) -> Result<(), String> {
         if !self.system || uid == ROOT || uid == self.own {
             return Ok(());
         }
         let mut accounts = self.accounts.lock().unwrap_or_else(PoisonError::into_inner);
-        if accounts.values().any(|held| *held != person) {
-            return Err("another person's account is this computer's already".to_owned());
+        if let Some(held) = accounts.get(&uid)
+            && held.person != person
+        {
+            return Err("this account made another person on this computer already".to_owned());
         }
-        accounts.insert(uid, person);
-        if let Some(path) = &self.kept {
-            let record: HashMap<String, String> = accounts
-                .iter()
-                .map(|(uid, person)| (uid.to_string(), hex::encode(person)))
-                .collect();
+        accounts.insert(uid, AccountPerson { person, device });
+        if let Some(profile) = &self.kept {
+            let path = person_record(profile, uid);
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|error| {
+                    format!("this computer could not keep which account is whose person: {error}")
+                })?;
+            }
+            let record = serde_json::json!({ "person": hex::encode(person), "device": device });
             let bytes = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
-            tilo_files::native::atomic::write_private(path, &bytes).map_err(|error| {
-                format!("this computer could not keep which account is its person: {error}")
+            tilo_files::native::atomic::write_private(&path, &bytes).map_err(|error| {
+                format!("this computer could not keep which account is whose person: {error}")
             })?;
         }
         Ok(())
+    }
+
+    /// The account `uid` signed in with no person yet, whose key here `key` is: it may make one,
+    /// and then acts as that key.
+    ///
+    /// # Errors
+    /// `by` is not root.
+    pub fn signed_in_founding(&self, by: u32, uid: u32, key: [u8; 32]) -> Result<(), String> {
+        Self::by_root(by)?;
+        self.seats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(uid, Seat::Founding { key });
+        Ok(())
+    }
+
+    /// The account `uid` made the person `person` after signing in with no person yet: it acts
+    /// as the key of theirs this device made for it, once their certificate for it comes.
+    ///
+    /// # Errors
+    /// `uid` signed in with no key of its own here.
+    pub fn founded(&self, uid: u32, person: [u8; 32]) -> Result<(), String> {
+        let mut seats = self.seats.lock().unwrap_or_else(PoisonError::into_inner);
+        match seats.get(&uid) {
+            Some(Seat::Founding { key }) => {
+                let key = *key;
+                seats.insert(
+                    uid,
+                    Seat::Key {
+                        person,
+                        key,
+                        cert: None,
+                    },
+                );
+                Ok(())
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Whether it is the system unit's daemon, serving every account of the computer.
@@ -174,6 +336,8 @@ impl Admission {
         if !self.system {
             return Admitted::Stranger;
         }
+        // A person's root is opened only while their account is signed in, so an account no
+        // sign-in named now is answered the device's own actions alone.
         match self.seat(uid) {
             Some(Seat::Person(person)) => Admitted::Person(person),
             Some(Seat::Key {
@@ -181,13 +345,7 @@ impl Admission {
                 key,
                 cert: Some(_),
             }) => Admitted::Key { person, key },
-            Some(Seat::Key { cert: None, .. }) => Admitted::Stranger,
-            None => self
-                .accounts
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get(&uid)
-                .map_or(Admitted::Stranger, |person| Admitted::Person(*person)),
+            Some(Seat::Key { cert: None, .. } | Seat::Founding { .. }) | None => Admitted::Stranger,
         }
     }
 
@@ -223,6 +381,21 @@ impl Admission {
             }) => Some((person, key)),
             _ => None,
         }
+    }
+
+    /// The key `uid` may act as once it makes its person, while it has made none yet.
+    #[must_use]
+    pub fn founding(&self, uid: u32) -> Option<[u8; 32]> {
+        match self.seat(uid) {
+            Some(Seat::Founding { key }) => Some(key),
+            _ => None,
+        }
+    }
+
+    /// Whether this account is signed in, with a person here or none yet.
+    #[must_use]
+    pub fn signed_in_now(&self, uid: u32) -> bool {
+        self.seat(uid).is_some()
     }
 
     fn seat(&self, uid: u32) -> Option<Seat> {
@@ -343,6 +516,13 @@ pub fn here(own: impl FnOnce() -> u32) -> &'static Admission {
     HERE.get_or_init(|| Admission::new(own(), false))
 }
 
+/// This process's admission when its daemon installed one: none in a process that is no daemon,
+/// which keeping accounts is not asked of.
+#[must_use]
+pub fn installed() -> Option<&'static Admission> {
+    HERE.get()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,26 +543,58 @@ mod tests {
     }
 
     #[test]
-    fn the_account_that_made_the_person_is_them_across_restarts() {
-        let dir = tempfile::tempdir().unwrap();
-        let kept = dir.path().join("accounts").join("person.json");
+    fn each_account_keeps_its_own_person_across_restarts() {
+        let profile = tempfile::tempdir().unwrap();
         let admission = Admission::new(990, true)
-            .keeping_accounts_in(kept.clone())
+            .keeping_accounts_in(profile.path().to_path_buf())
             .unwrap();
         assert_eq!(admission.admit(1000), Admitted::Stranger);
         admission.founded_by(1000, [7; 32]).unwrap();
+        // The root is opened only while the account is signed in.
+        assert_eq!(admission.admit(1000), Admitted::Stranger);
+        admission.signed_in(ROOT, 1000, [7; 32]).unwrap();
         assert_eq!(admission.admit(1000), Admitted::Person([7; 32]));
-        assert_eq!(admission.admit(1001), Admitted::Stranger);
+        // Another account makes a person of its own, never the first account's.
+        admission.founded_by(1001, [8; 32]).unwrap();
+        assert_eq!(admission.recorded_person(1001).unwrap().person, [8; 32]);
+        assert!(!admission.recorded_person(1001).unwrap().device);
         assert!(
-            admission.founded_by(1001, [8; 32]).is_err(),
-            "a second person never takes the computer"
+            admission.founded_by(1001, [9; 32]).is_err(),
+            "an account makes one person on a computer"
         );
-        let restarted = Admission::new(990, true).keeping_accounts_in(kept).unwrap();
-        assert_eq!(restarted.admit(1000), Admitted::Person([7; 32]));
+        let restarted = Admission::new(990, true)
+            .keeping_accounts_in(profile.path().to_path_buf())
+            .unwrap();
+        assert_eq!(restarted.recorded_person(1000).unwrap().person, [7; 32]);
+        assert_eq!(restarted.recorded_person(1001).unwrap().person, [8; 32]);
+        assert_eq!(restarted.device_person_uid(), Some(1000));
         assert_eq!(restarted.admit(1001), Admitted::Stranger);
-        // Leaving a session ends a sign-in, not which account the person is.
+        // Leaving a session ends a sign-in, not which account made which person.
         assert!(!restarted.left(ROOT, 1000).unwrap());
-        assert_eq!(restarted.admit(1000), Admitted::Person([7; 32]));
+        assert_eq!(restarted.recorded_person(1000).unwrap().person, [7; 32]);
+    }
+
+    #[test]
+    fn an_account_with_no_person_signs_in_to_found_one() {
+        let admission = Admission::new(990, true);
+        admission.signed_in_founding(ROOT, 1001, [9; 32]).unwrap();
+        assert_eq!(admission.admit(1001), Admitted::Stranger);
+        assert_eq!(admission.founding(1001), Some([9; 32]));
+        admission.founded(1001, [8; 32]).unwrap();
+        assert_eq!(admission.awaiting(1001), Some(([8; 32], [9; 32])));
+        assert_eq!(admission.founding(1001), None);
+    }
+
+    #[test]
+    fn an_account_with_no_person_may_make_one() {
+        let profile = tempfile::tempdir().unwrap();
+        let admission = Admission::new(990, true)
+            .keeping_accounts_in(profile.path().to_path_buf())
+            .unwrap();
+        assert!(!admission.has_person(1000));
+        admission.founded_by(1000, [7; 32]).unwrap();
+        assert!(admission.has_person(1000));
+        assert!(!admission.has_person(1001));
     }
 
     #[test]

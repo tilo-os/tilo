@@ -17,7 +17,7 @@ use tilo_user_identity::{
 };
 use tilo_workspace_service::workspaces::{Workspaces, person_workspace};
 
-use super::services::root_record;
+use super::services::device_root_record;
 use super::workspaces::{ServiceWorkspaces, block_on_owned};
 
 /// How long an agent's grant this daemon certifies lasts, and how much of it may be left when it
@@ -27,7 +27,7 @@ const AGENT_GRANT_RENEW_WITHIN_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
 
 /// The person's root as this daemon keeps it, and the identity it signs for.
 fn person() -> io::Result<([u8; 32], String, tilo_identity::store::SigningIdentity)> {
-    let record = root_record()?;
+    let record = device_root_record()?;
     let dir = record
         .parent()
         .ok_or_else(|| io::Error::other("the root's record has no directory"))?;
@@ -227,7 +227,7 @@ pub fn enrol_boot_key(
         .and_then(|device| hex::decode(device).ok())
         .and_then(|device| <[u8; 32]>::try_from(device).ok());
     let now = tilo_clock::unix_now_ns();
-    let root = tilo_identity::store::load_from_path(root_record()?)
+    let root = tilo_identity::store::load_from_path(device_root_record()?)
         .map_err(|error| io::Error::other(error.to_string()))?;
     // The boot key is certified as an ordinary device certificate that grants nothing: it can ask
     // for the half, never act as the device.
@@ -328,7 +328,7 @@ pub fn release_half(args: &Value) -> io::Result<Value> {
         .ok()
         .and_then(|ephemeral| ephemeral.try_into().ok())
         .ok_or_else(|| io::Error::other("the boot's ephemeral key is 32 bytes in hex"))?;
-    let root = tilo_identity::store::load_from_path(root_record()?)
+    let root = tilo_identity::store::load_from_path(device_root_record()?)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let secret_sync = root
         .secret_sync_key()
@@ -395,7 +395,7 @@ pub fn answer_sign_in(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let root = tilo_identity::store::load_from_path(root_record()?)
+    let root = tilo_identity::store::load_from_path(device_root_record()?)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let device = tilo_device_identity::persist::load_device_key(keys)
         .map_err(|error| io::Error::other(error.to_string()))?;

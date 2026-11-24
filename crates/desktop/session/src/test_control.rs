@@ -1746,11 +1746,15 @@ fn snapshot(compositor: &mut Compositor, path: &str) -> Result<(), (&'static str
         .map_err(|error| ("snapshot_failed", format!("{path}: {error}")))
 }
 
-/// Mint a throwaway identity for this session's user, the one a session started after it opens its
-/// session with: what `provision_test_identity` answers on the shell's socket, in the same shape. A
-/// real identity is never replaced; a release build mints none.
+/// Give this session's user their identity, as a session started after it opens its session
+/// with: what `provision_test_identity` answers on the shell's socket, in the same shape.
+///
+/// The account's person is made the one way a person is made, this computer's daemon founding
+/// them ([`crate::startup::found_and_certify`]), and its key certified with the root the daemon
+/// keeps for the account. A session with no daemon (a test fixture) mints a throwaway identity
+/// of its own instead. A real identity is never replaced; a release build mints none.
 fn provision_test_identity() -> Json {
-    use tilo_identity::provisioning::{ProvisionOutcome, THROWAWAY_TEST_IDENTITY_NAME};
+    use tilo_identity::provisioning::ProvisionOutcome;
     let identity_path = match tilo_identity::store::active_identity_path() {
         Ok(path) => path,
         Err(error) => return refusal("provision_failed", &format!("no identity store: {error}")),
@@ -1758,6 +1762,25 @@ fn provision_test_identity() -> Json {
     let Some(identity_dir) = identity_path.parent() else {
         return refusal("provision_failed", "the identity store has no directory");
     };
+    if !tilo_onboarding_session::identity_provisioning::needs_first_run_flow(&identity_path) {
+        return refusal("identity_exists", "this account has an identity already");
+    }
+    // This computer's daemon makes the account's person, as it makes every person.
+    if tilo_api::daemon::who::who().is_ok() {
+        return match crate::startup::found_and_certify(identity_dir) {
+            Ok(true) => json!({"answer": {
+                "created": true,
+                "display_name": tilo_identity::provisioning::login_account_display_name(),
+                "throwaway": true,
+            }}),
+            Ok(false) => refusal(
+                "not_signed_in",
+                "this account is not signed in on this computer, so no person can be made for it",
+            ),
+            Err(error) => refusal("provision_failed", &error),
+        };
+    }
+    use tilo_identity::provisioning::THROWAWAY_TEST_IDENTITY_NAME;
     match tilo_onboarding_session::firstboot::ensure_throwaway_test_identity(
         identity_dir,
         &tilo_onboarding_session::firstboot::collaboration_identity_paths(),

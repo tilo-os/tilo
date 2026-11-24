@@ -243,18 +243,33 @@ impl Seats {
             .then_some((signing, cert))
     }
 
-    /// Whether the account `seat` may make this device's person ([`FOUND`]): its own account,
-    /// and under the system unit the account that sets the computer up, while it has no person.
+    /// Whether the account `seat` may make a person ([`FOUND`]): its own account, or an account
+    /// signed in on the computer, while that account has no person yet.
     ///
     /// [`FOUND`]: tilo_device_identity::login::FOUND
     pub(crate) fn founds(&self, seat: Seat) -> bool {
-        seat.admitted == Admitted::Device || (self.admission.system() && seat.uid != u32::MAX)
+        if seat.uid == u32::MAX {
+            return false;
+        }
+        if !self.admission.system() {
+            return seat.admitted == Admitted::Device && !self.admission.has_person(seat.uid);
+        }
+        seat.uid != ROOT
+            && (seat.admitted == Admitted::Device || self.admission.signed_in_now(seat.uid))
+            && !self.admission.has_person(seat.uid)
     }
 
-    /// Record that the account `seat` made the device's person `person`, which it acts as from
-    /// now on.
+    /// Whether this daemon serves every account of the computer, each with its own person.
+    pub(crate) fn system(&self) -> bool {
+        self.admission.system()
+    }
+
+    /// Record that the account `seat` made the person `person`: the first person a computer
+    /// makes is the one it serves, and every account after it acts as a key of its own.
     pub(crate) fn founded_by(&self, seat: Seat, person: [u8; 32]) -> Result<(), String> {
-        self.admission.founded_by(seat.uid, person)
+        self.admission.founded_by(seat.uid, person)?;
+        // The key the account signed in with acts for it from now on, as its certificate comes.
+        self.admission.founded(seat.uid, person)
     }
 
     /// Serve the person's shells with `shells` from now on: what a sign-in and a shell's start do.
@@ -408,21 +423,28 @@ impl Seats {
     }
 
     /// Take the certificate `request` hands (`{cert}`) for the key the account `seat` signed in
-    /// to act as: its own account alone hands it, and it must be its person's for that key.
+    /// to act as: its own account alone hands it, and it must be its person's for that key. An
+    /// account whose person this computer keeps the root of asks with none (`{}`), and the
+    /// daemon signs it with that person's root: no root ever signs for another account.
     fn certified(&self, seat: Seat, request: &Value) -> Result<Value, String> {
-        let cert = request
+        let handed = request
             .get("cert")
             .and_then(Value::as_str)
-            .and_then(|cert| hex::decode(cert).ok())
-            .ok_or("a certificate is handed as its canonical bytes, in hex")?;
-        let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&cert)
-            .map_err(|error| format!("the certificate does not read: {error}"))?;
-        let ours = self
+            .and_then(|cert| hex::decode(cert).ok());
+        let (ours, cert) = match handed {
+            Some(bytes) => {
+                let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&bytes)
+                    .map_err(|error| format!("the certificate does not read: {error}"))?;
+                (cert.device_public_key, cert)
+            }
+            None => self.certify_here(seat)?,
+        };
+        let key = self
             .keys
             .lock_recover()
             .get(&seat.uid)
             .map(|key| key.verifying_key().to_bytes());
-        if ours != Some(cert.device_public_key) {
+        if key != Some(ours) {
             return Err(format!(
                 "this computer made account {} no key that certificate names",
                 seat.uid
@@ -431,6 +453,40 @@ impl Seats {
         let key = cert.device_public_key;
         self.admission.certified(seat.uid, cert)?;
         Ok(json!({"key": hex::encode(key)}))
+    }
+
+    /// The certificate of the key the account `seat` signed in to act as, signed here with the
+    /// root this computer keeps for that account alone.
+    fn certify_here(&self, seat: Seat) -> Result<([u8; 32], DeviceCert), String> {
+        let (person, key) = self
+            .admission
+            .awaiting(seat.uid)
+            .ok_or("this account is to certify no key on this computer")?;
+        let root = crate::device::services::root_for(seat.uid)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                "this computer keeps no root of this person's: certify the key from a device of \
+                 theirs that does"
+                    .to_owned()
+            })?;
+        if root.group_public_key() != person {
+            return Err(
+                "the root this computer keeps is another person's than the account's".to_owned(),
+            );
+        }
+        let mut cert = DeviceCert {
+            user_public_key: person,
+            device_public_key: key,
+            device_label: tilo_user_identity::UNNAMED_SHARED_DEVICE.to_owned(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root)
+            .map_err(|error| format!("the certificate is not signed: {error}"))?;
+        Ok((key, cert))
     }
 
     fn signed_in(
@@ -445,26 +501,48 @@ impl Seats {
             .and_then(Value::as_str)
             .and_then(|person| hex::decode(person).ok())
             .and_then(|person| <[u8; 32]>::try_from(person).ok());
-        let bound = self
-            .device
-            .person()
-            .ok_or("this computer has no person yet: they are set up at its first sign-in")?;
-        // The device's person is the account the daemon recorded as theirs, never one that only
-        // names them.
-        let person = match self.admission.admit(uid) {
-            Admitted::Person(person) if person == bound => person,
-            _ => match named {
-                Some(person) if person != bound => {
-                    return self.another_person(seat, uid, person);
-                }
-                _ => {
-                    return Err(format!(
-                        "account {uid} is not the account this computer's person was set up from"
-                    ));
-                }
-            },
+        let recorded = self.admission.recorded_person(uid);
+        if let Some(held) = recorded
+            && let Some(named) = named
+            && named != held.person
+        {
+            return Err(format!(
+                "account {uid} made another person on this computer than the one it names"
+            ));
+        }
+        // The person this account is: the one it made here, else the one it names.
+        let held = match recorded {
+            Some(held) => held,
+            // A person whose identity another device of theirs holds: this computer records
+            // that the account made that person, and serves it a key of theirs.
+            None => {
+                let Some(named) = named else {
+                    // No identity yet: the account may make one here, then certify its key.
+                    let key = SigningKey::from_bytes(&rand::random());
+                    self.admission.signed_in_founding(
+                        seat.uid,
+                        uid,
+                        key.verifying_key().to_bytes(),
+                    )?;
+                    self.keys.lock_recover().insert(uid, key);
+                    return Ok(json!({"founding": true, "shell": false}));
+                };
+                let held = tilo_api::daemon::admission::AccountPerson {
+                    person: named,
+                    // The account a certificate already names this device for is the person it
+                    // serves; another account is a person whose identity another device holds.
+                    device: self.device.person() == Some(named),
+                };
+                self.admission
+                    .founded_by_as(uid, held.person, held.device)?;
+                held
+            }
         };
-        self.admission.signed_in(seat.uid, uid, person)?;
+        // The account the computer was set up from is the person its own services serve.
+        if !held.device {
+            return self.another_person(seat, uid, held.person);
+        }
+        self.admission.signed_in(seat.uid, uid, held.person)?;
         self.keys.lock_recover().remove(&uid);
         let importing = request.get("importing").and_then(Value::as_bool) == Some(true);
         // The link the session root starts is admitted by: none while the person's services
@@ -479,13 +557,18 @@ impl Seats {
         });
         let shell = link.is_some();
         *handed.lock_recover() = link.map(OwnedFd::from);
-        Ok(json!({"person": hex::encode(person), "shell": shell}))
+        Ok(json!({"person": hex::encode(held.person), "shell": shell}))
     }
 
     /// The account `uid` signed in as `person`, another person than the device's: it acts as a
     /// key of theirs this daemon makes it now, once they certified it. Answers the key to certify.
     fn another_person(&self, seat: Seat, uid: u32, person: [u8; 32]) -> Result<Value, String> {
-        let key = SigningKey::from_bytes(&rand::random());
+        let key = self
+            .keys
+            .lock_recover()
+            .get(&uid)
+            .cloned()
+            .unwrap_or_else(|| SigningKey::from_bytes(&rand::random()));
         let public = key.verifying_key().to_bytes();
         self.admission
             .signed_in_as_key(seat.uid, uid, person, public)?;
@@ -518,12 +601,12 @@ impl Seats {
             who.insert("label".into(), json!(label));
         }
         who.insert("claimed".into(), json!(self.device.claimed()));
-        // Whether the device keeps its person's root, to that person alone: what a backup and
-        // the recovery words are made from.
-        if person.is_some() && !matches!(seat.admitted, Admitted::Key { .. }) {
+        // Whether this computer keeps the account's person's root, to that account alone: what a
+        // backup and the recovery words are made from.
+        if person.is_some() && seat.uid != u32::MAX {
             who.insert(
                 "holds_root".into(),
-                json!(crate::device::services::holds_a_root()),
+                json!(crate::device::services::holds_a_root(seat.uid)),
             );
         }
         match seat.admitted {
@@ -537,14 +620,17 @@ impl Seats {
                         "certify".into(),
                         json!({"person": hex::encode(person), "key": hex::encode(key)}),
                     );
+                } else if let Some(key) = self.admission.founding(seat.uid) {
+                    // An account that signed in with no person yet: it may make one here.
+                    who.insert("founding".into(), json!(true));
+                    who.insert("key".into(), json!(hex::encode(key)));
                 }
             }
             Admitted::Device | Admitted::Person(_) => {}
         }
         // Where the device enters its person's workspaces, to the device's own person alone:
         // another person acts as their key.
-        if person.is_some()
-            && !matches!(seat.admitted, Admitted::Key { .. })
+        if matches!(seat.admitted, Admitted::Person(_))
             && let Some(home) = crate::device::home()
         {
             who.insert("home".into(), tilo_api::daemon::who::home_answer(&home));
