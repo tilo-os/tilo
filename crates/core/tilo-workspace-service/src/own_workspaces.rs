@@ -181,10 +181,6 @@ mod tests {
         let (key, cert) = governor();
         let server = test_host(dir.path(), &key, &cert).await;
         let created = server.workspaces().create("Home").await.unwrap();
-        server
-            .host()
-            .workspaces()
-            .accept_agents_from_other_devices(false);
         let handed = local_caller(&cert)
             .in_workspace(created.workspace.as_str())
             .delegated_to("claude");

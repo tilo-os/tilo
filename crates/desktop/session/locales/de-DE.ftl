@@ -362,9 +362,6 @@ session-answer-ask = Antworten
 session-ask-later = Später fragen
 session-tray-open = Öffnen
 session-agents-stop = Stoppen
-session-agents-other-devices = Ob Agenten von meinen anderen Geräten hier arbeiten
-session-agents-accept-other-devices = Agenten von meinen anderen Geräten annehmen
-session-agents-act-without-asking = Ohne Rückfrage handeln lassen
 session-people = Personen
 
 ## Wie der Sperrbildschirm heißt, solange er oben ist.

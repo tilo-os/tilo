@@ -77,10 +77,6 @@ pub(crate) struct DeviceWork {
     governance: std::sync::OnceLock<std::sync::Weak<super::actions::Shared>>,
     /// The providers registered on this device: what another device's call naming one reaches.
     pub(super) providers: super::providers::Providers,
-    /// Whether agents from the person's other devices are let in, when a test says so
-    /// itself rather than reading the device's settings.
-    #[cfg(any(test, feature = "test-support"))]
-    agents_from_other_devices: std::sync::RwLock<Option<bool>>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -251,26 +247,6 @@ impl DeviceWork {
         self.jobs.read_recover().clone()
     }
 
-    /// The answer this device keeps about agents from the person's other devices in
-    /// `workspace`: what its grants say now, or what a test said.
-    async fn agents_from_other_devices(
-        &self,
-        workspace: Option<&str>,
-    ) -> Option<tilo_action_policy::Answer> {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(accepts) = *self.agents_from_other_devices.read_recover() {
-            return accepts.then_some(tilo_action_policy::Answer::Ask);
-        }
-        let workspaces = self.turns.get().and_then(super::WeakWorkspaces::upgrade)?;
-        workspaces.agents_from_other_devices(workspace?).await
-    }
-
-    /// Let agents from the person's other devices work here, or not, as a test says.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn accept_agents_from_other_devices(&self, accepts: bool) {
-        *self.agents_from_other_devices.write_recover() = Some(accepts);
-    }
-
     /// The device action service's work for the workspaces in `workspaces`.
     ///
     /// # Panics
@@ -288,8 +264,6 @@ impl DeviceWork {
             log: std::sync::Mutex::default(),
             governance: std::sync::OnceLock::new(),
             providers: super::providers::Providers::default(),
-            #[cfg(any(test, feature = "test-support"))]
-            agents_from_other_devices: std::sync::RwLock::default(),
             runtime: tokio::runtime::Handle::current(),
         })
     }
@@ -557,9 +531,6 @@ fn turn_of(request: &InvokeRequest, requester: [u8; 32]) -> Result<Turn, ActionC
     })
 }
 
-/// What an agent another of the person's devices handed here reads while this device takes none.
-const DEVICE_AGENTS_NOT_ACCEPTED: &str = "device-agents-not-accepted";
-
 /// How long a Linux run is left before it is looked at again, when its
 /// machine cannot say it changed.
 const LINUX_LOOK: Duration = Duration::from_millis(100);
@@ -784,49 +755,9 @@ impl ActionProvider for Answers {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        // An agent another of the person's devices handed its session to works here only while
-        // the person let such agents in on this device: the grant its workspace keeps for this
-        // device says so, and whether a step their grants ask first goes unasked.
-        if caller.acting().handed {
-            let answers = Self {
-                work: Arc::clone(&self.work),
-                apps: self
-                    .apps
-                    .get()
-                    .cloned()
-                    .map(std::sync::OnceLock::from)
-                    .unwrap_or_default(),
-            };
-            let caller = caller.clone();
-            let (completer, answer) = tilo_actions::remote::pending();
-            self.work.runtime.clone().spawn(async move {
-                let caller = match answers
-                    .work
-                    .agents_from_other_devices(caller.workspace())
-                    .await
-                {
-                    Some(tilo_action_policy::Answer::Allow) => caller.steps_unasked(),
-                    Some(tilo_action_policy::Answer::Ask) => caller,
-                    Some(tilo_action_policy::Answer::Deny) | None => {
-                        completer.complete(Err(ActionCallError::Refused {
-                            reason: crate::i18n::message(
-                                None,
-                                DEVICE_AGENTS_NOT_ACCEPTED,
-                                &tilo_history::FluentArgs::new(),
-                            ),
-                        }));
-                        return;
-                    }
-                };
-                completer.complete(
-                    answers
-                        .admitted(&caller, request)
-                        .await
-                        .unwrap_or(Err(ActionCallError::Unanswered)),
-                );
-            });
-            return answer;
-        }
+        // An agent another of the person's devices handed its session to acts here under the
+        // workspace's grants naming it, as one of this device's own does: its answer decides a
+        // step its grants ask first, and nobody else had to let it in.
         self.admitted(caller, request)
     }
 

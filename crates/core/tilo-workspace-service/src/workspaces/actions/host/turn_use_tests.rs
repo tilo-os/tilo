@@ -80,7 +80,6 @@ pub(super) async fn dispatched(
         )
         .await;
     }
-    workspaces.accept_agents_from_other_devices(false);
     let receipt = workspaces
         .device_actions()
         .invoke(caller, request.clone())

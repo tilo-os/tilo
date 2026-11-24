@@ -80,10 +80,6 @@ pub struct Caller {
     // provider that runs it on its person's device (`Self::held_to`). `None` there holds it to
     // nothing: it carries no delegation at all.
     own_bound: Option<Vec<tilo_action_policy::Rule>>,
-    // The computer that admitted an agent from another of its person's devices answers the
-    // person's ask for its steps itself (`Self::steps_unasked`): the grant kept there says the
-    // person let them go. Set only by the host that read that grant.
-    steps_unasked: bool,
     // The device's operating system (`Self::local_system`), which acts for nobody.
     system: bool,
     // The invitation a visitor redeems (`Self::invited`): it acts by its issuer's authority,
@@ -120,7 +116,6 @@ impl Caller {
             agent_name: None,
             asked: None,
             own_bound: None,
-            steps_unasked: false,
             system: false,
             invited: None,
         }
@@ -610,24 +605,6 @@ impl Caller {
         self
     }
 
-    /// The computer that admitted this agent from another of its person's devices lets the steps
-    /// its grants ask first go unasked here, as the grant kept there says. Set only by the host
-    /// that read that grant, never a payload; changes nothing for any other caller.
-    #[must_use]
-    pub fn steps_unasked(mut self) -> Self {
-        if self.acting.is_agent() && self.acting.acted_for_person().is_some() {
-            self.steps_unasked = true;
-        }
-        self
-    }
-
-    /// Whether the person answered this agent's steps that would ask first on the computer that
-    /// admitted it ([`Self::steps_unasked`]).
-    #[must_use]
-    pub const fn lets_steps_go_unasked(&self) -> bool {
-        self.steps_unasked
-    }
-
     /// The grants made for this caller's software, the one place an agent's bound becomes
     /// grants, so every host and every receiver narrows an agent alike. An agent a person's own
     /// device handed its session to is held to `kept`, the bound the workspace's list of its
@@ -743,7 +720,6 @@ impl Caller {
             agent_name: self.agent_name.clone(),
             asked: self.asked.clone(),
             own_bound: self.own_bound.clone(),
-            steps_unasked: self.steps_unasked,
             system: self.system,
         }
     }
@@ -770,7 +746,6 @@ pub struct KeptCaller {
     agent_name: Option<String>,
     asked: Option<String>,
     own_bound: Option<Vec<tilo_action_policy::Rule>>,
-    steps_unasked: bool,
     system: bool,
 }
 
@@ -803,7 +778,6 @@ impl KeptCaller {
             agent_name: self.agent_name,
             asked: self.asked,
             own_bound: self.own_bound,
-            steps_unasked: self.steps_unasked,
             system: self.system,
             // A redemption never waits for a person's yes, so no kept call carries one.
             invited: None,

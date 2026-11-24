@@ -24,8 +24,6 @@ async fn the_hosts_own_answers_go_to_whoever_the_device_acts_as() {
     let host = test_host(dir.path(), &key, &owner).await;
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    // Nothing before the host's own answer turns the handed agent away.
-    workspaces.accept_agents_from_other_devices(true);
     let members = || InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(

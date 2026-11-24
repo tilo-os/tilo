@@ -20,7 +20,6 @@ use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, endpoint::presets};
 use serde_json::{Value, json};
-use tilo_action_policy::{Answer, Grantee};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
@@ -988,34 +987,6 @@ impl Forwarded {
         }
     }
 
-    /// Let the person's agents from their other devices in on this computer, or take it back.
-    async fn let_in(&self, answer: Answer) {
-        let grant = tilo_action_policy::device_agents::grant(
-            &self.workspace,
-            &self.host_cert.device_public_key,
-            answer,
-            Grantee::person(hex::encode(self.person)),
-        );
-        tilo_workspace_service::workspaces::fixtures::record_grants(
-            self.host.workspaces(),
-            &self.workspace,
-            &[grant],
-        )
-        .await;
-    }
-
-    /// Take the answer back.
-    async fn take_back(&self) {
-        tilo_workspace_service::workspaces::fixtures::revoke_grants(
-            self.host.workspaces(),
-            &self.workspace,
-            &[tilo_action_policy::device_agents::grant_id(
-                &self.host_cert.device_public_key,
-            )],
-        )
-        .await;
-    }
-
     /// The caller the host last ran an invocation as.
     fn last_invoker(&self) -> Caller {
         self.answers
@@ -1042,7 +1013,7 @@ impl Forwarded {
 tilo_test_env::scenario! {
     fn an_agent_on_the_persons_laptop_works_on_another_device_through_the_forward;
 
-    phase the_forward_lists_the_persons_devices_and_a_call_there_is_refused_until_let_in;
+    phase the_forward_lists_the_persons_devices_and_its_agent_acts_with_no_setup;
     {
         runtime().block_on(async {
             let mut forwarded = Forwarded::start().await;
@@ -1053,80 +1024,14 @@ tilo_test_env::scenario! {
                 text.contains(&hex::encode(forwarded.host_cert.device_public_key)),
                 "{listed}"
             );
-            let refused = forwarded
-                .client
-                .call("tilo_do", &json!({"path": "notes/Notebook#pin"}));
-            let why = refused_by(&refused);
-            assert!(
-                why.contains("Accept agents from my other devices"),
-                "the refusal names the setting: {why}"
-            );
-            assert!(forwarded.answers.invokers.lock().unwrap().is_empty());
-            forwarded.finish().await;
-        });
-    }
-
-    phase let_in_a_step_its_grants_ask_first_is_put_to_the_person_here;
-    {
-        runtime().block_on(async {
-            let mut forwarded = Forwarded::start().await;
-            forwarded.let_in(Answer::Ask).await;
+            // Its agent acts here under the workspace's grants naming it: no device setting
+            // lets it in, and no switch is turned on for it.
             let done = forwarded
                 .client
                 .call("tilo_do", &json!({"path": "notes/Notebook#pin"}));
             assert_eq!(done["result"]["isError"], false, "{done}");
             let caller = forwarded.last_invoker();
             assert!(caller.acting().is_agent(), "it acts as the agent: {caller:?}");
-            assert!(
-                !caller.lets_steps_go_unasked(),
-                "the step its grants ask first is put to the person here"
-            );
-            forwarded.finish().await;
-        });
-    }
-
-    phase letting_them_act_without_asking_answers_the_ask_on_the_device;
-    {
-        runtime().block_on(async {
-            let mut forwarded = Forwarded::start().await;
-            forwarded.let_in(Answer::Ask).await;
-            forwarded.let_in(Answer::Allow).await;
-            let done = forwarded
-                .client
-                .call("tilo_do", &json!({"path": "notes/Notebook#pin"}));
-            assert_eq!(done["result"]["isError"], false, "{done}");
-            assert!(
-                forwarded.last_invoker().lets_steps_go_unasked(),
-                "the person let the step go unasked here"
-            );
-            forwarded.finish().await;
-        });
-    }
-
-    phase taking_the_answer_back_refuses_the_next_call;
-    {
-        runtime().block_on(async {
-            let mut forwarded = Forwarded::start().await;
-            forwarded.let_in(Answer::Ask).await;
-            let done = forwarded
-                .client
-                .call("tilo_do", &json!({"path": "notes/Notebook#pin"}));
-            assert_eq!(done["result"]["isError"], false, "{done}");
-            forwarded.take_back().await;
-            let before = forwarded.answers.invokers.lock().unwrap().len();
-            let refused = forwarded
-                .client
-                .call("tilo_do", &json!({"path": "notes/Notebook#pin"}));
-            let why = refused_by(&refused);
-            assert!(
-                why.contains("Accept agents from my other devices"),
-                "the refusal names the setting: {why}"
-            );
-            assert_eq!(
-                forwarded.answers.invokers.lock().unwrap().len(),
-                before,
-                "nothing it asked since reached the host"
-            );
             forwarded.finish().await;
         });
     }

@@ -380,17 +380,6 @@ impl Workspaces {
             .map(|permissions| (*permissions.policy).clone())
     }
 
-    /// The answer `workspace`'s grants keep for this device about the person's agents from
-    /// their other devices ([`tilo_action_policy::device_agents`]): `None` while nobody turned
-    /// it on here, which refuses them.
-    pub(crate) async fn agents_from_other_devices(
-        &self,
-        workspace: &str,
-    ) -> Option<tilo_action_policy::Answer> {
-        let policy = self.policy_of(workspace).await?;
-        tilo_action_policy::device_agents::answer(&policy, &self.inner.host.cert.device_public_key)
-    }
-
     /// The role `user` holds in `workspace` as one of its members now: `None`
     /// for someone it does not have in it, a person it removed, and one it
     /// banned.
