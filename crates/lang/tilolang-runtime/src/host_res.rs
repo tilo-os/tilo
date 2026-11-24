@@ -1306,6 +1306,7 @@ impl Core {
     }
 
     /// [`Core::resource_import`]: reading, making and changing resources.
+    #[expect(clippy::too_many_lines, reason = "one arm per resource call")]
     fn resource_access(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ResGetI => {
