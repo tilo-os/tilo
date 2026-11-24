@@ -311,7 +311,7 @@ pub(crate) fn start_app_wire(
                 as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
         });
     let fabric = acting_fabric(options, sync);
-    let (hosted, socket, terminals) = match &daemon {
+    let (hosted, socket) = match &daemon {
         // The device's daemon serves this session's apps: each connection is attested here and
         // handed to it, and what only this seat answers is served to it on the shell's link.
         Ok(shell) => {
@@ -351,21 +351,12 @@ pub(crate) fn start_app_wire(
                 std::sync::Arc::clone(&options.launches),
                 shell.clone(),
             )?;
-            let terminals = view.clone().zip(engine.as_ref()).map(|(view, engine)| {
-                crate::workspace_terminals::Terminals {
-                    view,
-                    dispatch: shell.dispatch(),
-                    endpoint: sync.map(|sync| sync.endpoint_handle()),
-                    device: engine.identity().device_cert.device_public_key,
-                    runtime: tilo_rt::app().handle().clone(),
-                }
-            });
-            (None, Some(socket), terminals)
+            (None, Some(socket))
         }
         // A session the host placed in a workspace's VM runs no daemon yet: its window's page is
         // served by the broker it keeps itself ([`app_wire::serve_hosted`]).
         Err(_) => {
-            let (broker, terminals) = app_wire::serve_hosted(
+            let broker = app_wire::serve_hosted(
                 path.clone(),
                 std::sync::Arc::clone(&link),
                 std::sync::Arc::clone(&options.launches),
@@ -400,7 +391,7 @@ pub(crate) fn start_app_wire(
                     fanout: std::sync::Arc::clone(&fanout),
                 },
             )?;
-            (Some(broker), None, terminals)
+            (Some(broker), None)
         }
     };
     // The person's other devices are dialled as this session's siblings, and the session's pass
@@ -430,7 +421,6 @@ pub(crate) fn start_app_wire(
         carets: crate::carets::Carets::new(fanout, options.wake.handle()),
         file_clipboard,
         item_lending,
-        terminals,
     }))
 }
 

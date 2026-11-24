@@ -19649,6 +19649,7 @@ dependencies = [
  "tilo-registry-types",
  "tilo-render-protocol",
  "tilo-resource",
+ "tilo-resource-store",
  "tilo-rt",
  "tilo-runtime-bundle",
  "tilo-runtime-collab",

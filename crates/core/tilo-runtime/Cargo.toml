@@ -122,6 +122,8 @@ tilo-os-search = { path = "../../integrations/os-search" }
 # The native request an app hands a host search result back with.
 tilo-host-search = { path = "../../integrations/tilo-host-search" }
 tilo-peer-state = { path = "../tilo-peer-state" }
+# The record commands Terminal's environments are read and written with.
+tilo-resource-store = { path = "../resource-store" }
 # The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.

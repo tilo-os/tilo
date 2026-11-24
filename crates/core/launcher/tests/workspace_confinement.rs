@@ -282,7 +282,9 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
 /// The device daemon's profiles under a home (the account's own, and one named apart the way a test
 /// or a VM host names it) hold its store, its device's key and, for the one named apart, its native
 /// endpoint. An app with the whole home granted reaches none of them, nor the endpoint of the
-/// account's own daemon in the runtime directory.
+/// account's own daemon in the runtime directory, nor the session's agent socket beside it: the
+/// session trusts a process that is not an app's to ask it for an environment's socket, which holds
+/// only while no sandbox binds the runtime directory.
 #[test]
 fn a_home_grant_never_reaches_the_device_daemons_profiles_or_endpoint() {
     use collab_types::caps::Access;
@@ -312,6 +314,14 @@ fn a_home_grant_never_reaches_the_device_daemons_profiles_or_endpoint() {
         keys.push(key);
         endpoints.push(endpoint);
     }
+    let session = tilo_paths::login::session_dir(Some(home.runtime().into()))
+        .expect("the runtime directory names the session's");
+    std::fs::create_dir_all(&session).expect("session dir");
+    let agent = session.join(tilo_paths::login::AGENT_SOCKET_FILE);
+    let listener = UnixListener::bind(&agent).expect("agent socket");
+    listener.set_nonblocking(true).expect("nonblocking");
+    listeners.push(listener);
+    endpoints.push(agent);
     let path = |p: &std::path::Path| p.display().to_string();
     let data = DataHome::new();
     let grant = [(path(home.home()), Access::Write)];

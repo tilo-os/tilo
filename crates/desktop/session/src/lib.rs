@@ -221,8 +221,6 @@ mod engine_write;
 #[cfg(target_os = "linux")]
 mod env;
 #[cfg(target_os = "linux")]
-mod environment_records;
-#[cfg(target_os = "linux")]
 mod feedback;
 #[cfg(target_os = "linux")]
 mod feeds;
@@ -367,9 +365,9 @@ mod record_content;
 #[cfg(target_os = "linux")]
 pub mod recovery;
 #[cfg(target_os = "linux")]
-mod render;
-#[cfg(target_os = "linux")]
 mod references;
+#[cfg(target_os = "linux")]
+mod render;
 #[cfg(target_os = "linux")]
 mod resource_index;
 #[cfg(target_os = "linux")]
@@ -486,8 +484,6 @@ mod workspace_delete;
 mod workspace_nodes;
 pub mod workspace_people;
 pub mod workspace_settings;
-#[cfg(target_os = "linux")]
-mod workspace_terminals;
 #[cfg(target_os = "linux")]
 mod workspaces;
 // A session a display manager starts where Tilo's service runs as the person: the service starts

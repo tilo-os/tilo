@@ -1376,10 +1376,10 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         // coming: a connection that only asks what this device is (a desktop about to hand its
         // workspaces over, a computer whose person's part is still starting) must be answered
         // without founding a workspace or waiting for one, and goes on asking as it likes.
+        let hand = seated.map(|seated| Arc::clone(&seated.handed));
         let admit = || {
-            Ok::<_, io::Error>(Arc::new(
-                (self.session_factory)()?.with_media(self.media.clone()),
-            ))
+            let made = crate::seats::making_for(hand.clone(), || (self.session_factory)())?;
+            Ok::<_, io::Error>(Arc::new(made.with_media(self.media.clone())))
         };
         if let Err(error) = serve_connection(
             &stream,

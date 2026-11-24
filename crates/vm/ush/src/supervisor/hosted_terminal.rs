@@ -2,10 +2,10 @@
 //! workspace's shells, and this device carries it to the window.
 //!
 //! The window asks for its session as in any workspace. Before this device's own environment
-//! is considered, the session is asked whether a host runs the workspace
-//! ([`runtime_portal::workspace_terminal`]): it holds the device's key and its connection to
-//! that host, so it asks the host to open the session's shell on a terminal and carries the
-//! host's terminal stream here. The window gets a terminal of this device's as it always does;
+//! is considered, the device's daemon is asked whether a host runs the workspace
+//! ([`runtime_portal::workspace_terminal`]): it holds the device's endpoint, so it asks the host
+//! to open the session's shell on a terminal and carries the host's terminal stream here, on a
+//! socket it hands this process. The window gets a terminal of this device's as it always does;
 //! what is typed on it goes to the host's shell, what the shell draws comes back onto it, and
 //! the window's size follows it there.
 //!
@@ -22,7 +22,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use runtime_portal::workspace_terminal::{Answer, Request};
+use runtime_portal::workspace_terminal::{Reply, Request};
+use tilo_device_identity::login::OPEN_TERMINAL;
+use tilo_device_identity::login::daemon::DeviceActions;
 
 use super::session_end::EndReport;
 use super::{ServeRequest, ServeResponse, Served, SessionTransport, reply};
@@ -33,7 +35,7 @@ use crate::store::Store;
 /// How often the window's terminal is looked at for a new size while nothing is typed.
 const TICK: Duration = Duration::from_millis(100);
 
-/// What the session said of the workspace's shell.
+/// What the daemon said of the workspace's shell.
 enum Route {
     /// No host other than this device runs the workspace.
     Local,
@@ -72,7 +74,7 @@ pub(super) fn serve_hosted(
     if !command.is_empty() || store.workspace_id().is_primary() {
         return Ok(None);
     }
-    let Some(socket) = crate::mcp_server::session_api().filter(|socket| socket.exists()) else {
+    let Some(daemon) = crate::images::device_actions() else {
         return Ok(None);
     };
     let request = Request::new(
@@ -82,7 +84,7 @@ pub(super) fn serve_hosted(
         host_session.as_deref(),
     );
     let mut told = Ok(());
-    let route = ask(&socket, &request, || {
+    let route = ask(&daemon, &request, || {
         told = reply(writer, &ServeResponse::Waiting, None);
     });
     told?;
@@ -145,26 +147,38 @@ struct Leased<'a> {
     protocol: u16,
 }
 
-/// Ask the session at `socket` for `request`'s shell and take the stream it carries;
-/// `hosted` runs once the session says a host is asked.
-fn ask(socket: &std::path::Path, request: &Request, hosted: impl FnOnce()) -> Route {
-    match runtime_portal::workspace_terminal::open(socket, request, hosted) {
-        Ok(Answer::Local) => Route::Local,
-        Ok(Answer::Refused(reason)) => Route::Refused(reason),
-        Ok(Answer::Opened {
-            stream, connection, ..
-        }) => take(stream, connection),
-        // No session answers there: nothing of this login reaches a host.
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) =>
-        {
-            Route::Local
-        }
+/// Ask the device's daemon for `request`'s shell and take the stream it hands over; `hosted`
+/// runs once the daemon says a host is asked.
+fn ask(daemon: &DeviceActions, request: &Request, hosted: impl FnOnce()) -> Route {
+    let args = match serde_json::to_value(request) {
+        Ok(args) => args,
+        Err(error) => return Route::Refused(error.to_string()),
+    };
+    let answer = daemon.ask_receiving(OPEN_TERMINAL, args, |native| {
+        runtime_portal::fd_transport::recv_with_fd(native)
+    });
+    let (answer, handed) = match answer {
+        Ok(answered) => answered,
+        // No daemon answers: nothing of this computer reaches a host.
+        Err(refused) if refused.not_running() => return Route::Local,
+        Err(refused) => return Route::Refused(refused.message),
+    };
+    if answer.get("hosted").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Route::Local;
+    }
+    let Some(handed) = handed else {
+        return Route::Refused("the device's daemon handed over no terminal".into());
+    };
+    hosted();
+    let mut stream = UnixStream::from(handed);
+    match Reply::read(&mut stream) {
+        Ok(Reply::Opened {
+            stream: id,
+            session: _,
+        }) => take(id, stream),
+        Ok(Reply::Refused { reason }) => Route::Refused(reason),
         Err(error) => Route::Refused(format!(
-            "this device's session did not reach the workspace's host: {error}"
+            "this device's daemon did not reach the workspace's host: {error}"
         )),
     }
 }

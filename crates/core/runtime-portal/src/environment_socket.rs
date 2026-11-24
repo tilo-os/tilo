@@ -36,10 +36,6 @@ pub struct Request {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
-    /// That the runtime asking holds the device identity, for a session that cannot look at it
-    /// ([`crate::holder_proof`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proof: Option<String>,
 }
 
 impl Request {
@@ -50,15 +46,7 @@ impl Request {
             environment: environment.to_owned(),
             name: name.to_owned(),
             workspace: workspace.map(str::to_owned),
-            proof: None,
         }
-    }
-
-    /// This request with `proof` ([`crate::holder_proof`]).
-    #[must_use]
-    pub fn proved(mut self, proof: Option<String>) -> Self {
-        self.proof = proof;
-        self
     }
 
     #[must_use]
@@ -81,11 +69,7 @@ impl Request {
             && request
                 .workspace
                 .as_deref()
-                .is_none_or(|workspace| named(workspace, 128))
-            && request
-                .proof
-                .as_deref()
-                .is_none_or(crate::holder_proof::well_formed))
+                .is_none_or(|workspace| named(workspace, 128)))
         .then_some(request)
     }
 }
@@ -204,13 +188,6 @@ mod tests {
                 None
             );
             assert_eq!(Request::of(b"{\"jsonrpc\":\"2.0\"}"), None);
-            let proved = Request::new("dev", "Development", None).proved(Some("0f".repeat(32)));
-            assert_eq!(
-                Request::of(&serde_json::to_vec(&proved).unwrap()),
-                Some(proved)
-            );
-            let garbled = Request::new("dev", "Development", None).proved(Some("proof".into()));
-            assert_eq!(Request::of(&serde_json::to_vec(&garbled).unwrap()), None);
         }
 
         phase a_lease_holds_the_socket_the_session_answered_until_it_is_dropped;

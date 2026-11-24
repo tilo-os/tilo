@@ -1431,22 +1431,11 @@ impl Session {
             );
         }
         let mcp_server = server.map(|server| {
-            let mut server = server.serve(
+            server.serve(
                 app_wire
                     .as_ref()
                     .and_then(|app_wire| app_wire.dispatch.clone()),
-            );
-            server.open_terminals_on(
-                app_wire
-                    .as_ref()
-                    .and_then(|app_wire| app_wire.terminals.clone()),
-            );
-            // Terminal's environments, which the device's shell runtime keeps in their
-            // workspace at the device's daemon.
-            server.keep_environment_records(crate::environment_records::EnvironmentRecords::new(
-                daemon.clone(),
-            ));
-            server
+            )
         });
         let automation = crate::automation::Automation::new(
             handle.clone(),

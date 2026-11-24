@@ -614,7 +614,7 @@ pub fn serve_hosted(
     launches: std::sync::Arc<Launches>,
     fabric: Option<crate::platform::fabric::SharedLink>,
     hosted: Hosted,
-) -> std::io::Result<(BrokerHandle, Option<crate::workspace_terminals::Terminals>)> {
+) -> std::io::Result<BrokerHandle> {
     link.admitting(std::sync::Arc::clone(&launches));
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.layout) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
@@ -646,7 +646,7 @@ pub fn serve_hosted(
     launches.watching(hosted.lists.clone());
     // No daemon records the effects of a hosted session's actions.
     let publisher = PeerPublisher::disabled();
-    let (services, terminals) = host_services_with_hosts(
+    let services = host_services(
         link,
         launches,
         fabric,
@@ -663,7 +663,7 @@ pub fn serve_hosted(
         channels,
         fanout,
     )?;
-    Ok((broker, terminals))
+    Ok(broker)
 }
 
 /// The session the broker's thread decides against: the workspaces it shows and
@@ -1075,7 +1075,6 @@ fn agent_session_steps(
 /// What the apps this session runs reach of it: the resources its services
 /// publish, the launcher that started them, and — when this session runs on a
 /// device fabric — the speaker groups Settings asks that fabric for.
-#[cfg(test)]
 fn host_services(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
@@ -1084,22 +1083,6 @@ fn host_services(
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
 ) -> ProcessServices {
-    host_services_with_hosts(link, launches, fabric, hosted, certificates, memberships).0
-}
-
-/// [`host_services`], handing out what a Terminal window's shell in a workspace placed on a
-/// host is opened through as well.
-fn host_services_with_hosts(
-    link: std::sync::Arc<Link>,
-    launches: std::sync::Arc<Launches>,
-    fabric: Option<crate::platform::fabric::SharedLink>,
-    hosted: Hosted,
-    certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
-    memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
-) -> (
-    ProcessServices,
-    Option<crate::workspace_terminals::Terminals>,
-) {
     // The host this session's VM is placed on, where the person's actions on its workspace go.
     let runtime = tilo_rt::app().handle().clone();
     let placed: Option<std::sync::Arc<crate::hosted_workspaces::HostedWorkspaces>> = hosted
@@ -1128,7 +1111,6 @@ fn host_services_with_hosts(
             .map(|engine| engine.identity().device_cert.clone()),
         placed.as_ref(),
     );
-    let terminals = None;
     let decided = broker_services(
         link,
         launches,
@@ -1146,7 +1128,7 @@ fn host_services_with_hosts(
             tracing::debug!(service, why, "this session serves nothing of this service");
         }
     }
-    (decided.into_host_services(), terminals)
+    decided.into_host_services()
 }
 
 /// This session's decision for every service of the broker's [`ProcessServices`]:
@@ -1518,8 +1500,6 @@ pub(crate) struct AppWire {
     /// Files' clipboard, whose copies the loop puts on the desktop's
     /// clipboard: what the person pastes into any other app.
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
-    /// What a Terminal window's shell in a workspace placed on a host is opened through.
-    pub(crate) terminals: Option<crate::workspace_terminals::Terminals>,
     /// What Browser's asks for vault items are answered with, shared with the service that
     /// answers them.
     pub(crate) item_lending: std::sync::Arc<crate::item_lending::ItemLending>,

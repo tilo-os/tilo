@@ -77,10 +77,10 @@ mod daemon_flows;
 mod desktop_page;
 #[path = "device_actions.rs"]
 mod device_actions;
-#[path = "device_key.rs"]
-mod device_key;
 #[path = "device_host.rs"]
 mod device_host;
+#[path = "device_key.rs"]
+mod device_key;
 #[path = "device_writes.rs"]
 mod device_writes;
 #[path = "files_collab.rs"]
@@ -135,6 +135,8 @@ mod search;
 mod shared_workspace;
 #[path = "shell_link.rs"]
 mod shell_link;
+#[path = "shell_runtime.rs"]
+mod shell_runtime;
 #[path = "terminal_streams.rs"]
 mod terminal_streams;
 #[path = "throughput.rs"]

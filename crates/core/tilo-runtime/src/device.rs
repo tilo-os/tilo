@@ -51,6 +51,7 @@ pub(crate) mod home;
 mod host_runs;
 mod hosts;
 mod keep;
+mod key_use;
 pub(crate) mod layout;
 mod live;
 mod live_call;
@@ -86,8 +87,8 @@ pub mod serve;
 pub mod server_settings;
 pub mod services;
 mod shell;
+mod shell_runtime;
 pub mod shortcuts;
-mod key_use;
 pub(crate) mod signing;
 #[cfg(not(windows))]
 mod styles;

@@ -851,7 +851,7 @@ fn an_environment_made_through_its_action_is_there_after_the_runtime_restarts() 
     fixture_images(&images).expect("the guest's fixture images");
     let store = Store::at(dir.path().join("store"));
     store.ensure().unwrap();
-    // The workspace's one store, as the session serves it: it outlives every runtime.
+    // The workspace's one store, as the device's daemon keeps it: it outlives every runtime.
     let workspace = ush::records::testing::Workspace::serve(store.records_root());
     let socket = dir.path().join("ush.sock");
     let start = || {
@@ -900,13 +900,13 @@ fn an_environment_made_through_its_action_is_there_after_the_runtime_restarts() 
         "and no other workspace's"
     );
 
-    // Without the session that reaches the workspace, Terminal is told so, in words.
+    // Without the device's daemon that keeps the workspace, Terminal is told so, in words.
     drop(workspace);
     let refused = ask_line(&launched_in(&socket, Some(W1)), &list);
     assert!(
         matches!(&refused, ServeResponse::Denied { reason }
-            if reason == "environments are kept in your workspace, and the Tilo session that \
-                          reaches it is not running on this device"),
+            if reason == "environments are kept in your workspace, and Tilo's device service that \
+                          keeps it is not running on this computer"),
         "{refused:?}"
     );
 }

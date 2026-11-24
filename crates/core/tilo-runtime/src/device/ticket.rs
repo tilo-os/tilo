@@ -328,6 +328,12 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
             .into_iter()
             .map(|descriptor| row(Some(descriptor))),
     );
+    // What the device's shell runtime asks of it: Terminal's environments and hosted shells.
+    rows.extend(
+        super::shell_runtime::descriptors()
+            .into_iter()
+            .map(|descriptor| row(Some(descriptor))),
+    );
     // The device's own settings: what it keeps before anyone claims it, read through the record
     // API and changed here.
     if keep(super::records::SET) {

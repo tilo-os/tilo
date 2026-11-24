@@ -1,5 +1,5 @@
 //! A Terminal window in a workspace a server hosts gets the host's shell, carried by the
-//! device's session: what is typed reaches the host, what the host draws comes back, the
+//! device's daemon: what is typed reaches the host, what the host draws comes back, the
 //! window's size follows, and how the stream ends is told on the session's lease. A lost
 //! connection comes back to the host's session by its id. Whatever the host says, the device's
 //! own environment is never what opens.
@@ -21,29 +21,47 @@ const RECORD: &str = "uuid:5b0e2a6c-1f7d-4c3e-9a8b-2d4f6e8a0c1e";
 const SESSION: &str = "0123456789abcdef0123456789abcdef";
 const STREAM: &str = "fedcba9876543210fedcba9876543210";
 
-/// The device's session as the supervisor reaches it at `runtime`: each workspace terminal it is
-/// asked for, with the connection it was asked on. The runtime never reads the device key, which
-/// only the device's daemon keeps, so the session can look at it as at any process of the login:
-/// a request carries no proof of the device's identity.
-fn session(runtime: &Path) -> mpsc::Receiver<(Request, UnixStream)> {
-    let dir = runtime.join("tilo-session");
-    std::fs::create_dir_all(&dir).unwrap();
-    let listener = UnixListener::bind(dir.join("agent.sock")).unwrap();
+/// The device's daemon as the supervisor reaches it, at its native endpoint: each hosted
+/// workspace's terminal it is asked for, as the `openTerminal` device action, answered hosted
+/// with one end of a socket pair handed beside the answer. The other end is the daemon's side of
+/// the stream, which the test speaks for the host.
+fn daemon() -> mpsc::Receiver<(Request, UnixStream)> {
+    let native = tilo_device_identity::login::daemon::DeviceActions::here(
+        tilo_device_identity::IdentityPaths::under(
+            tilo_device_identity::persist::collaboration_identity_root(),
+        ),
+    )
+    .unwrap()
+    .native()
+    .to_owned();
+    let listener = UnixListener::bind(native).unwrap();
     let (asked, asks) = mpsc::channel();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let stream = stream.unwrap();
-            let mut line = Vec::new();
+            let mut line = String::new();
             BufReader::new(stream.try_clone().unwrap())
-                .read_until(b'\n', &mut line)
+                .read_line(&mut line)
                 .unwrap();
-            let request = Request::of(line.strip_suffix(b"\n").unwrap())
-                .unwrap_or_else(|| panic!("not a workspace terminal: {line:?}"));
-            assert!(
-                request.proof.is_none(),
-                "the runtime proves nothing it would need the device key for: {request:?}"
+            let call: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(
+                call.pointer("/params/arguments/path")
+                    .and_then(serde_json::Value::as_str),
+                Some("devices#openTerminal"),
+                "{call}"
             );
-            if asked.send((request, stream)).is_err() {
+            let request = Request::of(call.pointer("/params/arguments/args").unwrap())
+                .unwrap_or_else(|| panic!("not a workspace terminal: {call}"));
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            let mut answer = serde_json::json!({"jsonrpc": "2.0", "id": call["id"], "result": {
+                "content": [{"type": "text", "text": ""}],
+                "structuredContent": {"status": "ok", "result": {"hosted": true}},
+            }})
+            .to_string()
+            .into_bytes();
+            answer.push(b'\n');
+            runtime_portal::fd_transport::send_with_fd(&stream, &answer, &theirs).unwrap();
+            if asked.send((request, ours)).is_err() {
                 return;
             }
         }
@@ -64,12 +82,6 @@ fn serving(dir: &Path) -> PathBuf {
     while !socket.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    // SAFETY: PR_GET_DUMPABLE takes no pointers and only reads a flag.
-    let dumpable = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
-    assert_eq!(
-        dumpable, 1,
-        "the runtime reads no device key, so the session can look at it as at any process"
-    );
     socket
 }
 
@@ -163,11 +175,10 @@ struct Host {
 }
 
 impl Host {
-    /// Answer the session's ask on `stream`: the host opened the shell, and the stream presented
+    /// Answer the daemon's ask on `stream`: the host opened the shell, and the stream presented
     /// is the one handed out.
     fn opens(stream: UnixStream) -> Self {
         let mut stream = stream;
-        stream.write_all(&Reply::Hosted.line()).unwrap();
         stream
             .write_all(
                 &Reply::Opened {
@@ -255,7 +266,12 @@ fn a_hosted_workspaces_window_types_into_the_hosts_shell_and_hears_it_end() {
             env.set("XDG_RUNTIME_DIR", &runtime);
             env.set("TILO_IDENTITY_ROOT", dir.path().join("identity"));
             env.set("TILO_USH_IMAGES", dir.path().join("images"));
-            let asks = session(&runtime);
+            // The test's daemon listens in a profile of its own, never the account's.
+            env.set(
+                tilo_paths::machine::DAEMON_PROFILE_VAR,
+                dir.path().join("profile"),
+            );
+            let asks = daemon();
             let socket = serving(dir.path());
 
             let window = Window::connect(&socket);
@@ -268,7 +284,7 @@ fn a_hosted_workspaces_window_types_into_the_hosts_shell_and_hears_it_end() {
                     asked.attach
                 ),
                 (WORKSPACE, RECORD, None),
-                "the session is asked for the window's own record"
+                "the daemon is asked for the window's own record"
             );
             assert_eq!((asked.cols, asked.rows), (80, 24));
             let mut host = Host::opens(stream);
@@ -319,7 +335,12 @@ fn a_lost_stream_is_said_and_the_window_comes_back_to_the_hosts_session() {
             env.set("XDG_RUNTIME_DIR", &runtime);
             env.set("TILO_IDENTITY_ROOT", dir.path().join("identity"));
             env.set("TILO_USH_IMAGES", dir.path().join("images"));
-            let asks = session(&runtime);
+            // The test's daemon listens in a profile of its own, never the account's.
+            env.set(
+                tilo_paths::machine::DAEMON_PROFILE_VAR,
+                dir.path().join("profile"),
+            );
+            let asks = daemon();
             let socket = serving(dir.path());
             let window = Window::connect(&socket);
 
@@ -350,7 +371,6 @@ fn a_lost_stream_is_said_and_the_window_comes_back_to_the_hosts_session() {
             // A host that refuses is the window's answer: never this device's own environment.
             window.open(Some(SESSION));
             let (_, mut stream) = asks.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-            stream.write_all(&Reply::Hosted.line()).unwrap();
             stream
                 .write_all(
                     &Reply::Refused {

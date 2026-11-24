@@ -46,7 +46,6 @@ use tilo_actions::remote::{
 use tilo_compositor::ReadableWatch;
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::session_api::{Consent, Hello};
-use tilo_seal::secret_service::CallerKey;
 use tilo_service::{Answer, AskSender, Asked, Question, Wake};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::{word, words};
@@ -326,12 +325,6 @@ pub(crate) struct Loop {
     environments: environments::Sockets,
     /// The agent key the person started the session with, when they did.
     agent_key: Option<agent_key::AgentKey>,
-    /// What a Terminal window's shell in a workspace placed on a host is opened through
-    /// ([`crate::workspace_terminals`]).
-    hosting: Option<crate::workspace_terminals::Terminals>,
-    /// Where the device's shell runtime reads and writes Terminal's environment records
-    /// ([`crate::environment_records`]).
-    environment_records: Option<crate::environment_records::EnvironmentRecords>,
 }
 
 /// What serving one connection takes, on a thread of its own.
@@ -347,41 +340,9 @@ struct Serving {
     /// The places connections are served in: as many as the server serves at once.
     room: Room,
     environments: environments::Opener,
-    hosting: Option<crate::workspace_terminals::Terminals>,
-    environment_records: Option<crate::environment_records::EnvironmentRecords>,
 }
 
 impl Serving {
-    /// Carry out the shell runtime's command on Terminal's environment records, asked on
-    /// `stream` in `request` by `pid`, which must prove it holds the device identity: no program
-    /// a sandbox holds can.
-    fn environment_records(
-        &self,
-        stream: UnixStream,
-        request: runtime_portal::workspace_documents::Request,
-        pid: u32,
-    ) {
-        let key = tilo_secrets::device_session_key();
-        if !holds_device_identity(key.as_ref(), pid, &request.op, request.proof.as_deref()) {
-            tracing::info!(
-                pid,
-                "MCP server: a process proved no device identity for Terminal's records"
-            );
-            crate::environment_records::refuse(
-                stream,
-                "only Tilo's shell runtime on this device reads and writes Terminal's environments",
-            );
-            return;
-        }
-        match &self.environment_records {
-            Some(records) => records.open(stream, request),
-            None => crate::environment_records::refuse(
-                stream,
-                "this session keeps no workspace's records yet; try again shortly",
-            ),
-        }
-    }
-
     /// Serve one connection of this account, from `from`, on its own thread, in the `place` it
     /// took, which it gives back when it ends: nothing it asks for runs before the person admits
     /// it.
@@ -513,8 +474,6 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         sessions,
         environments,
         agent_key,
-        hosting: None,
-        environment_records: None,
     };
     Ok(Mounted { server })
 }
@@ -537,23 +496,6 @@ impl Shared {
 }
 
 impl Loop {
-    /// Open the shells of Terminal windows in the workspaces placed on a host through `hosting`,
-    /// as the device's shell runtime asks.
-    pub(crate) fn open_terminals_on(
-        &mut self,
-        hosting: Option<crate::workspace_terminals::Terminals>,
-    ) {
-        self.hosting = hosting;
-    }
-
-    /// Read and write Terminal's environment records through `records`, as the device's shell
-    /// runtime asks.
-    pub(crate) fn keep_environment_records(
-        &mut self,
-        records: crate::environment_records::EnvironmentRecords,
-    ) {
-        self.environment_records = Some(records);
-    }
     /// End the loop's wait when a client connects, so it is asked about on the
     /// pass that follows.
     ///
@@ -571,11 +513,6 @@ impl Loop {
     /// person's agent member for the client (`members` finds or adds it), and the client is served
     /// as that agent.
     pub(crate) fn follow(&mut self, handle: &DesktopHandle, person: &str, members: &Members<'_>) {
-        if let Some(records) = &self.environment_records {
-            records.in_front(
-                handle.read(|tree| tree.active_workspace().map(|held| held.id().to_string())),
-            );
-        }
         self.accept();
         self.environments.follow(handle, person);
         if let Some(key) = self.agent_key.as_mut() {
@@ -638,8 +575,6 @@ impl Loop {
             sessions: Arc::clone(&self.sessions),
             room: self.room.clone(),
             environments: self.environments.opener(),
-            hosting: self.hosting.clone(),
-            environment_records: self.environment_records.clone(),
         }
     }
 
@@ -1016,15 +951,18 @@ impl PeerRefusal {
 }
 
 /// Which entrance the peer `pid`, whose facts the kernel gave as `peer`, comes in by: the login's
-/// own program, or a process of this account the kernel hides from the session, which is admitted
-/// to prove it holds the device identity for its environments' sockets and its workspaces'
-/// terminals ([`holds_device_identity`], [`serve_shell_runtime`]). A hidden process is not one
-/// sharing the session's namespaces, so it is [`PeerRefusal::Sandboxed`] to [`peer_decision`]: the
-/// proof is what tells it from a program a sandbox put elsewhere.
+/// own program, or a process of this account the kernel hides from the session
+/// ([`From::Hidden`]), which is served an environment's socket and nothing else.
+///
+/// A hidden process is not one sharing the session's namespaces, so it is
+/// [`PeerRefusal::Sandboxed`] to [`peer_decision`]. What keeps a sandboxed app's program out is
+/// the mount: no sandbox binds this socket's directory, the login's session directory, so no
+/// program in one can open it (`launcher`'s sandbox tests hold that), and whatever opens it is a
+/// program of the account outside every sandbox.
 fn entrance(pid: u32, peer: &Peer) -> Result<From, PeerRefusal> {
     match peer_decision(peer) {
         Ok(()) => Ok(From::Login(pid)),
-        Err(PeerRefusal::Sandboxed) if peer.hidden => Ok(From::ShellRuntime(pid)),
+        Err(PeerRefusal::Sandboxed) if peer.hidden => Ok(From::Hidden(pid)),
         Err(refusal) => Err(refusal),
     }
 }
@@ -1079,25 +1017,6 @@ pub(crate) fn identify(stream: &UnixStream) -> Result<(u32, Peer), PeerRefusal> 
             hidden: shares.is_none(),
         },
     ))
-}
-
-/// Whether `proof` shows that the process `pid` holds the device identity, checked with `key`,
-/// the session's own ([`tilo_secrets::device_session_key`]): made over that process's own
-/// statement ([`runtime_portal::holder_proof::statement`]) for the request `op`.
-///
-/// That is how the login's shell runtime is told from a sandboxed program, although the kernel
-/// shows the session neither its namespaces nor its executable: it reads the device key (its
-/// tool builder signs with it), which makes it non-dumpable, and no sandbox hands a program that
-/// key. A proof is the process's alone: one copied to another process, or kept past its end,
-/// proves nothing there.
-fn holds_device_identity(key: Option<&CallerKey>, pid: u32, op: &str, proof: Option<&str>) -> bool {
-    let (Some(key), Some(proof)) = (key, proof) else {
-        return false;
-    };
-    let Some(statement) = runtime_portal::holder_proof::statement(pid) else {
-        return false;
-    };
-    hex::decode(proof).is_ok_and(|proof| key.verify(&statement, op, b"", &proof))
 }
 
 /// Whether `pid` runs in this process's user and mount namespaces: what tells a program of this
@@ -2401,11 +2320,9 @@ enum From {
     /// A program inside a confined environment of this login, by its pid, at that environment's
     /// own socket ([`environments`]).
     Environment(u32, Arc<environments::Environment>),
-    /// A process of this account the kernel hides from the session, by the pid that opened it:
-    /// the login's shell runtime once it proves it holds the device identity
-    /// ([`holds_device_identity`]), served its environments' sockets and its workspaces'
-    /// terminals and nothing else.
-    ShellRuntime(u32),
+    /// A process of this account the kernel hides from the session, by the pid that opened it
+    /// ([`entrance`]): served an environment's socket and nothing else.
+    Hidden(u32),
 }
 
 /// A client that left before asking needs no answer: the server lets it go
@@ -2438,8 +2355,8 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         Err(error) => return left_before_asking(&error),
     };
     let (pid, entrance) = match from {
-        From::ShellRuntime(pid) => {
-            serve_shell_runtime(stream, &first, pid, serving);
+        From::Hidden(pid) => {
+            serve_hidden(stream, &first, pid, serving);
             return;
         }
         From::Login(pid) => (pid, Origin::Host),
@@ -2487,28 +2404,15 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     );
 }
 
-/// The login's shell runtime, by `pid`, which the kernel hides from the session: it asks, in
-/// `first`, for an environment's socket or a workspace's terminal, proving it holds the device
-/// identity, and is served nothing else.
-fn serve_shell_runtime(stream: UnixStream, first: &[u8], pid: u32, serving: &Serving) {
-    let key = tilo_secrets::device_session_key();
-    let proven = |op: &str, proof: &Option<String>| {
-        holds_device_identity(key.as_ref(), pid, op, proof.as_deref())
-    };
-    if let Some(request) = runtime_portal::environment_socket::Request::of(first)
-        && proven(&request.op, &request.proof)
-    {
+/// A process of this account the kernel hides from the session, by `pid`: it asks, in `first`,
+/// for an environment's socket, and is served nothing else.
+fn serve_hidden(stream: UnixStream, first: &[u8], pid: u32, serving: &Serving) {
+    if let Some(request) = runtime_portal::environment_socket::Request::of(first) {
         environments::open(stream, request, pid, serving.clone());
-    } else if let Some(request) = runtime_portal::workspace_terminal::Request::of(first)
-        && proven(&request.op, &request.proof)
-    {
-        crate::workspace_terminals::open(stream, request, serving.hosting.clone());
-    } else if let Some(request) = runtime_portal::workspace_documents::Request::of(first) {
-        serving.environment_records(stream, request, pid);
     } else {
         tracing::info!(
             pid,
-            "MCP server: a hidden process proved no device identity for an environment's socket or a workspace's terminal"
+            "MCP server: a hidden process asked for something other than an environment's socket"
         );
         refuse(stream, &PeerRefusal::Sandboxed);
     }
