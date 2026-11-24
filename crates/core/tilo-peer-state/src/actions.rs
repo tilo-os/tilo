@@ -1227,22 +1227,22 @@ impl ActionService {
                 })
             }
             // A record read is the provider's own reader's, which decides it for the caller: a
-            // device asks its host for the person's list of workspaces this way.
+            // device asks its host for the person's list of workspaces this way. The reader
+            // answers it whole, as one that hands reads on to another device does.
             RemoteActionMessage::ResourceRead {
                 correlation, read, ..
             } => match dispatcher.resource_reads() {
-                Some(reads) => {
-                    tilo_actions::remote::answer_read(reads, caller, *correlation, read.clone())
-                        .await
-                        .or_else(|| {
-                            tilo_actions::remote::refuse(
-                                request,
-                                ActionCallError::Unavailable {
-                                    reason: "the record's reader dropped the read".into(),
-                                },
-                            )
-                        })
-                }
+                Some(reads) => reads
+                    .answer_read(caller, *correlation, read.clone())
+                    .await
+                    .or_else(|| {
+                        tilo_actions::remote::refuse(
+                            request,
+                            ActionCallError::Unavailable {
+                                reason: "the record's reader dropped the read".into(),
+                            },
+                        )
+                    }),
                 None => Some(RemoteActionMessage::ResourceReading {
                     correlation: *correlation,
                     result: Err(ActionCallError::Unavailable {
