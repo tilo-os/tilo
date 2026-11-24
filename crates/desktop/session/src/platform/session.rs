@@ -1561,6 +1561,7 @@ impl Session {
             &services,
             options.backlights.take(),
             Rc::clone(&commands),
+            settings_store::source(),
         );
         // A brightness key or slider anywhere wakes the loop, so a display
         // dimmed in software follows at once.
@@ -2161,8 +2162,11 @@ impl Session {
         let turned = self.rotation.follow(&self.compositor.outputs());
         // What the displays service publishes follows what the compositor
         // shows: which ones there are, and which one the person works on.
-        self.displays_service
-            .land(working, &self.compositor.outputs());
+        self.displays_service.land(
+            working,
+            &self.compositor.outputs(),
+            self.compositor.display_snapshot(),
+        );
         // A display with neither a backlight nor DDC/CI keeps its brightness
         // control: the compositor darkens what it shows to it.
         self.displays_service.dim(&mut self.compositor)?;

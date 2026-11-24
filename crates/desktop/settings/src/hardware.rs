@@ -19,6 +19,7 @@ pub use profiles::{
     same_scale,
 };
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", rename_all = "snake_case")]
 pub enum OutputTransform {
@@ -58,6 +59,7 @@ pub fn logical_extent(mode: (u32, u32), scale: f64, transform: OutputTransform) 
     }
 }
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct OutputMode {
@@ -357,6 +359,7 @@ pub fn process_start_ticks(pid: u32) -> Option<u64> {
 /// it, then changes it to `AwaitingConfirmation`. Only `ConfirmRequested`
 /// commits durable intent. A timeout or `RevertRequested` restores
 /// `previous`, including after Settings itself crashed.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", rename_all = "snake_case")]
 pub enum DisplayTransactionState {
@@ -377,6 +380,7 @@ tilo_resource::json_model!(DisplayTransactionState);
 
 pub const DISPLAY_TRANSACTION_SECTION: &str = "display_transaction";
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct DisplayTransaction {
@@ -392,6 +396,9 @@ pub struct DisplayTransaction {
 }
 
 crate::read_through_json_value!(DisplayTransaction);
+
+#[cfg(feature = "model")]
+tilo_resource::json_model!(DisplayTransaction);
 
 impl Default for DisplayTransaction {
     fn default() -> Self {
@@ -866,6 +873,7 @@ pub fn lenient_tablets<'de, D: serde::Deserializer<'de>>(
     reason = "four independent per-output toggles serialised by field name; consumers in \
               other crates read and persist them directly"
 )]
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct OutputConfig {
@@ -928,6 +936,7 @@ impl Default for OutputConfig {
 pub const DEFAULT_SDR_BRIGHTNESS_NITS: u16 = 203;
 pub const SDR_BRIGHTNESS_NITS_RANGE: std::ops::RangeInclusive<u16> = 80..=480;
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct DisplayConfig {

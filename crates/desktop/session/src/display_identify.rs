@@ -122,6 +122,7 @@ fn labels_of(snapshot: Option<&DisplayHardwareSnapshot>, outputs: &[OutputInfo])
 mod tests {
     use super::*;
     use settings_store::hardware::{DisplayOutputSnapshot, OutputDescriptor, OutputMode};
+    use tilo_compositor::Transform;
 
     fn hardware(connector: &str, builtin: bool) -> DisplayOutputSnapshot {
         DisplayOutputSnapshot {
@@ -173,6 +174,9 @@ mod tests {
             enabled,
             rect: enabled.then_some((0, 0, 1920, 1080)),
             scale: 1.0,
+            transform: Transform::Normal,
+            primary: false,
+            mode: None,
             description: None,
             colour: tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default(),
         }

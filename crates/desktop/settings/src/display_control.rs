@@ -93,6 +93,15 @@ fn previous(observed: &DisplayHardwareSnapshot, saved: &DisplayConfig) -> Displa
     }
 }
 
+/// The configuration the displays run with now: what the person saved for these monitors, with
+/// each one's current mode, scale, place and whether it is on taken from `observed`. A change
+/// starts from this, so a display's other choices — its turn, HDR, colour profile — are kept.
+#[must_use]
+pub fn current(observed: &DisplayHardwareSnapshot) -> DisplayConfig {
+    let set = DisplaySet::of_descriptors(&descriptors(observed));
+    previous(observed, &DisplayConfig::load_for(&set))
+}
+
 fn apply(
     observed: &DisplayHardwareSnapshot,
     current: Option<&DisplayTransaction>,

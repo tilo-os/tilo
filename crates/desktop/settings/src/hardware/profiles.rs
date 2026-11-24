@@ -30,6 +30,7 @@ impl<'a> From<&'a OutputDescriptor> for AttachedOutput<'a> {
     }
 }
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct DisplaySet {

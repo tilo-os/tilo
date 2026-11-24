@@ -102,6 +102,84 @@ pub enum DisplaysAction {
         #[param("Brightness from 0 to 1")]
         level: f64,
     },
+    /// Move a display on the arrangement
+    /// Its top-left corner on the desktop, in logical pixels; the other displays stay where they
+    /// are.
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "monitor")]
+    ArrangeDisplays {
+        /// The display's connector, as the reading lists it.
+        #[param("The display's connector")]
+        display: String,
+        #[param("Left, in logical pixels")]
+        x: i64,
+        #[param("Top, in logical pixels")]
+        y: i64,
+    },
+    /// Choose a display's resolution and refresh rate
+    /// The change is tried for a moment and kept, or the previous mode comes back.
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "monitor")]
+    SetDisplayMode {
+        #[param("The display's connector")]
+        display: String,
+        #[param("Width in pixels")]
+        width: i64,
+        #[param("Height in pixels")]
+        height: i64,
+        /// In millihertz; left out, the fastest at that size.
+        #[param("Refresh rate in millihertz")]
+        refresh_mhz: Option<i64>,
+    },
+    /// Set a display's scale
+    /// How many physical pixels it draws a logical pixel with.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "monitor")]
+    SetDisplayScale {
+        #[param("The display's connector")]
+        display: String,
+        #[param("Scale, such as 1, 1.25 or 2")]
+        scale: f64,
+    },
+    /// Turn a display's picture
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "rotate")]
+    RotateDisplay {
+        #[param("The display's connector")]
+        display: String,
+        /// One of [`TRANSFORMS`].
+        #[param("Which way: normal, rotate-90, rotate-180 or rotate-270", choices = TRANSFORMS)]
+        transform: String,
+    },
+    /// Make a display the primary one
+    /// The display a shell tells apart from the others, and where it counts from.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "monitor")]
+    MakeDisplayPrimary {
+        #[param("The display's connector")]
+        display: String,
+    },
+    /// Number the screens
+    /// Each display says its number and name for a moment, so a person sees which is which.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "monitor")]
+    IdentifyDisplays,
+    /// Keep the display change being tried
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "check")]
+    KeepDisplayChange {
+        /// The change's id, as the reading of the change names it.
+        #[param("The change's id")]
+        transaction: i64,
+    },
+    /// Put the displays back as they were
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "undo")]
+    RevertDisplayChange {
+        /// The change's id, as the reading of the change names it.
+        #[param("The change's id")]
+        transaction: i64,
+    },
 }
 
 /// The displays as one reads them now: which ones the session shows, how bright each is, and which
@@ -114,6 +192,8 @@ pub enum DisplaysAction {
 pub struct Reading {
     /// Every display the session shows, the built-in one first.
     pub displays: Vec<Display>,
+    /// How the displays are used together now: one of [`NAMES`].
+    pub mode: String,
     /// The connector of the display the person works on, when the shell names one of the displays
     /// shown.
     pub focused: Option<String>,
@@ -154,6 +234,10 @@ impl Reading {
 }
 
 /// One display the session shows.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one screen, read one at a time by a view"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Display {
     /// Its DRM connector (`eDP-1`, `DP-2` ), which its brightness is set by.
@@ -168,7 +252,53 @@ pub struct Display {
     /// The colour it shows: what its sink accepts and the signal it is driven with, so what is
     /// shown on it is prepared for it.
     pub colour: DisplayCapabilities,
+    /// Where its top-left corner stands in the desktop's logical layout. A display left of or
+    /// above the first has a negative place.
+    pub x: i64,
+    pub y: i64,
+    /// How much of the desktop it shows, in logical pixels.
+    pub width: i64,
+    pub height: i64,
+    /// The scale it draws at: `/scale` follows it, so a panel is as crisp as it can be.
+    pub scale: f64,
+    /// Which way its picture is turned: `normal`, `rotate-90`, `rotate-180` or `rotate-270`.
+    pub transform: String,
+    /// Whether it is the display the person made primary.
+    pub primary: bool,
+    /// What it shows now, when its current mode is known.
+    pub mode: Option<Mode>,
+    /// Every mode it offers, as its panel and the signal to it allow.
+    pub modes: Vec<Mode>,
+    /// Whether it can show high dynamic range.
+    pub hdr: bool,
+    /// Whether it can vary its refresh rate.
+    pub vrr: bool,
 }
+
+/// A size and rate a display can be driven at.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct Mode {
+    /// In pixels.
+    pub width: i64,
+    pub height: i64,
+    /// In millihertz, so 59.94 Hz and 60 Hz stay distinct.
+    pub refresh_mhz: i64,
+}
+
+impl Mode {
+    /// How a person reads it: `1920 × 1080 at 60 Hz`.
+    #[must_use]
+    pub fn label(self) -> String {
+        let hz = format!("{:.2}", self.refresh_mhz as f64 / 1000.0);
+        let hz = hz.trim_end_matches('0').trim_end_matches('.');
+        format!("{} × {} at {hz} Hz", self.width, self.height)
+    }
+}
+
+/// Which way a display's picture is turned, as `rotate` takes it.
+pub const TRANSFORMS: [&str; 4] = ["normal", "rotate-90", "rotate-180", "rotate-270"];
 
 /// The displays as a view of another language reads and changes them: the reading ([`Reading`]) as
 /// their fields and [`DisplaysAction`] as their verbs.

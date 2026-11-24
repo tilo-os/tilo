@@ -6,9 +6,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use settings_store::hardware::{
-    DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
-};
+use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
 use settings_store::person_displays::Placements;
 use ui::tilo_resource;
 
@@ -193,7 +191,9 @@ impl AutomaticDisplayPrefs {
     }
 }
 
-/// The display change being tried on this device, as the session writes it:
+/// The display change being tried on this device, as the session writes it. What a change is
+/// tried *with* is a display's own action (`session:displays`), so this is read-only: the change
+/// being tried, how it stands, and when it goes back unless the person keeps it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(default)]
 pub struct PendingDisplayChange {
@@ -204,15 +204,6 @@ pub struct PendingDisplayChange {
     /// refused.
     #[model(readonly)]
     pub state: DisplayTransactionState,
-    /// The monitors the change was arranged for.
-    #[model(readonly)]
-    pub set: DisplaySet,
-    /// The configuration before it, which reverting restores.
-    #[model(readonly)]
-    pub previous: DisplayConfig,
-    /// The configuration being tried.
-    #[model(readonly)]
-    pub candidate: DisplayConfig,
     /// When it reverts unless kept, in Unix milliseconds.
     #[model(readonly)]
     pub deadline_unix_ms: Option<u64>,
@@ -228,16 +219,14 @@ impl settings_model::SettingsSchema for PendingDisplayChange {
 
 #[ui::tilo_resource::resource(kind = "settings.display-change")]
 impl PendingDisplayChange {
-    /// Ask for a display change to be tried, whole: the compositor reads it and answers here. A
-    /// process outside the session (a device step laying out a machine's monitors) stages its
-    /// change by this, as the session's own Settings writes it.
+    /// Stage a display change prepared outside the session, whole: a device step laying out a
+    /// machine's monitors builds the transaction as the session's own Settings does. A view tries
+    /// a change through the display's own actions instead.
     #[action(id = "request")]
     pub fn request(
         &mut self,
-        #[param("The change asked for, as a display transaction")] change: serde_json::Value,
+        #[param("The change asked for, as a display transaction")] change: DisplayTransaction,
     ) -> Result<(), tilo_resource::Refusal> {
-        let change: DisplayTransaction = serde_json::from_value(change)
-            .map_err(|_| tilo_resource::Refusal::new("the display change is malformed"))?;
         if change.id == 0 || change.state != DisplayTransactionState::Requested {
             return Err(tilo_resource::Refusal::new(
                 "only a change asked for, with its id, is staged",
@@ -246,9 +235,6 @@ impl PendingDisplayChange {
         *self = Self {
             id: change.id,
             state: change.state,
-            set: change.set,
-            previous: change.previous,
-            candidate: change.candidate,
             deadline_unix_ms: change.deadline_unix_ms,
             message: change.message,
         };
@@ -263,11 +249,9 @@ impl PendingDisplayChange {
         (self.id != 0).then(|| DisplayTransaction {
             id: self.id,
             state: self.state,
-            set: self.set.clone(),
-            previous: self.previous.clone(),
-            candidate: self.candidate.clone(),
             deadline_unix_ms: self.deadline_unix_ms,
             message: self.message.clone(),
+            ..DisplayTransaction::default()
         })
     }
 }

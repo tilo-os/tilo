@@ -132,6 +132,7 @@ impl State {
         &self,
         colour: impl Fn(&Output) -> tilo_color_pipeline::hdr_display::DisplayCapabilities,
     ) -> Vec<crate::output::OutputInfo> {
+        let primary = self.primary_monitor();
         self.space
             .outputs()
             .map(|output| crate::output::OutputInfo {
@@ -144,23 +145,31 @@ impl State {
                     .output_geometry(output)
                     .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)),
                 scale: output.current_scale().fractional_scale(),
+                transform: output.current_transform(),
+                primary: primary.as_deref() == Some(crate::output::monitor_of(output).0.as_str()),
+                mode: output
+                    .current_mode()
+                    .map(|mode| (mode.size.w, mode.size.h, mode.refresh)),
                 description: Some(output.description()),
                 colour: colour(output),
             })
-            .chain(
-                self.disabled_outputs
-                    .iter()
-                    .map(|output| crate::output::OutputInfo {
-                        name: output.name(),
-                        monitor: crate::output::monitor_of(output).0,
-                        label: crate::output::monitor_of(output).1,
-                        enabled: false,
-                        rect: None,
-                        scale: output.current_scale().fractional_scale(),
-                        description: Some(output.description()),
-                        colour: colour(output),
-                    }),
-            )
+            .chain(self.disabled_outputs.iter().map(|output| {
+                crate::output::OutputInfo {
+                    name: output.name(),
+                    monitor: crate::output::monitor_of(output).0,
+                    label: crate::output::monitor_of(output).1,
+                    enabled: false,
+                    rect: None,
+                    scale: output.current_scale().fractional_scale(),
+                    transform: output.current_transform(),
+                    primary: false,
+                    mode: output
+                        .current_mode()
+                        .map(|mode| (mode.size.w, mode.size.h, mode.refresh)),
+                    description: Some(output.description()),
+                    colour: colour(output),
+                }
+            }))
             .collect()
     }
 

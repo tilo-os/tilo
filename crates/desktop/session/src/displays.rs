@@ -20,6 +20,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use os_actions::brightness::{BrightnessService, MonitorLevel, SessionDisplays};
 use os_actions::{BrightnessKind, software_luminance, step_together};
@@ -27,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
-use tilo_compositor::{Compositor, OutputChange, OutputInfo};
+use tilo_compositor::{Compositor, OutputChange, OutputInfo, Transform};
 
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
@@ -36,12 +37,13 @@ use crate::controls::SessionCommand;
 use crate::i18n::t;
 
 /// A way of using the displays together, or the next one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DisplayMode {
     /// The one after the current, in [`MODES`] order.
     Next,
     /// Every display on, side by side: one desktop across them.
+    #[default]
     Extend,
     /// Every display on, each showing the same.
     Mirror,
@@ -59,7 +61,9 @@ pub const MODES: [DisplayMode; 4] = [
     DisplayMode::External,
 ];
 
-pub use tilo_device_surfaces::displays::{Display, DisplaysAction, NAMES, Reading, Screen};
+pub use tilo_device_surfaces::displays::{
+    Display, DisplaysAction, Mode, NAMES, Reading, Screen, TRANSFORMS,
+};
 
 impl DisplayMode {
     /// The mode named `name` ([`NAMES`]).
@@ -69,6 +73,16 @@ impl DisplayMode {
             .iter()
             .zip(MODES)
             .find_map(|(known, mode)| (*known == name).then_some(mode))
+    }
+
+    /// The name a view reads it by ([`NAMES`]).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        NAMES
+            .iter()
+            .zip(MODES)
+            .find_map(|(known, mode)| (mode == self).then_some(*known))
+            .unwrap_or(NAMES[0])
     }
 }
 
@@ -99,6 +113,31 @@ pub(crate) fn display_name(output: &OutputInfo) -> String {
     } else {
         output.label.clone()
     }
+}
+
+/// Which way a display's picture is turned, as the reading names it.
+fn transform_name(transform: Transform) -> &'static str {
+    match transform {
+        Transform::Normal => "normal",
+        Transform::_90 => "rotate-90",
+        Transform::_180 => "rotate-180",
+        Transform::_270 => "rotate-270",
+        Transform::Flipped => "flipped",
+        Transform::Flipped90 => "flipped-90",
+        Transform::Flipped180 => "flipped-180",
+        Transform::Flipped270 => "flipped-270",
+    }
+}
+
+/// The turn `name` (one of [`TRANSFORMS`]) stands for, else `None`.
+fn transform_of(name: &str) -> Option<settings_store::hardware::OutputTransform> {
+    Some(match name {
+        "normal" => settings_store::hardware::OutputTransform::Normal,
+        "rotate-90" => settings_store::hardware::OutputTransform::Rotate90,
+        "rotate-180" => settings_store::hardware::OutputTransform::Rotate180,
+        "rotate-270" => settings_store::hardware::OutputTransform::Rotate270,
+        _ => return None,
+    })
 }
 
 /// A display the compositor's outputs put somewhere: its connector, whether it is on, where it
@@ -352,6 +391,11 @@ struct Inner {
     /// What the screen says of its edges, and whether that moved since the last pass.
     edges: tilo_session_core::shell::ScreenEdges,
     edges_moved: bool,
+    /// How the outputs put the displays together on the last pass.
+    arrangement: DisplayMode,
+    /// Where this person's display settings are kept, which a change tried from a view is
+    /// written to; `None` in a session with no settings document.
+    source: Option<Arc<dyn settings_store::SettingsSource>>,
 }
 
 /// One display the compositor shows.
@@ -361,6 +405,15 @@ struct Shown {
     monitor: String,
     name: String,
     colour: DisplayCapabilities,
+    /// Where it stands, logical `(x, y, w, h)`.
+    rect: (i32, i32, i32, i32),
+    scale: f64,
+    transform: String,
+    primary: bool,
+    mode: Option<Mode>,
+    modes: Vec<Mode>,
+    hdr: bool,
+    vrr: bool,
 }
 
 impl Inner {
@@ -383,9 +436,21 @@ impl Inner {
                         backlight: level
                             .is_some_and(|level| level.kind != BrightnessKind::Software),
                         colour: shown.colour,
+                        x: i64::from(shown.rect.0),
+                        y: i64::from(shown.rect.1),
+                        width: i64::from(shown.rect.2),
+                        height: i64::from(shown.rect.3),
+                        scale: shown.scale,
+                        transform: shown.transform.clone(),
+                        primary: shown.primary,
+                        mode: shown.mode,
+                        modes: shown.modes.clone(),
+                        hdr: shown.hdr,
+                        vrr: shown.vrr,
                     }
                 })
                 .collect(),
+            mode: self.arrangement.name().to_owned(),
             focused: self.focused.clone(),
             level: None,
             bar_reached: self.edges.bar_reached,
@@ -413,16 +478,19 @@ impl Inner {
 }
 
 impl Displays {
-    /// The displays over `backlights` , whose modes land as `commands` the loop carries out.
+    /// The displays over `backlights` , whose modes land as `commands` the loop carries out, as
+    /// `source` keeps the person's settings.
     #[must_use]
     pub fn new(
         backlights: Option<Box<dyn Backlights>>,
         commands: Rc<RefCell<Vec<SessionCommand>>>,
+        source: Option<Arc<dyn settings_store::SettingsSource>>,
     ) -> Self {
         Self {
             inner: Rc::new(RefCell::new(Inner {
                 backlights,
                 commands,
+                source,
                 ..Inner::default()
             })),
         }
@@ -434,26 +502,73 @@ impl Displays {
         services: &Rc<RefCell<tilo_service::Services>>,
         backlights: Option<Box<dyn Backlights>>,
         commands: Rc<RefCell<Vec<SessionCommand>>>,
+        source: Option<Arc<dyn settings_store::SettingsSource>>,
     ) -> Self {
-        let displays = Self::new(backlights, commands);
+        let displays = Self::new(backlights, commands, source);
         services.borrow_mut().add(Box::new(displays.clone()));
         displays
     }
 
-    /// The compositor shows `outputs` now, and the person works on the one named `focused` (its
-    /// connector): take them in, and tell the brightness controls which displays are shown, so a
-    /// monitor nothing is shown on has no control.
-    pub fn land(&self, focused: Option<String>, outputs: &[OutputInfo]) {
+    /// The compositor shows `outputs` now, the person works on the one named `focused` (its
+    /// connector), and `snapshot` is what it says of each one's modes: take them in, and tell the
+    /// brightness controls which displays are shown, so a monitor nothing is shown on has no
+    /// control.
+    pub fn land(
+        &self,
+        focused: Option<String>,
+        outputs: &[OutputInfo],
+        snapshot: Option<&settings_store::hardware::DisplayHardwareSnapshot>,
+    ) {
         let shown: Vec<Shown> = outputs
             .iter()
             .filter(|output| output.enabled)
-            .map(|output| Shown {
-                connector: output.name.clone(),
-                monitor: output.monitor.clone(),
-                name: display_name(output),
-                colour: output.colour,
+            .map(|output| {
+                let observed = snapshot.and_then(|snapshot| {
+                    snapshot
+                        .outputs
+                        .iter()
+                        .find(|observed| observed.descriptor.connector == output.name)
+                });
+                Shown {
+                    connector: output.name.clone(),
+                    monitor: output.monitor.clone(),
+                    name: display_name(output),
+                    colour: output.colour,
+                    rect: output.rect.unwrap_or_default(),
+                    scale: output.scale,
+                    transform: transform_name(output.transform).to_owned(),
+                    primary: output.primary,
+                    mode: observed
+                        .map(|observed| Mode {
+                            width: i64::from(observed.current_mode.width),
+                            height: i64::from(observed.current_mode.height),
+                            refresh_mhz: i64::from(observed.current_mode.refresh_mhz),
+                        })
+                        .or_else(|| {
+                            output.mode.map(|(width, height, refresh_mhz)| Mode {
+                                width: i64::from(width),
+                                height: i64::from(height),
+                                refresh_mhz: i64::from(refresh_mhz),
+                            })
+                        }),
+                    modes: observed.map_or_else(Vec::new, |observed| {
+                        observed
+                            .descriptor
+                            .modes
+                            .iter()
+                            .map(|mode| Mode {
+                                width: i64::from(mode.width),
+                                height: i64::from(mode.height),
+                                refresh_mhz: i64::from(mode.refresh_mhz),
+                            })
+                            .collect()
+                    }),
+                    hdr: observed.is_some_and(|observed| observed.descriptor.hdr),
+                    vrr: observed.is_some_and(|observed| observed.descriptor.vrr),
+                }
             })
             .collect();
+        let arrangement = current(outputs);
         let connectors: Vec<String> = shown.iter().map(|shown| shown.connector.clone()).collect();
         let mut inner = self.inner.borrow_mut();
         if inner.told != connectors {
@@ -466,6 +581,7 @@ impl Displays {
         }
         inner.shown = shown;
         inner.focused = focused;
+        inner.arrangement = arrangement;
     }
 
     /// Wake the session's loop whenever the brightness controls report a change, so a level set
@@ -641,6 +757,107 @@ fn level_of(level: f64) -> Result<f32, ApiError> {
 }
 
 impl Displays {
+    /// The displays the compositor shows now, the monitors they are arranged for, and the
+    /// configuration they run with: the starting point of a change a view asks for.
+    fn running(
+        &self,
+    ) -> Result<
+        (
+            settings_store::hardware::DisplayHardwareSnapshot,
+            settings_store::hardware::DisplaySet,
+            settings_store::hardware::DisplayConfig,
+        ),
+        ApiError,
+    > {
+        let observed =
+            settings_store::hardware::DisplayHardwareSnapshot::load().ok_or_else(|| {
+                ApiError::Unavailable {
+                    code: "displays-unknown".into(),
+                    reason: "The connected displays are not known yet.".into(),
+                }
+            })?;
+        let descriptors: Vec<settings_store::hardware::OutputDescriptor> = observed
+            .outputs
+            .iter()
+            .map(|output| output.descriptor.clone())
+            .collect();
+        if descriptors.is_empty() {
+            return Err(ApiError::Unavailable {
+                code: "no-displays".into(),
+                reason: "No display is connected.".into(),
+            });
+        }
+        let set = settings_store::hardware::DisplaySet::of_descriptors(&descriptors);
+        let config = settings_store::display_control::current(&observed);
+        Ok((observed, set, config))
+    }
+
+    /// Where this person's display settings are written.
+    fn settings_source(&self) -> Result<Arc<dyn settings_store::SettingsSource>, ApiError> {
+        self.inner
+            .borrow()
+            .source
+            .clone()
+            .ok_or_else(|| ApiError::Unavailable {
+                code: "no-settings".into(),
+                reason: "This session keeps no display settings.".into(),
+            })
+    }
+
+    /// Try the change `edit` makes: the desktop applies it, and the person keeps it or the
+    /// displays go back as they were.
+    fn stage(
+        &self,
+        edit: impl FnOnce(
+            &settings_store::hardware::DisplayHardwareSnapshot,
+            &mut settings_store::hardware::DisplayConfig,
+        ) -> Result<(), ApiError>,
+    ) -> Result<(), ApiError> {
+        let (observed, set, mut candidate) = self.running()?;
+        edit(&observed, &mut candidate)?;
+        let source = self.settings_source()?;
+        settings_store::display_control::execute(
+            source.as_ref(),
+            observed,
+            settings_store::display_control::DisplayCommand::Apply {
+                observed_set: set,
+                candidate,
+            },
+        )
+        .map(drop)
+        .map_err(ApiError::Failed)
+    }
+
+    /// Say which screen is which, on the screens themselves.
+    fn identify(&self) -> Result<(), ApiError> {
+        let (observed, _, _) = self.running()?;
+        let source = self.settings_source()?;
+        settings_store::display_control::execute(
+            source.as_ref(),
+            observed,
+            settings_store::display_control::DisplayCommand::Identify,
+        )
+        .map(drop)
+        .map_err(ApiError::Failed)
+    }
+
+    /// Answer for the change `transaction` being tried: keep it, or put the previous display
+    /// configuration back.
+    fn decide(&self, transaction: i64, keep: bool) -> Result<(), ApiError> {
+        let transaction = u64::try_from(transaction)
+            .map_err(|_| ApiError::InvalidArguments("the change's id is not a number".into()))?;
+        let (observed, _, _) = self.running()?;
+        let source = self.settings_source()?;
+        let command = if keep {
+            settings_store::display_control::DisplayCommand::Keep { transaction }
+        } else {
+            settings_store::display_control::DisplayCommand::Revert { transaction }
+        };
+        settings_store::display_control::execute(source.as_ref(), observed, command)
+            .map(drop)
+            .map_err(ApiError::Failed)
+    }
+
     /// What the screen says of its edges now: the pointer at an edge, and a window where
     /// a bar or a dock there rides. What a bar or dock that shows only sometimes follows.
     /// Whether they moved.
@@ -719,6 +936,103 @@ impl Service for Displays {
                 let level = level_of(level)?;
                 self.set(&display, level)?;
             }
+            DisplaysAction::ArrangeDisplays { display, x, y } => {
+                self.stage(|_, config| {
+                    let output = config.outputs.get_mut(&display).ok_or_else(|| {
+                        ApiError::InvalidArguments(format!("`{display}` is not a display"))
+                    })?;
+                    output.x = i32::try_from(x).map_err(|_| {
+                        ApiError::InvalidArguments("the place is out of range".into())
+                    })?;
+                    output.y = i32::try_from(y).map_err(|_| {
+                        ApiError::InvalidArguments("the place is out of range".into())
+                    })?;
+                    Ok(())
+                })?;
+            }
+            DisplaysAction::SetDisplayMode {
+                display,
+                width,
+                height,
+                refresh_mhz,
+            } => {
+                self.stage(|observed, config| {
+                    let offered = observed
+                        .outputs
+                        .iter()
+                        .find(|output| output.descriptor.connector == display)
+                        .ok_or_else(|| {
+                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
+                        })?;
+                    let matches = |mode: &&settings_store::hardware::OutputMode| {
+                        i64::from(mode.width) == width
+                            && i64::from(mode.height) == height
+                            && refresh_mhz
+                                .is_none_or(|refresh| i64::from(mode.refresh_mhz) == refresh)
+                    };
+                    let mode = offered
+                        .descriptor
+                        .modes
+                        .iter()
+                        .filter(matches)
+                        .max_by_key(|mode| mode.refresh_mhz)
+                        .copied()
+                        .ok_or_else(|| {
+                            ApiError::InvalidArguments(format!(
+                                "{width} × {height} is not a mode of `{display}`"
+                            ))
+                        })?;
+                    let output = config.outputs.get_mut(&display).ok_or_else(|| {
+                        ApiError::InvalidArguments(format!("`{display}` is not a display"))
+                    })?;
+                    output.mode = Some(mode);
+                    Ok(())
+                })?;
+            }
+            DisplaysAction::SetDisplayScale { display, scale } => {
+                self.stage(|_, config| {
+                    let output = config.outputs.get_mut(&display).ok_or_else(|| {
+                        ApiError::InvalidArguments(format!("`{display}` is not a display"))
+                    })?;
+                    if !(scale.is_finite() && scale > 0.0) {
+                        return Err(ApiError::InvalidArguments(
+                            "the scale is not a positive number".into(),
+                        ));
+                    }
+                    output.scale = scale;
+                    Ok(())
+                })?;
+            }
+            DisplaysAction::RotateDisplay { display, transform } => {
+                let transform = transform_of(&transform).ok_or_else(|| {
+                    ApiError::InvalidArguments(format!("`{transform}` is not a turn"))
+                })?;
+                self.stage(|_, config| {
+                    let output = config.outputs.get_mut(&display).ok_or_else(|| {
+                        ApiError::InvalidArguments(format!("`{display}` is not a display"))
+                    })?;
+                    output.transform = transform;
+                    Ok(())
+                })?;
+            }
+            DisplaysAction::MakeDisplayPrimary { display } => {
+                self.stage(|_, config| {
+                    if !config.outputs.contains_key(&display) {
+                        return Err(ApiError::InvalidArguments(format!(
+                            "`{display}` is not a display"
+                        )));
+                    }
+                    for (connector, output) in &mut config.outputs {
+                        output.primary = *connector == display;
+                    }
+                    Ok(())
+                })?;
+            }
+            DisplaysAction::IdentifyDisplays => self.identify()?,
+            DisplaysAction::KeepDisplayChange { transaction } => self.decide(transaction, true)?,
+            DisplaysAction::RevertDisplayChange { transaction } => {
+                self.decide(transaction, false)?;
+            }
         }
         Ok(Started::Done(ActionOutput::default()))
     }
@@ -743,6 +1057,9 @@ mod tests {
             enabled: true,
             rect: Some((x, 0, 1280, 800)),
             scale: 1.0,
+            transform: Transform::Normal,
+            primary: false,
+            mode: None,
             description: None,
             colour: DisplayCapabilities::sdr_default(),
         }
@@ -881,15 +1198,30 @@ mod tests {
         let displays = Displays::new(
             backlights.map(|dials| Box::new(dials) as Box<dyn Backlights>),
             Rc::new(RefCell::new(Vec::new())),
+            None,
         );
         let mut inner = displays.inner.borrow_mut();
         inner.shown = shown
             .iter()
-            .map(|(connector, name)| Shown {
+            .enumerate()
+            .map(|(index, (connector, name))| Shown {
                 connector: (*connector).into(),
                 monitor: (*connector).into(),
                 name: (*name).into(),
                 colour: DisplayCapabilities::sdr_default(),
+                rect: (
+                    i32::try_from(index).unwrap_or_default() * 1280,
+                    0,
+                    1280,
+                    800,
+                ),
+                scale: 1.0,
+                transform: "normal".into(),
+                primary: index == 0,
+                mode: None,
+                modes: Vec::new(),
+                hdr: false,
+                vrr: false,
             })
             .collect();
         inner.told = shown
@@ -950,6 +1282,9 @@ mod tests {
                 enabled: true,
                 rect: Some((0, 0, 1280, 800)),
                 scale: 1.0,
+                transform: Transform::Normal,
+                primary: false,
+                mode: None,
                 description: None,
                 colour: DisplayCapabilities::sdr_default(),
             };

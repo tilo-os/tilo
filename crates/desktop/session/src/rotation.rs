@@ -136,6 +136,9 @@ mod tests {
             enabled: true,
             rect: Some((0, 0, 800, 600)),
             scale: 1.0,
+            transform: Transform::Normal,
+            primary: false,
+            mode: None,
             description: None,
             colour: DisplayCapabilities::sdr_default(),
         }

@@ -49,6 +49,12 @@ pub struct OutputInfo {
     pub rect: Option<(i32, i32, i32, i32)>,
     /// Physical pixels per logical pixel it draws at.
     pub scale: f64,
+    /// Which way its picture is turned.
+    pub transform: Transform,
+    /// Whether the person made it the display their shell counts from.
+    pub primary: bool,
+    /// The mode it shows now, as width, height and millihertz, while it is on.
+    pub mode: Option<(i32, i32, i32)>,
     /// What the panel calls itself (`Tilo 27"`), when it says.
     pub description: Option<String>,
     /// The colour it shows: what its sink accepts and what it is being driven with, from its EDID
