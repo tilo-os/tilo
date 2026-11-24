@@ -977,7 +977,6 @@ impl PackageMeta {
 
     /// The ids of the package's root types people share, the device roots left out: what a
     /// window of the app opens.
-    #[must_use]
     pub fn shared_roots(&self) -> impl Iterator<Item = &String> {
         self.roots.iter().filter(|ty| !self.is_device_root(ty))
     }

@@ -559,7 +559,7 @@ fn build_meta(
     if env.app != crate::stdlib::APP {
         meta.uses.push(crate::stdlib::APP.to_string());
     }
-    meta.device_roots = env.device_roots.iter().map(|key| type_id(key)).collect();
+    meta.device_roots = env.device_roots.iter().map(type_id).collect();
     meta.named_roots = env
         .named_roots
         .iter()
