@@ -870,6 +870,7 @@ impl Platform for HostPlatform {
         if app == crate::containers_engine::APP {
             return crate::containers_engine::call(self, app, op, input);
         }
+        crate::files_engine::register();
         tilolang_tilo::engine::answer(app, op, input)
     }
 
@@ -895,6 +896,7 @@ impl Platform for HostPlatform {
         if app == crate::containers_engine::APP {
             return crate::containers_engine::start(self, app, op, input);
         }
+        crate::files_engine::register();
         tilolang_tilo::engine::begin(app, op, input)
     }
 
@@ -1021,8 +1023,10 @@ impl Platform for HostPlatform {
                 return Ok(status);
             }
         }
+        crate::files_engine::register();
         crate::containers_engine::status(job).or_else(|unknown| {
             tilolang_tilo::engine::progress(job).map_err(|_| unknown)
+        })
         })
     }
 
@@ -1045,6 +1049,7 @@ impl Platform for HostPlatform {
                 return true;
             }
         }
+        crate::files_engine::register();
         // A stream's last frame goes with its job: the window shows the session closed, not a
         // frozen screen.
         ui_core::live_pictures::forget(job);

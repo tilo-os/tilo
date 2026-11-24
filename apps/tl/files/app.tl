@@ -91,6 +91,55 @@ type Destination (title: name) {
     path: Text = ""
 }
 
+/// A copy or a move the device carries out as its own work, so a large one says how far it has
+/// got and can be stopped: what it is doing, in the person's words, and how it stands.
+type Transfer (title: label) {
+    /// The device's job; empty once it ended.
+    job: Text = ""
+    /// What it does: "Copying 3 items to “Pictures”".
+    label: Text = ""
+    /// Bytes written, of how many.
+    done: Int = 0
+    total: Int = 0
+    /// The entry it is on.
+    current: Text = ""
+    /// Why it stopped short; empty while it runs or once it finished.
+    failed: Text = ""
+}
+
+/// What a file's header says it is: a picture's size, how long a recording plays, how many pages
+/// a document has, and its codec and container; `0` or empty where it says nothing.
+type FileFacts {
+    width: Int = 0
+    height: Int = 0
+    /// How long it plays, in milliseconds.
+    duration: Int = 0
+    pages: Int = 0
+    codec: Text = ""
+    container: Text = ""
+}
+
+/// What a transfer asks of the device: the entries at `paths` put into `folder`.
+type TransferAsk {
+    paths: List<Text>
+    folder: Text
+    moving: Bool
+}
+
+/// The job the device started.
+type TransferStarted {
+    job: Text
+}
+
+/// How a transfer stands, as the device reports it.
+type TransferState {
+    state: Text
+    done: Int
+    total: Int
+    current: Text
+    error: Text
+}
+
 /// One person's window on this device's files: where they are, how they look, what they marked,
 /// what they carry, and the folders this window has read. It is the reader's own, so two people
 /// at one workspace never turn each other's pages.
@@ -119,6 +168,8 @@ type Session (readers: author) {
     preview: Option<File> = .none
     previewed: Text = ""
     words: Text = ""
+    /// What the chosen file's own header says it is, as the device read it.
+    facts: Option<FileFacts> = .none
     /// The entries the person chose, by their paths, the entry the inspector shows last among
     /// them; empty while nothing is chosen.
     chosen: List<Text>
@@ -131,6 +182,8 @@ type Session (readers: author) {
     openers: List<host.DocumentApp>
     /// The last thing that went wrong, for the window to say; empty while nothing did.
     notice: Text = ""
+    /// The copies and moves under way from this window, and the ones that stopped short.
+    transfers: Collection<Transfer>
 }
 
 /// The workspace's Files: one window per person, the places they marked, and what they opened.
@@ -414,35 +467,90 @@ action copy_into(f: Files, folder: Text) uses files, time {
     put_into(f, acted_on(f), folder, false)
 }
 
-/// Puts the entries at `paths` into `folder`, moving them or copying them: a moved entry whose
-/// name the folder holds is renamed before it moves and a copied one is made under a free name, so
-/// nothing is replaced.
+/// Puts the entries at `paths` into `folder`, moving them or copying them, as the device's own work:
+/// the window shows how far it has got and can stop it. What arrives under a name the folder
+/// already holds lands as “name (2)”, so nothing is replaced.
 action put_into(f: Files, paths: List<Text>, folder: Text, moving: Bool) uses files, time {
     require not paths.is_empty() "Choose a file first"
     require folder_place(folder) "Choose a folder to put them in"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
-    for path in paths {
-        let name = free_name(f, folder, name_of(path))
-        let source = if moving and name != name_of(path) {
-            match File.rename(path, name) {
-                .ok(moved) => moved.path,
-                .err(why) => {
-                    s.notice = "Couldn’t rename “{name_of(path)}”: {why}"
-                    path
-                }
-            }
-        } else { path }
-        let outcome = if moving {
-            File.move(source, folder)
-        } else { File.copy_to(path, join(folder, name)) }
-        match outcome {
-            .ok(_) => {}
+    let what = if paths.len() == 1 {
+        "“{name_of(paths.first() ?? "")}”"
+    } else { "{paths.len()} items" }
+    let label = if moving {
+        "Moving {what} to “{name_of(folder)}”"
+    } else {
+        "Copying {what} to “{name_of(folder)}”"
+    }
+    match engine.start(
+        "transfer",
+        json.encode(TransferAsk(paths: paths, folder: folder, moving: moving)),
+    ) {
+        .err(why) => {
+            s.notice = "Couldn’t put them there: {why}"
+        }
+        .ok(text) => match json.decode<TransferStarted>(text) {
             .err(why) => {
-                s.notice = "Couldn’t put “{name_of(path)}” there: {why}"
+                s.notice = "Couldn’t put them there: {why}"
             }
+            .ok(started) => {
+                s.transfers.insert(Transfer(job: started.job, label: label))
+            }
+        },
+    }
+}
+
+/// Asks how far each transfer under way has got. One that finished leaves the window and the
+/// folder is read again; one that failed stays, saying why, until it is dismissed.
+action poll_transfers(f: Files) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    for t in s.transfers {
+        if t.job != "" {
+            match engine.status(t.job) {
+                .err(why) => {
+                    t.failed = why
+                    t.job = ""
+                }
+                .ok(text) => match json.decode<TransferState>(text) {
+                    .err(why) => {
+                        t.failed = why
+                        t.job = ""
+                    }
+                    .ok(state) => {
+                        t.done = state.done
+                        t.total = state.total
+                        t.current = state.current
+                        if state.state == "failed" {
+                            t.failed = state.error
+                            t.job = ""
+                        } else if state.state != "running" {
+                            t.job = ""
+                        }
+                    }
+                },
+            }
+            if t.job == "" { read_listing(f, s.here) }
         }
     }
-    read_listing(f, s.here)
+    for t in s.transfers.filter(t -> t.job == "" and t.failed == "") {
+        s.transfers.remove(t)
+    }
+}
+
+/// Stops the transfer `transfer`: the entry it was on is taken away, and what it finished stays.
+action stop_transfer(f: Files, transfer: Transfer) uses files, time (icon: .x) {
+    require transfer.job != "" "It has already stopped"
+    engine.cancel(transfer.job)
+}
+
+/// Takes a transfer that stopped short out of the window.
+action dismiss_transfer(f: Files, transfer: Transfer) {
+    if let s = f.sessions.first() { s.transfers.remove(transfer) }
+}
+
+/// Whether a transfer from this window is under way.
+fn transferring(s: Session) -> Bool {
+    s.transfers.any(t -> t.job != "")
 }
 
 /// The files a drag of `e` carries: every chosen entry when `e` is one of them, else `e` alone.
@@ -983,9 +1091,9 @@ action compress_selection(f: Files, zip: Bool) uses files, time {
     }
 }
 
-/// Pastes what the person carries into the place shown. A name the folder already holds is kept
-/// both: the copy lands as “name (2)”, and a cut entry is renamed before it moves, so nothing is
-/// overwritten.
+/// Pastes what the person carries into the place shown, as the device's own work that says how
+/// far it has got. A name the folder already holds is kept both: what arrives lands as
+/// “name (2)”, so nothing is overwritten.
 action paste(f: Files) uses files, time (icon: .clipboard_paste, label: "Paste", key: "Ctrl+V") {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if not folder_place(s.here) or s.carrying.is_empty() {
@@ -995,36 +1103,13 @@ action paste(f: Files) uses files, time (icon: .clipboard_paste, label: "Paste",
         return
     }
     let moving = s.cutting
-    for path in s.carrying {
-        if moving and parent_of(path) == s.here {
-            // A cut entry is already here: there is nothing to do.
-        } else {
-            let name = free_name(f, s.here, name_of(path))
-            let source = if moving and name != name_of(path) {
-                match File.rename(path, name) {
-                    .ok(moved) => moved.path,
-                    .err(why) => {
-                        s.notice = "Couldn’t rename “{name_of(path)}”: {why}"
-                        path
-                    }
-                }
-            } else { path }
-            let outcome = if moving {
-                File.move(source, s.here)
-            } else { File.copy_to(path, join(s.here, name)) }
-            match outcome {
-                .ok(_) => {}
-                .err(why) => {
-                    s.notice = "Couldn’t paste “{name_of(path)}”: {why}"
-                }
-            }
-        }
-    }
+    // A cut entry already here has nowhere to go.
+    let going = s.carrying.filter(path -> not moving or parent_of(path) != s.here)
+    if not going.is_empty() { put_into(f, going, s.here, moving) }
     if moving {
         s.carrying = []
         s.cutting = false
     }
-    read_listing(f, s.here)
 }
 
 /// A name `folder` does not hold yet, for an entry that would land as `name`: the name itself, or
@@ -1089,6 +1174,7 @@ action inspect(f: Files, path: Text) uses files {
     s.previewed = path
     s.preview = .none
     s.words = ""
+    s.facts = .none
     let found = match File.stat(path) {
         .ok(entry) => entry,
         .err(_) => .none,
@@ -1096,6 +1182,15 @@ action inspect(f: Files, path: Text) uses files {
     if let e = found {
         if e.folder {
             return
+        }
+        match engine.call("facts", e.path) {
+            .ok(text) => match json.decode<FileFacts>(text) {
+                .ok(facts) => {
+                    s.facts = .some(facts)
+                }
+                .err(_) => {}
+            },
+            .err(_) => {}
         }
         if is_picture(e.name) and e.size < 20000000 {
             match File.read(e.path) {
@@ -1249,6 +1344,18 @@ fn is_text(name: Text) -> Bool {
         .any(x -> x)
 }
 
+/// How long a recording plays, as a clock reads it: `0:42`, `1:05`, `1:02:03`.
+fn playing_time(ms: Int) -> Text {
+    let seconds = ms / 1000
+    let minutes = seconds / 60
+    let clock = if seconds % 60 < 10 { "0{seconds % 60}" } else { "{seconds % 60}" }
+    if minutes < 60 {
+        return "{minutes}:{clock}"
+    }
+    let within = if minutes % 60 < 10 { "0{minutes % 60}" } else { "{minutes % 60}" }
+    "{minutes / 60}:{within}:{clock}"
+}
+
 /// How many bytes read to a person: `4.2 MB`, `812 B`.
 fn size_of(n: Int) -> Text {
     if n < 1000 {
@@ -1355,6 +1462,10 @@ view files(f: Files) {
         if previews_waiting(s) {
             every 1s: preview_step(f)
         }
+        // A copy or a move under way says how far it has got while it runs.
+        if transferring(s) {
+            every 1s: poll_transfers(f)
+        }
         ui.NavShell(
             content_kind: if s.grid { .grid } else { .list },
             title: name_of(s.here),
@@ -1398,6 +1509,9 @@ view files(f: Files) {
                         ) {
                             on act: dismiss_notice(f)
                         }
+                    }
+                    for t in s.transfers {
+                        transfer_row(f, t)
                     }
                     if naming != "" {
                         naming_row(f, s, naming, name)
@@ -1935,6 +2049,35 @@ view entry_grid(f: Files, s: Session, entries: List<Entry>) {
     }
 }
 
+/// A copy or a move from this window: what it does and the entry it is on, how far it has got,
+/// and a press that stops it; one that stopped short says why.
+view transfer_row(f: Files, t: Transfer) {
+    stack(padding: .related) {
+        ui.ListRow(
+            title: t.label,
+            secondary: if t.failed != "" {
+                t.failed
+            } else if t.total > 0 {
+                "{size_of(t.done)} of {size_of(t.total)} · {t.current}"
+            } else { t.current },
+            mark: if t.failed != "" { .triangle_alert } else { .copy },
+        )
+        if t.failed == "" {
+            ui.ProgressBar(
+                value: if t.total > 0 { t.done.to_float() / t.total.to_float() } else { 0.0 },
+                label: t.label,
+            )
+            ui.Button("Stop", icon: .x, role: .plain) {
+                on press: stop_transfer(f, t)
+            }
+        } else {
+            ui.Button("Dismiss", icon: .x, role: .plain) {
+                on press: dismiss_transfer(f, t)
+            }
+        }
+    }
+}
+
 /// One entry's card: a picture's preview the device made, or its kind's glyph, and a file's size.
 view entry_card(s: Session, e: Entry) {
     stack(gap: .tight) {
@@ -2042,6 +2185,23 @@ view inspected(f: Files, s: Session, entries: List<Entry>) {
                 ui.Property("Type", kind_of(e))
                 if not e.folder {
                     ui.Property("Size", size_of(e.size))
+                }
+                if let x = s.facts {
+                    if x.width > 0 {
+                        ui.Property("Dimensions", "{x.width} × {x.height} px")
+                    }
+                    if x.duration > 0 {
+                        ui.Property("Duration", playing_time(x.duration))
+                    }
+                    if x.pages > 0 {
+                        ui.Property("Pages", "{x.pages}")
+                    }
+                    if x.codec != "" {
+                        ui.Property("Codec", x.codec)
+                    }
+                    if x.container != "" and x.container != x.codec {
+                        ui.Property("Container", x.container)
+                    }
                 }
                 ui.Property("Modified", e.modified)
                 ui.Property("Location", parent_of(e.path), copyable: true)

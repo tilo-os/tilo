@@ -564,6 +564,23 @@ fn place(path: &str, folder: &str, copy: bool) -> Result<Entry, String> {
 
 /// Copy the file or folder at `from` to `to`, which must not exist.
 fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
+    copy_tree_told(from, to, &mut |_| true)
+}
+
+/// What [`copy_tree_told`] says when the one it tells asked it to stop.
+pub(crate) const STOPPED: &str = "stopped";
+
+/// How much a copy reads and writes at a time between telling how far it has got.
+const COPY_CHUNK: usize = 1 << 20;
+
+/// Copy the file or folder at `from` to `to`, which must not exist, telling `copied` each run of
+/// bytes it wrote. `copied` answers whether to go on: when it says no the copy stops between
+/// chunks with [`STOPPED`], leaving what it wrote so far for the caller to take away.
+pub(crate) fn copy_tree_told(
+    from: &std::path::Path,
+    to: &std::path::Path,
+    copied: &mut dyn FnMut(u64) -> bool,
+) -> Result<(), String> {
     let meta = from
         .symlink_metadata()
         .map_err(|error| format!("{}: {error}", from.display()))?;
@@ -573,7 +590,7 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> Result<(), String>
             std::fs::read_dir(from).map_err(|error| format!("{}: {error}", from.display()))?;
         for item in reading {
             let item = item.map_err(|error| format!("{}: {error}", from.display()))?;
-            copy_tree(&item.path(), &to.join(item.file_name()))?;
+            copy_tree_told(&item.path(), &to.join(item.file_name()), copied)?;
         }
         Ok(())
     } else if meta.file_type().is_symlink() {
@@ -590,14 +607,47 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> Result<(), String>
         };
         linked.map_err(|error| format!("{}: {error}", to.display()))
     } else {
-        std::fs::copy(from, to)
-            .map(|_| ())
-            .map_err(|error| format!("{}: {error}", from.display()))
+        copy_file_told(from, to, meta.permissions(), copied)
     }
 }
 
+/// Copy one file's bytes a chunk at a time, telling `copied` after each.
+fn copy_file_told(
+    from: &std::path::Path,
+    to: &std::path::Path,
+    permissions: std::fs::Permissions,
+    copied: &mut dyn FnMut(u64) -> bool,
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+    let mut source =
+        std::fs::File::open(from).map_err(|error| format!("{}: {error}", from.display()))?;
+    let mut target = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)
+        .map_err(|error| format!("{}: {error}", to.display()))?;
+    let mut chunk = vec![0_u8; COPY_CHUNK];
+    loop {
+        let read = match source.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("{}: {error}", from.display())),
+        };
+        target
+            .write_all(&chunk[..read])
+            .map_err(|error| format!("{}: {error}", to.display()))?;
+        if !copied(read as u64) {
+            return Err(STOPPED.to_owned());
+        }
+    }
+    target
+        .set_permissions(permissions)
+        .map_err(|error| format!("{}: {error}", to.display()))
+}
+
 /// Remove the file or folder at `path` for good.
-fn remove_tree(path: &std::path::Path) -> Result<(), String> {
+pub(crate) fn remove_tree(path: &std::path::Path) -> Result<(), String> {
     let meta = path
         .symlink_metadata()
         .map_err(|error| format!("{}: {error}", path.display()))?;

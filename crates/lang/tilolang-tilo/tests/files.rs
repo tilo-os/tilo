@@ -14,6 +14,7 @@ use tilolang::IdsLock;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::files::{DocumentApp, Entry, FileTarget, FilesHost, TrashEntry};
+use tilolang_runtime::host_work::EngineHost;
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
@@ -294,6 +295,109 @@ impl FilesHost for Disk {
     }
 }
 
+/// The device's engine for Files: a transfer is carried out at once on the test's disk, under a
+/// name the folder does not hold yet, and reported running on its first poll and done after, as
+/// a device's job is.
+#[derive(Clone)]
+struct Transfers {
+    disk: Disk,
+    asked: Rc<RefCell<Vec<serde_json::Value>>>,
+    polls: Rc<RefCell<u32>>,
+    stopped: Rc<RefCell<Vec<String>>>,
+}
+
+impl Transfers {
+    fn new(disk: Disk) -> Self {
+        Self {
+            disk,
+            asked: Rc::default(),
+            polls: Rc::default(),
+            stopped: Rc::default(),
+        }
+    }
+}
+
+/// A copy of the file or folder at `from` at `to`.
+fn copy_all(from: &Path, to: &Path) {
+    if from.is_dir() {
+        std::fs::create_dir(to).expect("a folder");
+        for item in std::fs::read_dir(from).expect("a folder reads") {
+            let item = item.expect("an entry");
+            copy_all(&item.path(), &to.join(item.file_name()));
+        }
+    } else {
+        std::fs::copy(from, to).expect("a copy");
+    }
+}
+
+impl EngineHost for Transfers {
+    /// What a file's header states, as the device reads it: a movie plays for a minute and five
+    /// seconds, a document has twelve pages, anything else states nothing.
+    fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        assert_eq!((app, op), ("so.tilo.file-explorer", "facts"));
+        Ok(if input.ends_with(".mp4") {
+            r#"{"width":0,"height":0,"duration":65000,"pages":0,"codec":"h264","container":"mp4"}"#
+        } else if input.ends_with(".pdf") {
+            r#"{"width":0,"height":0,"duration":0,"pages":12,"codec":"pdf","container":"pdf"}"#
+        } else {
+            r#"{"width":0,"height":0,"duration":0,"pages":0,"codec":"","container":""}"#
+        }
+        .to_owned())
+    }
+
+    fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        assert_eq!((app, op), ("so.tilo.file-explorer", "transfer"));
+        let ask: serde_json::Value = serde_json::from_str(input).expect("the ask is JSON");
+        let folder = self.disk.resolve(ask["folder"].as_str().expect("a folder"));
+        for path in ask["paths"].as_array().expect("paths") {
+            let from = self.disk.resolve(path.as_str().expect("a path"));
+            let name = from
+                .file_name()
+                .expect("a name")
+                .to_string_lossy()
+                .into_owned();
+            let (stem, extension) = name
+                .rsplit_once('.')
+                .map_or((name.clone(), String::new()), |(stem, extension)| {
+                    (stem.to_owned(), format!(".{extension}"))
+                });
+            let to = std::iter::once(folder.join(&name))
+                .chain((2..).map(|n| folder.join(format!("{stem} ({n}){extension}"))))
+                .find(|to| !to.exists())
+                .expect("a free name");
+            if ask["moving"] == true {
+                std::fs::rename(&from, &to).expect("a move");
+            } else {
+                copy_all(&from, &to);
+            }
+        }
+        self.asked.borrow_mut().push(ask);
+        Ok(format!(
+            r#"{{"job":"transfer-{}"}}"#,
+            self.asked.borrow().len()
+        ))
+    }
+
+    fn status(&self, job: &str) -> Result<String, String> {
+        if !job.starts_with("transfer-") {
+            return Err(format!("no job `{job}` runs on this device"));
+        }
+        let mut polls = self.polls.borrow_mut();
+        *polls += 1;
+        Ok(if *polls == 1 {
+            r#"{"state":"running","done":1048576,"total":4194304,"current":"report.pdf","error":""}"#
+        } else {
+            r#"{"state":"done","done":4194304,"total":4194304,"current":"report.pdf","error":""}"#
+        }
+        .to_owned())
+    }
+
+    fn cancel(&self, job: &str) -> bool {
+        self.stopped.borrow_mut().push(job.to_owned());
+        true
+    }
+}
+
 /// The content store a dropped file's bytes are kept in.
 #[derive(Clone, Default)]
 struct Store {
@@ -374,6 +478,7 @@ struct Files {
     disk: Disk,
     store: Store,
     sent: Sent,
+    transfers: Transfers,
     _home: tempfile::TempDir,
 }
 
@@ -419,6 +524,8 @@ impl Files {
         host.runtime().set_foreign_invoker(sent.clone());
         host.runtime().set_blobs(store.clone());
         host.runtime().set_device_files(disk.clone());
+        let transfers = Transfers::new(disk.clone());
+        host.runtime().set_engine(transfers.clone());
         let app = Self {
             host,
             root,
@@ -427,6 +534,7 @@ impl Files {
             disk,
             store,
             sent,
+            transfers,
             _home: home,
         };
         app.set_readings();
@@ -730,7 +838,7 @@ fn a_name_with_a_slash_or_one_already_taken_is_refused_in_the_persons_words() {
         !home.join("Documents/a").exists(),
         "no folder is made under a slash"
     );
-    assert!(has(&app.window(), "A name cannot hold a slash"));
+    assert!(has(&mut app.window(), "A name cannot hold a slash"));
 
     app.call(
         "rename_entry",
@@ -746,7 +854,7 @@ fn a_name_with_a_slash_or_one_already_taken_is_refused_in_the_persons_words() {
         "a rename never replaces another entry"
     );
     assert!(home.join("Documents/notes.md").exists());
-    assert!(has(&app.window(), "“plan.md” is already here"));
+    assert!(has(&mut app.window(), "“plan.md” is already here"));
 
     assert!(app.refuses(
         "rename_entry",
@@ -849,8 +957,8 @@ fn showing_a_file_opens_the_folder_that_holds_it_with_the_file_chosen() {
         vec![app.root_value(), app.text("~/Documents/Projects/plan.md")],
     );
 
-    let window = app.window();
-    let words = shown(&window);
+    let mut window = app.window();
+    let words = shown(&mut window);
     assert!(
         words.iter().any(|text| text == "plan.md"),
         "the file stands in its folder: {words:?}"
@@ -877,7 +985,7 @@ fn the_folder_above_a_place_in_the_home_folder_is_in_the_home_folder() {
     );
 
     app.call("up", vec![app.root_value()]);
-    let words = shown(&app.window());
+    let words = shown(&mut app.window());
     assert!(
         words.iter().any(|text| text == "Projects"),
         "up from a folder in the home folder lands on its parent: {words:?}"
@@ -1043,4 +1151,94 @@ fn entries_dragged_onto_a_folders_row_move_into_it() {
         home.join("Downloads/Archive/report.pdf").exists(),
         "it stays as it was"
     );
+}
+
+#[test]
+fn a_move_says_how_far_it_got_and_stops_when_asked() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Downloads/report.pdf", "report");
+    std::fs::create_dir_all(home.join("Archive")).expect("a folder");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), app.text("~/Downloads")]);
+    app.call(
+        "choose",
+        vec![
+            app.root_value(),
+            Value::List(vec![app.text("~/Downloads/report.pdf")]),
+        ],
+    );
+    app.call("move_into", vec![app.root_value(), app.text("~/Archive")]);
+
+    // The device is asked to do the work, and the window says what it does.
+    let asked = app.transfers.asked.borrow().clone();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0]["moving"], true);
+    assert_eq!(asked[0]["folder"], "~/Archive");
+    assert!(has(&mut app.window(), "Moving “report.pdf” to “Archive”"));
+
+    // While it runs, it says how far it has got, and a press stops it.
+    app.call("poll_transfers", vec![app.root_value()]);
+    let mut window = app.window();
+    assert!(
+        !window.tree().of_kind("ui.ProgressBar").is_empty(),
+        "a bar shows how far it got"
+    );
+    let words = shown(&mut window);
+    assert!(
+        words
+            .iter()
+            .any(|word| word.contains("1 MB of 4.2 MB") || word.contains(" of ")),
+        "it says how much of how much: {words:?}"
+    );
+    let stop = window
+        .tree()
+        .of_kind("ui.Button")
+        .into_iter()
+        .find(|button| button.props.get("label") == Some(&Value::Text("Stop".into())))
+        .expect("a Stop button")
+        .key
+        .clone();
+    window.fire(&stop, "press").expect("the stop runs");
+    assert_eq!(
+        *app.transfers.stopped.borrow(),
+        vec!["transfer-1".to_owned()]
+    );
+
+    // Once it ended, it leaves the window, and the folder it changed is read again.
+    app.call("poll_transfers", vec![app.root_value()]);
+    let mut window = app.window();
+    assert!(window.tree().of_kind("ui.ProgressBar").is_empty());
+    assert!(!has(&mut window, "report.pdf"), "the folder shows it gone");
+}
+
+#[test]
+fn the_inspector_says_how_long_a_recording_plays_and_how_many_pages_a_document_has() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Videos/holiday.mp4", "movie");
+    write(&home, "Videos/plan.pdf", "document");
+    write(&home, "Videos/notes.txt", "notes");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), app.text("~/Videos")]);
+
+    let properties = |path: &str| {
+        app.call("show", vec![app.root_value(), app.text(path)]);
+        shown(&mut app.window())
+    };
+    let words = properties("~/Videos/holiday.mp4");
+    for wanted in ["Duration", "1:05", "Codec", "h264", "Container", "mp4"] {
+        assert!(
+            words.iter().any(|word| word == wanted),
+            "{wanted}: {words:?}"
+        );
+    }
+    let words = properties("~/Videos/plan.pdf");
+    assert!(words.iter().any(|word| word == "Pages"), "{words:?}");
+    assert!(words.iter().any(|word| word == "12"), "{words:?}");
+    assert!(!words.iter().any(|word| word == "Duration"), "{words:?}");
+    let words = properties("~/Videos/notes.txt");
+    for gone in ["Duration", "Pages", "Codec"] {
+        assert!(!words.iter().any(|word| word == gone), "{gone}: {words:?}");
+    }
 }

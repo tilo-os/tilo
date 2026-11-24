@@ -526,6 +526,12 @@ d-qfj1tkgq = Geprüft
     .w-selected = { $len } ausgewählt
     .w-type = Art
     .w-size = Größe
+    .w-dimensions = Abmessungen
+    .w-px = { $width } × { $height } px
+    .w-duration = Dauer
+    .w-pages = Seiten
+    .w-codec = Codec
+    .w-container = Container
     .w-modified = Geändert
     .w-location = Ort
     .w-came-from = Kam von
@@ -680,3 +686,133 @@ d-7qxtagjs-folder = Ordner
 d-456rxelx = Eintragskarte
 
 d-qs2kdhod = Eintragszeile
+
+d-spg47sjt = Übertragung
+    .doc = Ein Kopieren oder Verschieben, das das Gerät als eigene Arbeit erledigt, damit ein großes sagt, wie weit es ist, und angehalten werden kann: was es tut, in den Worten der Person, und wie es steht.
+    .noun = { $count ->
+        [one] Übertragung
+       *[other] Übertragungen
+    }
+
+d-holiaqgm = Auftrag
+    .doc = Der Auftrag des Geräts; leer, sobald er endete.
+
+d-dtg3bicb = Bezeichnung
+    .doc = Was sie tut: „3 Einträge nach „Bilder“ kopieren“.
+
+d-b4sboihw = Erledigt
+    .doc = Geschriebene Bytes, von wie vielen.
+
+d-yqeek7os = Gesamt
+
+d-o5vail2q = Aktuell
+    .doc = Der Eintrag, an dem sie gerade ist.
+
+d-gdzzzq6x = Fehlgeschlagen
+    .doc = Warum sie vorzeitig aufhörte; leer, solange sie läuft oder sobald sie fertig ist.
+
+d-spg47sjt-filter-done = Erledigt
+
+d-spg47sjt-filter-total = Gesamt
+
+d-wwz64bpe = Übertragungsauftrag
+    .doc = Was eine Übertragung vom Gerät verlangt: die Einträge unter `paths` in `folder` ablegen.
+    .noun = { $count ->
+        [one] Übertragungsauftrag
+       *[other] Übertragungsaufträge
+    }
+
+d-wsdpc7wm = Pfade
+
+d-3s3dhes2 = Ordner
+
+d-3ebinaph = Verschieben
+
+d-wwz64bpe-filter-moving = Verschieben
+
+d-ipsiyxex = Gestartete Übertragung
+    .doc = Der Auftrag, den das Gerät gestartet hat.
+    .noun = { $count ->
+        [one] gestartete Übertragung
+       *[other] gestartete Übertragungen
+    }
+
+d-l4hyxvom = Auftrag
+
+d-gwl4xhmy = Übertragungsstand
+    .doc = Wie eine Übertragung steht, wie das Gerät sie meldet.
+    .noun = { $count ->
+        [one] Übertragungsstand
+       *[other] Übertragungsstände
+    }
+
+d-cjszmwp5 = Zustand
+
+d-xy4h2hjf = Erledigt
+
+d-xqn7tfzw = Gesamt
+
+d-mfmf4wlj = Aktuell
+
+d-xxm5zyoq = Fehler
+
+d-gwl4xhmy-filter-done = Erledigt
+
+d-gwl4xhmy-filter-total = Gesamt
+
+d-3jhnrnyu = Übertragungen
+    .doc = Die Kopien und Verschiebungen, die von diesem Fenster aus laufen, und die, die vorzeitig aufhörten.
+
+d-bon3vr35 = Übertragungen abfragen
+    .doc = Fragt, wie weit jede laufende Übertragung ist.
+
+d-ik5gn7tg = Übertragung anhalten
+    .doc = Hält die Übertragung `transfer` an: der Eintrag, an dem sie war, wird entfernt, und was sie fertig hat, bleibt.
+    .w-it-has-already-stopped = Sie ist schon angehalten
+
+d-ik5gn7tg-transfer = Übertragung
+
+d-mhe7mk2n = Übertragung schließen
+    .doc = Nimmt eine Übertragung, die vorzeitig aufhörte, aus dem Fenster.
+
+d-mhe7mk2n-transfer = Übertragung
+
+d-gidwg2mc = Übertragung anhalten~present
+
+d-mxaz5hjr = Übertragungszeile
+    .w-of = { $size_of } von { $size_of2 } · { $current }
+    .w-stop = Anhalten
+    .w-dismiss = Schließen
+
+d-f55s4nn4 = Dateiangaben
+    .doc = Was der Kopf einer Datei über sie sagt: die Größe eines Bildes, wie lange eine Aufnahme läuft, wie viele Seiten ein Dokument hat, und ihr Codec und Container; `0` oder leer, wo er nichts sagt.
+    .noun = { $count ->
+        [one] Dateiangabe
+       *[other] Dateiangaben
+    }
+
+d-foqi2yof = Breite
+
+d-sg7ksmy3 = Höhe
+
+d-opvq63ti = Dauer
+    .doc = Wie lange sie läuft, in Millisekunden.
+
+d-wzwzsjca = Seiten
+
+d-nea4pran = Codec
+
+d-nyczknd7 = Container
+
+d-f55s4nn4-filter-width = Breite
+
+d-f55s4nn4-filter-height = Höhe
+
+d-f55s4nn4-filter-duration = Dauer
+
+d-f55s4nn4-filter-pages = Seiten
+
+d-27yiejjv = Angaben
+    .doc = Was der eigene Kopf der gewählten Datei über sie sagt, wie das Gerät ihn las.
+
+d-rb1nrssu-filter-facts = Angaben

@@ -46,6 +46,8 @@ pub mod db_engine;
 ))]
 pub mod feed_engine;
 pub mod files;
+#[cfg(feature = "app-launch")]
+pub mod files_engine;
 pub mod hosted;
 pub mod invocations;
 /// The engines this process opens from its runtime bundle the first time an app asks one.
