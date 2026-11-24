@@ -3054,6 +3054,7 @@ impl RuntimeServices for Daemon {
         let host = self.action_provider()?;
         Ok(host.session_factory(
             workspace,
+            self.actor.clone(),
             self.policy_origin.capture().map_err(io::Error::other)?,
         ))
     }
@@ -4461,17 +4462,17 @@ impl RuntimeActionProvider {
     fn session_factory(
         self,
         workspace: String,
+        actor: String,
         policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
     ) -> tilo_mcp::SessionFactory<Self> {
         let provider = self;
         Arc::new(move || {
             // The MCP client is the person's agent, under a key of its own: the admission stays
-            // the person's, and every call the client makes is signed by the agent's key.
-            let admission = provider
-                .admission()
-                .ok_or_else(|| io::Error::other("this dispatch admitted no run to delegate"))?;
+            // the person's, and every call the client makes is signed by the agent's key. Each
+            // connection is a run of its own, admitted for it: its end retires that run alone,
+            // never the one the daemon's other connections go on as.
             let (session_host, caller) =
-                provider.agent_session_of(admission, &policy_time, |person| {
+                provider.agent_session(&workspace, &actor, &policy_time, |person| {
                     (device_agent_id(person, MCP_CLIENT), MCP_CLIENT.to_owned())
                 })?;
             let run = tilo_mcp::agent_id(&caller);
