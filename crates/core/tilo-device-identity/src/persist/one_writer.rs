@@ -259,6 +259,8 @@ mod tests {
     /// The child this test starts takes the key under the root this names, says so, and keeps
     /// it until its standard input ends.
     const CHILD: &str = "TILO_TEST_TAKE_DEVICE_KEY_UNDER";
+    /// What the child says once it took the key.
+    const SAID_TAKEN: &str = "the device key is taken";
     const TEST: &str =
         "persist::one_writer::tests::a_second_process_taking_the_key_is_refused_naming_the_first";
 
@@ -287,7 +289,7 @@ mod tests {
                 lock.key().to_bytes(),
                 "a read in the process that took the key answers that key"
             );
-            println!("taken");
+            println!("{SAID_TAKEN}");
             let mut rest = String::new();
             let _ = io::Read::read_to_string(&mut io::stdin(), &mut rest);
             drop(lock);
@@ -306,7 +308,8 @@ mod tests {
             .unwrap();
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         assert!(
-            lines.any(|line| line.is_ok_and(|line| line.trim() == "taken")),
+            // The test harness names the test on the line the child's word ends.
+            lines.any(|line| line.is_ok_and(|line| line.trim_end().ends_with(SAID_TAKEN))),
             "the first process took the key"
         );
 

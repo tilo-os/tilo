@@ -1329,9 +1329,21 @@ fn a_device_running_on_two_machines_is_refused_by_name_until_one_is_readded() {
     let heads = doc.get_heads();
     comment_on("o1")(&mut doc);
     step(&mut doc, comment(), Some("o1"), person_of(&peer, &owner_key));
-    let owners = signed_write_at(&mut doc, &heads, &owner_key, 1);
-    peer.receive_from_report(owner_origin, owners, now())
+    // Past every number the owner's seeding gave its writes.
+    let owners = signed_write_at(
+        &mut doc,
+        &heads,
+        &owner_key,
+        collab_types::next_unordered_document_sequence(now()),
+    );
+    let report = peer
+        .receive_from_report(owner_origin, owners, now())
         .expect("another device's write is taken");
+    assert!(
+        matches!(report.primary(), crate::InputDisposition::Accepted(_)),
+        "{:?}",
+        report.primary()
+    );
     assert!(value_has_comment(&peer, "o1"));
 
     // The person re-adds the copy with a ticket: it is certified under a key of its own.

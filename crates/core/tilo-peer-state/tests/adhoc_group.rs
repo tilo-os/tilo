@@ -3,8 +3,9 @@
 //! invitation. Every desktop opens its own workspace service in process, as
 //! each desktop does; the workspace is placed on the service of the desktop it
 //! was made on, and every desktop takes part in it as a member over its own
-//! direct link. What any one writes reaches all five, a lease-held job is done
-//! on one device at a time and moves when its device goes, and a device that
+//! direct link, or through its own service where that service keeps the
+//! workspace: one device writes from the one place that signs as it. What any
+//! one writes reaches all five, a lease-held job is done on one device at a time and moves when its device goes, and a device that
 //! leaves takes nothing of the rest with it.
 #![allow(
     clippy::unwrap_used,
@@ -249,10 +250,16 @@ impl Desktop {
         self.links_to(&enrolled).await;
     }
 
-    fn link(&self) -> &DirectSync {
-        self.link
-            .as_ref()
-            .expect("this device takes part in the workspace")
+    /// This device's end of the workspace. Where its own service keeps the workspace, that is
+    /// the service's: the device writes as itself from the one place that signs as it, never
+    /// from a second copy numbering its changes beside it. Elsewhere it is its member copy's link.
+    fn link(&self) -> DirectSync {
+        let own = Arc::clone(&self.service) as Arc<dyn OwnHost>;
+        own.direct(workspace()).unwrap_or_else(|| {
+            self.link
+                .clone()
+                .expect("this device takes part in the workspace")
+        })
     }
 
     /// The resource `resource` as this device has it.

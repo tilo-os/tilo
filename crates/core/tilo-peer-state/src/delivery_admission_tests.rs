@@ -105,14 +105,17 @@ tilo_test_env::scenario! {
             envelope.timestamp += Duration::from_secs(1);
             collab_types::sign_op(envelope, &key).unwrap();
         }
+        let mut floor_only = receiver.clone();
+        // Two bodies signed under one number are the key on two machines: refused by name.
         assert!(matches!(
             receiver.receive_from_report(origin, changed.clone(), now),
-            Err(AdmissionError::ConflictingSequence)
+            Err(AdmissionError::CopiedDevice(copied))
+                if copied.device == key.verifying_key().to_bytes()
         ));
         assert_eq!(receiver.durable().unwrap(), before);
         // Compatibility: legacy receive keeps its old floor/duplicate semantics.
         assert!(
-            receiver
+            floor_only
                 .receive_from(origin, changed, now)
                 .unwrap()
                 .duplicate
@@ -132,7 +135,7 @@ tilo_test_env::scenario! {
         }
         assert!(matches!(
             receiver.receive_from_report(origin, different_payload.clone(), now),
-            Err(AdmissionError::ConflictingSequence)
+            Err(AdmissionError::CopiedDevice(_))
         ));
         assert_eq!(
             legacy

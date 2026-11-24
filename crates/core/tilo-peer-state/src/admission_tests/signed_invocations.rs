@@ -880,6 +880,7 @@ fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
         ))),
         ..ActionContext::for_resource(RECORD, KIND, "Test")
     };
+    // Its writer refuses to sign it, and a receiver handed it anyway refuses it.
     let named_device = upkeep(
         &receiver,
         &server_key,
@@ -890,12 +891,12 @@ fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
             "as the device",
         ),
         now,
-    )
-    .expect("the change is drafted");
-    assert!(
-        take(&mut receiver, named_device, now).is_err(),
-        "a device is no member"
     );
+    let refused = match named_device {
+        Ok(message) => take(&mut receiver, message, now).unwrap_err().reason,
+        Err(refusal) => format!("{refusal:?}"),
+    };
+    assert!(refused.contains("not granted"), "a device is no member: {refused}");
     assert_eq!(value(&receiver), "\"kept\"", "never applied");
 
     // The person reads only now: the same upkeep is decided with the person's role.
