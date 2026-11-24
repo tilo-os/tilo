@@ -72,6 +72,7 @@ fn package(text: &str) -> tilolang_runtime::Meta {
             name: name.to_owned(),
             ty: format!("{APP}#{ty}"),
             published: Some(published.to_owned()),
+            device: false,
         });
     }
     meta
