@@ -1,12 +1,27 @@
-# App publisher: the profile before and after a publisher key is made.
+# App publisher: the key pane before and after a publisher key exists, and the
+# registry's answer about the application.
 
 [[situation]]
 name = "start"
 title = "Before a key exists"
+scenario = "no key yet"
 
 [[situation]]
 name = "key-created"
-title = "A publisher key created"
+title = "A publisher key on this computer"
+scenario = "a key on this computer"
 
-[[situation.steps]]
-invoke = { resource = "publisher.profile", action = "create-key", confirm = true }
+[[situation]]
+name = "approved"
+title = "An approved application"
+scenario = "an approved application"
+
+[[situation]]
+name = "failed"
+title = "An application the registry refused"
+scenario = "a failed application"
+
+[[situation]]
+name = "unreadable"
+title = "A key that can’t be read"
+scenario = "an unreadable key"

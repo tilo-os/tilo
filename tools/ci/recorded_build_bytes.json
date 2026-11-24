@@ -405,10 +405,6 @@
       "libraries": 11242707,
       "tests": 292788328
     },
-    "publisher": {
-      "libraries": 6175282,
-      "tests": 751071976
-    },
     "registry-server": {
       "libraries": 35561265,
       "tests": 253794480

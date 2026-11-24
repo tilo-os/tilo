@@ -54,6 +54,9 @@ tilo-network-client = { version = "0.1.0", path = "../../platform/tilo-network-c
 tilolang-tilo = { path = "../tilolang-tilo" }
 # The disk usage analyzer's device work: a folder measured, answered for `so.tilo.disk-usage`.
 tilo-disk-usage = { path = "../../engines/disk-usage" }
+# The App Publisher's device work: this machine's signing key and the registry, answered for
+# `so.tilo.publisher`.
+publisher-engine = { path = "../../engines/publisher-engine" }
 # The database engine the Database Client asks by name: the drivers, kept off the app's side.
 tilo-db = { version = "0.1.0", path = "../../engines/tilo-db" }
 # A tilolang app as a session service: the history its records answer.

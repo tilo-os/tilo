@@ -3,10 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, bail};
 use app_registry::publisher::{RegistryClient, key};
 use clap::Subcommand;
-use registry_types::application::{NamespaceClaim, proof_token};
+use registry_types::application::proof_token;
 use serde_json::{Value, json};
 
 #[derive(clap::Args)]
@@ -101,23 +101,13 @@ pub fn run_apply(args: ApplyArgs) -> Result<Value> {
     let client = RegistryClient::resolve(args.registry.as_deref())?;
     let public = key::public_hex(&key);
     if args.status {
-        let status = client
-            .application(&public)?
-            .ok_or_else(|| anyhow!("{} has no application from this key", client.base()))?;
-        println!("{}", app_registry::publisher::status_summary(&status));
+        let Some((status, summary)) = app_registry::publisher::application(&client, &key)? else {
+            bail!("{} has no application from this key", client.base());
+        };
+        println!("{summary}");
         return Ok(status);
     }
-    let mut claims: Vec<NamespaceClaim> = args
-        .domains
-        .into_iter()
-        .map(|domain| NamespaceClaim::Domain { domain })
-        .collect();
-    for forge in &args.forges {
-        claims.push(app_registry::publisher::forge_claim(forge).context("--forge")?);
-    }
-    if claims.is_empty() {
-        bail!("name a namespace to prove with --domain or --forge");
-    }
+    let claims = app_registry::publisher::claims(&args.domains, &args.forges)?;
     let token = proof_token(&public);
     eprintln!("[tilolang] the registry looks for `{token}` at:");
     for claim in &claims {

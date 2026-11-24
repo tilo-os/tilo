@@ -27,6 +27,7 @@ mod host;
 fn main() -> std::process::ExitCode {
     // The engines this bundle answers its apps with, registered before any of them asks.
     tilo_disk_usage::register();
+    publisher_engine::register();
     // A host is started on its process link with the storage of its workspace and app
     // (`spawn_host` of the device). A window has a process link too, the one its session opens
     // its later windows on, but no storage; a page window has storage but no process link.

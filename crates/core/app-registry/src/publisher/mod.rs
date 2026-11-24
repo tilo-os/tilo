@@ -45,6 +45,56 @@ pub fn apply(
     client.apply(&application)
 }
 
+/// The namespaces `domains` and `forges` name (`github:ada`), in that order: what an
+/// application asks the registry for.
+///
+/// # Errors
+///
+/// A forge text that is not `FORGE:ACCOUNT`, or nothing named at all.
+pub fn claims<I, J>(domains: I, forges: J) -> Result<Vec<NamespaceClaim>>
+where
+    I: IntoIterator,
+    I::Item: AsRef<str>,
+    J: IntoIterator,
+    J::Item: AsRef<str>,
+{
+    let mut claims = Vec::new();
+    for domain in domains {
+        let domain = domain.as_ref().trim();
+        if !domain.is_empty() {
+            claims.push(NamespaceClaim::Domain {
+                domain: domain.to_owned(),
+            });
+        }
+    }
+    for forge in forges {
+        let forge = forge.as_ref().trim();
+        if !forge.is_empty() {
+            claims.push(forge_claim(forge)?);
+        }
+    }
+    if claims.is_empty() {
+        bail!("name a domain or a forge account to claim");
+    }
+    Ok(claims)
+}
+
+/// The registry's answer about `key`'s application, with the summary line a person reads:
+/// nothing when the registry has no application from that key.
+///
+/// # Errors
+///
+/// The registry could not be reached, or answered something this client cannot read.
+pub fn application(
+    client: &RegistryClient,
+    key: &SigningKey,
+) -> Result<Option<(serde_json::Value, String)>> {
+    Ok(client.application(&key::public_hex(key))?.map(|status| {
+        let summary = status_summary(&status);
+        (status, summary)
+    }))
+}
+
 /// The claim `FORGE:ACCOUNT` names, such as `github:ada`.
 pub fn forge_claim(text: &str) -> Result<NamespaceClaim> {
     let (forge, account) = text

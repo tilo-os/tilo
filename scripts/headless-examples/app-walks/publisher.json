@@ -1,0 +1,112 @@
+{
+  "app": "publisher",
+  "said": "App Publisher",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.publisher",
+    "package": "publisher"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open App Publisher on a machine that has no publisher key yet",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        },
+        {
+          "must": {
+            "see": [
+              "Signing key",
+              "Create key"
+            ]
+          }
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "create",
+      "said": "Create this machine's key and read its proof line",
+      "ops": [
+        {
+          "press": "Create key"
+        },
+        {
+          "wait_for": {
+            "shown": "Copy proof line"
+          }
+        },
+        {
+          "must": {
+            "see": [
+              "Public key",
+              "Proof line",
+              "Copy proof line",
+              "Copy key for CI"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "claims",
+      "said": "Claim a domain and see every place its proof goes",
+      "ops": [
+        {
+          "press": "example.com"
+        },
+        {
+          "type": "lovelace.dev"
+        },
+        {
+          "wait_for": {
+            "shown": "Publish at"
+          }
+        },
+        {
+          "must": {
+            "see": [
+              "Where to publish the proof",
+              "Publish at"
+            ]
+          }
+        },
+        {
+          "press": "github:ada"
+        },
+        {
+          "type": "codeberg:ada"
+        },
+        {
+          "wait_for": {
+            "shown": "Copy proof line"
+          }
+        },
+        {
+          "must": {
+            "see": [
+              "Publish at"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 30000
+    }
+  ]
+}

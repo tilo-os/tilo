@@ -5266,6 +5266,529 @@
         "required": [],
         "description": ""
       },
+      "tilolang.personal.view-state.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Keep a view's state"
+      },
+      "tilolang.personal.seen.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Keep what is seen"
+      },
+      "tilolang.personal.seen-runs.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Keep reviewed runs"
+      },
+      "tl.so.tilo.publisher.Reading.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.publisher.Reading.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "summary"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.Reading.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.Reading.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.publisher.Publisher.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.publisher.Publisher.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "registry",
+              "domain",
+              "forge_account",
+              "contact",
+              "key",
+              "public_key",
+              "notice_kind",
+              "notice_title",
+              "notice_detail",
+              "job"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.Publisher.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.Publisher.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.publisher.Publisher.read_key.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Reads this computer's publisher key: whether it has one, and its public half. Opening the app\nreads it, so the window shows the key's state without anything to press."
+      },
+      "tl.so.tilo.publisher.Publisher.create_key.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Makes this computer's publisher key. It signs the person's apps and their requests to the\nregistry, and a second one is never made: a publisher key is one per machine."
+      },
+      "tl.so.tilo.publisher.Publisher.copy_proof.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Copies the proof line: the words to publish where only the person can write."
+      },
+      "tl.so.tilo.publisher.Publisher.copy_secret.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Copies the key file, for the person's CI: one secret, `TILO_PUBLISHER_KEY`, holding it."
+      },
+      "tl.so.tilo.publisher.Publisher.export_key.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The key file, for the person to keep somewhere safe: what they restore the key from."
+      },
+      "tl.so.tilo.publisher.Publisher.apply_for_namespaces.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks the registry for the namespaces the profile's domain and forge account name."
+      },
+      "tl.so.tilo.publisher.Publisher.check_status.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Reads what the registry holds about this computer's key's application."
+      },
+      "tl.so.tilo.publisher.Publisher.poll.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Asks the registry how the call under way is doing, once a second while one runs."
+      },
+      "tl.so.tilo.publisher.ForgeParts.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.publisher.ForgeParts.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "host",
+              "account"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.ForgeParts.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.ForgeParts.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.publisher.KeyFile.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.publisher.KeyFile.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "text"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.KeyFile.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.KeyFile.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.publisher.ApplyAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.publisher.ApplyAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "registry",
+              "domain",
+              "forge_account",
+              "contact"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.ApplyAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.ApplyAsk.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.publisher.StatusAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.publisher.StatusAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "registry"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.StatusAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.StatusAsk.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.publisher.JobState.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.publisher.JobState.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "state",
+              "summary",
+              "error"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.JobState.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.JobState.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.publisher.JobAnswer.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.publisher.JobAnswer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "job"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.JobAnswer.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.JobAnswer.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.publisher.KeyState.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.publisher.KeyState.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "state",
+              "public"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.KeyState.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.publisher.KeyState.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
       "remote.connection-list.add-connection.Arguments": {
         "type": "object",
         "properties": {
@@ -7377,24 +7900,6 @@
           "app"
         ],
         "description": ""
-      },
-      "tilolang.personal.view-state.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Keep a view's state"
-      },
-      "tilolang.personal.seen.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Keep what is seen"
-      },
-      "tilolang.personal.seen-runs.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Keep reviewed runs"
       },
       "tl.so.tilo.activity.Window.$create.Arguments": {
         "type": "object",
@@ -79861,6 +80366,288 @@
       "resource": "so.tilo.poker.table",
       "action": "rebuy",
       "arguments": "#/components/schemas/so.tilo.poker.table.rebuy.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Reading",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Reading.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Reading",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Reading.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Reading",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Reading.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Reading",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Reading.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "read_key",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.read_key.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "create_key",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.create_key.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "copy_proof",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.copy_proof.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "copy_secret",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.copy_secret.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "export_key",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.export_key.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "apply_for_namespaces",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.apply_for_namespaces.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "check_status",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.check_status.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "poll",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.poll.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.ForgeParts",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.ForgeParts.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.ForgeParts",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.ForgeParts.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.ForgeParts",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.ForgeParts.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.ForgeParts",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.ForgeParts.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.KeyFile",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.KeyFile.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.KeyFile",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.KeyFile.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.KeyFile",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.KeyFile.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.KeyFile",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.KeyFile.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.ApplyAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.ApplyAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.ApplyAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.ApplyAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.ApplyAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.ApplyAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.ApplyAsk",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.ApplyAsk.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.StatusAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.StatusAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.StatusAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.StatusAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.StatusAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.StatusAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.StatusAsk",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.StatusAsk.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.JobState",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobState.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.JobState",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobState.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.JobState",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobState.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.JobState",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobState.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.JobAnswer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobAnswer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.JobAnswer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobAnswer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.JobAnswer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobAnswer.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.JobAnswer",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.JobAnswer.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.KeyState",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.KeyState.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.KeyState",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.KeyState.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.KeyState",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.KeyState.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.KeyState",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.KeyState.$scenario.Arguments"
     },
     {
       "app": "so.tilo.remote",

@@ -763,9 +763,6 @@ doc = false
 "psl-2_1_190" = { package = "psl", version = "^2.1.190", default-features = false, features = ["default", "helpers"] }
 "psl-types-2_0_11" = { package = "psl-types", version = "^2.0.11", default-features = false, features = [] }
 "psm-0_1_31" = { package = "psm", version = "^0.1.31", default-features = false, features = [] }
-"publisher" = { path = "../../apps/publisher", default-features = false, features = [] }
-"publisher-model" = { path = "../../apps/publisher-model", default-features = false, features = [] }
-"publisher-model-wasm" = { path = "../../apps/publisher-model-wasm", default-features = false, features = [] }
 "pulldown-cmark-0_12_2" = { package = "pulldown-cmark", path = "../../vendor/pulldown-cmark", default-features = false, features = [] }
 "pulley-interpreter-50_0_2" = { package = "pulley-interpreter", version = "^50.0.2", default-features = false, features = ["decode", "disas", "encode", "interp", "std"] }
 "pxfm-0_1_27" = { package = "pxfm", version = "^0.1.27", default-features = false, features = [] }
@@ -3272,9 +3269,6 @@ doc = false
 "psl-2_1_190" = { package = "psl", version = "^2.1.190", default-features = false, features = ["default", "helpers"] }
 "psl-types-2_0_11" = { package = "psl-types", version = "^2.0.11", default-features = false, features = [] }
 "psm-0_1_31" = { package = "psm", version = "^0.1.31", default-features = false, features = [] }
-"publisher" = { path = "../../apps/publisher", default-features = false, features = [] }
-"publisher-model" = { path = "../../apps/publisher-model", default-features = false, features = [] }
-"publisher-model-wasm" = { path = "../../apps/publisher-model-wasm", default-features = false, features = [] }
 "pulldown-cmark-0_12_2" = { package = "pulldown-cmark", path = "../../vendor/pulldown-cmark", default-features = false, features = [] }
 "pulley-interpreter-50_0_2" = { package = "pulley-interpreter", version = "^50.0.2", default-features = false, features = ["decode", "disas", "encode", "interp", "std"] }
 "pxfm-0_1_27" = { package = "pxfm", version = "^0.1.27", default-features = false, features = [] }

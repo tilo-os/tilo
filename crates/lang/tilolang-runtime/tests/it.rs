@@ -82,6 +82,8 @@ mod e2e_native_ui;
 mod e2e_notes;
 #[path = "e2e_pdf.rs"]
 mod e2e_pdf;
+#[path = "e2e_publisher.rs"]
+mod e2e_publisher;
 #[path = "e2e_removals.rs"]
 mod e2e_removals;
 #[path = "e2e_scratchpad.rs"]

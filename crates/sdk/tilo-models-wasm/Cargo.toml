@@ -20,7 +20,6 @@ path = "src/lib.rs"
 assistant-model-wasm = { path = "../../../apps/assistant-model-wasm" }
 console-model-wasm = { path = "../../../apps/console-model-wasm" }
 poker-model-wasm = { path = "../../../apps/poker-model-wasm" }
-publisher-model-wasm = { path = "../../../apps/publisher-model-wasm" }
 remote-model-wasm = { path = "../../../apps/remote-model-wasm" }
 
 # The workspace-hack's native feature set does not build for wasm32 (it turns

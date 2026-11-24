@@ -11498,37 +11498,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "publisher"
+name = "publisher-engine"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "ed25519-dalek 3.0.0",
  "hex",
- "publisher-model",
- "runtime-dylib",
- "tilo-app",
- "tilo-app-registry",
- "tilo-app-test-host",
- "tilo-history",
- "tilo-registry-types",
- "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
-name = "publisher-model"
-version = "0.1.0"
-dependencies = [
+ "serde",
  "serde_json",
- "tilo-resource",
- "url",
- "workspace-hack",
-]
-
-[[package]]
-name = "publisher-model-wasm"
-version = "0.1.0"
-dependencies = [
- "publisher-model",
- "tilo-model-guest",
+ "tempfile",
+ "tilo-app-registry",
+ "tilo-registry-types",
+ "tilo-secrets",
+ "tilo-test-env",
+ "tilolang-tilo",
  "workspace-hack",
 ]
 
@@ -18366,7 +18349,6 @@ dependencies = [
  "assistant-model-wasm",
  "console-model-wasm",
  "poker-model-wasm",
- "publisher-model-wasm",
  "remote-model-wasm",
  "workspace-hack",
 ]
@@ -22189,6 +22171,7 @@ dependencies = [
  "notify",
  "os-actions",
  "passwords-engine",
+ "publisher-engine",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -27061,9 +27044,6 @@ dependencies = [
  "psl",
  "psl-types",
  "psm",
- "publisher",
- "publisher-model",
- "publisher-model-wasm",
  "pulldown-cmark",
  "pulley-interpreter",
  "pulley-macros",

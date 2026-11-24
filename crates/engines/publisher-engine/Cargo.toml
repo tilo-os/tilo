@@ -1,0 +1,32 @@
+[package]
+name = "publisher-engine"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "The App Publisher's device work: the Ed25519 key this machine signs with, and the registry applications it makes. No UI."
+
+[lib]
+name = "publisher_engine"
+path = "src/lib.rs"
+
+[dependencies]
+app-registry = { package = "tilo-app-registry", path = "../../core/app-registry" }
+registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
+tilo-secrets = { path = "../../platform/tilo-secrets" }
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+anyhow.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
