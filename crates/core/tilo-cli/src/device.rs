@@ -133,7 +133,7 @@ pub fn add(
 /// the host refused the approval.
 #[allow(
     clippy::too_many_lines,
-    reason = "one command: the browser's request, the root's signature, and what the person reads"
+    reason = "one command: the browser's request, the approval, and what the person reads"
 )]
 fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     use tilo_device_identity::login::{APPROVE, Direction, PENDING};
@@ -152,7 +152,6 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
             ticket.trim()
         );
     }
-    let person = crate::identity::held()?;
     let (_, here) = login::here()?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
     login::ensure_daemon()?;
     let runtime = login::runtime()?;
@@ -208,39 +207,10 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         label: label.clone(),
         agent: agent.clone(),
     };
-    // The person's root signs the tab's certificate, as it signs one for any device of theirs.
-    // A computer without the root hands the signing to one that holds it: the tab's request is
-    // already queued for the person's approving devices.
-    let cert = match (&person, &agent) {
-        (None, Some(_)) => bail!(
-            "This computer does not hold your identity, so it cannot approve a key for your \
-             agent: run `tilo device add {}` on the one that does.",
-            ticket.trim()
-        ),
-        (Some(person), Some(_)) => {
-            let mut cert = tab
-                .certificate(person.public_key(), tilo_clock::unix_now_ns())
-                .map_err(|error| anyhow!("the agent's key's certificate: {error}"))?;
-            tilo_user_identity::sign_device_cert(&mut cert, &person.root)
-                .map_err(|error| anyhow!("signing the agent's key's certificate: {error}"))?;
-            Some(cert)
-        }
-        (Some(person), None) => {
-            let mut cert = tab
-                .certificate(person.public_key(), tilo_clock::unix_now_ns())
-                .map_err(|error| anyhow!("the browser's certificate: {error}"))?;
-            tilo_user_identity::sign_device_cert(&mut cert, &person.root)
-                .map_err(|error| anyhow!("signing the browser's certificate: {error}"))?;
-            Some(cert)
-        }
-        (None, None) => None,
-    };
     let answer = runtime.block_on(async {
         let client = Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await?;
-        let argument = match &cert {
-            Some(cert) => json!({"ticket": text, "cert": cert, "label": here.cert.device_label}),
-            None => json!({"ticket": text, "label": here.cert.device_label}),
-        };
+        // The daemon signs the tab with the root it keeps, or hands the signing on.
+        let argument = json!({"ticket": text, "tab": tab, "label": here.cert.device_label});
         client
             .act(
                 Some(&here.workspace),
@@ -255,10 +225,13 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         println!("{}", json!({"label": label, "device": device}));
     } else if agent.is_some() {
         println!("Approved: \"{label}\" runs your agent from now on.");
-    } else if cert.is_some() {
+    } else if answer
+        .get("signed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         println!("Signed the browser in as one of your devices.");
     } else {
-        let _ = answer;
         println!(
             "This computer does not hold your identity, so it handed the signing on: approve \
              \"{label}\" on a device that does, in your Tilo or in a tab of yours, and the browser \

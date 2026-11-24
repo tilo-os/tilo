@@ -45,6 +45,21 @@ fn person() -> io::Result<([u8; 32], String, tilo_identity::store::SigningIdenti
     Ok((person, id, root))
 }
 
+/// The certificate the person's root signs for a browser or agent `tab` a sign-in ticket waits
+/// with, as it signs one for any device of theirs.
+///
+/// # Errors
+/// This daemon keeps no root, or the tab is not one a certificate is signed for.
+pub(crate) fn sign_tab(tab: &tilo_device_identity::login::Tab) -> io::Result<DeviceCert> {
+    let (person, _identity, root) = person()?;
+    let mut cert = tab
+        .certificate(person, tilo_clock::unix_now_ns())
+        .map_err(|error| io::Error::other(format!("the tab's certificate: {error}")))?;
+    tilo_user_identity::sign_device_cert(&mut cert, &root)
+        .map_err(|error| io::Error::other(format!("signing the tab's certificate: {error}")))?;
+    Ok(cert)
+}
+
 /// The daemon's `devices#personalDevices` answer: the person's devices as their record lists them,
 /// the revocations their root signed, and whether this daemon keeps that root.
 ///

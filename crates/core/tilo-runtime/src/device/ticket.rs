@@ -1206,10 +1206,28 @@ impl Tickets {
     /// Sign the browser's certificate for the sign-in `ticket`, so it is signed in.
     async fn approve(&self, args: &Value) -> Result<Value> {
         let ticket = Self::ticket_in(args, Direction::SignIn)?;
-        let cert: Option<tilo_user_identity::DeviceCert> = args
-            .get("cert")
+        // The tab the ticket waits with is signed here, by the root this daemon keeps. A daemon
+        // without the root hands the signing on: the request is already queued for the person's
+        // devices that keep it. A certificate the page signed itself comes as `cert`.
+        let tab = args
+            .get("tab")
             .cloned()
-            .and_then(|cert| serde_json::from_value(cert).ok());
+            .map(serde_json::from_value::<tilo_device_identity::login::Tab>)
+            .transpose()
+            .map_err(|error| anyhow!("the tab the ticket waits with: {error}"))?;
+        let cert: Option<tilo_user_identity::DeviceCert> = match &tab {
+            Some(tab) if super::services::root_record().is_ok() => {
+                Some(super::signing::sign_tab(tab)?)
+            }
+            Some(tab) if tab.agent.is_some() => bail!(
+                "This computer does not hold your identity, so it cannot approve a key for your \
+                 agent: run `tilo device add` with the ticket on the one that does."
+            ),
+            _ => args
+                .get("cert")
+                .cloned()
+                .and_then(|cert| serde_json::from_value(cert).ok()),
+        };
         let here = self
             .here()
             .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
@@ -1240,6 +1258,7 @@ impl Tickets {
             Some(cert) => json!({
                 "label": cert.device_label,
                 "device": hex::encode(cert.device_public_key),
+                "signed": true,
             }),
             None => answer,
         })
