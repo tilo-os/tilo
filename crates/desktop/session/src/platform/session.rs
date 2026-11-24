@@ -919,11 +919,11 @@ impl Session {
         if let Some(view) = &view {
             session_services.keep_view(std::sync::Arc::clone(view));
         }
-        // A task's host is started as every tilolang process here is.
+        // A task's host is started by the device's processes, as every tilolang process here is.
         if let Some(processes) = options
             .launch
             .as_ref()
-            .and_then(|launch| launch.processes())
+            .and_then(|launch| launch.device_processes().ok())
         {
             session_services.keep_processes(processes);
         }

@@ -1986,7 +1986,7 @@ impl Daemon {
             .ok()?;
         let catalogue = super::tasks::WorkspaceCatalogue::new(host, caller);
         Some(Arc::new(super::tasks::TaskHosts::new(
-            processes,
+            Arc::new(processes),
             Some(person),
             Arc::new(catalogue),
         )))

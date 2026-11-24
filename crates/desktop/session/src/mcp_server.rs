@@ -1197,9 +1197,9 @@ pub(crate) struct SessionServices {
     founding: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// The asks held for a workspace this session is founding, until the loop delivers them.
     held: std::sync::Mutex<Vec<HeldFounding>>,
-    /// The session's tilolang processes, which start a task's host as they start every app's
-    /// process: `None` until the session starts apps, and on a session that starts none.
-    processes: std::sync::OnceLock<Arc<tilo_runtime::device::processes::Processes>>,
+    /// The device's tilolang processes, which start a task's host as they start every app's
+    /// process: unset until the session reaches them, and on a session that reaches none.
+    processes: std::sync::OnceLock<runtime_portal::device_processes::Device>,
     /// How the person's workspaces stand, to tell a workspace this device holds from one it is
     /// founding even between passes (a founding is under way while the loop waits for it).
     view: std::sync::OnceLock<Arc<crate::workspace_view::WorkspaceView>>,
@@ -1348,25 +1348,22 @@ impl SessionServices {
         }
     }
 
-    /// Start a task's host through `processes` from now on: the session's own, which start
-    /// every tilolang process it runs.
-    pub(crate) fn keep_processes(
-        &self,
-        processes: Arc<tilo_runtime::device::processes::Processes>,
-    ) {
+    /// Start a task's host through `processes` from now on: the device's, which start every
+    /// tilolang process of this computer.
+    pub(crate) fn keep_processes(&self, processes: runtime_portal::device_processes::Device) {
         let _ = self.processes.set(processes);
     }
 
     /// Where the programs of a task run as `person` here are done: each task's host, which the
-    /// session's processes start over its own catalogue. `None` on a session that starts no
-    /// tilolang process.
+    /// device's processes start over this session's catalogue. `None` on a session that reaches
+    /// no tilolang process.
     pub(crate) fn task_hosts(
         self: &Arc<Self>,
         person: Option<&str>,
     ) -> Option<Arc<tilo_runtime::device::tasks::TaskHosts>> {
         let processes = self.processes.get()?;
         Some(Arc::new(tilo_runtime::device::tasks::TaskHosts::new(
-            Arc::clone(processes),
+            Arc::new(processes.clone()),
             person,
             Arc::new(SessionCatalogue::new(Arc::clone(self))),
         )))

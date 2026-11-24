@@ -204,8 +204,6 @@ struct State {
     /// workspace and app, and the session hands each tilolang window's instance to it. `Err` says
     /// why this session reaches no daemon.
     processes: Option<Result<DeviceProcesses, String>>,
-    /// What starts an agent task's host, once the session lent its links ([`Apps::processes`]).
-    task_hosts: Option<Arc<tilo_runtime::device::processes::Processes>>,
     /// Whether this session handed the daemon an instance: only then do processes run its windows,
     /// whose people's access it says again when the workspace's policy changes.
     handed_over: bool,
@@ -413,7 +411,6 @@ impl Apps {
                 wake,
                 processes: None,
                 handed_over: false,
-                task_hosts: None,
                 tools: None,
                 documents: None,
                 #[cfg(target_os = "linux")]
@@ -654,13 +651,6 @@ impl Apps {
         Ok(())
     }
 
-    /// What starts an agent task's host here, once the session lent its window links. A task's
-    /// programs run against this session's own catalogue, so its host is still started from
-    /// the session; every app instance runs in the device's daemon.
-    pub fn processes(&self) -> Option<Arc<tilo_runtime::device::processes::Processes>> {
-        self.state.borrow().task_hosts.clone()
-    }
-
     /// The window links the session keeps for the apps it starts: from here on the first launch of
     /// an app in a workspace hands its process the link, and every later window of that app there
     /// opens in that process.
@@ -684,10 +674,6 @@ impl Apps {
         }));
         let mut state = self.state.borrow_mut();
         state.me = Rc::downgrade(self);
-        state.task_hosts = state
-            .launcher
-            .clone()
-            .map(tilo_runtime::device::processes::Processes::new);
         state.processes = state
             .launcher
             .is_some()

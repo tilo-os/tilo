@@ -35,11 +35,35 @@ pub trait TaskCatalogue: Send + Sync {
     fn catalogue(&self, workspace: &str) -> Catalogue;
 }
 
+/// What starts a task's host: the device's processes, in the daemon or asked by the person's
+/// desktop session on its link.
+pub trait StartsTasks: Send + Sync {
+    /// Start the host of `request`, with its program connection and apps `fds`.
+    ///
+    /// # Errors
+    /// No host starts.
+    fn start_task(&self, request: TaskRequest, fds: TaskFds) -> std::io::Result<()>;
+}
+
+impl StartsTasks for Arc<Processes> {
+    fn start_task(&self, request: TaskRequest, fds: TaskFds) -> std::io::Result<()> {
+        let runs_on = super::package_runs::task_runtimes()
+            .map_err(|why| std::io::Error::new(std::io::ErrorKind::NotFound, why))?;
+        Processes::start_task(self, request, fds, runs_on)
+    }
+}
+
+impl StartsTasks for runtime_portal::device_processes::Device {
+    fn start_task(&self, request: TaskRequest, fds: TaskFds) -> std::io::Result<()> {
+        Self::start_task(self, request, fds)
+    }
+}
+
 /// What starts one connection's task hosts: each task's host, started on its first program by
 /// the device's processes, which run it, follow it and end it like every tilolang process. This
 /// keeps no process of its own.
 pub struct TaskHosts {
-    processes: Arc<Processes>,
+    processes: Arc<dyn StartsTasks>,
     /// The person the connection was admitted for: `me` in its programs.
     person: Mutex<Option<String>>,
     catalogue: Arc<dyn TaskCatalogue>,
@@ -50,7 +74,7 @@ impl TaskHosts {
     /// as `person`.
     #[must_use]
     pub fn new(
-        processes: Arc<Processes>,
+        processes: Arc<dyn StartsTasks>,
         person: Option<&str>,
         catalogue: Arc<dyn TaskCatalogue>,
     ) -> Self {
@@ -81,15 +105,12 @@ impl tilo_mcp::TaskHosts for TaskHosts {
             documents_under: catalogue.documents_under,
             changed_at_document: catalogue.changed_at_document,
         };
-        let runs_on = super::package_runs::task_runtimes()
-            .map_err(|why| std::io::Error::new(std::io::ErrorKind::NotFound, why))?;
         self.processes.start_task(
             request,
             TaskFds {
                 program: host_end.into(),
                 apps,
             },
-            runs_on,
         )?;
         // The host ends when the API closes the program connection, with the client that
         // started it.

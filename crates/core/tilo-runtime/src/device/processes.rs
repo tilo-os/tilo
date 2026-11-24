@@ -529,6 +529,17 @@ impl Processes {
                 FromDevice::Told
             }
             ToDevice::Running => FromDevice::Running(self.instances()),
+            ToDevice::Task { request, fds } => FromDevice::Started(if has(&request.workspace) {
+                super::package_runs::task_runtimes().and_then(|runs_on| {
+                    self.start_task(*request, fds, runs_on)
+                        .map_err(|error| error.to_string())
+                })
+            } else {
+                Err(format!(
+                    "this device has no workspace {} of yours",
+                    request.workspace
+                ))
+            }),
             ToDevice::Origin {
                 app,
                 origin,

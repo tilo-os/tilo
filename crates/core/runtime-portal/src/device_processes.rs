@@ -24,7 +24,9 @@ use serde::{Deserialize, Serialize};
 use tilo_action_policy::MemberAccess;
 
 use crate::packet::{Descriptor, Packet};
-use crate::process_link::{AppAccess, Locale, MediaCommand, MediaView, OpenRequest};
+use crate::process_link::{
+    AppAccess, Locale, MediaCommand, MediaView, OpenRequest, TaskFds, TaskRequest,
+};
 
 /// The launcher's flag for a window whose instance a tilolang process runs.
 pub const PROCESS_ARG: &str = "--tilolang-process";
@@ -62,6 +64,12 @@ pub enum ToDevice {
         #[serde(with = "crate::packet::fd")]
         connection: Descriptor,
     },
+    /// Start an agent task's host for `request`, with its program connection and the apps its
+    /// programs compile against in `fds`: a tilolang process of the task's own.
+    Task {
+        request: Box<TaskRequest>,
+        fds: TaskFds,
+    },
 }
 
 impl Packet for ToDevice {}
@@ -84,6 +92,8 @@ pub enum FromDevice {
     Media(MediaChange),
     /// A [`ToDevice::Origin`]: the connection is attached to the connector, or why it is not.
     Attached(Result<(), String>),
+    /// A [`ToDevice::Task`]: the task's host started, or why it did not.
+    Started(Result<(), String>),
 }
 
 /// What one of the device's apps plays, as the system's media controls hear it: the Playback's
@@ -278,6 +288,24 @@ impl Device {
         match self.ask(&asked)? {
             FromDevice::Attached(Ok(())) => Ok(ours),
             FromDevice::Attached(Err(refusal)) => {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, refusal))
+            }
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Start an agent task's host for `request`, with its program connection and apps `fds`.
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::PermissionDenied`] with why it starts nowhere, or the connection's error.
+    pub fn start_task(&self, request: TaskRequest, fds: TaskFds) -> io::Result<()> {
+        let asked = ToDevice::Task {
+            request: Box::new(request),
+            fds,
+        };
+        match self.ask(&asked)? {
+            FromDevice::Started(Ok(())) => Ok(()),
+            FromDevice::Started(Err(refusal)) => {
                 Err(io::Error::new(io::ErrorKind::PermissionDenied, refusal))
             }
             other => Err(unexpected(&other)),
