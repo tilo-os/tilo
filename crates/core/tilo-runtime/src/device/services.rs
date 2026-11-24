@@ -2615,6 +2615,9 @@ impl RuntimeServices for Daemon {
         self.first
             .found_if_theirs(&self.workspace)
             .map_err(io::Error::other)?;
+        // The app's collaboration connection, opened here, names this launch, which the
+        // collaboration service attests it as.
+        self.apps.launching(app_id, &self.workspace);
         let child = host::launch(
             command,
             app_id,

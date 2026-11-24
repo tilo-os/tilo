@@ -93,6 +93,9 @@ pub struct Apps {
     /// The apps this runtime's own process is the windowless endpoint of,
     /// by app and workspace.
     own: Mutex<std::collections::BTreeSet<(String, String)>>,
+    /// The launches whose collaboration connection this process is opening itself, by app and
+    /// workspace: each attests the one connection from this process that names it, once.
+    launching: Mutex<Vec<(String, String)>>,
     /// The person's answers about this device's camera and microphone, kept in their own store
     /// once the runtime opened it.
     device_grants: tilo_peer_state::DeviceGrants,
@@ -197,6 +200,7 @@ impl Apps {
             launcher_candidates,
             launched,
             own: Mutex::default(),
+            launching: Mutex::default(),
             device_grants: tilo_peer_state::DeviceGrants::unkept(),
             grants: OnceLock::new(),
         }
@@ -215,6 +219,31 @@ impl Apps {
         self.own
             .lock_recover()
             .remove(&(app.to_owned(), workspace.to_owned()));
+    }
+
+    /// Attest the next connection this process opens naming `app` in `workspace` as that launch:
+    /// the one it opens for a process it is about to start, before the process runs.
+    pub(crate) fn launching(&self, app: &str, workspace: &str) {
+        self.launching
+            .lock_recover()
+            .push((app.to_owned(), workspace.to_owned()));
+    }
+
+    /// The launch of `app` in `workspace` this process opened a connection for, taken once by the
+    /// connection that names it.
+    fn take_launching(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        if pid != std::process::id() {
+            return false;
+        }
+        let mut launching = self.launching.lock_recover();
+        let Some(at) = launching
+            .iter()
+            .position(|(launched, into)| launched == app && into == workspace)
+        else {
+            return false;
+        };
+        launching.remove(at);
+        true
     }
 
     /// Whether `pid` is this runtime's own process serving `app` in
@@ -962,6 +991,15 @@ impl LauncherServices for Apps {
             && let Some(launch) = self.instances.take(app, workspace, instance)
         {
             return Ok(Some(launch));
+        }
+        // A connection this process opened for a process it is starting: that launch, once.
+        if window_instance.is_none() && self.take_launching(pid, app, workspace) {
+            return Ok(Some(AuthenticatedApplicationLaunch {
+                continuation_instance: None,
+                launch_ticket: None,
+                windowless: false,
+                opened_for: None,
+            }));
         }
         if self.serves(pid, app, workspace) {
             return Ok(Some(AuthenticatedApplicationLaunch {

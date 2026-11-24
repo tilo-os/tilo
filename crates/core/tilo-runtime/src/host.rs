@@ -88,6 +88,22 @@ impl ServiceConnections {
         Self::open(app_id, workspace, sockets, true)
     }
 
+    /// [`Self::connect`] for a process this process is about to start as `app_id`: its
+    /// collaboration connection names that launch, as the launcher names one, so the
+    /// collaboration service attests it once this process recorded the launch.
+    pub(crate) fn connect_launched(
+        app_id: &str,
+        workspace: &str,
+        sockets: &ServiceSockets<'_>,
+    ) -> io::Result<Self> {
+        let services = Self::open(app_id, workspace, sockets, true)?;
+        if let Some(collab) = &services.collab {
+            let mut collab = collab;
+            launcher::services::write_collab_handoff(&mut collab, app_id, workspace)?;
+        }
+        Ok(services)
+    }
+
     /// [`Self::connect`] with no collaboration connection: a tilolang window's, whose instance
     /// its app's process runs with the app's own.
     #[cfg(target_os = "macos")]
@@ -180,7 +196,20 @@ impl Connections {
         workspace: &str,
         sockets: &ServiceSockets<'_>,
     ) -> io::Result<Self> {
-        let services = ServiceConnections::connect(app_id, workspace, sockets)?;
+        Self::inherited(
+            command,
+            app_id,
+            workspace,
+            ServiceConnections::connect(app_id, workspace, sockets)?,
+        )
+    }
+
+    fn inherited(
+        command: &mut Command,
+        app_id: &str,
+        workspace: &str,
+        services: ServiceConnections,
+    ) -> io::Result<Self> {
         let fds = services.fds();
         command
             .env_remove("TILO_SVC_BLOBS_FD")
@@ -213,9 +242,10 @@ impl Connections {
     }
 }
 
-/// Spawn `command` as `app_id` with its service connections inherited.
+/// Spawn `command` as `app_id` with its service connections inherited, its collaboration
+/// connection naming the launch the caller recorded for it.
 /// # Errors
-/// Returns `Connections::prepare` or spawn errors.
+/// Returns connection or spawn errors.
 #[cfg(unix)]
 pub fn launch(
     mut command: Command,
@@ -223,7 +253,12 @@ pub fn launch(
     workspace: &str,
     sockets: &ServiceSockets<'_>,
 ) -> io::Result<Child> {
-    let _connections = Connections::prepare(&mut command, app_id, workspace, sockets)?;
+    let _connections = Connections::inherited(
+        &mut command,
+        app_id,
+        workspace,
+        ServiceConnections::connect_launched(app_id, workspace, sockets)?,
+    )?;
     command.spawn()
 }
 
