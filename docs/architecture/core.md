@@ -1214,6 +1214,8 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   doesn't apply to it, since nothing stands between them and the action. Apps,
   agents, shell programs and forwarded links still ask, whatever identity they
   carry.
+  A confined device never treats a connection as the person, and refuses to
+  issue device tickets.
   Reads work the same way: a record, page, search or view opened for a person
   reads with that person's grants, never with those of the person whose
   device serves it.
