@@ -79,7 +79,7 @@ pub use tilo_oauth::client::Authorization;
 #[cfg(feature = "store")]
 pub use tilo_oauth::device::{DeviceAuthorization, DeviceCancel};
 pub use tilo_oauth::loopback::LoopbackCancel;
-pub use tilo_oauth::{Registration, TokenSet};
+pub use tilo_oauth::{Provider, Refresh, Registration, Revocation, TokenSet};
 
 /// An `OAuth` grant as the vault keeps it, the shape [`oauth_tokens`] reads back: what a sign-in
 /// made without the credential store (the model manager's, in a terminal) hands the session to

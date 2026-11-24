@@ -46,21 +46,46 @@ struct Types {
     suggestion: OriginType,
     section: OriginType,
     device: OriginType,
+    /// The kind of what plays next on Spotify, when the package declares it.
+    queue: Option<OriginType>,
+    /// The field of the library that holds the queue's songs, when the package declares it.
+    queue_field: Option<String>,
     root: ResourceRef,
     root_ty: OriginType,
 }
 
 /// A request handed to the service and not answered yet.
 enum Pending {
-    Search { query: String },
+    Search {
+        query: String,
+    },
     Home,
-    Artist { key: String },
-    Album { key: String },
-    Playlist { key: String },
-    Stream { key: String },
-    Lyrics { title: String, artist: String },
-    Pin { url: String, name: String },
-    Spotify(SpotifyOp),
+    Artist {
+        key: String,
+    },
+    Album {
+        key: String,
+    },
+    Playlist {
+        key: String,
+    },
+    Stream {
+        key: String,
+    },
+    Lyrics {
+        title: String,
+        artist: String,
+    },
+    Pin {
+        url: String,
+        name: String,
+    },
+    Spotify {
+        op: SpotifyOp,
+        /// The record the effect is about, when the app named one: a playlist of the person's
+        /// own that a write makes or changes.
+        at: Option<String>,
+    },
 }
 
 /// What a request came back with.
@@ -73,7 +98,7 @@ enum Answered {
     Stream(String),
     Lyrics { title: String, lyrics: Lyrics },
     Pinned { url: String, address: String },
-    Spotify(SpotifyOp, Box<SpotifyReply>),
+    Spotify(SpotifyOp, Option<String>, Box<SpotifyReply>),
 }
 
 struct Waiting {
@@ -137,6 +162,7 @@ impl MusicOrigin {
         let suggestion = kind("music.suggestion")?;
         let section = kind("music.section")?;
         let device = kind("music.device")?;
+        let queue = kind("music.spotify_queue");
         let (_, root_ty) = package.main()?;
         let declared = package.meta.types.iter().find(|t| t.id == root_ty)?;
         let collection_of = |name: &str| {
@@ -154,6 +180,11 @@ impl MusicOrigin {
             suggestions_field: collection_of("Suggestion")?,
             sections_field: collection_of("Section")?,
             devices_field: collection_of("SpotifyDevice")?,
+            queue_field: if queue.is_some() {
+                collection_of("SpotifyQueueItem")
+            } else {
+                None
+            },
             track,
             album,
             artist,
@@ -161,6 +192,7 @@ impl MusicOrigin {
             suggestion,
             section,
             device,
+            queue,
             // The root as the store made it: its id is the workspace's one resource of its
             // type, not the type's own id.
             root: host.root_of(app).ok()?,
@@ -200,7 +232,10 @@ impl MusicOrigin {
                 url: url.clone(),
                 name: name.clone(),
             },
-            Pending::Spotify(op) => Pending::Spotify(op.clone()),
+            Pending::Spotify { op, at } => Pending::Spotify {
+                op: op.clone(),
+                at: at.clone(),
+            },
         }
     }
 
@@ -260,9 +295,9 @@ fn answer(service: &dyn Service, pending: &Pending) -> Result<Answered, ServiceE
             url: url.clone(),
             address,
         }),
-        Pending::Spotify(op) => service
+        Pending::Spotify { op, at } => service
             .spotify(op)
-            .map(|reply| Answered::Spotify(op.clone(), Box::new(reply))),
+            .map(|reply| Answered::Spotify(op.clone(), at.clone(), Box::new(reply))),
     }
 }
 
@@ -296,6 +331,115 @@ fn upsert_writes(
             },
         })
         .collect()
+}
+
+/// The fields of the record `key` names in `field`, when it is there already: what a write
+/// reads back changes, never adds a record the app has not shown.
+fn marked(
+    host: &Host,
+    t: &Types,
+    ty: &OriginType,
+    field: &str,
+    key: &str,
+    pairs: &[(&str, Value)],
+) -> Vec<OriginWrite> {
+    items_in(host, &t.root, field)
+        .into_iter()
+        .find(|at| read_text(host, at, ty, "key") == key)
+        .map(|at| OriginWrite::Set {
+            target: at,
+            fields: declared(ty, pairs.to_vec()),
+        })
+        .into_iter()
+        .collect()
+}
+
+/// The fields `pairs` of the record `at`, named as the record's type declares them: a type that
+/// names none of them takes no write.
+fn toward(host: &Host, at: &ResourceRef, pairs: Vec<(&str, Value)>) -> Vec<OriginWrite> {
+    let fields: Vec<(String, Value)> = host
+        .packages()
+        .iter()
+        .flat_map(|package| package.meta.types.iter())
+        .find(|ty| ty.id == at.ty)
+        .map(|ty| {
+            pairs
+                .into_iter()
+                .filter_map(|(name, value)| {
+                    ty.fields
+                        .iter()
+                        .find(|field| field.name == name)
+                        .map(|field| (field.id.clone(), value))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if fields.is_empty() {
+        Vec::new()
+    } else {
+        vec![OriginWrite::Set {
+            target: at.clone(),
+            fields,
+        }]
+    }
+}
+
+/// What plays next on Spotify, written as the library's snapshot of it: every song in its
+/// place, the ones that left taken out, so a second refresh never shows two queues.
+fn queue_writes(host: &Host, t: &Types, songs: &[TrackItem]) -> Vec<OriginWrite> {
+    let (Some(ty), Some(field)) = (&t.queue, &t.queue_field) else {
+        return Vec::new();
+    };
+    let mut rows: BTreeMap<String, Vec<(String, Value)>> = BTreeMap::new();
+    for song in songs {
+        rows.insert(song.key.clone(), queue_entry_fields(ty, song));
+    }
+    let held = items_in(host, &t.root, field);
+    let kept: Vec<String> = held
+        .iter()
+        .map(|at| read_text(host, at, ty, "key"))
+        .collect();
+    let mut writes = Vec::new();
+    for at in &held {
+        let key = read_text(host, at, ty, "key");
+        if let Some(fields) = rows.get(&key) {
+            writes.push(OriginWrite::Set {
+                target: at.clone(),
+                fields: fields.clone(),
+            });
+        } else {
+            writes.push(OriginWrite::Remove {
+                owner: t.root.clone(),
+                field: field.clone(),
+                item: at.clone(),
+            });
+        }
+    }
+    for (key, fields) in rows {
+        if !kept.contains(&key) {
+            writes.push(OriginWrite::Insert {
+                owner: t.root.clone(),
+                field: field.clone(),
+                ty: ty.ty.clone(),
+                fields,
+            });
+        }
+    }
+    writes
+}
+
+fn queue_entry_fields(ty: &OriginType, song: &TrackItem) -> Vec<(String, Value)> {
+    declared(
+        ty,
+        vec![
+            ("key", MusicOrigin::text(&song.key)),
+            ("title", MusicOrigin::text(&song.title)),
+            ("artist", MusicOrigin::text(&song.artist)),
+            ("album", MusicOrigin::text(&song.album)),
+            ("cover", MusicOrigin::text(&song.cover)),
+            ("seconds", Value::Int(song.seconds)),
+        ],
+    )
 }
 
 fn items_in(host: &Host, at: &ResourceRef, field: &str) -> Vec<ResourceRef> {
@@ -401,6 +545,16 @@ impl Origin for MusicOrigin {
                 .to_owned()
         };
         let first = payload.as_str().map_or_else(|| text(0), str::to_owned);
+        // The id the app names in the payload is what a write is about: a playlist of the
+        // person's own, which the answer fills in with what Spotify made of it.
+        let named = |at: usize| {
+            payload
+                .as_array()?
+                .get(at)?
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        };
         let pending = match capability {
             "music.search" => Pending::Search { query: first },
             "music.home" => Pending::Home,
@@ -417,12 +571,13 @@ impl Origin for MusicOrigin {
                 name: text(1),
             },
             "music.spotify" => {
-                let Some(op) = spotify_ask(&first, &text(1)) else {
+                let args: Vec<String> = (1..=3).map(text).collect();
+                let Some(op) = spotify_ask(&first, &args) else {
                     return Delivery::Rejected(format!(
                         "the music origin has no Spotify operation `{first}`"
                     ));
                 };
-                Pending::Spotify(op)
+                Pending::Spotify { op, at: named(2) }
             }
             _ => return Delivery::Rejected(format!("the music origin serves no `{capability}`")),
         };
@@ -533,7 +688,7 @@ impl MusicOrigin {
         match answered {
             Err(error) => {
                 Self::state_writes(t, pending, "failed", &error.0, &mut writes);
-                if matches!(pending, Pending::Spotify(_)) {
+                if matches!(pending, Pending::Spotify { .. }) {
                     Self::spotify_trouble(t, &error.0, &mut writes);
                 }
             }
@@ -567,8 +722,8 @@ impl MusicOrigin {
             Ok(Answered::Pinned { url, address }) => {
                 writes.extend(pin_writes(host, t, url, address));
             }
-            Ok(Answered::Spotify(op, reply)) => {
-                writes.extend(spotify_writes(host, t, op, reply));
+            Ok(Answered::Spotify(op, at, reply)) => {
+                writes.extend(spotify_writes(host, t, op, at.as_ref(), reply));
             }
         }
         if writes.is_empty() {
@@ -608,7 +763,7 @@ impl MusicOrigin {
         let (what, why) = match pending {
             Pending::Search { .. } => ("search_state", "search_trouble"),
             Pending::Home => ("home_state", "home_trouble"),
-            Pending::Spotify(op) => match op.name() {
+            Pending::Spotify { op, .. } => match op.name() {
                 "search" => ("search_state", "search_trouble"),
                 "home" => ("home_state", "home_trouble"),
                 _ => return,
@@ -627,29 +782,63 @@ impl MusicOrigin {
     }
 }
 
-/// The Spotify operation an effect names, with its one argument.
-fn spotify_ask(name: &str, arg: &str) -> Option<SpotifyOp> {
-    let device = || arg.to_owned();
+/// The Spotify operation an effect names, with its arguments: the payload's texts after the
+/// operation's name. A switch is said as `true`/`false` or `1`/`0`.
+fn spotify_ask(name: &str, args: &[String]) -> Option<SpotifyOp> {
+    let arg = |at: usize| args.get(at).cloned().unwrap_or_default();
+    let flag = |at: usize| matches!(args.get(at).map(String::as_str), Some("true" | "1"));
     Some(match name {
         "connect" => SpotifyOp::Connect,
         "finish" => SpotifyOp::Finish,
         "disconnect" => SpotifyOp::Disconnect,
         "status" => SpotifyOp::Status,
         "devices" => SpotifyOp::Devices,
-        "transfer" => SpotifyOp::Transfer { device: device() },
+        "transfer" => SpotifyOp::Transfer { device: arg(0) },
         "play" => SpotifyOp::Play {
-            uri: device(),
+            uri: arg(0),
             device: String::new(),
         },
-        "pause" => SpotifyOp::Pause { device: device() },
-        "next" => SpotifyOp::Next { device: device() },
-        "previous" => SpotifyOp::Previous { device: device() },
+        "pause" => SpotifyOp::Pause { device: arg(0) },
+        "next" => SpotifyOp::Next { device: arg(0) },
+        "previous" => SpotifyOp::Previous { device: arg(0) },
         "now" => SpotifyOp::Now,
-        "search" => SpotifyOp::Search { query: device() },
+        "search" => SpotifyOp::Search { query: arg(0) },
         "home" => SpotifyOp::Home,
-        "album" => SpotifyOp::Album { key: device() },
-        "artist" => SpotifyOp::Artist { key: device() },
-        "playlist" => SpotifyOp::Playlist { key: device() },
+        "album" => SpotifyOp::Album { key: arg(0) },
+        "artist" => SpotifyOp::Artist { key: arg(0) },
+        "playlist" => SpotifyOp::Playlist { key: arg(0) },
+        "like" => SpotifyOp::Like {
+            key: arg(0),
+            liked: flag(1),
+        },
+        "save_album" => SpotifyOp::SaveAlbum {
+            key: arg(0),
+            keep: flag(1),
+        },
+        "follow" => SpotifyOp::Follow {
+            key: arg(0),
+            follow: flag(1),
+        },
+        "create_playlist" => SpotifyOp::CreatePlaylist { name: arg(0) },
+        "edit_playlist" => SpotifyOp::EditPlaylist {
+            key: arg(0),
+            name: arg(1),
+            description: arg(2),
+        },
+        "playlist_add" => SpotifyOp::AddToPlaylist {
+            key: arg(0),
+            uri: arg(1),
+        },
+        "playlist_remove" => SpotifyOp::RemoveFromPlaylist {
+            key: arg(0),
+            uri: arg(1),
+        },
+        "queue" => SpotifyOp::Queue,
+        "add_to_queue" => SpotifyOp::AddToQueue { uri: arg(0) },
+        "saved_page" => SpotifyOp::SavedPage {
+            kind: arg(0),
+            offset: arg(1).parse().unwrap_or(0),
+        },
         _ => return None,
     })
 }
@@ -664,14 +853,65 @@ fn spotify_writes(
     host: &Host,
     t: &Types,
     op: &SpotifyOp,
+    at: Option<&String>,
     reply: &SpotifyReply,
 ) -> Vec<OriginWrite> {
     let mut writes = Vec::new();
+    // A sign-in Spotify will not renew is the person's to give again: that, and nothing else
+    // the answer might have held.
+    if reply.expired {
+        let mut fields = Vec::new();
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_state",
+            MusicOrigin::text("expired"),
+        );
+        put(
+            &t.root_ty,
+            &mut fields,
+            "spotify_trouble",
+            MusicOrigin::text("Spotify ended the sign-in"),
+        );
+        if !fields.is_empty() {
+            writes.push(OriginWrite::Set {
+                target: t.root.clone(),
+                fields,
+            });
+        }
+        return writes;
+    }
     if let Some(page) = &reply.search {
         writes.extend(search_writes(host, t, page));
     }
     if let Some(page) = &reply.home {
         writes.extend(home_writes(host, t, page));
+    }
+    // What the person keeps in Spotify, page by page: each page says where the page after it
+    // starts, so the app can ask for more without counting for itself. A home page's own write
+    // already put its sections and rows there.
+    for page in &reply.pages {
+        if reply.home.is_none() {
+            writes.extend(suggestions(
+                host,
+                t,
+                &page.section.title,
+                &page.section.items,
+            ));
+        }
+        let mut fields = Vec::new();
+        put(
+            &t.root_ty,
+            &mut fields,
+            &format!("spotify_next_{}", page.kind),
+            Value::Int(page.next),
+        );
+        if !fields.is_empty() {
+            writes.push(OriginWrite::Set {
+                target: t.root.clone(),
+                fields,
+            });
+        }
     }
     match op {
         SpotifyOp::Album { .. } => {
@@ -694,6 +934,51 @@ fn spotify_writes(
                     page,
                 ));
             }
+        }
+        SpotifyOp::Like { key, .. } => writes.extend(marked(
+            host,
+            t,
+            &t.track,
+            &t.tracks_field,
+            key,
+            &[("liked", Value::Bool(reply.liked))],
+        )),
+        SpotifyOp::SaveAlbum { key, .. } => writes.extend(marked(
+            host,
+            t,
+            &t.album,
+            &t.albums_field,
+            key,
+            &[("in_library", Value::Bool(reply.saved))],
+        )),
+        SpotifyOp::Follow { key, .. } => writes.extend(marked(
+            host,
+            t,
+            &t.artist,
+            &t.artists_field,
+            key,
+            &[("followed", Value::Bool(reply.followed))],
+        )),
+        // A playlist of the person's own, as Spotify has it: the app holds the key its writes
+        // go to, and what the provider says it is called now.
+        SpotifyOp::CreatePlaylist { .. } | SpotifyOp::EditPlaylist { .. } => {
+            if let (Some(at), Some(made)) = (at, &reply.made)
+                && let Some(probe) = ResourceRef::parse_id(at, String::new())
+                && let Some(at) = host.runtime().resolve_ref(&probe)
+            {
+                writes.extend(toward(
+                    host,
+                    &at,
+                    vec![
+                        ("spotify", MusicOrigin::text(&made.key)),
+                        ("name", MusicOrigin::text(&made.title)),
+                        ("description", MusicOrigin::text(&made.description)),
+                    ],
+                ));
+            }
+        }
+        SpotifyOp::Queue | SpotifyOp::AddToQueue { .. } => {
+            writes.extend(queue_writes(host, t, &reply.queue));
         }
         _ => {}
     }
@@ -883,6 +1168,15 @@ fn artist_fields(ty: &OriginType, a: &ArtistItem, found_for: &str) -> Vec<(Strin
         ("name", MusicOrigin::text(&a.name)),
         ("subscribers", Value::Int(a.subscribers)),
         ("avatar", MusicOrigin::text(&a.avatar)),
+        (
+            "genres",
+            Value::List(
+                a.genres
+                    .iter()
+                    .map(|genre| MusicOrigin::text(genre))
+                    .collect(),
+            ),
+        ),
     ];
     if !found_for.is_empty() {
         pairs.push(("found_for", MusicOrigin::text(found_for)));
@@ -897,6 +1191,7 @@ fn playlist_fields(ty: &OriginType, p: &PlaylistItem, found_for: &str) -> Vec<(S
         ("subtitle", MusicOrigin::text(&p.subtitle)),
         ("track_count", Value::Int(p.track_count)),
         ("cover", MusicOrigin::text(&p.cover)),
+        ("description", MusicOrigin::text(&p.description)),
     ];
     if !found_for.is_empty() {
         pairs.push(("found_for", MusicOrigin::text(found_for)));

@@ -1010,6 +1010,8 @@ impl Resolver<'_> {
             "Date" => *have == Ty::Date,
             "Set<Text>" => *have == Ty::Set(Box::new(Ty::Text)),
             "List<File>" => *have == Ty::List(Box::new(Ty::File)),
+            // A list of the service's own words, such as an artist's kinds of music.
+            "List<Text>" => *have == Ty::List(Box::new(Ty::Text)),
             // A reference to one of the service's other kinds (`caldav.calendar`, reached
             // from `Option<caldav.calendar>` above): a record that comes from that kind.
             kind => match have {

@@ -37,7 +37,7 @@ pub use remote::RemoteService;
 pub use service::{
     AlbumItem, AlbumPage, ArtistItem, ArtistPage, HomePage, HomeSection, Item, Live, LyricLine,
     Lyrics, PlaylistItem, Scripted, SearchPage, Service, ServiceError, SpotifyDevice, SpotifyOp,
-    SpotifyReply, TrackItem, scripted,
+    SpotifyPage, SpotifyReply, TrackItem, scripted,
 };
 
 /// The origin kept in step with YouTube over the connector at the far end of `stream`, waking

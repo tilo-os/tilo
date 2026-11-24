@@ -3,7 +3,8 @@
 
 pub mod ownership {
     pub use account_credentials::{
-        Authorization, Capability, ClientTable, CredentialStore, OAuthIssuer, OAuthUse, TokenSet,
+        Authorization, Capability, ClientTable, CredentialError, CredentialStore, OAuthIssuer,
+        OAuthUse, Provider, Refresh, Registration, Revocation, TokenSet,
     };
 }
 pub use accounts::AccountId;

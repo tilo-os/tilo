@@ -49,6 +49,10 @@ pub struct ArtistItem {
     pub name: String,
     pub subscribers: i64,
     pub avatar: String,
+    /// What the catalogue calls the artist's kind of music, as it lists them: empty where the
+    /// catalogue names none.
+    #[serde(default)]
+    pub genres: Vec<String>,
 }
 
 /// A catalogue playlist, as the service says it is.
@@ -59,6 +63,9 @@ pub struct PlaylistItem {
     pub subtitle: String,
     pub track_count: i64,
     pub cover: String,
+    /// What the playlist says about itself; empty when it says nothing.
+    #[serde(default)]
+    pub description: String,
 }
 
 /// One thing a search or the home page names.
@@ -263,6 +270,7 @@ impl Service for Live {
             name: a.name,
             subscribers: i64::try_from(a.subscriber_count).unwrap_or(i64::MAX),
             avatar: a.avatar_url,
+            genres: Vec::new(),
         };
         let playlist = |p: crate::backend::PlaylistHit| PlaylistItem {
             key: p.id,
@@ -270,6 +278,7 @@ impl Service for Live {
             subtitle: p.subtitle,
             track_count: i64::try_from(p.track_count).unwrap_or(i64::MAX),
             cover: p.cover_url,
+            description: String::new(),
         };
         let top = bundle.top.map(|top| match top {
             crate::backend::SearchTop::Track(t) => Item::Track(track(t)),
@@ -337,6 +346,7 @@ impl Service for Live {
                 name: page.name,
                 subscribers: i64::try_from(page.subscriber_count).unwrap_or(i64::MAX),
                 avatar: page.header_url.clone(),
+                genres: Vec::new(),
             },
             description: page.description,
             header: page.header_url,
@@ -377,6 +387,7 @@ impl Service for Live {
                     name: a.name,
                     subscribers: i64::try_from(a.subscriber_count).unwrap_or(i64::MAX),
                     avatar: a.avatar_url,
+                    genres: Vec::new(),
                 })
                 .collect(),
         })
@@ -497,6 +508,7 @@ impl Item {
                 name: t.artist,
                 subscribers: 0,
                 avatar: t.cover,
+                genres: Vec::new(),
             }),
             (Item::Track(t), "playlist") => Item::Playlist(PlaylistItem {
                 key: t.key,
@@ -504,6 +516,7 @@ impl Item {
                 subtitle: t.artist,
                 track_count: 0,
                 cover: t.cover,
+                description: String::new(),
             }),
             (item, _) => item,
         }
@@ -576,6 +589,53 @@ pub enum SpotifyOp {
     Playlist {
         key: String,
     },
+    /// Keep a song in Spotify's library, or take it out.
+    Like {
+        key: String,
+        liked: bool,
+    },
+    /// Keep an album in Spotify's library, or take it out.
+    SaveAlbum {
+        key: String,
+        keep: bool,
+    },
+    /// Follow an artist, or stop following them.
+    Follow {
+        key: String,
+        follow: bool,
+    },
+    /// Make a private playlist of the person's own, called `name`.
+    CreatePlaylist {
+        name: String,
+    },
+    /// Give a playlist of the person's a new name and description.
+    EditPlaylist {
+        key: String,
+        name: String,
+        description: String,
+    },
+    /// Put `uri` at the end of a playlist.
+    AddToPlaylist {
+        key: String,
+        uri: String,
+    },
+    /// Take `uri` out of a playlist, every time it is in it.
+    RemoveFromPlaylist {
+        key: String,
+        uri: String,
+    },
+    /// What plays next on Spotify: its own queue, which the app shows but never edits.
+    Queue,
+    /// Put `uri` after what plays on Spotify.
+    AddToQueue {
+        uri: String,
+    },
+    /// One more page of what the person keeps: `tracks`, `albums`, `playlists` or `artists`,
+    /// from `offset`.
+    SavedPage {
+        kind: String,
+        offset: i64,
+    },
 }
 
 impl SpotifyOp {
@@ -599,8 +659,29 @@ impl SpotifyOp {
             Self::Album { .. } => "album",
             Self::Artist { .. } => "artist",
             Self::Playlist { .. } => "playlist",
+            Self::Like { .. } => "like",
+            Self::SaveAlbum { .. } => "save_album",
+            Self::Follow { .. } => "follow",
+            Self::CreatePlaylist { .. } => "create_playlist",
+            Self::EditPlaylist { .. } => "edit_playlist",
+            Self::AddToPlaylist { .. } => "playlist_add",
+            Self::RemoveFromPlaylist { .. } => "playlist_remove",
+            Self::Queue => "queue",
+            Self::AddToQueue { .. } => "add_to_queue",
+            Self::SavedPage { .. } => "saved_page",
         }
     }
+}
+
+/// One page of what the person keeps in Spotify: a section of the home page, and where the page
+/// after it starts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotifyPage {
+    /// `tracks`, `albums`, `playlists` or `artists`: which of the person's collections.
+    pub kind: String,
+    pub section: HomeSection,
+    /// The offset the next page starts at; 0 when Spotify said there is no more.
+    pub next: i64,
 }
 
 /// What Spotify answered: a catalogue page, the person's sign-in, or their devices.
@@ -625,6 +706,28 @@ pub struct SpotifyReply {
     pub album: Option<AlbumPage>,
     pub artist: Option<ArtistPage>,
     pub playlist: Option<AlbumPage>,
+    /// What plays next on Spotify, in its order, from [`SpotifyOp::Queue`].
+    #[serde(default)]
+    pub queue: Vec<TrackItem>,
+    /// Pages of what the person keeps, from the home page and [`SpotifyOp::SavedPage`].
+    #[serde(default)]
+    pub pages: Vec<SpotifyPage>,
+    /// Whether the song a like or unlike named is in the library now, read back.
+    #[serde(default)]
+    pub liked: bool,
+    /// Whether the album a save or removal named is in the library now, read back.
+    #[serde(default)]
+    pub saved: bool,
+    /// Whether the person follows the artist a follow or unfollow named, read back.
+    #[serde(default)]
+    pub followed: bool,
+    /// The playlist a create or edit made, as Spotify has it now.
+    #[serde(default)]
+    pub made: Option<PlaylistItem>,
+    /// Spotify says this sign-in is over: the person connects again. Nothing else in it is an
+    /// answer to what was asked.
+    #[serde(default)]
+    pub expired: bool,
 }
 
 /// A service that answers from a script, for a test or a development session: the same answers

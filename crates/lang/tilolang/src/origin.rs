@@ -1248,6 +1248,11 @@ pub const KINDS: &[OriginKind] = &[
                 "Text",
                 "The search that found them, empty for none.",
             ),
+            field(
+                "genres",
+                "List<Text>",
+                "The kinds of music the catalogue calls theirs, empty where it names none.",
+            ),
         ],
     },
     OriginKind {
@@ -1307,6 +1312,27 @@ pub const KINDS: &[OriginKind] = &[
                 "Text",
                 "The address of its picture, empty for none.",
             ),
+        ],
+    },
+    OriginKind {
+        name: "music.spotify_queue",
+        doc: "A song in what plays next on Spotify, in its own order.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "The song's Spotify address."),
+            field("title", "Text", "What it is called."),
+            field(
+                "artist",
+                "Text",
+                "Who sings it, or the show it is an episode of.",
+            ),
+            field("album", "Text", "The album or show it is from."),
+            field(
+                "cover",
+                "Text",
+                "The address of its picture, empty for none.",
+            ),
+            field("seconds", "Int", "How long it runs."),
         ],
     },
     OriginKind {
