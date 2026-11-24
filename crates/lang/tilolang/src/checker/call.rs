@@ -3076,11 +3076,13 @@ impl Checker<'_> {
         Ex::host(imp, arguments, held)
     }
 
-    /// `engine.call(op, input)`, `engine.start(op, input)`, `engine.stream(op, input)`,
-    /// `engine.state(job)`, `engine.picture(op, input)`, `engine.status(job)` and
-    /// `engine.cancel(job)`: the device's own work — a decode, a render, a raster — asked by a
-    /// name the host answers for this app. A call answers now; a start answers a job id, and the
-    /// job's progress is asked for by that id. Both carry JSON, which the app reads into its own
+    /// `engine.call(op, input)`, `engine.start(op, input)`, `engine.run(op, input)`,
+    /// `engine.stream(op, input)`, `engine.state(job)`, `engine.picture(op, input)`,
+    /// `engine.status(job)` and `engine.cancel(job)`: the device's own work — a decode, a render,
+    /// a raster — asked by a name the host answers for this app. A call answers now; a start
+    /// answers a job id, and the job's progress is asked for by that id; a run starts the work
+    /// and answers the job's own state once it ends, so a caller that waits for the answer does
+    /// not hold a job to ask about. Both carry JSON, which the app reads into its own
     /// records with `json.decode<T>`. A stream is a job whose newest frame the device keeps,
     /// shown by the address `"tilo-live://" + job` and moved on without the app asking; what it
     /// says of itself — connecting, running, or why it ended — is `engine.state`, a reading a
@@ -3091,18 +3093,19 @@ impl Checker<'_> {
     fn builtin_engine(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let result = || Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text));
         let asks_input = match name.name.as_str() {
-            "call" | "start" | "stream" | "picture" => true,
+            "call" | "start" | "run" | "stream" | "picture" => true,
             "state" | "status" | "cancel" => false,
             other => {
                 self.err(
                     "E022",
                     name.span,
                     format!(
-                        "`engine` has `call`, `start`, `stream`, `state`, `picture`, \
+                        "`engine` has `call`, `start`, `run`, `stream`, `state`, `picture`, \
                          `status` and `cancel`, not `{other}`: `engine.call(op, input)`, \
-                         `engine.start(op, input)`, `engine.stream(op, input)`, \
-                         `engine.state(job)`, `engine.picture(op, input)`, \
-                         `engine.status(job)` and `engine.cancel(job)`"
+                         `engine.start(op, input)`, `engine.run(op, input)`, \
+                         `engine.stream(op, input)`, `engine.state(job)`, \
+                         `engine.picture(op, input)`, `engine.status(job)` and \
+                         `engine.cancel(job)`"
                     ),
                 );
                 for a in args {
@@ -3148,7 +3151,7 @@ impl Checker<'_> {
                             "{what} takes the op and its input, and nothing else: \
                              `engine.{}(\"{}\u{2026}\", input)",
                             name.name,
-                            if name.name == "start" || name.name == "stream" {
+                            if name.name == "start" || name.name == "run" || name.name == "stream" {
                                 "paint"
                             } else {
                                 "decode"
@@ -3200,6 +3203,10 @@ impl Checker<'_> {
             "start" => {
                 let input = input.unwrap_or_else(Ex::error);
                 Ex::host(Imp::EngineStart, vec![app, held, input], result())
+            }
+            "run" => {
+                let input = input.unwrap_or_else(Ex::error);
+                Ex::host(Imp::EngineRun, vec![app, held, input], result())
             }
             "stream" => {
                 let input = input.unwrap_or_else(Ex::error);

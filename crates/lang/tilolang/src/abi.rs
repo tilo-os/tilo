@@ -554,6 +554,7 @@ imports! {
     // fills.
     EngineCall = "engine_call" ([H, H, H] -> [H]);
     EngineStart = "engine_start" ([H, H, H] -> [H]);
+    EngineRun = "engine_run" ([H, H, H] -> [H]);
     EngineStream = "engine_stream" ([H, H, H] -> [H]);
     EngineState = "engine_state" ([H] -> [H]);
     EnginePicture = "engine_picture" ([H, H, H] -> [H]);

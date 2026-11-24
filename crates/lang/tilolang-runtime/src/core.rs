@@ -30,7 +30,8 @@ use Imp::{
     CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace,
     CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart,
     DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DurationText, Earlier, EditField,
-    EngineCall, EngineCancel, EnginePicture, EngineStart, EngineState, EngineStatus, EngineStream,
+    EngineCall, EngineCancel, EnginePicture, EngineRun, EngineStart, EngineState, EngineStatus,
+    EngineStream,
     EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
     EventPart, EventValue, FieldChanged, FileAt, FileBook, FileBookCover, FileBookInfo,
     FileCompress, FileCopy, FileCrop, FileData, FileEncode, FileExtract, FileFiles, FileImageInfo,
@@ -698,7 +699,7 @@ impl Core {
             | ClipboardPasteImage => self.clipboard_import(imp, a),
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
             FontFamilies => self.font_import(imp, a),
-            EngineCall | EngineStart | EngineStream | EngineState | EnginePicture
+            EngineCall | EngineStart | EngineRun | EngineStream | EngineState | EnginePicture
             | EngineStatus | EngineCancel => self.engine_import(imp, a),
             VaultCode => self.vault_import(a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin

@@ -49,6 +49,26 @@ action paint(p: Page) {
     }
 }
 
+/// One request waited for: the device's answer is read here, and nothing keeps a job to ask.
+action awaited(p: Page) {
+    match engine.run("page.slow", "slow") {
+        .ok(said) => {
+            p.words = said
+        }
+        .err(why) => {
+            p.words = why
+        }
+    }
+}
+
+/// What `engine.run` answers is its action's own answer: the caller reads it, not the window.
+action answered(p: Page) -> Text {
+    match engine.run("page.slow", "slow") {
+        .ok(said) => said,
+        .err(why) => why,
+    }
+}
+
 /// The picture the device drew, shown by the address it kept it at.
 action drawn(p: Page) {
     match engine.picture("page.render", "third") {
@@ -196,6 +216,88 @@ action refused(p: Page) {
             )]
         );
         assert_eq!(bench.words(), r#"{"state":"done","job":"job-1"}"#);
+    }
+
+    /// A device whose job runs for a while: `status` says `running` the first `running` times,
+    /// then `done` with what it made.
+    #[derive(Clone, Default)]
+    struct Slow {
+        running: Rc<RefCell<usize>>,
+        asked: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl EngineHost for Slow {
+        fn call(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
+            Err(format!("`{op}` is no call of this device"))
+        }
+
+        fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+            self.asked.borrow_mut().push(format!("start {op} {input}"));
+            Ok("job-slow".to_owned())
+        }
+
+        fn status(&self, job: &str) -> Result<String, String> {
+            let mut asked = self.asked.borrow_mut();
+            asked.push(format!("status {job}"));
+            let mut running = self.running.borrow_mut();
+            if *running > 0 {
+                *running -= 1;
+                return Ok(r#"{"state":"running","done":1,"total":8}"#.to_owned());
+            }
+            Ok(r#"{"state":"done","answer":"201"}"#.to_owned())
+        }
+
+        fn cancel(&self, _job: &str) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_run_waits_for_the_device_and_answers_its_caller() {
+        let bench = Bench::new(false);
+        let slow = Slow::default();
+        *slow.running.borrow_mut() = 2;
+        bench.rt.set_engine(slow.clone());
+        let id = bench.app.action("answered");
+        let outcome = bench
+            .rt
+            .invoke_action(&me(), (id.as_str(), vec![Value::resource(&bench.page)]))
+            .unwrap();
+        let InvokeOutcome::Done(answer) = outcome else {
+            panic!("the run ends with its answer, not {outcome:?}");
+        };
+        assert_eq!(
+            answer,
+            Value::text(r#"{"state":"done","answer":"201"}"#),
+            "the caller reads the job's own state once it ends"
+        );
+        assert_eq!(
+            slow.asked.borrow().as_slice(),
+            [
+                "start page.slow slow",
+                "status job-slow",
+                "status job-slow",
+                "status job-slow",
+            ],
+            "the device starts the work once and is asked how it does until it ends"
+        );
+        assert_eq!(
+            bench.rt.read(&bench.page, "words").unwrap(),
+            Value::text(""),
+            "the answer went to the caller, not into the window"
+        );
+    }
+
+    #[test]
+    fn a_run_keeps_its_answer_in_the_window_when_its_action_does() {
+        let bench = Bench::new(false);
+        let slow = Slow::default();
+        bench.rt.set_engine(slow.clone());
+        bench.call("awaited");
+        assert_eq!(
+            bench.words(),
+            r#"{"state":"done","answer":"201"}"#
+        );
     }
 
     #[test]

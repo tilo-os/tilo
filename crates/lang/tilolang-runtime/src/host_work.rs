@@ -152,6 +152,18 @@ impl Push for LiveFrames {
     }
 }
 
+/// Whether the job state `state` says the job ended, as JSON `{"state": "done", ...}`: `Some(true)`
+/// once it did, `Some(false)` while it still runs, `None` when it names no state this contract
+/// knows.
+fn ended(state: &str) -> Option<bool> {
+    let parsed: serde_json::Value = serde_json::from_str(state).ok()?;
+    match parsed.get("state")?.as_str()? {
+        "queued" | "running" => Some(false),
+        "done" | "failed" | "cancelled" => Some(true),
+        _ => None,
+    }
+}
+
 /// What the device answers an app's engine work with (`Runtime::set_engine`).
 pub trait EngineHost {
     /// One request answered now: the app asking, the op it names, and its input as the app wrote
@@ -263,6 +275,12 @@ impl Core {
                 let input = self.text(a.h(2)?)?;
                 self.result(self.engine_begin(&app, &op, &input).map(Value::text))
             }
+            Imp::EngineRun => {
+                let app = self.text(a.h(0)?)?;
+                let op = self.text(a.h(1)?)?;
+                let input = self.text(a.h(2)?)?;
+                self.result(self.engine_run(&app, &op, &input).map(Value::text))
+            }
             Imp::EngineStream => {
                 let app = self.text(a.h(0)?)?;
                 let op = self.text(a.h(1)?)?;
@@ -360,6 +378,41 @@ impl Core {
         };
         self.note_state_read(key, generation, &seen);
         seen
+    }
+
+    /// `engine.run`: the device's work started and waited for, answering the job's own state as
+    /// `engine.status` writes it once the job ends: `done` with what it made, `failed` with why,
+    /// or `cancelled`. The whole wait is one ask of the device, so a run replayed answers from its
+    /// journal instead of starting the work a second time.
+    fn engine_run(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        /// How long a wait sleeps between asks of the job, so a quick job is not held back.
+        const POLL: std::time::Duration = std::time::Duration::from_millis(5);
+        let answer = self.device_work("run", op, input, || {
+            let borrowing = self.engine_work.borrow();
+            let Some(host) = borrowing.as_ref() else {
+                return Value::Error(no_engine());
+            };
+            let job = match host.start(app, op, input) {
+                Ok(job) => job,
+                Err(why) => return Value::Error(why),
+            };
+            loop {
+                let state = match host.status(&job) {
+                    Ok(state) => state,
+                    Err(why) => return Value::Error(why),
+                };
+                match ended(&state) {
+                    Some(true) => return Value::text(state),
+                    Some(false) => std::thread::sleep(POLL),
+                    None => {
+                        return Value::Error(format!(
+                            "the device answered how job `{job}` is doing without saying: {state}"
+                        ));
+                    }
+                }
+            }
+        })?;
+        text_answer(answer)
     }
 
     fn engine_status(&self, job: &str) -> Result<String, String> {
