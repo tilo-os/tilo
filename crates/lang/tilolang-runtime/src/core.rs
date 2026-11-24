@@ -600,7 +600,6 @@ impl Core {
 }
 
 impl Core {
-    #[expect(clippy::too_many_lines, reason = "one arm per imported call")]
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | StrToFloat
