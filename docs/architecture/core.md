@@ -60,7 +60,9 @@ one resource to everyone.
   without reading them.
   Every device checks a sealed change's signer, that the signer may write for
   the member the change names (its own person, or an agent it runs), and the
-  member's grants. A device that can
+  member's grants. Outside the seal a change written for a caller elsewhere
+  names that caller and carries their signature over the call's digest, never
+  its arguments, so a device without the keys checks it too. A device that can
   read the change also checks its contents, with the same check admission uses.
   A change that fails a reader's check is refused on its own, and the record
   stays readable without it. One bad change, from a buggy writer or a hostile
