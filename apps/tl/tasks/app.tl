@@ -259,7 +259,8 @@ type Task {
         filter "Done" = status == .done or status == .cancelled (icon: .circle_check)
         filter "Assigned to me" = assignee == workspace.me
             and not (status == .done or status == .cancelled) (icon: .user)
-        filter "Nobody yet" = assignee == .none and contact == .none
+        filter "Nobody yet" = assignee == .none
+            and contact == .none
             and not (status == .done or status == .cancelled) (icon: .circle_dashed)
         filter "Agent work" = assigned_by != .none
             and not (status == .done or status == .cancelled) (icon: .bot)
@@ -821,7 +822,11 @@ action assign_many(chosen: List<Task>, who: Option<Actor>) uses time (
 
 /// Links a task to another, with how they relate: the workspace's own link between two tasks,
 /// which the page of the task it relates to draws too.
-action relate(t: Task, other: Task, how: Text) (icon: .link, label: "Relate to…", did: "linked a task") {
+action relate(t: Task, other: Task, how: Text) (
+    icon: .link,
+    label: "Relate to…",
+    did: "linked a task",
+) {
     require t != other "A task does not relate to itself"
     require not t.related.any(r -> r.task == other and r.how == how) "They are related already"
     t.related.insert(Related(task: other, how: how))

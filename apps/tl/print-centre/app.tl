@@ -159,11 +159,7 @@ type ScanAsk {
 
 /// How many pages the person's scanned document holds.
 fn scan_page_count(p: PrintCentre) -> Int {
-    if let scan = p.scans.first() {
-        scan.pages.len()
-    } else {
-        0
-    }
+    if let scan = p.scans.first() { scan.pages.len() } else { 0 }
 }
 
 /// How a queue stands.
@@ -172,11 +168,7 @@ fn queue_words(state: device.QueueState) -> Text {
         std.say("Ready")
     } else if state == .printing {
         std.say("Printing")
-    } else if state == .paused {
-        std.say("Paused")
-    } else {
-        std.say("Offline")
-    }
+    } else if state == .paused { std.say("Paused") } else { std.say("Offline") }
 }
 
 /// How a job stands.
@@ -191,11 +183,7 @@ fn job_words(state: device.JobState) -> Text {
         std.say("Stopped")
     } else if state == .cancelled {
         std.say("Cancelled")
-    } else if state == .failed {
-        std.say("Failed")
-    } else {
-        std.say("Printed")
-    }
+    } else if state == .failed { std.say("Failed") } else { std.say("Printed") }
 }
 
 fn job_active(job: device.PrintJob) -> Bool {
@@ -212,9 +200,7 @@ fn size_words(bytes: Int) -> Text {
         std.say("{bytes} B")
     } else if bytes < 1000000 {
         std.say("{bytes / 1000} KB")
-    } else {
-        std.say("{bytes / 1000000} MB")
-    }
+    } else { std.say("{bytes / 1000000} MB") }
 }
 
 /// The jobs waiting on `queue`.
@@ -246,9 +232,7 @@ action preview_of_file(file: File) -> Option<File> uses image {
             .ok(page) => .some(page),
             .err(why) => .none,
         }
-    } else {
-        .none
-    }
+    } else { .none }
 }
 
 /// Asks the engine what the chosen printer reports, so the form offers only what it can do.
@@ -259,10 +243,16 @@ action ask_options(p: PrintCentre) {
     }
     match engine.call("options", json.encode(OptionsAsk(queue: doc.queue))) {
         .ok(text) => match json.decode<PrinterOptions>(text) {
-            .ok(options) => { p.options = options }
-            .err(why) => { doc.trouble = why }
+            .ok(options) => {
+                p.options = options
+            }
+            .err(why) => {
+                doc.trouble = why
+            }
         },
-        .err(why) => { doc.trouble = why },
+        .err(why) => {
+            doc.trouble = why
+        }
     }
 }
 
@@ -301,13 +291,17 @@ action send_to_printer(p: PrintCentre) {
             orientation: doc.orientation,
         )
         match engine.start("print", json.encode(asked)) {
-            .err(why) => { doc.failed = why }
+            .err(why) => {
+                doc.failed = why
+            }
             .ok(text) => match json.decode<JobAnswer>(text) {
                 .ok(answer) => {
                     doc.job = answer.job
                     doc.failed = ""
                 }
-                .err(why) => { doc.failed = why }
+                .err(why) => {
+                    doc.failed = why
+                }
             },
         }
     } else {
@@ -354,11 +348,7 @@ action scan_page(p: PrintCentre) {
     let scanners = device.scanners
     let scanner = if scan.scanner != "" {
         scan.scanner
-    } else if let first = scanners.found.first() {
-        first.device
-    } else {
-        ""
-    }
+    } else if let first = scanners.found.first() { first.device } else { "" }
     if scanner == "" {
         scan.failed = std.say("This computer has no scanner")
         return
@@ -372,13 +362,17 @@ action scan_page(p: PrintCentre) {
         name: "scan-{scan.pages.len() + 1}.png",
     )
     match engine.start("scan", json.encode(asked)) {
-        .err(why) => { scan.failed = why }
+        .err(why) => {
+            scan.failed = why
+        }
         .ok(text) => match json.decode<JobAnswer>(text) {
             .ok(answer) => {
                 scan.job = answer.job
                 scan.failed = ""
             }
-            .err(why) => { scan.failed = why }
+            .err(why) => {
+                scan.failed = why
+            }
         },
     }
 }
@@ -401,7 +395,10 @@ action poll_scan(p: PrintCentre) {
                         if state.state == "done" {
                             let name = "scan-{scan.pages.len() + 1}.png"
                             scan.pages.insert(
-                                ScannedPage(file: File.at(name, state.url), order: scan.pages.len()),
+                                ScannedPage(
+                                    file: File.at(name, state.url),
+                                    order: scan.pages.len(),
+                                ),
                             )
                             scan.job = ""
                             scan.failed = ""
@@ -423,7 +420,9 @@ trigger watch_scan(p: PrintCentre) every 1s: poll_scan(p)
 /// Turns a scanned page a quarter clockwise.
 action turn_page(page: ScannedPage) uses image {
     match page.file.turned(1) {
-        .ok(turned) => { page.file = turned }
+        .ok(turned) => {
+            page.file = turned
+        }
         .err(why) => {}
     }
 }
@@ -455,7 +454,9 @@ action recognize(page: ScannedPage) {
     let language = p.defaults.ocr_language
     match engine.call("ocr", json.encode(OcrAsk(url: page.file.url, language: language))) {
         .ok(text) => match json.decode<OcrAnswer>(text) {
-            .ok(answer) => { page.text = answer.text }
+            .ok(answer) => {
+                page.text = answer.text
+            }
             .err(why) => {}
         },
         .err(why) => {}
@@ -464,9 +465,7 @@ action recognize(page: ScannedPage) {
 
 /// Copies a scanned page's text.
 action copy_text(page: ScannedPage) uses clipboard {
-    if page.text != "" {
-        clipboard.copy(page.text)
-    }
+    if page.text != "" { clipboard.copy(page.text) }
 }
 
 /// The scanned page as a file to save.
@@ -477,12 +476,9 @@ action page_to_save(page: ScannedPage) -> File {
 /// The scanned document as one searchable PDF, to save.
 action document_to_save(p: PrintCentre) -> File {
     let pages = if let scan = p.scans.first() {
-        ordered(scan.pages.map(page -> page)).map(
-            page -> PdfPage(url: page.file.url, text: page.text),
-        )
-    } else {
-        []
-    }
+        ordered(scan.pages.map(page -> page))
+            .map(page -> PdfPage(url: page.file.url, text: page.text))
+    } else { [] }
     match engine.call(
         "pages_pdf",
         json.encode(PagesAsk(pages: pages, name: "scanned document.pdf")),
@@ -695,9 +691,7 @@ view printer_card(queue: device.PrinterQueue, printers: device.Printers) {
                     .success
                 } else if queue.state == .paused or queue.state == .offline {
                     .warning
-                } else {
-                    .info
-                },
+                } else { .info },
             )
             if queue.default {
                 ui.Badge("Default", tone: .info)
@@ -711,7 +705,12 @@ view printer_card(queue: device.PrinterQueue, printers: device.Printers) {
         }
         for supply in queue.supplies {
             if let level = supply.level {
-                ui.ProgressBar(value: level.to_float() / 100.0, label: supply.name, warning: 0.2, danger: 0.1)
+                ui.ProgressBar(
+                    value: level.to_float() / 100.0,
+                    label: supply.name,
+                    warning: 0.2,
+                    danger: 0.1,
+                )
             } else {
                 ui.Text("{supply.name}: its level is not reported", role: .caption, secondary: true)
             }
@@ -722,10 +721,7 @@ view printer_card(queue: device.PrinterQueue, printers: device.Printers) {
                     on press: device.set_default(device.printers, printer: queue.name)
                 }
             }
-            ui.Button(
-                if queue.state == .paused { "Resume" } else { "Pause" },
-                size: .small,
-            ) {
+            ui.Button(if queue.state == .paused { "Resume" } else { "Pause" }, size: .small) {
                 on press: device.set_paused(
                     device.printers,
                     printer: queue.name,
@@ -748,11 +744,7 @@ view job_row(job: device.PrintJob) {
         meta: size_words(job.size_bytes),
         meta_tone: if job.state == .failed {
             .danger
-        } else if job.state == .printing {
-            .info
-        } else {
-            .neutral
-        },
+        } else if job.state == .printing { .info } else { .neutral },
         icon: .file,
     ) {
         trailing: {
@@ -886,7 +878,17 @@ view print_form(p: PrintCentre, printers: device.Printers) {
     ) {
         on act: file.choose(
             absorb_document(p),
-            accept: ["application/pdf", "image/png", "image/jpeg", "text/plain", ".pdf", ".png", ".jpg", ".jpeg", ".txt"],
+            accept: [
+                "application/pdf",
+                "image/png",
+                "image/jpeg",
+                "text/plain",
+                ".pdf",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".txt",
+            ],
         )
     }
 }
@@ -1044,7 +1046,9 @@ view scan_pane(p: PrintCentre, scan: ScanSession, scanners: device.Scanners) {
                 ui.ListRow(
                     scanner.description,
                     secondary: scanner.device,
-                    selected: scan.scanner == scanner.device or (scan.scanner == "" and scanner.device == (scanners.found.first()?.device ?? "")),
+                    selected: scan.scanner == scanner.device
+                        or scan.scanner == ""
+                            and scanner.device == (scanners.found.first()?.device ?? ""),
                     icon: .scan_line,
                 ) {
                     on activate: set_scanner(p, scanner.device)
@@ -1095,7 +1099,10 @@ view scan_pane(p: PrintCentre, scan: ScanSession, scanners: device.Scanners) {
         field("Text language") {
             row(gap: .tight, wrap: true) {
                 for language in ocr_languages() {
-                    ui.Chip(language, selected: p.defaults.ocr_language == language_code(language)) {
+                    ui.Chip(
+                        language,
+                        selected: p.defaults.ocr_language == language_code(language),
+                    ) {
                         on press: set_ocr_language(p, language_code(language))
                     }
                 }
@@ -1112,7 +1119,11 @@ view scan_pane(p: PrintCentre, scan: ScanSession, scanners: device.Scanners) {
     let pages = ordered(scan.pages.map(page -> page))
     if not pages.is_empty() {
         ui.Section("Pages") {
-            ui.Text("Press a page to turn it, and use its row's controls to order it.", role: .caption, secondary: true)
+            ui.Text(
+                "Press a page to turn it, and use its row's controls to order it.",
+                role: .caption,
+                secondary: true,
+            )
             for page in pages {
                 scanned_page(page)
             }
@@ -1140,13 +1151,7 @@ fn ocr_languages() -> List<Text> {
 fn language_code(name: Text) -> Text {
     if name == "German" {
         "deu"
-    } else if name == "French" {
-        "fra"
-    } else if name == "Spanish" {
-        "spa"
-    } else {
-        "eng"
-    }
+    } else if name == "French" { "fra" } else if name == "Spanish" { "spa" } else { "eng" }
 }
 
 /// One scanned page: its picture, the text read off it, and what can be done with it.

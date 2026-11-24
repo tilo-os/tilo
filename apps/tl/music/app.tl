@@ -707,9 +707,7 @@ view taste_page(lib: Library) {
                         ) {
                             on press: if lib.spotify_playing {
                                 remote_pause(lib)
-                            } else {
-                                remote_play(lib)
-                            }
+                            } else { remote_play(lib) }
                         }
                         ui.Button("Next", icon: .skip_forward) {
                             on press: remote_next(lib)
@@ -983,9 +981,7 @@ action search(lib: Library, query: Text) uses time (icon: .search) {
     lib.search_trouble = ""
     if lib.catalogue == "spotify" {
         outside("music.spotify", ["search", query])
-    } else {
-        outside("music.search", query)
-    }
+    } else { outside("music.search", query) }
 }
 
 /// Asks the catalogue for its home page.
@@ -994,28 +990,24 @@ action refresh(lib: Library) uses time (icon: .refresh) {
     lib.home_trouble = ""
     if lib.catalogue == "spotify" {
         outside("music.spotify", ["home", ""])
-    } else {
-        outside("music.home", "")
-    }
+    } else { outside("music.home", "") }
 }
 
 /// Asks the catalogue for an artist's page.
 action refresh_artist(a: Artist) (icon: .refresh) {
     if a.key.starts_with("spotify:") {
         let lib = root Library
-        if lib.catalogue == "spotify" { outside("music.spotify", ["artist", a.key]) }
-    } else {
-        outside("music.artist", a.key)
-    }
+        if lib.catalogue == "spotify" {
+            outside("music.spotify", ["artist", a.key])
+        }
+    } else { outside("music.artist", a.key) }
 }
 
 /// Asks the catalogue for a playlist's songs.
 action open_playlist(p: Playlist) (icon: .refresh, label: "Refresh") {
     if p.key.starts_with("spotify:") {
         outside("music.spotify", ["playlist", p.key])
-    } else {
-        outside("music.playlist", p.key)
-    }
+    } else { outside("music.playlist", p.key) }
 }
 
 /// Does what a suggestion on the home page names.
@@ -1025,21 +1017,15 @@ action open_suggestion(lib: Library, row: Suggestion) uses time {
     } else if row.kind == "album" {
         if row.target.starts_with("spotify:") {
             outside("music.spotify", ["album", row.target])
-        } else {
-            outside("music.album", row.target)
-        }
+        } else { outside("music.album", row.target) }
     } else if row.kind == "artist" {
         if row.target.starts_with("spotify:") {
             outside("music.spotify", ["artist", row.target])
-        } else {
-            outside("music.artist", row.target)
-        }
+        } else { outside("music.artist", row.target) }
     } else if row.kind == "playlist" {
         if row.target.starts_with("spotify:") {
             outside("music.spotify", ["playlist", row.target])
-        } else {
-            outside("music.playlist", row.target)
-        }
+        } else { outside("music.playlist", row.target) }
     }
 }
 
@@ -1180,11 +1166,7 @@ action prefer_artist(lib: Library, a: Artist) {
 
 /// Who is signed in to Spotify, and what it lets them do.
 fn spotify_account_line(lib: Library) -> Text {
-    let account = if lib.spotify_account == "" {
-        "Spotify"
-    } else {
-        lib.spotify_account
-    }
+    let account = if lib.spotify_account == "" { "Spotify" } else { lib.spotify_account }
     if lib.spotify_product == "" { account } else { "{account} · {lib.spotify_product}" }
 }
 

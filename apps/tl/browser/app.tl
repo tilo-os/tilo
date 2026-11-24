@@ -716,11 +716,12 @@ opened action opened_page(p: Page) uses page {
 /// window raises it as the Browser's own call when the site asks: the person allows it on the
 /// system's card, which names the Browser and the site, and an always-allow lets this site have it
 /// from then on. Declined, or the page gone, the site is told no.
-destructive action allow_permission(p: Page, id: Int, origin: Text, wants: Text) -> Answer uses page (
-    icon: .shield,
-    label: "Allow the site",
-    shows: [origin, wants],
-) {
+destructive action allow_permission(
+    p: Page,
+    id: Int,
+    origin: Text,
+    wants: Text,
+) -> Answer uses page (icon: .shield, label: "Allow the site", shows: [origin, wants]) {
     page_answered(page.call(json.encode(Ask(op: "answer_permission", id: .some(id), allow: true))))
 }
 
@@ -737,35 +738,52 @@ destructive action save_download(p: Page, id: Int, name: Text, url: Text) -> Ans
 /// Gives an extension the more access it asked for. The window raises it as the Browser's own
 /// call, and the person allows it on the system's card, which says what the extension could then
 /// do.
-destructive action allow_extension_access(p: Page, id: Int, extension: Text, could: Text) -> Answer uses page (
-    icon: .puzzle,
-    label: "Allow the extension",
-    shows: [extension, could],
-) {
+destructive action allow_extension_access(
+    p: Page,
+    id: Int,
+    extension: Text,
+    could: Text,
+) -> Answer uses page (icon: .puzzle, label: "Allow the extension", shows: [extension, could]) {
     page_answered(page.call(json.encode(Ask(op: "answer_extension", id: .some(id), allow: true))))
 }
 
 /// Signs in to a site that asks for a user name and a password. The window raises it as the
 /// Browser's own call; the person types both on the system's card, on this device, and the
 /// password goes to the site alone: never into this action's arguments, its record or history.
-destructive action sign_in(p: Page, id: Int, asker: Text, site: Text, realm: Text) -> Answer uses page (
+destructive action sign_in(
+    p: Page,
+    id: Int,
+    asker: Text,
+    site: Text,
+    realm: Text,
+) -> Answer uses page (
     icon: .key,
     label: "Sign in to the site",
     shows: [site, realm],
     takes: ["User name", ("Password", .secret)],
 ) {
-    page_answered(page.call(json.encode(Ask(op: "answer_sign_in", id: .some(id), asker: .some(asker), typed: true))))
+    page_answered(
+        page.call(
+            json.encode(
+                Ask(op: "answer_sign_in", id: .some(id), asker: .some(asker), typed: true),
+            ),
+        ),
+    )
 }
 
 /// Lets what the page sends leave it: a form, a navigation or a request kept until the person
 /// says so. The window raises it as the Browser's own call, and the person allows it on the
 /// system's card, which says what leaves and where.
-destructive action let_leave(p: Page, id: Int, origin: Text, method: Text, leaving: Text) -> Answer uses page (
-    icon: .send,
-    label: "Let it leave",
-    shows: [leaving, origin, method],
-) {
-    page_answered(page.call(json.encode(Ask(op: "answer_held_request", id: .some(id), allow: true))))
+destructive action let_leave(
+    p: Page,
+    id: Int,
+    origin: Text,
+    method: Text,
+    leaving: Text,
+) -> Answer uses page (icon: .send, label: "Let it leave", shows: [leaving, origin, method]) {
+    page_answered(
+        page.call(json.encode(Ask(op: "answer_held_request", id: .some(id), allow: true))),
+    )
 }
 
 /// Takes a row of the page's own menu, by the command the engine gave it.

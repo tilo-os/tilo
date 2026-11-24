@@ -1732,9 +1732,9 @@ template view note_page(
             // person wrote in the block names the page it became. The editor wrote down the
             // block the words stood in, and the note the press made is the next one under this
             // one; the ask makes that block the link to it.
-            on slash_page(words): set(page_place, nb.notes.count(x -> x.parent == n)).then(
-                set(page_ask, page_ask + 1),
-            ).then(new_child(n, words))
+            on slash_page(words): set(page_place, nb.notes.count(x -> x.parent == n))
+                .then(set(page_ask, page_ask + 1))
+                .then(new_child(n, words))
             on headings(words, levels): set(headings, words).then(set(heading_levels, levels))
         }
         std.linked(n, compact: true)

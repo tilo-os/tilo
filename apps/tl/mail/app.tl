@@ -625,16 +625,7 @@ fn rank_messages(
                 )
             }
         } else if msg.mailbox != "junk" {
-            rank_person(
-                msg.from,
-                msg.from_name,
-                1,
-                msg.received,
-                own,
-                shown,
-                weights,
-                latest,
-            )
+            rank_person(msg.from, msg.from_name, 1, msg.received, own, shown, weights, latest)
         }
     }
 }
@@ -658,9 +649,7 @@ fn rank_person(
         return
     }
     weights.put(mail, (weights.get(mail) ?? 0) + weight)
-    if (latest.get(mail) ?? Time("1970-01-01T00:00:00Z")) < at {
-        latest.put(mail, at)
-    }
+    if (latest.get(mail) ?? Time("1970-01-01T00:00:00Z")) < at { latest.put(mail, at) }
     let known = shown.get(mail) ?? ""
     if known == "" or sender_name(known) == sender_address(known) {
         shown.put(mail, header_addr(name.trim(), address.trim()))
@@ -687,9 +676,7 @@ fn people_in(header: Text) -> List<Text> {
 /// address the words being typed start, the best first, and no more than a recipient field
 /// offers.
 fn offered_recipients(people: List<Text>, field: Text) -> List<Text> {
-    people
-        .filter(p -> offers_recipient(sender_name(p), sender_address(p), field))
-        .take(6)
+    people.filter(p -> offers_recipient(sender_name(p), sender_address(p), field)).take(6)
 }
 
 /// The recipients already written in a recipient `field`, up to and including the separator
@@ -2484,12 +2471,7 @@ view editor(d: Draft) {
             }
         }
         field("Cc") {
-            ui.Autocomplete(
-                bind: d.cc,
-                open_list: true,
-                filter: false,
-                max_visible: 6,
-            ) {
+            ui.Autocomplete(bind: d.cc, open_list: true, filter: false, max_visible: 6) {
                 for person in offered_recipients(people, d.cc) {
                     ui.Suggestion(
                         recipient_taken(d.cc, sender_name(person), sender_address(person)),

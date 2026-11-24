@@ -17,7 +17,9 @@ scenario "a week of changes" {
     bed.unified = "   1    1  pub struct Bed \{\n   2    2      pub name: String,\n   3      -    pub width_m: f32,\n         3 +    pub width_cm: u32,\n         4 +    pub length_cm: u32,\n   4    5  \}\n"
     bed.left = "   1  pub struct Bed \{\n   2      pub name: String,\n   3  -    pub width_m: f32,\n\n\n   4  \}\n"
     bed.right = "   1  pub struct Bed \{\n   2      pub name: String,\n\n   3  +    pub width_cm: u32,\n   4  +    pub length_cm: u32,\n   5  \}\n"
-    bed.hunks = json.encode([json.encode(Hunk(index: 0, header: "pub struct Bed", old_start: 1, new_start: 1))])
+    bed.hunks = json.encode(
+        [json.encode(Hunk(index: 0, header: "pub struct Bed", old_start: 1, new_start: 1))],
+    )
     let readme = s.changes.insert(Change(path: "README.md"))
     readme.area = .unstaged
     readme.kind = .modified
@@ -26,7 +28,9 @@ scenario "a week of changes" {
     readme.unified = "   1    1  # Garden planner\n   2    2  \n   3      -Plan beds.\n         3 +Plan beds and sowing dates for the community garden.\n         4 +\n         5 +Run the planner to see the beds.\n"
     readme.left = "   1  # Garden planner\n   2  \n   3  -Plan beds.\n\n\n"
     readme.right = "   1  # Garden planner\n   2  \n\n   3  +Plan beds and sowing dates for the community garden.\n   4  +\n   5  +Run the planner to see the beds.\n"
-    readme.hunks = json.encode([json.encode(Hunk(index: 0, header: "", old_start: 1, new_start: 1))])
+    readme.hunks = json.encode(
+        [json.encode(Hunk(index: 0, header: "", old_start: 1, new_start: 1))],
+    )
     let todo = s.changes.insert(Change(path: "notes/todo.md"))
     todo.area = .untracked
     todo.kind = .untracked
@@ -55,7 +59,10 @@ scenario "a week of changes" {
                         age: 172800,
                         date: "2026-05-29 07:06 UTC",
                         parents: ["a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"],
-                        refs: [json.encode(WireRef(name: "spring-layout", kind: .local_branch)), json.encode(WireRef(name: "HEAD", kind: .head))],
+                        refs: [
+                            json.encode(WireRef(name: "spring-layout", kind: .local_branch)),
+                            json.encode(WireRef(name: "HEAD", kind: .head)),
+                        ],
                         column: 0,
                     ),
                 ),
@@ -69,7 +76,12 @@ scenario "a week of changes" {
                         age: 1296000,
                         date: "2026-05-17 10:40 UTC",
                         parents: ["0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"],
-                        refs: [json.encode(WireRef(name: "raised-beds", kind: .local_branch)), json.encode(WireRef(name: "origin/raised-beds", kind: .remote_branch))],
+                        refs: [
+                            json.encode(WireRef(name: "raised-beds", kind: .local_branch)),
+                            json.encode(
+                                WireRef(name: "origin/raised-beds", kind: .remote_branch),
+                            ),
+                        ],
                         column: 1,
                     ),
                 ),
@@ -88,22 +100,59 @@ scenario "a week of changes" {
                 ),
             ],
             branches: [
-                json.encode(WireBranch(name: "spring-layout", is_head: true, upstream: .some("origin/spring-layout"), ahead: 2, tip: "5f2c1a9")),
-                json.encode(WireBranch(name: "raised-beds", ahead: 1, behind: 3, upstream: .some("origin/raised-beds"), tip: "a1b2c3d")),
-                json.encode(WireBranch(name: "origin/spring-layout", is_remote: true, tip: "5f2c1a9")),
-                json.encode(WireBranch(name: "origin/raised-beds", is_remote: true, tip: "a1b2c3d")),
+                json.encode(
+                    WireBranch(
+                        name: "spring-layout",
+                        is_head: true,
+                        upstream: .some("origin/spring-layout"),
+                        ahead: 2,
+                        tip: "5f2c1a9",
+                    ),
+                ),
+                json.encode(
+                    WireBranch(
+                        name: "raised-beds",
+                        ahead: 1,
+                        behind: 3,
+                        upstream: .some("origin/raised-beds"),
+                        tip: "a1b2c3d",
+                    ),
+                ),
+                json.encode(
+                    WireBranch(name: "origin/spring-layout", is_remote: true, tip: "5f2c1a9"),
+                ),
+                json.encode(
+                    WireBranch(name: "origin/raised-beds", is_remote: true, tip: "a1b2c3d"),
+                ),
             ],
             tags: [
-                json.encode(WireTag(name: "v0.1", target: "0f1e2d3", message: .some("The first bed"))),
+                json.encode(
+                    WireTag(name: "v0.1", target: "0f1e2d3", message: .some("The first bed")),
+                ),
             ],
             stashes: [
-                json.encode(WireStash(index: 0, message: "WIP on spring-layout: try the msaa path", branch: "spring-layout")),
+                json.encode(
+                    WireStash(
+                        index: 0,
+                        message: "WIP on spring-layout: try the msaa path",
+                        branch: "spring-layout",
+                    ),
+                ),
             ],
             remotes: [
-                json.encode(WireRemote(name: "origin", url: "git@example.org:garden/planner.git")),
+                json.encode(
+                    WireRemote(name: "origin", url: "git@example.org:garden/planner.git"),
+                ),
             ],
             worktrees: [
-                json.encode(WireWorktree(name: "main", path: "~/src/garden-planner", head: "spring-layout", current: true)),
+                json.encode(
+                    WireWorktree(
+                        name: "main",
+                        path: "~/src/garden-planner",
+                        head: "spring-layout",
+                        current: true,
+                    ),
+                ),
             ],
         ),
     )

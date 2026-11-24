@@ -23,16 +23,8 @@ fn drive_name(d: Disks, drive: device.Drive) -> Text {
     if let serial = drive.serial {
         if let named = d.names.get(serial) {
             named
-        } else if let model = drive.model {
-            model
-        } else {
-            drive.name
-        }
-    } else if let model = drive.model {
-        model
-    } else {
-        drive.name
-    }
+        } else if let model = drive.model { model } else { drive.name }
+    } else if let model = drive.model { model } else { drive.name }
 }
 
 /// Bytes in the words a person reads.
@@ -45,9 +37,7 @@ fn size_words(bytes: Int) -> Text {
         std.say("{bytes / 1000000} MB")
     } else if bytes < 1000000000000 {
         std.say("{bytes / 1000000000} GB")
-    } else {
-        std.say("{bytes / 1000000000000} TB")
-    }
+    } else { std.say("{bytes / 1000000000000} TB") }
 }
 
 fn rate_words(bytes: Float) -> Text {
@@ -72,18 +62,12 @@ fn allocated(drive: device.Drive, at: Int) -> Int {
 fn health_words(health: device.DiskHealth) -> Text {
     if health.failing {
         std.say("Predicted to fail")
-    } else if health.supported {
-        std.say("Healthy")
-    } else {
-        std.say("Its health is not reported")
-    }
+    } else if health.supported { std.say("Healthy") } else { std.say("Its health is not reported") }
 }
 
 /// A drive's name in the words of the person reading it, by its serial.
 action name_drive(d: Disks, serial: Text, name: Text) {
-    if name.trim() != "" {
-        d.names.put(serial, name.trim())
-    }
+    if name.trim() != "" { d.names.put(serial, name.trim()) }
 }
 
 /// The filesystems a person may write from here.
@@ -188,7 +172,11 @@ view drive_detail(
     tab: State<Text>,
     formatting: State<Text>,
 ) {
-    ui.ObjectHeader(drive_name(d, drive), caption: "{drive.name}, {size_words(drive.size_bytes)}", icon: .hard_drive)
+    ui.ObjectHeader(
+        drive_name(d, drive),
+        caption: "{drive.name}, {size_words(drive.size_bytes)}",
+        icon: .hard_drive,
+    )
     ui.ViewTabs(selected: tab_index(tab), label: "Drive") {
         ui.Segment("Overview")
         ui.Segment("Health")
@@ -213,33 +201,25 @@ fn tab_key(index: Int) -> Text {
 }
 
 /// The drive as one bar: its partitions by size, then the space no partition uses.
-view overview_pane(
-    d: Disks,
-    disks: device.Disks,
-    drive: device.Drive,
-    formatting: State<Text>,
-) {
+view overview_pane(d: Disks, disks: device.Disks, drive: device.Drive, formatting: State<Text>) {
     let free = drive.size_bytes - allocated(drive, 0)
     ui.Section("How it is divided") {
         if drive.size_bytes > 0 {
             row(gap: .none) {
                 for partition in drive.partitions {
                     shape(
-                        (partition.size_bytes * 1000) / drive.size_bytes,
+                        partition.size_bytes * 1000 / drive.size_bytes,
                         partition.mountpoint != .none,
                     )
                 }
                 if free > 0 {
-                    shape((free * 1000) / drive.size_bytes, false)
+                    shape(free * 1000 / drive.size_bytes, false)
                 }
             }
         }
         ui.PropertyList {
             for partition in drive.partitions {
-                ui.Property(
-                    "{partition.name} {label_of(partition)}",
-                    partition_words(partition),
-                )
+                ui.Property("{partition.name} {label_of(partition)}", partition_words(partition))
             }
             ui.Property("Unallocated", size_words(free))
         }
@@ -376,7 +356,9 @@ view partitions_pane(d: Disks, drive: device.Drive, formatting: State<Text>) {
             ui.ListRow(
                 partition.name,
                 secondary: partition_words(partition),
-                value: if partition.mountpoint != .none { std.say("Open") } else { std.say("Closed") },
+                value: if partition.mountpoint != .none {
+                    std.say("Open")
+                } else { std.say("Closed") },
                 icon: if partition.mountpoint != .none { .folder_open } else { .hard_drive },
             ) {
                 trailing: {
@@ -391,7 +373,13 @@ view partitions_pane(d: Disks, drive: device.Drive, formatting: State<Text>) {
                                 on press: device.mount(device.disks, device: partition.name)
                             }
                         }
-                        ui.Button("Erase…", icon: .trash, icon_only: true, role: .destructive, size: .small) {
+                        ui.Button(
+                            "Erase…",
+                            icon: .trash,
+                            icon_only: true,
+                            role: .destructive,
+                            size: .small,
+                        ) {
                             on press: set(formatting, partition.name)
                         }
                     }

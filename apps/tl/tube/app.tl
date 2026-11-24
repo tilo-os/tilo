@@ -3,8 +3,8 @@ app so.tilo.tube "YouTube" (
     category: .multimedia,
     tagline: "Browses and plays YouTube videos",
     keywords: ["youtube", "video", "videos", "streaming", "watch", "channel", "channels", "subscriptions", "creators", "trending", "filme", "videos ansehen", "kanäle", "kanaele", "kanal", "schauen", "mediathek", "anschauen", "abos", "videoportal"],
-    schemes: "tube",
     splash_budget: 250,
+    schemes: "tube",
 )
 
 use so.tilo.playback as playback
@@ -572,10 +572,7 @@ action play_items(yt: YouTube, videos: List<Video>, at: Text) {
 /// the service for a stream of that picture. The session keeps the item and the place it stood
 /// at, so the picture changes without the playhead moving; the address YouTube answers with is
 /// the one the player opens next, and `progress` writes it into the session's item.
-action play_at_quality(v: Video, quality: Text) (
-    icon: .settings,
-    label: "Playback quality",
-) {
+action play_at_quality(v: Video, quality: Text) (icon: .settings, label: "Playback quality") {
     let yt = root YouTube
     set_quality(yt, quality)
     if v.stream != "" {
@@ -594,9 +591,7 @@ action autoplay_next(yt: YouTube, p: playback.Playback, share: Float) uses time 
         return
     }
     playback.next(p)
-    if let v = yt.videos.find(x -> x.key == p.track) {
-        progress(v, 0.0)
-    }
+    if let v = yt.videos.find(x -> x.key == p.track) { progress(v, 0.0) }
 }
 
 /// Records how far into the video the person is, and that they watched it now: it moves to the
@@ -638,9 +633,7 @@ action progress(v: Video, at: Float) uses time {
     // the service writes a new one and the session follows it, so the live card names the stream
     // the player opened.
     if let p = yt.playing {
-        if p.track == v.key and p.source != v.stream {
-            playback.set_source(p, v.stream)
-        }
+        if p.track == v.key and p.source != v.stream { playback.set_source(p, v.stream) }
     }
 }
 
@@ -1562,13 +1555,15 @@ view video_page(v: Video) {
                         )
                         // The playhead moved where a segment SponsorBlock marks is: the same skip
                         // as when playback reaches one on its own.
-                        on seek(place: Float): playback.seek(playing, place)
+                        on seek(place: Float): playback
+                            .seek(playing, place)
                             .then(skip_segment(v, place))
                         // The player reports where it got to every five seconds and once when it
                         // stops, so a video watched without touching the playhead is remembered
                         // where it was left. A report that lands in a segment SponsorBlock marks
                         // moves the playhead past it, so a sponsor read is not watched.
-                        on progress(share: Float): playback.set_share(playing, share)
+                        on progress(share: Float): playback
+                            .set_share(playing, share)
                             .then(progress(v, share))
                             .then(skip_segment(v, share))
                             .then(autoplay_next(yt, playing, share))
@@ -1822,30 +1817,18 @@ view watch_row(h: WatchEntry) {
 scenario "a subscriptions feed" {
     let yt = root YouTube
     for key in ["UCmkbhd", "UCveritasium", "UCcpu", "UCkitchen", "UCbrass"] {
-        if let c = yt.channels.find(x -> x.key == key) {
-            invoke(subscribe(c, true))
-        }
+        if let c = yt.channels.find(x -> x.key == key) { invoke(subscribe(c, true)) }
     }
     // Two videos on the watch queue, oldest first, two liked, and three the person watched.
     for key in ["v-rehearsal", "v-bread"] {
-        if let v = yt.videos.find(x -> x.key == key) {
-            invoke(watch_later(v, true))
-        }
+        if let v = yt.videos.find(x -> x.key == key) { invoke(watch_later(v, true)) }
     }
     for key in ["v-magnet", "v-wires"] {
-        if let v = yt.videos.find(x -> x.key == key) {
-            invoke(like(v, true))
-        }
+        if let v = yt.videos.find(x -> x.key == key) { invoke(like(v, true)) }
     }
-    if let v = yt.videos.find(x -> x.key == "v-phone") {
-        invoke(progress(v, 0.35))
-    }
-    if let v = yt.videos.find(x -> x.key == "v-cache") {
-        invoke(progress(v, 0.0))
-    }
-    if let v = yt.videos.find(x -> x.key == "v-wires") {
-        invoke(progress(v, 0.72))
-    }
+    if let v = yt.videos.find(x -> x.key == "v-phone") { invoke(progress(v, 0.35)) }
+    if let v = yt.videos.find(x -> x.key == "v-cache") { invoke(progress(v, 0.0)) }
+    if let v = yt.videos.find(x -> x.key == "v-wires") { invoke(progress(v, 0.72)) }
     yt
 }
 

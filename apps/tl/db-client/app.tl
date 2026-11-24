@@ -62,9 +62,8 @@ root database: Database
 
 default view window for Database
 
-// ---------------------------------------------------------------- what the engine answers
-
 /// One table or view of an open connection's catalog.
+// ---------------------------------------------------------------- what the engine answers
 type TableInfo {
     schema: Text = "main"
     name: Text = ""
@@ -126,10 +125,9 @@ type Opened {
     connection: Int = 0
 }
 
-// ---------------------------------------------------------------- this device's window
-
 /// A password this window keeps for a connection. It stays out of the shared connection the
 /// members see, so a connection is shared without its secret.
+// ---------------------------------------------------------------- this device's window
 type Secret {
     connection: Text = ""
     password: Text = ""
@@ -213,7 +211,6 @@ type Session (readers: author) {
 }
 
 // ---------------------------------------------------------------- names, defaults and what a cell says
-
 fn engine_key(e: Engine) -> Text {
     if e == .sqlite { "sqlite" } else if e == .mysql { "mysql" } else { "postgres" }
 }
@@ -234,16 +231,12 @@ fn tab_index(tab: Tab) -> Int {
 fn address(c: Connection) -> Text {
     if c.engine == .sqlite {
         if c.file_path == "" { "No file chosen" } else { c.file_path }
-    } else if c.port == default_port(c.engine) {
-        "{c.host}"
-    } else {
-        "{c.host}:{c.port}"
-    }
+    } else if c.port == default_port(c.engine) { "{c.host}" } else { "{c.host}:{c.port}" }
 }
 
 /// The password this window keeps for `connection`.
 fn password_of(s: Session, connection: Text) -> Text {
-    (s.secrets.find(x -> x.connection == connection))?.password ?? ""
+    s.secrets.find(x -> x.connection == connection)?.password ?? ""
 }
 
 /// What a result says of itself: its rows and how long they took.
@@ -253,9 +246,7 @@ fn say_result(a: Answer) -> Text {
         "Changed {a.rows_affected ?? 0} in {ms}"
     } else if a.truncated != "" {
         "The first {a.rows.len()} rows in {ms}"
-    } else {
-        "{a.rows.len()} in {ms}"
-    }
+    } else { "{a.rows.len()} in {ms}" }
 }
 
 /// What the window says about a result that was cut short, or nothing when it was whole.
@@ -264,9 +255,7 @@ fn cut_note(truncated: Text) -> Text {
         "This result was cut at 1,000 rows. Narrow the query, or page through the table instead."
     } else if truncated == "payload" {
         "This result was cut to keep the window responsive: 8 MB is as much of it as is held. Narrow the query to see the rest."
-    } else {
-        ""
-    }
+    } else { "" }
 }
 
 /// One cell's text, by its column's place in the row.
@@ -293,7 +282,8 @@ fn row_text(o: Outcome, row: Row) -> Text {
         if cell_empty(row, place) {
             cells = cells + [""]
         } else {
-            cells = cells + [cell_at(row, place).replace("\t", " ").replace("\n", " ").replace("\r", " ")]
+            cells = cells
+                + [cell_at(row, place).replace("\t", " ").replace("\n", " ").replace("\r", " ")]
         }
         place = place + 1
     }
@@ -323,9 +313,8 @@ fn ordered_rows(rows: List<Row>, o: Outcome) -> List<Row> {
     }
 }
 
-// ---------------------------------------------------------------- the SQL safety check
-
 /// The verbs that change data, which ask before they run.
+// ---------------------------------------------------------------- the SQL safety check
 fn changing_verb(word: Text) -> Bool {
     [
         "ALTER",
@@ -376,7 +365,10 @@ fn first_word(sql: Text) -> Text {
 /// prefixed with an apostrophe, and every field is quoted.
 fn csv_field(value: Text) -> Text {
     let trimmed = value.trim()
-    let formula = trimmed.starts_with("=") or trimmed.starts_with("+") or trimmed.starts_with("-") or trimmed.starts_with("@")
+    let formula = trimmed.starts_with("=")
+        or trimmed.starts_with("+")
+        or trimmed.starts_with("-")
+        or trimmed.starts_with("@")
     let safe = if formula { "'{value}" } else { value }
     "\"{safe.replace("\"", "\"\"")}\""
 }
@@ -404,9 +396,8 @@ fn first_line(sql: Text) -> Text {
     if line.trim() == "" { "Saved query" } else { line.trim() }
 }
 
-// ---------------------------------------------------------------- what a person asks for
-
 /// This person's window, made by their own first action so it is theirs to read and write.
+// ---------------------------------------------------------------- what a person asks for
 action ensure_session(d: Database) -> Session {
     d.sessions.first() ?? d.sessions.insert(Session(schemas: []))
 }
@@ -537,18 +528,14 @@ action add_connection(
 /// Removes a saved connection: its password goes with it on this device.
 action remove_connection(d: Database, c: Connection) {
     let s = ensure_session(d)
-    if s.open == c.id {
-        disconnect(d)
-    }
+    if s.open == c.id { disconnect(d) }
     forget_password(s, c)
     d.connections.remove(c)
 }
 
 /// Drops what this device kept for `c`.
 action forget_password(s: Session, c: Connection) {
-    if let held = s.secrets.find(x -> x.connection == c.id) {
-        s.secrets.remove(held)
-    }
+    if let held = s.secrets.find(x -> x.connection == c.id) { s.secrets.remove(held) }
 }
 
 /// Keeps `password` for `c` on this device, or forgets it when it is empty.
@@ -596,11 +583,7 @@ action load_starter(d: Database, name: Text, sql: Text) {
 action choose_tab(d: Database, index: Int) {
     if index == 1 {
         show_tab(d, .data)
-    } else if index == 2 {
-        show_tab(d, .structure)
-    } else {
-        show_tab(d, .query)
-    }
+    } else if index == 2 { show_tab(d, .structure) } else { show_tab(d, .query) }
 }
 
 /// Shows one of the window's three views.
@@ -870,9 +853,7 @@ action clear_rows(s: Session, result: Bool) {
 fn total_rows(s: Session) -> Int {
     if let t = s.tables.find(x -> x.name == s.selected_table and x.schema == s.selected_schema) {
         t.row_count ?? 0
-    } else {
-        0
-    }
+    } else { 0 }
 }
 
 /// Whether the selected table has a page after this one.
@@ -880,9 +861,7 @@ fn next_page_is_there(d: Database) -> Bool {
     if let s = d.sessions.first() {
         let shown = s.page_rows.len()
         total_rows(s) > s.offset + shown
-    } else {
-        false
-    }
+    } else { false }
 }
 
 /// Shows the next page of the selected table's rows.
@@ -1000,11 +979,7 @@ action copy_result(d: Database) uses clipboard {
 
 /// Whether the result in front can be written out as a CSV file.
 fn exportable(d: Database) -> Bool {
-    if let o = session_queries(d) {
-        o.is_select and not o.columns.is_empty()
-    } else {
-        false
-    }
+    if let o = session_queries(d) { o.is_select and not o.columns.is_empty() } else { false }
 }
 
 /// The statement's result as a CSV file, for a person to keep.
@@ -1054,9 +1029,7 @@ action check(d: Database) {
                         }
                     } else if kind == "open" {
                         opened(d, progress.result)
-                    } else {
-                        queried(d, progress.result)
-                    }
+                    } else { queried(d, progress.result) }
                 }
                 .err(why) => failed_job(s, why),
             },
@@ -1120,13 +1093,9 @@ action queried(d: Database, answer: Text) {
             s.notice = ""
             s.history.insert(Run(connection: s.open, sql: d.sql, summary: held.summary))
             if s.history.len() > 20 {
-                if let oldest = s.history.first() {
-                    s.history.remove(oldest)
-                }
+                if let oldest = s.history.first() { s.history.remove(oldest) }
             }
-            if not result.is_select {
-                refresh_catalog(d)
-            }
+            if not result.is_select { refresh_catalog(d) }
         }
         .err(why) => {
             s.notice = why
@@ -1135,7 +1104,6 @@ action queried(d: Database, answer: Text) {
 }
 
 // ---------------------------------------------------------------- the requests the engine reads
-
 type OpenAsk {
     engine: Text = "sqlite"
     host: Text = ""
@@ -1169,11 +1137,10 @@ type Handle {
     connection: Int = 0
 }
 
-// ---------------------------------------------------------------- the window
-
 /// The database client's window: the connections and the open catalog down the side, and the
 /// statement, its result or the table's rows beside them. A client nobody has used yet has no
 /// window state of its own, and says where to start.
+// ---------------------------------------------------------------- the window
 view window(d: Database) {
     let current = d.sessions.first()
     // What the person typed in the window's search: the connections and tables narrow to it.
@@ -1218,7 +1185,15 @@ view window(d: Database) {
         }
         actions: {
             ui.Button("New connection", icon: .plus, role: .primary) {
-                on press: set(adding, true).then(set(new_name, "")).then(set(new_engine, 1)).then(set(new_host, "localhost")).then(set(new_port, 5432)).then(set(new_database, "")).then(set(new_user, "")).then(set(new_file, "")).then(set(new_password, ""))
+                on press: set(adding, true)
+                    .then(set(new_name, ""))
+                    .then(set(new_engine, 1))
+                    .then(set(new_host, "localhost"))
+                    .then(set(new_port, 5432))
+                    .then(set(new_database, ""))
+                    .then(set(new_user, ""))
+                    .then(set(new_file, ""))
+                    .then(set(new_password, ""))
             }
         }
         content: {
@@ -1292,14 +1267,16 @@ view window(d: Database) {
 fn listing(current: Option<Session>, asked: Text) -> List<TableInfo> {
     if let s = current {
         s.tables.filter(t -> asked == "" or t.name.lower().contains(asked))
-    } else {
-        []
-    }
+    } else { [] }
 }
 
 /// The connections, the open catalog, the queries this workspace saved and what this window ran.
 view navigator(d: Database, s: Session, listed: List<Connection>, tables: List<TableInfo>) {
-    ui.NavList(selected: if s.selected_table != "" { s.selected_schema + "." + s.selected_table } else { s.open }) {
+    ui.NavList(
+        selected: if s.selected_table != "" {
+            s.selected_schema + "." + s.selected_table
+        } else { s.open },
+    ) {
         ui.NavSection("Connections") {
             for c in listed {
                 ui.NavItem(
@@ -1369,11 +1346,8 @@ view query_tab(d: Database, s: Session) {
             }
             result_menu(d, s)
         }
-        ui.TextInput(
-            bind: d.sql,
-            placeholder: "Write a SQL query",
-            lines: 6,
-        ) {}
+        ui.TextInput(bind: d.sql, placeholder: "Write a SQL query", lines: 6) {
+        }
         if s.status != "" {
             ui.Text(s.status, role: .caption, secondary: true)
         }
@@ -1420,13 +1394,25 @@ view result_menu(d: Database, s: Session) {
 view starter_queries(d: Database) {
     ui.MenuButton("Starter queries", icon: .list) {
         ui.MenuItem("Top tracks by price") {
-            on choose: load_starter(d, "Top tracks by price", "SELECT name, unit_price FROM tracks ORDER BY unit_price DESC LIMIT 10;")
+            on choose: load_starter(
+                d,
+                "Top tracks by price",
+                "SELECT name, unit_price FROM tracks ORDER BY unit_price DESC LIMIT 10;",
+            )
         }
         ui.MenuItem("Albums with artist") {
-            on choose: load_starter(d, "Albums with artist", "SELECT albums.title, artists.name FROM albums JOIN artists ON artists.artist_id = albums.artist_id;")
+            on choose: load_starter(
+                d,
+                "Albums with artist",
+                "SELECT albums.title, artists.name FROM albums JOIN artists ON artists.artist_id = albums.artist_id;",
+            )
         }
         ui.MenuItem("Tracks per genre") {
-            on choose: load_starter(d, "Tracks per genre", "SELECT genres.name, COUNT(*) AS tracks FROM tracks JOIN genres ON genres.genre_id = tracks.genre_id GROUP BY genres.name;")
+            on choose: load_starter(
+                d,
+                "Tracks per genre",
+                "SELECT genres.name, COUNT(*) AS tracks FROM tracks JOIN genres ON genres.genre_id = tracks.genre_id GROUP BY genres.name;",
+            )
         }
         ui.MenuItem("Every table of this file") {
             on choose: load_starter(d, "Every table", "SELECT name, type FROM sqlite_master;")
@@ -1448,7 +1434,9 @@ view result_grid(d: Database, o: Outcome, rows: Collection<Row>) {
                 for c in o.columns {
                     ui.DataTableColumn(
                         c,
-                        kind: if numeric_column(o.numeric, o.columns.index_of(c) ?? 0) { .numeric } else { .prose },
+                        kind: if numeric_column(o.numeric, o.columns.index_of(c) ?? 0) {
+                            .numeric
+                        } else { .prose },
                     )
                 }
             }
@@ -1501,11 +1489,7 @@ view data_tab(d: Database, s: Session) {
             }
         }
     } else if s.selected_table == "" {
-        ui.EmptyState(
-            "No table selected",
-            icon: .table,
-            message: "Choose a table to see its rows.",
-        )
+        ui.EmptyState("No table selected", icon: .table, message: "Choose a table to see its rows.")
     } else {
         ui.EmptyState(
             "No rows read yet",
@@ -1543,8 +1527,16 @@ view structure_tab(s: Session) {
                                 cells: {
                                     ui.DataTableCell("Name", value: c.name)
                                     ui.DataTableCell("Type", value: c.decl_type)
-                                    ui.DataTableCell("Nullable", value: if c.nullable and not c.primary_key { "Yes" } else { "No" })
-                                    ui.DataTableCell("Key", value: if c.primary_key { "Primary" } else { "" })
+                                    ui.DataTableCell(
+                                        "Nullable",
+                                        value: if c.nullable and not c.primary_key {
+                                            "Yes"
+                                        } else { "No" },
+                                    )
+                                    ui.DataTableCell(
+                                        "Key",
+                                        value: if c.primary_key { "Primary" } else { "" },
+                                    )
                                     ui.DataTableCell("Default", value: c.default_value ?? "")
                                 }
                             }
@@ -1565,7 +1557,10 @@ view structure_tab(s: Session) {
                                 cells: {
                                     ui.DataTableCell("Constraint", value: "Foreign key")
                                     ui.DataTableCell("Column", value: f.column)
-                                    ui.DataTableCell("References", value: "{f.ref_table}.{f.ref_column}")
+                                    ui.DataTableCell(
+                                        "References",
+                                        value: "{f.ref_table}.{f.ref_column}",
+                                    )
                                 }
                             }
                         }
@@ -1584,7 +1579,10 @@ view structure_tab(s: Session) {
                             ui.DataTableRow(i) {
                                 cells: {
                                     ui.DataTableCell("Index", value: i.name)
-                                    ui.DataTableCell("Unique", value: if i.unique { "Yes" } else { "No" })
+                                    ui.DataTableCell(
+                                        "Unique",
+                                        value: if i.unique { "Yes" } else { "No" },
+                                    )
                                     ui.DataTableCell("Columns", value: i.columns)
                                 }
                             }
@@ -1618,27 +1616,34 @@ view connect_dialog(
         body: {
             stack(gap: .related) {
                 text("Name", role: .caption, secondary: true)
-                ui.TextInput(bind: local_name, placeholder: "Connection name", autofocus: true) {}
+                ui.TextInput(bind: local_name, placeholder: "Connection name", autofocus: true) {
+                }
                 ui.ToggleGroup(selected: local_engine, label: "Engine") {
                     ui.Segment("SQLite")
                     ui.Segment("PostgreSQL")
                     ui.Segment("MySQL")
-                    on change(i): set(local_engine, i).then(set(local_port, default_port(engine_of(i))))
+                    on change(i): set(local_engine, i)
+                        .then(set(local_port, default_port(engine_of(i))))
                 }
                 if local_engine == 0 {
                     text("SQLite file path", role: .caption, secondary: true)
-                    ui.TextInput(bind: local_file, placeholder: "~/Documents/app.sqlite") {}
+                    ui.TextInput(bind: local_file, placeholder: "~/Documents/app.sqlite") {
+                    }
                 } else {
                     text("Host", role: .caption, secondary: true)
-                    ui.TextInput(bind: local_host, placeholder: "localhost") {}
+                    ui.TextInput(bind: local_host, placeholder: "localhost") {
+                    }
                     text("Port", role: .caption, secondary: true)
                     ui.NumberInput(bind: local_port, min: 1, max: 65535)
                     text("Database", role: .caption, secondary: true)
-                    ui.TextInput(bind: local_database, placeholder: "database") {}
+                    ui.TextInput(bind: local_database, placeholder: "database") {
+                    }
                     text("User", role: .caption, secondary: true)
-                    ui.TextInput(bind: local_user, placeholder: "user") {}
+                    ui.TextInput(bind: local_user, placeholder: "user") {
+                    }
                     text("Password", role: .caption, secondary: true)
-                    ui.TextInput(bind: local_password, placeholder: "Password", secret: true) {}
+                    ui.TextInput(bind: local_password, placeholder: "Password", secret: true) {
+                    }
                     text(
                         "The password is kept on this device, never in the shared connection.",
                         role: .caption,
@@ -1648,16 +1653,17 @@ view connect_dialog(
             }
         }
         on act_primary: add_connection(
-            d,
-            local_name,
-            local_engine,
-            local_host,
-            local_port,
-            local_database,
-            local_user,
-            local_file,
-            local_password,
-        ).then(set(open, false))
+                d,
+                local_name,
+                local_engine,
+                local_host,
+                local_port,
+                local_database,
+                local_user,
+                local_file,
+                local_password,
+            )
+            .then(set(open, false))
         on dismiss: set(open, false)
     }
 }
@@ -1666,7 +1672,9 @@ view connect_dialog(
 view confirm_dialog(d: Database, s: Session) {
     ui.ModalDialog(
         title: "Run this statement?",
-        description: .some(if s.name == "" { "No connection is open." } else { "This runs on {s.name}." }),
+        description: .some(
+            if s.name == "" { "No connection is open." } else { "This runs on {s.name}." },
+        ),
         open: true,
         primary: "Run statement",
         secondary: "Cancel",

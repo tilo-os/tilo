@@ -709,11 +709,7 @@ action resolve_conflict(g: Repository, c: Change, ours: Bool) (label: "Keep a si
     let file = c.path
     asks(g, s, "resolve_conflict", json.encode(ResolveAsk(path: s.path, file: file, ours: ours)))
     if s.trouble == "" {
-        s.notice = if ours {
-            "Kept our side of {file}"
-        } else {
-            "Kept their side of {file}"
-        }
+        s.notice = if ours { "Kept our side of {file}" } else { "Kept their side of {file}" }
     }
 }
 
