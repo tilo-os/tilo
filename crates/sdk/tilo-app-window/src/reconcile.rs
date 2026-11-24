@@ -471,7 +471,12 @@ impl<L: ui::widget::arrange::Layout + 'static> PartContainer for ui::widget::arr
     }
 
     fn set_placement(&mut self, index: usize, placement: Placement) {
-        let Placement { fit, span, at, offset } = placement;
+        let Placement {
+            fit,
+            span,
+            at,
+            offset,
+        } = placement;
         ui::widget::arrange::Arranged::set_placement(self, index, fit, span, at);
         ui::widget::arrange::Arranged::set_offset(self, index, offset);
     }
@@ -2365,6 +2370,7 @@ mod tests {
                     }],
                     attrs: BTreeMap::new(),
                 }],
+                styles: Default::default(),
                 embeds: vec![Embed {
                     reference: TASK.into(),
                     view,

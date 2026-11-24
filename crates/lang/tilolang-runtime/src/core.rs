@@ -20,22 +20,23 @@ use crate::store::Store;
 use crate::value::Value;
 
 use Imp::{
-    Abort, ActAnswer, ActCall, ActCallInput, ActCallVolume, ActChoose, ActChooseFolder, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen, ActUndo, Actions, ActorApp, ActorEq,
-    ActorId, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength,
-    CallFn, CallInputs, CallMembers, CanvasCombine, CanvasCompare, CanvasDiff, CanvasDiffPicture,
-    CanvasExport, CanvasFind, CanvasGrade, CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen,
-    CanvasRemoveAlong, CanvasSave, CanvasSelect, CanvasSvg, CanvasSvgImport, CanvasWand,
-    ChangeView, ClipboardCopyImage, ClipboardCopySecret, ClipboardCopyText, ClipboardPasteImage,
-    ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs,
-    CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives,
-    CollRemove, CollValues, CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart,
-    DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DeviceRefLit, DurationText,
-    Earlier, EditField, EngineCall, EngineCancel, EngineCheck, EnginePicture, EngineRun,
-    EngineStart, EngineStartDone, EngineState, EngineStatus, EngineStream, EntryParts, EnumGetF,
-    EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventPress,
-    EventValue, FieldChanged, FileAt, FileBook, FileBookCover, FileBookInfo, FileCompress,
-    FileCopy, FileCrop, FileData, FileEncode, FileExtract, FileFiles, FileImageInfo, FileList,
-    FileMarkdown, FileMkdir, FileMove, FileOfBytes, FileOfDocument, FileOfText, FileOpen,
+    Abort, ActAnswer, ActCall, ActCallInput, ActCallVolume, ActChoose, ActChooseFolder,
+    ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen, ActUndo, Actions,
+    ActorApp, ActorEq, ActorId, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, Base64Decode,
+    Blake3, BytesLength, CallFn, CallInputs, CallMembers, CanvasCombine, CanvasCompare, CanvasDiff,
+    CanvasDiffPicture, CanvasExport, CanvasFind, CanvasGrade, CanvasInspect, CanvasLook,
+    CanvasMeasure, CanvasOpen, CanvasRemoveAlong, CanvasSave, CanvasSelect, CanvasSvg,
+    CanvasSvgImport, CanvasWand, ChangeView, ClipboardCopyImage, ClipboardCopySecret,
+    ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText, CollCount, CollCounted, CollEmpty,
+    CollInsert, CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
+    CollPlace, CollRelatives, CollRemove, CollValues, CollWhere, CollWhereWith, CountBy, DateShow,
+    DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DeviceRefLit,
+    DurationText, Earlier, EditField, EngineCall, EngineCancel, EngineCheck, EnginePicture,
+    EngineRun, EngineStart, EngineStartDone, EngineState, EngineStatus, EngineStream, EntryParts,
+    EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart,
+    EventPress, EventValue, FieldChanged, FileAt, FileBook, FileBookCover, FileBookInfo,
+    FileCompress, FileCopy, FileCrop, FileData, FileEncode, FileExtract, FileFiles, FileImageInfo,
+    FileList, FileMarkdown, FileMkdir, FileMove, FileOfBytes, FileOfDocument, FileOfText, FileOpen,
     FileOpenPath, FilePart, FileReadPath, FileRemove, FileRename, FileResize, FileRestore,
     FileSize, FileStat, FileText, FileThumbnail, FileTrash, FileTrashEntries, FileTurn, FileWatch,
     FileWrite, FileZip, FilterLit, Filters, Find, FirstUnseen, FloatAbs, FloatAcos, FloatAsin,
@@ -55,22 +56,24 @@ use Imp::{
     PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
     RandomFloat, RandomId, RandomInt, RandomShuffle, Reach, ReadText, ReadWith, RecNew, RecOwn,
     RecSetF, RecSetH, RecSetI, RecordAt, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF,
-    ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended, RichEmbed,
-    RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown, RichMarked, RichNew, RichPart,
-    RichRelinked, RichTime, RowKey, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, Sha256,
-    SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges, SheetRecords,
-    SheetValues, Single, SomeB, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers,
-    StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq,
-    StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrMisspelled, StrReplace, StrSlice,
-    StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper, StrUrlEncode,
-    StrWords, Suggest, Take, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse,
-    TimeShift, TimeSpan, TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps,
-    ToolOpenLink, ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
-    TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
-    UiBindState, UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
-    Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode, VersionChange, VersionEnd, Versions,
-    WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost, WebPostBytes, WebStatus,
-    WebStatusText, WebText, WindowState, Withdraw, Word, Zones,
+    ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended,
+    RichCellWritten, RichEmbed, RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown,
+    RichMarked, RichNew, RichPart, RichRelinked, RichReplaced, RichStyleCopied, RichStyleLook,
+    RichStyleNames, RichStyleRemoved, RichStyleSet, RichTableEdited, RichTime, RowKey, RowOpen,
+    RunChanges, SeenBy, SetAdd, SetRemove, Sha256, SheetEdit, SheetEntry, SheetFile, SheetNumbers,
+    SheetOfFile, SheetRanges, SheetRecords, SheetValues, Single, SomeB, SomeF, SomeH, SomeI,
+    SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat,
+    StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches,
+    StrMisspelled, StrReplace, StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat,
+    StrToInt, StrTrim, StrUpper, StrUrlEncode, StrWords, Suggest, Take, TimeClock, TimeDay,
+    TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan, TimeWall, Today,
+    ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenLink, ToolOpenWith, ToolTerminal,
+    TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+    UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild,
+    UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+    VaultCode, VersionChange, VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet,
+    WebHeaders, WebOk, WebPost, WebPostBytes, WebStatus, WebStatusText, WebText, WindowState,
+    Withdraw, Word, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -667,9 +670,9 @@ impl Core {
                 self.random_import(imp, a)
             }
             RichNew | RichPart | RichEmpty | RichAppended | RichTime | RichFromMarkdown
-            | RichFromHtml | RichMarkdown | RichEmbed | RichRelinked | RichMarked => {
-                self.rich_import(imp, a)
-            }
+            | RichFromHtml | RichMarkdown | RichEmbed | RichRelinked | RichMarked
+            | RichTableEdited | RichCellWritten | RichReplaced | RichStyleNames | RichStyleLook
+            | RichStyleSet | RichStyleCopied | RichStyleRemoved => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             // Everything that reaches past the values in hand: the workspace's resources, the
@@ -733,9 +736,9 @@ impl Core {
             VaultCode => self.vault_import(a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
             | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | UiBindStateAt
-            | StateGet | StateAt | ArgAt | ActSet | ActThen | ActAnswer | ActMadeFrom | ActMany | ActOpen
-            | ActUndo | ChangeView | UiActions | UiAction | ActChoose | ActChooseFolder
-            | ActSave | ActCall | ActCallInput | ActCallVolume | ActRunLine => {
+            | StateGet | StateAt | ArgAt | ActSet | ActThen | ActAnswer | ActMadeFrom | ActMany
+            | ActOpen | ActUndo | ChangeView | UiActions | UiAction | ActChoose
+            | ActChooseFolder | ActSave | ActCall | ActCallInput | ActCallVolume | ActRunLine => {
                 self.ui_import(imp, a)
             }
             EventValue | EventPart | EventPress | Actions | Lenses | CallMembers | CallInputs

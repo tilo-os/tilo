@@ -13,7 +13,7 @@ use tilo_doc::snapshot::{AttrVal, BlockView};
 
 use crate::format::CodecError;
 
-pub const TABLE_SOURCE: &str = "table_source";
+pub const TABLE_SOURCE: &str = tilo_doc::table_source::ATTR;
 
 /// The line a table of contents is written as, in Markdown: what a person types and what a
 /// document written out carries, in the one form every Markdown reader keeps as text.

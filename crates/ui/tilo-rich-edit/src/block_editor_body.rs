@@ -207,9 +207,12 @@ impl BodyBinding {
 }
 
 impl Held {
+    /// What the editor reads beside the paragraphs: how each reference reads, and the look of
+    /// each named style the document keeps.
     fn show_references(&self, editor: &mut BlockEditor) {
         if let Held::Rich(rich) = self {
             editor.show_references(rich);
+            editor.set_named_styles(&rich.styles);
         }
     }
 }

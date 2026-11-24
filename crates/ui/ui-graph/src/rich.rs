@@ -24,6 +24,12 @@ pub struct RichText {
     /// no entry reads as its run.
     #[serde(default)]
     pub embeds: Vec<Embed>,
+    /// The document's named styles, each one's look by the name a paragraph's `style` attribute
+    /// names (`font`, `size`, `bold`, `italic`, `color`, `align`, `space_before`, `space_after`,
+    /// `indent`, `line_spacing`): what a paragraph set in one looks like where it does not say
+    /// otherwise. The view reads them; it never writes them back.
+    #[serde(default)]
+    pub styles: BTreeMap<String, BTreeMap<String, Attr>>,
 }
 
 /// One paragraph: its kind (`paragraph`, `heading`, `list_item`, `quote`, `divider`), its

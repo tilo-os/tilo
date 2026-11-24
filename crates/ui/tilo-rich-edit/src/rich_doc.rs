@@ -84,7 +84,7 @@ pub fn kind_of(view: &BlockView) -> BlockKind {
 
 /// A table the editor keeps as its Markdown source is a paragraph of that
 /// source with this attribute, `true` while it shows as a grid.
-pub const TABLE_SOURCE: &str = "table_source";
+pub const TABLE_SOURCE: &str = tilo_doc::table_source::ATTR;
 
 /// The attribute that makes a quote a callout: the alert's name (`warning`).
 pub const CALLOUT: &str = "alert";
@@ -555,6 +555,7 @@ pub fn rich_of_blocks(
     tilo_ui_graph::rich::RichText {
         blocks: written,
         embeds: rich.embeds.clone(),
+        styles: rich.styles.clone(),
     }
 }
 
@@ -829,6 +830,7 @@ mod tests {
                 ],
                 ..Block::default()
             }],
+            styles: Default::default(),
             embeds: Vec::new(),
         }
     }
@@ -988,6 +990,7 @@ mod tests {
                     ..Block::default()
                 },
             ],
+            styles: Default::default(),
             embeds: Vec::new(),
         };
         let blocks = blocks_as_written(&written);
@@ -1096,6 +1099,7 @@ mod tests {
                 }],
                 attrs: std::collections::BTreeMap::new(),
             }],
+            styles: Default::default(),
             embeds: vec![Embed {
                 reference: TASK.into(),
                 view,

@@ -1422,6 +1422,7 @@ fn typed_rich(text: &str) -> patch::rich::RichText {
             ..patch::rich::Block::default()
         }],
         embeds: Vec::new(),
+        styles: Default::default(),
     }
 }
 

@@ -148,6 +148,23 @@ pub fn reads_as(doc: &AutoCommit, root: &automerge::ObjId, source: &DocSnapshot)
     same_state(&written, source)
 }
 
+/// Bring the named styles of the rich text under `root` to read as `wanted`, leaving its body,
+/// notes and page settings alone: a style whose look changed is written, a new one added and one
+/// `wanted` lacks removed. How a value carrying a document's style table is written back to it.
+///
+/// # Errors
+/// When `root` holds no rich text.
+pub fn reconcile_styles_under(
+    doc: &mut AutoCommit,
+    root: &automerge::ObjId,
+    wanted: &BTreeMap<String, BTreeMap<String, AttrVal>>,
+) -> Result<(), DocError> {
+    let c = crate::model::open(doc, root)?;
+    let ids = &mut crate::model::try_seeded_id_gen(doc, &c)?;
+    styles(&mut DocMut { doc, c: &c, ids }, wanted);
+    Ok(())
+}
+
 /// Write every named style the file has and drop the ones it does not.
 fn styles(d: &mut DocMut<'_>, wanted: &BTreeMap<String, BTreeMap<String, AttrVal>>) {
     let have = crate::model::all_styles(d.doc, d.c);

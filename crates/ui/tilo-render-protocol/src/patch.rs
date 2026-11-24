@@ -1054,6 +1054,7 @@ mod tests {
                 marks,
                 attrs: std::collections::BTreeMap::new(),
             }],
+            styles: Default::default(),
             embeds,
         };
         let batch: Vec<ToUi> = [
@@ -1106,6 +1107,7 @@ mod tests {
                 ..rich::Block::default()
             }],
             embeds: Vec::new(),
+            styles: Default::default(),
         };
         for rich in [rich::RichText::default(), plain] {
             let edit = vec![ToApp::EditRich {

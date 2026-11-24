@@ -4041,6 +4041,114 @@ impl Checker<'_> {
                     Ty::RichText,
                 )
             }
+            // `r.table_edited(table: n, edit: kind, row: r, column: c)`: the document with its
+            // `n`th table (from 1) changed at a cell — a row or column added or deleted, or the
+            // table deleted — as the editor's grid changes it: only that table is rewritten.
+            (Ty::RichText, "table_edited") => {
+                let form = "table_edited(table: n, edit: kind, row: r, column: c)`: the document \
+                            with its `n`th table (from 1) changed by `add-row`, `add-column`, \
+                            `delete-row`, `delete-column` or `delete-table` at the cell at row `r` \
+                            (its head 0) and column `c` (from 0)";
+                let Some(named) =
+                    self.named_args(args, &["table", "edit", "row", "column"], form, span)
+                else {
+                    return Ex::error();
+                };
+                let table = self.expr_as(&named[0].value, &Ty::Int);
+                let edit = self.expr_as(&named[1].value, &Ty::Text);
+                let row = self.expr_as(&named[2].value, &Ty::Int);
+                let column = self.expr_as(&named[3].value, &Ty::Int);
+                Ex::host(
+                    Imp::RichTableEdited,
+                    vec![r, table, edit, row, column],
+                    Ty::RichText,
+                )
+            }
+            // `r.cell_written(table: n, row: r, column: c, text: words)`: the document with one
+            // cell of its `n`th table reading `words`, and nothing else rewritten.
+            (Ty::RichText, "cell_written") => {
+                let form = "cell_written(table: n, row: r, column: c, text: words)`: the document \
+                            with the cell at row `r` (the head 0) and column `c` of its `n`th \
+                            table reading `words`";
+                let Some(named) =
+                    self.named_args(args, &["table", "row", "column", "text"], form, span)
+                else {
+                    return Ex::error();
+                };
+                let table = self.expr_as(&named[0].value, &Ty::Int);
+                let row = self.expr_as(&named[1].value, &Ty::Int);
+                let column = self.expr_as(&named[2].value, &Ty::Int);
+                let text = self.expr_as(&named[3].value, &Ty::Text);
+                Ex::host(
+                    Imp::RichCellWritten,
+                    vec![r, table, row, column, text],
+                    Ty::RichText,
+                )
+            }
+            // `r.replaced(find: a, with: b, all: yes)`: the document with `a` replaced by `b`
+            // where it stands in each paragraph, the first time or every time, the marks around
+            // the words kept: a find-and-replace that leaves comments and formatting in place.
+            (Ty::RichText, "replaced") => {
+                let form = "replaced(find: a, with: b, all: yes)`: the document with `a` replaced \
+                            by `b` in each paragraph's own words, the first time or every time";
+                let Some(named) = self.named_args(args, &["find", "with", "all"], form, span)
+                else {
+                    return Ex::error();
+                };
+                let find = self.expr_as(&named[0].value, &Ty::Text);
+                let with = self.expr_as(&named[1].value, &Ty::Text);
+                let all = self.expr_as(&named[2].value, &Ty::Bool);
+                Ex::host(Imp::RichReplaced, vec![r, find, with, all], Ty::RichText)
+            }
+            // The document's named styles: `r.style_names()` the ones a paragraph may be set in,
+            // `r.style_look(style: s, key: k)` one part of one's look as words, and the document
+            // with a part set (`style_set`), a style copied under a new name (`style_copied`) or
+            // one deleted (`style_removed`).
+            (Ty::RichText, "style_names") if args.is_empty() => {
+                Ex::host(Imp::RichStyleNames, vec![r], Ty::List(Box::new(Ty::Text)))
+            }
+            (Ty::RichText, "style_look") => {
+                let form = "style_look(style: name, key: part)`: one part of the style's look \
+                            (`font`, `size`, `bold`, `italic`, `color`, `align`, `space_before`, \
+                            `space_after`, `indent`, `line_spacing`) as words, empty where it sets none";
+                let Some(named) = self.named_args(args, &["style", "key"], form, span) else {
+                    return Ex::error();
+                };
+                let style = self.expr_as(&named[0].value, &Ty::Text);
+                let key = self.expr_as(&named[1].value, &Ty::Text);
+                Ex::host(Imp::RichStyleLook, vec![r, style, key], Ty::Text)
+            }
+            (Ty::RichText, "style_set") => {
+                let form = "style_set(style: name, key: part, value: words)`: the document with \
+                            the style's look setting `part` to `words`, the style made if it is new";
+                let Some(named) = self.named_args(args, &["style", "key", "value"], form, span)
+                else {
+                    return Ex::error();
+                };
+                let style = self.expr_as(&named[0].value, &Ty::Text);
+                let key = self.expr_as(&named[1].value, &Ty::Text);
+                let value = self.expr_as(&named[2].value, &Ty::Text);
+                Ex::host(Imp::RichStyleSet, vec![r, style, key, value], Ty::RichText)
+            }
+            (Ty::RichText, "style_copied") => {
+                let form = "style_copied(style: name, named: new)`: the document with a new style \
+                            `new` that looks as `name` does";
+                let Some(named) = self.named_args(args, &["style", "named"], form, span) else {
+                    return Ex::error();
+                };
+                let style = self.expr_as(&named[0].value, &Ty::Text);
+                let new = self.expr_as(&named[1].value, &Ty::Text);
+                Ex::host(Imp::RichStyleCopied, vec![r, style, new], Ty::RichText)
+            }
+            (Ty::RichText, "style_removed") => {
+                let form = "style_removed(style: name)`: the document without the style, its \
+                            paragraphs back in the body's look";
+                let Some(named) = self.named_args(args, &["style"], form, span) else {
+                    return Ex::error();
+                };
+                let style = self.expr_as(&named[0].value, &Ty::Text);
+                Ex::host(Imp::RichStyleRemoved, vec![r, style], Ty::RichText)
+            }
             // `r.markdown(links: pages, from: folder)`: each reference to a page of `links` a link
             // to that page, at the path from the folder the page is written in.
             (Ty::RichText, "markdown") => {

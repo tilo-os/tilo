@@ -84,7 +84,29 @@ pub fn resource_id(reference: &Reference) -> Option<&str> {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RichValue {
     pub blocks: Vec<BlockView>,
+    /// The document's named styles, by the name a paragraph's `style` names: each one's look
+    /// (`font`, `size`, `bold`, `italic`, `color`, `align`, `space_before`, `space_after`,
+    /// `indent`, `line_spacing`), which every paragraph set in it takes. `Some` for a text read
+    /// from a field, whose table a write brings the field's to; `None` for one made from words
+    /// (`RichText.from_markdown`), whose write leaves the field's styles as they are.
+    #[serde(default)]
+    pub styles: Option<Styles>,
 }
+
+/// A document's style table: each style's look by its name ([`RichValue::styles`]).
+pub type Styles =
+    std::collections::BTreeMap<String, std::collections::BTreeMap<String, tilo_doc::AttrVal>>;
+
+/// The styles every document has, which a paragraph is set in without the table naming them and
+/// which are never deleted: their look in the table only changes how they read.
+pub const BUILT_IN_STYLES: [&str; 6] = [
+    "Body",
+    "Heading 1",
+    "Heading 2",
+    "Heading 3",
+    "Quote",
+    "List item",
+];
 
 /// `path` as a page in `from` reaches it: the folders it shares with `from` left out,
 /// and one `..` for each folder of `from` above them — `../Plan.md` for a page in `Home` naming
@@ -202,7 +224,10 @@ impl RichValue {
     /// When the text is not a document.
     pub fn from_markdown(markdown: &str) -> Result<Self, String> {
         tilo_doc_codecs::rich::blocks_of_markdown(markdown)
-            .map(|blocks| Self { blocks })
+            .map(|blocks| Self {
+                blocks,
+                styles: None,
+            })
             .map_err(|why| format!("this text is not a document: {why}"))
     }
 
@@ -214,7 +239,10 @@ impl RichValue {
     /// When the text is not a document.
     pub fn from_html(html: &str) -> Result<Self, String> {
         tilo_doc_codecs::rich::blocks_of_html(html)
-            .map(|blocks| Self { blocks })
+            .map(|blocks| Self {
+                blocks,
+                styles: None,
+            })
             .map_err(|why| format!("this text is not an HTML document: {why}"))
     }
 
@@ -226,6 +254,7 @@ impl RichValue {
         }
         Self {
             blocks: text.split('\n').map(paragraph).collect(),
+            styles: None,
         }
     }
 
@@ -586,6 +615,325 @@ impl RichValue {
         Ok(out)
     }
 
+    /// The document's styles a person may set a paragraph in: the built-in ones, then the ones
+    /// its table adds, by name.
+    #[must_use]
+    pub fn style_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = BUILT_IN_STYLES.iter().map(|s| (*s).to_owned()).collect();
+        for name in self.styles.iter().flat_map(|t| t.keys()) {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+        names
+    }
+
+    /// One part of the look of the style `style`, as words (`"serif"`, `"14"`, `"true"`,
+    /// `"#cf222e"`), and nothing where the style does not set it.
+    #[must_use]
+    pub fn style_look(&self, style: &str, key: &str) -> String {
+        match self
+            .styles
+            .as_ref()
+            .and_then(|t| t.get(style))
+            .and_then(|look| look.get(key))
+        {
+            Some(tilo_doc::AttrVal::Str(text)) => text.clone(),
+            Some(tilo_doc::AttrVal::Float(n)) => format!("{n}"),
+            Some(tilo_doc::AttrVal::Int(n)) => n.to_string(),
+            Some(tilo_doc::AttrVal::Bool(b)) => b.to_string(),
+            _ => String::new(),
+        }
+    }
+
+    /// This text with the style `style` setting `key` to `value`: the style is made if the
+    /// table has none of that name. Every paragraph set in it takes the look.
+    ///
+    /// # Errors
+    /// When `key` is no part of a style's look, or `value` is not one it takes.
+    pub fn style_set(&self, style: &str, key: &str, value: &str) -> Result<Self, String> {
+        let style = style.trim();
+        if style.is_empty() {
+            return Err("a style needs a name".to_owned());
+        }
+        let number = |what: &str| {
+            value
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|n| n.is_finite() && *n >= 0.0)
+                .map(tilo_doc::AttrVal::Float)
+                .ok_or_else(|| format!("a style's {what} is a number of points, not {value}"))
+        };
+        let attr = match key {
+            "font" => match value {
+                "sans" | "serif" | "mono" => tilo_doc::AttrVal::Str(value.to_owned()),
+                _ => {
+                    return Err(format!(
+                        "a style's face is sans, serif or mono, not {value}"
+                    ));
+                }
+            },
+            "size" | "space_before" | "space_after" | "indent" => number(key)?,
+            "line_spacing" => number("line spacing")?,
+            "bold" | "italic" => match value {
+                "true" => tilo_doc::AttrVal::Bool(true),
+                "false" => tilo_doc::AttrVal::Bool(false),
+                _ => {
+                    return Err(format!(
+                        "a style is {key} or not: true or false, not {value}"
+                    ));
+                }
+            },
+            "color"
+                if value.len() == 7
+                    && value.starts_with('#')
+                    && value[1..].chars().all(|c| c.is_ascii_hexdigit()) =>
+            {
+                tilo_doc::AttrVal::Str(value.to_owned())
+            }
+            "color" => return Err(format!("a style's colour is #rrggbb, not {value}")),
+            "align" => match value {
+                "left" | "center" | "right" | "justify" => tilo_doc::AttrVal::Str(value.to_owned()),
+                _ => {
+                    return Err(format!(
+                        "a style aligns left, center, right or justify, not {value}"
+                    ));
+                }
+            },
+            _ => return Err(format!("a style has no {key}")),
+        };
+        let mut out = self.clone();
+        out.styles
+            .get_or_insert_with(Styles::new)
+            .entry(style.to_owned())
+            .or_default()
+            .insert(key.to_owned(), attr);
+        Ok(out)
+    }
+
+    /// This text with a new style `named` that looks as `style` does: what a person edits to
+    /// make a variant of a style without changing the paragraphs set in it.
+    ///
+    /// # Errors
+    /// When a style of that name is already there.
+    pub fn style_copied(&self, style: &str, named: &str) -> Result<Self, String> {
+        let named = named.trim();
+        if named.is_empty() {
+            return Err("a style needs a name".to_owned());
+        }
+        if self.style_names().iter().any(|n| n == named) {
+            return Err(format!("the document already has a style called {named}"));
+        }
+        let look = self
+            .styles
+            .as_ref()
+            .and_then(|t| t.get(style))
+            .cloned()
+            .unwrap_or_default();
+        let mut out = self.clone();
+        out.styles
+            .get_or_insert_with(Styles::new)
+            .insert(named.to_owned(), look);
+        Ok(out)
+    }
+
+    /// This text without the style `style`: its paragraphs go back to the body's look, keeping
+    /// their own. A built-in style is never deleted.
+    ///
+    /// # Errors
+    /// When `style` is built in, or the document has no style of that name.
+    pub fn style_removed(&self, style: &str) -> Result<Self, String> {
+        if BUILT_IN_STYLES.contains(&style) {
+            return Err(format!("{style} is one of the styles every document has"));
+        }
+        let mut out = self.clone();
+        let held = out.styles.as_mut().and_then(|t| t.remove(style));
+        if held.is_none() {
+            return Err(format!("the document has no style called {style}"));
+        }
+        for block in &mut out.blocks {
+            if block.str_attr("style") == Some(style) {
+                block.attrs.remove("style");
+            }
+        }
+        Ok(out)
+    }
+
+    /// The places of this text's tables in [`Self::blocks`], in order: the paragraphs that are a
+    /// table's Markdown source.
+    fn table_places(&self) -> Vec<usize> {
+        self.blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.attrs.contains_key(tilo_doc::table_source::ATTR))
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    /// This text with its `table`th table (counted from 1) changed by `edit` at the cell at
+    /// `row` (its head 0) and `column` (from 0): `add-row`, `add-column`, `delete-row`,
+    /// `delete-column`, or `delete-table` for the whole of it. Only that table's paragraph
+    /// changes, as the editor's own grid changes it, so the words around it, their marks and
+    /// the comments anchored in them stay as they are. A row or column added past the last
+    /// is added after the last.
+    ///
+    /// # Errors
+    /// When the text holds no such table or cell, the edit is not one of these, or it would take
+    /// a table's last row or column.
+    pub fn table_edited(
+        &self,
+        table: usize,
+        edit: &str,
+        row: usize,
+        column: usize,
+    ) -> Result<Self, String> {
+        let at = self.table_at(table)?;
+        let mut out = self.clone();
+        if edit == "delete-table" {
+            out.blocks.remove(at);
+            return Ok(out);
+        }
+        let kind = tilo_doc::table_source::TableEdit::named(edit).ok_or_else(|| {
+            format!(
+                "a table is edited by add-row, add-column, delete-row, delete-column or \
+                 delete-table, not {edit}"
+            )
+        })?;
+        let block = &self.blocks[at];
+        let rows = tilo_doc::table_source::data_rows(&block.text);
+        let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let adding = matches!(
+            kind,
+            tilo_doc::table_source::TableEdit::AddRow
+                | tilo_doc::table_source::TableEdit::AddColumn
+        );
+        let (row, column) = if adding {
+            (
+                row.min(rows.len().saturating_sub(1)),
+                column.min(columns.saturating_sub(1)),
+            )
+        } else {
+            (row, column)
+        };
+        let made = tilo_doc::table_source::restructured(&block.text, row, column, kind)
+            .ok_or_else(|| {
+                format!(
+                    "table {table} has no row {row} and column {column} to {edit}, or it is the \
+                     last one"
+                )
+            })?;
+        out.blocks[at].text = made.source;
+        Ok(out)
+    }
+
+    /// This text with the cell at `row` (the head 0) and `column` of its `table`th table reading
+    /// `text`: only that cell's words are rewritten.
+    ///
+    /// # Errors
+    /// When the text holds no such table or cell.
+    pub fn cell_written(
+        &self,
+        table: usize,
+        row: usize,
+        column: usize,
+        text: &str,
+    ) -> Result<Self, String> {
+        let at = self.table_at(table)?;
+        let mut out = self.clone();
+        let rows = tilo_doc::table_source::data_rows(&self.blocks[at].text);
+        let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+        if row >= rows.len() || column >= columns {
+            return Err(format!(
+                "table {table} has {} rows and {columns} columns, so no cell at {row}, {column}",
+                rows.len()
+            ));
+        }
+        if let Some(written) =
+            tilo_doc::table_source::with_cell(&self.blocks[at].text, row, column, text)
+        {
+            out.blocks[at].text = written;
+        }
+        Ok(out)
+    }
+
+    /// The place of the `table`th table, counted from 1.
+    fn table_at(&self, table: usize) -> Result<usize, String> {
+        let places = self.table_places();
+        table
+            .checked_sub(1)
+            .and_then(|i| places.get(i).copied())
+            .ok_or_else(|| match places.len() {
+                0 => "this text holds no table".to_owned(),
+                n => format!("this text holds {n} tables, so no table {table}"),
+            })
+    }
+
+    /// This text with `find` replaced by `with`, the first time it stands or every time, in each
+    /// paragraph's own words: a paragraph's marks stay over the words that stay, a mark around
+    /// the replaced words covers what replaced them, and a paragraph without `find` is left as it
+    /// was. Answers the text and how many were replaced; `find` never spans two paragraphs.
+    #[must_use]
+    pub fn replaced(&self, find: &str, with: &str, all: bool) -> (Self, usize) {
+        let mut out = self.clone();
+        let mut count = 0usize;
+        if find.is_empty() {
+            return (out, 0);
+        }
+        let found_chars = find.chars().count();
+        let with_chars = with.chars().count();
+        for block in &mut out.blocks {
+            if !all && count > 0 {
+                break;
+            }
+            if !block.text.contains(find) {
+                continue;
+            }
+            let mut text = String::with_capacity(block.text.len());
+            let mut rest = block.text.as_str();
+            // Where each replacement stands, in characters of the words as they are written now.
+            let mut chars_before = 0usize;
+            let mut edits: Vec<usize> = Vec::new();
+            while let Some(byte) = rest.find(find) {
+                if !all && count > 0 {
+                    break;
+                }
+                let (head, tail) = rest.split_at(byte);
+                text.push_str(head);
+                chars_before += head.chars().count();
+                edits.push(chars_before);
+                text.push_str(with);
+                chars_before += with_chars;
+                rest = &tail[find.len()..];
+                count += 1;
+            }
+            text.push_str(rest);
+            block.text = text;
+            for at in edits {
+                // `at` is where the replacement starts in the new words; marks are still counted
+                // in the old ones from there on.
+                let old_end = at + found_chars;
+                let shift = |pos: usize, is_end: bool| -> usize {
+                    if pos <= at {
+                        pos
+                    } else if pos >= old_end {
+                        pos - found_chars + with_chars
+                    } else if is_end {
+                        at + with_chars
+                    } else {
+                        at
+                    }
+                };
+                for mark in &mut block.marks {
+                    mark.start = shift(mark.start, false);
+                    mark.end = shift(mark.end, true);
+                }
+            }
+            block.marks.retain(|m| m.start < m.end);
+        }
+        (out, count)
+    }
+
     /// Each paragraph's anchor and its block: `¶1`, `¶2`, …, with the items of a list counted
     /// under the list's own number (`¶2.1`, `¶2.2`), as agents and quotes cite them.
     #[must_use]
@@ -739,9 +1087,11 @@ pub fn store_under(doc: &mut AutoCommit, obj: &ObjId, value: &RichValue) -> Resu
     if tilo_doc::model::open(doc, obj).is_err() {
         tilo_doc::model::init(doc, obj);
     }
-    tilo_doc::reconcile_body_under(doc, obj, &value.blocks)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    tilo_doc::reconcile_body_under(doc, obj, &value.blocks).map_err(|e| e.to_string())?;
+    if let Some(styles) = &value.styles {
+        tilo_doc::reconcile_styles_under(doc, obj, styles).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Make the field `key` of the map `parent` hold rich text, empty, when it holds none yet.
@@ -763,6 +1113,7 @@ pub fn read_under(doc: &AutoCommit, obj: &ObjId) -> RichValue {
     match tilo_doc::model::open(doc, obj) {
         Ok(c) => RichValue {
             blocks: tilo_doc::model::materialize_region(doc, &c, Region::Body),
+            styles: Some(tilo_doc::model::all_styles(doc, &c)).filter(|t| !t.is_empty()),
         },
         Err(_) => RichValue::default(),
     }
@@ -840,7 +1191,10 @@ impl RichValue {
             })
             .filter(|block| !block.text.is_empty())
             .collect();
-        Self { blocks }
+        Self {
+            blocks,
+            styles: None,
+        }
     }
 }
 

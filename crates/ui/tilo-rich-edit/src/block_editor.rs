@@ -640,6 +640,9 @@ pub struct BlockEditor {
     /// How every line is aligned within the editor's width (a centred
     /// slide title); left unless the owner says otherwise.
     text_align: ui::richtext::TextAlign,
+    /// The bound document's named styles, by the name a paragraph's style names: the look a
+    /// paragraph set in one takes where it says nothing of its own.
+    named_styles: std::collections::BTreeMap<String, styles::StyleLook>,
     font_scale: f32,
     /// How much larger the document reads than its own size: a zoom of 1 shows it as it is,
     /// and 2 sets every block twice as large and breaks the pages again.
@@ -954,6 +957,7 @@ impl BlockEditor {
             handle_reveal: handle_reveal::HandleReveal::default(),
             mention_paint: None,
             text_align: ui::richtext::TextAlign::Left,
+            named_styles: std::collections::BTreeMap::new(),
             ink: None,
             font_scale: 1.0,
             zoom: 1.0,
@@ -5645,134 +5649,9 @@ fn formula_descriptor(kind: &BlockKind) -> Option<ui::math::FormulaDescriptor> {
     ui::math::FormulaDescriptor::from_fence_language(lang.as_deref())
 }
 
-fn markdown_table_rows(source: &str) -> Vec<Vec<&str>> {
-    markdown_table_ranges(source)
-        .into_iter()
-        .map(|row| {
-            row.into_iter()
-                .filter_map(|range| source.get(range))
-                .collect()
-        })
-        .collect()
-}
-
-fn markdown_table_data_rows(source: &str) -> Vec<Vec<&str>> {
-    markdown_table_rows(source)
-        .into_iter()
-        .enumerate()
-        .filter(|(index, row)| *index != 1 || !markdown_table_separator(row))
-        .map(|(_, row)| row)
-        .collect()
-}
-
-fn markdown_table_ranges(source: &str) -> Vec<Vec<std::ops::Range<usize>>> {
-    let mut offset = 0usize;
-    let mut rows = Vec::new();
-    for line in source.split_inclusive('\n') {
-        let trimmed = line.trim();
-        let leading = line.len().saturating_sub(line.trim_start().len());
-        let mut delimiters = Vec::new();
-        let mut escaped = false;
-        for (index, ch) in trimmed.char_indices() {
-            if ch == '|' && !escaped {
-                delimiters.push(index);
-            }
-            escaped = ch == '\\' && !escaped;
-        }
-        if !delimiters.is_empty() {
-            let start = usize::from(delimiters.first() == Some(&0));
-            let end = if delimiters.last().copied() == trimmed.len().checked_sub(1) {
-                trimmed.len().saturating_sub(1)
-            } else {
-                trimmed.len()
-            };
-            let mut previous = start;
-            let mut cells = Vec::new();
-            for boundary in delimiters
-                .into_iter()
-                .filter(|index| *index >= start && *index < end)
-                .chain(std::iter::once(end))
-            {
-                if let Some(cell) = trimmed.get(previous..boundary) {
-                    let left =
-                        previous.saturating_add(cell.len().saturating_sub(cell.trim_start().len()));
-                    let right = left.saturating_add(cell.trim().len());
-                    let base = offset.saturating_add(leading);
-                    cells.push(base.saturating_add(left)..base.saturating_add(right));
-                }
-                previous = boundary.saturating_add(1);
-            }
-            rows.push(cells);
-        }
-        offset = offset.saturating_add(line.len());
-    }
-    rows
-}
-
-fn decode_table_cell(value: &str) -> String {
-    let value = value
-        .replace("<br>", "\n")
-        .replace("<br/>", "\n")
-        .replace("<br />", "\n")
-        .replace("&#32;", " ")
-        .replace("&#9;", "\t")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&");
-    let mut decoded = String::new();
-    let mut chars = value.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' && chars.peek().is_some_and(|next| matches!(next, '|' | '\\')) {
-            if let Some(next) = chars.next() {
-                decoded.push(next);
-            }
-        } else {
-            decoded.push(ch);
-        }
-    }
-    decoded
-}
-
-fn encode_table_cell(value: &str) -> String {
-    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
-    let first_content = normalized
-        .find(|character| character != ' ')
-        .unwrap_or(normalized.len());
-    let last_content = normalized
-        .rfind(|character| character != ' ')
-        .map_or(0, |index| {
-            index.saturating_add(
-                normalized
-                    .get(index..)
-                    .and_then(|suffix| suffix.chars().next())
-                    .map_or(0, char::len_utf8),
-            )
-        });
-    let mut encoded = String::with_capacity(normalized.len());
-    for (index, character) in normalized.char_indices() {
-        match character {
-            '&' => encoded.push_str("&amp;"),
-            '<' => encoded.push_str("&lt;"),
-            '>' => encoded.push_str("&gt;"),
-            ' ' if index < first_content || index >= last_content => encoded.push_str("&#32;"),
-            ' ' => encoded.push(' '),
-            '\t' => encoded.push_str("&#9;"),
-            '\\' => encoded.push_str("\\\\"),
-            '|' => encoded.push_str("\\|"),
-            '\n' => encoded.push_str("<br>"),
-            other => encoded.push(other),
-        }
-    }
-    encoded
-}
-
-fn markdown_table_separator(row: &[&str]) -> bool {
-    !row.is_empty()
-        && row.iter().all(|cell| {
-            let cell = cell.trim_matches(':').trim();
-            cell.len() >= 3 && cell.chars().all(|ch| ch == '-')
-        })
-}
+// A table is one paragraph of its Markdown source; the grid, the preview and an app's actions
+// read and edit it through the one set of helpers the document model keeps.
+use tilo_doc::table_source::{data_rows as markdown_table_data_rows, decode_cell as decode_table_cell};
 
 struct TablePreviewLayout {
     rows: Vec<Vec<String>>,
@@ -8806,12 +8685,18 @@ impl BlockEditor {
             .count();
         // The space each paragraph asks for below it, read before the blocks are borrowed to
         // prepare them: a block's top margin is the wider of its own ask and the one above.
-        let space_after_above: Vec<Option<f32>> = self
+        // Each paragraph's look, its named style filling what it leaves unset, and the words'
+        // look that style sets.
+        let looks: Vec<(ParagraphStyle, Option<crate::rich_text_line::RunLook>)> = self
             .blocks
             .iter()
-            .map(|block| block.style.space_after)
+            .map(|block| (self.paragraph_look(block), self.run_look_of(block)))
             .collect();
+        let space_after_above: Vec<Option<f32>> =
+            looks.iter().map(|(look, _)| look.space_after).collect();
         for (i, b) in self.blocks.iter_mut().enumerate() {
+            let (look, run_look) = looks.get(i).cloned().unwrap_or_default();
+            b.line.set_run_look(run_look);
             let image = self.image_attachments.get(&b.id);
             let image_preview = image
                 .and_then(|image| markdown_image_parts(&image.source))
@@ -8837,7 +8722,7 @@ impl BlockEditor {
                 reason = "bounded on-screen block inset"
             )]
             let paragraph_indent =
-                b.style.indent.unwrap_or(0.0) + b.style.first_line_indent.unwrap_or(0.0).max(0.0);
+                look.indent.unwrap_or(0.0) + look.first_line_indent.unwrap_or(0.0).max(0.0);
             b.line.set_layout_inset(
                 (prefix_gutter_for(&b.kind) * self.text_scale) as f32
                     + LIST_INDENT_STEP_PX * f32::from(b.indent()) * theme.text_scale
@@ -8855,9 +8740,9 @@ impl BlockEditor {
             // text starts as far from the margin as its indent puts it. A first line's own
             // indent rides with the inset until a hanging one is asked for, which no codec
             // stores yet, so the first line shares the paragraph's.
-            b.line.set_align(b.style.align.unwrap_or(self.text_align));
+            b.line.set_align(look.align.unwrap_or(self.text_align));
             // A paragraph set double-spaced stands taller and breaks pages as it prints.
-            b.line.set_line_spacing(b.style.line_spacing.unwrap_or(1.0));
+            b.line.set_line_spacing(look.line_spacing.unwrap_or(1.0));
             // A document paragraph already receives spacing from the block stack, and TextInput's
             // normal multiline field padding would add another 8 px above and below every line,
             // making consecutive prose read like separate form fields: keep that padding for richer
@@ -8954,7 +8839,7 @@ impl BlockEditor {
             // The space a paragraph asks for above it replaces the rhythm's, and the one the
             // paragraph before asked for below it adds to it: a person sets both, and either
             // alone holds.
-            let asked_before = b.style.space_before.map(|points| points * PIXELS_PER_POINT);
+            let asked_before = look.space_before.map(|points| points * PIXELS_PER_POINT);
             let asked_after_above = space_after_above
                 .get(i.saturating_sub(1))
                 .copied()
@@ -9428,7 +9313,10 @@ impl BlockEditor {
             .map(|caret| ui::num::f32_of_f64(caret.y0 - self.rect.y0));
         let y = caret
             .or(view_top)
-            .or_else(|| self.focused.and_then(|index| self.stack.tops.get(index).copied()))
+            .or_else(|| {
+                self.focused
+                    .and_then(|index| self.stack.tops.get(index).copied())
+            })
             .unwrap_or(0.0);
         let page = self
             .stack
@@ -10080,7 +9968,12 @@ impl Widget for BlockEditor {
         };
         self.refresh_image_dimensions();
         let single_block = self.blocks.len() == 1;
-        for block in &mut self.blocks {
+        let aligns: Vec<Option<ui::richtext::TextAlign>> = self
+            .blocks
+            .iter()
+            .map(|block| self.paragraph_look(block).align)
+            .collect();
+        for (at, block) in self.blocks.iter_mut().enumerate() {
             let hint = if single_block && matches!(block.kind, BlockKind::Paragraph) {
                 self.empty_hint.as_str()
             } else {
@@ -10089,7 +9982,7 @@ impl Widget for BlockEditor {
             if block.line.inner().placeholder() != hint {
                 block.line.inner_mut().set_placeholder(hint);
             }
-            let align = block.style.align.unwrap_or(self.text_align);
+            let align = aligns.get(at).copied().flatten().unwrap_or(self.text_align);
             if block.line.align() != align {
                 block.line.set_align(align);
             }
@@ -12764,6 +12657,9 @@ mod present;
 pub mod references;
 #[path = "block_editor_remount.rs"]
 mod remount;
+#[path = "block_editor_styles.rs"]
+mod styles;
+pub use styles::StyleLook;
 #[path = "block_editor_text_menu.rs"]
 mod text_menu;
 pub use present::{BlockContent, EditScope, ParagraphStyle, PresenceKeyFn};
@@ -13219,64 +13115,17 @@ impl BlockEditor {
         if !matches!(block.kind, BlockKind::Table { .. }) {
             return false;
         }
-        let source = block.text().to_owned();
-        let mut rows: Vec<Vec<String>> = markdown_table_data_rows(&source)
-            .into_iter()
-            .map(|row| row.into_iter().map(str::to_owned).collect())
-            .collect();
-        let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
-        if row >= rows.len() || column >= columns {
+        let Some(edit) = tilo_doc::table_source::TableEdit::named(command) else {
             return false;
-        }
-        for row in &mut rows {
-            row.resize(columns, String::new());
-        }
-        let mut divider: Vec<String> = markdown_table_rows(&source)
-            .get(1)
-            .filter(|row| markdown_table_separator(row))
-            .map_or_else(
-                || vec!["---".to_owned(); columns],
-                |row| row.iter().map(|value| (*value).to_owned()).collect(),
-            );
-        divider.resize(columns, "---".to_owned());
-        let mut focus_row = row;
-        let mut focus_column = column;
-        match command {
-            "table-add-row" => {
-                focus_row = row.saturating_add(1);
-                rows.insert(focus_row, vec![String::new(); columns]);
-            }
-            "table-add-column" => {
-                focus_column = column.saturating_add(1);
-                for row in &mut rows {
-                    row.insert(focus_column, String::new());
-                }
-                divider.insert(focus_column, "---".into());
-            }
-            "table-delete-row" if rows.len() > 1 => {
-                rows.remove(row);
-                focus_row = row.min(rows.len().saturating_sub(1));
-            }
-            "table-delete-column" if columns > 1 => {
-                for row in &mut rows {
-                    row.remove(column);
-                }
-                divider.remove(column);
-                focus_column = column.min(columns.saturating_sub(2));
-            }
-            _ => return false,
-        }
-        let mut lines = Vec::new();
-        for (index, row) in rows.iter().enumerate() {
-            lines.push(format!("| {} |", row.join(" | ")));
-            if index == 0 {
-                lines.push(format!("| {} |", divider.join(" | ")));
-            }
-        }
-        let mut updated = lines.join("\n");
-        if source.ends_with('\n') {
-            updated.push('\n');
-        }
+        };
+        let Some(tilo_doc::table_source::Restructured {
+            source: updated,
+            rows,
+            focus: (focus_row, focus_column),
+        }) = tilo_doc::table_source::restructured(block.text(), row, column, edit)
+        else {
+            return false;
+        };
         let Some(block) = self.blocks.get_mut(index) else {
             return false;
         };
@@ -13332,49 +13181,10 @@ impl BlockEditor {
         if !matches!(block.kind, BlockKind::Table { .. }) {
             return false;
         }
-        let mut source = block.text().to_owned();
-        let rows: Vec<_> = markdown_table_ranges(&source)
-            .into_iter()
-            .enumerate()
-            .filter(|(index, row)| {
-                let values: Vec<_> = row
-                    .iter()
-                    .filter_map(|range| source.get(range.clone()))
-                    .collect();
-                *index != 1 || !markdown_table_separator(&values)
-            })
-            .map(|(_, row)| row)
-            .collect();
-        if column >= rows.iter().map(Vec::len).max().unwrap_or(0) {
-            return false;
-        }
-        let Some(ranges) = rows.get(row) else {
+        let Some(source) = tilo_doc::table_source::with_cell(block.text(), row, column, value)
+        else {
             return false;
         };
-        if let Some(current) = ranges
-            .get(column)
-            .and_then(|range| source.get(range.clone()))
-            && decode_table_cell(current) == value
-        {
-            return false;
-        }
-        let encoded = encode_table_cell(value);
-        if let Some(range) = ranges.get(column) {
-            source.replace_range(range.clone(), &encoded);
-        } else {
-            let (Some(first), Some(last)) = (ranges.first(), ranges.last()) else {
-                return false;
-            };
-            let mut cells: Vec<_> = ranges
-                .iter()
-                .filter_map(|range| source.get(range.clone()).map(str::to_owned))
-                .collect();
-            cells.resize(column.saturating_add(1), String::new());
-            if let Some(cell) = cells.get_mut(column) {
-                *cell = encoded;
-            }
-            source.replace_range(first.start..last.end, &cells.join(" | "));
-        }
         if self
             .blocks
             .get(index)

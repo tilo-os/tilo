@@ -1000,6 +1000,7 @@ mod tests {
                 ],
                 attrs: std::collections::BTreeMap::new(),
             }],
+            styles: Default::default(),
             embeds: views
                 .into_iter()
                 .map(|(reference, view)| Embed {
@@ -1087,6 +1088,7 @@ mod tests {
                     attrs: std::collections::BTreeMap::new(),
                 },
             ],
+            styles: Default::default(),
             embeds: views
                 .into_iter()
                 .map(|(reference, view)| Embed {
@@ -1690,6 +1692,7 @@ mod tests {
                         ..Block::default()
                     },
                 ],
+                styles: Default::default(),
                 embeds: Vec::new(),
             };
             let body = ui::LocalState::new(rich);
@@ -1750,6 +1753,7 @@ mod tests {
                     attrs: [("level".to_owned(), Attr::Int(level))].into(),
                     ..Block::default()
                 }],
+                styles: Default::default(),
                 embeds: Vec::new(),
             };
             let props = |rich: RichText| BlockEditorProps {
@@ -1924,6 +1928,7 @@ mod tests {
                         ..Block::default()
                     },
                 ],
+                styles: Default::default(),
                 embeds: Vec::new(),
             };
             let value = ui::LocalState::new(rich.clone());

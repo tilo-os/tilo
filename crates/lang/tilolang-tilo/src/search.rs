@@ -456,6 +456,7 @@ fn block_hits(holdings: &Holdings<'_>, id: &str, field: &str, rich: &RichValue) 
                     children: Vec::new(),
                     ..block.clone()
                 }],
+                styles: None,
             };
             let text = crate::reading::said(holdings, id, FieldValue::Rich(one))?;
             (!text.trim().is_empty()).then(|| BlockHit {

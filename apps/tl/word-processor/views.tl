@@ -27,6 +27,8 @@ view writer(d: Document) {
     // it is laid out at: the editor reports the count as the width and the words change.
     state zoom: Float = 1.0
     state page_count: Int = 0
+    // The sheet the caret stands on, or the one the view's top shows: the "N" of "Page N of M".
+    state page_shown: Int = 0
     // Where the person's caret or selection stands, as the editor reports it: the block it
     // starts in, and where it starts and ends there. What a comment written now is anchored to.
     state comment_at: Text = ""
@@ -136,6 +138,7 @@ view writer(d: Document) {
                                             set(panel, "comments"),
                                         )
                                     on page_count(count): set(page_count, count)
+                                    on page_shown(sheet): set(page_shown, sheet)
                                     on slash_image: file.choose(
                                         place_image(d),
                                         accept: ["image/png", "image/jpeg", "image/webp"],
@@ -146,7 +149,7 @@ view writer(d: Document) {
                         }
                     }
                 }
-                status_band(d, page_count, zoom)
+                status_band(d, page_shown, page_count, zoom)
             }
         }
     }
@@ -427,11 +430,6 @@ fn line_spacings() -> List<Text> {
     ["1", "1.15", "1.5", "2"]
 }
 
-/// The styles every document has, as the paragraph panel names them.
-fn style_names() -> List<Text> {
-    ["Body", "Heading 1", "Heading 2", "Heading 3", "Quote", "List item"]
-}
-
 /// The panel beside the page: the page's setup, the words' own look, or the review of what
 /// others proposed.
 template view side_panel(
@@ -618,9 +616,9 @@ fn sizes() -> List<Int> {
 }
 
 /// The inks a person sets words to: the page's own black and greys, then the colours that read
-/// as a note, a link, a correction and a mark.
+/// as a note, a link, a correction and a mark. A style's ink is one of the same.
 fn text_colors() -> List<Text> {
-    ["#1f2328", "#57606a", "#0969da", "#1a7f37", "#9a6700", "#cf222e", "#8250df", "#bf3989"]
+    style_inks()
 }
 
 /// The bands a person marks words with, pale enough that the words still read.
@@ -671,16 +669,6 @@ view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>)
         }
         section("Paragraph") {
             row(gap: .tight, wrap: true) {
-                for name in style_names() {
-                    ui.Chip("{name}") {
-                        on press: set(asked, asked + 1)
-                            .then(
-                                set(format_ask, "style:{name}:{asked + 1}"),
-                            )
-                    }
-                }
-            }
-            row(gap: .tight, wrap: true) {
                 text("Before", role: .caption, secondary: true)
                 for step in steps() {
                     ui.Chip("{step}") {
@@ -714,6 +702,7 @@ view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>)
                 }
             }
         }
+        style_sheet(d, format_ask, asked)
         section("Set up") {
             text("Started as a {d.started} page.", role: .caption, secondary: true)
             text(
@@ -723,6 +712,131 @@ view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>)
             )
         }
     }
+}
+
+/// The document's named styles: pressing one sets the paragraph the caret is in in it and chooses
+/// it here, where its face, size, weight, ink, alignment and spacing are set, and every paragraph
+/// set in it follows. A new style starts from the one chosen; one the document made can be
+/// duplicated and deleted.
+view style_sheet(d: Document, format_ask: State<Option<Text>>, asked: State<Int>) {
+    state chosen: Text = "Body"
+    state draft: Text = ""
+    section("Styles") {
+        stack(gap: .tight) {
+            row(gap: .tight, wrap: true) {
+                for name in d.body.style_names() {
+                    ui.Chip(name, selected: name == chosen) {
+                        on press: set(chosen, name)
+                            .then(set(asked, asked + 1))
+                            .then(
+                                set(format_ask, "style:{name}:{asked + 1}"),
+                            )
+                    }
+                }
+            }
+            row(gap: .tight, wrap: true) {
+                text("Face", role: .caption, secondary: true)
+                for face in ["sans", "serif", "mono"] {
+                    ui.Chip(
+                        face_name(face),
+                        selected: d.body.style_look(style: chosen, key: "font") == face,
+                    ) {
+                        on press: set_style_look(d, chosen, font: .some(face))
+                    }
+                }
+            }
+            row(gap: .tight, wrap: true) {
+                text("Size", role: .caption, secondary: true)
+                for size in style_sizes() {
+                    ui.Chip(
+                        "{size.round()} pt",
+                        selected: d.body.style_look(style: chosen, key: "size")
+                            == "{size.round()}",
+                    ) {
+                        on press: set_style_look(d, chosen, size: .some(size))
+                    }
+                }
+            }
+            row(gap: .tight, wrap: true) {
+                ui.Chip("Bold", selected: d.body.style_look(style: chosen, key: "bold") == "true") {
+                    on press: set_style_look(
+                        d,
+                        chosen,
+                        bold: .some(d.body.style_look(style: chosen, key: "bold") != "true"),
+                    )
+                }
+                ui.Chip(
+                    "Italic",
+                    selected: d.body.style_look(style: chosen, key: "italic") == "true",
+                ) {
+                    on press: set_style_look(
+                        d,
+                        chosen,
+                        italic: .some(d.body.style_look(style: chosen, key: "italic") != "true"),
+                    )
+                }
+                for side in ["left", "center", "right", "justify"] {
+                    ui.Chip(
+                        align_name(side),
+                        selected: d.body.style_look(style: chosen, key: "align") == side,
+                    ) {
+                        on press: set_style_look(d, chosen, align: .some(side))
+                    }
+                }
+            }
+            ui.ColorSwatchPicker(
+                swatches: text_colors(),
+                columns: 8,
+                selected: text_colors().index_of(d.body.style_look(style: chosen, key: "color")),
+                label: "Style colour",
+            ) {
+                on change(index): set_style_ink(d, chosen, index)
+            }
+            row(gap: .tight, wrap: true) {
+                text("After", role: .caption, secondary: true)
+                for step in steps() {
+                    ui.Chip("{step}") {
+                        on press: set_style_look(d, chosen, after: .some(step.to_float()))
+                    }
+                }
+            }
+            row(gap: .tight, align: .center) {
+                ui.TextInput(bind: draft, placeholder: "A new style's name", fill)
+                ui.Button("New style", icon: .plus) {
+                    on press: new_style(d, draft, chosen)
+                        .then(set(chosen, draft.trim()))
+                        .then(set(draft, ""))
+                }
+            }
+            row(gap: .tight, wrap: true) {
+                ui.Button("Duplicate", icon: .copy, role: .plain) {
+                    on press: duplicate_style(d, chosen).then(set(chosen, "{chosen} copy"))
+                }
+                if not built_in_styles().contains(chosen) {
+                    ui.Button("Delete", icon: .trash, role: .plain) {
+                        on press: delete_style(d, chosen).then(set(chosen, "Body"))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A face as the style panel names it.
+fn face_name(face: Text) -> Text {
+    if face == "serif" { "Serif" } else if face == "mono" { "Mono" } else { "Sans" }
+}
+
+/// An alignment as the style panel names it.
+fn align_name(side: Text) -> Text {
+    if side == "center" {
+        "Centre"
+    } else if side == "right" { "Right" } else if side == "justify" { "Justified" } else { "Left" }
+}
+
+/// The sizes a style is set to, in points.
+fn style_sizes() -> List<Float> {
+    [10.0, 11.0, 12.0, 14.0, 16.0, 18.0, 24.0, 32.0]
 }
 
 /// What others proposed for the document, each proposal a card a person accepts or dismisses.
@@ -775,8 +889,9 @@ view review_panel(
     }
 }
 
-/// What stands under the page: how much the document says, and what the page is set for.
-view status_band(d: Document, page_count: Int, zoom: Float) {
+/// What stands under the page: how much the document says, which sheet of how many the person
+/// is on, and what the page is set for.
+view status_band(d: Document, page_shown: Int, page_count: Int, zoom: Float) {
     row(gap: .related, align: .center, padding: .related) {
         spacer()
         text("{d.body.text.words()} words", role: .caption, secondary: true)
@@ -784,7 +899,11 @@ view status_band(d: Document, page_count: Int, zoom: Float) {
         text("{d.body.text.len()} characters", role: .caption, secondary: true)
         if page_count > 0 {
             text("·", role: .caption, secondary: true)
-            text("{page_count} pages", role: .caption, secondary: true)
+            if page_shown > 0 {
+                text("Page {page_shown} of {page_count}", role: .caption, secondary: true)
+            } else {
+                text("{page_count} pages", role: .caption, secondary: true)
+            }
         }
         if zoom != 1.0 {
             text("·", role: .caption, secondary: true)

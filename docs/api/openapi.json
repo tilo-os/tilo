@@ -88305,7 +88305,7 @@
           "find",
           "replace"
         ],
-        "description": "Finds `find` in the document and replaces the first of it, or every one, with `replace`. A\nparagraph's marks stay around the words that stay."
+        "description": "Finds `find` in the document and replaces the first of it, or every one, with `replace`. The\nwords are replaced where they stand, as the editor replaces them: a paragraph's marks, its\nformatting and the comments anchored in it stay around the words that stay."
       },
       "tl.so.tilo.word-processor.Document.insert_table.Arguments": {
         "type": "object",
@@ -88322,45 +88322,186 @@
       },
       "tl.so.tilo.word-processor.Document.add_row.Arguments": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "row": {
+            "type": "integer"
+          },
+          "table": {
+            "type": "integer"
+          }
+        },
         "required": [],
-        "description": "Adds a row like the last of the document's first table, under it."
+        "description": "Adds a blank row to a table of the document, under the row `row` counted from its head at 1,\nor under its last row. Only that table changes, as a row added in the editor's grid does."
       },
       "tl.so.tilo.word-processor.Document.add_column.Arguments": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "column": {
+            "type": "integer"
+          },
+          "table": {
+            "type": "integer"
+          }
+        },
         "required": [],
-        "description": "Adds a cell to every row of the document's first table."
+        "description": "Adds a blank column to a table of the document, right of the column `column` counted from its\nleft at 1, or right of its last."
       },
       "tl.so.tilo.word-processor.Document.delete_row.Arguments": {
         "type": "object",
         "properties": {
           "row": {
             "type": "integer"
+          },
+          "table": {
+            "type": "integer"
           }
         },
         "required": [
           "row"
         ],
-        "description": "Deletes a row of the document's first table, counted from its head at 1."
+        "description": "Deletes a row of a table of the document, counted from its head at 1."
       },
       "tl.so.tilo.word-processor.Document.delete_column.Arguments": {
         "type": "object",
         "properties": {
           "column": {
             "type": "integer"
+          },
+          "table": {
+            "type": "integer"
           }
         },
         "required": [
           "column"
         ],
-        "description": "Deletes a column of the document's first table, counted from its left at 1."
+        "description": "Deletes a column of a table of the document, counted from its left at 1."
       },
       "tl.so.tilo.word-processor.Document.delete_table.Arguments": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "table": {
+            "type": "integer"
+          }
+        },
         "required": [],
-        "description": "Deletes the document's first table and everything it holds."
+        "description": "Deletes a table of the document and everything it holds; the words around it stay."
+      },
+      "tl.so.tilo.word-processor.Document.write_cell.Arguments": {
+        "type": "object",
+        "properties": {
+          "row": {
+            "type": "integer"
+          },
+          "column": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          },
+          "table": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "row",
+          "column",
+          "text"
+        ],
+        "description": "Writes `text` in one cell of a table of the document, at `row` counted from its head at 1 and\n`column` from its left at 1: that cell's words change and nothing else does, as typing in the\neditor's grid changes them."
+      },
+      "tl.so.tilo.word-processor.Document.set_style_look.Arguments": {
+        "type": "object",
+        "properties": {
+          "style": {
+            "type": "string"
+          },
+          "font": {
+            "type": "string"
+          },
+          "size": {
+            "type": "number"
+          },
+          "bold": {
+            "type": "boolean"
+          },
+          "italic": {
+            "type": "boolean"
+          },
+          "color": {
+            "type": "string"
+          },
+          "align": {
+            "type": "string"
+          },
+          "before": {
+            "type": "number"
+          },
+          "after": {
+            "type": "number"
+          },
+          "indent": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "style"
+        ],
+        "description": "Changes how the named style `style` looks: its face (sans, serif or mono), its size in points,\nwhether it is bold or italic, its colour (#rrggbb), how its lines align (left, center, right,\njustify), and the space before and after it and its indent, in points. What is left out stays\nas it was. The style is the document's own, so every paragraph set in it changes at once, on\nevery device, and the change is one a person takes back."
+      },
+      "tl.so.tilo.word-processor.Document.set_style_ink.Arguments": {
+        "type": "object",
+        "properties": {
+          "style": {
+            "type": "string"
+          },
+          "swatch": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "style",
+          "swatch"
+        ],
+        "description": "Sets the ink of the named style `style` to one of the inks the page offers, counted from 0 in\nthe order its colour swatches show them: the page's black and greys, then blue, green, ochre,\nred, violet and pink."
+      },
+      "tl.so.tilo.word-processor.Document.new_style.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "Makes a new named style called `name`, looking as the style `from` does: a person sets\nparagraphs in it and changes its look without touching the styles every document has."
+      },
+      "tl.so.tilo.word-processor.Document.duplicate_style.Arguments": {
+        "type": "object",
+        "properties": {
+          "style": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "style"
+        ],
+        "description": "Makes a copy of the named style `style`, called \"`style` copy\", to change apart from it."
+      },
+      "tl.so.tilo.word-processor.Document.delete_style.Arguments": {
+        "type": "object",
+        "properties": {
+          "style": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "style"
+        ],
+        "description": "Deletes a style the document made: its paragraphs go back to the body's look. The styles\nevery document has (Body, the headings, Quote and List item) stay."
       },
       "tl.so.tilo.word-processor.Document.set_page_margins.Arguments": {
         "type": "object",
@@ -121062,6 +121203,42 @@
       "resource": "tl.so.tilo.word-processor.Document",
       "action": "delete_table",
       "arguments": "#/components/schemas/tl.so.tilo.word-processor.Document.delete_table.Arguments"
+    },
+    {
+      "app": "so.tilo.word-processor",
+      "resource": "tl.so.tilo.word-processor.Document",
+      "action": "write_cell",
+      "arguments": "#/components/schemas/tl.so.tilo.word-processor.Document.write_cell.Arguments"
+    },
+    {
+      "app": "so.tilo.word-processor",
+      "resource": "tl.so.tilo.word-processor.Document",
+      "action": "set_style_look",
+      "arguments": "#/components/schemas/tl.so.tilo.word-processor.Document.set_style_look.Arguments"
+    },
+    {
+      "app": "so.tilo.word-processor",
+      "resource": "tl.so.tilo.word-processor.Document",
+      "action": "set_style_ink",
+      "arguments": "#/components/schemas/tl.so.tilo.word-processor.Document.set_style_ink.Arguments"
+    },
+    {
+      "app": "so.tilo.word-processor",
+      "resource": "tl.so.tilo.word-processor.Document",
+      "action": "new_style",
+      "arguments": "#/components/schemas/tl.so.tilo.word-processor.Document.new_style.Arguments"
+    },
+    {
+      "app": "so.tilo.word-processor",
+      "resource": "tl.so.tilo.word-processor.Document",
+      "action": "duplicate_style",
+      "arguments": "#/components/schemas/tl.so.tilo.word-processor.Document.duplicate_style.Arguments"
+    },
+    {
+      "app": "so.tilo.word-processor",
+      "resource": "tl.so.tilo.word-processor.Document",
+      "action": "delete_style",
+      "arguments": "#/components/schemas/tl.so.tilo.word-processor.Document.delete_style.Arguments"
     },
     {
       "app": "so.tilo.word-processor",
