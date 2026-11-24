@@ -387,6 +387,11 @@ pub fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String> {
 /// Resume transport only for the exact durable identity and certified device,
 /// of whichever class the daemon certified it as. This grants no app access;
 /// native owner/session admission remains separate.
+///
+/// It reads the device's own root-signed certificate as the daemon's start does
+/// ([`tilo_identity::trusted_device::unlisted`]): setup runs before the host that
+/// keeps the person's devices record has listed this device, and on a computer the
+/// daemon has not started at all. A revocation the record carries is still refused.
 pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
     if existing_identity_at(&minted.path).map_or(true, |current| current != *minted) {
         return false;
@@ -398,7 +403,7 @@ pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
         return false;
     };
     let room = collab_types::person_workspace(&person);
-    tilo_identity::trusted_device::current(&room.to_string())
+    tilo_identity::trusted_device::unlisted(&room.to_string())
         .is_ok_and(|(_, certificate)| certificate.user_public_key == person)
 }
 

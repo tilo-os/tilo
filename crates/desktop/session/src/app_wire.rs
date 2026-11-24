@@ -1280,7 +1280,7 @@ fn host_services_with_hosts(
         hosted
             .engine
             .as_ref()
-            .map(|engine| engine.identity().device_cert.user_public_key),
+            .map(|engine| engine.identity().device_cert.clone()),
         placed.as_ref(),
     );
     let terminals = on_daemon

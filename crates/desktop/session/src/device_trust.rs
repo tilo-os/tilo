@@ -1,7 +1,9 @@
 //! The person's devices as this session admits them: the record of their own workspace, followed
 //! through the record API, answered by one [`DevicesTrust`] every admission in this process asks.
 //!
-//! The session keeps none of their devices itself. A session a daemon started reads the record
+//! The session keeps none of their devices itself, but this device, which its own certificate
+//! names and which the record will list: that is admitted before the record answers, and by a
+//! session no daemon started at all. A session a daemon started reads the record
 //! from that daemon on its shell link, as every app's read of it is decided there, and asks it
 //! for the revocations the person's root signed, which a record's mark cannot say; a session the
 //! host placed in a workspace's VM reads the record from the host that certified it; and a
@@ -52,35 +54,62 @@ fn trust() -> &'static Arc<DevicesTrust> {
 /// authority decides anything: from the `daemon` it was started by, from the `vm` host that
 /// placed it, or from `service` when this session keeps the workspaces itself.
 ///
+/// `own` is this session's device certificate. It is admitted from the first call, whatever the
+/// record of the person's devices has answered yet: it is this device the record will list, and a
+/// session the daemon did not start may never read the record at all. A revocation the record
+/// carries still takes it back, and no other device is admitted without the record.
+///
 /// A session with none of these knows no device of the person's, and installs an answer that
 /// admits none.
 pub(crate) fn install(
     daemon: &DeviceDaemon,
     service: &ServiceSlot,
-    person: Option<[u8; 32]>,
+    own: Option<DeviceCert>,
     vm: Option<&Arc<HostedWorkspaces>>,
 ) {
     let trust = trust();
-    let Some(person) = person else {
+    let Some(own) = own else {
         trust.reading(|| None);
         return;
     };
     if let Ok(link) = daemon {
         install_from_daemon(
             DaemonShell::new(Ok(link.clone()), tilo_rt::app().handle().clone()),
-            person,
+            own,
         );
         return;
     }
     if let Some(hosted) = vm {
-        follow_host(trust, Arc::clone(hosted), person);
+        follow_host(trust, Arc::clone(hosted), own);
         return;
     }
     let slot = service.clone();
     trust.reading(move || {
-        slot.service()
-            .map(|service| seen_of_host(service.workspaces()))
+        with_own(
+            &own,
+            slot.service()
+                .map(|service| seen_of_host(service.workspaces())),
+        )
     });
+}
+
+/// What the session answers of `own`'s person, with `own`'s key among the certified: the
+/// certificate their root signed for this device is this session's own to present before any host
+/// lists it, and a revocation the record carries still takes it back.
+fn with_own(own: &DeviceCert, seen: Option<DevicesSeen>) -> Option<DevicesSeen> {
+    match seen {
+        Some(mut seen) if seen.person == own.user_public_key => {
+            seen.certified.insert(own.device_public_key);
+            Some(seen)
+        }
+        Some(seen) => Some(seen),
+        None => Some(DevicesSeen::of_host(
+            own.user_public_key,
+            [own.device_public_key],
+            [],
+            Vec::new(),
+        )),
+    }
 }
 
 /// What a follow keeps of the last reading: the revision it stands at, and what the record said.
@@ -110,16 +139,18 @@ impl Cached {
 
 /// Install the session's answer from `shell`, the daemon's own link, and follow the person's
 /// record on it from now on.
-fn install_from_daemon(shell: DaemonShell, person: [u8; 32]) {
-    answer_from_daemon(trust(), shell, person);
+fn install_from_daemon(shell: DaemonShell, own: DeviceCert) {
+    answer_from_daemon(trust(), shell, own);
 }
 
 /// [`install_from_daemon`], on the trust this process answers through.
-fn answer_from_daemon(trust: &Arc<DevicesTrust>, shell: DaemonShell, person: [u8; 32]) {
+fn answer_from_daemon(trust: &Arc<DevicesTrust>, shell: DaemonShell, own: DeviceCert) {
+    let person = own.user_public_key;
     let cache = Arc::new(Mutex::new(Cached::default()));
     trust.reading({
         let cache = Arc::clone(&cache);
-        move || cache.lock_recover().seen.clone()
+        let own = own.clone();
+        move || with_own(&own, cache.lock_recover().seen.clone())
     });
     // The daemon holds the record already: a session that served before its first reading would
     // refuse this device, and every other of the person's, once.
@@ -136,11 +167,12 @@ fn answer_from_daemon(trust: &Arc<DevicesTrust>, shell: DaemonShell, person: [u8
 }
 
 /// Answer from `hosted`, the host's read of the person's record, and follow it from now on.
-fn follow_host(trust: &Arc<DevicesTrust>, hosted: Arc<HostedWorkspaces>, person: [u8; 32]) {
+fn follow_host(trust: &Arc<DevicesTrust>, hosted: Arc<HostedWorkspaces>, own: DeviceCert) {
+    let person = own.user_public_key;
     let cache = Arc::new(Mutex::new(Cached::default()));
     trust.reading({
         let cache = Arc::clone(&cache);
-        move || cache.lock_recover().seen.clone()
+        move || with_own(&own, cache.lock_recover().seen.clone())
     });
     hosted.runtime().spawn(async move {
         follow(cache, person, None, Follow::Host(hosted)).await;
@@ -387,7 +419,7 @@ mod tests {
 
         // The install the session makes when a daemon started it: the daemon answers the record
         // of the person's devices on the link it handed the session.
-        install_from_daemon(daemon.shell(), person);
+        install_from_daemon(daemon.shell(), cert.clone());
 
         assert_eq!(
             tilo_identity::sources::device_trust()

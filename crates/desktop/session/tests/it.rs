@@ -35,6 +35,8 @@ mod common;
 mod a11y_export;
 #[path = "acceptance.rs"]
 mod acceptance;
+#[path = "admission.rs"]
+mod admission;
 #[path = "agent_control.rs"]
 mod agent_control;
 #[path = "agent_environments.rs"]
