@@ -15,7 +15,7 @@ use tilo_automation::{
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 use super::*;
-use crate::workspaces::fixtures::{governor, test_host};
+use crate::workspaces::fixtures::{declare_app, declare_built_in_app, governor, test_host};
 
 /// The runs a test's broker was asked to start, each of which ran to its end at once.
 #[derive(Default)]
@@ -211,6 +211,7 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
         signer: Arc::new(key.clone()),
     }));
     let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+    declare_built_in_app(&host, "so.tilo.tasks");
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: "so.tilo.tasks".into(),
         cluster_id: workspace.clone(),
@@ -290,6 +291,7 @@ async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
         signer: Arc::new(key.clone()),
     }));
     let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+    declare_built_in_app(&host, "so.tilo.tasks");
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: "so.tilo.tasks".into(),
         cluster_id: workspace.clone(),
@@ -651,16 +653,16 @@ fn a_cause_tells_the_files_its_item_carries() {
     let event: DocumentEvent = serde_json::from_value(json!({
         "workspace": "w",
         "record": "general",
-        "app": "so.tilo.lang.chat",
-        "kind": "tl.so.tilo.lang.chat.Message",
+        "app": "so.tilo.chat",
+        "kind": "tl.so.tilo.chat.Message",
         "change": "c0ffee",
         "actor": {"by": {"member": {"person": "ada"}}},
-        "did": {"did": "verb", "action": {"app": "so.tilo.lang.chat", "kind": "tl.so.tilo.lang.chat.Message", "action": "send"}},
-        "item": {"kind": "tl.so.tilo.lang.chat.Message", "id": "m-1", "label": ""},
+        "did": {"did": "verb", "action": {"app": "so.tilo.chat", "kind": "tl.so.tilo.chat.Message", "action": "send"}},
+        "item": {"kind": "tl.so.tilo.chat.Message", "id": "m-1", "label": ""},
         "after": {
             "body": {"blocks": [{"text": "read this", "marks": []}]},
             "$held": [{
-                "$kind": "tl.so.tilo.lang.chat.Attached",
+                "$kind": "tl.so.tilo.chat.Attached",
                 "name": "plan.txt",
                 "media": "text/plain",
                 "size": 12,
@@ -688,11 +690,11 @@ fn a_cause_tells_the_files_its_item_carries() {
 )]
 async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
     use crate::agents::triggered::{MayRead, Where, unreadable};
-    use tilo_resource_store::wire::Command;
+    use tilo_resource_store::wire::{Command, Edit};
     use tilo_resource_store::{Cell, Resource, Stamp, Value};
 
-    const CHAT: &str = "so.tilo.lang.chat";
-    const MESSAGE: &str = "tl.so.tilo.lang.chat.Message";
+    const CHAT: &str = "so.tilo.chat";
+    const MESSAGE: &str = "tl.so.tilo.chat.Message";
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let host = test_host(dir.path(), &key, &cert).await;
@@ -702,6 +704,7 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
         signer: Arc::new(key.clone()),
     }));
     let workspace = workspaces.create("Chat").await.unwrap().workspace;
+    declare_built_in_app(&host, CHAT);
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.clone(),
@@ -709,8 +712,14 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
     };
     let _ = workspaces.own_route_keys(&route, true).await.unwrap();
     let person = hex::encode(cert.user_public_key);
+    // The id Chat's declaration keeps for `send`: what a change its program makes claims.
+    let send = crate::tl_records::built_in(CHAT)
+        .expect("the built-in packages compile")
+        .expect("Chat is built in")
+        .action_id("send")
+        .expect("Chat offers send");
     let stamp = Stamp {
-        verb: "send".into(),
+        verb: send,
         invoker: person.clone(),
         invocation: "i-1".into(),
         at: jiff::Timestamp::now().to_string(),
@@ -722,7 +731,7 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
             CHAT,
             Command::Batch(vec![
                 Command::Put {
-                    kind: "tl.so.tilo.lang.chat.TextChannel".into(),
+                    kind: "tl.so.tilo.chat.TextChannel".into(),
                     id: "general".into(),
                     resource: Resource {
                         readers: "*".into(),
@@ -740,9 +749,18 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
                         readers: "*".into(),
                         parent: Some("general".into()),
                         order: None,
-                        fields: [("title".to_owned(), Cell::One(Value::Text("hello".into())))]
-                            .into(),
+                        fields: BTreeMap::new(),
                     },
+                    stamp: stamp.clone(),
+                },
+                // What the message says is its rich body, which a change writes as content.
+                Command::Edit {
+                    kind: MESSAGE.into(),
+                    id: "m-1".into(),
+                    edits: vec![Edit::Set {
+                        field: "body".into(),
+                        value: json!({"blocks": [{"text": "hello", "marks": []}]}),
+                    }],
                     stamp: stamp.clone(),
                 },
             ]),
@@ -759,7 +777,7 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
         "actor": {"by": {"member": {"person": person}}},
         "did": {"did": "verb", "action": {"app": CHAT, "kind": MESSAGE, "action": "send"}},
         "item": {"kind": MESSAGE, "id": "m-1", "label": "hello"},
-        "after": {"title": "hello", "$in": {"$id": "general", "$kind": "Direct"}},
+        "after": {"body": "hello", "$in": {"$id": "general", "$kind": "Direct"}},
     }))
     .unwrap();
     let place = Where::of(&event).unwrap();
@@ -856,8 +874,8 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     use tilo_resource_store::wire::{Command, Edit};
     use tilo_resource_store::{Cell, Resource, Stamp, Value};
 
-    const CHAT: &str = "so.tilo.lang.chat";
-    const MESSAGE: &str = "tl.so.tilo.lang.chat.Message";
+    const CHAT: &str = "so.tilo.chat";
+    const MESSAGE: &str = "tl.so.tilo.chat.Message";
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
     let (key, cert) = governor();
@@ -869,6 +887,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     }));
     workspaces.run_agents(Arc::new(ActsAsScout));
     let workspace = workspaces.create("Chat").await.unwrap().workspace;
+    declare_built_in_app(&host, CHAT);
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.clone(),
@@ -894,6 +913,12 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     let person = tilo_actions::Acting::person(hex::encode(cert.user_public_key)).by;
     let scout = Who::member(MemberId::agent("scout"));
     let bridge = Who::member(MemberId::bot("bridge"));
+    // The id Chat's declaration keeps for `send`: what a change its program makes claims.
+    let send = crate::tl_records::built_in(CHAT)
+        .expect("the built-in packages compile")
+        .expect("Chat is built in")
+        .action_id("send")
+        .expect("Chat offers send");
     // `by` puts the resource `id` of `kind` in `parent`, with `fields` and the `content` its
     // fields hold, a message's rich body among them.
     let put = async |kind: &str,
@@ -903,20 +928,29 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
                      fields: Vec<(&str, &str)>,
                      content: Vec<(&str, serde_json::Value)>| {
         // The write serves an invocation of `by`'s, as the chat app's write for an action that
-        // was delivered to it.
+        // was delivered to it. An agent's change is the person's it works for.
         let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+        let acted_for = matches!(by, Who::Member(MemberId::Agent(_)))
+            .then(|| hex::encode(cert.user_public_key));
         let stamp = Stamp {
-            verb: "send".into(),
+            verb: send.clone(),
             invoker: Stamp::by(by),
+            acted_for,
             invocation: invocation.0.to_string(),
             at: jiff::Timestamp::now().to_string(),
             ..Stamp::default()
+        };
+        // A direct conversation is read by the people it names, so its write names no readers.
+        let readers = if kind == "tl.so.tilo.chat.Direct" {
+            String::new()
+        } else {
+            "*".to_owned()
         };
         let mut commands = vec![Command::Put {
             kind: kind.into(),
             id: id.into(),
             resource: Resource {
-                readers: "*".into(),
+                readers,
                 parent: parent.map(str::to_owned),
                 order: None,
                 fields: fields
@@ -979,7 +1013,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     // A message's `body`.
     let body = |words: &str, mention: bool| vec![("body", rich(words, mention))];
     put(
-        "tl.so.tilo.lang.chat.TextChannel",
+        "tl.so.tilo.chat.TextChannel",
         "general",
         None,
         &person,
@@ -988,7 +1022,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     )
     .await;
     put(
-        "tl.so.tilo.lang.chat.Direct",
+        "tl.so.tilo.chat.Direct",
         "with-scout",
         None,
         &person,
@@ -1105,7 +1139,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     // A thread in its direct conversation is nested in the conversation: a reply there, naming
     // nobody, asks it too, and the answer is sent into the thread.
     put(
-        "tl.so.tilo.lang.chat.Thread",
+        "tl.so.tilo.chat.Thread",
         "thread-1",
         Some("with-scout"),
         &person,
@@ -1201,6 +1235,33 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         signer: Arc::new(key.clone()),
     }));
     workspaces.run_agents(Arc::new(ActsAsScout));
+    // Mail is a package the daemon does not run itself: a test that writes its records compiles
+    // its sources and declares the surface they make.
+    let mail_package = crate::tl_records::Packages::compile(&[
+        (
+            concat!(
+                include_str!("../../../../../apps/tl/contacts/app.tl"),
+                "\n",
+                include_str!("../../../../../apps/tl/contacts/identities.tl")
+            ),
+            include_str!("../../../../../apps/tl/contacts/app.ids"),
+        ),
+        (
+            include_str!("../../../../../apps/tl/mail/app.tl"),
+            include_str!("../../../../../apps/tl/mail/app.ids"),
+        ),
+    ])
+    .expect("Mail's sources compile");
+    declare_app(
+        &host,
+        MAIL,
+        &mail_package
+            .surface(MAIL)
+            .expect("Mail declares its surface"),
+    );
+    let delivered = mail_package
+        .action_id("deliver_message")
+        .expect("Mail offers deliver_message");
     let workspace = workspaces.create("Mail").await.unwrap().workspace;
     assert!(
         workspaces.join_keys(&workspace).await,
@@ -1279,7 +1340,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         started.0.lock().unwrap()[before..].to_vec()
     };
 
-    put(THREAD, "thread-1", None, "sync", &mail, Vec::new()).await;
+    put(THREAD, "thread-1", None, Stamp::ORIGIN_VERB, &mail, Vec::new()).await;
     let now = fired(&mut runner).await;
     assert!(
         now.is_empty(),
@@ -1341,7 +1402,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         MESSAGE,
         "message-2",
         Some("thread-1"),
-        "deliver_message",
+        &delivered,
         &person,
         vec![("mailbox", "inbox")],
     )
@@ -3074,6 +3135,20 @@ async fn a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names() {
         )
     });
     let source = Source::saying("text/html", &prices(10, "10:42", "a"));
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    let workspace = workspaces.create("Proxy").await.unwrap().workspace;
+    save_signed(
+        workspaces,
+        &workspace,
+        on_a_source("page", "tilo.web.page", &source.at()),
+        (&key, &cert),
+    )
+    .await;
+    // The environment names the proxy only while the look runs: the host's endpoint asks its
+    // relay where it is seen from as it opens, and that request is no look at a source.
     let mut environment = ScopedEnv::new();
     for name in [
         "HTTP_PROXY",
@@ -3089,19 +3164,6 @@ async fn a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names() {
     for name in ["NO_PROXY", "no_proxy", "REQUEST_METHOD"] {
         environment.remove(name);
     }
-
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let host = test_host(dir.path(), &key, &cert).await;
-    let workspaces = host.workspaces();
-    let workspace = workspaces.create("Proxy").await.unwrap().workspace;
-    save_signed(
-        workspaces,
-        &workspace,
-        on_a_source("page", "tilo.web.page", &source.at()),
-        (&key, &cert),
-    )
-    .await;
     let clock = Pinned::at(SOURCE_START);
     let started = Arc::new(Started::default());
     let mut runner = source_runner(workspaces, &started, true).await;
@@ -3110,8 +3172,11 @@ async fn a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names() {
     let sent = proxy.drain_requests();
     assert!(
         sent.is_empty(),
-        "the proxy the environment names was sent {} request(s) of a look",
-        sent.len()
+        "the proxy the environment names was sent {} request(s) of a look: {:?}",
+        sent.len(),
+        sent.iter()
+            .map(|request| (&request.method, request.target.as_str()))
+            .collect::<Vec<_>>()
     );
     assert_eq!(source.looks(), 1, "the source itself was asked");
     host.shutdown().await;
@@ -3366,6 +3431,12 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
 
     let person = tilo_actions::Acting::person(hex::encode(cert.user_public_key)).by;
     let scout = Who::member(MemberId::agent("scout"));
+    // The id Chat's declaration keeps for `send`: what a change its program makes claims.
+    let send = crate::tl_records::built_in(CHAT)
+        .expect("the built-in packages compile")
+        .expect("Chat is built in")
+        .action_id("send")
+        .expect("Chat offers send");
     // `put` writes the resource `id` of `kind` as `by`, as the app's write for an action that
     // was delivered to it.
     let put = async |kind: &str,
@@ -3375,9 +3446,12 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
                      verb: &str,
                      fields: Vec<(&str, String)>| {
         let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+        let acted_for = matches!(by, Who::Member(MemberId::Agent(_)))
+            .then(|| hex::encode(cert.user_public_key));
         let stamp = Stamp {
             verb: verb.into(),
             invoker: Stamp::by(by),
+            acted_for,
             invocation: invocation.0.to_string(),
             at: jiff::Timestamp::now().to_string(),
             ..Stamp::default()
@@ -3411,7 +3485,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     };
     // A member posts a message in the channel: what the watch fires on.
     let post = async |id: &str, by: &Who| {
-        put(MESSAGE, id, Some("general"), by, "send", Vec::new()).await;
+        put(MESSAGE, id, Some("general"), by, &send, Vec::new()).await;
     };
     // A report filed against a message, on the workspace's moderation record.
     let report = async |id: &str, by: &Who, reason: &str| {

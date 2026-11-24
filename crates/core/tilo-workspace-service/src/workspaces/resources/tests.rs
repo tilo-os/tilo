@@ -19,12 +19,41 @@ use tilo_resource_store::wire::{Command, Reply};
 use tilo_resource_store::{Cell, Query, Resource, Stamp, Store, Value};
 
 use super::super::Workspaces;
-use super::super::fixtures::{TestGroupKeys, governor_with, test_host_holding};
+use super::super::fixtures::{TestGroupKeys, declare_app, governor_with, test_host_holding};
 use super::super::sealed_documents::fixtures::member_device;
 use crate::apps::services::ResourceRequestContext;
 
 const APP: &str = "so.tilo.tasks";
-const KIND: &str = "tasks.issue";
+const KIND: &str = "tl.so.tilo.tasks.Task";
+
+/// What a write of a task claims: the host's verb for a tilolang package's root, as the app's
+/// own program writes a record it makes.
+fn create() -> Stamp {
+    Stamp {
+        verb: "$create".to_owned(),
+        ..Stamp::default()
+    }
+}
+
+/// The entry's surface: the address a visitor leaves and the verbs the workspace's entry opens
+/// to any key. The entry is the workspace's own setting rather than a package this build carries,
+/// so a test declares it as an installed app's surface is declared.
+const ENTRY_SURFACE: &str = r#"format = 2
+
+[[resources]]
+kind = "entry.request"
+label = "Request"
+version = 1
+fields = [
+  { path = "title", type = "text" },
+]
+verbs = [
+  { id = "join", label = "Ask to join", kind = "undoable" },
+  { id = "confirm", label = "Confirm the address", kind = "undoable" },
+  { id = "leave", label = "Take the address off", kind = "undoable" },
+  { id = "remove", label = "Remove", kind = "undoable" },
+]
+"#;
 
 fn context(workspace: &str, cert: &tilo_user_identity::DeviceCert) -> ResourceRequestContext {
     ResourceRequestContext::authenticated(
@@ -71,8 +100,8 @@ impl Writer {
         self.put_fields(workspaces, workspace, id, fields).await;
     }
 
-    /// Writes the photograph `id` whose content is `reference`: what a page's Photos keeps,
-    /// naming its picture's bytes and none of them.
+    /// Writes the record `id` whose title is `reference`: what an app keeps when its record
+    /// names a file's bytes by address, and none of them.
     async fn put_content(
         &mut self,
         workspaces: &Workspaces,
@@ -81,7 +110,7 @@ impl Writer {
         reference: &str,
     ) -> String {
         let fields = BTreeMap::from([(
-            "content".to_owned(),
+            "title".to_owned(),
             Cell::One(Value::Text(reference.to_owned())),
         )]);
         self.put_fields(workspaces, workspace, id, fields).await
@@ -118,10 +147,7 @@ impl Writer {
             order: None,
             fields,
         };
-        let written = self
-            .store
-            .put(KIND, id, resource, &Stamp::default())
-            .unwrap();
+        let written = self.store.put(KIND, id, resource, &create()).unwrap();
         let mut placed = String::new();
         let mut bodies = Vec::new();
         for write in written {
@@ -346,6 +372,14 @@ async fn assert_scribed_as_agent(
 ) -> tilo_actions::Actor {
     let agent = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"));
     let delivered = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+    // The agent works for the person whose device carried the write: what every receiver
+    // decides it as, never as a bare name.
+    let acted_for = hex::encode(
+        context
+            .caller()
+            .user_public_key()
+            .expect("the device's person"),
+    );
     workspaces
         .resource_command(
             &context.clone().serving(vec![(delivered, agent.clone())]),
@@ -355,6 +389,7 @@ async fn assert_scribed_as_agent(
                 resource,
                 stamp: Stamp {
                     invocation: delivered.0.to_string(),
+                    acted_for: Some(acted_for),
                     ..stamp.clone()
                 },
             },
@@ -390,7 +425,7 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
     let _ = workspaces.own_route_keys(&route, true).await.unwrap();
 
     let stamp = Stamp {
-        verb: "add".to_owned(),
+        verb: "$create".to_owned(),
         invoker: "ada".to_owned(),
         invocation: "i1".to_owned(),
         ..Stamp::default()
@@ -527,6 +562,7 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
     let keys = Arc::new(TestGroupKeys::default());
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+    declare_app(&server, ENTRY, ENTRY_SURFACE.as_bytes());
     let workspaces = server.workspaces().clone();
     workspaces.set_member_device(Arc::new(super::super::MemberDevice {
         cert: cert.clone(),
@@ -579,7 +615,7 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
     workspaces
         .resource_command(
             &view(APP, member(&editor)),
-            viewed_put(KIND, "i-1", "Edited", "add"),
+            viewed_put(KIND, "i-1", "Edited", "$create"),
         )
         .await
         .unwrap();
@@ -596,11 +632,11 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
     let refused = workspaces
         .resource_command(
             &view(APP, member(&viewer)),
-            viewed_put(KIND, "i-2", "Viewed", "add"),
+            viewed_put(KIND, "i-2", "Viewed", "$create"),
         )
         .await
         .unwrap_err();
-    assert!(refused.contains("may not add"), "{refused}");
+    assert!(refused.contains("may not $create"), "{refused}");
     assert!(
         title_through_service(&workspaces, &device, "i-2")
             .await
@@ -842,7 +878,7 @@ async fn an_open_query_is_sent_each_page_a_write_makes_different() {
             fields: BTreeMap::from([("title".to_owned(), Cell::One(Value::Text(title.into())))]),
         },
         stamp: Stamp {
-            verb: "add".to_owned(),
+            verb: "$create".to_owned(),
             invocation: invocation.to_owned(),
             ..Stamp::default()
         },
@@ -900,9 +936,9 @@ async fn an_open_query_is_sent_each_page_a_write_makes_different() {
     );
 }
 
-/// A page's Photos keeps a photograph as a resource of the workspace's store: the document names
-/// the picture's bytes by reference, and the server reads the document back from the store —
-/// the replica does not hold a document the store placed.
+/// An app keeps a record whose field names a file's bytes as a resource of the workspace's store:
+/// the document names the bytes by reference, and the server reads the document back from the
+/// store — the replica does not hold a document the store placed.
 #[tokio::test]
 async fn a_members_store_document_reads_back_the_content_its_cells_name() {
     let dir = tempfile::tempdir().unwrap();
@@ -1017,7 +1053,7 @@ fn put_signed_issue(title: &str) -> Command {
         kind: KIND.into(),
         id: "i-1".into(),
         resource: signed_issue(title),
-        stamp: Stamp::default(),
+        stamp: create(),
     }
 }
 
@@ -1114,7 +1150,7 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
         Command::Remove {
             kind: KIND.into(),
             id: "missing".into(),
-            stamp: Stamp::default(),
+            stamp: create(),
         },
     ]);
     let refused = workspaces
@@ -1299,7 +1335,7 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
                     readers: author.clone(),
                     ..signed_issue("Only mine")
                 },
-                stamp: Stamp::default(),
+                stamp: create(),
             },
         )
         .await
@@ -1464,7 +1500,7 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
             .draft_field_update(
                 (KIND, "i-1"),
                 &signed_issue("Cancelled"),
-                &Stamp::default(),
+                &create(),
                 device.device(),
                 None,
                 &|_: &tilo_resource_store::Proposal<'_>| true,
@@ -1532,7 +1568,7 @@ async fn a_write_this_device_cannot_send_is_not_read_back() {
             fields: BTreeMap::from([("title".to_owned(), Cell::One(Value::Text(title.into())))]),
         },
         stamp: Stamp {
-            verb: "add".to_owned(),
+            verb: "$create".to_owned(),
             invoker: "ada".to_owned(),
             invocation: invocation.to_owned(),
             ..Stamp::default()

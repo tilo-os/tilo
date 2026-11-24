@@ -120,6 +120,16 @@ impl Packages {
             .map_or("", |package| package.meta.app.as_str())
     }
 
+    /// The `surface.toml` this package declares for `app`, one it uses included: the types and
+    /// verbs a workspace's store judges the app's records' writes by.
+    #[must_use]
+    pub fn surface(&self, app: &str) -> Option<Vec<u8>> {
+        self.surfaces()
+            .into_iter()
+            .find(|(named, _)| named == app)
+            .map(|(_, bytes)| bytes)
+    }
+
     /// The id the app's declaration keeps for its action published as `name`: what a change it
     /// made records.
     #[must_use]
@@ -290,6 +300,22 @@ pub fn built_in_apps() -> Vec<String> {
         .iter()
         .map(|packages| packages.app().to_owned())
         .collect()
+}
+
+/// The `surface.toml` this build's own sources compile to for `app`: the types and verbs a
+/// workspace's store judges the app's records' writes by. `None` for an app this build does not
+/// carry.
+///
+/// # Panics
+/// A built-in package does not compile, which is a bug of this build.
+#[must_use]
+pub(crate) fn built_in_surface(app: &str) -> Option<Vec<u8>> {
+    compiled()
+        .as_ref()
+        .expect("the packages built into this build compile")
+        .iter()
+        .find(|packages| packages.app() == app)?
+        .surface(app)
 }
 
 /// Declare the types and verbs of every package built into this build in `surfaces`, the

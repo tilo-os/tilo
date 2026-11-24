@@ -492,6 +492,28 @@ pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -
     test_host_with_grants(state_root, key, cert, None).await
 }
 
+/// Name `app`'s `surface`, the `surface.toml` its package ships, on `host`, as running that
+/// package does: the types and verbs its workspaces judge their resource writes by. A test whose
+/// app is a package this build carries declares its own surface ([`declare_built_in_app`]); one
+/// whose app no package exists for passes the surface it writes by.
+pub fn declare_app(host: &TestHost, app: &str, surface: &[u8]) {
+    host.workspaces().declare_package_surface(app, surface);
+}
+
+/// [`declare_app`] for `app`, a package this build carries: its own `surface.toml`, compiled
+/// from its sources, as a device that runs it names it.
+///
+/// # Panics
+///
+/// This build carries no package `app`.
+#[cfg(feature = "agents")]
+pub fn declare_built_in_app(host: &TestHost, app: &str) {
+    let surface = crate::tl_records::built_in_surface(app)
+        .unwrap_or_else(|| panic!("this build carries no package {app}"));
+    declare_app(host, app, &surface);
+}
+
+
 /// The same host, keeping `grants` pre-admissions per workspace
 /// ([`crate::service::ServiceConfig::max_workspace_grants`]).
 ///

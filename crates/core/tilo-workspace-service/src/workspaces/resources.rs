@@ -1614,6 +1614,14 @@ impl Workspaces {
 }
 
 impl Workspaces {
+    /// Name `app`'s `surface`, the `surface.toml` its package ships, where this device's
+    /// workspaces judge their resource writes by it: what launching the package does on a device
+    /// that runs it, for a test whose app is a package this build does not carry.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn declare_package_surface(&self, app: &str, surface: &[u8]) {
+        crate::workspaces::keep_surface(&self.inner.host.surfaces, app, surface);
+    }
+
     /// `governed`'s store with every app surface this device knows declared
     /// ([`GovernedWorkspace::store_with_surfaces`]), its live resources shown where this service
     /// shows them ([`Self::show_live`]).
