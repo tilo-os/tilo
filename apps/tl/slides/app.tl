@@ -220,6 +220,7 @@ action add_authored_slide(
     after: Option<Slide>,
 ) -> Slide {
     let chosen = layout ?? fallback
+    let gives_way = starter_gives_way(d, after)
     let made = d.slides.insert(
         Slide(
             layout: chosen,
@@ -241,6 +242,8 @@ action add_authored_slide(
         }
         place += 1
     }
+    // A deck that only held the empty starter keeps the slide someone made instead of it.
+    if let old = gives_way { d.slides.remove(old) }
     made
 }
 
@@ -252,6 +255,7 @@ action add_slides(d: Deck, outline: Text, after: Option<Slide> = .none) -> Resul
 ) {
     match json.decode<List<Outline>>(outline) {
         .ok(slides) => {
+            let gives_way = starter_gives_way(d, after)
             let previous = after
             let added = 0
             for outline in slides {
@@ -286,6 +290,8 @@ action add_slides(d: Deck, outline: Text, after: Option<Slide> = .none) -> Resul
                 }
                 added += 1
             }
+            // The empty starter gives way to the deck written from the outline.
+            if let old = gives_way { d.slides.remove(old) }
             .ok(added)
         }
         .err(why) => .err(why),
@@ -742,6 +748,36 @@ action resume_clock(d: Deck) uses time (label: "Start the clock again") {
 /// The boxes a layout starts with, in reading order (the first is the title, the second the body).
 // ---------------------------------------------------------------------------------------------
 // Templates and small readings.
+
+/// The untouched starter `after` lets give way: the deck opens on one empty title slide, and the
+/// first slide anyone adds takes its place. A slide added after another keeps it.
+fn starter_gives_way(d: Deck, after: Option<Slide>) -> Option<Slide> {
+    let starter = untouched_starter(d)
+    if let at = after {
+        if let s = starter {
+            if s.id() == at.id() { return starter }
+        }
+        return .none
+    }
+    starter
+}
+
+/// The deck's one starter slide while nobody has written on it or moved what it holds.
+fn untouched_starter(d: Deck) -> Option<Slide> {
+    if d.slides.len() != 1 { return .none }
+    let s = d.slides.at(0) ?? return .none
+    if s.layout != .title or s.background != .accent { return .none }
+    if s.notes.markdown(links: Map<Text>(), from: "").trim() != "" { return .none }
+    let starters = template_boxes(.title)
+    if s.elements.len() != starters.len() { return .none }
+    for i in 0..starters.len() {
+        let held = s.elements.at(i) ?? return .none
+        let fresh = starters.at(i) ?? return .none
+        if held != fresh { return .none }
+    }
+    .some(s)
+}
+
 fn template_boxes(layout: Layout) -> List<Element> {
     if layout == .title {
         [
@@ -1260,6 +1296,12 @@ view deck(d: Deck) {
     state help: Bool = false
     state properties: Bool = true
     state audience_screen: Bool = false
+    /// How large the stage draws the slide, in slide pixels a window pixel: 0 fits it to the
+    /// window, which is where the editor opens.
+    state zoom: Float = 0.0
+    state pan: List<Float> = [0.0, 0.0]
+    /// The person opened the chosen box for typing (Enter on it): the box takes the keyboard.
+    state editing: Bool = false
     let shown = current_slide(d, current)
     ui.Fullscreen(
         showing: presenting,
@@ -1312,6 +1354,17 @@ view deck(d: Deck) {
                         ) {
                             on press: set(overview, true)
                         }
+                        ui.MenuButton(zoom_label(zoom), icon: .zoom_in) {
+                            ui.MenuItem("Fit", icon: .maximize) {
+                                on choose: set(zoom, 0.0).then(set(pan, [0.0, 0.0]))
+                            }
+                            for step in zoom_steps() {
+                                let percent = (step * 100.0).round()
+                                ui.MenuItem("{percent}%", icon: .percent) {
+                                    on choose: set(zoom, step).then(set(pan, [0.0, 0.0]))
+                                }
+                            }
+                        }
                         ui.Button(
                             "Properties",
                             icon: .panel_right,
@@ -1336,7 +1389,7 @@ view deck(d: Deck) {
                             }
                             if let s = shown {
                                 stack(gap: .related, padding: .related, fill) {
-                                    slide_stage(d, s, chosen)
+                                    slide_stage(d, s, chosen, zoom, pan, editing)
                                     insert_tools(s, chosen)
                                 }
                             } else {
@@ -1364,6 +1417,19 @@ view deck(d: Deck) {
     }
 }
 
+/// How much the stage is zoomed, as the bar names it: fitted, or the size it draws a slide at.
+fn zoom_label(zoom: Float) -> Text {
+    if zoom <= 0.0 { return "Zoom: Fit" }
+    let percent = (zoom * 100.0).round()
+    "Zoom: {percent}%"
+}
+
+/// The sizes the zoom menu steps between: a slide drawn at its own pixels reads at 100%, and the
+/// steps around it hold the sizes a person picks to see more of the slide or more of the page.
+fn zoom_steps() -> List<Float> {
+    [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
+}
+
 /// The deck's name, or the word a deck with no name shows.
 fn deck_name(d: Deck) -> Text {
     if d.title.trim() == "" { "Untitled deck" } else { d.title }
@@ -1377,6 +1443,23 @@ view slide_rail(d: Deck, current: State<Text>, chosen: State<Text>) {
         for s in d.slides {
             let index = d.slides.index_of(s) ?? 0
             ui.ListItem(item: s) {
+                menu: {
+                    ui.MenuItem("Open", icon: .external_link) {
+                        on choose: set(current, s.id()).then(set(chosen, "none"))
+                    }
+                    ui.MenuItem("Duplicate", icon: .copy) {
+                        on choose: duplicate_slide(d, s)
+                    }
+                    ui.MenuItem("Move the slide up", icon: .arrow_up) {
+                        on choose: move_slide(d, s, (index - 1).max(0))
+                    }
+                    ui.MenuItem("Move the slide down", icon: .arrow_down) {
+                        on choose: move_slide(d, s, (index + 1).min(d.slides.len() - 1))
+                    }
+                    ui.MenuItem("Delete", icon: .trash, destructive: true) {
+                        on choose: delete_slide(d, s)
+                    }
+                }
                 row(gap: .related, align: .center) {
                     ui.Text("{index + 1}", role: .caption, secondary: true, numeric: true)
                     ui.Stage(
@@ -1395,7 +1478,7 @@ view slide_rail(d: Deck, current: State<Text>, chosen: State<Text>) {
                                 width: e.w,
                                 height: e.h,
                             ) {
-                                element_view(d, s, e, "", 0.1)
+                                element_view(d, s, e, "", false, 0.1)
                             }
                         }
                     }
@@ -1424,16 +1507,29 @@ view slide_rail(d: Deck, current: State<Text>, chosen: State<Text>) {
 
 /// The stage: the slide's elements at their places, as large as the window takes, the person
 /// choosing, moving and sizing them there.
-view slide_stage(d: Deck, s: Slide, chosen: State<Text>) {
+view slide_stage(
+    d: Deck,
+    s: Slide,
+    chosen: State<Text>,
+    zoom: State<Float>,
+    pan: State<List<Float>>,
+    editing: State<Bool>,
+) {
     ui.Stage(
         name: "Slide",
         canvas: [1280, 720],
         background: slide_ground(d, s),
         chosen: chosen_key(s, chosen),
+        zoom: if zoom > 0.0 { .some(zoom) } else { .none },
+        pan: .some(pan),
         fill,
     ) {
-        on press: set(chosen, "none")
-        on select(target: Text): set(chosen, target)
+        on press: set(chosen, "none").then(set(editing, false))
+        on zoomed(scale: Float): set(zoom, scale)
+        on panned(at: List<Float>): set(pan, at)
+        on select(target: Text): set(chosen, target).then(set(editing, false))
+        on open(target: Text): set(chosen, target).then(set(editing, true))
+        on delete(target: Text): delete_element(s, target).then(set(chosen, "none"))
         on moved(target: Text, at: List<Int>): move_element_to(s, target, at)
         on resized(target: Text, at: List<Int>): resize_element_to(s, target, at)
         on context(target: Text): set(chosen, target)
@@ -1447,14 +1543,14 @@ view slide_stage(d: Deck, s: Slide, chosen: State<Text>) {
                 height: e.h,
                 moves: true,
             ) {
-                element_view(d, s, e, chosen, 1.0)
+                element_view(d, s, e, chosen, editing, 1.0)
             }
         }
     }
 }
 
 /// One element as it is drawn on the slide: its words, its picture, or its shape.
-view element_view(d: Deck, s: Slide, e: Element, chosen: Text, scale: Float) {
+view element_view(d: Deck, s: Slide, e: Element, chosen: Text, editing: Bool, scale: Float) {
     if e.kind == .text {
         if e.id() == chosen {
             ui.BlockEditor(
@@ -1463,6 +1559,7 @@ view element_view(d: Deck, s: Slide, e: Element, chosen: Text, scale: Float) {
                 size: e.font_size,
                 align: align_code(e.align),
                 colour: slide_ink(d, s, e.fill),
+                focus: editing,
             )
         } else {
             ui.BlockEditor(
@@ -1790,7 +1887,7 @@ view present_view(
                         width: e.w,
                         height: e.h,
                     ) {
-                        element_view(d, s, e, "", 1.0)
+                        element_view(d, s, e, "", false, 1.0)
                     }
                 }
             }
@@ -1946,7 +2043,7 @@ view slide_picture(d: Deck, s: Slide, name: Text, height: Option<Float>) {
                 width: e.w,
                 height: e.h,
             ) {
-                element_view(d, s, e, "", 1.0)
+                element_view(d, s, e, "", false, 1.0)
             }
         }
     }
