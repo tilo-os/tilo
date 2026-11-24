@@ -9,13 +9,11 @@ use tilo_lock::MutexRecover as _;
 
 use iroh::{EndpointAddr, EndpointId};
 use tilo_endpoint_reachability::Reachability;
-use tilo_network_actor::own_service::OwnService;
 use tilo_network_actor::{DeviceIdentity, NetCmd, NetEvent};
 use tilo_session_client::Cmd;
 use tilo_session_client::network::Event;
 
 use super::adopt::enter;
-use super::own_service::open as open_own_service;
 use super::{DesktopEvent, Engine, Enrolled, HostCmd, KeyLink, endpoint_for};
 use tilo_network_actor::WorkspaceId;
 
@@ -133,17 +131,10 @@ impl Serving {
         bound: Bound,
         link: Option<Arc<KeyLink>>,
         protocols: tilo_network_actor::own_service::Protocols,
-        documents: Option<super::PeerDocuments>,
-        service: tilo_workspace_service::service::ServiceSlot,
     ) -> Self {
         Self {
             bound,
-            beside: Beside {
-                link,
-                protocols,
-                documents,
-                service,
-            },
+            beside: Beside { link, protocols },
         }
     }
 }
@@ -157,12 +148,6 @@ pub(crate) struct Beside {
     /// endpoint's protocols are fixed once it is bound, so whatever answers on it is here from the
     /// first pass.
     pub(crate) protocols: tilo_network_actor::own_service::Protocols,
-    /// Where what admission takes in from another device is handed to this device's apps: `None` on
-    /// a session that serves no apps.
-    pub(crate) documents: Option<super::PeerDocuments>,
-    /// Where this device's own workspace service is installed: what answers for it beside this
-    /// thread, the session's reads of a workspace's resources included.
-    pub(crate) service: tilo_workspace_service::service::ServiceSlot,
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
@@ -326,8 +311,6 @@ struct Listening {
     actor_task: tokio::task::JoinHandle<()>,
     carrying: tokio::task::JoinHandle<()>,
     attending: Option<tokio::task::JoinHandle<()>>,
-    /// This device's own workspace service, which holds what it founds.
-    own_service: Option<OwnService>,
 }
 
 /// The session's ends of the peer network's thread: what the client hears, what only this desktop keeps,
@@ -369,10 +352,8 @@ pub(super) fn run(
             actor_task,
             carrying,
             attending,
-            own_service,
         }) = listening(
             identity.as_ref(),
-            engine.as_ref(),
             arrivals,
             desktop_events,
             wake,
@@ -394,7 +375,6 @@ pub(super) fn run(
             link,
             engine,
             identity,
-            own_service,
         };
         while let Some(command) = commands.recv().await {
             if let HostCmd::Network(command) = &command {
@@ -482,9 +462,6 @@ struct Asking {
     link: Option<Arc<KeyLink>>,
     engine: Option<Arc<Engine>>,
     identity: Option<DeviceIdentity>,
-    /// This device's own workspace service: a workspace founded here is placed on it, and an
-    /// invitation that names it is redeemed with it in process.
-    own_service: Option<OwnService>,
 }
 
 /// One of the person's own workspaces, asked of the device serving it to take this device in.
@@ -518,7 +495,6 @@ impl Asking {
         let network = self.network.clone();
         let events = self.events.clone();
         let channels = self.link.clone();
-        let own_service = self.own_service.clone();
         tokio::spawn(async move {
             let result = enter(
                 endpoint,
@@ -528,7 +504,6 @@ impl Asking {
                 &events,
                 *request,
                 channels.as_deref(),
-                own_service.as_ref(),
             )
             .await;
             let _ = landed.send(Enrolled {
@@ -542,53 +517,15 @@ impl Asking {
     }
 }
 
-/// Wait for `opening`, this device's own workspace service opening, and tell the peer actor once
-/// it opened or failed to: whether it opened.
-async fn own_service_opened(
-    opening: impl std::future::Future<
-        Output = Result<
-            Arc<tilo_network_actor::own_service::workspace_service::WorkspaceService>,
-            String,
-        >,
-    >,
-    service: &OwnService,
-    actor: &tokio::sync::mpsc::Sender<NetCmd>,
-) -> bool {
-    match opening.await {
-        Ok(_service) => {
-            let _ = actor.send(NetCmd::OwnServiceSettled).await;
-            true
-        }
-        Err(error) => {
-            tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
-            // The workspaces placed on this device say they cannot be opened here, rather than
-            // wait for a service that will not come.
-            service.failed_to_open();
-            let _ = actor.send(NetCmd::OwnServiceSettled).await;
-            false
-        }
-    }
-}
-
 /// Bind this device's endpoint, serve the peer actor and its app wire on it, and say where the
 /// session's apps reach this device — or say why it could not, and answer nothing.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one place binds what the network is opened with and serves everything it carries"
-)]
 async fn listening(
     identity: Option<&DeviceIdentity>,
-    engine: Option<&Arc<Engine>>,
     arrivals: std::sync::mpsc::Sender<Event>,
     desktop_events: std::sync::mpsc::Sender<DesktopEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
-    Beside {
-        link,
-        protocols,
-        documents,
-        service,
-    }: Beside,
+    Beside { link, protocols }: Beside,
     bound: &Bound,
 ) -> Option<Listening> {
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
@@ -634,51 +571,21 @@ async fn listening(
     // devices, when it offers one.
     served.extend(protocols);
     let _ = bound.endpoint.set(endpoint.clone());
-    // This device's own workspace service answers here: the workspaces it founds are held there,
-    // and their other devices and members join, sync and act with it on its own ALPNs.
-    let (own_service, serving_own) = match identity
-        .zip(engine)
-        .map(|_| OwnService::deferred_in(service))
-    {
-        Some((service, protocols)) => (
-            Some(service.clone()),
-            Some(tilo_network_actor::OwnServing { service, protocols }),
-        ),
-        None => (None, None),
-    };
+    // The workspaces this device keeps are its daemon's, which serves them on its own endpoint:
+    // this one serves none.
     let (actor, actor_task) = tilo_network_actor::Actor::spawn_serving(
         endpoint.clone(),
         lookup,
         identity.cloned(),
         Arc::new(std::sync::Mutex::new(Vec::new())),
         reachability.clone(),
-        serving_own,
+        None,
         served,
     );
-    let mut opened = false;
-    if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
-        let opening = open_own_service(service, identity, engine, (&endpoint, &reachability));
-        opened = own_service_opened(Box::pin(opening), service, &actor).await;
-    }
-    // Other devices' writes reach this device's apps from its workspace service, which holds a
-    // member copy of every workspace this device takes part in.
-    let service = own_service.as_ref().and_then(OwnService::get);
-    if let (true, Some(documents), Some(service)) = (opened, documents, service) {
-        documents.follow(service.workspaces());
-    }
     let (events, carrying, attending) =
         heard(identity.is_some(), arrivals, desktop_events, wake, link);
     if ready.send(Ok((publisher, addr, reachability))).is_err() {
         return None;
-    }
-    if let (true, Some(engine)) = (opened, engine) {
-        // The workspaces this device took part in before its service held them are held there too.
-        if let Some(service) = own_service.clone() {
-            let holding = Arc::clone(engine);
-            tokio::spawn(
-                async move { super::adopt::hold_every_workspace(&holding, &service).await },
-            );
-        }
     }
     Some(Listening {
         endpoint,
@@ -687,7 +594,6 @@ async fn listening(
         actor_task,
         carrying,
         attending,
-        own_service,
     })
 }
 

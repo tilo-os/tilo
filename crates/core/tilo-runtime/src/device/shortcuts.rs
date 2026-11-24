@@ -16,13 +16,12 @@ use tilo_workspace_service::apps::automation::{ShortcutChange, validate_trigger}
 use tilo_workspace_service::apps::services::{
     ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
 };
-use tilo_workspace_service::service::{ServiceSlot, WorkspacesAt};
 use tilo_workspace_service::workspaces::Workspaces;
 
 /// The person's saved shortcuts, as a device's broker keeps and runs them.
 pub struct Shortcuts {
     /// The workspaces this device holds: where a saved shortcut is committed.
-    held: WorkspacesAt,
+    held: Workspaces,
     /// The device this library signs as: the one its workspace has admitted.
     device: DeviceCert,
     /// Signs as `device`: the shortcut's own proof of who saved it.
@@ -41,29 +40,8 @@ impl Shortcuts {
         device: DeviceCert,
         signer: Arc<dyn DeviceSigner>,
     ) -> std::io::Result<Self> {
-        Self::over(WorkspacesAt::Held(workspaces), device, signer)
-    }
-
-    /// A library over the workspaces the service `service` installs, signing as `device` with
-    /// `signer`: what a session builds before its own workspace service opens.
-    ///
-    /// # Errors
-    /// The runtime a shortcut's run executes on could not be started.
-    pub fn when_installed(
-        service: ServiceSlot,
-        device: DeviceCert,
-        signer: Arc<dyn DeviceSigner>,
-    ) -> std::io::Result<Self> {
-        Self::over(WorkspacesAt::Opening(service), device, signer)
-    }
-
-    fn over(
-        held: WorkspacesAt,
-        device: DeviceCert,
-        signer: Arc<dyn DeviceSigner>,
-    ) -> std::io::Result<Self> {
         Ok(Self {
-            held,
+            held: workspaces,
             device,
             signer,
             runs: automation_runtime()?,
@@ -118,7 +96,7 @@ impl ShortcutLibraryServices for Shortcuts {
 /// watch, signed as its saver's own device, then committed through the service that holds the
 /// workspace.
 async fn store_shortcut(
-    held: WorkspacesAt,
+    held: Workspaces,
     device: DeviceCert,
     signer: Arc<dyn DeviceSigner>,
     request: ShortcutLibraryRequest,
@@ -150,16 +128,11 @@ async fn store_shortcut(
             }
             // A change the saver's proof does not cover (a pause) keeps that proof, and so
             // whose shortcut it is; any other change is signed again here.
-            let revocations = held
-                .get()
-                .await
-                .state(&request.workspace)
-                .await
-                .and_then(|state| {
-                    state
-                        .admitted_workspace()
-                        .map(tilo_peer_state::workspace::workspace_revocations)
-                });
+            let revocations = held.state(&request.workspace).await.and_then(|state| {
+                state
+                    .admitted_workspace()
+                    .map(tilo_peer_state::workspace::workspace_revocations)
+            });
             let still_proven = shortcut.saved_proof.is_some()
                 && revocations.is_some_and(|revocations| {
                     tilo_peer_state::workspace::proven_saver(
@@ -173,9 +146,7 @@ async fn store_shortcut(
             match (&agent, still_proven) {
                 (_, true) => {}
                 (Some((agent, root)), false) => {
-                    held.get()
-                        .await
-                        .sign_shortcut_as_agent(&request.workspace, agent, root, &mut shortcut)
+                    held.sign_shortcut_as_agent(&request.workspace, agent, root, &mut shortcut)
                         .await?;
                 }
                 (None, false) => tilo_peer_state::workspace::sign_saved_shortcut(
@@ -189,12 +160,10 @@ async fn store_shortcut(
         }
         delete @ ShortcutChange::Delete(_) => delete.clone(),
     };
-    let workspaces = held.get().await;
     let command = WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(change));
     // A workspace another device serves takes the change in this device's member copy and sends
     // it there; the workspace founded here is committed as its governor.
-    workspaces
-        .commit_own_change(&request.workspace, command, None)
+    held.commit_own_change(&request.workspace, command, None)
         .await
 }
 

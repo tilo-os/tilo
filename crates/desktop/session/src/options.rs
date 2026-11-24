@@ -242,43 +242,12 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// `beside` is what else this device answers on its endpoint — its exit for the person's other
 /// devices. A caller that hands its own client ([`Options::sync`]) has already said what that
 /// endpoint serves.
-/// `documents` is where what admission takes in from another device goes, so the apps this session
-/// runs show what everyone wrote.
-/// `service` is where this device's own workspace service is installed, from the session's start:
-/// a member copy of each workspace this device takes part in, kept beside the device's daemon.
+/// The peer network is the one `options` hands, or this device's own.
 pub(crate) fn start_collaboration(
     options: &Options,
     continuity: crate::platform::fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
     beside: tilo_network_actor::own_service::Protocols,
-    documents: Option<sync::PeerDocuments>,
-    service: tilo_workspace_service::service::ServiceSlot,
-) -> Option<Rc<sync::Client>> {
-    let opening = engine.clone();
-    let sync = collaborating(
-        options,
-        continuity,
-        engine,
-        beside,
-        documents,
-        service.clone(),
-    );
-    // This device's workspace service opens whether or not its peer network came up: one that did
-    // opened it on its endpoint, and one that did not leaves it to open here.
-    if let Some(engine) = &opening {
-        sync::open_alone(engine, service);
-    }
-    sync
-}
-
-/// [`start_collaboration`]'s peer network: the one `options` hands, or this device's own.
-fn collaborating(
-    options: &Options,
-    continuity: crate::platform::fabric::Continuity,
-    engine: Option<std::sync::Arc<engine::Engine>>,
-    beside: tilo_network_actor::own_service::Protocols,
-    documents: Option<sync::PeerDocuments>,
-    service: tilo_workspace_service::service::ServiceSlot,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -323,8 +292,6 @@ fn collaborating(
         engine,
         options.asks.as_ref().map(|(asks, _)| asks.clone()),
         beside,
-        documents,
-        service,
     ) {
         Ok(sync) => {
             // What is the person's alone is kept in their own workspace: the answers they gave

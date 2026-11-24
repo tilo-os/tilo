@@ -66,15 +66,11 @@ use tilo_workspace_service::content::ContentSources;
 mod adopt;
 #[cfg(target_os = "linux")]
 mod network;
-#[cfg(target_os = "linux")]
-mod own_service;
 
 #[cfg(target_os = "linux")]
 pub(crate) use network::Reached;
 #[cfg(target_os = "linux")]
 use network::{Serving, Wire, run};
-#[cfg(target_os = "linux")]
-pub(crate) use own_service::open_alone;
 
 /// How long the session waits for this device's endpoint to bind before it starts without one: a
 /// desktop with no one else on it, rather than a session that never opens.
@@ -1350,9 +1346,7 @@ fn live_beside(
 impl Client {
     /// Take part in the peer network: bind this device's endpoint, start the peer actor,
     /// and from then on hear the workspaces the session joins. `beside` is what else this session
-    /// serves on that endpoint (its protocols are fixed once it binds), `documents` is where
-    /// what admission takes in from another device goes, and `service` is where this device's own
-    /// workspace service is installed once it opens.
+    /// serves on that endpoint (its protocols are fixed once it binds).
     ///
     /// # Errors
     /// The endpoint could not be bound.
@@ -1362,8 +1356,6 @@ impl Client {
         engine: Option<Arc<Engine>>,
         questions: Option<tilo_service::AskSender>,
         mut beside: tilo_network_actor::own_service::Protocols,
-        documents: Option<PeerDocuments>,
-        service: tilo_workspace_service::service::ServiceSlot,
     ) -> std::io::Result<Self> {
         let (identity, wake) = (entry.identity, entry.wake);
         let live_rows = tilo_workspace_service::live::LiveRows::default();
@@ -1414,7 +1406,7 @@ impl Client {
                         ready,
                     },
                     wake,
-                    Serving::new(binding, network_link, beside, documents, service),
+                    Serving::new(binding, network_link, beside),
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
@@ -2252,107 +2244,6 @@ fn endpoint_for(
             .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());
     }
     Ok((builder, relays.relays.clone()))
-}
-
-/// Where an admitted peer's app document goes so this device's apps see it as they see this
-/// device's own writes: the broker's channels, which record it and answer an app's subscription,
-/// and its fan-out, which shows it to the apps that hold its route open.
-#[derive(Clone)]
-#[cfg(target_os = "linux")]
-pub struct PeerDocuments {
-    channels: Arc<std::sync::Mutex<tilo_broker_core::collab_core::BrokerChannels>>,
-    fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
-    /// What search reads again of a record a peer wrote.
-    changes: Option<Arc<dyn tilo_workspace_service::apps::services::DocumentIndexChanges>>,
-    /// What wakes a read waiting for a record this device held none of until it lands.
-    arrivals: Option<Arc<tilo_session_client::Arrivals>>,
-}
-
-#[cfg(target_os = "linux")]
-impl PeerDocuments {
-    /// Hand peer app documents to the broker's `channels` and show them to the apps through
-    /// `fanout`.
-    #[must_use]
-    pub fn new(
-        channels: Arc<std::sync::Mutex<tilo_broker_core::collab_core::BrokerChannels>>,
-        fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
-        changes: Option<Arc<dyn tilo_workspace_service::apps::services::DocumentIndexChanges>>,
-        arrivals: Option<Arc<tilo_session_client::Arrivals>>,
-    ) -> Self {
-        Self {
-            channels,
-            fanout,
-            changes,
-            arrivals,
-        }
-    }
-
-    /// Show this device's apps every write of another device that `workspaces`, this device's
-    /// workspace service, takes in from now on: a member's write to a workspace it governs, and
-    /// what the device serving a workspace this device joined sends. Also tell them each record
-    /// of theirs whose reach moved, as this device's own writes reach the workspace's other
-    /// devices. Followed until the service stops.
-    pub(crate) fn follow(&self, workspaces: &tilo_workspace_service::workspaces::Workspaces) {
-        let documents = self.clone();
-        let arrivals = self.arrivals.clone();
-        let fanout = Arc::clone(&self.fanout);
-        tokio::spawn(
-            tilo_workspace_service::apps::collab_inbound::follow_workspace_writes(
-                workspaces,
-                fanout,
-                move |document| documents.deliver(document),
-                // Writes went by unheard: every read waiting for one reads again.
-                move || {
-                    if let Some(arrivals) = &arrivals {
-                        arrivals.landed();
-                    }
-                },
-            ),
-        );
-    }
-
-    /// Hand one app write the session wrote through this device's workspace service to this
-    /// device's apps on its route.
-    pub(crate) fn deliver_write(&self, write: tilo_peer_state::owner::AppWrite) {
-        self.deliver(
-            tilo_workspace_service::apps::collab_inbound::RemoteDocument {
-                app_id: write.app_id,
-                cluster_id: write.cluster_id,
-                document_id: write.document_id,
-                author: write.author,
-                replayed: write.replayed,
-                envelope: write.envelope,
-            },
-        );
-    }
-
-    /// Hand one app write to this device's apps on its route: another device's, or one the
-    /// session wrote itself.
-    fn deliver(&self, document: tilo_workspace_service::apps::collab_inbound::RemoteDocument) {
-        let (workspace, app, record) = (
-            document.cluster_id.clone(),
-            document.app_id.clone(),
-            document.document_id.clone(),
-        );
-        tilo_workspace_service::apps::collab_inbound::deliver(
-            &self.channels,
-            &self.fanout,
-            document,
-        );
-        // What search holds of the record is read again from what was written into it.
-        if let Some(changes) = &self.changes {
-            changes.changed(&workspace, &app, &record);
-        }
-        // A read of the record that this device held none of until now waits for it, and one that
-        // holds it open reads what landed: a write on its route answers both, and nothing else
-        // does.
-        if let Some(arrivals) = &self.arrivals {
-            arrivals.landed();
-        }
-        if let Some(state) = self.fanout.app_broker() {
-            state.wake_document_reads(&workspace, &app, &record);
-        }
-    }
 }
 
 #[cfg(test)]

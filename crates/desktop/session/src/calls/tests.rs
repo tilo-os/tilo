@@ -126,8 +126,6 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
         None,
         None,
         Vec::new(),
-        None,
-        tilo_workspace_service::service::ServiceSlot::default(),
     )
     .expect("a loopback endpoint binds")
 }

@@ -4,13 +4,12 @@
 //! The session keeps none of their devices itself, but this device, which its own certificate
 //! names and which the record will list: that is admitted before the record answers, and by a
 //! session no daemon started at all. A session the host placed in a workspace's VM reads the
-//! record from the host that certified it; a session that keeps the workspaces itself
-//! ([`ServiceSlot`]) answers from their service, which is where its record lives. A session the
-//! device's daemon started asks that daemon instead: it keeps the record and answers every
-//! admission in its own process. Each reads the same record, and each revocation in it, the root's
-//! own signature, is checked against that root as it is read: one that does not verify refuses
-//! nothing. A device is admitted here wherever the host that holds the record says it is, and
-//! refused when that host cannot be asked.
+//! record from the host that certified it; one that reaches no host admits this device alone. A
+//! session the device's daemon started asks that daemon instead: it keeps the record and answers
+//! every admission in its own process. Each reads the same record, and each revocation in it, the
+//! root's own signature, is checked against that root as it is read: one that does not verify
+//! refuses nothing. A device is admitted here wherever the host that holds the record says it is,
+//! and refused when that host cannot be asked.
 
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -24,8 +23,6 @@ use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_session_client::daemon_documents::document_read;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::apps::services::DeviceDaemon;
-use tilo_workspace_service::service::ServiceSlot;
-use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 
 use crate::hosted_workspaces::HostedWorkspaces;
@@ -47,8 +44,7 @@ fn trust() -> &'static Arc<DevicesTrust> {
 }
 
 /// Install the session's answer for the person's devices, before the broker or the identity
-/// authority decides anything: from the `vm` host that placed it, or from `service` when this
-/// session keeps the workspaces itself.
+/// authority decides anything: from the `vm` host that placed it.
 ///
 /// `daemon` is kept for the call site that builds a session's services: a session the device's
 /// daemon started has that daemon's own answer already installed in its process, and installs
@@ -63,7 +59,6 @@ fn trust() -> &'static Arc<DevicesTrust> {
 /// admits none.
 pub(crate) fn install(
     _daemon: &DeviceDaemon,
-    service: &ServiceSlot,
     own: Option<DeviceCert>,
     vm: Option<&Arc<HostedWorkspaces>>,
 ) {
@@ -76,14 +71,8 @@ pub(crate) fn install(
         follow_host(trust, Arc::clone(hosted), own);
         return;
     }
-    let slot = service.clone();
-    trust.reading(move || {
-        with_own(
-            &own,
-            slot.service()
-                .map(|service| seen_of_host(service.workspaces())),
-        )
-    });
+    // Neither reaches the record: this device is admitted on its own certificate, and no other.
+    trust.reading(move || with_own(&own, None));
 }
 
 /// What the session answers of `own`'s person, with `own`'s key among the certified: the
@@ -237,18 +226,6 @@ fn seen_of_record(person: [u8; 32], record: &Devices) -> DevicesSeen {
     )
 }
 
-/// What the workspaces this session keeps say of the person's devices: the record's keys and the
-/// root-signed revocations it holds, as the service read them.
-fn seen_of_host(workspaces: &Workspaces) -> DevicesSeen {
-    let person = workspaces.serving_certificate().user_public_key;
-    let keys = workspaces.blocked_keys();
-    DevicesSeen::of_host(
-        person,
-        keys.certified_keys().copied(),
-        keys.revocations().iter().cloned(),
-    )
-}
-
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
@@ -256,6 +233,7 @@ mod tests {
         DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert,
         sign_revocation_entry,
     };
+    use tilo_workspace_service::workspaces::Workspaces;
     use tilo_workspace_service::workspaces::person_workspace;
     use tilo_workspace_service::workspaces::person_workspace::devices;
 

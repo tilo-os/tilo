@@ -147,9 +147,6 @@ pub(crate) struct Collaboration<'a> {
     pub sync: Option<&'a crate::sync::Client>,
     /// The shell link the device's daemon handed this session, or why it has none.
     pub daemon: tilo_workspace_service::apps::services::DeviceDaemon,
-    /// Where this device's own workspace service is installed: the workspaces it holds take an
-    /// app's window write, the one store the session's own writes and reads go through.
-    pub service: tilo_workspace_service::service::ServiceSlot,
     /// This session's own workspaces, as its engine holds them, when it has an identity to hold
     /// them with: what a change to a workspace's people is written through, whatever the session's
     /// peer network.
@@ -226,18 +223,10 @@ pub(crate) struct Knitted {
     clippy::too_many_lines,
     reason = "the app wire's services are all decided in one place, so a service added is not missed"
 )]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the service slot the agents start on is moved into their start once the broker \
-              serves, not held to the end"
-)]
 pub(crate) fn start_app_wire(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
     handle: &DesktopHandle,
-    shortcuts: Option<
-        std::sync::Arc<dyn tilo_workspace_service::apps::services::ShortcutLibraryServices>,
-    >,
     activity: &activity::Activity,
     services: Knitted,
     collaboration: Collaboration<'_>,
@@ -248,7 +237,6 @@ pub(crate) fn start_app_wire(
         daemon,
         engine,
         view,
-        service,
         sealed,
         fanout,
         content,
@@ -384,7 +372,6 @@ pub(crate) fn start_app_wire(
                     native_media: calls_service.clone(),
                     records,
                     layout: std::sync::Arc::clone(&layout),
-                    shortcuts,
                     activity: activity_wire,
                     agents: services.agents,
                     agent_sessions: services.agent_sessions,
@@ -394,7 +381,6 @@ pub(crate) fn start_app_wire(
                     action_offload,
                     engine,
                     view,
-                    service: service.clone(),
                     endpoint: sync.map(|sync| sync.endpoint_handle()),
                     journal_root: match options.state.as_deref() {
                         Some(state) => {

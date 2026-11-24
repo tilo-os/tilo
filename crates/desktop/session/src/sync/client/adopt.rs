@@ -11,7 +11,6 @@ use tilo_network_actor::{DeviceIdentity, NetCmd, NetEvent};
 use crate::engine::Engine;
 use crate::sync::{Entering, REDEEM_WITHIN, SETTLE_WITHIN};
 use crate::workspace_keys::KeyLink;
-use tilo_network_actor::own_service::OwnService;
 
 /// The peer network a workspace taken in is carried on: its actor, and where what it hears of the
 /// workspace goes.
@@ -70,13 +69,12 @@ pub(super) async fn enter(
     events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Entering,
     link: Option<&KeyLink>,
-    own_service: Option<&OwnService>,
 ) -> Result<(), tilo_session_client::EnrollFailure> {
     let topic = request.workspace_id;
     identity.current_material(topic)?;
     let owner = engine.owner().clone();
     let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint);
-    let (bootstrap, at) = tokio::time::timeout(
+    tokio::time::timeout(
         REDEEM_WITHIN,
         tilo_peer_state::owner::enroll::admit_as_member(
             client,
@@ -100,55 +98,5 @@ pub(super) async fn enter(
     )
     .await
     .map_err(|_| "the workspace was not taken in time".to_owned())??;
-    hold_on_service(own_service, &bootstrap, &at).await;
     Ok(())
-}
-
-/// Hold `workspace` on this device's own service too, as the member copy the session's own reads
-/// and writes go through: the serving device admitted `bootstrap`, and this device's service acts
-/// as this device, so the same membership holds the workspace's documents there. A service that is
-/// not open, or that serves the workspace itself, keeps no copy; the workspace stays one this
-/// device's engine holds alone, as before.
-async fn hold_on_service(
-    own_service: Option<&OwnService>,
-    bootstrap: &tilo_peer_state::join::JoinBootstrap,
-    hint: &tilo_peer_state::join::TransportHint,
-) {
-    let Some(service) = own_service.and_then(OwnService::get) else {
-        tracing::warn!(
-            "this device's workspace service is not open, so the workspace is not a member copy here"
-        );
-        return;
-    };
-    match tokio::time::timeout(
-        SETTLE_WITHIN,
-        service.workspaces().join_admitted(bootstrap, hint),
-    )
-    .await
-    {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "the workspace was taken in here, but not on this device's service");
-        }
-        Err(_) => {
-            tracing::warn!(
-                "the workspace's member copy did not arrive on this device's service in time"
-            );
-        }
-    }
-}
-
-/// Hold every workspace `engine` takes part in on this device's own service, `own_service`, as a
-/// member copy synced with the device hosting it: those this device joined before its service held
-/// the workspaces it joins, or while the service was not open, and those a copy of another device's
-/// state brought. A copy the service kept from before is synced already as it opens.
-pub(super) async fn hold_every_workspace(engine: &Engine, own_service: &OwnService) {
-    let Some(service) = own_service.get() else {
-        return;
-    };
-    let held = engine
-        .workspaces()
-        .into_iter()
-        .filter_map(|workspace| Some((workspace, engine.member_of(workspace)?)));
-    service.workspaces().hold_as_members(held).await;
 }

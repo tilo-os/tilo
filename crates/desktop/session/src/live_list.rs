@@ -17,6 +17,52 @@ use tilo_service::Started;
 /// The resource the rows are published under.
 pub(crate) const RESOURCE: &str = "session:live";
 
+/// How long one read of the workspaces' live rows waits at the daemon for them to move, ms.
+const FOLLOW_WAIT_MS: u32 = 25_000;
+/// How long a follow waits before it asks a daemon that did not answer again.
+const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Follow what is live in the workspaces the device's daemon keeps, as `person`'s desktop, into
+/// `rows` from now on: the daemon keeps the workspaces, and the session shows their rows, filtered
+/// by the devices it reaches.
+pub(crate) fn follow_daemon(
+    daemon: &tilo_session_client::daemon_documents::DaemonShell,
+    person: [u8; 32],
+    rows: tilo_workspace_service::live::LiveRows,
+) {
+    let daemon = daemon.clone();
+    let workspace = collab_types::person_workspace(&person).to_string();
+    daemon.runtime().clone().spawn(async move {
+        let mut after: Option<String> = None;
+        loop {
+            let read = tilo_actions::remote::ResourceReadRequest {
+                workspace: workspace.clone(),
+                app: tilo_desktop_model::commands::APP_ID.to_owned(),
+                record: tilo_workspace_service::live::RESOURCE.to_owned(),
+                joined: false,
+                wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
+                after: after.clone(),
+                answer: tilo_actions::remote::ReadAnswer::Document,
+            };
+            let taken = daemon.read(read).await.and_then(|readings| {
+                let reading = serde_json::to_vec(&readings["records"][0]["value"])
+                    .map_err(|error| error.to_string())?;
+                rows.take_reading(&reading)?;
+                Ok(readings["revision"].as_str().map(str::to_owned))
+            });
+            match taken {
+                Ok(revision) if revision.is_some() && revision != after => after = revision,
+                Ok(_) => tokio::time::sleep(ASK_AGAIN).await,
+                Err(error) => {
+                    tracing::debug!(%error, "what is live in the workspaces did not read");
+                    after = None;
+                    tokio::time::sleep(ASK_AGAIN).await;
+                }
+            }
+        }
+    });
+}
+
 /// The rows as a view of another language reads them (`device.live`).
 #[must_use]
 pub fn surface() -> tilo_resource::surface::Surface {

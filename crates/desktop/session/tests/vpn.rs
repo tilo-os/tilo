@@ -533,8 +533,6 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
         None,
         None,
         Vec::new(),
-        None,
-        tilo_workspace_service::service::ServiceSlot::default(),
     )
     .expect("a loopback endpoint binds");
     sync.connect(exit.addr.clone());
@@ -693,8 +691,6 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         None,
         None,
         shell_vpn.served(),
-        None,
-        tilo_workspace_service::service::ServiceSlot::default(),
     )
     .expect("this device's endpoint binds");
     // The laptop's endpoint, serving nothing but its own app wires: the route it carries is not one of
@@ -714,8 +710,6 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         None,
         None,
         Vec::new(),
-        None,
-        tilo_workspace_service::service::ServiceSlot::default(),
     )
     .expect("the laptop's endpoint binds");
     // The person's phone: an endpoint that proves which of their devices it is by the key it

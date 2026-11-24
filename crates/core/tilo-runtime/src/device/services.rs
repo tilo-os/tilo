@@ -2088,6 +2088,11 @@ fn broker_services(
                 &[super::server_settings::SERVER],
                 Arc::clone(&server_settings),
             )
+            // What is live in the workspaces this device keeps, which the desktop shows.
+            .serving(
+                &[tilo_workspace_service::live::RESOURCE],
+                super::live::Published::of(parts.workspaces.copies()),
+            )
             .serving_the_rest(Arc::new(
                 tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
             )),

@@ -64,8 +64,6 @@ impl Device {
             Some(std::sync::Arc::clone(&engine)),
             Some(asks),
             Vec::new(),
-            None,
-            tilo_workspace_service::service::ServiceSlot::default(),
         )
         .expect("the session's peer network starts");
         Self {

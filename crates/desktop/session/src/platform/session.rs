@@ -646,9 +646,6 @@ impl Session {
         published.add(Rc::clone(&lists_surface));
         // The chrome above the windows: its own tree, beside the shell's.
         let intents = Rc::new(RefCell::new(Vec::new()));
-        // Where this device's own workspace service is installed, and what its roles read from:
-        // every role here reads what its workspaces hold through it.
-        let workspace_service = tilo_workspace_service::service::ServiceSlot::default();
         // The settings everything in this process reads: the workspace's, once the daemon holds
         // the person's.
         let settings = crate::session_settings::SessionSettings::install();
@@ -670,10 +667,7 @@ impl Session {
         let channels_broker = std::sync::Arc::new(std::sync::Mutex::new(
             tilo_broker_core::collab_core::BrokerChannels::default(),
         ));
-        // What the broker shows the apps that hold a record's route open: the
-        // peer network hands it what another device wrote, so a record
-        // an app holds shows everyone's writes, and the broker below shows
-        // this device's own.
+        // What the broker shows the apps that hold a record's route open.
         let channels_fanout =
             std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
         let key_link = crate::workspace_keys::KeyLink::new();
@@ -681,9 +675,6 @@ impl Session {
         let resource_index = engine
             .as_ref()
             .map(|_| crate::resource_index::RecordChanges::start(&document_reads, changes.clone()));
-        let resource_changes = resource_index.clone().map(|index| {
-            index as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>
-        });
         let channels = engine.as_ref().and_then(|engine| {
             let settled = resource_index.clone();
             // Keys that arrived open records the loop read sealed: it reads the layouts again.
@@ -712,33 +703,22 @@ impl Session {
         if let Some(index) = &resource_index {
             index.sweep();
         }
-        let peer_documents = crate::sync::PeerDocuments::new(
-            std::sync::Arc::clone(&channels_broker),
-            std::sync::Arc::clone(&channels_fanout),
-            resource_changes.clone(),
-            engine.as_ref().map(|engine| engine.arrivals()),
-        );
-        let sync = start_collaboration(
-            &options,
-            continuity.clone(),
-            engine.clone(),
-            beside,
-            Some(peer_documents),
-            workspace_service.clone(),
-        );
-        // What is live in the workspaces the service holds, on this device or on one the peer
-        // network reaches: what the shell shows in the bar, quick settings and on the lock screen,
-        // from the moment the service opens.
+        let sync = start_collaboration(&options, continuity.clone(), engine.clone(), beside);
+        // What is live in the workspaces the device's daemon keeps, on this device or on one the
+        // peer network reaches: what the shell shows in the bar, quick settings and on the lock
+        // screen, followed at the daemon.
         let live_rows = sync
             .as_ref()
             .map_or_else(tilo_workspace_service::live::LiveRows::default, |sync| {
                 sync.live_rows()
             });
-        tilo_rt::app().handle().spawn({
-            let slot = workspace_service.clone();
-            let rows = live_rows.clone();
-            async move { slot.get().await.show_live(rows).await }
-        });
+        if let Some(identity) = crate::sync::device_identity() {
+            crate::live_list::follow_daemon(
+                &daemon,
+                identity.device_cert.user_public_key,
+                live_rows.clone(),
+            );
+        }
         // The stores of the workspaces the daemon keeps, as the apps the session runs itself read
         // and write their resources in them.
         let held_stores = crate::app_stores::held_stores(daemon.clone());
@@ -1190,35 +1170,13 @@ impl Session {
         // take.
         options.launches.waking(options.wake.handle());
 
-        // The shortcuts the person saved and the triggers that start them
-        // without anyone invoking them: armed on the shell this device shows,
-        // and started on the broker below. A run executes here, on a runtime
-        // of its own; the shortcuts themselves are saved into, and run from,
-        // this device's own workspace service, by the library the daemon
-        // installs too.
+        // What the session runs off its loop beside the shell: a runtime of its own. The
+        // shortcuts the person saved are the device daemon's, which keeps the workspaces.
         let automation_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("tilo-automation")
             .enable_all()
             .build()
-            .map_err(crate::Error::host)?;
-        let shortcut_library: Option<
-            std::sync::Arc<dyn tilo_workspace_service::apps::services::ShortcutLibraryServices>,
-        > = crate::sync::device_identity()
-            .map(|identity| {
-                tilo_runtime::device::shortcuts::Shortcuts::when_installed(
-                    workspace_service.clone(),
-                    identity.device_cert,
-                    identity.signer,
-                )
-                .map(|library| {
-                    std::sync::Arc::new(library)
-                        as std::sync::Arc<
-                            dyn tilo_workspace_service::apps::services::ShortcutLibraryServices,
-                        >
-                })
-            })
-            .transpose()
             .map_err(crate::Error::host)?;
         // What each of this device's workspaces revokes, read from the
         // workspaces the engine holds: the broker's decisions and the
@@ -1240,7 +1198,6 @@ impl Session {
             &options,
             &live_activities,
             &handle,
-            shortcut_library,
             &activity,
             crate::services::app_wire::Knitted {
                 agents: Some(agents.roster()),
@@ -1251,7 +1208,6 @@ impl Session {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
                 daemon: daemon_link.clone(),
-                service: workspace_service.clone(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 view: view.clone(),
                 sealed: crate::app_wire::Sealed {

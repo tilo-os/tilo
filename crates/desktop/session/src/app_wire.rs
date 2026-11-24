@@ -32,9 +32,8 @@ use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, 
 use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
 use tilo_workspace_service::apps::services::{
     ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
-    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
-    ShortcutLibraryServices, SpeakerChange, SpeakerServices, WifiContinuityServices,
-    WorkspaceMemberships,
+    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch, SpeakerChange,
+    SpeakerServices, WifiContinuityServices, WorkspaceMemberships,
 };
 use tilo_workspace_service::workspaces::providers::Providers;
 use tokio::sync::{mpsc, oneshot};
@@ -363,23 +362,15 @@ impl SpeakerServices for FabricSpeakers {
     }
 }
 
-/// Who is present on which device, as this session hears it: the links this device's workspaces
-/// hold into each, and the person's own devices on a live session with it, as its fabric hears
-/// them.
-struct SessionPresence {
-    service: tilo_workspace_service::service::ServiceSlot,
+/// Who is present on which device, as a session in a workspace's VM hears it: the person's own
+/// devices on a live session with it, as its fabric hears them. The workspaces' links are its
+/// host's to hear.
+struct FabricPresence {
     fabric: Option<crate::platform::fabric::SharedLink>,
 }
 
-impl tilo_workspace_service::workspaces::PresentDevices for SessionPresence {
-    fn attach(&self, workspace: &str, here: &mut Vec<tilo_actions::remote::Here>) {
-        if let Some(service) = self.service.service() {
-            tilo_workspace_service::workspaces::PresentDevices::attach(
-                service.workspaces(),
-                workspace,
-                here,
-            );
-        }
+impl tilo_workspace_service::workspaces::PresentDevices for FabricPresence {
+    fn attach(&self, _workspace: &str, here: &mut Vec<tilo_actions::remote::Here>) {
         let (Some(fabric), Some(identity)) = (&self.fabric, crate::sync::device_identity()) else {
             return;
         };
@@ -408,7 +399,7 @@ pub struct Sealed {
 /// What a session the host placed in a workspace's VM hands the broker it keeps
 /// ([`serve_hosted`]) besides the link and the launcher: the board every app's
 /// live activity shows on, what notes its records changing, the session it
-/// decides a workspace against, the shortcuts it saves and runs, the
+/// decides a workspace against, the
 /// workspace's activity it serves, and the runs of what people ask its agents.
 pub struct Hosted {
     pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
@@ -418,9 +409,6 @@ pub struct Hosted {
     /// What notes the workspaces' records changing, for the roles that follow them.
     pub records: Option<std::sync::Arc<crate::resource_index::RecordChanges>>,
     pub layout: std::sync::Arc<LayoutAuthority>,
-    /// The workspace's shortcuts as the broker saves and runs them, from this device's own
-    /// workspace service; no session without a device identity keeps any.
-    pub shortcuts: Option<std::sync::Arc<dyn ShortcutLibraryServices>>,
     pub activity: std::sync::Arc<ActivityWire>,
     /// Who keeps each workspace's agents, as its record of them names them:
     /// what the broker admits an agent's session on.
@@ -449,10 +437,6 @@ pub struct Hosted {
     /// what it dials the hosts of its workspaces from. `None` when the
     /// session runs none.
     pub endpoint: Option<std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>>,
-    /// This device's own workspace service, where it holds the workspaces an app's window writes:
-    /// the write is committed by the service, into the copy the session's own writes reach and its
-    /// reads answer from, and the owner keeps only a workspace the service holds none of.
-    pub service: tilo_workspace_service::service::ServiceSlot,
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
@@ -1080,7 +1064,6 @@ fn host_services_with_hosts(
     // device of theirs.
     crate::device_trust::install(
         &Err("a session in a workspace's VM runs no device daemon".to_owned()),
-        &hosted.service,
         hosted
             .engine
             .as_ref()
@@ -1129,7 +1112,6 @@ fn broker_services(
         native_media,
         records,
         layout,
-        shortcuts,
         activity,
         agents,
         agent_sessions,
@@ -1138,7 +1120,6 @@ fn broker_services(
         engine,
         view,
         endpoint: _,
-        service,
         document_content,
         action_offload,
         journal_root,
@@ -1156,8 +1137,7 @@ fn broker_services(
     // by the service a window's app speaks on, and by the session's own passes.
     let window_notes = launches.notes();
     let present_devices: std::sync::Arc<dyn tilo_workspace_service::workspaces::PresentDevices> =
-        std::sync::Arc::new(SessionPresence {
-            service: service.clone(),
+        std::sync::Arc::new(FabricPresence {
             fabric: fabric.clone(),
         });
     let grants_layout = std::sync::Arc::clone(&layout);
@@ -1283,15 +1263,11 @@ fn broker_services(
         workspace_governance: BrokerService::unserved(
             "workspace grants are given in the session's own sheets, not by an app",
         ),
-        // A shortcut a person saves lands in its workspace, written through this device's own
-        // workspace service, and a shortcut's run executes on the library's runtime. A session
-        // with no device identity keeps no shortcut and says so.
-        shortcut_library: match shortcuts {
-            Some(library) => BrokerService::served(library),
-            None => BrokerService::unserved(
-                "this session holds no device identity to save a shortcut with",
-            ),
-        },
+        // A shortcut is saved in its workspace by the device that keeps it, which a session in
+        // a workspace's VM is not.
+        shortcut_library: BrokerService::unserved(
+            "a session in a workspace's VM keeps no workspace to save a shortcut in",
+        ),
         // The device's shortcut catalogue, as the shortcut guide and
         // Settings read it: the broker hands over the keymap, and only this
         // machine's callers are offered it.
@@ -1760,7 +1736,6 @@ mod tests {
                 crate::engine::revocations_of(None),
                 Names::default(),
             )),
-            shortcuts: None,
             activity: crate::activity_provider::wire(requests()),
             agents: None,
             agent_sessions: None,
@@ -1787,7 +1762,6 @@ mod tests {
             item_lending: std::sync::Arc::default(),
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,
-            service: tilo_workspace_service::service::ServiceSlot::default(),
         }
     }
 
@@ -2289,78 +2263,5 @@ mod tests {
         ) -> Result<Started, ApiError> {
             Ok(Started::Done(tilo_actions::ActionOutput::default()))
         }
-    }
-
-    /// The broker this session starts answers the shortcut library a launched app asks for: the
-    /// library in its services writes a shortcut through this device's own workspace service, and
-    /// the workspace lists it.
-    #[tokio::test]
-    async fn the_services_an_app_is_given_answer_the_shortcut_library() {
-        use tilo_workspace_service::apps::services::ShortcutLibraryRequest;
-        use tilo_workspace_service::workspaces::fixtures;
-
-        let directory = tempfile::tempdir().expect("a directory for the service");
-        let (key, cert) = fixtures::governor();
-        let host = fixtures::test_host(directory.path(), &key, &cert).await;
-        let workspaces = host.workspaces().clone();
-        let workspace = workspaces
-            .create("Home")
-            .await
-            .expect("a workspace")
-            .workspace;
-        let library = tilo_runtime::device::shortcuts::Shortcuts::new(
-            workspaces.clone(),
-            cert.clone(),
-            std::sync::Arc::new(key.clone()),
-        )
-        .expect("a runtime for shortcut runs");
-        let decided = broker_services(
-            Link::for_test(),
-            std::sync::Arc::new(Launches::default()),
-            None,
-            Hosted {
-                shortcuts: Some(std::sync::Arc::new(library)),
-                ..hosted()
-            },
-            None,
-            None,
-            None,
-        );
-        assert!(
-            decided
-                .decisions()
-                .iter()
-                .any(|(service, why)| *service == "shortcut_library" && why.is_none()),
-            "the broker this session starts serves the shortcut library"
-        );
-        let library = decided
-            .into_host_services()
-            .shortcut_library
-            .expect("the broker holds the library it serves");
-        let saved = library
-            .store(ShortcutLibraryRequest {
-                workspace: workspace.clone(),
-                actor: tilo_action_policy::MemberId::person(hex::encode(cert.user_public_key)),
-                acting_for: None,
-                change: serde_json::from_value(serde_json::json!({
-                    "save": { "id": "tidy", "name": "Tidy", "steps": [], "triggers": [] },
-                }))
-                .expect("a shortcut change"),
-                context: tilo_actions::ActionContext::default(),
-                invocation: tilo_actions::InvocationId::new(),
-            })
-            .await;
-        assert_eq!(saved, Ok(()));
-        let described = workspaces.described().await;
-        let listed = described
-            .iter()
-            .find(|described| described.id().to_string() == workspace)
-            .expect("the workspace the shortcut was saved in");
-        assert_eq!(
-            listed.shortcuts.len(),
-            1,
-            "the workspace lists the shortcut the app saved"
-        );
-        host.shutdown().await;
     }
 }

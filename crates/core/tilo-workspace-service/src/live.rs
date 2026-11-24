@@ -14,8 +14,12 @@ use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
 
+/// The resource the device's daemon publishes its live rows as, to the desktop on its shell link
+/// alone ([`LiveRows::reading`]): the desktop shows them, filtered by the devices it reaches.
+pub const RESOURCE: &str = "workspaces.live";
+
 /// One live resource, as a reader is shown it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LiveRow {
     /// The workspace it is in.
     pub workspace: String,
@@ -134,6 +138,46 @@ impl LiveRows {
         self.moved();
     }
 
+    /// Every row as the stores last listed them, and this device's key, as [`RESOURCE`] reads:
+    /// unfiltered, since which devices count as reached is the reader's to say.
+    #[must_use]
+    pub fn reading(&self) -> Vec<u8> {
+        let reading = Reading {
+            here: self.0.here.lock_recover().clone(),
+            rows: self.0.rows.lock_recover().clone(),
+        };
+        serde_json::to_vec(&reading).unwrap_or_default()
+    }
+
+    /// Show what a [`Self::reading`] of another `LiveRows` says, in place of what these showed:
+    /// the rows a reader follows at the device that keeps the workspaces.
+    ///
+    /// # Errors
+    /// The reading does not read.
+    pub fn take_reading(&self, reading: &[u8]) -> Result<(), String> {
+        let Reading { here, rows } = serde_json::from_slice(reading)
+            .map_err(|error| format!("the live rows do not read: {error}"))?;
+        let mut moved = false;
+        {
+            let mut held = self.0.here.lock_recover();
+            if *held != here {
+                *held = here;
+                moved = true;
+            }
+        }
+        {
+            let mut shown = self.0.rows.lock_recover();
+            if *shown != rows {
+                *shown = rows;
+                moved = true;
+            }
+        }
+        if moved {
+            self.moved();
+        }
+        Ok(())
+    }
+
     fn moved(&self) {
         self.0.revision.fetch_add(1, Ordering::AcqRel);
         let wake = self.0.wake.lock_recover().clone();
@@ -141,4 +185,11 @@ impl LiveRows {
             wake();
         }
     }
+}
+
+/// A [`LiveRows::reading`]: this device's key and, per workspace, its rows.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Reading {
+    here: String,
+    rows: BTreeMap<String, Vec<LiveRow>>,
 }
