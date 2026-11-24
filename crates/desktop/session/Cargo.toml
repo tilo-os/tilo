@@ -457,6 +457,9 @@ settings-store = { path = "../../system/settings-store", features = ["watch"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
+# A test runs a session in its own process as the device's daemon's shell
+# (`shell_session`), on the link the daemon hands out behind this feature.
+tilo-runtime = { path = "../../core/tilo-runtime", features = ["test-support"] }
 # A Tasks window in the tests, as the app's process runs one over the workspace's store.
 tilolang-process = { path = "../../lang/tilolang-process" }
 # The page track and window-share tests drive a synchronous web engine.

@@ -250,7 +250,7 @@ fn what_one_member_lets_an_app_reach_reaches_every_members_session() {
     let sessions = the_owner_admitted_ada();
     let owner = hex::encode(sessions.owner_cert.user_public_key);
     let mut workspace = Workspace::new(sessions.workspace_id, "Test");
-    workspace.set_owner(owner.clone());
+    workspace.policy.owner = Some(owner.clone());
     let network = CapOverride::grant(
         Grantee::person(owner.clone()),
         Scope::NetHost("*".into()),
@@ -340,7 +340,7 @@ fn a_role_another_member_sets_reaches_this_shells_people() {
     // What this session had of the workspace's people before the change is the owner's and this
     // person's; after it, what the workspace has.
     let mut workspace = Workspace::new(workspace_id, "Test");
-    workspace.set_owner(owner.clone());
+    workspace.policy.owner = Some(owner.clone());
     workspace
         .policy
         .members
@@ -350,12 +350,12 @@ fn a_role_another_member_sets_reaches_this_shells_people() {
         "the people the workspace has are projected on to this session"
     );
     assert_eq!(
-        workspace.role_of(&person),
+        workspace.policy.role_of(&person),
         Some(Role::Moderator),
         "the People tab shows her with the role the owner set"
     );
     assert_eq!(
-        workspace.role_of(&session),
+        workspace.policy.role_of(&session),
         Some(Role::Editor),
         "and this person as the workspace has her"
     );
@@ -813,10 +813,11 @@ fn a_refused_role_change_says_why_and_keeps_the_role() {
         Some("editor"),
         "she keeps the role she had"
     );
-    let governed = session
-        .session()
-        .handle()
-        .read(|tree| tree.workspaces.first().and_then(|ws| ws.role_of(&ada)));
+    let governed = session.session().handle().read(|tree| {
+        tree.workspaces
+            .first()
+            .and_then(|ws| ws.policy.role_of(&ada))
+    });
     assert_eq!(
         governed,
         Some(Role::Editor),
@@ -1005,9 +1006,11 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
     session
         .step(std::time::Duration::from_millis(1))
         .expect("a frame");
-    let role = session
-        .handle()
-        .read(|tree| tree.workspaces.first().and_then(|ws| ws.role_of(&person)));
+    let role = session.handle().read(|tree| {
+        tree.workspaces
+            .first()
+            .and_then(|ws| ws.policy.role_of(&person))
+    });
     assert_eq!(
         role,
         Some(Role::Editor),
@@ -1066,57 +1069,94 @@ fn provisioned_identity(
     (root, cert, key)
 }
 
-/// A directory for the session's socket that only this user reaches: the broker refuses to
-/// serve one anybody else could open.
+/// A directory for the session's app wire that only this user reaches: it refuses to serve one
+/// anybody else could open.
 fn private_directory() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the broker in");
+    let root = tempfile::tempdir().expect("a directory to serve the actions in");
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the broker's directory is this user's");
+        .expect("the actions directory is this user's");
     root
 }
 
-/// The session this computer runs, keeping `state` and serving its broker on `socket` : where
-/// its person changes a workspace's people.
-fn session_serving(state: &std::path::Path, socket: &std::path::Path) -> crate::Session {
-    crate::Session::headless(
+/// The device's daemon over a profile of the test's own, and the session this computer runs in
+/// this process as its shell on the link the daemon made: where its person changes a workspace's
+/// people, and what its device writes.
+#[cfg(target_os = "linux")]
+struct Served {
+    /// Stopped first: its link closing is what ends the providers it served there.
+    session: crate::Session,
+    _daemon: tilo_runtime::daemon::Running,
+    /// The profile the daemon serves, its sockets inside it.
+    _profile: tempfile::TempDir,
+    /// The directory the session's app wire listens in, which lives as long as it does.
+    _app_wire: tempfile::TempDir,
+}
+
+#[cfg(target_os = "linux")]
+impl std::ops::Deref for Served {
+    type Target = crate::Session;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::ops::DerefMut for Served {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.session
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Served {
+    /// The device's one dispatch over the session's link: where a call goes, and where it is
+    /// followed, as the person the link was made for or the caller the session names.
+    fn dispatch(&self) -> runtime_collab::ShellDispatch {
+        let link = self
+            .session
+            .shared
+            .daemon
+            .link()
+            .expect("the session runs on the daemon's link");
+        let _entered = tilo_rt::app().handle().enter();
+        link.dispatch()
+    }
+}
+
+/// The session this computer runs, keeping `state` and serving its own actions on the device's
+/// daemon, its app wire on a socket in a private directory: where its person changes a
+/// workspace's people.
+#[cfg(target_os = "linux")]
+fn session_serving(state: &std::path::Path) -> Served {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let app_wire = private_directory();
+    let profile = tempfile::tempdir().expect("a profile for the daemon");
+    std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the profile is this user's");
+    let (daemon, mut session) = crate::shell_session::start_in_process(
+        profile.path(),
         crate::Options {
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             state: Some(state.to_path_buf()),
-            app_socket: crate::AppSocket::At(socket.to_path_buf()),
+            app_socket: crate::AppSocket::At(app_wire.path().join("collab.sock")),
             ..crate::Options::default()
         },
         &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+        std::time::Duration::from_secs(60),
     )
-    .expect("a session")
-}
-
-/// Wait for `broker` to publish the workspace's people actions, on the clock it re-reads what
-/// this device may change.
-#[track_caller]
-fn wait_for_people(
-    broker: &tilo_workspace_service::apps::collab_broker::AppActionBroker,
-    workspace_id: WorkspaceId,
-) {
-    let resource = tilo_actions::remote::workspace_governance_resource(&workspace_id.to_string());
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let published = broker.surfaces().into_iter().any(|surface| {
-            surface.route.cluster_id == workspace_id.to_string()
-                && surface
-                    .actions
-                    .iter()
-                    .any(|action| action.resource == resource && action.action == "set-role")
-        });
-        if published {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the workspace's people actions are not published"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
+    .expect("the daemon starts and the session runs as its shell");
+    session
+        .step(std::time::Duration::from_millis(1))
+        .expect("a frame");
+    Served {
+        session,
+        _daemon: daemon,
+        _profile: profile,
+        _app_wire: app_wire,
     }
 }
 
@@ -1188,47 +1228,68 @@ fn a_second_device(
     (hers, her, her_key, person)
 }
 
-/// This session's broker writes `command` into the workspace's people as this computer's own
-/// device asks it, and the workspace answers as taken.
+/// This session's device changes `change` in the workspace's people on the device's daemon, as
+/// the settings sheet's own effect does, and the workspace answers as taken.
+#[cfg(target_os = "linux")]
 #[track_caller]
-fn change_governance(
-    session: &crate::Session,
-    workspace_id: WorkspaceId,
-    cert: &tilo_user_identity::DeviceCert,
-    command: &WorkspaceMembershipCommand,
-) {
-    let broker = session
-        .app_wire
-        .as_ref()
-        .and_then(crate::app_wire::AppWire::action_broker)
-        .expect("the session serves its broker");
-    wait_for_people(&broker, workspace_id);
-    let job = broker
-        .change_workspace_membership(&workspace_id.to_string(), command, cert)
-        .expect("this device's person may change the workspace's people");
-    let completed = job
-        .completion
-        .recv_timeout(tilo_test_env::hang_bound())
-        .expect("the invocation answers");
-    assert!(completed.code.is_empty(), "{}", completed.message);
+fn change_governance(session: &Served, workspace_id: WorkspaceId, change: &Change) {
+    let workspace = workspace_id.to_string();
+    let (person, action, arguments) = member_change(change);
+    let request = tilo_actions::remote::InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        on_behalf_of: None,
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                tilo_actions::remote::workspace_member(&workspace, &person),
+                action,
+            ),
+        },
+        argument: tilo_actions::remote::InvokeArgument::Json(
+            arguments
+                .as_object()
+                .expect("a change names its fields")
+                .clone(),
+        ),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let dispatch = session.dispatch();
+    let answered = tilo_rt::app().block_on(dispatch.settled(Some(workspace), request));
+    if let Err(reason) = answered {
+        panic!("this device's person may change the workspace's people: {reason}");
+    }
+}
+
+/// The person `change` moves, the action the workspace publishes it under, and its arguments:
+/// a member's part, or their removal from the workspace.
+#[cfg(target_os = "linux")]
+#[track_caller]
+fn member_change(change: &Change) -> (String, &'static str, serde_json::Value) {
+    match change {
+        Change::SetRole { person, role } => (
+            person.clone(),
+            tilo_actions::remote::WORKSPACE_MEMBER_PLACED,
+            serde_json::json!({ "role": role }),
+        ),
+        Change::RemoveMember { person } => (
+            person.clone(),
+            tilo_actions::remote::WORKSPACE_MEMBER_REMOVED,
+            serde_json::json!({}),
+        ),
+        other => panic!("the settings sheet changes a member's part or removes them: {other:?}"),
+    }
 }
 
 /// [`change_governance`] one of the people changes the settings sheet makes.
+#[cfg(target_os = "linux")]
 #[track_caller]
-fn change_people(
-    session: &crate::Session,
-    workspace_id: WorkspaceId,
-    cert: &tilo_user_identity::DeviceCert,
-    change: &Change,
-) {
-    change_governance(
-        session,
-        workspace_id,
-        cert,
-        &WorkspaceMembershipCommand::Member {
-            change: change.clone(),
-        },
-    );
+fn change_people(session: &Served, workspace_id: WorkspaceId, change: &Change) {
+    change_governance(session, workspace_id, change);
 }
 
 /// Run frames until the session shows `person` in `expected` 's part of the workspace.
@@ -1236,9 +1297,11 @@ fn change_people(
 fn the_shell_shows(session: &mut crate::Session, person: &str, expected: Option<Role>) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let shown = session
-            .handle()
-            .read(|tree| tree.workspaces.first().and_then(|ws| ws.role_of(person)));
+        let shown = session.handle().read(|tree| {
+            tree.workspaces
+                .first()
+                .and_then(|ws| ws.policy.role_of(person))
+        });
         if shown == expected {
             return;
         }
@@ -1291,8 +1354,9 @@ fn her_device_takes(
 
 /// A person's own device changes a workspace's people through the session this computer runs:
 /// the role they give and the member they remove are the workspace's own change, signed with
-/// this device's key, so the workspace the session's engine holds has them, and the person's
+/// this device's key, so the workspace the device's daemon holds has them, and the person's
 /// other device takes them as it takes any change of the workspace.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs() {
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
@@ -1315,10 +1379,10 @@ fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs()
         now,
         |_, _, _| (),
     );
-    let socket_dir = private_directory();
-    let socket = socket_dir.path().join("collab.sock");
+    // Her state home is this device's, as the daemon keeps the workspace this session shows.
+    home.env().set("XDG_STATE_HOME", state.path());
     // The role the person gives her, and then the member they remove: each through this
-    // session's broker, as the person's own device asks it.
+    // session's device, as the person's own settings sheet asks it.
     for change in [
         Change::SetRole {
             person: her_person.clone(),
@@ -1332,12 +1396,9 @@ fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs()
             Change::SetRole { .. } => Some(Role::Moderator),
             _ => None,
         };
-        let mut session = session_serving(state.path(), &socket);
-        session
-            .step(std::time::Duration::from_millis(1))
-            .expect("a frame");
-        change_people(&session, workspace_id, &cert, &change);
-        // What the session shows is the workspace the session's engine holds: the role is hers, or
+        let mut session = session_serving(state.path());
+        change_people(&session, workspace_id, &change);
+        // What the session shows is the workspace the device's daemon holds: the role is hers, or
         // she is gone from it.
         the_shell_shows(&mut session, &her_person, expected);
         drop(session);
@@ -1359,23 +1420,29 @@ fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs()
     }
 }
 
-/// Whether asking this session's broker to re-role someone as `scribe` is refused: the person's
-/// device handed the session to an agent, and a workspace's people change at its person's
-/// device only.
+/// Whether the device's daemon refuses an agent's re-role of `person` in `workspace_id`: the
+/// person's session handed the agent its work, and a workspace's people change at its person's
+/// device only. The daemon takes the shell's calls for its own person, and what names an agent
+/// is turned away on the link it came on; a workspace nobody may change also answers a caller it
+/// does not know as it answers one it forbids.
+#[cfg(target_os = "linux")]
 #[track_caller]
 fn an_agent_is_refused_a_role(
-    broker: &tilo_workspace_service::apps::collab_broker::AppActionBroker,
+    session: &Served,
     cert: &tilo_user_identity::DeviceCert,
     workspace_id: WorkspaceId,
     person: &str,
 ) -> bool {
+    use tilo_actions::remote::ActionProvider as _;
+
+    let workspace = workspace_id.to_string();
     let agent =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
-            .in_workspace(workspace_id.to_string())
+            .in_workspace(workspace.clone())
             .in_new_execution()
             .delegated_to("scribe");
-    let answer = broker
-        .device_host()
+    let answer = session
+        .dispatch()
         .invoke(
             &agent,
             tilo_actions::remote::InvokeRequest {
@@ -1384,20 +1451,15 @@ fn an_agent_is_refused_a_role(
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.into(),
                     address: tilo_actions::ActionAddress::new(
-                        tilo_actions::remote::workspace_governance_resource(
-                            &workspace_id.to_string(),
-                        ),
-                        "set-role",
+                        tilo_actions::remote::workspace_member(&workspace, person),
+                        tilo_actions::remote::WORKSPACE_MEMBER_PLACED,
                     ),
                 },
                 argument: tilo_actions::remote::InvokeArgument::Json(
-                    serde_json::json!({
-                        "person": person,
-                        "role": "moderator",
-                    })
-                    .as_object()
-                    .expect("an object")
-                    .clone(),
+                    serde_json::json!({ "role": "moderator" })
+                        .as_object()
+                        .expect("an object")
+                        .clone(),
                 ),
                 context: None,
                 confirmation: None,
@@ -1410,15 +1472,19 @@ fn an_agent_is_refused_a_role(
         .wait_timeout(tilo_test_env::hang_bound())
         .ok()
         .flatten()
-        .expect("the host answers");
+        .expect("the device answers");
     matches!(
         answer,
-        Err(tilo_actions::remote::ActionCallError::NotPermitted)
+        Err(tilo_actions::remote::ActionCallError::NotPermitted
+            | tilo_actions::remote::ActionCallError::UnknownAction
+            | tilo_actions::remote::ActionCallError::Unavailable { .. }
+            | tilo_actions::remote::ActionCallError::Refused { .. })
     )
 }
 
 /// An agent the person's device handed its session to cannot change a workspace's people: that
 /// is the person's own act at their device.
+#[cfg(target_os = "linux")]
 #[test]
 fn an_agent_cannot_change_a_workspaces_people() {
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
@@ -1428,24 +1494,14 @@ fn an_agent_cannot_change_a_workspaces_people() {
     let stranger = SigningKey::from_bytes(&[0x73; 32])
         .verifying_key()
         .to_bytes();
-    let socket_dir = private_directory();
-    let socket = socket_dir.path().join("collab.sock");
-    let mut session = session_serving(state.path(), &socket);
-    session
-        .step(std::time::Duration::from_millis(1))
-        .expect("a frame");
-    let broker = session
-        .app_wire
-        .as_ref()
-        .and_then(crate::app_wire::AppWire::action_broker)
-        .expect("the session serves its broker");
-    wait_for_people(&broker, workspace_id);
+    home.env().set("XDG_STATE_HOME", state.path());
+    let session = session_serving(state.path());
     assert!(
-        an_agent_is_refused_a_role(&broker, &cert, workspace_id, &hex::encode(stranger)),
+        an_agent_is_refused_a_role(&session, &cert, workspace_id, &hex::encode(stranger)),
         "an agent is refused the workspace's people"
     );
     // And nobody was added to the workspace it asked for.
-    drop((session, broker));
+    drop(session);
     let mine = Engine::open(
         crate::sync::device_identity().expect("this computer is a device"),
         Some(state.path()),

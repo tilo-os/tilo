@@ -364,26 +364,77 @@ impl SessionActions {
 mod tests {
     use std::time::Duration;
 
-    use tilo_actions::remote::{ActionCallError, Caller, CatalogueQuery, PendingPoll};
+    use tilo_actions::remote::{
+        ActionCallError, ActionProvider as _, Caller, CatalogueQuery, PendingPoll, ReceiptStatus,
+    };
 
-    /// A headless session serving its own broker on `app_wire`, so the session's own actions reach
-    /// the catalogue every caller of the desktop is offered.
-    fn serving(state: &std::path::Path, app_wire: &std::path::Path) -> crate::Session {
-        crate::Session::headless(
-            crate::Options {
-                presentation: ui::headless::fixture_runner_inputs,
-                collab: false,
-                state: Some(state.to_path_buf()),
-                app_socket: crate::AppSocket::At(app_wire.join("collab.sock")),
-                ..crate::Options::default()
-            },
-            &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
-        )
-        .expect("a session")
+    /// The device's daemon, started over a profile of the test's own, and the session running in
+    /// this process as its shell on the link the daemon made
+    /// ([`crate::shell_session::start_in_process`]): every call the tests make is the daemon's,
+    /// as an app's or an agent's is.
+    #[cfg(target_os = "linux")]
+    struct Device {
+        /// Stopped first: its link closing is what ends the providers it served there.
+        session: crate::Session,
+        _daemon: tilo_runtime::daemon::Running,
+        /// The profile the daemon serves, its sockets inside it.
+        _profile: tempfile::TempDir,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl std::ops::Deref for Device {
+        type Target = crate::Session;
+
+        fn deref(&self) -> &Self::Target {
+            &self.session
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl std::ops::DerefMut for Device {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.session
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Device {
+        /// The device's one dispatch over the session's link: where a call goes, and where it is
+        /// followed, as the person the link was made for or the caller the session names.
+        fn dispatch(&self) -> runtime_collab::ShellDispatch {
+            let link = self
+                .session
+                .shared
+                .daemon
+                .link()
+                .expect("the session runs on the daemon's link");
+            let _entered = tilo_rt::app().handle().enter();
+            link.dispatch()
+        }
+
+        /// Run one frame of the session, whose pass carries what its own steps asked.
+        fn frame(&mut self) {
+            self.session
+                .step(Duration::from_millis(1))
+                .expect("a frame");
+        }
+    }
+
+    /// A headless session serving the session's own actions on the device's daemon: the catalogue
+    /// every caller of the desktop is offered.
+    #[cfg(target_os = "linux")]
+    fn serving(
+        state: &std::path::Path,
+        app_wire: &std::path::Path,
+        person: &str,
+        workspace: &str,
+    ) -> Device {
+        power_session(state, app_wire, person, workspace, Vec::new())
     }
 
     /// What `ask` answers, run until the session's pass has answered it: a host step's rows and
-    /// its invocation are read on the loop, which steps here until the answer is in.
+    /// its invocation are read on the loop, which steps here until the answer is in. The ask is
+    /// the device's, answered off this thread, so the loop is free to carry out what it asked.
     fn answered<T: Send + 'static>(
         session: &mut crate::Session,
         ask: impl FnOnce() -> tilo_actions::remote::Pending<Result<T, ActionCallError>>,
@@ -394,7 +445,7 @@ mod tests {
         while std::time::Instant::now() < deadline {
             session.step(Duration::from_millis(1)).expect("a frame");
             if let PendingPoll::Ready(answer) = answered.poll_ready() {
-                return answer.expect("the broker answers");
+                return answer.expect("the daemon answers");
             }
         }
         Err(ActionCallError::Refused {
@@ -424,24 +475,39 @@ mod tests {
     }
 
     /// What the line `request` answered as `person`, running the session until the invocation
-    /// ends: its output, or why it ended otherwise.
+    /// ends at the device's daemon: its output, or why it ended otherwise.
     #[cfg(target_os = "linux")]
     fn ended_line(
-        session: &mut crate::Session,
+        device: &mut Device,
         person: &Caller,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<serde_json::Value, ActionCallError> {
-        let broker = session
-            .action_broker()
-            .expect("the session serves its actions");
-        answered(session, || {
-            broker.action_invoke_local_person(person, request)
-        })
-        .expect("the broker admits the person's line");
+        let dispatch = device.dispatch();
+        let receipt = answered(&mut *device, || dispatch.invoke(person, request.clone()))
+            .expect("the daemon admits the person's line");
+        // A line that ended before its receipt answered: what it answered is the receipt's.
+        if let ReceiptStatus::Completed { output } = receipt.status {
+            return Ok(output.value.unwrap_or_default());
+        }
+        followed(device, &dispatch, person, request)
+    }
+
+    /// Where the line `request`, already admitted for `person`, ended: its output, or why it
+    /// ended otherwise. The daemon follows a background one as the session answers it, so the
+    /// loop steps until the line has ended.
+    #[cfg(target_os = "linux")]
+    fn followed(
+        device: &mut Device,
+        dispatch: &runtime_collab::ShellDispatch,
+        person: &Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<serde_json::Value, ActionCallError> {
         let deadline = tilo_test_env::hang_deadline();
         while std::time::Instant::now() < deadline {
-            session.step(Duration::from_millis(1)).expect("a frame");
-            if let Some(state) = broker.action_observe(person, &request.invocation)
+            device.frame();
+            // Where the daemon last followed the line to: a background one is read off its
+            // record, which the session answers without waiting on its pass.
+            if let Some(state) = dispatch.observe(person, &request.invocation)
                 && state.update.is_terminal()
             {
                 return match state.update {
@@ -467,20 +533,20 @@ mod tests {
         })
     }
 
-    /// A headless session whose workspace the person at this device governs, with its own broker:
-    /// the shell's own actions are enough for a line to change something.
+    /// A headless session whose workspace the person at this device governs, running as the
+    /// device's daemon's shell: the shell's own actions are enough for a line to change something.
     #[cfg(target_os = "linux")]
     fn line_session(
         state: &std::path::Path,
         app_wire: &std::path::Path,
         person: &str,
         workspace: &str,
-    ) -> crate::Session {
-        let mut session = power_session(state, app_wire, person, workspace, Vec::new());
+    ) -> Device {
+        let mut device = power_session(state, app_wire, person, workspace, Vec::new());
         for _ in 0..4 {
-            session.step(Duration::from_millis(1)).expect("a frame");
+            device.frame();
         }
-        session
+        device
     }
 
     /// The person's own line runs as them: what it changes lands, and History credits it to the
@@ -562,27 +628,38 @@ mod tests {
     #[test]
     fn a_line_in_a_workspace_the_person_is_no_member_of_is_refused() {
         const WORKSPACE: &str = "5b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b51";
+        /// A workspace this device holds nothing of: the person at it is no member there.
+        const ELSEWHERE: &str = "5b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b59";
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
-        let mut session = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
-        let stranger =
-            Caller::local_person("a-person-this-workspace-does-not-know").in_workspace(WORKSPACE);
-
-        let broker = session
-            .action_broker()
-            .expect("the session serves its actions");
-        let refused = answered(&mut session, || {
-            broker.action_invoke(&stranger, None, None, &run_line("session.new_strip()"))
-        });
-        assert!(
-            matches!(
-                refused,
-                Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
+        let mut device = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
+        // The daemon decides each call in the workspace its caller names: one this device holds
+        // nothing of, and the person at it is in no way a member of.
+        let elsewhere = Caller::local_person(person_id).in_workspace(ELSEWHERE);
+        let dispatch = device.dispatch();
+        let request = run_line("session.new_strip()");
+        match answered(&mut device, || dispatch.invoke(&elsewhere, &request)) {
+            // Refused where it was asked: nothing ran.
+            Err(refused) => assert!(
+                matches!(
+                    refused,
+                    ActionCallError::NotPermitted
+                        | ActionCallError::Refused { .. }
+                        | ActionCallError::Unavailable { .. }
+                ),
+                "the line is refused in the system's words: {refused:?}"
             ),
-            "the line is refused in the system's words: {refused:?}"
-        );
+            // Admitted where it was asked, and the line ends where it runs: it ran nowhere.
+            Ok(_) => {
+                let ended = followed(&mut device, &dispatch, &elsewhere, &request);
+                assert!(
+                    ended.is_err(),
+                    "the line runs nowhere in a workspace the person is no member of: {ended:?}"
+                );
+            }
+        }
     }
 
     /// A line the person stops while it runs makes no change and reads cancelled.
@@ -594,29 +671,25 @@ mod tests {
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = governed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
-        let mut session = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
+        let mut device = line_session(state.path(), app_wire.path(), &person_id, WORKSPACE);
         let person = Caller::local_person(person_id).in_workspace(WORKSPACE);
-        let strips = session.layout().borrow().reading().strips.len();
-        let broker = session
-            .action_broker()
-            .expect("the session serves its actions");
+        let strips = device.layout().borrow().reading().strips.len();
+        let dispatch = device.dispatch();
         let request = run_line("session.new_strip(name: \"Never\")");
 
         // The line's calls are the session's own, which run on its pass: it has made none yet.
-        answered(&mut session, || {
-            broker.action_invoke_local_person(&person, &request)
-        })
-        .expect("the broker admits the person's line");
-        answered(&mut session, || {
-            broker.action_cancel(&person, &request.invocation)
+        answered(&mut device, || dispatch.invoke(&person, &request))
+            .expect("the daemon admits the person's line");
+        answered(&mut device, || {
+            dispatch.cancel(&person, &request.invocation)
         })
         .expect("the person stops the line");
 
         let deadline = tilo_test_env::hang_deadline();
         let mut ended = None;
         while std::time::Instant::now() < deadline {
-            session.step(Duration::from_millis(1)).expect("a frame");
-            if let Some(state) = broker.action_observe(&person, &request.invocation)
+            device.frame();
+            if let Some(state) = dispatch.observe(&person, &request.invocation)
                 && state.update.is_terminal()
             {
                 ended = Some(state.update);
@@ -631,41 +704,41 @@ mod tests {
             "a stopped line reads cancelled: {ended:?}"
         );
         assert_eq!(
-            session.layout().borrow().reading().strips.len(),
+            device.layout().borrow().reading().strips.len(),
             strips,
             "the stopped line made no change"
         );
     }
 
-    /// The session's own actions are its broker's: the person at this device is offered the
-    /// layout's `place` on the session's own provider, read on the loop's pass and listed
-    /// by the broker — one catalogue, whichever API the caller came in by. Its invocation, and
-    /// the turn's admission of it, are proven against a real tracker in the broker's own
+    /// The session's own actions are the device's: the person at this device is offered the
+    /// layout's `place` on the daemon's catalogue, read on the loop's pass and listed there —
+    /// one catalogue, whichever API the caller came in by. Its invocation, and the turn's
+    /// admission of it, are proven against a real tracker in the device's own
     /// `a_turn_takes_the_hosts_turn_steps_and_nobody_else_does`.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn the_sessions_own_actions_are_the_brokers() {
+    fn the_sessions_own_actions_are_the_devices() {
         use std::os::unix::fs::PermissionsExt as _;
 
+        const WORKSPACE: &str = "7b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b53";
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
-        // The broker binds in a directory only this account reaches.
+        let (_env, _identity_root, me) = governed_workspace(state.path(), WORKSPACE);
+        // The daemon binds in a directory only this account reaches.
         let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
         std::fs::set_permissions(app_wire.path(), std::fs::Permissions::from_mode(0o700))
             .expect("the broker's directory is this user's");
-        let mut session = serving(state.path(), app_wire.path());
-        session.step(Duration::from_millis(1)).expect("a frame");
-        let me = session.shared.person.clone();
-        let broker = session
-            .action_broker()
-            .expect("the session serves a broker");
-        let workspace = session
+        let mut device = serving(state.path(), app_wire.path(), &me, WORKSPACE);
+        device.frame();
+        let dispatch = device.dispatch();
+        let workspace = device
             .handle()
             .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
             .expect("a workspace is in front");
         let person = Caller::local_person(me).in_workspace(workspace);
 
-        let page = answered(&mut session, || {
-            broker.action_query(
+        let page = answered(&mut device, || {
+            dispatch.query(
                 &person,
                 &CatalogueQuery {
                     provider: Some(tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned()),
@@ -680,7 +753,7 @@ mod tests {
             .iter()
             .filter_map(|row| row.action.as_ref())
             .find(|action| action.address.action == "place")
-            .expect("the layout's place is offered on the broker")
+            .expect("the layout's place is offered by the daemon")
             .clone();
         assert_eq!(
             placing.address.resource,
@@ -693,10 +766,10 @@ mod tests {
             "the rows stand under the session's own provider"
         );
 
-        // What the broker lists is what the session publishes: every row names a resource the
+        // What the daemon lists is what the session publishes: every row names a resource the
         // session's own API holds, but the person's line, which is a host step of the session's
         // own and not a resource its services read.
-        let published = published(&session);
+        let published = published(&device);
         for row in &page.rows {
             let action = row.action.as_ref().expect("a row offers its action");
             assert!(
@@ -827,12 +900,23 @@ mod tests {
         state: &std::path::Path,
         workspace: &str,
     ) -> (tilo_test_env::ScopedEnv, tempfile::TempDir, String) {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let root = tempfile::tempdir().expect("an identity directory");
         let xdg = root.path().join("config");
         let system = root.path().join("system");
+        let runtime = root.path().join("run");
+        std::fs::create_dir_all(&runtime).expect("a runtime directory");
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))
+            .expect("the runtime directory is this user's");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", &xdg)
             .set("XDG_DATA_HOME", root.path().join("data"))
+            .set("XDG_CACHE_HOME", root.path().join("cache"))
+            .set("XDG_RUNTIME_DIR", &runtime)
+            // The device's daemon keeps the person's workspaces under the state home, and this
+            // session's own state is there too: one store, which the daemon holds.
+            .set("XDG_STATE_HOME", state)
             .set("TILO_IDENTITY_ROOT", &system)
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         let paths = tilo_device_identity::IdentityPaths::under(&system);
@@ -888,7 +972,8 @@ mod tests {
         panic!("power action never settled")
     }
 
-    /// Start a headless session mounted with `services` and a governed workspace where
+    /// Start the device's daemon over a profile of the test's own and, on the link it makes, a
+    /// headless session mounted with `services` as its shell: a workspace in front where
     /// `person_id` owns the workspace and agent `scribe` is allowed to read and act.
     #[cfg(target_os = "linux")]
     fn power_session(
@@ -897,12 +982,14 @@ mod tests {
         person_id: &str,
         workspace_id: &str,
         services: Vec<Box<dyn tilo_service::Service>>,
-    ) -> crate::Session {
+    ) -> Device {
         use std::os::unix::fs::PermissionsExt as _;
 
         std::fs::set_permissions(app_wire, std::fs::Permissions::from_mode(0o700))
             .expect("the actions directory is this user's");
-        let mut session = crate::Session::headless(
+        let profile = tempfile::tempdir().expect("a profile for the daemon");
+        let (daemon, mut session) = crate::shell_session::start_in_process(
+            profile.path(),
             crate::Options {
                 presentation: ui::headless::fixture_runner_inputs,
                 services,
@@ -913,15 +1000,16 @@ mod tests {
                 ..crate::Options::default()
             },
             &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+            Duration::from_secs(60),
         )
-        .expect("a session");
+        .expect("the daemon starts and the session runs as its shell");
         let id = tilo_desktop_model::WorkspaceId::parse(workspace_id).expect("workspace id");
         let mut workspace = tilo_desktop_model::Workspace::new(id, "Shell");
-        workspace.set_owner(person_id.to_owned());
+        workspace.policy.owner = Some(person_id.to_owned());
         workspace.policy.grants.push(tilo_action_policy::Grant::new(
             "agent-member:scribe:session",
             tilo_action_policy::Grantee::agent("scribe"),
-            workspace.node(),
+            workspace.policy.node(),
             tilo_action_policy::KindSet::ALL,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(person_id.to_owned()),
@@ -934,25 +1022,67 @@ mod tests {
         for _ in 0..4 {
             session.step(Duration::from_millis(1)).expect("a frame");
         }
-        session
+        let mut device = Device {
+            session,
+            _daemon: daemon,
+            _profile: profile,
+        };
+        // The session serves its own actions on the daemon off its loop, and offers the rows its
+        // services publish as it reads them: the tests wait for the daemon to list them.
+        served_on_the_daemon(&mut device, workspace_id);
+        device
     }
 
-    /// Every power-profile or power-mode action offered to agent `scribe` in `session`'s catalogue.
+    /// Wait until the device's daemon lists the session's own actions, the layout's `place`
+    /// among them: what the session's pass offered, and its link carried there.
+    #[cfg(target_os = "linux")]
+    fn served_on_the_daemon(device: &mut Device, workspace_id: &str) {
+        let dispatch = device.dispatch();
+        let person =
+            Caller::local_person(device.session.shared.person.clone()).in_workspace(workspace_id);
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let page = answered(&mut *device, || {
+                dispatch.query(
+                    &person,
+                    &CatalogueQuery {
+                        provider: Some(tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned()),
+                        max_results: 512,
+                        ..CatalogueQuery::default()
+                    },
+                )
+            });
+            if let Ok(page) = &page
+                && page.rows.iter().any(|row| {
+                    row.action
+                        .as_ref()
+                        .is_some_and(|action| action.address.action == "place")
+                })
+            {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the daemon never listed the session's own actions: {page:?}"
+            );
+        }
+    }
+
+    /// Every power-profile or power-mode action offered to agent `scribe` by the device's daemon
+    /// for the session's own catalogue.
     #[cfg(target_os = "linux")]
     fn agent_profile_actions(
-        session: &mut crate::Session,
+        device: &mut Device,
         person_id: &str,
         workspace_id: &str,
     ) -> Vec<(String, String, String)> {
-        let actions = session
-            .action_broker()
-            .expect("the session serves its actions");
+        let dispatch = device.dispatch();
         let agent = Caller::local_person(person_id.to_owned())
             .in_workspace(workspace_id)
             .delegated_to("scribe")
             .in_new_execution();
-        let page = answered(session, || {
-            actions.action_query(
+        let page = answered(device, || {
+            dispatch.query(
                 &agent,
                 &CatalogueQuery {
                     provider: Some(tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned()),
@@ -1002,20 +1132,19 @@ mod tests {
         (fake, Box::new(service))
     }
 
-    /// Invoke a session action on the session's catalogue provider as `person`.
+    /// Invoke a session action on the device's dispatch as `person`, as Settings' window's own
+    /// click is: the daemon admits it, and the session carries it out on its pass.
     #[cfg(target_os = "linux")]
     fn invoke_session_step(
-        session: &mut crate::Session,
+        device: &mut Device,
         person: &Caller,
         resource: &str,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
-        let actions = session
-            .action_broker()
-            .expect("the session serves its actions");
-        answered(session, || {
-            actions.action_invoke_local_person(person, &session_step(resource, action, arguments))
+        let dispatch = device.dispatch();
+        answered(device, || {
+            dispatch.invoke(person, &session_step(resource, action, arguments))
         })
     }
 
@@ -1201,7 +1330,7 @@ mod tests {
         fake_system: &std::sync::Arc<FakeSystem>,
         profiles: Vec<String>,
         active: &str,
-    ) -> (tilo_session_power::PowerLink, crate::Session) {
+    ) -> (tilo_session_power::PowerLink, Device) {
         let power_link = tilo_session_power::PowerLink::default();
         power_link.attached();
         power_link.bridge().note_profiles(profiles);

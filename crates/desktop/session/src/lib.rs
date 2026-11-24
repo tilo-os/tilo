@@ -52,7 +52,7 @@ pub mod search;
 mod search_agent;
 mod search_ask;
 mod session_actions;
-#[cfg(all(feature = "test-support", target_os = "linux"))]
+#[cfg(all(any(test, feature = "test-support"), target_os = "linux"))]
 pub mod shell_session;
 // The person's settings, which Settings' window drives through the broker as another provider's
 // actions: the session keeps them in its settings service, so the answer is this host's.
