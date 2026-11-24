@@ -43,9 +43,6 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
-# The secret store the native apps kept their secrets in before the vault, read once to move
-# them into it (and kept in memory by a test).
-tilo-secrets.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../action-policy" }
 tilo-paths.workspace = true
