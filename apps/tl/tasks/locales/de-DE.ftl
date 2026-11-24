@@ -505,9 +505,8 @@ d-khy6tj7s = Ausrücken
     .w-it-is-at-the-top-level = Sie ist schon auf der obersten Ebene
 
 d-o3lvuj36 = Status
-    .doc = Stellt eine Aufgabe in eine Spalte des Boards, an die Stelle `at` unter den Aufgaben, die schon dort stehen: was das Ziehen einer Karte benennt.
+    .doc = Stellt eine Aufgabe in eine Spalte des Boards, an die Stelle `at` unter den Aufgaben, die schon dort stehen: was das Ziehen einer Karte benennt. In der eigenen Spalte verschiebt sie das Ablegen nur unter deren Aufgaben.
     .did = verschoben
-    .w-it-stands-there-already = Sie steht dort bereits
 
 d-o3lvuj36-status = Status
 
@@ -798,8 +797,6 @@ d-da66j22u = fügt jemanden hinzu
 d-ym2iynlv = benennt um
 
 d-mg3c777a = Verschieben nach~present
-
-d-ajdiznj3 = setzt den Status
 
 d-2vvqvs5e = setzt den Status mehrerer
 

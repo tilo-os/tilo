@@ -485,13 +485,12 @@ action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Ctrl+[", gro
 }
 
 /// Puts a task in a column of the board, at the place `at` among the tasks already there: what a
-/// card's drag names.
+/// card's drag names. A drop in its own column only moves it among the column's tasks.
 action set_status(t: Task, status: Status, at: Int = 0) uses time (
     label: "Status",
     did: "moved",
     settles: t.status,
 ) {
-    require t.status != status "It stands there already"
     t.status = status
     t.done = closed(status)
     // A place counts among the column's other tasks: the moved one stands in it already.
