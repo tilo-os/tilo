@@ -81,6 +81,8 @@ mod collab;
 mod confirm;
 #[path = "controllers.rs"]
 mod controllers;
+#[path = "daemon_start.rs"]
+mod daemon_start;
 #[path = "delete_workspace.rs"]
 mod delete_workspace;
 #[path = "desktop_services.rs"]
