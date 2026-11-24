@@ -4711,9 +4711,6 @@ pub(super) fn action_provider(
     let (named, actor) = (workspace.to_owned(), actor.to_owned());
     let admission = block_on_owned(async move { admitting.admit_execution(&named, &actor).await })
         .map_err(io::Error::other)?;
-    let provider = broker
-        .certified_local_action_provider(admission.caller(), admission.presentation())
-        .map_err(io::Error::other)?;
     admission
         .check(workspaces.copies())
         .map_err(io::Error::other)?;

@@ -7,12 +7,11 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    self, ActionCallError, ActionProvider, Caller, DEVICE_SETTINGS, ReadAnswer, ReceiptStatus,
-    ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, device_record_address,
+    self, ActionCallError, ActionProvider, Caller, DEVICE_SETTINGS, InvokeArgument, InvokeRequest,
+    ReadAnswer, ReceiptStatus, RemoteActionTarget, ResourceAddress, ResourceCopy,
+    ResourceReadRequest, ResourceReads, device_record_address,
 };
-use tilo_actions::{
-    ActionAddress, InvocationId, InvokeArgument, InvokeRequest, RemoteActionTarget,
-};
+use tilo_actions::{ActionAddress, InvocationId};
 
 use super::{DeviceRecords, REMOVE, RESOURCE, SET};
 
@@ -67,7 +66,7 @@ async fn reading(
         wait_ms: None,
         answer: ReadAnswer::Reading,
     };
-    let answer = reads
+    let answer = Arc::clone(reads)
         .answer_read(caller, 0, request)
         .await
         .expect("the device answers the read");
@@ -95,7 +94,7 @@ async fn revision(
         wait_ms: None,
         answer: ReadAnswer::Reading,
     };
-    let answer = reads
+    let answer = Arc::clone(reads)
         .answer_read(caller, 0, request)
         .await
         .expect("the device answers the read");
