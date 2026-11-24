@@ -9,7 +9,7 @@ use tilo_ui_graph::rich::{InlineView, RichText, Run};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use super::BlockEditor;
+use super::{BlockEditor, Pages};
 use crate::block_editor::{ImageInserter, PictureIn};
 use crate::block_editor_body::BodyBinding;
 use crate::slash_menu::SlashHostCommand;
@@ -90,6 +90,22 @@ pub struct BlockEditorProps {
     /// control of the app's own.
     #[component(state)]
     pub format: Option<String>,
+    /// The paper the document is set on: `A4`, `Letter` or `Legal`. A view that asks for pages
+    /// has the stack broken into sheets with the margins a printed page keeps, each sheet
+    /// carrying `header` in its top margin and `footer` and its number in the bottom one.
+    pub page: Option<String>,
+    /// Words set in every page's top margin, such as the document's title.
+    pub header: Option<String>,
+    /// Words set in every page's bottom margin, before the page number.
+    pub footer: Option<String>,
+    /// The page's top margin in points, where the view sets it; an inch otherwise.
+    pub margin_top: Option<f64>,
+    /// The page's right margin in points, where the view sets it.
+    pub margin_right: Option<f64>,
+    /// The page's bottom margin in points, where the view sets it.
+    pub margin_bottom: Option<f64>,
+    /// The page's left margin in points, where the view sets it.
+    pub margin_left: Option<f64>,
     /// A picture to write in at the caret, as a view asks after the person chose a file: the
     /// address of its content, then a count the view changes every time it asks
     /// (`{address}:1`), so the same picture chosen twice is two pictures. A view asks this from
@@ -350,6 +366,30 @@ fn picture_inserter() -> ImageInserter {
     })
 }
 
+/// The pages a view asks for, when it names a paper: its header and footer, and the margins it
+/// sets or an inch each.
+fn pages_of(
+    page: Option<&str>,
+    header: Option<String>,
+    footer: Option<String>,
+    margins: [Option<f64>; 4],
+) -> Option<Pages> {
+    let pages = Pages::of(
+        page?,
+        header.unwrap_or_default(),
+        footer.unwrap_or_default(),
+    )?;
+    let points = |value: Option<f64>| {
+        value.map_or(super::DEFAULT_PAGE_MARGIN, |points| points as f32)
+    };
+    Some(pages.with_margins(
+        points(margins[0]),
+        points(margins[1]),
+        points(margins[2]),
+        points(margins[3]),
+    ))
+}
+
 fn theme_fingerprint(theme: &Theme) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -388,6 +428,13 @@ impl Described for BlockEditor {
             // A view opened with a formatting ask is just opened: the ask is answered on the
             // change that follows, never on the editor a note is first shown in.
             format: _,
+            page,
+            header,
+            footer,
+            margin_top,
+            margin_right,
+            margin_bottom,
+            margin_left,
             insert: _,
             reveal,
         } = props;
@@ -428,6 +475,12 @@ impl Described for BlockEditor {
         } else {
             editor.show_rich_text(&value.unwrap_or_default());
         }
+        editor.set_pages(pages_of(
+            page.as_deref(),
+            header.clone(),
+            footer.clone(),
+            [margin_top, margin_right, margin_bottom, margin_left],
+        ));
         editor.publish_headings();
         // A view opened with a heading asked for, of the note shown before, is just opened; a
         // block asked for by its place is shown.
@@ -453,6 +506,13 @@ impl Described for BlockEditor {
             headings,
             image,
             format,
+            page,
+            header,
+            footer,
+            margin_top,
+            margin_right,
+            margin_bottom,
+            margin_left,
             insert,
             reveal,
         } = props;
@@ -486,6 +546,12 @@ impl Described for BlockEditor {
         // A view that asks for a heading again changes its count, so the same heading is shown
         // again rather than read as the ask it already answered.
         self.reveal_asked(reveal);
+        self.set_pages(pages_of(
+            page.as_deref(),
+            header.clone(),
+            footer.clone(),
+            [margin_top, margin_right, margin_bottom, margin_left],
+        ));
         // A formatting ask is one command: the same ask twice is the command it already ran.
         let formatted = self.format_asked(format);
         let inserted = self.insert_asked(insert);

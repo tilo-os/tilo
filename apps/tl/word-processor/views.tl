@@ -63,6 +63,12 @@ view writer(d: Document) {
                                     placeholder: "Start writing",
                                     reveal: reveal,
                                     format: format_ask,
+                                    page: d.paper,
+                                    header: d.title,
+                                    margin_top: d.margin_top,
+                                    margin_right: d.margin_right,
+                                    margin_bottom: d.margin_bottom,
+                                    margin_left: d.margin_left,
                                     insert: if d.chosen == "" {
                                         .none
                                     } else {

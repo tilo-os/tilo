@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -295,6 +296,9 @@ pub struct Block {
 /// A paragraph's spacing and indent are stored in points, the unit every document codec
 /// writes; the toolkit draws in logical pixels at 96 dpi.
 const PIXELS_PER_POINT: f32 = 96.0 / 72.0;
+
+/// The space between two sheets, in pixels at the scale the paper is drawn at.
+const PAGE_GAP_PX: f32 = 24.0;
 
 /// Ephemeral pointer state for the editor's block-order handle.  The durable
 /// result is still produced by the normal semantic-diff bridge as a stable-id
@@ -798,6 +802,9 @@ pub struct BlockEditor {
     /// The picture a view last asked to write in at the caret (`insert`), as it asked: the ask
     /// it answers again only when it changes.
     insert_ask: Option<String>,
+    /// The paper the document is set on, when a view asks for pages: the stack breaks the
+    /// blocks into sheets and the draw puts the paper, the header and the footer under them.
+    pages: Option<Pages>,
     /// Presence keys from the host whose model owns the blocks
     /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
     presence_key: Option<present::PresenceKeyFn>,
@@ -1000,6 +1007,7 @@ impl BlockEditor {
             revealed_block: None,
             asked_format: None,
             insert_ask: None,
+            pages: None,
             presence_key: None,
             body: None,
         };
@@ -1626,6 +1634,24 @@ impl BlockEditor {
     /// Align every line within the editor's width: a text box whose
     /// alignment belongs to the box rather than to each paragraph.
     #[must_use]
+    /// Set the paper the document is set on, or `None` to write on one continuous page: the
+    /// stack breaks blocks into sheets, and each sheet carries the header in its top margin
+    /// and the footer and its number in the bottom one.
+    pub fn set_pages(&mut self, pages: Option<Pages>) {
+        if self.pages == pages {
+            return;
+        }
+        self.pages = pages;
+        self.restack();
+        self.dirty = true;
+    }
+
+    /// The paper the document is set on, when the view asked for pages.
+    #[must_use]
+    pub fn pages(&self) -> Option<&Pages> {
+        self.pages.as_ref()
+    }
+
     pub fn with_text_align(mut self, align: ui::richtext::TextAlign) -> Self {
         self.set_text_align(align);
         self
@@ -2942,6 +2968,83 @@ impl BlockEditor {
     ) {
         self.popovers_painted = true;
         self.paint_popovers(scene, transform, text_renderer, theme);
+    }
+
+    /// The paper under the words, when a view asked for pages: one sheet per page the stack
+    /// broke at, its top margin saying the header, its bottom one the footer and the number.
+    fn paint_pages(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(spec) = &self.pages else {
+            return;
+        };
+        let grid = &self.stack.pages;
+        if grid.pages.is_empty() || self.stack.width.is_none() {
+            return;
+        }
+        let colors = &theme.tokens.colors;
+        let x0 = self.rect.x0 - f64::from(grid.margin_left);
+        let x1 = self.rect.x1 + f64::from(grid.margin_right);
+        let inset = f64::from(grid.margin_top) * 0.35;
+        let bottom_inset = f64::from(grid.margin_bottom) * 0.3;
+        let size = (11.0 * grid.scale).clamp(9.0, 14.0);
+        let count = grid.pages.len();
+        for (index, start) in grid.pages.iter().enumerate() {
+            let y0 = self.rect.y0 + f64::from(*start) - f64::from(grid.margin_top);
+            let sheet_rect = Rect::new(x0, y0, x1, y0 + f64::from(grid.sheet));
+            let paper = RoundedRect::from_rect(sheet_rect, 4.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.base,
+                None,
+                &paper,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.border_standard,
+                None,
+                &paper,
+            );
+            if !spec.header.is_empty() {
+                text_renderer.draw_text(
+                    scene,
+                    &spec.header,
+                    size,
+                    colors.text_tertiary,
+                    transform.pre_translate((x0 + inset, y0 + inset).into()),
+                    Some((x1 - x0 - 2.0 * inset).max(1.0) as f32),
+                );
+            }
+            let baseline = y0 + f64::from(grid.sheet) - bottom_inset;
+            if !spec.footer.is_empty() {
+                text_renderer.draw_text(
+                    scene,
+                    &spec.footer,
+                    size,
+                    colors.text_tertiary,
+                    transform.pre_translate((x0 + inset, baseline).into()),
+                    None,
+                );
+            }
+            if count > 1 {
+                let number = format!("{} / {count}", index.saturating_add(1));
+                let width = f64::from(size) * 0.55 * number.len() as f64;
+                text_renderer.draw_text(
+                    scene,
+                    &number,
+                    size,
+                    colors.text_tertiary,
+                    transform.pre_translate((x1 - inset - width, baseline).into()),
+                    None,
+                );
+            }
+        }
     }
 
     fn paint_popovers(
@@ -7970,6 +8073,104 @@ struct StackBox {
     min: f32,
 }
 
+/// The paper a document is written on, and the words its pages carry in the margins: what a
+/// view asks for with `page`, `header` and `footer`, so a page reads as the sheet it prints as.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pages {
+    pub paper: Paper,
+    /// Words set in every page's top margin, such as the document's title.
+    pub header: String,
+    /// Words set in every page's bottom margin, before the page number.
+    pub footer: String,
+    /// The page's margins in points, from its top, right, bottom and left edges: the writing
+    /// between them, which is where a page breaks.
+    pub margin_top: f32,
+    pub margin_right: f32,
+    pub margin_bottom: f32,
+    pub margin_left: f32,
+}
+
+/// A page's margin when a view asks for pages and says nothing of it: one inch.
+pub const DEFAULT_PAGE_MARGIN: f32 = 72.0;
+
+impl Pages {
+    /// The paper `name` names, as a view writes it (`A4`, `Letter`, `Legal`), with pages of it
+    /// and every margin an inch.
+    #[must_use]
+    pub fn of(name: &str, header: impl Into<String>, footer: impl Into<String>) -> Option<Self> {
+        Some(Self {
+            paper: Paper::of(name)?,
+            header: header.into(),
+            footer: footer.into(),
+            margin_top: DEFAULT_PAGE_MARGIN,
+            margin_right: DEFAULT_PAGE_MARGIN,
+            margin_bottom: DEFAULT_PAGE_MARGIN,
+            margin_left: DEFAULT_PAGE_MARGIN,
+        })
+    }
+
+    /// The four margins as a view sets them, in points from the page's edges.
+    #[must_use]
+    pub fn with_margins(mut self, top: f32, right: f32, bottom: f32, left: f32) -> Self {
+        self.margin_top = top.clamp(0.0, 288.0);
+        self.margin_right = right.clamp(0.0, 288.0);
+        self.margin_bottom = bottom.clamp(0.0, 288.0);
+        self.margin_left = left.clamp(0.0, 288.0);
+        self
+    }
+}
+
+/// The sheets a document is set on, at their size in logical pixels at 96 dpi.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Paper {
+    A4,
+    Letter,
+    Legal,
+}
+
+impl Paper {
+    /// The paper a view names, in the case it writes it.
+    #[must_use]
+    pub fn of(name: &str) -> Option<Self> {
+        match name.trim().to_lowercase().as_str() {
+            "a4" => Some(Self::A4),
+            "letter" => Some(Self::Letter),
+            "legal" => Some(Self::Legal),
+            _ => None,
+        }
+    }
+
+    /// Its width and height in points, the unit a page's margins are set in.
+    #[must_use]
+    pub fn size(self) -> (f32, f32) {
+        match self {
+            // Millimetres to points: a point is a 72nd of an inch.
+            Self::A4 => (595.28, 841.89),
+            Self::Letter => (612.0, 792.0),
+            Self::Legal => (612.0, 1008.0),
+        }
+    }
+}
+
+/// Where the pages break in the last stack: each page's first block, and the page a text is
+/// set in (its content height, its margins and the gap between two sheets), so the draw puts
+/// the paper under the words it was measured for.
+#[derive(Default)]
+struct PageGrid {
+    /// Each page's first block, in the stack's coordinates.
+    pages: Vec<f32>,
+    /// How tall a page's writing is.
+    content: f32,
+    /// A sheet's height and its margins, in pixels: where its paper and its bands stand.
+    sheet: f32,
+    margin_top: f32,
+    margin_bottom: f32,
+    margin_left: f32,
+    margin_right: f32,
+    /// How much of its own size the paper is drawn at.
+    scale: f32,
+}
+
 #[derive(Default)]
 struct BlockStack {
     tops: Vec<f32>,
@@ -7978,6 +8179,7 @@ struct BlockStack {
     total: f32,
     measured: bool,
     shaping: Option<(std::sync::Arc<()>, u32)>,
+    pages: PageGrid,
 }
 
 /// The leaf that stands for the editor's block stack in the layout tree. A
@@ -8433,6 +8635,56 @@ impl BlockEditor {
             stack.heights.push(height);
         }
         stack.total = total;
+        // The pages the blocks fall on, when a view asked for paper: a block that would run
+        // past the sheet's writing starts the next one, and the stack makes room for the margins
+        // and the gap between the two sheets. A block taller than a sheet overflows it, the way
+        // a first thing on a page never moves.
+        stack.pages = PageGrid::default();
+        if let Some(spec) = &self.pages {
+            let (paper_width, paper_height) = spec.paper.size();
+            // The paper is drawn at the scale that makes its writing as wide as the stack: the
+            // text keeps the width it was measured at, and the margins stand outside it.
+            let writing = (paper_width - spec.margin_left - spec.margin_right).max(1.0);
+            let scale = width / (writing * PIXELS_PER_POINT);
+            let margin = spec.margin_top * PIXELS_PER_POINT * scale;
+            let bottom = spec.margin_bottom * PIXELS_PER_POINT * scale;
+            let content = (paper_height - spec.margin_top - spec.margin_bottom)
+                .max(1.0)
+                * PIXELS_PER_POINT
+                * scale;
+            let gap = PAGE_GAP_PX * scale;
+            let trim = margin + bottom + gap;
+            let natural = std::mem::take(&mut stack.tops);
+            let mut shifted = Vec::with_capacity(natural.len());
+            let mut pages = vec![0.0];
+            let mut page_start = 0.0;
+            let mut shift = 0.0;
+            for (top, height) in natural.iter().zip(&stack.heights) {
+                let at = top + shift;
+                if at > page_start + 0.01 && at + height > page_start + content {
+                    shift += (page_start + content - at) + trim;
+                    page_start += content + trim;
+                    pages.push(page_start);
+                }
+                shifted.push(top + shift);
+            }
+            stack.tops = shifted;
+            stack.total = stack
+                .tops
+                .last()
+                .zip(stack.heights.last())
+                .map_or(0.0, |(top, height)| top + height);
+            stack.pages = PageGrid {
+                pages,
+                content,
+                sheet: paper_height * PIXELS_PER_POINT * scale,
+                margin_top: margin,
+                margin_bottom: bottom,
+                margin_left: spec.margin_left * PIXELS_PER_POINT * scale,
+                margin_right: spec.margin_right * PIXELS_PER_POINT * scale,
+                scale,
+            };
+        }
         stack.width = Some(width);
     }
 
@@ -9038,11 +9290,13 @@ impl Widget for BlockEditor {
             if block.line.inner().placeholder() != hint {
                 block.line.inner_mut().set_placeholder(hint);
             }
-            if block.line.align() != self.text_align {
-                block.line.set_align(self.text_align);
+            let align = block.style.align.unwrap_or(self.text_align);
+            if block.line.align() != align {
+                block.line.set_align(align);
             }
         }
 
+        self.paint_pages(scene, transform, text_renderer, theme);
         self.handle_reveal.set_reduce_motion(theme.reduce_motion);
         let shown = self.handle_opacity(ui::time::now());
         self.handle_reveal.drawn(shown);

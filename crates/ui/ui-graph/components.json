@@ -7392,6 +7392,55 @@
           "type": {
             "list": "text"
           }
+        },
+        {
+          "name": "page",
+          "doc": "The paper the document is set on: `A4`, `Letter` or `Legal`. A view that asks for pages has the stack broken into sheets with the margins a printed page keeps, each sheet carrying `header` in its top margin and `footer` and its number in the bottom one.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "header",
+          "doc": "Words set in every page's top margin, such as the document's title.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "footer",
+          "doc": "Words set in every page's bottom margin, before the page number.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "margin_top",
+          "doc": "The page's top margin in points, where the view sets it; an inch otherwise.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "margin_right",
+          "doc": "The page's right margin in points, where the view sets it.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "margin_bottom",
+          "doc": "The page's bottom margin in points, where the view sets it.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "margin_left",
+          "doc": "The page's left margin in points, where the view sets it.",
+          "type": {
+            "option": "float"
+          }
         }
       ],
       "events": [
