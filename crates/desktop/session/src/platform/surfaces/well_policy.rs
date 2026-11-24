@@ -227,6 +227,10 @@ impl WellPolicy {
             return;
         }
         self.mapped.push(window.id);
+        // The desktop makes the window's tab on its pass: run it now, so the size and place the
+        // compositor asks for in this same call are its well's, never a guess configured again a
+        // frame later. Whatever that pass changed is drawn in the next frame.
+        self.desktop.pass();
         self.desktop.ask();
         // A window launched into a workspace not in front goes there once its tab is made.
         self.desktop.policy().carry_launched();
