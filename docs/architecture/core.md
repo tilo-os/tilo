@@ -86,7 +86,9 @@ the only separator of an action and a name can never be mistaken for one.
 People and agents use names, which resolve to stable ids, so renaming
 something keeps links and grants. One resolver in `tilo_actions::tree` walks
 the published tree from the workspace root for every caller, and grants
-use the same addresses.
+use the same addresses. An action belongs to its resource's type, and its id
+always names that type and the verb, so a second type adding the same verb
+never changes an id that grants and records already name.
 
 ### Permissions
 
