@@ -1173,6 +1173,7 @@ impl SetupApp {
             self.support_report = None;
         }
         let wants_report = self.full_os_check.is_some() || self.reviewed() == Experience::FullOs;
+        let support_report = std::sync::Arc::clone(&self.internal_install.runtime().support_report);
         let Some(task) = self.internal_install.probe_task() else {
             return;
         };
@@ -1181,7 +1182,7 @@ impl SetupApp {
             "imager-host-probe",
             Box::new(move || {
                 let (facts, records) = task();
-                let report = wants_report.then(probe_support_report);
+                let report = wants_report.then(|| support_report());
                 let _ = tx.send(WorkerMessage::HostProbe {
                     facts,
                     records,
@@ -1905,10 +1906,6 @@ const fn download_phase_key(phase: super::internal_cache::coordinator::Phase) ->
         Phase::Released => "released",
         Phase::Discarded => "discarded",
     }
-}
-
-fn probe_support_report() -> SupportReport {
-    imager_backend::support_report::SupportReport::probe()
 }
 
 pub(crate) fn another_computer_report_sections(report: &SupportReport) -> Vec<Box<dyn Widget>> {
@@ -2842,7 +2839,7 @@ mod tests {
             app.review_full_os();
             app.full_os_check = Some(result.clone());
             app.start_host_probe();
-            app.poll_background();
+            wait_for_app(app, "the full OS check is ready", SetupApp::check_ready);
             assert!(app.check_ready());
             for effect in [
                 SetupEffect::StartInternalDownload,
@@ -2933,7 +2930,7 @@ mod tests {
             app.review_full_os();
             app.full_os_check = Some(result.clone());
             app.start_host_probe();
-            app.poll_background();
+            wait_for_app(app, "the full OS check is ready", SetupApp::check_ready);
             invoke_setup_raw(app, SetupEffect::ContinueSetup).unwrap();
             assert!(result.get().is_some());
             facts
@@ -2944,7 +2941,9 @@ mod tests {
             invoke_setup_raw(app, SetupEffect::RecheckInternal).unwrap();
             assert!(result.get().is_none());
             assert!(invoke_setup_raw(app, SetupEffect::ContinueSetup).is_err());
-            app.poll_background();
+            wait_for_app(app, "the recheck has read the facts", |app| {
+                !app.internal_install.is_probing()
+            });
             assert!(!app.check_ready());
             assert!(invoke_setup_raw(app, SetupEffect::ContinueSetup).is_err());
             assert!(

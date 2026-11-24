@@ -14,6 +14,7 @@ use super::staging::plan::{self, Basis, Plan, PlanError, Requirements, TargetBou
 use super::staging::probe::{self, Blocker, HostFacts};
 use super::staging::record::{Record, ReleaseRef, Step};
 use super::staging::{ALIGN_BYTES, DEFAULT_TARGET_BYTES};
+use imager_backend::support_report::SupportReport;
 use tilo_lock::MutexRecover as _;
 
 pub(super) const BUILD_ALLOW: Option<&str> = option_env!("TILO_IMAGER_INTERNAL_INSTALL");
@@ -65,10 +66,13 @@ type LaunchFn = dyn Fn(&Request) -> Result<Box<dyn HelperRun>, String> + Send + 
 type RecordsFn = dyn Fn() -> Vec<Record> + Send + Sync;
 type PathsFn = dyn Fn(&SelectedManifest) -> Result<ComponentPaths, String> + Send + Sync;
 type HostCommandFn = dyn Fn(HostCommand) -> Result<(), String> + Send + Sync;
+type SupportFn = dyn Fn() -> SupportReport + Send + Sync;
 
 #[derive(Clone)]
 pub(super) struct StagingRuntime {
     pub(super) probe: Arc<ProbeFn>,
+    /// How this computer's hardware is supported, read beside its facts for the full OS check.
+    pub(super) support_report: Arc<SupportFn>,
     pub(super) compute: Arc<PlanFn>,
     pub(super) target_bounds: Arc<BoundsFn>,
     pub(super) launch: Arc<LaunchFn>,
@@ -82,6 +86,7 @@ impl StagingRuntime {
     pub(super) fn live() -> Self {
         Self {
             probe: Arc::new(probe::probe),
+            support_report: Arc::new(SupportReport::probe),
             compute: Arc::new(plan::compute),
             target_bounds: Arc::new(plan::target_bounds),
             launch: Arc::new(|request| {
@@ -1247,6 +1252,9 @@ pub(super) mod tests {
                     probes.fetch_add(1, Ordering::SeqCst);
                     facts.clone()
                 }),
+                support_report: Arc::new(|| {
+                    SupportReport::declared_model("Fixture", "Laptop", "Rev A").unwrap()
+                }),
                 compute: Arc::new(fake_plan),
                 target_bounds: Arc::new(fake_bounds),
                 launch: Arc::new(move |request| {
@@ -1620,13 +1628,7 @@ pub(super) mod tests {
             let intent = install.link.lock().intent.clone().unwrap();
             let dir = tempfile::tempdir().unwrap();
             let manifest = selected(40 * GIB);
-            let request = stage_request(
-                &install.link,
-                &manifest,
-                intent,
-                dir.path(),
-            )
-            .unwrap();
+            let request = stage_request(&install.link, &manifest, intent, dir.path()).unwrap();
             assert_eq!(request.action, Action::Stage);
             assert_eq!(request.plan_sha256, digest);
             assert_eq!(request.plan.digest().unwrap(), digest);
