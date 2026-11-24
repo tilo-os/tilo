@@ -1185,15 +1185,25 @@ owner_api_key() {
 
 # tilo as the device of the stack's own person: what it asks them, their root here answers.
 owner_tilo() {
+  refuse_device_add "$@"
   stack_person >/dev/null
   owner_daemon
   as_owner "$@"
+}
+
+# A stack has no one to answer the card a `tilo device add` asks the person on: its computers
+# join with the tickets the act that makes the person issued. The add waits up to a ticket's
+# lifetime for an answer, so the stack stops at once, naming why, rather than wait one out.
+refuse_device_add() {
+  [[ ${1-} == device && ${2-} == add ]] || return 0
+  die "the stack's person's computers join with the tickets their founding act issued: \`tilo device add\` waits for the person to answer a card nobody here can"
 }
 
 # tilo as the stack's own person on the device their root certified, with no
 # key: a key is the person's agent, which the host refuses their vault and
 # their mail accounts. A `do` is asked as them, not as the computer's agent.
 owner_person() {
+  refuse_device_add "$@"
   stack_person >/dev/null
   owner_daemon
   if [[ ${1-} == do ]]; then
