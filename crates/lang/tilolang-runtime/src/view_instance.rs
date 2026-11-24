@@ -787,13 +787,11 @@ impl ViewInstance {
         };
         let Some(show) = pkg
             .view(&root.target.view)
-            .and_then(|view| view.show.clone())
+            .and_then(|view| view.shows.iter().find(|show| show.ty == target.ty))
+            .cloned()
         else {
             return Ok(false);
         };
-        if show.ty != target.ty {
-            return Ok(false);
-        }
         let item = Value::Ref(crate::value::RefValue {
             target: Rc::new(target.clone()),
             author: None,

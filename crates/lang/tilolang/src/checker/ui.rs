@@ -220,7 +220,7 @@ impl Checker<'_> {
             let act = self.expr_as(action, &Ty::Action);
             self.emit(Stmt::Return(Some(act)));
         }
-        let export = ir::show_export(id);
+        let export = ir::show_export(id, shown.as_deref().unwrap_or("error"));
         let mut f = self.end(ir::FuncKind::Fn, &format!("{name} shown an item"), &export);
         f.nparams = 1;
         self.st = outer;
