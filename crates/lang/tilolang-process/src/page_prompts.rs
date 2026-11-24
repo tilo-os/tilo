@@ -113,9 +113,7 @@ impl PagePrompts {
         let invocation = InvocationId::new();
         let request = InvokeRequest {
             invocation,
-            target: tilo_actions::remote::application_action_target(
-                workspace, app, page, action,
-            ),
+            target: tilo_actions::remote::application_action_target(workspace, app, page, action),
             argument: InvokeArgument::Json(arguments),
             context: None,
             confirmation: None,
@@ -186,7 +184,10 @@ impl PagePrompts {
     /// The calls that wait, by the invocation each went out as.
     #[cfg(test)]
     fn waiting(&self) -> Vec<InvocationId> {
-        self.raised.values().map(|raised| raised.invocation).collect()
+        self.raised
+            .values()
+            .map(|raised| raised.invocation)
+            .collect()
     }
 }
 
@@ -221,9 +222,11 @@ mod tests {
         let mut prompts = PagePrompts::default();
         let sent = raise(&mut prompts, camera());
         assert!(raise(&mut prompts, camera()).is_empty(), "raised once");
-        let [CollabRequest::RemoteAction {
-            message: RemoteActionMessage::Invoke(request),
-        }] = sent.as_slice()
+        let [
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(request),
+            },
+        ] = sent.as_slice()
         else {
             panic!("one call: {sent:?}");
         };
@@ -249,14 +252,21 @@ mod tests {
                 error: ActionCallError::asks(tilo_actions::remote::asked::AskedFacts::default()),
             },
         });
-        assert_eq!(prompts.answered(&waits), Some(None), "it waits for the person");
+        assert_eq!(
+            prompts.answered(&waits),
+            Some(None),
+            "it waits for the person"
+        );
         let declined = RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
             invocation,
             status: ReceiptStatus::Cancelled {
                 message: Some(tilo_actions::remote::asked::DECLINED.to_owned()),
             },
         });
-        let no = prompts.answered(&declined).flatten().expect("the page's no");
+        let no = prompts
+            .answered(&declined)
+            .flatten()
+            .expect("the page's no");
         let no: serde_json::Value = serde_json::from_str(&no).unwrap();
         assert_eq!(no["op"], "answer_permission");
         assert_eq!(no["allow"], false);

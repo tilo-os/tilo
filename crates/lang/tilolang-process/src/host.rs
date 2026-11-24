@@ -158,7 +158,7 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
         // What each instance plays, as the system's media controls show it: said when it moved.
         for (instance, view) in host.take_media() {
             if let Some(open) = api.as_ref()
-                && let Err(error) = FromProcess::Media { instance, view }.send(open)
+                && let Err(error) = (FromProcess::Media { instance, view }).send(open)
             {
                 tracing::warn!(%error, instance, "the session was not told what plays");
             }

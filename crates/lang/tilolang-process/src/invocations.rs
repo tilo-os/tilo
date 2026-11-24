@@ -14,7 +14,7 @@
 //! answers is shown where they ran it (`lines_run(r)`) while the window is open. What it changed
 //! is in the records it changed, credited to them.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use collaboration::{CollabEvent, CollabRequest};
 use serde_json::{Value, json};
@@ -43,7 +43,7 @@ pub struct Invocations {
     /// Each invocation a view read, by the id it read it by.
     followed: BTreeMap<String, Followed>,
     /// The lines in flight, by the invocation they went out as.
-    asked: BTreeMap<InvocationId, Asked>,
+    asked: HashMap<InvocationId, Asked>,
     /// The reads in flight, by their correlation: the invocation a view reads that each asks for.
     reads: BTreeMap<u64, String>,
     /// The next correlation a read is asked under.
@@ -84,7 +84,7 @@ impl Invocations {
         Self {
             workspace: workspace.to_owned(),
             followed: BTreeMap::new(),
-            asked: BTreeMap::new(),
+            asked: HashMap::new(),
             reads: BTreeMap::new(),
             next_correlation: 1,
             lines: BTreeMap::new(),

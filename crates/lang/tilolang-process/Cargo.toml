@@ -28,6 +28,7 @@ app-launch = [
     "dep:tilolang-music",
     "dep:tilolang-youtube",
     "tilolang-mail/engine",
+    "dep:tilolang-calendar",
     "dep:tilo-feeds",
     "dep:video-edit",
     "dep:video-picture",
@@ -52,6 +53,10 @@ runtime-portal = { version = "0.1.0", path = "../../core/runtime-portal" }
 # The patch connection to each instance's window, and the sealed memfd its module comes in.
 tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+# The page a shown view is written to, and the desktop page's address.
+tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
+# The device's preview cache: what `File.thumbnail` answers.
+tilo-thumbnail = { version = "0.1.0", path = "../../engines/thumbnail" }
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 # Dates and clocks as the person set them, which the session hands over the API: the toolkit
 # writes them the same way, so a sentence here and a view there read alike.
@@ -86,6 +91,8 @@ uuid.workspace = true
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false, features = ["blocking"] }
 # The mail origin, reaching the connector process the system runs for the app.
 tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
+# The calendar origin (`app-launch`): the connector process the system runs for a hosted Calendar.
+tilolang-calendar = { path = "../../integrations/tilolang-calendar", optional = true }
 # The device's content store, which an app's files are kept in, and the person's own chooser.
 tilo-content = { version = "0.1.0", path = "../../core/content" }
 # The device's drawing engine: a Canvas artwork drawn, carried and brought over its file.

@@ -56,7 +56,9 @@ pub fn start(_platform: &dyn Platform, app: &str, op: &str, input: &str) -> Resu
 ///
 /// No such job on this device.
 pub fn status(job: &str) -> Result<String, String> {
-    let known = jobs().lock().map_err(|_| "the job table is unreadable".to_owned())?;
+    let known = jobs()
+        .lock()
+        .map_err(|_| "the job table is unreadable".to_owned())?;
     let Some(state) = known.get(job) else {
         return Err(format!("no job `{job}` runs on this device"));
     };

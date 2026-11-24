@@ -21,7 +21,7 @@
 //! answered as it is there.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use collaboration::{CollabEvent, CollabRequest};
@@ -127,7 +127,7 @@ pub struct ShellPage {
     untold: bool,
     /// The layout reads in flight, and the layout's changes the page asked for.
     reading: Option<InvocationId>,
-    changing: BTreeMap<InvocationId, &'static str>,
+    changing: HashMap<InvocationId, &'static str>,
     /// The catalogue read in flight.
     listing: Option<u64>,
     next_correlation: u64,
@@ -150,7 +150,7 @@ impl ShellPage {
             apps: None,
             untold: true,
             reading: None,
-            changing: BTreeMap::new(),
+            changing: HashMap::new(),
             listing: None,
             next_correlation: 1,
             queued: Vec::new(),
@@ -376,8 +376,8 @@ impl ShellPage {
         let Some(read) = &self.layout else {
             return LayoutReading::default();
         };
-        let mut reading: LayoutReading =
-            serde_json::from_value(read["layout"].clone()).unwrap_or_else(|error| {
+        let mut reading: LayoutReading = serde_json::from_value(read["layout"].clone())
+            .unwrap_or_else(|error| {
                 tracing::warn!(%error, "the layout a page's shell read is not one");
                 LayoutReading::default()
             });
@@ -598,11 +598,13 @@ fn taken(invocation: &Invocation) -> Option<Taken> {
     if app.as_str() == SESSION_APP && name == "close" {
         let named = args.iter().find_map(|(parameter, value)| match value {
             tilolang_tilo::runtime::Value::Ref(reference) if parameter == "place" => {
-                place(reference)
+                place(&reference.target)
             }
             _ => None,
         });
-        return named.or_else(|| target.as_ref().and_then(place)).map(Taken::Close);
+        return named
+            .or_else(|| target.as_ref().and_then(place))
+            .map(Taken::Close);
     }
     if app.as_str() == SESSION_APP && name == "open-app" {
         return text("app").map(Taken::Open);

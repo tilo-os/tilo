@@ -260,7 +260,9 @@ pub fn serve(
                 WindowAnswer::Changed(patches(changed))
             }
             WindowAsk::Changed => WindowAnswer::Changed(patches(page.changed(frame))),
-            WindowAsk::Wells(wells) => WindowAnswer::Changed(patches(page.fill_wells(frame, wells))),
+            WindowAsk::Wells(wells) => {
+                WindowAnswer::Changed(patches(page.fill_wells(frame, wells)))
+            }
         };
         window::send(link, &answer)?;
     }

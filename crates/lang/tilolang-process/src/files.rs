@@ -637,16 +637,16 @@ fn deleted_at(receipt: &str) -> i64 {
     let Some((date, time)) = stamp.split_once('T') else {
         return 0;
     };
-    let mut parts = date.split('-').filter_map(|part| part.parse::<i64>().ok());
-    let (Some(y), Some(m), Some(d)) = (parts.next(), parts.next(), parts.next()) else {
+    let mut parts = date.split('-').map(str::parse::<i64>);
+    let (Some(Ok(y)), Some(Ok(m)), Some(Ok(d))) = (parts.next(), parts.next(), parts.next()) else {
         return 0;
     };
-    let mut clock = time.split(':').filter_map(|part| part.parse::<i64>().ok());
-    let (hours, minutes, seconds) = (
-        clock.next().unwrap_or(0),
-        clock.next().unwrap_or(0),
-        clock.next().unwrap_or(0),
-    );
+    let mut clock = time.split(':').map(str::parse::<i64>);
+    let (Some(Ok(hours)), Some(Ok(minutes)), Some(Ok(seconds))) =
+        (clock.next(), clock.next(), clock.next())
+    else {
+        return 0;
+    };
     days_from_civil(y, m, d) * 86_400 + hours * 3600 + minutes * 60 + seconds
 }
 
@@ -702,7 +702,9 @@ pub fn trash(path: &str) -> Result<TrashEntry, String> {
     // the place to put it back.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX));
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        });
     std::fs::write(
         info.join(format!("{candidate}.trashinfo")),
         format!(
@@ -717,7 +719,7 @@ pub fn trash(path: &str) -> Result<TrashEntry, String> {
         remove_tree(&from)?;
     }
     Ok(TrashEntry {
-        name: candidate,
+        name: candidate.clone(),
         path: files.join(&candidate).to_string_lossy().into_owned(),
         original,
         deleted: now,
@@ -731,7 +733,8 @@ pub fn trash(path: &str) -> Result<TrashEntry, String> {
 /// Why it cannot be read.
 pub fn trash_entries() -> Result<Vec<TrashEntry>, String> {
     let (files, info) = trash_dirs()?;
-    let reading = std::fs::read_dir(&info).map_err(|error| format!("{}: {error}", info.display()))?;
+    let reading =
+        std::fs::read_dir(&info).map_err(|error| format!("{}: {error}", info.display()))?;
     let mut entries = Vec::new();
     for item in reading {
         let Ok(item) = item else {
@@ -757,8 +760,8 @@ pub fn trash_entries() -> Result<Vec<TrashEntry>, String> {
 pub fn restore(name: &str) -> Result<Entry, String> {
     let (files, info) = trash_dirs()?;
     let name = name.strip_suffix(".trashinfo").unwrap_or(name);
-    let (original, _) = receipt(&info, name)
-        .ok_or_else(|| format!("{} is not in this device's trash", name))?;
+    let (original, _) =
+        receipt(&info, name).ok_or_else(|| format!("{} is not in this device's trash", name))?;
     let to = resolve(&original);
     if to.symlink_metadata().is_ok() {
         return Err(format!("{} already exists", to.display()));

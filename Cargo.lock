@@ -21383,6 +21383,7 @@ dependencies = [
  "tilo-net",
  "tilolang-tilo",
  "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -22744,14 +22745,17 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-resource-store",
+ "tilo-server-protocol",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tilo-thumbnail",
  "tilo-ui",
  "tilo-video-edit",
  "tilo-video-picture",
  "tilo-wake",
  "tilo-workspace-service",
  "tilolang",
+ "tilolang-calendar",
  "tilolang-mail",
  "tilolang-music",
  "tilolang-process",

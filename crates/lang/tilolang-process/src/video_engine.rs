@@ -62,7 +62,9 @@ pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Resul
 ///
 /// No such job on this device.
 pub fn status(platform: &dyn Platform, job: &str) -> Result<String, String> {
-    let known = jobs().lock().map_err(|_| "the job table is unreadable".to_owned())?;
+    let known = jobs()
+        .lock()
+        .map_err(|_| "the job table is unreadable".to_owned())?;
     let Some(state) = known.get(job) else {
         return Err(format!("no job `{job}` runs on this device"));
     };
@@ -281,18 +283,21 @@ fn sample(platform: &dyn Platform, input: &str) -> Result<String, String> {
     let (width, height) = (480_u32, 270_u32);
     let mut compositor = video_picture::gpu::HeadlessCompositor::new()
         .map_err(|error| format!("this device cannot draw the frame: {error}"))?;
-    let mut sources = video_picture::gpu::MediaFrameSource::new(
-        &project,
-        video_picture::gpu::Fetch::Exact,
-    )
-    .with_timeout(std::time::Duration::from_secs(2))
-    .strict();
+    let mut sources =
+        video_picture::gpu::MediaFrameSource::new(&project, video_picture::gpu::Fetch::Exact)
+            .with_timeout(std::time::Duration::from_secs(2))
+            .strict();
     let rgba = compositor.frame(&project, ask.at, width, height, &mut sources);
-    let x = ((ask.x.clamp(0.0, 1.0) * f64::from(width - 1)).round() as usize).min(width as usize - 1);
-    let y = ((ask.y.clamp(0.0, 1.0) * f64::from(height - 1)).round() as usize).min(height as usize - 1);
+    let x =
+        ((ask.x.clamp(0.0, 1.0) * f64::from(width - 1)).round() as usize).min(width as usize - 1);
+    let y =
+        ((ask.y.clamp(0.0, 1.0) * f64::from(height - 1)).round() as usize).min(height as usize - 1);
     let at = (y * width as usize + x) * 4;
     let channel = |i: usize| f64::from(*rgba.get(at + i).unwrap_or(&0)) / 255.0;
-    Ok(serde_json::json!({ "red": channel(0), "green": channel(1), "blue": channel(2) }).to_string())
+    Ok(
+        serde_json::json!({ "red": channel(0), "green": channel(1), "blue": channel(2) })
+            .to_string(),
+    )
 }
 
 /// Start a cut's render as a job.
@@ -369,7 +374,9 @@ fn render(platform: &dyn Platform, input: &str) -> Result<String, String> {
                     report_total_in.store(total, Ordering::Relaxed);
                 },
             );
-            worker.done.store(done.load(Ordering::Relaxed), Ordering::Relaxed);
+            worker
+                .done
+                .store(done.load(Ordering::Relaxed), Ordering::Relaxed);
             worker
                 .total
                 .store(report_total.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -427,7 +434,8 @@ fn media_path(platform: &dyn Platform, url: &str) -> Result<PathBuf, String> {
     let bytes = platform
         .read_content(hash)
         .ok_or_else(|| "that source's bytes are not on this device yet".to_owned())?;
-    std::fs::write(&file, bytes).map_err(|error| format!("the source cannot be laid out: {error}"))?;
+    std::fs::write(&file, bytes)
+        .map_err(|error| format!("the source cannot be laid out: {error}"))?;
     Ok(file)
 }
 
@@ -811,8 +819,11 @@ impl Shot {
             for text in &clip.keys {
                 let key: ShotKey = reads(text)?;
                 if let Some(param) = Param::from_name(&key.param) {
-                    anim.ensure(param)
-                        .set_key(key.t, key.v, Interp::from_name(&key.interp));
+                    anim.ensure(param).set_key(
+                        key.t,
+                        key.v,
+                        Interp::from_name(key.interp.as_deref().unwrap_or_default()),
+                    );
                 }
             }
             let mut effects = Ordered::new();
@@ -861,7 +872,10 @@ impl Shot {
                     crop_bottom: clip.crop_bottom.unwrap_or(0.0),
                 },
                 speed: model::Speed {
-                    rate: clip.speed_rate.unwrap_or(1.0).clamp(model::MIN_SPEED, model::MAX_SPEED),
+                    rate: clip
+                        .speed_rate
+                        .unwrap_or(1.0)
+                        .clamp(model::MIN_SPEED, model::MAX_SPEED),
                     reverse: clip.speed_reverse,
                 },
                 key: model::ChromaKey {
@@ -932,12 +946,14 @@ mod tests {
         .unwrap();
         let project = shot.into_project(None).unwrap();
         assert_eq!(project.clips.len(), 1);
-        assert_eq!(project.clips[0].transition, model::Transition::CrossDissolve);
+        assert_eq!(
+            project.clips[0].transition,
+            model::Transition::CrossDissolve
+        );
         assert_eq!(project.tracks[0].kind, model::TrackKind::Video);
         assert_eq!(project.markers[0].name, "Beat");
         assert_eq!(project.media[0].path, "/media/a.mp4");
         assert!(project.clips[0].anim.is_animated(Param::Opacity));
         assert_eq!(project.clips[0].anim.sample(Param::Opacity, 1.0), Some(0.6));
     }
-
 }

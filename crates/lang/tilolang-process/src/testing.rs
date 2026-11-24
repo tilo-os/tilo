@@ -216,9 +216,10 @@ impl Bus {
         }
         let members = members
             .iter()
-            .map(|(id, name)| {
-                let mut member = collaboration::Member::named(id.clone(), name.clone());
-                member.is_self = id.person_id() == Some(person);
+            .map(|row| {
+                let mut member = collaboration::Member::named(row.who.clone(), row.name.clone());
+                member.avatar = row.avatar.clone();
+                member.is_self = row.who.person_id() == Some(person);
                 member
             })
             .collect();

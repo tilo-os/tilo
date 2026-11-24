@@ -566,7 +566,7 @@ impl HostedWindow {
                 let watch = Watch::start(watched, wake);
                 let mut view = AppWindow::new(Box::new(transport), Vec::new());
                 // A floating surface the view asks for mirrors its app's own player.
-                if let Some(bundle) = crate::installed_bundle() {
+                if let Some(bundle) = crate::window::installed_bundle() {
                     view.set_app_id(bundle.meta.app.as_str());
                 }
                 self.connected = Some(Connected {
@@ -885,7 +885,11 @@ impl ui::widget::Decorator for HostedWindow {
     }
 
     fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         // What the window's first frames show, for its launch timing: the instance's own
         // tree, or the loading state before it arrived.
@@ -901,7 +905,7 @@ impl ui::widget::Decorator for HostedWindow {
         }
         self.drawn = true;
         self.content_mut()
-            .draw_child(scene, transform, text, theme,&env);
+            .draw_child(scene, transform, text, theme, &env);
     }
 
     fn needs_idle_sync(&self) -> bool {

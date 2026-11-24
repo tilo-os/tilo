@@ -89,7 +89,7 @@ struct Serving {
 
 /// What one instance is: the app, the workspace, the window and who is at it, as the session named
 /// them for the app's launch.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Spec {
     pub app: String,
     pub workspace: String,
@@ -600,7 +600,9 @@ impl passwords_engine::Device for EngineContent<'_> {
     }
 
     fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<String, String> {
-        self.0.keep_content(name, media, bytes).map(|file| file.hash)
+        self.0
+            .keep_content(name, media, bytes)
+            .map(|file| file.hash)
     }
 }
 
@@ -867,10 +869,13 @@ impl Platform for HostPlatform {
         if context.len() > MAX_BYTES {
             return String::new();
         }
-        serde_json::from_str::<serde_json::Value>(&context)
-            .ok()
-            .map(|_| context)
-            .unwrap_or_default()
+        match serde_json::from_str::<serde_json::Value>(&context) {
+            Ok(_) => context,
+            Err(error) => {
+                tracing::warn!(%error, "the tool context the app was started with is not JSON");
+                String::new()
+            }
+        }
     }
 
     fn open_container_shell(&self, container: &str, engine: &str) -> Result<(), String> {

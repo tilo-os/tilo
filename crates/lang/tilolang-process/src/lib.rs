@@ -28,13 +28,17 @@
 #![cfg(unix)]
 
 pub mod call;
+pub mod canvas;
 pub mod connection;
+#[cfg(feature = "app-launch")]
+pub mod containers_engine;
+#[cfg(feature = "app-launch")]
+pub mod feed_engine;
 pub mod files;
 pub mod hosted;
 pub mod invocations;
-pub mod canvas;
-pub mod pdf;
 pub mod page_prompts;
+pub mod pdf;
 pub mod personal;
 pub mod phrases;
 pub mod presence;
@@ -43,14 +47,10 @@ pub mod stop;
 pub mod task;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+#[cfg(feature = "app-launch")]
+pub mod video_engine;
 pub mod wait;
 pub mod web;
-#[cfg(feature = "app-launch")]
-#[cfg(feature = "app-launch")]
-pub mod containers_engine;
-#[cfg(feature = "app-launch")]
-pub mod feed_engine;
-pub mod video_engine;
 #[cfg(feature = "app-launch")]
 pub mod window;
 
@@ -1158,7 +1158,11 @@ impl TilolangProcess {
 
     /// Run the media control `command` as the Playback's own action on the instance `instance`:
     /// what the desktop's media keys, its now-playing surface and a script ask.
-    pub fn media_command(&mut self, instance: u64, command: runtime_portal::process_link::MediaCommand) {
+    pub fn media_command(
+        &mut self,
+        instance: u64,
+        command: runtime_portal::process_link::MediaCommand,
+    ) {
         let Some(running) = self
             .running
             .iter_mut()
