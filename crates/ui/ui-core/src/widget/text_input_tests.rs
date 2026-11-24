@@ -394,6 +394,31 @@ fn a_fields_first_change_is_reported_so_an_entry_makes_its_item() {
     assert!(queue.take().is_empty(), "the first change is told once");
 }
 
+/// A field tells its listener every change as the person types, carrying what it holds now: what
+/// acts on the words while they are typed, as a window's search does.
+#[test]
+fn a_field_reports_every_change_as_the_words_are_typed() {
+    use crate::component::{Event, Fired, Intent};
+    use winit::event::Ime;
+    let queue: crate::Intents<Fired> = crate::Intents::default();
+    let mut ti = TextInput::local();
+    ti.set_changed_event(Event::View(Intent::new(&queue, "bar-search", "changed")));
+    let mut doc = AutoCommit::new();
+    Widget::set_focus(&mut ti, true);
+    Dispatch::new()
+        .doc(&mut doc)
+        .send(&mut ti, &WindowEvent::Ime(Ime::Commit("n".into())));
+    Dispatch::new()
+        .doc(&mut doc)
+        .send(&mut ti, &WindowEvent::Ime(Ime::Commit("o".into())));
+    let fired = queue.take();
+    assert_eq!(fired.len(), 2, "every change is told: {fired:?}");
+    assert_eq!(fired[0].key, "bar-search");
+    assert_eq!(fired[0].event, "changed");
+    assert_eq!(fired[0].value, Some(crate::component::testing::text("n")));
+    assert_eq!(fired[1].value, Some(crate::component::testing::text("no")));
+}
+
 /// A field tells its listener when it loses the keyboard: an entry left empty is taken away, so no
 /// empty item is left behind.
 #[test]

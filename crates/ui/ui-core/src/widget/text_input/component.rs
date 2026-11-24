@@ -65,6 +65,10 @@ pub struct TextInputProps {
     /// holds now. An entry makes the item it names here, from the first keystroke.
     #[component(event(value = String))]
     pub begin: Event,
+    /// The text changed as the person typed: carries what the field holds now. Told for every
+    /// change the person makes (a key, a paste, a cut), never for what the field binds.
+    #[component(event(value = String))]
+    pub changed: Event,
     /// The field lost the keyboard: an entry left empty is taken away by what listens.
     #[component(event)]
     pub blur: Event,
@@ -96,6 +100,7 @@ impl Default for TextInputProps {
             select: Event::None,
             cancel: Event::None,
             begin: Event::None,
+            changed: Event::None,
             blur: Event::None,
             caret: false,
             secret: false,
@@ -146,6 +151,7 @@ impl Described for TextInput {
             select,
             cancel,
             begin,
+            changed,
             blur,
             caret,
             secret,
@@ -197,6 +203,7 @@ impl Described for TextInput {
             input = input.on_submit(move |text| submit.fire(Some(Value::Text(text.to_owned()))));
         }
         input.set_begin_event(begin);
+        input.set_changed_event(changed);
         input.set_blur_event(blur);
         input = input.with_selection_event(select);
         input.set_cancel_event(cancel);
@@ -229,6 +236,7 @@ impl Described for TextInput {
             select,
             cancel,
             begin,
+            changed,
             blur,
             caret,
             secret,

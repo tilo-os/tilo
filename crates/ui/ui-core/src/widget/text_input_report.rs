@@ -38,6 +38,10 @@ impl TextInput {
             self.begin_event
                 .fire(Some(crate::component::Value::Text(held)));
         }
+        // Every change, for what reads the words as they are typed (a window's search).
+        let held = self.text.clone();
+        self.changed_event
+            .fire(Some(crate::component::Value::Text(held)));
         if let Some(action) = &mut self.action {
             let after = self.text.clone();
             let _ = crate::bound_dispatch::with_physical_text(physical_text, || {

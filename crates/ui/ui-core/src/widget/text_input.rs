@@ -488,6 +488,9 @@ pub struct TextInput {
     /// The field's text went from empty to non-empty ([`Self::set_begin_event`]): the first
     /// change, which makes the item a list entry names. Carries the text it now holds.
     begin_event: crate::component::Event,
+    /// The field's text changed as the person typed ([`Self::set_changed_event`]): what redraws
+    /// what the words are for, as they are typed, such as a window's search.
+    changed_event: crate::component::Event,
     /// The field lost the keyboard ([`Self::set_blur_event`]): a list's entry that was left
     /// empty is taken away by what listens.
     blur_event: crate::component::Event,
@@ -783,6 +786,7 @@ impl TextInput {
             selection_event: None,
             cancel_event: crate::component::Event::None,
             begin_event: crate::component::Event::None,
+            changed_event: crate::component::Event::None,
             blur_event: crate::component::Event::None,
             submit_action: None,
             accessory: None,

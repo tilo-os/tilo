@@ -71,6 +71,12 @@ impl TextInput {
         self.begin_event = event;
     }
 
+    /// Tell `event` whenever the field's text changes as the person types, carrying what it holds
+    /// now: what acts on the words while they are being typed, as a window's search does.
+    pub fn set_changed_event(&mut self, event: crate::component::Event) {
+        self.changed_event = event;
+    }
+
     /// Tell `event` when the field loses the keyboard: an entry left empty is taken away by what
     /// listens, so no empty item is left behind.
     pub fn set_blur_event(&mut self, event: crate::component::Event) {

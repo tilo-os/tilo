@@ -5214,6 +5214,20 @@
           "name": "slide",
           "doc": "It arrives from its trailing edge on the panel slide, as a banner rises in the corner.",
           "type": "bool"
+        },
+        {
+          "name": "x",
+          "doc": "Where it stands, from the top-leading corner of what holds it, in logical pixels: its left edge. With `y`, the panel stands there rather than where its siblings put it.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "y",
+          "doc": "Its top edge, from the top of what holds it, in logical pixels.",
+          "type": {
+            "option": "float"
+          }
         }
       ],
       "parts": [
@@ -5233,6 +5247,15 @@
           "name": "footer",
           "doc": "Its footer, under the body.",
           "accepts": "view"
+        }
+      ],
+      "events": [
+        {
+          "name": "moved",
+          "doc": "The person dragged it by its header and let it go: carries where it settled, its left and top edge from the top-leading corner of what holds it, onto an edge it was let go near and inside what holds it. A panel with this moves when its header is dragged.",
+          "value": {
+            "list": "int"
+          }
         }
       ],
       "semantics": {
@@ -6850,6 +6873,11 @@
         {
           "name": "begin",
           "doc": "The field's text went from empty to non-empty: the first change, carrying the text it holds now. An entry makes the item it names here, from the first keystroke.",
+          "value": "text"
+        },
+        {
+          "name": "changed",
+          "doc": "The text changed as the person typed: carries what the field holds now. Told for every change the person makes (a key, a paste, a cut), never for what the field binds.",
           "value": "text"
         },
         {
