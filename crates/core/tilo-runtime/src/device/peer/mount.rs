@@ -126,16 +126,12 @@ pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
     Ok(fs)
 }
 
-/// Run `step`, which blocks its thread, where blocking is allowed: on a thread of its own when
-/// the caller is a task of the app's current-thread runtime (a founding call starts the person's
-/// workspace, and mounts its files, from one), and on the caller's own otherwise, where the
-/// store's own blocking bridge may lend its thread.
+/// Run `step`, which blocks its thread, where blocking is allowed: a task's thread is the
+/// runtime's, not the step's, so the step runs on a thread of its own and the task waits. A
+/// founding call starts the person's workspace, and mounts its files, from a task of the app's
+/// current-thread runtime, whose one thread its store's blocking bridge cannot take.
 fn off_the_worker<T: Send>(step: impl FnOnce() -> T + Send) -> T {
-    let cramped = tokio::task::try_id().is_some()
-        && tokio::runtime::Handle::try_current().is_ok_and(|handle| {
-            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread
-        });
-    if !cramped {
+    if tokio::task::try_id().is_none() {
         return step();
     }
     std::thread::scope(|scope| {
