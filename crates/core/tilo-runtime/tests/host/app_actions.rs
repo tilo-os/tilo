@@ -47,8 +47,6 @@ const APPS: &[App] = &[
         kind: "assistant.window",
     },
     App {
-    },
-    App {
         package: "console",
         bin: "console",
         id: "so.tilo.console",
