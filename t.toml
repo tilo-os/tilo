@@ -7661,6 +7661,29 @@ outputs = ["/target/page-notes/**"]
 timeout_secs = 1800
 default = false
 
+# Two people in a voice call, each in a headless Chromium of their own with a
+# synthetic microphone and camera, on the workspace's page against the Lounge:
+# they name themselves from the page's search, one makes a voice channel, both
+# join its call, unmute and turn their camera on, and the call is proved by its
+# own counters on each page (voice frames heard, pictures sent and received) and
+# by the other person's tile drawing picture after picture.
+[[check]]
+name = "page-call"
+# No egress: as page-notes, the walk meets its Lounge on loopback (direct-lounge.sh) and its
+# programs and fonts are its needs', and a page's call runs over that same loopback. This
+# host's own endpoints probe a router for a port devices reach it by without the relay (iroh's
+# portmapper: SSDP to 239.255.255.250:1900 and a name lookup at the sandbox's resolver). The
+# product does that by design and the walk neither uses it nor needs it; the sandbox has no
+# router, so the packets are refused unless the check declares them. Exactly those two.
+egress = { to = ["169.254.1.1:53", "239.255.255.250:1900"] }
+run = "bash os/containers/tilo-lounge/test-page-call.sh /target/publish/web-entry/bundle /target/page-call"
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-runtime", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0" }
+requires = ["arch=x86_64"]
+outputs = ["/target/page-call/**"]
+timeout_secs = 1800
+default = false
+
 [[check]]
 name = "page-reopen"
 # No egress: as page-notes, the walk meets its Lounge on loopback (direct-lounge.sh) and its

@@ -1809,6 +1809,11 @@ reason = "walks a workspace's page, its Notes and every app it opens in a headle
 check = "page-notes"
 
 [[unrequired]]
+suite = "os/containers/tilo-lounge/test-page-call.sh"
+reason = "walks two people in a voice call, each in a headless browser of their own with a synthetic microphone and camera, and judges the call by its own counters (frames heard, pictures sent and received) and by the other person's tile redrawing; needs the built web desktop bundle, the built server, crypto and font programs; the page-call check runs it on request"
+check = "page-call"
+
+[[unrequired]]
 suite = "os/containers/tilo-lounge/test-page-reopen.sh"
 reason = "walks a page whose app request is held past the server's wait, keeping what each step saw; needs the built web desktop bundle, the built server, crypto and font programs; the page-reopen check runs it on request"
 check = "page-reopen"
