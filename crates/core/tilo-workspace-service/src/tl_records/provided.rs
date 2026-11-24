@@ -108,7 +108,7 @@ impl BuiltInRecords {
             .into_iter()
             .filter_map(|row| row.action)
             .find(|action| &action.address == address)
-            .ok_or_else(|| format!("{} publishes no {address}", self.app))?;
+            .ok_or_else(|| format!("{} publishes no {}", self.app, address.encode()))?;
         let arguments = match &request.argument {
             InvokeArgument::Json(arguments) => arguments.clone(),
             InvokeArgument::None => Map::new(),

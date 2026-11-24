@@ -847,6 +847,7 @@ impl Opened {
                     before: None,
                     after: None,
                     caused_by: None,
+                    origin: None,
                     incoming_message: false,
                     housekeeping: false,
                     shortcut: None,
@@ -939,14 +940,16 @@ impl Opened {
         }
         let action: DynAction = serde_json::from_slice(&encoded.payload)
             .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
-        let made = self
+        let output = self
             .host
             .take_returned(&action.action_id)
-            .map(|made| resource_id(&action.app, &made.id_string()));
-        Ok(ActionOutput {
-            value: None,
-            resources: made.into_iter().collect(),
-        })
+            .map(|value| {
+                self.host
+                    .action_output(&action.app, &action.action_id, &value)
+            })
+            .transpose()
+            .map_err(ApiError::Failed)?;
+        Ok(output.unwrap_or_default())
     }
 }
 
