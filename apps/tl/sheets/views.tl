@@ -1,8 +1,6 @@
-//! The workbook's window: the grid of the sheet the person has open, the bar over it holding the
-//! name box and the formula bar, the tabs under it, and the panel beside it with what was said
-//! about the cells and the charts drawn over them.
-
-/// The workbook's window.
+/// The workbook's window: the grid of the sheet the person has open, the bar over it holding the
+/// name box and the formula bar, the tabs under it, and the panel beside it with what was said
+/// about the cells and the charts drawn over them.
 view workbook(w: Workbook) {
     state open_sheet: Option<Sheet> = w.sheets.first()
     state area: Text = "A1"
@@ -23,7 +21,7 @@ view sheet_window(s: Sheet) {
 }
 
 /// One sheet as a row: its name and how many cells it holds.
-row view sheet_row(s: Sheet) {
+view sheet_row(s: Sheet) {
     ui.ListRow(title: s.name, secondary: "{s.cells.keys().len()} cells")
 }
 
@@ -46,13 +44,18 @@ template view workbook_page(
         let book = book_of(w.sheets.map(x -> sheet_input(x)), currency_code(w.currency))
         let rows = shown_sheet(values_of(book), s.name)
         let cells = shown_cells(rows)
-        std.page(w, canvas: true, fill: true, header: {
-            workbook_bar(w, s, area, typed, formulas, panel, settings_open)
-        }) {
+        std.page(
+            w,
+            canvas: true,
+            fill: true,
+            header: {
+                workbook_bar(w, s, area, typed, formulas, panel, settings_open)
+            },
+        ) {
             ui.Docked {
                 content: {
                     row(fill) {
-                        grid(w, s, area, typed, cells, formulas)
+                        sheet_grid(w, s, area, typed, cells, formulas)
                         if panel != "" {
                             side_panel(w, s, area, panel, book)
                         }
@@ -114,13 +117,16 @@ template view workbook_bar(
 template view file_menu(w: Workbook, s: Sheet, settings_open: State<Bool>) {
     ui.MenuButton("File", icon: .file_plus) {
         ui.MenuItem("Import a table…", icon: .file_plus) {
-            on choose: file.choose(import_table(w), accept: [
-                "text/csv",
-                "text/tab-separated-values",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "application/vnd.oasis.opendocument.spreadsheet",
-                "application/zip",
-            ])
+            on choose: file.choose(
+                import_table(w),
+                accept: [
+                    "text/csv",
+                    "text/tab-separated-values",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "application/vnd.oasis.opendocument.spreadsheet",
+                    "application/zip",
+                ],
+            )
         }
         ui.MenuItem("Export the workbook…", icon: .download) {
             on choose: file.save(export_workbook(w), name: export_name(w, "xlsx"))
@@ -131,11 +137,9 @@ template view file_menu(w: Workbook, s: Sheet, settings_open: State<Bool>) {
         ui.MenuItem("Export this sheet as a table…", icon: .download) {
             on choose: file.save(export_table(w, s), name: export_name(w, "csv"))
         }
-        ui.MenuSeparator
         ui.MenuItem("Document settings…", icon: .settings_2) {
             on choose: set(settings_open, true)
         }
-        ui.MenuSeparator
         ui.MenuItem("Duplicate this sheet", icon: .copy) {
             on choose: duplicate_sheet(w, s)
         }
@@ -163,17 +167,15 @@ template view format_menu(w: Workbook, s: Sheet, area: State<Text>) {
         ui.MenuItem("Time", icon: .clock) {
             on choose: format_cells(w, s, area, format: time_format(w))
         }
-        ui.MenuItem("Text", icon: .type) {
+        ui.MenuItem("Text", icon: .baseline) {
             on choose: format_cells(w, s, area, format: "text")
         }
         ui.MenuItem("General", icon: .eraser) {
             on choose: format_cells(w, s, area, format: "general")
         }
-        ui.MenuSeparator
         ui.MenuItem("Sum this selection", icon: .plus) {
             on choose: sum_selection(w, s, area)
         }
-        ui.MenuSeparator
         ui.MenuItem("Insert rows above", icon: .list_plus) {
             on choose: insert_rows(w, s, row_of(range_start(area)))
         }
@@ -186,7 +188,6 @@ template view format_menu(w: Workbook, s: Sheet, area: State<Text>) {
         ui.MenuItem("Delete these columns", icon: .trash, destructive: true) {
             on choose: delete_columns(w, s, columns_of_range(area))
         }
-        ui.MenuSeparator
         ui.MenuItem("Sort the rows ascending", icon: .arrow_down_wide_narrow) {
             on choose: sort_rows(w, s, area, column_of(range_start(area)))
         }
@@ -217,11 +218,15 @@ fn count_up(from: Int, to: Int) -> List<Int> {
 fn columns_of_range(range: Text) -> List<Text> {
     let first = column_index(column_of(range_start(range)))
     let last = column_index(column_of(range_end(range)))
-    if first > last { [] } else { count_up(first, last).map(i -> column_letter(i)) }
+    if first > last {
+        []
+    } else {
+        count_up(first, last).map(i -> column_letter(i))
+    }
 }
 
 /// The grid of the sheet the person has open.
-template view grid(
+template view sheet_grid(
     w: Workbook,
     s: Sheet,
     area: State<Text>,
@@ -229,11 +234,11 @@ template view grid(
     cells: List<List<Text>>,
     formulas: State<Bool>,
 ) {
-    let count = shown_count(cells, formulas)
+    let count = shown_count()
     ui.Sheet(
         name: .some(s.name),
-        columns: count.0,
-        rows: count.1,
+        columns: count.columns,
+        rows: count.rows,
         column_width: .some(112.0),
         row_height: .some(28.0),
         sizes: sizes_of(s),
@@ -248,50 +253,52 @@ template view grid(
         on paste: paste_cells(w, s, range_start(area))
         on resized_column(pair): resize_column(s, pair)
         on resized_row(pair): resize_row(s, pair)
-        on fill(pair): fill(w, s, pair.at(0) ?? "", pair.at(1) ?? "")
+        on fill(pair): fill(w, s, pair)
     }
 }
 
+/// How many columns and rows a sheet's grid holds.
+type Extent {
+    columns: Int
+    rows: Int
+}
+
 /// How many columns and rows the grid holds: what the sheet reaches, and at least a window's.
-fn shown_count(cells: List<List<Text>>, formulas: Bool) -> (Int, Int) {
-    let last = cells.last() ?? []
-    (26, 200)
+fn shown_count() -> Extent {
+    Extent(columns: 26, rows: 200)
 }
 
 /// The cells a sheet's grid shows: what each holds, and how it reads.
 fn cells_of(s: Sheet, cells: List<List<Text>>, formulas: Bool) -> List<ui.SheetCell> {
-    cells.map(c -> .cell(
-        cell: text_at(c, 1),
-        text: if formulas { input_at(s, text_at(c, 1)) } else { text_at(c, 2) },
-        kind: if formulas { .text } else { kind_of(text_at(c, 3)) },
-        bold: s.bold.contains(text_at(c, 1)),
-    ))
+    cells.map(
+        c -> ui.SheetCell.cell(
+            cell: text_at(c, 1),
+            text: if formulas { input_at(s, text_at(c, 1)) } else { text_at(c, 2) },
+            kind: if formulas { ui.SheetCellKind.text } else { kind_of(text_at(c, 3)) },
+            bold: s.bold.contains(text_at(c, 1)),
+        ),
+    )
 }
 
 /// How a cell's text reads, as the grid draws it.
 fn kind_of(kind: Text) -> ui.SheetCellKind {
     if kind == "number" {
         .number
-    } else if kind == "error" {
-        .error
-    } else if kind == "bool" {
-        .bool
-    } else {
-        .text
-    }
+    } else if kind == "error" { .error } else if kind == "bool" { .bool } else { .text }
 }
 
 /// Writes the cells a grid edit reports: pairs of reference and input, in order.
-action edit_cells(w: Workbook, s: Sheet, pairs: List<Text>) (label: "Edit cells", did: "edited cells") {
+action edit_cells(w: Workbook, s: Sheet, pairs: List<Text>) (
+    label: "Edit cells",
+    did: "edited cells",
+) {
     for i in pairs.map((x, i) -> i) {
         if i % 2 == 0 {
             let reference = pairs.at(i) ?? ""
             let input = pairs.at(i + 1) ?? ""
             if reference != "" {
                 if input == "" {
-                    if s.cells.get(reference) != .none {
-                        s.cells.remove(reference)
-                    }
+                    if s.cells.get(reference) != .none { s.cells.remove(reference) }
                 } else {
                     let entry = entry_of(input, currency_code(w.currency))
                     s.cells.put(reference, text_at(entry, 0))
@@ -306,33 +313,37 @@ action edit_cells(w: Workbook, s: Sheet, pairs: List<Text>) (label: "Edit cells"
 }
 
 /// Keeps the width the person dragged a column to: the pair carries its letter and its width.
-action resize_column(s: Sheet, pair: List<Text>) (label: "Resize the column", did: "resized a column") {
+action resize_column(s: Sheet, pair: List<Text>) (
+    label: "Resize the column",
+    did: "resized a column",
+) {
     let letter = pair.at(0) ?? ""
     let width = pair.at(1) ?? ""
-    if letter != "" and width != "" {
-        s.widths.put(letter, width)
-    }
+    if letter != "" and width != "" { s.widths.put(letter, width) }
 }
 
 /// Keeps the height the person dragged a row to: the pair carries its number and its height.
 action resize_row(s: Sheet, pair: List<Text>) (label: "Resize the row", did: "resized a row") {
     let number = pair.at(0) ?? ""
     let height = pair.at(1) ?? ""
-    if number != "" and height != "" {
-        s.heights.put(number, height)
-    }
+    if number != "" and height != "" { s.heights.put(number, height) }
 }
 
 /// The columns and rows the person sized.
 fn sizes_of(s: Sheet) -> List<ui.SheetSize> {
-    let wide = s.widths.keys().map(k -> .column(
-        column: k,
-        width: pixels_of(s.widths.get(k) ?? "", 112),
-    ))
-    let tall = s.heights.keys().map(k -> .row(
-        row: (k.to_int() ?? 1).to_float(),
-        height: pixels_of(s.heights.get(k) ?? "", 28),
-    ))
+    let wide: List<ui.SheetSize> = s.widths
+        .keys()
+        .map(
+            k -> ui.SheetSize.column(column: k, width: pixels_of(s.widths.get(k) ?? "", 112)),
+        )
+    let tall: List<ui.SheetSize> = s.heights
+        .keys()
+        .map(
+            k -> ui.SheetSize.row(
+                row: (k.to_int() ?? 1).to_float(),
+                height: pixels_of(s.heights.get(k) ?? "", 28),
+            ),
+        )
     [wide, tall].flat_map(x -> x)
 }
 
@@ -341,10 +352,9 @@ fn pixels_of(text: Text, fallback: Int) -> Float {
     (text.to_int() ?? fallback).to_float()
 }
 
+/// The workbook's sheets as tabs, with the way to add one and the open sheet's own menu.
 // ---------------------------------------------------------------------------------------------
 // The tabs under the grid.
-
-/// The workbook's sheets as tabs, with the way to add one and the open sheet's own menu.
 template view workbook_tabs(
     w: Workbook,
     s: Sheet,
@@ -371,7 +381,7 @@ template view workbook_tabs(
             on press: new_sheet_after(w, s)
         }
         spacer
-        ui.MenuButton("Sheet", icon: .more_horizontal, icon_only: true, size: .small) {
+        ui.MenuButton("Sheet", icon: .more_horizontal, icon_only: true) {
             ui.MenuItem("Rename…", icon: .pencil) {
                 on choose: set(rename_text, s.name).then(set(renaming, true))
             }
@@ -384,13 +394,11 @@ template view workbook_tabs(
             ui.MenuItem(if s.hidden { "Show the tab" } else { "Hide the tab" }, icon: .eye_off) {
                 on choose: set_sheet_hidden(s, not s.hidden)
             }
-            ui.MenuSeparator
             for other in w.sheets.filter(x -> x != s) {
                 ui.MenuItem("Move before {other.name}", icon: .arrow_left) {
                     on choose: place_sheet(w, s, other)
                 }
             }
-            ui.MenuSeparator
             ui.MenuItem("Delete the sheet", icon: .trash, destructive: true) {
                 on choose: delete_sheet(w, s)
             }
@@ -398,10 +406,9 @@ template view workbook_tabs(
     }
 }
 
+/// The panel beside the grid: the comments about the open sheet, or its charts.
 // ---------------------------------------------------------------------------------------------
 // What was said about the cells, and the charts over them.
-
-/// The panel beside the grid: the comments about the open sheet, or its charts.
 template view side_panel(w: Workbook, s: Sheet, area: State<Text>, panel: State<Text>, book: Text) {
     ui.Card {
         row(gap: .tight, align: .center) {
@@ -469,14 +476,20 @@ template view comment_card(w: Workbook, c: Comment, area: State<Text>) {
         }
         if replying {
             ui.RichInput(bind: reply_text, placeholder: "Reply") {
-                on submit: reply(c, reply_text).then(set(reply_text, RichText(""))).then(set(replying, false))
+                on submit: reply(c, reply_text)
+                    .then(set(reply_text, RichText("")))
+                    .then(set(replying, false))
             }
         }
         row(gap: .tight) {
             ui.Button("Reply", icon: .reply, size: .small) {
                 on press: set(replying, true)
             }
-            ui.Button(if c.resolved { "Reopen" } else { "Resolve" }, icon: .circle_check, size: .small) {
+            ui.Button(
+                if c.resolved { "Reopen" } else { "Resolve" },
+                icon: .circle_check,
+                size: .small,
+            ) {
                 on press: resolve(c)
             }
             spacer
@@ -549,7 +562,10 @@ template view chart_card(w: Workbook, s: Sheet, c: Chart, area: State<Text>, boo
 /// The numbers a range shows, as a chart reads them: its last column, or the only column it has.
 fn readings_of(book: Text, sheet: Text, range: Text) -> List<Float> {
     match book.sheet_numbers(sheet, range) {
-        .ok(text) => json.decode<List<Float>>(text) ?? [],
+        .ok(text) => match json.decode<List<Float>>(text) {
+            .ok(numbers) => numbers,
+            .err(_) => [],
+        },
         .err(_) => [],
     }
 }
@@ -567,10 +583,9 @@ fn cell_row(cells: List<List<Text>>, reference: Text) -> List<Text> {
     cells.find(c -> text_at(c, 1) == reference) ?? []
 }
 
+/// The dialogs: renaming a sheet, choosing its colour, and the document's settings.
 // ---------------------------------------------------------------------------------------------
 // The small questions a sheet asks: its name, its colour and the workbook's settings.
-
-/// The dialogs: renaming a sheet, choosing its colour, and the document's settings.
 template view workbook_dialogs(
     w: Workbook,
     s: Sheet,
@@ -591,12 +606,7 @@ template view workbook_dialogs(
         on dismiss: set(renaming, false)
         ui.TextInput(bind: rename_text, autofocus: true, placeholder: s.name)
     }
-    ui.ModalDialog(
-        title: "Tab colour",
-        open: coloring,
-        secondary: "Done",
-        icon: .palette,
-    ) {
+    ui.ModalDialog(title: "Tab colour", open: coloring, secondary: "Done", icon: .palette) {
         on act_secondary: set(coloring, false)
         on dismiss: set(coloring, false)
         ui.ColorSwatchPicker(
@@ -605,10 +615,10 @@ template view workbook_dialogs(
             columns: 6,
             label: "Tab colour",
         ) {
-            on change(index): set_sheet_color(s, .some(index))
+            on change(index): set_sheet_color(s, index)
         }
         ui.Button("No colour") {
-            on press: set_sheet_color(s, .none)
+            on press: clear_sheet_color(s)
         }
     }
     ui.ModalDialog(
@@ -631,7 +641,17 @@ template view workbook_dialogs(
 /// The currencies the workbook's bare money format may show in.
 template view money_choice(w: Workbook) {
     ui.MenuButton("Money: {currency_name(w.currency)}", icon: .wallet) {
-        for c in [.usd, .eur, .gbp, .jpy, .chf, .cad, .aud, .cny, .inr] {
+        for c in [
+            Currency.usd,
+            Currency.eur,
+            Currency.gbp,
+            Currency.jpy,
+            Currency.chf,
+            Currency.cad,
+            Currency.aud,
+            Currency.cny,
+            Currency.inr,
+        ] {
             ui.MenuItem(currency_name(c), checked: c == w.currency) {
                 on choose: set_settings(w, currency: .some(c))
             }
@@ -642,7 +662,7 @@ template view money_choice(w: Workbook) {
 /// The date styles the workbook reads its dates in.
 template view date_choice(w: Workbook) {
     ui.MenuButton("Dates: {date_name(w.date_style)}", icon: .calendar) {
-        for d in [.language, .iso, .us, .eu, .long] {
+        for d in [DateStyle.language, DateStyle.iso, DateStyle.us, DateStyle.eu, DateStyle.long] {
             ui.MenuItem(date_name(d), checked: d == w.date_style) {
                 on choose: set_settings(w, date_style: .some(d))
             }
@@ -653,7 +673,7 @@ template view date_choice(w: Workbook) {
 /// The time styles the workbook reads its times in.
 template view time_choice(w: Workbook) {
     ui.MenuButton("Times: {time_name(w.time_style)}", icon: .clock) {
-        for t in [.language, .h24, .h12] {
+        for t in [TimeStyle.language, TimeStyle.h24, TimeStyle.h12] {
             ui.MenuItem(time_name(t), checked: t == w.time_style) {
                 on choose: set_settings(w, time_style: .some(t))
             }
@@ -669,27 +689,37 @@ fn currency_name(c: Currency) -> Text {
 /// What a date style is called in the menu.
 fn date_name(d: DateStyle) -> Text {
     match d {
-        .language => "As the language writes them"
-        .iso => "2026-11-23"
-        .us => "11/23/2026"
-        .eu => "23.11.2026"
-        .long => "November 23, 2026"
+        .language => "As the language writes them",
+        .iso => "2026-11-23",
+        .us => "11/23/2026",
+        .eu => "23.11.2026",
+        .long => "November 23, 2026",
     }
 }
 
 /// What a time style is called in the menu.
 fn time_name(t: TimeStyle) -> Text {
     match t {
-        .language => "As the language writes them"
-        .h24 => "14:30"
-        .h12 => "2:30 PM"
+        .language => "As the language writes them",
+        .h24 => "14:30",
+        .h12 => "2:30 PM",
     }
 }
 
 /// The colours a tab may take.
 fn tab_colors() -> List<Text> {
     [
-        "#e5484d", "#e54d2e", "#f76b15", "#ffb224", "#46a758", "#12a594",
-        "#05a2c2", "#3e63dd", "#8e4ec6", "#e93d82", "#8d8d8d", "#60646c",
+        "#e5484d",
+        "#e54d2e",
+        "#f76b15",
+        "#ffb224",
+        "#46a758",
+        "#12a594",
+        "#05a2c2",
+        "#3e63dd",
+        "#8e4ec6",
+        "#e93d82",
+        "#8d8d8d",
+        "#60646c",
     ]
 }

@@ -2,11 +2,7 @@ app so.tilo.sheets "Sheets" (
     icon: .table,
     category: .office,
     tagline: "Spreadsheets with formulas, shared live",
-    keywords: [
-        "spreadsheet", "spreadsheets", "excel", "calc", "table", "tables", "csv", "xls",
-        "xlsx", "formulas", "numbers", "libreoffice calc", "tabelle", "tabellen",
-        "kalkulation", "rechnen", "tabellenkalkulation",
-    ],
+    keywords: ["spreadsheet", "spreadsheets", "excel", "calc", "table", "tables", "csv", "xls", "xlsx", "formulas", "numbers", "libreoffice calc", "tabelle", "tabellen", "kalkulation", "rechnen", "tabellenkalkulation"],
 )
 
 /// The currency a bare money format shows in.
@@ -61,7 +57,7 @@ type Workbook (untitled: "Untitled workbook") {
     /// How many times its rows, columns or sheets have moved. A write that names a `seen` stamp
     /// is refused when the workbook has moved since that stamp was read, so a reference a caller
     /// wrote against never means another cell.
-    structure: Int = 0
+    structure: Int merge counter
 }
 
 /// One sheet: its tab, its cells as typed, the formats they show in and the size the person gave
@@ -159,7 +155,9 @@ type RecordWrites {
 root workbook: Workbook
 
 default view workbook for Workbook
+
 default view sheet_window for Sheet
+
 row view sheet_row for Sheet
 
 /// A workbook starts with one sheet.
@@ -167,10 +165,9 @@ initial action start(w: Workbook) {
     w.sheets.insert(Sheet(name: "Sheet1"))
 }
 
+/// `text` as JSON writes it.
 // ---------------------------------------------------------------------------------------------
 // What the engine reads, as texts a view and an action build the same way.
-
-/// `text` as JSON writes it.
 fn quoted(text: Text) -> Text {
     json.encode(text)
 }
@@ -195,7 +192,10 @@ fn book_of(sheets: List<SheetInput>, currency: Text) -> Text {
 /// The rows a JSON answer holds, or none when it refused.
 fn rows_of(answer: Result<Text, Text>) -> List<List<List<Text>>> {
     match answer {
-        .ok(text) => json.decode<List<List<List<Text>>>>(text) ?? [],
+        .ok(text) => match json.decode<List<List<List<Text>>>>(text) {
+            .ok(rows) => rows,
+            .err(_) => [],
+        },
         .err(_) => [],
     }
 }
@@ -203,7 +203,10 @@ fn rows_of(answer: Result<Text, Text>) -> List<List<List<Text>>> {
 /// The texts a JSON answer holds, or none when it refused.
 fn texts_of(answer: Result<Text, Text>) -> List<Text> {
     match answer {
-        .ok(text) => json.decode<List<Text>>(text) ?? [],
+        .ok(text) => match json.decode<List<Text>>(text) {
+            .ok(texts) => texts,
+            .err(_) => [],
+        },
         .err(_) => [],
     }
 }
@@ -252,10 +255,12 @@ fn kind_at(cells: List<List<Text>>, reference: Text) -> Text {
 /// What the cells of `range` of the sheet named `sheet` show, row by row from its first cell to
 /// its last, or their input as typed when `formulas`: what a person reads in the grid, for an
 /// agent that never opened the window.
-action read_cells(w: Workbook, sheet: Text, range: Text = "A1:B2", formulas: Bool = false) -> List<Text> (
-    icon: .hash,
-    label: "Read cells",
-) {
+action read_cells(
+    w: Workbook,
+    sheet: Text,
+    range: Text = "A1:B2",
+    formulas: Bool = false,
+) -> List<Text> (icon: .hash, label: "Read cells") {
     let found = w.sheets.find(x -> x.name == sheet)
     if let s = found {
         let book = book_of([sheet_input(s)], currency_code(w.currency))
@@ -265,57 +270,53 @@ action read_cells(w: Workbook, sheet: Text, range: Text = "A1:B2", formulas: Boo
         let first_row = row_of(range_start(range))
         let last_row = row_of(range_end(range))
         let rows = count_up(first_row, last_row)
-        [rows.map(r -> count_up(first_column, last_column).map(c -> cell_text(s, cells, "{column_letter(c)}{r}", formulas)))].flat_map(row -> row)
-    } else {
-        []
-    }
+        rows.flat_map(
+            r -> count_up(first_column, last_column)
+                .map(c -> cell_text(s, cells, "{column_letter(c)}{r}", formulas)),
+        )
+    } else { [] }
 }
 
 /// The text a cell of `cells` reads for `reference`: its input when `formulas`, else what it
 /// shows.
 fn cell_text(s: Sheet, cells: List<List<Text>>, reference: Text, formulas: Bool) -> Text {
-    if formulas {
-        input_at(s, reference)
-    } else {
-        text_at(cell_row(cells, reference), 2)
-    }
+    if formulas { input_at(s, reference) } else { text_at(cell_row(cells, reference), 2) }
 }
 
+/// The ISO code of a currency.
 // ---------------------------------------------------------------------------------------------
 // References, formats and settings, as code writes them.
-
-/// The ISO code of a currency.
 fn currency_code(c: Currency) -> Text {
     match c {
-        .usd => "USD"
-        .eur => "EUR"
-        .gbp => "GBP"
-        .jpy => "JPY"
-        .chf => "CHF"
-        .cad => "CAD"
-        .aud => "AUD"
-        .cny => "CNY"
-        .inr => "INR"
+        .usd => "USD",
+        .eur => "EUR",
+        .gbp => "GBP",
+        .jpy => "JPY",
+        .chf => "CHF",
+        .cad => "CAD",
+        .aud => "AUD",
+        .cny => "CNY",
+        .inr => "INR",
     }
 }
 
 /// The code a date style is stored and read by.
 fn date_code(s: DateStyle) -> Text {
     match s {
-        .language => "Language"
-        .iso => "ISO"
-        .us => "US"
-        .eu => "EU"
-        .long => "Long"
+        .language => "Language",
+        .iso => "ISO",
+        .us => "US",
+        .eu => "EU",
+        .long => "Long",
     }
 }
 
 /// The code a time style is stored and read by.
 fn time_code(s: TimeStyle) -> Text {
     match s {
-        .language => "Language"
-        .h24 => "H24"
-        .h12 => "H12"
+        .language => "Language",
+        .h24 => "H24",
+        .h12 => "H12",
     }
 }
 
@@ -337,8 +338,7 @@ fn time_format(w: Workbook) -> Text {
 /// How many letters an A1 reference opens with: where its row number starts.
 fn letters_len(reference: Text) -> Int {
     let up = reference.trim().upper()
-    let found = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
-        .map(d -> up.find(d) ?? up.len())
+    let found = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"].map(d -> up.find(d) ?? up.len())
     found.sort_by(i -> i).first() ?? up.len()
 }
 
@@ -380,20 +380,19 @@ fn input_at(s: Sheet, reference: Text) -> Text {
     s.cells.get(reference) ?? ""
 }
 
+/// Adds a sheet at the end, named `name` or the next free `SheetN`.
 // ---------------------------------------------------------------------------------------------
 // The sheets and their cells.
-
-/// Adds a sheet at the end, named `name` or the next free `SheetN`.
 primary action new_sheet(w: Workbook, name: Text = "") -> Sheet (icon: .plus) {
+    require name.trim() == "" or not taken_name(w, name.trim()) "There is already a sheet called {name.trim()}"
     let wanted = if name.trim() == "" { free_name(w, w.sheets.len() + 1) } else { name.trim() }
-    require not taken_name(w, wanted) "There is already a sheet called {wanted}"
     w.sheets.insert(Sheet(name: wanted))
 }
 
 /// Adds a sheet right after `after`, so a new tab stands where the person is.
 action new_sheet_after(w: Workbook, after: Sheet, name: Text = "") -> Sheet (icon: .plus) {
+    require name.trim() == "" or not taken_name(w, name.trim()) "There is already a sheet called {name.trim()}"
     let wanted = if name.trim() == "" { free_name(w, w.sheets.len() + 1) } else { name.trim() }
-    require not taken_name(w, wanted) "There is already a sheet called {wanted}"
     let made = w.sheets.insert(Sheet(name: wanted))
     w.sheets.move(made, after: after)
     made
@@ -407,14 +406,14 @@ action set_title(w: Workbook, title: Text) (icon: .pencil, label: "Name the work
 
 /// Renames a sheet; every formula that reads it follows it to its new name.
 action rename_sheet(w: Workbook, s: Sheet, name: Text) (icon: .pencil, label: "Rename sheet") {
+    require name.trim() != "" "Name the sheet something"
+    require not w.sheets.any(x -> x != s and x.name.lower() == name.trim().lower()) "There is already a sheet called {name.trim()}"
     let wanted = name.trim()
-    require wanted != "" "Name the sheet something"
-    require not w.sheets.any(x -> x != s and x.name.lower() == wanted.lower()) "There is already a sheet called {wanted}"
-    apply_edit(w, "\{\"op\": \"rename\", \"sheet\": \{quoted(s.name)}, \"name\": \{quoted(wanted)}}")
+    apply_edit(w, "\{\"op\": \"rename\", \"sheet\": {quoted(s.name)}, \"name\": {quoted(wanted)}\}")
 }
 
 /// Copies a sheet and everything on it, under a name of its own, right after it.
-action duplicate_sheet(w: Workbook, s: Sheet) (icon: .copy, label: "Duplicate sheet") -> Sheet {
+action duplicate_sheet(w: Workbook, s: Sheet) -> Sheet (icon: .copy, label: "Duplicate sheet") {
     let made = w.sheets.insert(Sheet(name: free_name(w, w.sheets.len() + 1), source: s.source))
     for k in s.cells.keys() {
         made.cells.put(k, s.cells.get(k) ?? "")
@@ -444,7 +443,7 @@ destructive action delete_sheet(w: Workbook, s: Sheet) (icon: .trash, label: "De
         w.comments.remove(c)
     }
     w.sheets.remove(s)
-    w.structure = w.structure + 1
+    w.structure += 1
 }
 
 /// Puts a sheet's tab right before another, so the person reorders the tabs.
@@ -462,20 +461,27 @@ action set_sheet_hidden(s: Sheet, hidden: Bool) (label: "Hide the sheet", icon: 
     s.hidden = hidden
 }
 
-/// Gives a sheet's tab a colour from the palette, or none for the theme's own.
-action set_sheet_color(s: Sheet, color: Option<Int> = .none) (icon: .palette, label: "Tab colour") {
-    s.color = color
+/// Gives a sheet's tab a colour from the palette, by its place in it.
+action set_sheet_color(s: Sheet, color: Int) (icon: .palette, label: "Tab colour") {
+    s.color = .some(color)
+}
+
+/// Gives a sheet's tab no colour of its own, so it takes the theme's.
+action clear_sheet_color(s: Sheet) (icon: .palette, label: "No tab colour") {
+    s.color = .none
 }
 
 /// Writes the inputs `inputs` into the cells `refs`, by position: an empty input clears its cell.
 /// A typed entry keeps the format it is read in (a date, money, a percent), unless the cell has
 /// one the person set. A `seen` stamp refuses the write when rows, columns or sheets have moved
 /// since it was read.
-action write_cells(w: Workbook, sheet: Text, refs: List<Text>, inputs: List<Text>, seen: Text = "") (
-    icon: .pencil,
-    label: "Write cells",
-    did: "wrote cells",
-) {
+action write_cells(
+    w: Workbook,
+    sheet: Text,
+    refs: List<Text>,
+    inputs: List<Text>,
+    seen: Text = "",
+) (icon: .pencil, label: "Write cells", did: "wrote cells") {
     require seen == "" or seen == w.structure.to_text() "Rows, columns or sheets moved since this write was made from; read the sheet again and write against what it answers now"
     require w.sheets.any(x -> x.name == sheet) "No sheet is called {sheet}"
     if let s = w.sheets.find(x -> x.name == sheet) {
@@ -484,9 +490,7 @@ action write_cells(w: Workbook, sheet: Text, refs: List<Text>, inputs: List<Text
             let input = inputs.at(i) ?? ""
             if reference != "" {
                 if input == "" {
-                    if s.cells.get(reference) != .none {
-                        s.cells.remove(reference)
-                    }
+                    if s.cells.get(reference) != .none { s.cells.remove(reference) }
                 } else {
                     let entry = entry_of(input, currency_code(w.currency))
                     s.cells.put(reference, text_at(entry, 0))
@@ -503,7 +507,10 @@ action write_cells(w: Workbook, sheet: Text, refs: List<Text>, inputs: List<Text
 /// The input to store for a typed entry, and the format it is read in.
 fn entry_of(input: Text, currency: Text) -> List<Text> {
     match input.sheet_entry(currency) {
-        .ok(text) => json.decode<List<Text>>(text) ?? [input, "general"],
+        .ok(text) => match json.decode<List<Text>>(text) {
+            .ok(entry) => entry,
+            .err(_) => [input, "general"],
+        },
         .err(_) => [input, "general"],
     }
 }
@@ -516,7 +523,10 @@ action set_cells(w: Workbook, s: Sheet, start: Text, rows: List<List<Text>>, see
 ) {
     require seen == "" or seen == w.structure.to_text() "Rows, columns or sheets moved since this write was made from; read the sheet again and write against what it answers now"
     let written = rows_json(rows)
-    apply_edit(w, "\{\"op\": \"set-cells\", \"sheet\": \{quoted(s.name)}, \"start\": \{quoted(start)}, \"rows\": \{written}}")
+    apply_edit(
+        w,
+        "\{\"op\": \"set-cells\", \"sheet\": {quoted(s.name)}, \"start\": {quoted(start)}, \"rows\": {written}\}",
+    )
 }
 
 /// Writes records into a sheet by column header: each record an object keyed by the sheet's
@@ -531,9 +541,11 @@ action set_records(
     row: Option<Int> = .none,
     columns: Option<List<Text>> = .none,
     key: Option<Text> = .none,
-) (icon: .table, label: "Write records", did: "wrote records") {
+) -> Result<Text, Text> (icon: .table, label: "Write records", did: "wrote records") {
     require not records.is_empty() "Give at least one record to write"
-    let request = json.encode(RecordsRequest(records: records, row: row, columns: columns, key: key))
+    let request = json.encode(
+        RecordsRequest(records: records, row: row, columns: columns, key: key),
+    )
     match json.encode(sheet_input(s)).sheet_records(request) {
         .ok(text) => {
             match json.decode<RecordWrites>(text) {
@@ -547,21 +559,21 @@ action set_records(
                 }
                 .err(_) => {}
             }
+            .ok(text)
         }
-        .err(why) => {
-            require false why
-        }
+        .err(why) => .err(why),
     }
 }
 
 /// Writes a record into a sheet by the values that identify its row: `matching` names the headers
 /// and values that find the row, and `value` the cells it takes. A row nothing matches is made
 /// under the headers.
-action upsert_item(w: Workbook, s: Sheet, matching: Map<Text>, value: Map<Text>) (
-    icon: .pencil,
-    label: "Update the record",
-    did: "updated a record",
-) {
+action upsert_item(
+    w: Workbook,
+    s: Sheet,
+    matching: Map<Text>,
+    value: Map<Text>,
+) -> Result<Text, Text> (icon: .pencil, label: "Update the record", did: "updated a record") {
     require not matching.keys().is_empty() "Name the values that identify the record"
     let request = json.encode(UpsertRequest(records: [], matching: matching, value: value))
     match json.encode(sheet_input(s)).sheet_records(request) {
@@ -577,18 +589,16 @@ action upsert_item(w: Workbook, s: Sheet, matching: Map<Text>, value: Map<Text>)
                 }
                 .err(_) => {}
             }
+            .ok(text)
         }
-        .err(why) => {
-            require false why
-        }
+        .err(why) => .err(why),
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The clipboard: the chosen cells out, and what is on it in.
-
 /// Copies the cells a person chose to their clipboard as a table: a line per row and a tab
 /// between columns, which a sheet, a word processor or a mail app reads.
+// ---------------------------------------------------------------------------------------------
+// The clipboard: the chosen cells out, and what is on it in.
 action copy_cells(text: Text) uses clipboard (label: "Copy", key: "Ctrl+C") {
     clipboard.copy(text)
 }
@@ -613,21 +623,31 @@ action paste_cells(w: Workbook, s: Sheet, at: Text) uses clipboard (label: "Past
 }
 
 /// Clears the cells `area` names.
-action clear_cells(w: Workbook, s: Sheet, area: Text) (label: "Clear the cells", did: "cleared cells") {
+action clear_cells(w: Workbook, s: Sheet, area: Text) (
+    label: "Clear the cells",
+    did: "cleared cells",
+) {
     let refs = rows_of_range(area).flat_map(r -> columns_of_range(area).map(c -> "{c}{r}"))
     write_cells(w, s.name, refs, refs.map(x -> ""))
 }
 
 /// Sets the format of the cells `range` (a code such as `currency:EUR`, `percent` or `date:ISO`),
 /// and their weight when `bold` is given.
-action format_cells(w: Workbook, s: Sheet, range: Text, format: Text = "", bold: Option<Bool> = .none) (
-    icon: .paint_bucket,
-    label: "Format cells",
-    did: "formatted cells",
-) {
-    let shaped = if format == "" { "" } else { ", \"format\": \{quoted(format)}" }
-    let weighted = if let b = bold { if b { ", \"bold\": true" } else { ", \"bold\": false" } } else { "" }
-    apply_edit(w, "\{\"op\": \"format\", \"sheet\": \{quoted(s.name)}, \"range\": \{quoted(range)}\{shaped}\{weighted}}")
+action format_cells(
+    w: Workbook,
+    s: Sheet,
+    range: Text,
+    format: Text = "",
+    bold: Option<Bool> = .none,
+) (icon: .paint_bucket, label: "Format cells", did: "formatted cells") {
+    let shaped = if format == "" { "" } else { ", \"format\": {quoted(format)}" }
+    let weighted = if let b = bold {
+        if b { ", \"bold\": true" } else { ", \"bold\": false" }
+    } else { "" }
+    apply_edit(
+        w,
+        "\{\"op\": \"format\", \"sheet\": {quoted(s.name)}, \"range\": {quoted(range)}{shaped}{weighted}\}",
+    )
 }
 
 /// Makes the cells `range` bold, or regular when any one of them already is.
@@ -649,14 +669,19 @@ fn in_range(range: Text, reference: Text) -> Bool {
 /// Writes the sum of the numbers above `at` into it, the run stopping at a blank, a word or an
 /// existing total: the AutoSum button.
 action autosum(w: Workbook, s: Sheet, at: Text) (icon: .plus, label: "AutoSum") {
-    let book = book_of([sheet_input(s)], currency_code(w.currency))
-    let cells = shown_cells(shown_sheet(values_of(book), s.name))
+    require row_of(at) > 1 "Nothing above to sum"
+    require autosum_run(w, s, at) > 0 "No numbers above to sum"
     let column = column_of(at)
     let row = row_of(at)
-    require row > 1 "Nothing above to sum"
-    let run = numeric_run(s, cells, column, row - 1)
-    require run > 0 "No numbers above to sum"
+    let run = autosum_run(w, s, at)
     s.cells.put(at, "=SUM({column}{row - run}:{column}{row - 1})")
+}
+
+/// How many number cells stand in the run above `at` that a sum would add.
+fn autosum_run(w: Workbook, s: Sheet, at: Text) -> Int {
+    let book = book_of([sheet_input(s)], currency_code(w.currency))
+    let cells = shown_cells(shown_sheet(values_of(book), s.name))
+    numeric_run(s, cells, column_of(at), row_of(at) - 1)
 }
 
 /// How many number cells stand in a run ending at `row` of `column`.
@@ -671,21 +696,18 @@ fn numeric_run(s: Sheet, cells: List<List<Text>>, column: Text, row: Int) -> Int
             0
         } else if raw.starts_with("=") or kind_at(cells, "{column}{row}") == "number" {
             1 + numeric_run(s, cells, column, row - 1)
-        } else {
-            0
-        }
+        } else { 0 }
     }
 }
 
 /// Adds up each column of the selection into the row under it.
 action sum_selection(w: Workbook, s: Sheet, range: Text) (icon: .plus, label: "Sum the selection") {
-    apply_edit(w, "\{\"op\": \"sum\", \"sheet\": \{quoted(s.name)}, \"range\": \{quoted(range)}}")
+    apply_edit(w, "\{\"op\": \"sum\", \"sheet\": {quoted(s.name)}, \"range\": {quoted(range)}\}")
 }
 
+/// The place of a column, counting from 1: `A` is 1 and `AA` is 27.
 // ---------------------------------------------------------------------------------------------
 // Columns, by their letters and their places.
-
-/// The place of a column, counting from 1: `A` is 1 and `AA` is 27.
 fn column_index(letters: Text) -> Int {
     let up = letters.trim().upper()
     let n = up.len()
@@ -703,8 +725,32 @@ fn column_index(letters: Text) -> Int {
 /// What one letter of a column's name stands for: `A` is 1.
 fn letter_value(letter: Text) -> Int {
     let places = [
-        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
-        "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L",
+        "M",
+        "N",
+        "O",
+        "P",
+        "Q",
+        "R",
+        "S",
+        "T",
+        "U",
+        "V",
+        "W",
+        "X",
+        "Y",
+        "Z",
     ]
     let found = places.index_of(letter.trim().upper()) ?? 0
     found + 1
@@ -713,8 +759,32 @@ fn letter_value(letter: Text) -> Int {
 /// The letter of the column at `place`, counting from 1.
 fn column_letter(place: Int) -> Text {
     let places = [
-        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
-        "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L",
+        "M",
+        "N",
+        "O",
+        "P",
+        "Q",
+        "R",
+        "S",
+        "T",
+        "U",
+        "V",
+        "W",
+        "X",
+        "Y",
+        "Z",
     ]
     if place <= 26 {
         places.at(place - 1) ?? "A"
@@ -740,41 +810,73 @@ fn column_json(row: List<Text>) -> Text {
     "[{values}]"
 }
 
+/// Inserts `count` rows above the row `at`, counting from 1.
 // ---------------------------------------------------------------------------------------------
 // Rows, columns, sorting and filling: each a change of the sheet the engine applies.
-
-/// Inserts `count` rows above the row `at`, counting from 1.
-action insert_rows(w: Workbook, s: Sheet, at: Int, count: Int = 1) (icon: .list_plus, label: "Insert rows") {
-    apply_edit(w, "\{\"op\": \"insert-rows\", \"sheet\": \{quoted(s.name)}, \"at\": {at - 1}, \"count\": {count}}")
+action insert_rows(w: Workbook, s: Sheet, at: Int, count: Int = 1) (
+    icon: .list_plus,
+    label: "Insert rows",
+) {
+    apply_edit(
+        w,
+        "\{\"op\": \"insert-rows\", \"sheet\": {quoted(s.name)}, \"at\": {at - 1}, \"count\": {count}\}",
+    )
 }
 
 /// Deletes the rows `rows`, counting from 1.
-destructive action delete_rows(w: Workbook, s: Sheet, rows: List<Int>) (icon: .list_plus, label: "Delete rows") {
+destructive action delete_rows(w: Workbook, s: Sheet, rows: List<Int>) (
+    icon: .list_plus,
+    label: "Delete rows",
+) {
     let places = rows.map(r -> (r - 1).to_text()).join(", ")
-    apply_edit(w, "\{\"op\": \"delete-rows\", \"sheet\": \{quoted(s.name)}, \"rows\": [{places}]}")
+    apply_edit(w, "\{\"op\": \"delete-rows\", \"sheet\": {quoted(s.name)}, \"rows\": [{places}]\}")
 }
 
 /// Inserts `count` columns left of the column `at`, by its letters.
-action insert_columns(w: Workbook, s: Sheet, at: Text, count: Int = 1) (icon: .columns_2, label: "Insert columns") {
-    apply_edit(w, "\{\"op\": \"insert-columns\", \"sheet\": \{quoted(s.name)}, \"at\": \{quoted(at.upper())}, \"count\": {count}}")
+action insert_columns(w: Workbook, s: Sheet, at: Text, count: Int = 1) (
+    icon: .columns_2,
+    label: "Insert columns",
+) {
+    apply_edit(
+        w,
+        "\{\"op\": \"insert-columns\", \"sheet\": {quoted(s.name)}, \"at\": {quoted(at.upper())}, \"count\": {count}\}",
+    )
 }
 
 /// Deletes the columns `columns`, by their letters.
-destructive action delete_columns(w: Workbook, s: Sheet, columns: List<Text>) (icon: .columns_2, label: "Delete columns") {
+destructive action delete_columns(w: Workbook, s: Sheet, columns: List<Text>) (
+    icon: .columns_2,
+    label: "Delete columns",
+) {
     let named = columns.map(c -> quoted(c.upper())).join(", ")
-    apply_edit(w, "\{\"op\": \"delete-columns\", \"sheet\": \{quoted(s.name)}, \"columns\": [{named}]}")
+    apply_edit(
+        w,
+        "\{\"op\": \"delete-columns\", \"sheet\": {quoted(s.name)}, \"columns\": [{named}]\}",
+    )
 }
 
 /// Sorts the rows of `range` by the values under the column `by`, by its letters.
-action sort_rows(w: Workbook, s: Sheet, range: Text, by: Text, descending: Bool = false) (icon: .arrow_down_wide_narrow, label: "Sort rows") {
+action sort_rows(w: Workbook, s: Sheet, range: Text, by: Text, descending: Bool = false) (
+    icon: .arrow_down_wide_narrow,
+    label: "Sort rows",
+) {
     let down = if descending { "true" } else { "false" }
-    apply_edit(w, "\{\"op\": \"sort-rows\", \"sheet\": \{quoted(s.name)}, \"range\": \{quoted(range)}, \"by\": \{quoted(by.upper())}, \"descending\": {down}}")
+    apply_edit(
+        w,
+        "\{\"op\": \"sort-rows\", \"sheet\": {quoted(s.name)}, \"range\": {quoted(range)}, \"by\": {quoted(by.upper())}, \"descending\": {down}\}",
+    )
 }
 
 /// Extends the cells `source` over `target`, as dragging the fill handle does: numbers count on,
-/// dates follow their step and a pattern of words repeats.
-action fill(w: Workbook, s: Sheet, source: Text, target: Text) (icon: .pencil, label: "Fill") {
-    apply_edit(w, "\{\"op\": \"fill\", \"sheet\": \{quoted(s.name)}, \"source\": \{quoted(source)}, \"target\": \{quoted(target)}}")
+/// dates follow their step and a pattern of words repeats. The pair carries the cells it copies
+/// from and the cells it fills, as the grid reports them.
+action fill(w: Workbook, s: Sheet, pair: List<Text>) (icon: .pencil, label: "Fill") {
+    let source = pair.at(0) ?? ""
+    let target = pair.at(1) ?? ""
+    apply_edit(
+        w,
+        "\{\"op\": \"fill\", \"sheet\": {quoted(s.name)}, \"source\": {quoted(source)}, \"target\": {quoted(target)}\}",
+    )
 }
 
 /// Applies one structural change to the workbook and keeps every sheet as the engine leaves it:
@@ -832,36 +934,35 @@ action apply_edit(w: Workbook, change: Text) (label: "Change the sheet", did: "c
                 if text_at(row, 0) == "cell" {
                     let input = text_at(row, 2)
                     let format = text_at(row, 3)
-                    if input != "" {
-                        target.cells.put(reference, input)
-                    }
-                    if format != "" {
-                        target.formats.put(reference, format)
-                    }
-                    if text_at(row, 4) == "1" {
-                        target.bold.add(reference)
-                    }
+                    if input != "" { target.cells.put(reference, input) }
+                    if format != "" { target.formats.put(reference, format) }
+                    if text_at(row, 4) == "1" { target.bold.add(reference) }
                 } else if text_at(row, 0) == "sheet" {
                     target.hidden = text_at(row, 2) == "1"
                 }
             }
         }
     }
-    w.structure = w.structure + 1
+    w.structure += 1
 }
 
+/// Charts the cells `range` as a column or a line chart, titled `title`.
 // ---------------------------------------------------------------------------------------------
 // Charts.
-
-/// Charts the cells `range` as a column or a line chart, titled `title`.
-action add_chart(s: Sheet, range: Text, kind: ChartKind, title: Text) (icon: .bar_chart, label: "Add chart") -> Chart {
+action add_chart(s: Sheet, range: Text, kind: ChartKind, title: Text) -> Chart (
+    icon: .bar_chart,
+    label: "Add chart",
+) {
     require range.trim() != "" "Chart a range of cells"
     let named = if title.trim() == "" { kind.label() } else { title.trim() }
     s.charts.insert(Chart(title: named, kind: kind, range: range.trim().upper()))
 }
 
 /// Changes a chart: its title, and its kind or the cells it charts when given.
-action edit_chart(c: Chart, title: Text = "", kind: Option<ChartKind> = .none, range: Text = "") (icon: .pencil, label: "Edit chart") {
+action edit_chart(c: Chart, title: Text = "", kind: Option<ChartKind> = .none, range: Text = "") (
+    icon: .pencil,
+    label: "Edit chart",
+) {
     if title.trim() != "" {
         c.title = title.trim()
     }
@@ -878,15 +979,14 @@ destructive action delete_chart(s: Sheet, c: Chart) (icon: .trash, label: "Delet
     s.charts.remove(c)
 }
 
+/// Says `text` about the cells `range` of a sheet.
 // ---------------------------------------------------------------------------------------------
 // Comments.
-
-/// Says `text` about the cells `range` of a sheet.
-action comment(w: Workbook, sheet: Text, range: Text, text: RichText) (
+action comment(w: Workbook, sheet: Text, range: Text, text: RichText) -> Comment (
     icon: .message_square_plus,
     label: "Comment",
     did: "commented",
-) -> Comment {
+) {
     require not text.is_empty() "Write a comment first"
     require range.trim() != "" "Comment on a cell or a range"
     require w.sheets.any(x -> x.name == sheet) "No sheet is called {sheet}"
@@ -894,7 +994,7 @@ action comment(w: Workbook, sheet: Text, range: Text, text: RichText) (
 }
 
 /// Answers a comment.
-action reply(c: Comment, text: RichText) (icon: .reply, label: "Reply", did: "replied") -> Reply {
+action reply(c: Comment, text: RichText) -> Reply (icon: .reply, label: "Reply", did: "replied") {
     require not text.is_empty() "Write a reply first"
     c.replies.insert(Reply(text: text))
 }
@@ -927,11 +1027,10 @@ destructive action delete_comment(w: Workbook, c: Comment) (icon: .trash, label:
     w.comments.remove(c)
 }
 
-// ---------------------------------------------------------------------------------------------
-// Settings.
-
 /// Sets the workbook's currency, date style and time style: what a cell's bare money, date and
 /// time formats are read in.
+// ---------------------------------------------------------------------------------------------
+// Settings.
 action set_settings(
     w: Workbook,
     currency: Option<Currency> = .none,
@@ -949,36 +1048,33 @@ action set_settings(
     }
 }
 
+/// Imports a table, a workbook or a Notion export as new sheets after the ones the workbook holds.
 // ---------------------------------------------------------------------------------------------
 // Files: a table, a workbook or a Notion export in, and the workbook or one sheet out.
-
-/// Imports a table, a workbook or a Notion export as new sheets after the ones the workbook holds.
 action import_table(w: Workbook, file: File) (
     icon: .file_plus,
     label: "Import a table",
     did: "imported a table",
     opens: [
-        "text/csv",
-        "text/tab-separated-values",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.oasis.opendocument.spreadsheet",
-        "application/zip",
-        .csv,
-        .tsv,
-        .xlsx,
-        .ods,
-    ],
+    "text/csv",
+    "text/tab-separated-values",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/zip",
+    .csv,
+    .tsv,
+    .xlsx,
+    .ods,
+],
 ) {
+    require not rows_of(file.sheets()).is_empty() "This file holds no table to import"
     let imported = rows_of(file.sheets())
-    require not imported.is_empty() "This file holds no table to import"
     for rows in imported {
         let head = row_at(rows, 0)
         let named = text_at(head, 1)
         let name = if named == "" or taken_name(w, named) {
             free_name(w, w.sheets.len() + 1)
-        } else {
-            named
-        }
+        } else { named }
         let made = w.sheets.insert(Sheet(name: name, source: file.url))
         made.hidden = text_at(head, 2) == "1"
         for row in rows {
@@ -986,15 +1082,9 @@ action import_table(w: Workbook, file: File) (
                 let reference = text_at(row, 1)
                 let input = text_at(row, 2)
                 let format = text_at(row, 3)
-                if input != "" {
-                    made.cells.put(reference, input)
-                }
-                if format != "" {
-                    made.formats.put(reference, format)
-                }
-                if text_at(row, 4) == "1" {
-                    made.bold.add(reference)
-                }
+                if input != "" { made.cells.put(reference, input) }
+                if format != "" { made.formats.put(reference, format) }
+                if text_at(row, 4) == "1" { made.bold.add(reference) }
             }
         }
     }
@@ -1008,9 +1098,7 @@ fn named_after(name: Text) -> Text {
     let parts = name.split(".")
     if parts.len() > 1 {
         name.slice(0, name.len() - (parts.last() ?? "").len() - 1)
-    } else {
-        name
-    }
+    } else { name }
 }
 
 /// What an exported file is called: the workbook's name, or `Untitled`, with its ending.
@@ -1022,14 +1110,8 @@ fn export_name(w: Workbook, ending: Text) -> Text {
 /// What a spreadsheet file holds, as the sheets the app keeps: each sheet's name, whether its tab
 /// is hidden, and its cells as typed by their A1 reference. An agent reads a table without the
 /// window.
-action read_file(file: File) -> Text (icon: .hash, label: "Read a table file") {
-    match file.sheets() {
-        .ok(sheets) => sheets,
-        .err(why) => {
-            require false why
-            ""
-        }
-    }
+action read_file(file: File) -> Result<Text, Text> (icon: .hash, label: "Read a table file") {
+    file.sheets()
 }
 
 /// The workbook as the engine reads it, as text: its sheets, its cells as typed and the currency
@@ -1039,19 +1121,19 @@ action read_content(w: Workbook) -> Text (icon: .hash, label: "Read the workbook
 }
 
 /// The workbook as an Excel file.
-action export_workbook(w: Workbook) (icon: .download, label: "Export the workbook") -> File {
+action export_workbook(w: Workbook) -> File (icon: .download, label: "Export the workbook") {
     let book = book_of(w.sheets.map(x -> sheet_input(x)), currency_code(w.currency))
     File.of_sheets(export_name(w, "xlsx"), book, "xlsx")
 }
 
 /// The workbook as an OpenDocument spreadsheet.
-action export_ods(w: Workbook) (icon: .download, label: "Export as OpenDocument") -> File {
+action export_ods(w: Workbook) -> File (icon: .download, label: "Export as OpenDocument") {
     let book = book_of(w.sheets.map(x -> sheet_input(x)), currency_code(w.currency))
     File.of_sheets(export_name(w, "ods"), book, "ods")
 }
 
 /// One sheet as a table file.
-action export_table(w: Workbook, s: Sheet) (icon: .download, label: "Export this sheet") -> File {
+action export_table(w: Workbook, s: Sheet) -> File (icon: .download, label: "Export this sheet") {
     let book = book_of([sheet_input(s)], currency_code(w.currency))
     File.of_sheets(export_name(w, "csv"), book, "csv")
 }
