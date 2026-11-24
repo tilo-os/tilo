@@ -132,8 +132,9 @@ esac
 exit 2
 """
 # t's families as t.toml declares them: the workspace's clippy over every member but the page
-# crate, which a per-architecture family lints, and the page's own wasm32 lint, which builds without
-# workspace-unify's features and is no lint a push gets.
+# crate, which a per-architecture family lints, the page's own wasm32 lint, which builds without
+# workspace-unify's features and is no lint a push gets, and the compile-only families over the
+# same members, which a dependant gets.
 T_TOML = """[[cargo]]
 name = "clippy"
 tool = "clippy"
@@ -151,6 +152,19 @@ matrix = { arch = ["x86_64", "aarch64"] }
 name = "clippy-page"
 tool = "clippy"
 packages = ["fixture-web", "page-user"]
+
+[[cargo]]
+name = "check"
+tool = "check"
+unify = "workspace-unify"
+exclude = ["fixture-web", "wasm-bindgen"]
+
+[[cargo]]
+name = "check-{arch}"
+tool = "check"
+unify = "workspace-unify"
+packages = ["fixture-web"]
+matrix = { arch = ["x86_64", "aarch64"] }
 
 [[cargo]]
 name = "test"
@@ -178,6 +192,8 @@ exit 0
 HOST_ONLY = "x86_64-unknown-linux-gnu"
 WITH_PAGE = HOST_ONLY + "\nwasm32-unknown-unknown"
 NATIVE_CLIPPY = "clippy --locked -p fixture-native --all-targets --keep-going -- -D warnings"
+# A dependant's compile: no `-D warnings`, as its lints are not the push's.
+USER_CHECK = "check --locked -p user --all-targets --keep-going"
 
 
 class PrePushLintTests(unittest.TestCase):
@@ -594,18 +610,19 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(self.calls(), [NATIVE_CLIPPY])
         self.assertIn("lint passed", result.stderr)
 
-    def test_a_push_lints_what_it_changes_and_what_builds_on_it(self):
+    def test_a_push_lints_what_it_changes_and_compiles_what_builds_on_it(self):
         # A dependant constructs what the changed package declares, so its build can break
-        # while the changed package compiles clean; a package that shares no path dependency
-        # with it stays out.
+        # while the changed package compiles clean: it is compiled, and only an error there
+        # refuses the push. Its lints are not the push's, so it is never linted; a package that
+        # shares no path dependency with the changed one stays out.
         self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
         self.write("native/src/lib.rs", "pub fn solution() -> u32 {\n    42\n}\n")
         self.commit("refactor: the answer is the solution")
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY.replace(
-            "-p fixture-native", "-p fixture-native -p user")])
-        self.assertIn("1 of them direct dependants of what changed", result.stderr)
+        self.assertCountEqual(self.calls(), [NATIVE_CLIPPY, USER_CHECK])
+        self.assertIn("linting 1 package and compiling 1 direct dependant(s) of what changed",
+                      result.stderr)
 
     def test_a_cargo_drop_in_compiles_instead_of_the_local_cargo(self):
         self.write("web/src/lib.rs", LIB.format(answer=13))
@@ -647,20 +664,31 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), ["t test clippy/fixture-native --json"])
 
-    def test_with_t_a_dependant_is_linted_through_its_check(self):
-        # t keys each per-package check by what that package's build reads, so a dependant is
-        # asked for as a seed is, and answered from t's cache when nothing it reads moved.
+    def test_with_t_a_dependant_is_compiled_through_its_check(self):
+        # t keys each per-package check by what that package's build reads, so a dependant's
+        # compile is answered from t's cache when nothing it reads moved; it is no clippy check.
         self.with_t()
         self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
         self.write("native/src/lib.rs", LIB.format(answer=24))
         self.commit("feat: answer 24")
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), ["t test clippy/fixture-native clippy/user --json"])
+        self.assertEqual(self.calls(), ["t test clippy/fixture-native check/user --json"])
 
-    def test_a_dependant_the_page_family_names_is_linted_for_the_page(self):
-        # The host lint cannot see a wasm32 break, so a dependant the page family names gets
-        # that family's check beside its host one.
+    def test_a_dependant_that_no_longer_compiles_refuses_the_push(self):
+        self.with_t()
+        self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
+        self.write("native/src/lib.rs", "pub fn solution() -> u32 {\n    42\n}\n")
+        self.commit("refactor: the answer is the solution")
+        result = self.push(t_outcome="fail", t_excerpt="error[E0425]: cannot find function `answer`")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("pre-push: clippy and dependants' compile (t) failed", result.stderr)
+        self.assertIn("check/user: fail", result.stderr)
+        self.assertIn("refusing the push", result.stderr)
+
+    def test_a_dependant_the_page_family_names_is_compiled_without_the_page_lint(self):
+        # The page family lints; a dependant is only compiled, so it gets no page check. Its
+        # wasm32 build is t's page family's on main.
         self.with_t()
         self.add_dependent("page-user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
         self.write("native/src/lib.rs", LIB.format(answer=25))
@@ -668,7 +696,7 @@ class PrePushLintTests(unittest.TestCase):
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), [
-            "t test clippy/fixture-native clippy/page-user clippy-page/page-user --json"])
+            "t test clippy/fixture-native check/page-user --json"])
 
     def test_a_change_to_the_hack_crate_lints_no_dependants(self):
         # workspace-hack only unifies third-party features: its dependants build on it without
@@ -737,15 +765,14 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("t: cannot reach the server", result.stderr)
         self.assertIn("refusing the push", result.stderr)
 
-    def test_a_package_no_family_lints_is_named_and_its_dependant_is_linted(self):
+    def test_a_package_no_family_lints_is_named_and_its_dependant_is_compiled(self):
         self.with_t()
         self.write("fake-binding/src/lib.rs", "pub fn bind() {}\npub fn more() {}\n")
         self.commit("feat: the binding binds more")
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("no clippy family of t's lints wasm-bindgen", result.stderr)
-        self.assertEqual(self.calls(), [
-            f"t test clippy-{ARCH}/fixture-web clippy-page/fixture-web --json"])
+        self.assertEqual(self.calls(), [f"t test check-{ARCH}/fixture-web --json"])
 
     def test_a_cargo_named_in_cargo_lints_instead_of_t(self):
         self.with_t()
@@ -913,7 +940,7 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), [
             "native: fixture-native user",
             "dependants: user",
-            "t: clippy/fixture-native clippy/user",
+            "t: clippy/fixture-native check/user",
             f"catalogue: --range {self.base[:12]}..{self.head()[:12]}",
         ])
 
