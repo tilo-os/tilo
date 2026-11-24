@@ -1040,6 +1040,11 @@ impl Workspaces {
         {
             return Ok(None);
         }
+        // The store judges the change by the types and verbs of the app surfaces this device
+        // knows, so they are declared before the change reaches it, as a restored write finds
+        // them ([`Self::replay_resource_write`]): a store that declared none admits none.
+        #[cfg(any(feature = "apps", feature = "agents"))]
+        self.store_of(&mut governed);
         if governed
             .take_resources(author, (app_id, document_id), envelope, readers.as_deref())
             .await?

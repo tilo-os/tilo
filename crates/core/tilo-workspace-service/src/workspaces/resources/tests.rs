@@ -1046,6 +1046,9 @@ async fn index_retained_checkpoint(
     {
         let state = workspaces.workspace(workspace).await.unwrap();
         let mut governed = state.lock().await;
+        // The store judges the change by the app surfaces this device knows, as a received one
+        // finds them declared.
+        governed.store_with_surfaces(&workspaces.inner.host.surfaces);
         assert!(
             governed
                 .take_resources(author, (APP, &document), envelope, None)
@@ -1551,12 +1554,19 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
         let state = workspaces.workspace(&workspace).await.unwrap();
         let mut governed = state.lock().await;
         let device = workspaces.member_identity().unwrap();
+        // A change names the person whose device makes it: one that names no one is refused.
+        let stamp = Stamp {
+            invoker: Stamp::by(&tilo_action_policy::Actor::Member(
+                tilo_action_policy::MemberId::person(hex::encode(device.cert.user_public_key)),
+            )),
+            ..create()
+        };
         let draft = governed
             .store_with_surfaces(&workspaces.inner.host.surfaces)
             .draft_field_update(
                 (KIND, "i-1"),
                 &signed_issue("Cancelled"),
-                &create(),
+                &stamp,
                 device.device(),
                 None,
                 &|_: &tilo_resource_store::Proposal<'_>| true,
