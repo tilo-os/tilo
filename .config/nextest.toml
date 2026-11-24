@@ -113,8 +113,8 @@ setup = "property-cases"
 command = [
     "bash", "tools/build-sibling-binaries.sh",
     "tilo-lock-screen:tilo-lock-screen", "osk:osk",
-    "tilolang-process:tilolang-process", "launcher:tilo-launcher",
-    "tilo-daemon:tilo-runtime=tilo-daemon/test-support",
+    "tilolang-process:tilolang-process=tilolang-process/app-launch", "launcher:tilo-launcher=launcher/dev-overrides",
+    "tilo-daemon:tilo-runtime=tilo-daemon/test-support,tilo-daemon/agents",
     "example-shared-checklist:example-shared-checklist",
 ]
 
@@ -129,7 +129,7 @@ setup = "session-siblings"
 [scripts.setup.lounge-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "tilo-daemon:tilo-runtime=tilo-daemon/agents",
+    "tilo-daemon:tilo-runtime=tilo-daemon/test-support,tilo-daemon/agents",
 ]
 
 [[profile.default.scripts]]
@@ -205,7 +205,7 @@ setup = "headless-audio"
 [scripts.setup.vault-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "launcher:tilo-launcher",
+    "launcher:tilo-launcher=launcher/dev-overrides",
 ]
 
 [[profile.default.scripts]]
@@ -224,9 +224,9 @@ setup = "vault-siblings"
 [scripts.setup.app-open-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "tilo-daemon:tilo-runtime=tilo-daemon/test-support",
-    "launcher:tilo-launcher",
-    "tilolang-process:tilolang-process=app-launch",
+    "tilo-daemon:tilo-runtime=tilo-daemon/test-support,tilo-daemon/agents",
+    "launcher:tilo-launcher=launcher/dev-overrides",
+    "tilolang-process:tilolang-process=tilolang-process/app-launch",
 ]
 
 [[profile.default.scripts]]
@@ -244,7 +244,7 @@ setup = "app-open-siblings"
 [scripts.setup.view-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "tilolang-process:tilolang-process", "launcher:tilo-launcher",
+    "tilolang-process:tilolang-process=tilolang-process/app-launch", "launcher:tilo-launcher=launcher/dev-overrides",
 ]
 
 [[profile.default.scripts]]

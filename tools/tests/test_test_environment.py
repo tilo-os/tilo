@@ -177,8 +177,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(siblings["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
         self.assertEqual(siblings["command"][2:], [
             "tilo-lock-screen:tilo-lock-screen", "osk:osk",
-            "tilolang-process:tilolang-process", "launcher:tilo-launcher",
-            "tilo-daemon:tilo-runtime=tilo-daemon/test-support",
+            "tilolang-process:tilolang-process=tilolang-process/app-launch", "launcher:tilo-launcher=launcher/dev-overrides",
+            "tilo-daemon:tilo-runtime=tilo-daemon/test-support,tilo-daemon/agents",
             "example-shared-checklist:example-shared-checklist",
         ])
         for profile in ("default", "ci"):
@@ -197,7 +197,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # launcher first; Passwords itself runs as its tilolang package.
         vault = scripts.pop("vault-siblings")
         self.assertEqual(vault["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                            "launcher:tilo-launcher"])
+                                            "launcher:tilo-launcher=launcher/dev-overrides"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
                      if rule["setup"] == "vault-siblings"]
@@ -212,7 +212,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # session's workspace-service test and the browser peer's fresh-page test.
         lounge = scripts.pop("lounge-siblings")
         self.assertEqual(lounge["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                             "tilo-daemon:tilo-runtime=tilo-daemon/agents"])
+                                             "tilo-daemon:tilo-runtime=tilo-daemon/test-support,tilo-daemon/agents"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
                      if rule["setup"] == "lounge-siblings"]
@@ -263,9 +263,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # budgets: the run builds each of them first.
         opened = scripts.pop("app-open-siblings")
         self.assertEqual(opened["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                             "tilo-daemon:tilo-runtime=tilo-daemon/test-support",
-                                             "launcher:tilo-launcher",
-                                             "tilolang-process:tilolang-process=app-launch"])
+                                             "tilo-daemon:tilo-runtime=tilo-daemon/test-support,tilo-daemon/agents",
+                                             "launcher:tilo-launcher=launcher/dev-overrides",
+                                             "tilolang-process:tilolang-process=tilolang-process/app-launch"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
                      if rule["setup"] == "app-open-siblings"]
@@ -280,8 +280,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # bundle the test bakes with the tilolang host in it.
         view = scripts.pop("view-siblings")
         self.assertEqual(view["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                           "tilolang-process:tilolang-process",
-                                           "launcher:tilo-launcher"])
+                                           "tilolang-process:tilolang-process=tilolang-process/app-launch",
+                                           "launcher:tilo-launcher=launcher/dev-overrides"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
                      if rule["setup"] == "view-siblings"]
