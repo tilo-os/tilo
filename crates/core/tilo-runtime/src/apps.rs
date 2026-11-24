@@ -13,7 +13,7 @@
 //! files it holds, with no window, as the desktop session attests its files
 //! daemon.
 
-use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET};
+use crate::daemon::Sockets;
 
 use app_catalogue::apps::InstalledApp;
 use std::{
@@ -42,8 +42,8 @@ mod instances;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(any(target_os = "macos", windows))]
 mod verified;
+pub(crate) use verified::verify_package;
 #[cfg(windows)]
 mod windows;
 #[cfg(any(target_os = "macos", windows))]
@@ -85,8 +85,8 @@ pub struct Apps {
     /// located, which is a catalogue with nothing in it.
     catalog: Option<package_store::Catalog>,
     root: PathBuf,
-    /// The directory the daemon's sockets are in, which a launch attaches the app to.
-    sockets: PathBuf,
+    /// The daemon's sockets, which a launch attaches the app to.
+    sockets: Sockets,
     /// Where app containers live on macOS, beside the runtime profile.
     #[cfg(target_os = "macos")]
     data_home: PathBuf,
@@ -138,19 +138,18 @@ pub(crate) trait LaunchGrantsSource: Send + Sync {
 }
 
 impl Apps {
-    /// The apps of the profile at `profile`, with the daemon's sockets in `sockets`, from the
+    /// The apps of the profile at `profile`, with the daemon's `sockets`, from the
     /// stores the environment names.
     #[must_use]
-    pub fn from_env(profile: &Path, sockets: &Path) -> Self {
+    pub(crate) fn from_env(profile: &Path, sockets: &Sockets) -> Self {
         let home = tilo_paths::home();
-        let mut apps = Self::new(
+        let apps = Self::new(
             package_store::Catalog::from_env().ok(),
             profile,
+            sockets.clone(),
             home.as_deref().map_or_else(PathBuf::new, data_home),
             launcher_candidates(),
         );
-        sockets.clone_into(&mut apps.sockets);
-        apps.instances.sockets_in(sockets);
         #[cfg(any(target_os = "macos", windows))]
         if let Some(catalog) = apps.catalog.as_ref() {
             carried::install_carried_runtimes(catalog);
@@ -161,9 +160,10 @@ impl Apps {
 
     /// Explicit stores and places, for tests.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         catalog: Option<package_store::Catalog>,
         profile: &Path,
+        sockets: Sockets,
         data_home: PathBuf,
         launcher_candidates: Vec<PathBuf>,
     ) -> Self {
@@ -194,10 +194,15 @@ impl Apps {
         // connection from it as the app it runs.
         let launched: Arc<Launched> = Arc::default();
         Self {
-            instances: instances::Instances::new(profile, finds_launcher, Arc::clone(&launched)),
+            instances: instances::Instances::new(
+                profile,
+                &sockets,
+                finds_launcher,
+                Arc::clone(&launched),
+            ),
             catalog,
             root: profile.to_path_buf(),
-            sockets: profile.to_path_buf(),
+            sockets,
             #[cfg(target_os = "macos")]
             data_home,
             connectors: connectors::Connectors::default(),
@@ -584,12 +589,7 @@ impl Apps {
             .ok_or_else(|| format!("{app_id} is not installed"))?;
         #[cfg(target_os = "linux")]
         {
-            let sockets = Sockets {
-                collab: self.sockets.join(COLLAB_SOCKET),
-                identity: self.sockets.join(IDENTITY_SOCKET),
-                blobs: self.sockets.join(BLOB_SOCKET),
-                native: self.sockets.join(tilo_paths::machine::DAEMON_NATIVE),
-            };
+            let sockets = self.sockets.clone();
             let original = self.original_launch(&app)?;
             let child = linux::connector(
                 self,
@@ -780,12 +780,7 @@ impl Apps {
             })
             .transpose()?;
         self.run_with_signed_surface(&app);
-        let sockets = Sockets {
-            collab: self.sockets.join(COLLAB_SOCKET),
-            identity: self.sockets.join(IDENTITY_SOCKET),
-            blobs: self.sockets.join(BLOB_SOCKET),
-            native: self.sockets.join(tilo_paths::machine::DAEMON_NATIVE),
-        };
+        let sockets = self.sockets.clone();
         #[cfg(target_os = "linux")]
         let original = self.original_launch(&app)?;
         #[cfg(target_os = "linux")]
@@ -1115,22 +1110,6 @@ impl Apps {
     pub fn no_window_processes(&self, app: &str, workspace: &str, record: Option<&str>) -> usize {
         self.launched.no_window_processes(app, workspace, record)
     }
-}
-
-/// The profile's service sockets, as an app is connected to them.
-#[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos")),
-    expect(
-        dead_code,
-        reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
-    )
-)]
-struct Sockets {
-    collab: PathBuf,
-    identity: PathBuf,
-    blobs: PathBuf,
-    /// The daemon's native endpoint, which an app's process calls actions on as that app.
-    native: PathBuf,
 }
 
 /// One launched app: the process the runtime started, which is the one the

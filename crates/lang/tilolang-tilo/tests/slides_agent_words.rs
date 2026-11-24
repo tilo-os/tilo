@@ -100,7 +100,7 @@ fn an_agents_field_edit_of_a_boxes_words_shows_in_the_deck() {
         .open_view(
             &person("ada"),
             &view_id(&ada, "deck"),
-            vec![Value::resource(&deck)],
+            vec![deck],
         )
         .expect("the deck's window opens");
     view.poll_patches().unwrap();

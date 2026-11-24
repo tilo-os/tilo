@@ -32,22 +32,45 @@ def answer(document):
     return io.BytesIO(json.dumps(document).encode())
 
 
+OURS = {"tilo-example": {"repository": None, "description": "Our example."}}
+
+
 class ForeignNamesTests(unittest.TestCase):
     def test_a_crate_of_another_repository_is_foreign(self):
         document = {"crate": {"name": "tilo-example", "repository": "https://example.com/other"}}
         with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
-            self.assertEqual(check.foreign_names(["tilo-example"]), {"tilo-example"})
+            self.assertEqual(check.foreign_names(OURS), {"tilo-example"})
 
     def test_a_crate_this_repository_published_is_ours(self):
         # Once a release published it, the name exists on crates.io: that is no reason to fail.
         document = {"crate": {"name": "tilo-example", "repository": check.REPOSITORY + "/"}}
         with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
-            self.assertEqual(check.foreign_names(["tilo-example"]), set())
+            self.assertEqual(check.foreign_names(OURS), set())
+
+    def test_a_fork_this_repository_published_is_ours(self):
+        # A fork's manifest credits its upstream's repository, and crates.io shows what the
+        # release published: the same repository and the same description are ours.
+        fork = {"tilo-example": {"repository": "https://example.com/upstream/",
+                                 "description": "upstream with one fix. Tilo's fork."}}
+        document = {"crate": {"name": "tilo-example", "repository": "https://example.com/upstream",
+                              "description": "upstream with one fix. Tilo's fork."}}
+        with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
+            self.assertEqual(check.foreign_names(fork), set())
+
+    def test_another_project_of_a_forks_upstream_is_foreign(self):
+        # The upstream's own repository with a description our manifest does not declare is
+        # someone else's crate under the name.
+        fork = {"tilo-example": {"repository": "https://example.com/upstream",
+                                 "description": "upstream with one fix. Tilo's fork."}}
+        document = {"crate": {"name": "tilo-example", "repository": "https://example.com/upstream",
+                              "description": "Something else."}}
+        with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
+            self.assertEqual(check.foreign_names(fork), {"tilo-example"})
 
     def test_only_not_found_means_available(self):
         error = urllib.error.HTTPError("https://crates.io", 404, "Not Found", {}, None)
         with patch.object(check.urllib.request, "urlopen", side_effect=error):
-            self.assertEqual(check.foreign_names(["tilo-example"]), set())
+            self.assertEqual(check.foreign_names(OURS), set())
 
     def test_invalid_success_response_cannot_mark_a_name_available(self):
         for document in ({}, {"errors": [{"detail": "unavailable"}]},
@@ -56,7 +79,7 @@ class ForeignNamesTests(unittest.TestCase):
             with self.subTest(document=document):
                 with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
                     with self.assertRaisesRegex(ValueError, "tilo-example.*cannot determine"):
-                        check.foreign_names(["tilo-example"])
+                        check.foreign_names(OURS)
 
     def test_service_and_transport_failures_propagate(self):
         for error in (urllib.error.HTTPError("https://crates.io", 503, "Unavailable", {}, None),
@@ -64,13 +87,13 @@ class ForeignNamesTests(unittest.TestCase):
             with self.subTest(error=error):
                 with patch.object(check.urllib.request, "urlopen", side_effect=error):
                     with self.assertRaises(type(error)) as raised:
-                        check.foreign_names(["tilo-example"])
+                        check.foreign_names(OURS)
                     self.assertIs(raised.exception, error)
 
     def test_invalid_json_propagates(self):
         with patch.object(check.urllib.request, "urlopen", return_value=io.BytesIO(b"not json")):
             with self.assertRaises(json.JSONDecodeError):
-                check.foreign_names(["tilo-example"])
+                check.foreign_names(OURS)
 
 
 class LocalRegistryChecksumTests(unittest.TestCase):

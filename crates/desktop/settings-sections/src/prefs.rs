@@ -420,15 +420,15 @@ impl InputDevicePrefs {
             .map_or_else(std::collections::BTreeMap::new, |shared| {
                 shared.options.clone()
             });
-        let mut profile =
-            self.keyboard_assignments
-                .get(&keyboard)
-                .cloned()
-                .unwrap_or(KeyboardProfile {
-                    sources: sources.clone(),
-                    active: active.clone(),
-                    options: inherited,
-                });
+        let mut profile = self
+            .keyboard_assignments
+            .get(&keyboard)
+            .cloned()
+            .unwrap_or_else(|| KeyboardProfile {
+                sources: sources.clone(),
+                active: active.clone(),
+                options: inherited,
+            });
         profile.sources.clone_from(&sources);
         profile.active = active;
         let kept = sources.clone();
@@ -2445,15 +2445,15 @@ impl AudioPrefs {
         &mut self,
         #[param("The theme's name, or none for the freedesktop one")] theme: Option<String>,
     ) -> Result<(), tilo_resource::Refusal> {
-        self.choose_sound_theme(theme)
+        self.choose_sound_theme(theme.as_deref())
     }
 }
 
 impl AudioPrefs {
     /// [`Self::set_system_sound_theme`], as the section keeps the choice: a
     /// theme is one name in the sound directories, never a path.
-    fn choose_sound_theme(&mut self, theme: Option<String>) -> Result<(), tilo_resource::Refusal> {
-        self.system_sounds.theme = match theme.as_deref().map(str::trim) {
+    fn choose_sound_theme(&mut self, theme: Option<&str>) -> Result<(), tilo_resource::Refusal> {
+        self.system_sounds.theme = match theme.map(str::trim) {
             None | Some("") => None,
             Some(theme) if theme == settings_store::system_sounds::DEFAULT_THEME => None,
             Some(theme) => {
@@ -2858,21 +2858,19 @@ mod audio_theme_tests {
         let mut audio = AudioPrefs::default();
         assert!(audio.system_sounds.theme.is_none());
 
-        audio.choose_sound_theme(Some("ocean".into())).unwrap();
+        audio.choose_sound_theme(Some("ocean")).unwrap();
         assert_eq!(audio.system_sounds.theme.as_deref(), Some("ocean"));
         // Following the freedesktop theme is no choice of its own, and an
         // empty one is no name at all.
-        audio
-            .choose_sound_theme(Some(DEFAULT_THEME.into()))
-            .unwrap();
+        audio.choose_sound_theme(Some(DEFAULT_THEME)).unwrap();
         assert!(audio.system_sounds.theme.is_none());
-        audio.choose_sound_theme(Some(" ".into())).unwrap();
+        audio.choose_sound_theme(Some(" ")).unwrap();
         assert!(audio.system_sounds.theme.is_none());
         audio.choose_sound_theme(None).unwrap();
         assert!(audio.system_sounds.theme.is_none());
 
         // A theme is one name in the sound directories, never a path.
-        assert!(audio.choose_sound_theme(Some("../../etc".into())).is_err());
+        assert!(audio.choose_sound_theme(Some("../../etc")).is_err());
         assert!(audio.system_sounds.theme.is_none());
     }
 }

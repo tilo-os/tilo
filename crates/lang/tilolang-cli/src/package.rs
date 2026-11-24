@@ -19,8 +19,9 @@ use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
 pub const RUNTIME_BIN: &str = "bin/tilolang-process";
-pub const DEFAULT_TILOLANG_RUNTIME: &str =
-    concat!("tilolang/", env!("CARGO_PKG_VERSION"), "+tilolang");
+/// The tilolang runtime a build names its apps run on: the build this tool's own tilolang side
+/// is ([`tilolang_tilo::RUNTIME`]), so what it builds and what a host carries are one id.
+pub const DEFAULT_TILOLANG_RUNTIME: &str = tilolang_tilo::RUNTIME;
 pub const DEFAULT_TILO_RUNTIME: &str = "tilo-runtime/2026.07";
 
 /// Where a tilolang app runs: where its runtime runs (`crates/lang/tilolang-process/tilo-runtime.toml`), as a

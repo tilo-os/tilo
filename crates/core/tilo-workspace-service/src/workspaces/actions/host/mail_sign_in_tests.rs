@@ -696,6 +696,34 @@ async fn an_account_added_in_settings_is_read_in_mail() {
         ["Lunch on Friday?", "Quarterly plan", "Welcome to the lab"],
         "the inbox holds what its server does"
     );
+
+    // Removing it in Settings takes it from Mail: its listing no longer has it, and its
+    // inbox is not read.
+    setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::REMOVE,
+            json!({"account": ADDRESS}),
+        )
+        .await
+        .expect("the account goes");
+    assert!(
+        setup.listed().await.accounts.is_empty(),
+        "Mail lists no account that Settings removed"
+    );
+    let refused = setup
+        .ask_as(
+            &setup.owner,
+            person_accounts::RESOURCE,
+            person_accounts::FETCH,
+            json!({"account": ADDRESS, "folder": "inbox"}),
+        )
+        .await
+        .expect_err("Mail reads no inbox of an account that is gone");
+    assert!(
+        matches!(&refused, ActionCallError::Refused { reason } if reason.contains("not kept here")),
+        "{refused:?}"
+    );
 }
 
 /// The reading a workspace's apps follow, as this host keeps it.

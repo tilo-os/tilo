@@ -1114,7 +1114,7 @@ fn texts(receiver: &Receiver) -> Vec<String> {
 /// sharing device's windows, and the page it holds of each, joined from what the live session brought
 /// on that window's track. What a shell watching a window is shown is what its track carries.
 struct Watcher {
-    live_session: Arc<LiveSession>,
+    live_session: crate::live::Sessions,
     host: [u8; 32],
     held: BTreeMap<u64, Receiver>,
 }

@@ -850,7 +850,10 @@ fn page_field(kind: vault_items::ItemKind) -> Result<PageField, String> {
         vault_items::ItemKind::Login => Ok(PageField::Password),
         vault_items::ItemKind::CodeGenerator => Ok(PageField::Code),
         vault_items::ItemKind::Value => Ok(PageField::Value),
-        vault_items::ItemKind::Key | vault_items::ItemKind::SshKey => {
+        vault_items::ItemKind::Key
+        | vault_items::ItemKind::SshKey
+        | vault_items::ItemKind::Note
+        | vault_items::ItemKind::Wifi => {
             Err("Only a login, a code generator or a value is filled into a page".to_owned())
         }
     }

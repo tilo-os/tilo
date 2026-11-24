@@ -153,6 +153,16 @@ fn checkbox(app: &mut TestApp<BoardApp>, field: &str) -> String {
         .expect("the field's control")
 }
 
+/// Where the settings keep `T`'s section for the app `app`: the resource its verbs are
+/// published on.
+fn section<T: SettingsSchema>(app: &str) -> String {
+    let section = T::SCOPE.section();
+    tilo_app::framework::section_address(
+        section,
+        ui_core::settings_placement::per_app(section).then_some(app),
+    )
+}
+
 fn published<A: ResourceApp>(app: &mut TestApp<A>, resource: &str) -> Vec<String> {
     let mut actions: Vec<String> = app
         .agent_surface()
@@ -174,6 +184,7 @@ tilo_test_env::scenario! {
         // A click on a control bound to a field of a settings section kept in the person's
         // records stores the change in the settings document, both ways.
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
+        let display = section::<Display>(BoardApp::ID);
         let control = checkbox(&mut app, "high_contrast");
         app.harness().click_named(&control).unwrap();
         app.settle();
@@ -194,7 +205,7 @@ tilo_test_env::scenario! {
         // Its verbs and a setter of each field are published beside the app's
         // resource, and nothing that sets any field at all: a grant names the
         // setting it allows.
-        let actions = published(&mut app, "settings:test.display");
+        let actions = published(&mut app, &display);
         for setter in ["set-high-contrast", "set-scale", "reset-scale"] {
             assert!(actions.iter().any(|action| action == setter), "{actions:?}");
         }
@@ -203,7 +214,7 @@ tilo_test_env::scenario! {
         }
         assert!(
             app.call_on(
-                "settings:test.display",
+                &display,
                 "field-edit",
                 serde_json::json!({ "edit": { "path": [{ "field": "scale" }], "op": "set", "value": 2.0 } }),
             )
@@ -214,7 +225,7 @@ tilo_test_env::scenario! {
         // An agent sets a field through the API, whole or by an edit inside
         // it; the model's invariant holds on every way in.
         app.call_on(
-            "settings:test.display",
+            &display,
             "set-scale",
             serde_json::json!({ "value": 2.0 }),
         )
@@ -224,7 +235,7 @@ tilo_test_env::scenario! {
         assert!(app.harness().inspection_json().unwrap().contains("scale 2"));
         assert!(
             app.call_on(
-                "settings:test.display",
+                &display,
                 "set-scale",
                 serde_json::json!({ "edit": { "path": [], "op": "set", "value": 9.0 } }),
             )
@@ -232,12 +243,12 @@ tilo_test_env::scenario! {
             "the check refuses a scale out of range"
         );
         assert!(
-            app.call_on("settings:test.display", "set-scale", serde_json::json!({}))
+            app.call_on(&display, "set-scale", serde_json::json!({}))
                 .is_err(),
             "a setter is given the value or an edit"
         );
         app.call_on(
-            "settings:test.display",
+            &display,
             "reset-scale",
             serde_json::json!({}),
         )
@@ -249,7 +260,7 @@ tilo_test_env::scenario! {
         let scale = |app: &TestApp<BoardApp>| app.settings::<Display>().get().scale;
         let step = |app: &mut TestApp<BoardApp>, action: &str, steps: i64| {
             app.call_on(
-                "settings:test.display",
+                &display,
                 action,
                 serde_json::json!({ "steps": steps }),
             )
@@ -300,7 +311,8 @@ tilo_test_env::scenario! {
                 .get()
                 .minutes
         };
-        let address = tilo_app::tilo_actions::ActionAddress::new("settings:test.lock", "set-minutes");
+        let address =
+            tilo_app::tilo_actions::ActionAddress::new(section::<Lock>(LockApp::ID), "set-minutes");
         let invoker = tilo_app::tilo_actions::ActionInvoker::person("ada");
 
         let records = tilo_app::framework::SettingsResources::new(LockApp::ID, LockApp::resources);
@@ -388,23 +400,24 @@ tilo_test_env::scenario! {
             app.settings::<Display>().get().high_contrast,
             "the click ran the host's setter"
         );
-        for kept in ["settings:test.display", "settings:test.lock"] {
-            assert_eq!(published(&mut app, kept), Vec::<String>::new(), "{kept}");
+        let lock = section::<Lock>(KeptApp::ID);
+        for kept in [section::<Display>(KeptApp::ID), lock.clone()] {
+            assert_eq!(published(&mut app, &kept), Vec::<String>::new(), "{kept}");
         }
 
-        app.call_on("settings:test.lock", "set-minutes", edit(1).into())
+        app.call_on(&lock, "set-minutes", edit(1).into())
             .unwrap();
         assert_eq!(app.settings::<Lock>().get().minutes, 1);
         assert_eq!(
-            app.call_on("settings:test.lock", "set-minutes", edit(0).into()),
+            app.call_on(&lock, "set-minutes", edit(0).into()),
             Err(tilo_app::tilo_actions::ApiError::ConfirmationRequired),
             "never locking asks first, here as at the host"
         );
-        app.call_confirmed_on("settings:test.lock", "set-minutes", edit(0).into())
+        app.call_confirmed_on(&lock, "set-minutes", edit(0).into())
             .unwrap();
         assert_eq!(app.settings::<Lock>().get().minutes, 0);
         assert!(
-            app.call_confirmed_on("settings:test.lock", "set-minutes", edit(90).into())
+            app.call_confirmed_on(&lock, "set-minutes", edit(90).into())
                 .is_err(),
             "the host's model refuses"
         );
@@ -528,9 +541,10 @@ tilo_test_env::scenario! {
         // The person record of playback is declared and kept open; the display section is the
         // settings document's, with no record of its own.
         assert_eq!(app.open_person_resources(), 1);
-        assert!(published(&mut app, "settings:test.display").contains(&"field-edit".to_owned()));
+        let display = section::<Display>(DeclaringApp::ID);
+        assert!(published(&mut app, &display).contains(&"set-high-contrast".to_owned()));
         app.call_on(
-            "settings:test.display",
+            &display,
             "set-high-contrast",
             serde_json::json!({ "value": true }),
         )
@@ -538,7 +552,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.open_person_resources(), 1, "a write keeps no record");
         assert!(app.settings::<Display>().get().high_contrast);
         app.call_on(
-            "settings:test.display",
+            &display,
             "undo",
             serde_json::json!({ "steps": 1 }),
         )

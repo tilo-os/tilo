@@ -8,6 +8,7 @@
 ///
 /// # Errors
 /// It does not verify, is no tilolang app, or its runtime is not installed or does not verify.
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) fn verified_tilolang(
     installed: &package_store::registry::InstalledPackage,
 ) -> Result<crate::device::package_runs::Verified, String> {
@@ -34,6 +35,7 @@ pub(crate) fn verified_tilolang(
 ///
 /// # Errors
 /// No installed package provides it, or the one that does fails [`verify_package`].
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) fn installed_runtime(
     catalog: &package_store::Catalog,
     runtime: &str,
@@ -58,9 +60,10 @@ pub(crate) fn installed_runtime(
 }
 
 /// Prove `package` is still what was installed: its record's signature by its publisher, the
-/// manifest and every payload file against the signed hashes, no file it did not ship, and a
-/// publisher key this profile has not revoked. The error says which check failed.
-pub(super) fn verify_package(
+/// manifest and every payload file against the signed hashes, no file it did not ship, and — on a
+/// profile that reads the person's revoked keys — a publisher key it has not revoked. The error
+/// says which check failed.
+pub(crate) fn verify_package(
     package: &package_store::registry::InstalledPackage,
 ) -> Result<(), String> {
     use package_store::integrity;
@@ -80,18 +83,26 @@ pub(super) fn verify_package(
         &package.package_id_hex,
     )
     .map_err(|error| error.to_string())?;
-    let revoked = tilo_app_package::RevocationList {
-        revoked: tilo_control::packages::trust()
-            .1
-            .into_iter()
-            .map(|key| tilo_app_package::RevokedKey {
-                pubkey_hex: key.pubkey_hex,
-                reason: key.reason,
-            })
-            .collect(),
-    };
-    if let Some(entry) = revoked.find(&signed.root.publisher_identity) {
-        return Err(format!("its publisher's key is revoked ({})", entry.reason));
+    // The person's revoked keys are the profile's, read on the platform whose daemon keeps them.
+    #[cfg(target_os = "macos")]
+    {
+        let revoked = tilo_app_package::RevocationList {
+            revoked: tilo_control::packages::trust()
+                .1
+                .into_iter()
+                .map(|key| tilo_app_package::RevokedKey {
+                    pubkey_hex: key.pubkey_hex,
+                    reason: key.reason,
+                })
+                .collect(),
+        };
+        if let Some(entry) = revoked.find(&signed.root.publisher_identity) {
+            return Err(format!("its publisher's key is revoked ({})", entry.reason));
+        }
+    }
+    if !hex::encode(signed.root.publisher_identity).eq_ignore_ascii_case(&package.publisher_key_hex)
+    {
+        return Err("its record names another publisher than the installed package's".to_owned());
     }
     Ok(())
 }

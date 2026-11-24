@@ -363,6 +363,42 @@ thread_local! {
     > = std::cell::RefCell::default();
 }
 
+/// The one link this page keeps to the host whose device key is `host`, at `address`: the link
+/// [`ticket_action`] asks over, and [`warm_ticket_action`] dials.
+fn ticket_link(
+    host: [u8; 32],
+    address: &tilo_server_protocol::web::ServerAddress,
+) -> std::rc::Rc<tilo_session_client::session::TicketLink> {
+    TICKET_LINKS.with(|links| {
+        std::rc::Rc::clone(links.borrow_mut().entry(host).or_insert_with(|| {
+            std::rc::Rc::new(tilo_session_client::session::TicketLink::new(
+                ServerAddress::published(address),
+            ))
+        }))
+    })
+}
+
+/// Dial the link [`ticket_action`] asks over, asking no action, so a person's first press only
+/// waits for the answer. The page calls this once its first screen is idle. A failure is quiet:
+/// the press dials again.
+///
+/// # Errors
+///
+/// Throws when the host names no address to reach its actions at, or could not be dialled.
+#[wasm_bindgen(js_name = warmTicketAction)]
+pub async fn warm_ticket_action(post: Function) -> Result<(), JsError> {
+    let info: tilo_server_protocol::web::ServerInfo =
+        post_decoded(&PageHttp(post), "/host", Vec::new()).await?;
+    let address = info
+        .address
+        .as_ref()
+        .ok_or_else(|| js_error("this host names no address to reach its actions at"))?;
+    ticket_link(info.server_cert.device_public_key, address)
+        .warm()
+        .await
+        .map_err(js_error)
+}
+
 /// Call one of `tilo.device`'s ticket actions on the host `post` reaches, with `argument`
 /// (JSON): `issue`, `follow` and `answer` for a ticket the page shows, `certify` to log this page
 /// in with a pairing link's ticket (`ticket`), and `pending` and `approve` for a page that holds
@@ -433,13 +469,7 @@ pub async fn ticket_action(
         argument.entry("agent").or_insert_with(|| "".into());
     }
     let host = info.server_cert.device_public_key;
-    let link = TICKET_LINKS.with(|links| {
-        std::rc::Rc::clone(links.borrow_mut().entry(host).or_insert_with(|| {
-            std::rc::Rc::new(tilo_session_client::session::TicketLink::new(
-                ServerAddress::published(address),
-            ))
-        }))
-    });
+    let link = ticket_link(host, address);
     // A certify waits for the person's answer, for as long as the ticket lasts.
     let follow_for = std::time::Duration::from_nanos(if action == CERTIFY {
         TICKET_LIFETIME_NS

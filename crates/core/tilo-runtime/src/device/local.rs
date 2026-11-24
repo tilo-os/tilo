@@ -45,6 +45,9 @@ pub(crate) struct Frames {
     /// What answers a release of a vault item to the app process the connection is, when it is
     /// one the daemon started.
     own_process: Option<(Tree, Caller)>,
+    /// The call lane an app's connection carries, when the connection is an app's: its setup, or
+    /// why this device will carry no call for it.
+    lane: Option<Result<tilo_live::app_call::CallSetup, String>>,
 }
 
 impl Frames {
@@ -56,6 +59,7 @@ impl Frames {
             tree: Arc::new(tree),
             uploads: Arc::default(),
             own_process: None,
+            lane: None,
         }
     }
 
@@ -101,6 +105,7 @@ impl Frames {
     pub(crate) fn of_an_app(daemon: &Arc<Daemon>, at: &crate::seats::AppAt) -> Self {
         let own = super::vault_release::OwnProcess::new(daemon, at.pid, &at.app, &at.workspace);
         let caller = Caller::local_app(&at.app).in_workspace(&at.workspace);
+        let lane = daemon.app_call_setup(at);
         let (daemon, app, workspace) =
             (Arc::downgrade(daemon), at.app.clone(), at.workspace.clone());
         let mut frames = Self::new(move |named| {
@@ -115,6 +120,7 @@ impl Frames {
             daemon.app_tree(&app, &workspace)
         });
         frames.own_process = Some((Arc::new(own) as Tree, caller));
+        frames.lane = Some(lane);
         frames
     }
 
@@ -190,13 +196,33 @@ impl Frames {
                 }),
             }
         };
-        remote::serve_lines(
+        // An app's connection carries the call lane of the workspace's live session; any other
+        // connection carries none.
+        let out = self.lane.is_some().then(|| {
+            stream.try_clone().ok().map(|writer| {
+                let writer = Arc::new(std::sync::Mutex::new(writer));
+                Arc::new(move |line: String| {
+                    if let Ok(mut writer) = writer.lock() {
+                        let _ = writeln!(writer, "{line}");
+                    }
+                }) as tilo_live::app_call::Out
+            })
+        });
+        let lane = match (&self.lane, out) {
+            (Some(granted), Some(Some(out))) => {
+                Some(tilo_live::app_call::AppLane::new(granted.clone(), out))
+            }
+            _ => None,
+        };
+        remote::serve_lines_with(
             in_workspace,
             &self.uploads,
             Some(first.to_vec()),
             input,
             stream,
             SLACK,
+            lane.as_ref()
+                .map(|lane| lane.as_ref() as &dyn remote::CallLanes),
         );
     }
 }

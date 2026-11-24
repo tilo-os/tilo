@@ -175,9 +175,9 @@ mod tests {
         for action in [
             person_vault::ADD,
             person_vault::REMOVE,
-            person_vault::KEEP_ENTRY,
-            person_vault::FORGET_ENTRY,
             person_vault::ASK,
+            person_vault::COPY,
+            person_vault::REVEAL,
             person_vault::FILL_PAGE,
             person_vault::WEB_CALL,
             person_vault::SIGN,
@@ -191,11 +191,7 @@ mod tests {
             }
         }
         assert_eq!(declared, 9, "every action that writes declares its step");
-        for read in [
-            person_vault::LIST,
-            person_vault::ENTRIES,
-            person_vault::USES,
-        ] {
+        for read in [person_vault::LIST, person_vault::USES] {
             assert!(
                 person_vault::effects(read).is_empty(),
                 "{read} writes nothing"

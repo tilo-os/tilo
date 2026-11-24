@@ -1,7 +1,7 @@
 //! The settings a process reads: the source its host installed.
 //!
 //! The session installs its settings as resources of the workspace
-//! ([`crate::workspace::WorkspaceSettings`]); a sandboxed app installs its channel to the
+//! (`settings_sections::workspace::WorkspaceSettings`); a sandboxed app installs its channel to the
 //! session; a service the session started, and a browser page, install a [`HostDocument`] of
 //! what their host gives them. A process with none installed reads every setting's default.
 
@@ -143,7 +143,7 @@ pub trait SettingsSource: Send + Sync {
     ///
     /// # Errors
     /// The settings' history is not kept here.
-    fn stamps(&self, _section: &str) -> std::io::Result<Vec<tilo_resource_store::Stamp>> {
+    fn stamps(&self, _section: &str) -> std::io::Result<Vec<tilo_actions::stamp::Stamp>> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "the settings' history is kept by the session",
@@ -220,7 +220,7 @@ shared_source! {
         origin: &ChangeOrigin,
     ) -> std::io::Result<ConditionalUpdate>;
     fn step(&self, section: &str, undo: bool, invokers: &[String]) -> std::io::Result<bool>;
-    fn stamps(&self, section: &str) -> std::io::Result<Vec<tilo_resource_store::Stamp>>;
+    fn stamps(&self, section: &str) -> std::io::Result<Vec<tilo_actions::stamp::Stamp>>;
     fn flush_pending(&self);
     fn take_deferred_failures(&self) -> Vec<DeferredFailure>;
     fn revision(&self) -> u64;

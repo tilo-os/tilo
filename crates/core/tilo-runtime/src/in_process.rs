@@ -141,7 +141,9 @@ impl Device {
                 let id = installed.release.app;
                 let found = catalog.iter().find(|app| app.app_id == id.as_str());
                 App {
-                    key: id.rsplit('.').next().unwrap_or(&id).to_owned(),
+                    // The app's own id, as the session's apps root names each: what
+                    // `session.open_app` is given reaches the app the person pressed.
+                    key: id.clone(),
                     name: found.map_or_else(
                         || package_store::display_name_for_package_id(&id),
                         |app| app.display_name.clone(),

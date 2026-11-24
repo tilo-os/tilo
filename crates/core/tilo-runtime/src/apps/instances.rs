@@ -264,18 +264,21 @@ impl tilo_dialogs::chooser_service::Opens for NoOpen {
 
 impl Instances {
     pub(crate) fn new(
-        root: &Path,
+        profile: &Path,
+        sockets: &crate::daemon::Sockets,
         launcher: FindsLauncher,
         launched: Arc<super::Launched>,
     ) -> Self {
+        #[cfg(not(target_os = "macos"))]
+        let _ = profile;
         Self {
-            collab: root.join(crate::COLLAB_SOCKET),
-            identity: root.join(crate::IDENTITY_SOCKET),
+            collab: sockets.collab.clone(),
+            identity: sockets.identity.clone(),
             launcher,
             launched,
             processes: OnceLock::new(),
             #[cfg(target_os = "macos")]
-            documents: tilo_documents::Documents::kept_in(root.join("documents.json")),
+            documents: tilo_documents::Documents::kept_in(profile.join("documents.json")),
             person: OnceLock::new(),
             provided: OnceLock::new(),
             made: Mutex::default(),
@@ -460,13 +463,6 @@ impl Instances {
             .map_err(|error| format!("{app}'s instance did not start: {error}"))
     }
 
-    /// Reach the daemon's collaboration and identity services through its sockets in `sockets`,
-    /// which a profile named apart keeps outside the profile itself.
-    pub(super) fn sockets_in(&mut self, sockets: &Path) {
-        self.collab = sockets.join(crate::COLLAB_SOCKET);
-        self.identity = sockets.join(crate::IDENTITY_SOCKET);
-    }
-
     /// The instance's collaboration connection, made from this process and named as
     /// `instance` of `app` in `workspace`, whose record the collaboration service takes as it
     /// attests it.
@@ -535,16 +531,51 @@ impl Instances {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    /// An instance connects at the collaboration socket the daemon it belongs to listens on, not
+    /// at one the profile's path would name: a profile named apart keeps its sockets outside
+    /// itself, so a path worked out beside the profile reaches nothing and no view opens.
+    #[cfg(unix)]
+    #[test]
+    fn an_instance_reaches_the_collaboration_socket_its_daemon_listens_on() {
+        let profile = tempfile::tempdir().unwrap();
+        let daemons_sockets = tempfile::tempdir().unwrap();
+        let sockets = crate::daemon::Sockets::in_dir(daemons_sockets.path());
+        let _listening = std::os::unix::net::UnixListener::bind(&sockets.collab).unwrap();
+        let instances = Instances::new(
+            profile.path(),
+            &sockets,
+            Box::new(|| Err("no launcher".into())),
+            Arc::default(),
+        );
+        let reached = instances.connect(
+            "so.tilo.notes",
+            "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            1,
+            Shows::Window,
+        );
+        assert!(
+            reached.is_ok(),
+            "an instance reaches its daemon's collaboration socket: {reached:?}"
+        );
+    }
+
     /// A hosted instance is handed a chooser that names it, served by this daemon: the app's
     /// file chooses reach the person instead of nothing.
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_hosted_instance_is_handed_a_chooser_named_for_it() {
         let profile = tempfile::tempdir().unwrap();
-        let instances = Instances::new(profile.path(), Box::new(|| Err("no launcher".into())));
+        let sockets = crate::daemon::Sockets::in_dir(profile.path());
+        let instances = Instances::new(
+            profile.path(),
+            &sockets,
+            Box::new(|| Err("no launcher".into())),
+            Arc::default(),
+        );
         let fd = instances
             .chooser_for("so.tilo.notes", "5ba25f73-87c5-447f-a5a6-880dc4249a81")
             .expect("a hosted app gets a chooser");

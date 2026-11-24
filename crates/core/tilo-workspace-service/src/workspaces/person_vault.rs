@@ -9,11 +9,10 @@
 //! agent or a key through a grant there. A Mail grant opens no vault.
 //!
 //! A secret travels in and never back. A listing says what is safe to say
-//! of an item and no request answers more.
-//!
-//! The entries themselves are the exception: whoever reads the vault reads
-//! them, secrets included, from any device, a browser page as much as a
-//! laptop ([`person_vault::ENTRIES`]).
+//! of an item and no request answers more. Its own person alone is handed one
+//! secret at a time, written down as a use: put on their clipboard by this
+//! device ([`person_vault::COPY`]), or answered to be shown while they look
+//! ([`person_vault::REVEAL`]), from Passwords or as themselves.
 //!
 //! What uses an item names it by its reference and carries no secret, so an
 //! agent whose grants reach both the vault and what it uses the item for may
@@ -33,22 +32,34 @@
 //! agent does either.
 
 use std::path::Path;
+use std::sync::Arc;
 
-use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultChange, VaultItems};
+use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultItems};
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::model_providers::{self, ProviderView, SetKey, SetKeyFromItem};
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_vault::{
-    self, AddItem, AlwaysUse, AskForItem, Entries, ForgetEntry, ItemKind, ItemRef, ItemUse,
-    ItemUses, ItemView, KeepEntry, KeptItems, RemoveItem, TakeBack, UsesOf,
+    self, AddItem, AlwaysUse, AskForItem, ItemKind, ItemRef, ItemUse, ItemUses, ItemView,
+    KeptItems, RemoveItem, Revealed, ShowItem, TakeBack, UsesOf,
 };
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
 use super::workspace_stores::Store;
 use super::{GovernedWorkspace, WorkspaceId, Workspaces};
+
+/// Where a device puts a secret its person copies from the vault ([`person_vault::COPY`]): the
+/// clipboard of the session they sit at, which keeps it out of its history and forgets it again
+/// after a while. A device with no session copies nothing.
+pub trait SecretClipboard: Send + Sync {
+    /// Offer `secret` as the person's copy. False when the clipboard did not take it.
+    fn copy_secret(&self, secret: &str) -> bool;
+}
+
+/// What a person is told when this device has no clipboard of theirs to copy to.
+pub const NO_CLIPBOARD: &str = "This device has no clipboard to copy to";
 
 impl Workspaces {
     /// The item `workspace`'s vault keeps for what `asked` asked its person for: the newest
@@ -105,17 +116,19 @@ impl Workspaces {
         let action = request.target.address.action.as_str();
         let effect = match action {
             person_vault::LIST
-            | person_vault::ENTRIES
             | person_vault::USES
-            | person_vault::CODE => ActionKind::Read,
+            | person_vault::CODE
+            | person_vault::COPY
+            | person_vault::REVEAL => ActionKind::Read,
             _ => ActionKind::Undoable,
         };
-        // A release reaches the vault only through the process it answers
-        // (`Workspaces::release_to`): whatever calls it here is refused, saying why.
+        // A release, and an app keeping its own secret, reach the vault only through the
+        // process they answer (`Workspaces::release_to`, `Workspaces::keep_for`): whatever calls
+        // them here is refused, saying why.
         if person_vault::is_page_login(&request.target) {
             return Err(ActionCallError::refused(super::page_logins::NOT_A_WINDOW));
         }
-        if action == person_vault::RELEASE {
+        if action == person_vault::RELEASE || action == person_vault::KEEP {
             return Err(ActionCallError::refused(super::vault_release::refusal_for(
                 caller,
             )));
@@ -123,6 +136,13 @@ impl Workspaces {
         // Who takes back what an agent may always use is a member, never an
         // agent: an agent's call of it is no call of the vault.
         if action == person_vault::TAKE_BACK && caller.acting().is_agent() {
+            return Err(ActionCallError::UnknownAction);
+        }
+        // A secret is shown or copied for its own person alone: no agent is, and no app but
+        // Passwords reaches the vault at all ([`Workspaces::reaching`]).
+        if matches!(action, person_vault::COPY | person_vault::REVEAL)
+            && (caller.acting().is_agent() || caller.acting().person_id().is_none())
+        {
             return Err(ActionCallError::UnknownAction);
         }
         let reach = self
@@ -169,7 +189,38 @@ impl Workspaces {
                     .await,
                 )
             }
-            person_vault::ENTRIES => said(self.vault_entries(&workspace).await),
+            person_vault::COPY | person_vault::REVEAL => {
+                let showing: ShowItem = argument(
+                    request,
+                    "a secret to copy or show names its item by reference, and which part",
+                )?;
+                let app = caller.acting().app().map(|app| app.as_str().to_owned());
+                let by = app.as_deref().map_or(String::new(), app_name);
+                let copying = action == person_vault::COPY;
+                let purpose = UsedFor {
+                    using: action,
+                    what: if copying {
+                        "Copied to the clipboard"
+                    } else {
+                        "Shown"
+                    },
+                    allowed: None,
+                };
+                let shown = self
+                    .changing_vault(&workspace, (Some(&reach.acting), Some(request)), |items| {
+                        show(items, &showing, &by, purpose)
+                    })
+                    .await
+                    .map_err(ActionCallError::refused)?;
+                if copying {
+                    self.copy_secret(&shown).map_err(ActionCallError::refused)?;
+                    answer(Ok(serde_json::json!({})))
+                } else {
+                    answer(Ok(Revealed {
+                        value: shown.to_string(),
+                    }))
+                }
+            }
             // The code of this moment from a code generator's seed, shown where the vault is:
             // a read, so nothing is written and no use stands in its history. The item is the
             // action's resource, so a grant covers that one account.
@@ -197,22 +248,6 @@ impl Workspaces {
                     "digits": code.params.digits,
                     "algorithm": code.params.algorithm.word(),
                 })))
-            }
-            person_vault::KEEP_ENTRY => {
-                let keeping: KeepEntry =
-                    argument(request, "an entry to keep is an entry of Passwords")?;
-                said(
-                    self.keep_entry((&workspace, caller.acting(), request), keeping)
-                        .await,
-                )
-            }
-            person_vault::FORGET_ENTRY => {
-                let forgetting: ForgetEntry =
-                    argument(request, "an entry to forget is named by its id")?;
-                said(
-                    self.forget_entry((&workspace, caller.acting(), request), forgetting)
-                        .await,
-                )
             }
             person_vault::USES => {
                 let of: UsesOf = argument(request, "an item's uses are read by its reference")?;
@@ -251,56 +286,24 @@ impl Workspaces {
         }
     }
 
-    /// Every entry of `workspace`'s vault, secrets included.
-    async fn vault_entries(&self, workspace: &str) -> Result<Entries, String> {
-        let opened = self.open_vault(workspace).await?;
-        entries_of(opened.entries().iter().map(|(entry, _)| entry))
+    /// Copy the secrets of the vault this device holds to `clipboard` from now on: the
+    /// session's, which the device's daemon reaches as its person does.
+    pub fn copy_secrets_to(&self, clipboard: Arc<dyn SecretClipboard>) {
+        let _ = self.inner.secret_clipboard.set(clipboard);
     }
 
-    /// Keep `keeping`'s entry, a new one or the edit of one kept, answering every entry then.
-    /// What was handed is never echoed in a refusal.
-    async fn keep_entry(
-        &self,
-        (workspace, by, call): (&str, &tilo_action_policy::Acting, &InvokeRequest),
-        keeping: KeepEntry,
-    ) -> Result<Entries, String> {
-        let mut entry: accounts::SecretItem = serde_json::from_value(keeping.entry)
-            .map_err(|_| "That is no entry of Passwords".to_owned())?;
-        if !accounts::is_entry_id(&entry.id.0) {
-            return Err("That is no entry of Passwords".to_owned());
+    /// Put `secret` on this device's clipboard, or say why it was not.
+    fn copy_secret(&self, secret: &str) -> Result<(), String> {
+        let clipboard = self
+            .inner
+            .secret_clipboard
+            .get()
+            .ok_or_else(|| NO_CLIPBOARD.to_owned())?;
+        if clipboard.copy_secret(secret) {
+            Ok(())
+        } else {
+            Err(NO_CLIPBOARD.to_owned())
         }
-        entry.updated_unix = tilo_clock::unix_now();
-        let opened = self.open_vault(workspace).await?;
-        self.write_vault(
-            &opened,
-            vec![VaultChange::Keep(entry)],
-            Some(by),
-            Some(call),
-        )
-        .await
-        .map_err(|error| format!("The entry could not be kept: {error}"))?;
-        self.vault_entries(workspace).await
-    }
-
-    /// Forget the entry `forgetting` names, answering every entry left. One already gone is no
-    /// refusal: another device may have forgotten it first.
-    async fn forget_entry(
-        &self,
-        (workspace, by, call): (&str, &tilo_action_policy::Acting, &InvokeRequest),
-        forgetting: ForgetEntry,
-    ) -> Result<Entries, String> {
-        let opened = self.open_vault(workspace).await?;
-        if opened.entry(&forgetting.id).is_some() {
-            self.write_vault(
-                &opened,
-                vec![VaultChange::Forget(accounts::SecretId(forgetting.id))],
-                Some(by),
-                Some(call),
-            )
-            .await
-            .map_err(|error| format!("The entry could not be forgotten: {error}"))?;
-        }
-        self.vault_entries(workspace).await
     }
 
     /// Read a vault item's grants, and revoke those the person chose to take back.
@@ -535,6 +538,8 @@ fn view(facts: ItemFacts) -> Result<ItemView, vault_items::ItemError> {
             vault_items::ItemKind::CodeGenerator => ItemKind::CodeGenerator,
             vault_items::ItemKind::SshKey => ItemKind::SshKey,
             vault_items::ItemKind::Value => ItemKind::Value,
+            vault_items::ItemKind::Note => ItemKind::Note,
+            vault_items::ItemKind::Wifi => ItemKind::Wifi,
         },
         belongs_to: facts.places.into_iter().map(String::from).collect(),
         title: Some(facts.title).filter(|title| !title.trim().is_empty()),
@@ -577,6 +582,7 @@ pub(super) fn add(
     adding: AddItem,
 ) -> Result<ItemView, vault_items::ItemError> {
     let AddItem {
+        item: changing,
         kind,
         belongs_to,
         username,
@@ -601,6 +607,8 @@ pub(super) fn add(
         ItemKind::CodeGenerator => vault_items::ItemKind::CodeGenerator,
         ItemKind::SshKey => vault_items::ItemKind::SshKey,
         ItemKind::Value => vault_items::ItemKind::Value,
+        ItemKind::Note => vault_items::ItemKind::Note,
+        ItemKind::Wifi => vault_items::ItemKind::Wifi,
     };
     let code = if kind == vault_items::ItemKind::CodeGenerator {
         // A code generator that names no hash makes its codes with SHA1, as a setup key that
@@ -648,7 +656,14 @@ pub(super) fn add(
     } else {
         Some(vault_items::KeyIn::parse(&sent_in)?)
     };
-    view(items.add_with(item, sent_in.as_ref(), &extras)?)
+    match changing {
+        Some(changing) => {
+            let id = vault_items::ItemId::parse(changing.id())
+                .ok_or(vault_items::ItemError::NotFound)?;
+            view(items.change(&id, item, sent_in.as_ref(), &extras)?)
+        }
+        None => view(items.add_with(item, sent_in.as_ref(), &extras)?),
+    }
 }
 
 /// A strong password drawn here for `asked`: never sent, never typed.
@@ -672,6 +687,40 @@ fn drawn(
     .map_err(|_| vault_items::ItemError::Invalid("No password could be drawn here"))
 }
 
+/// The part of `showing`'s item its person is handed, as `by` and for `purpose`.
+fn show(
+    items: &mut VaultItems,
+    showing: &ShowItem,
+    by: &str,
+    purpose: vault_items::UsedFor<'_>,
+) -> Result<zeroize::Zeroizing<String>, vault_items::ItemError> {
+    let id =
+        vault_items::ItemId::parse(showing.item.id()).ok_or(vault_items::ItemError::NotFound)?;
+    let part = match showing.part.as_str() {
+        ShowItem::SECRET => vault_items::Part::Secret,
+        ShowItem::NOTES => vault_items::Part::Notes,
+        ShowItem::USERNAME => vault_items::Part::Username,
+        other => match other.strip_prefix(ShowItem::FIELD) {
+            Some(label) => vault_items::Part::Field(label),
+            None => {
+                return Err(vault_items::ItemError::Invalid(
+                    "A part is `secret`, `notes`, `username` or `field:<label>`",
+                ));
+            }
+        },
+    };
+    items.show(&id, part, by, purpose)
+}
+
+/// What a use by `app` is written down under: the app's name where the system knows it.
+fn app_name(app: &str) -> String {
+    if app == tilo_app_id::apps::PASSWORDS {
+        "Passwords".to_owned()
+    } else {
+        app.to_owned()
+    }
+}
+
 fn remove(items: &mut VaultItems, item: &ItemRef) -> Result<KeptItems, vault_items::ItemError> {
     let id = vault_items::ItemId::parse(item.id()).ok_or(vault_items::ItemError::NotFound)?;
     if !items.remove(&id) {
@@ -680,26 +729,6 @@ fn remove(items: &mut VaultItems, item: &ItemRef) -> Result<KeptItems, vault_ite
     kept(items)
 }
 
-/// `entries` as Passwords reads them, secrets included.
-fn entries_of<'a>(
-    entries: impl Iterator<Item = &'a accounts::SecretItem>,
-) -> Result<Entries, String> {
-    let mut listed: Vec<&accounts::SecretItem> = entries.collect();
-    listed.sort_by(|a, b| {
-        a.title
-            .to_lowercase()
-            .cmp(&b.title.to_lowercase())
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    let entries = listed
-        .into_iter()
-        .map(serde_json::to_value)
-        .collect::<Result<_, _>>()
-        .map_err(|_| "An entry of Passwords could not be read".to_owned())?;
-    Ok(Entries { entries })
-}
-
-/// What the caller reads of a use's outcome, or the reason it was refused.
 fn said<T: serde::Serialize>(outcome: Result<T, String>) -> Result<Value, ActionCallError> {
     let refused = |reason: String| ActionCallError::Refused { reason };
     serde_json::to_value(outcome.map_err(refused)?).map_err(|error| refused(error.to_string()))

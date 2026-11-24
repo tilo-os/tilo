@@ -81,7 +81,9 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
             outgoing: std::sync::Arc::new(handle.clone()),
             arrived,
             enrolled,
-            saying: Some(tilo_session_client::saying(handle)),
+            saying: Some(tilo_session_client::Saying::Frames(
+                tilo_session_client::saying(handle),
+            )),
         },
         Device {
             publisher,

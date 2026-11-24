@@ -167,6 +167,47 @@ fn verified_package(
     .map_err(|error| error.to_string())
 }
 
+/// The payload of the installed tilolang app `app`, verified as a launch of it verifies it: its
+/// files against the signed record, its publisher's signature and the publisher not revoked, and
+/// the runtimes it names here — installed bundles, or the exact builds this device's host carries
+/// in itself, as a phone does. What a host that runs the app in its own process reads its bundle
+/// from (a phone's window starts no process), on the same verified installation a launch starts.
+///
+/// # Errors
+/// The app is not installed, is no tilolang app, does not verify, or names a runtime this device
+/// neither has nor carries.
+pub fn verified_payload(app: &str) -> Result<std::path::PathBuf, String> {
+    let installed = package_store::find_installed(app)
+        .map_err(|error| format!("the package store cannot be read: {error}"))?
+        .ok_or_else(|| format!("{app} is not installed here"))?;
+    crate::apps::verify_package(&installed)?;
+    let manifest = launcher::manifest::read_manifest(&installed.manifest_path)
+        .map_err(|error| format!("{app}'s manifest: {error}"))?;
+    let runtime = launcher::manifest::code_runtime(&manifest, &installed.payload_root)
+        .ok_or_else(|| format!("{app} is no tilolang app"))?;
+    for named in [Some(runtime), manifest.runtime.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter(|runtime| !runtime.is_empty())
+    {
+        if package_store::runtime_installed(named) || runtime_bundle::carried(named).is_some() {
+            continue;
+        }
+        return Err(format!(
+            "{app} names the runtime {named}, and this device {}",
+            if runtime_bundle::carried_builds().is_empty() {
+                "does not have it".to_owned()
+            } else {
+                format!(
+                    "carries {}",
+                    runtime_bundle::carried_builds().join(", ")
+                )
+            }
+        ));
+    }
+    Ok(installed.payload_root)
+}
+
 /// `app`, installed here, verified as a launch verifies it, on runtimes installed here: on Linux
 /// as `tilo-launcher` verifies a launch, on macOS and Windows as the daemon verifies an app it launches
 /// (`crate::apps`). An app installed for runtimes since replaced runs nowhere until it is built
@@ -175,7 +216,9 @@ pub(super) fn verified_installed(_workspace: &str, app: &str) -> Result<Verified
     #[cfg(target_os = "linux")]
     return {
         let verified = verified_package(app)?;
-        if !verified.runs_here() {
+        let carried = runtime_bundle::carried(&verified.runtime).is_some()
+            && runtime_bundle::carried(&verified.app_runtime).is_some();
+        if !verified.runs_here() && !carried {
             return Err(format!(
                 "{app} names runtimes not installed here ({}, {})",
                 verified.runtime, verified.app_runtime

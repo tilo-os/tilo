@@ -493,10 +493,6 @@
       "libraries": 1113793,
       "tests": 13241808
     },
-    "tilo-accounts-engine": {
-      "libraries": 0,
-      "tests": 2852024
-    },
     "tilo-action-policy": {
       "libraries": 8580067,
       "tests": 20360464

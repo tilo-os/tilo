@@ -323,6 +323,32 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
             ShellReply::Pressed
         }
         ShellCall::Writes => ShellReply::Writes(next_writes(&shell.writes).await),
+        ShellCall::Say {
+            workspace,
+            word,
+            agents,
+        } => {
+            let speaking = services
+                .speaking
+                .as_ref()
+                .ok_or("this device takes part in no live session")?;
+            speaking.say(&workspace, word.map(|word| *word), agents)?;
+            ShellReply::Said
+        }
+        ShellCall::Join { workspace, call } => {
+            let speaking = services
+                .speaking
+                .as_ref()
+                .ok_or("this device takes part in no live session")?;
+            ShellReply::Joined(speaking.join(&workspace, Some(call)).await)
+        }
+        ShellCall::Leave { workspace } => {
+            let speaking = services
+                .speaking
+                .as_ref()
+                .ok_or("this device takes part in no live session")?;
+            ShellReply::Joined(speaking.join(&workspace, None).await)
+        }
         call @ (ShellCall::Resources { .. }
         | ShellCall::Vault(_)
         | ShellCall::Receipt { .. }

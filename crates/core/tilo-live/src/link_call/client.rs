@@ -10,8 +10,8 @@ use moq_net::Timestamp;
 use tilo_lock::MutexRecover as _;
 
 use super::{
-    ACTIVITY, AUDIO, CAPTURE, DEMAND, HEARD, HEARING, HELD, HELD_RETAIN, PAGE, PICTURE, PRESENCE,
-    SHARE, SHOW, STATE, WINDOW, encode_page, encode_picture, encode_window,
+    ACTIVITY, AUDIO, CAPTURE, DEMAND, HEARD, HEARING, HELD, HELD_RETAIN, PAGE, PICTURE, SHARE,
+    SHOW, STATE, WINDOW, encode_page, encode_picture, encode_window,
 };
 use crate::Task;
 use crate::carrier;
@@ -117,9 +117,7 @@ impl Call {
             .create_broadcast(CAPTURE)
             .map_err(|error| error.to_string())?;
         let mut tracks = BTreeMap::new();
-        for name in [
-            AUDIO, PRESENCE, ACTIVITY, SHARE, SHOW, HEARING, PICTURE, WINDOW, PAGE,
-        ] {
+        for name in [AUDIO, ACTIVITY, SHARE, SHOW, HEARING, PICTURE, WINDOW, PAGE] {
             let track = broadcast
                 .create_track(
                     name,
@@ -359,18 +357,18 @@ impl Call {
         Ok(())
     }
 
-    /// Publish `body` as object `sequence` of `track`: voice and presence travel this way, and
+    /// Publish `body` as object `sequence` of `track`: voice and activity travel this way, and
     /// everything else has its own call.
     ///
     /// # Errors
     ///
     /// [`LiveError::Invalid`] for a track only [`Self::send_picture`],
-    /// [`Self::send_window`], [`Self::send_page`] or [`Self::say`] carries, and
-    /// [`LiveError::Ended`] once the session ended.
+    /// [`Self::send_window`], [`Self::send_page`] or [`Self::say`] carries, and for presence,
+    /// which only the device's daemon says ([`crate::speaker`]); [`LiveError::Ended`] once the
+    /// session ended.
     pub fn publish(&self, track: Track, _sequence: u32, body: &[u8]) -> Result<(), LiveError> {
         match track {
             Track::Audio => self.put_datagram(AUDIO, body),
-            Track::Presence => self.put(PRESENCE, body),
             Track::Activity => self.put(ACTIVITY, body),
             _ => Err(LiveError::Invalid),
         }

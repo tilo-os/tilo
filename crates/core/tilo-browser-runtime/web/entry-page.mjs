@@ -1329,7 +1329,7 @@ function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
     return {...made, saved: {...made.saved, person: identity.userPublicKey, host}};
   };
   const resume = saved => (ours(saved) ? tickets.resume(saved) : null);
-  return {tickets, ours, make, resume};
+  return {tickets, ours, make, resume, warm: () => tickets.warm()};
 }
 
 /**
@@ -1348,6 +1348,9 @@ function offerFirstScreenCodes({origin, identity, runtime, link, home = null, pa
   const host = new URL(origin).origin;
   const setup = agentSetupCodes({origin: host, identity, runtime, link});
   firstScreen.offerSetup(setup.make, setup.resume, {ahead: false});
+  // The press that makes a code asks the host over one link: dial it once the
+  // screen is idle, so that press waits only for the answer.
+  setup.warm();
   // Signing this tab in is the person's computer's to approve, and this tab's to pair once it
   // learns whom: the ticket names no workspace, so the host makes none for it.
   if (!pair) return;
@@ -1576,6 +1579,17 @@ function ticketCodes({origin, identity}) {
     },
     resume(saved) {
       return answerer(saved);
+    },
+    /** Dial the link a press's ticket action will ask over, so the press waits
+     * only for the answer: one pre-dial, once the runtime is in and the page is
+     * idle, never beside the runtime module's own download. Quiet when the host
+     * is not reached; the press dials again (`../src/peer.rs`). */
+    warm() {
+      const idle = () => {
+        void loadRuntime().then(runtime => runtime.warmTicketAction?.(post)).catch(() => {});
+      };
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(idle, {timeout: 5000});
+      else setTimeout(idle, 5000);
     },
   };
 }

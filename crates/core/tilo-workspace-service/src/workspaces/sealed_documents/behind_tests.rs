@@ -233,19 +233,24 @@ async fn a_members_compaction_of_the_nodes_fold_is_taken() {
         .await
         .unwrap()
         .unwrap();
-    keys.compact(
-        &mut folded,
-        (APP, DOCUMENT),
-        None,
-        (&lounge.governor, &lounge.governor_key),
-        now,
-    )
-    .unwrap();
+    let written = keys
+        .compact(
+            &mut folded,
+            (APP, DOCUMENT),
+            None,
+            (&lounge.governor, &lounge.governor_key),
+            now,
+        )
+        .unwrap();
     let collaboration = governed.collaboration().clone();
     governed
         .commit(folded, &lounge.governor_key, now, |_, _| Ok(collaboration))
         .unwrap();
     lounge.workspaces.settle(&mut governed).await.unwrap();
+    lounge
+        .workspaces
+        .carry_written(governed.workspace_id(), &written)
+        .unwrap();
     let fold = governed.peer().publication().sealed_history(APP, DOCUMENT)[0].clone();
     drop(governed);
     tilo_test_env::within("the server keeps the node's fold", async {

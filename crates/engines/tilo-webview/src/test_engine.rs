@@ -919,9 +919,6 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)
             | WebViewCommand::ReportDocumentSize(_)
-            | WebViewCommand::CancelNativeDownload { .. }
-            | WebViewCommand::RetryDownload { .. }
-            | WebViewCommand::CancelAllDownloads
             | WebViewCommand::AnswerClipboardRead { .. }
             | WebViewCommand::ImeComposition { .. }
             | WebViewCommand::ImeCommit(_)

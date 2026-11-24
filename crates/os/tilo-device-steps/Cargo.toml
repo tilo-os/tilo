@@ -56,8 +56,6 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-# The settings a session holds, in memory: what the display step and the compositor share.
-settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 

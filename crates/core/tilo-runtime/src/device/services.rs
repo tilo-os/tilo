@@ -20,7 +20,7 @@ use super::ticket::Tickets;
 use super::workspaces::{MemberListGrants, Opening, ServiceWorkspaces, block_on_owned};
 use super::{host_runs, take_work};
 use crate::personal_devices::PersonalDevices;
-use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, host, profile};
+use crate::{RuntimeServices, apps, host, profile};
 use ed25519_dalek::SigningKey;
 use serde_json::{Map, Value, json};
 #[cfg(unix)]
@@ -101,6 +101,9 @@ pub struct Daemon {
     /// The links of the shells this daemon starts ([`Self::start_shell`]).
     shell_links: Arc<tilo_workspace_service::apps::shell::ShellLinks>,
     workspaces: Arc<ServiceWorkspaces>,
+    /// The device's live session: the one place this device is in each workspace's call and
+    /// presence, which an app's call lane joins through ([`Self::app_call_setup`]).
+    live: std::sync::OnceLock<Arc<super::live_relay::Live>>,
     /// Whether this run walked the old keeper's kept secrets into the person's vault: done once
     /// the workspace is held, so an app launch costs no keyring read after the first.
     pub(crate) old_secrets: std::sync::atomic::AtomicBool,
@@ -170,6 +173,87 @@ pub struct Daemon {
         advisory_lock::FileLock,
     )>,
 }
+
+impl Daemon {
+    /// The device's live session, once the daemon runs it.
+    #[cfg(test)]
+    pub(crate) fn live(&self) -> Option<&Arc<super::live_relay::Live>> {
+        self.live.get()
+    }
+
+    /// What an app's call lane needs to carry one of its calls into a workspace's call through
+    /// the live session this device holds: the device's word there, and the way to join a call as
+    /// the app, through the device's one dispatch under the app's grants. No key material and no
+    /// relay are part of it.
+    ///
+    /// # Errors
+    ///
+    /// This device runs no live session, or the app's workspace has none: the lane refuses every
+    /// carry with the reason.
+    pub(crate) fn app_call_setup(
+        self: &Arc<Self>,
+        at: &crate::seats::AppAt,
+    ) -> Result<tilo_live::app_call::CallSetup, String> {
+        let live = self
+            .live
+            .get()
+            .ok_or("this computer's live session is not running")?;
+        let workspace = tilo_desktop_model::WorkspaceId::parse(&at.workspace)
+            .ok_or("that app runs in no workspace")?;
+        let call = live
+            .call_session(workspace)
+            .ok_or("this computer holds no live session for the app's workspace")?;
+        let daemon = Arc::downgrade(self);
+        let (app, named) = (at.app.clone(), at.workspace.clone());
+        let join: tilo_live::app_call::JoinCall = Arc::new(move |call| {
+            let daemon = daemon
+                .upgrade()
+                .ok_or("this computer's daemon is stopping")?;
+            let (tree, caller) = daemon
+                .app_tree(&app, &named)
+                .map_err(|error| error.to_string())?;
+            let request = match call {
+                Some(call) => super::live_speaking::request(
+                    super::live_speaking::JOIN,
+                    serde_json::to_value(super::live_speaking::Joining {
+                        channel: call.channel,
+                        name: call.name,
+                        bridge: call.bridge,
+                    })
+                    .map_err(|error| error.to_string())?,
+                ),
+                None => super::live_speaking::request(
+                    super::live_speaking::LEAVE,
+                    serde_json::Value::Object(serde_json::Map::new()),
+                ),
+            };
+            let receipt = tilo_actions::remote::ActionProvider::invoke(&tree, &caller, request)
+                .wait_timeout(JOIN_WAIT)
+                .ok()
+                .flatten()
+                .ok_or("the device did not answer the join in time")?
+                .map_err(|error| error.to_string())?;
+            match receipt.status {
+                tilo_actions::remote::ReceiptStatus::Completed { output } => match output.value {
+                    Some(value) => serde_json::from_value::<super::live_speaking::Joined>(value)
+                        .map(|joined| Some((joined.channel, joined.generation)))
+                        .map_err(|error| error.to_string()),
+                    None => Ok(None),
+                },
+                tilo_actions::remote::ReceiptStatus::Failed { error } => Err(error.message),
+                other => Err(format!("the join did not finish: {other:?}")),
+            }
+        });
+        Ok(tilo_live::app_call::CallSetup {
+            service: at.app.clone(),
+            speaker: Arc::clone(call.speaker()),
+            join,
+        })
+    }
+}
+
+/// How long an app's join of a call may take: its keys may have to arrive first.
+const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The services a profile is served as: the person's own runtime, or the same
 /// in development.
@@ -1185,7 +1269,7 @@ impl Daemon {
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
         let provider = self
             .person()?
-            .provider_at(workspace, caller.clone(), None)?;
+            .provider_at(workspace, caller.clone(), (None, false))?;
         let api = self.api()?;
         let named = workspace.to_owned();
         let joined = block_on_owned(async move { api.joined(&named, Arc::new(provider)).await })
@@ -1359,7 +1443,7 @@ impl Daemon {
             }
         };
         tilo_files::native::private::directory(root)?;
-        let sockets = &crate::daemon::sockets(root)?;
+        let sockets = crate::daemon::sockets(root)?;
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
         let joined = identity.joined();
@@ -1380,7 +1464,7 @@ impl Daemon {
             let founded = person_workspace(&identity.cert.user_public_key);
             (founded.to_string(), Some(founded))
         };
-        let apps = Arc::new(apps::Apps::from_env(root, sockets));
+        let apps = Arc::new(apps::Apps::from_env(root, &sockets));
         let brokers = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         // What apps may found records with here: the kinds their installed
@@ -1654,6 +1738,7 @@ impl Daemon {
             super::live_relay::Live::new(
                 &workspaces,
                 kept.as_ref().and_then(super::keep::Kept::live_relay),
+                Arc::clone(&fanout),
             )
         };
         stage("serving the device's endpoint");
@@ -1729,7 +1814,7 @@ impl Daemon {
         // What the device's providers publish at fixed addresses is what an app's code calls them
         // by: each instance is handed their packages.
         apps.read_provided_from(workspaces.copies().providers());
-        let identity_socket = sockets.join(IDENTITY_SOCKET);
+        let identity_socket = sockets.identity.clone();
         stage("starting the identity service");
         let identity_broker = identity_service(
             identity_socket.clone(),
@@ -1739,7 +1824,7 @@ impl Daemon {
             dev,
         )?;
         stage("opening the content store");
-        let media = profile::MediaHost::start(&root.join("content"), &sockets.join(BLOB_SOCKET))?;
+        let media = profile::MediaHost::start(&root.join("content"), &sockets.blobs)?;
         // The files daemons that mount this device's workspaces: their stores keep the files'
         // bytes, which the broker's record content reads and keeps through them.
         let files_daemons = Arc::new(tilo_workspace_service::files::socket::Daemons::default());
@@ -1772,7 +1857,7 @@ impl Daemon {
             BrokerParts {
                 shortcuts,
                 root,
-                sockets,
+                sockets: &sockets,
                 apps: &apps,
                 workspaces: &workspaces,
                 keys: &workspaces.keys(),
@@ -1856,7 +1941,7 @@ impl Daemon {
         // own: one copy each on this daemon's dispatch.
         super::capabilities::register(&super::capabilities::Mounting {
             providers: &workspaces.copies().providers(),
-            blob_socket: &sockets.join(BLOB_SOCKET),
+            blob_socket: &sockets.blobs,
             search: search
                 .search()
                 .map(|search| search as Arc<dyn tilo_actions::remote::ResourceSearch>),
@@ -2051,12 +2136,13 @@ impl Daemon {
             other_devices: other_devices(&workspaces),
             apps,
             workspaces,
+            live: std::sync::OnceLock::new(),
             old_secrets: std::sync::atomic::AtomicBool::new(false),
             _identity: identity_broker,
             workspace: workspace_id,
             actor,
             identity_socket,
-            blob_socket: sockets.join(BLOB_SOCKET),
+            blob_socket: sockets.blobs,
             replicas,
             _media: media,
             _endpoint_router: endpoint_router,
@@ -2076,6 +2162,7 @@ impl Daemon {
             dir: identity.place.dir().to_path_buf(),
             _lock: lock,
         };
+        let _ = daemon.live.set(Arc::clone(&live));
         // A person founded while this daemon serves has their root marked in their devices record
         // and their root-only asks served here from then on, without the person's services
         // starting again: the first person a fresh computer founds and every account after it.
@@ -2452,8 +2539,8 @@ fn take_work_action_service(
 /// What the broker's services are opened from: the device's workspaces and the apps.
 struct BrokerParts<'a> {
     root: &'a Path,
-    /// The directory the daemon's sockets are in.
-    sockets: &'a Path,
+    /// The daemon's sockets.
+    sockets: &'a crate::daemon::Sockets,
     apps: &'a Arc<apps::Apps>,
     workspaces: &'a Arc<ServiceWorkspaces>,
     keys: &'a tilo_workspace_service::apps::workspace_keys::KeyProvider,
@@ -2504,7 +2591,7 @@ fn start_broker(
 )> {
     let (policy_origin, policy_time) = execution_policy_clock()?;
     let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
-        parts.sockets.join(COLLAB_SOCKET),
+        parts.sockets.collab.clone(),
         Some(Arc::clone(parts.workspaces) as Arc<dyn WorkspaceAuthority>),
         PeerPublisher::with_commits(ServiceCommits::new(parts.workspaces)
             as Arc<dyn tilo_workspace_service::apps::workspace_commits::WorkspaceCommits>),
@@ -2525,7 +2612,7 @@ fn broker_services(
 ) -> io::Result<ProcessServices> {
     let document_content = super::content::document_content(
         parts.workspaces,
-        &parts.sockets.join(BLOB_SOCKET),
+        &parts.sockets.blobs,
         Arc::clone(&parts.files),
     );
     // Where this workspace's offloadable actions may run instead of here: the
@@ -2603,10 +2690,6 @@ fn broker_services(
     // and connecting, signing in again and removing stay the action API's.
     let accounts: Arc<dyn PublishedResources> =
         Arc::new(super::accounts::published(parts.workspaces));
-    // The workspace's vault, for Passwords' own window alone: its entries as this device opens
-    // them, and the calls that keep and forget them here, none of which records a secret.
-    let vault: Arc<dyn PublishedResources> =
-        Arc::new(super::passwords_vault::Published::new(parts.workspaces));
     // Nearby Send's offers and transfers, read by the person's shell over the shell link.
     let nearby: Arc<dyn PublishedResources> = Arc::new(parts.nearby.published());
     // What is live in the workspaces this device keeps, which the desktop shows.
@@ -2614,6 +2697,12 @@ fn broker_services(
     // The record each window this device runs holds, which its desktop notes beside the window.
     let window_notes: Arc<dyn PublishedResources> =
         super::window_notes::Published::of(parts.fanout);
+    // What a person copies from the vault is put on their session's clipboard from here, so no
+    // app ever holds it.
+    parts
+        .workspaces
+        .copies()
+        .copy_secrets_to(Arc::new(super::secret_clipboard::SessionClipboard));
     // The code of this moment a vault item's seed makes, which an app that shows one-time codes
     // follows as the item's reading: read here, where the seed is.
     let vault_codes: Arc<dyn PublishedResources> =
@@ -2643,10 +2732,6 @@ fn broker_services(
             .serving(
                 &[tilo_actions::remote::person_accounts::RESOURCE],
                 Arc::clone(&accounts),
-            )
-            .serving(
-                &[tilo_workspace_service::workspaces::passwords_vault::RESOURCE],
-                Arc::clone(&vault),
             )
     };
     // What the person's shell reads and changes over its link: what the daemon keeps, never what
@@ -2792,12 +2877,13 @@ fn broker_services(
         shell: Some(Arc::new(super::shell::services(
             parts.workspaces,
             parts.shell_links,
-            parts.sockets.join(COLLAB_SOCKET),
+            parts.sockets.collab.clone(),
             Arc::clone(parts.shell_dispatch),
             shell_published,
             shell_processes(parts.apps, parts.workspaces),
             Arc::clone(&parts.identity),
             Some(live_links(parts.live)),
+            Arc::clone(parts.live) as Arc<dyn tilo_workspace_service::apps::shell::ShellSpeaking>,
         ))),
         // A workspace placed on a host has its records changed there: the person's actions on
         // them are sent to the host, which decides and runs them, and the change reaches this
@@ -3007,6 +3093,7 @@ impl RuntimeServices for Daemon {
         let host = self.action_provider()?;
         Ok(host.session_factory(
             workspace,
+            self.actor.clone(),
             self.policy_origin.capture().map_err(io::Error::other)?,
         ))
     }
@@ -3106,26 +3193,29 @@ impl PersonDispatch {
 
     /// The dispatch the person's calls in `workspace` reach.
     pub(super) fn provider(&self, workspace: &str) -> io::Result<RuntimeActionProvider> {
-        self.provider_at(workspace, self.caller(workspace), None)
+        self.provider_at(workspace, self.caller(workspace), (None, false))
     }
 
-    /// [`Self::provider`] for a call the person pressed at `pressed` on their shell's screen: the
-    /// question the call may wait in stands over that window.
+    /// The dispatch the person's own shell's calls in `workspace` reach, on the link the daemon
+    /// made for it alone: where the call was pressed at `pressed` on their shell's screen, the
+    /// question it may wait in stands over that window. The shell is the system's view, so its
+    /// own answer to what waits for the person is their confirmation.
     pub(super) fn provider_pressed(
         &self,
         workspace: &str,
         pressed: Option<runtime_collab::wire::shell::ShellPress>,
     ) -> io::Result<RuntimeActionProvider> {
-        self.provider_at(workspace, self.caller(workspace), pressed)
+        self.provider_at(workspace, self.caller(workspace), (pressed, true))
     }
 
     /// The dispatch the calls of `caller` in `workspace` reach: every action of one answered
-    /// locally, and no other caller let in.
+    /// locally, and no other caller let in. `own_shell` where it serves the person's own shell
+    /// alone ([`AdmittedRuntimeSession::own_shell`]).
     fn provider_at(
         &self,
         workspace: &str,
         caller: Caller,
-        pressed: Option<runtime_collab::wire::shell::ShellPress>,
+        (pressed, own_shell): (Option<runtime_collab::wire::shell::ShellPress>, bool),
     ) -> io::Result<RuntimeActionProvider> {
         // A new person's first call in their own workspace founds it, when nothing came in for
         // them from their desktop.
@@ -3161,6 +3251,7 @@ impl PersonDispatch {
                 agent: None,
                 projection: Some(caller),
                 pressed,
+                own_shell,
             })),
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
@@ -3253,6 +3344,7 @@ impl Daemon {
                 admission,
                 projection: None,
                 pressed: None,
+                own_shell: false,
             })),
             // A key reads what the device is, as the person's agents do; only the person lets
             // another device in ([`RuntimeActionProvider::is_the_person`]).
@@ -4030,6 +4122,10 @@ struct AdmittedRuntimeSession {
     /// Where on the shell's screen the person pressed the call, when this dispatch serves their
     /// press: the device and the app are filled in where the call is kept.
     pressed: Option<runtime_collab::wire::shell::ShellPress>,
+    /// Whether this run serves the person's own shell on the link the daemon made for it alone:
+    /// the system's view, whose answer to a question that waits for the person is their
+    /// confirmation. An app or agent the shell names is no caller this run admits.
+    own_shell: bool,
 }
 
 impl AdmittedRuntimeSession {
@@ -4405,17 +4501,17 @@ impl RuntimeActionProvider {
     fn session_factory(
         self,
         workspace: String,
+        actor: String,
         policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
     ) -> tilo_mcp::SessionFactory<Self> {
         let provider = self;
         Arc::new(move || {
             // The MCP client is the person's agent, under a key of its own: the admission stays
-            // the person's, and every call the client makes is signed by the agent's key.
-            let admission = provider
-                .admission()
-                .ok_or_else(|| io::Error::other("this dispatch admitted no run to delegate"))?;
+            // the person's, and every call the client makes is signed by the agent's key. Each
+            // connection is a run of its own, admitted for it: its end retires that run alone,
+            // never the one the daemon's other connections go on as.
             let (session_host, caller) =
-                provider.agent_session_of(admission, &policy_time, |person| {
+                provider.agent_session(&workspace, &actor, &policy_time, |person| {
                     (device_agent_id(person, MCP_CLIENT), MCP_CLIENT.to_owned())
                 })?;
             let run = tilo_mcp::agent_id(&caller);
@@ -4529,6 +4625,7 @@ impl RuntimeActionProvider {
                 agent: Some(agent),
                 projection: None,
                 pressed: None,
+                own_shell: false,
             })),
             tickets: self.tickets.clone(),
             invocations: Arc::clone(&self.invocations),
@@ -4575,6 +4672,7 @@ impl RuntimeActionProvider {
                 agent: None,
                 projection: None,
                 pressed: None,
+                own_shell: false,
             })),
             tickets: None,
             invocations: Arc::clone(&self.invocations),
@@ -4886,8 +4984,15 @@ impl ActionProvider for RuntimeActionProvider {
                 return Pending::ready(Err(refusal.into()));
             }
             // A person's answer to a question that waits for them, as the run admitted them: an
-            // agent answers nobody's, its own least.
+            // agent answers nobody's, its own least. Only the system confirms for them: their own
+            // shell's confirm view, or the CLI's own prompt on a connection the kernel says is
+            // theirs. A program, an app and an agent are asked, never answer.
             if tilo_actions::remote::asked::is_resolve(&request.target) {
+                if session.agent.is_some() || !(session.own_shell || caller.is_own_connection()) {
+                    return Pending::ready(Err(ActionCallError::Refused {
+                        reason: tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM.to_owned(),
+                    }));
+                }
                 return self
                     .workspaces
                     .copies()

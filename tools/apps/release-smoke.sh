@@ -97,23 +97,18 @@ first_frame() (
   (( ${#failed[@]} == 0 )) || { echo "no first frame from: ${failed[*]}" >&2; exit 1; }
 )
 
-# Apps run their engine libraries. Settings has no probe (its binary is one
-# call into its engine library), Calendar none for the accounts engine, and Chat and the
-# on-screen keyboard none (build-thin-apps.sh runs those engines' own
-# checks): for those only the trace of the start counts (an app need not
-# accept --help). An engine another engine chains on (`via:` the engine the
-# app loads) must arrive from the app or through that engine, which the app
-# loaded itself:
-# Browser's import engine carries its service sessions, whose ownership comes
-# from the accounts engine; on x86_64 Browser names only the import engine.
-# Settings' engine library carries the app itself, whose ownership comes from
-# the accounts engine.
+# Apps run their engine libraries. Chat and the on-screen keyboard have no
+# probe of their own (build-thin-apps.sh runs those engines' own checks): for
+# those only the trace of the start counts (an app need not accept --help). An
+# engine another engine chains on (`via:` the engine the app loads) must
+# arrive from the app or through that engine, which the app loaded itself:
+# Browser's import engine carries its service sessions; on x86_64 Browser
+# names only the import engine.
 engines() (
   set -euo pipefail
   libdir=$(rustc --print target-libdir)
   failed=0
-  for probe in "calendar libtilo_accounts_engine.so" \
-               "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
+  for probe in "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                "chat libtilo_emoji_engine.so" \
                "osk libtilo_emoji_engine.so" \
                "notes libtilo_emoji_engine.so"; do

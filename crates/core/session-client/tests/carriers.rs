@@ -397,6 +397,9 @@ async fn a_links_ticket_is_refused_once_used_and_once_the_page_showing_it_is_rem
     // though the removed page still answers, not knowing.
     let (id, ticket) = ada.show_link(&shown, &page).await;
     let laptop = ada.laptop_peer(&ada.host_device.cert).await;
+    // The laptop announces the removal on its workspace's link: it waits for the link to be up,
+    // as a session told to revoke before it joins would keep the entry to itself.
+    ready(&[&laptop]).await;
     let removal = tilo_server_client::revoke_device(
         &ada.root,
         page.cert.device_public_key,

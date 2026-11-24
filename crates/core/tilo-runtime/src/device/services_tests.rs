@@ -159,6 +159,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
             agent: None,
             projection: Some(owner.clone()),
             pressed: None,
+            own_shell: false,
         })),
         tickets: None,
         invocations: Arc::default(),
@@ -245,6 +246,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
                 agent: None,
                 projection: Some(Caller::local_person(actor.clone()).in_workspace(&workspace_id)),
                 pressed: None,
+                own_shell: false,
             })
         }),
         ..provider.clone()

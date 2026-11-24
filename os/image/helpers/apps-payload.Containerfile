@@ -111,7 +111,6 @@ RUN --mount=type=secret,id=publisher_identity \
         args=(/out/tilo-runtime-bundle build \
           --release "${RUNTIME_RELEASE}" --arch "$(uname -m)" --from / \
           --include /out/libruntime_dylib.so \
-          --include-bin /out/tilo-runtime-account-capability \
           --include /out/fonts \
           --include "$1" \
           --identity /out/runtime-bundle-identity.json \
@@ -120,7 +119,7 @@ RUN --mount=type=secret,id=publisher_identity \
         objects=(); [ ! -f /out/tilolang-process ] || objects=(/out/tilolang-process); \
         while IFS= read -r engine; do objects+=("/out/$engine"); args+=(--include "/out/$engine"); done </out/runtime-engines; \
         dependencies="$(python3 /usr/local/libexec/tilo-collect-runtime-dependencies.py \
-          --library-dir /out /out/libruntime_dylib.so /out/tilo-runtime-account-capability "${objects[@]}" /out/thin-apps/*)"; \
+          --library-dir /out /out/libruntime_dylib.so "${objects[@]}" /out/thin-apps/*)"; \
         while IFS= read -r dependency; do args+=(--include "$dependency"); done <<<"$dependencies"; \
         "${args[@]}"' bundle "${RUST_LIBSTD}" \
       && /out/tilo-runtime-bundle key pubkey \
@@ -130,7 +129,7 @@ RUN --mount=type=secret,id=publisher_identity \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
-        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/tilo-runtime-account-capability /out/thin-apps/* $(find /out -maxdepth 1 -name tilolang-process) \
+        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/thin-apps/* $(find /out -maxdepth 1 -name tilolang-process) \
       && tilolang_packages="$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("tilolang", [])))' /out/app-plan.json 2>/dev/null || echo 0)" \
       && if [ "$tilolang_packages" != 0 ]; then \
            . /build/tools/apps/tilolang_packages.sh \

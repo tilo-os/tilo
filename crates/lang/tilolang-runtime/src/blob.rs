@@ -26,7 +26,7 @@
 use std::rc::Rc;
 
 use crate::abi::Imp;
-use crate::core::{Args, Core, HResult, ret_i64, trap};
+use crate::core::{Args, Core, HResult, ret_i32, ret_i64, trap};
 use crate::engine::Wasm;
 use crate::value::Value;
 
@@ -343,6 +343,16 @@ impl Core {
                 };
                 ret_i64(size)
             }
+            Imp::FileHere => {
+                let file = self.file_arg(a.h(0)?)?;
+                let here = self
+                    .blobs
+                    .borrow()
+                    .as_ref()
+                    .and_then(|blobs| blobs.read(&file.hash))
+                    .is_some();
+                ret_i32(i32::from(here))
+            }
             Imp::FileText => {
                 let file = self.file_arg(a.h(0)?)?;
                 let answer = match self.blobs.borrow().as_ref() {
@@ -597,11 +607,11 @@ fn made(blobs: &dyn BlobHost, name: &str, held: Held) -> Result<FileValue, Strin
                     "`{address}` is not the address of a file's content: they read `{SCHEME}<hash>`"
                 ));
             };
-            let bytes = blobs
-                .read(hash)
-                .ok_or_else(|| format!("the content of `{name}` is not on this device"))?;
-            let size = within(name, bytes.len(), MAX_CHOSEN)?;
-            Ok(FileValue::new(name, media_of(name), size, hash))
+            // A handle to what an address names, whether or not this device holds the bytes yet:
+            // a picture's record reaches a device before its bytes do, and saying that is what
+            // `File.here` and a viewer waiting for it are for. What reads the bytes says when
+            // they are not here, in its own words.
+            Ok(FileValue::new(name, media_of(name), -1, hash))
         }
         Held::Files(files) => {
             let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(files.len());

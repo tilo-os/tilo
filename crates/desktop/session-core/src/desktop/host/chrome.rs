@@ -175,22 +175,14 @@ impl ArrivalNotice {
 /// What a part of the shell, or a sheet over it, asks of its host that only the host carries out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChromeIntent {
-    TogglePeople,
     /// Invite someone to this workspace: the host's own invite flow, in one step.
     Invite,
     /// Add a device of this person's: the ticket a new device joins them with.
     PairDevice,
-    /// Open who is here at this person (their roster id): their row, with what they are doing and
-    /// the wave.
-    ShowPerson(String),
-    /// Open or close the person's own card: who they are here, and their devices.
-    ShowSelf,
     /// Open History on the workspace in front.
     ShowActivity,
     /// Give the active workspace this name.
-    RenameWorkspace {
-        name: String,
-    },
+    RenameWorkspace { name: String },
     /// Take the active workspace off this device's desktop, leaving it to the people in it.
     LeaveWorkspace,
     /// Delete the active workspace, with everything in it, now: the person already answered a

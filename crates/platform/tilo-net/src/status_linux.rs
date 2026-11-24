@@ -15,27 +15,6 @@ const BUS: &str = "org.freedesktop.portal.Desktop";
 const PATH: &str = "/org/freedesktop/portal/desktop";
 const INTERFACE: &str = "org.freedesktop.portal.NetworkMonitor";
 const DEADLINE: Duration = Duration::from_secs(3);
-static HOST: OnceLock<watch::Sender<Option<NetStatus>>> = OnceLock::new();
-
-fn host() -> &'static watch::Sender<Option<NetStatus>> {
-    HOST.get_or_init(|| watch::channel(None).0)
-}
-
-pub(super) fn set_host(available: Option<bool>, metered: Option<bool>) {
-    host().send_replace(Some(NetStatus {
-        connectivity: match available {
-            Some(true) => Connectivity::Online,
-            Some(false) => Connectivity::Offline,
-            None => Connectivity::Unknown,
-        },
-        metered,
-    }));
-}
-
-pub(super) fn clear_host() {
-    host().send_replace(None);
-}
-
 static STATUS: OnceLock<watch::Receiver<NetStatus>> = OnceLock::new();
 
 fn status() -> &'static watch::Receiver<NetStatus> {
@@ -58,10 +37,6 @@ fn status() -> &'static watch::Receiver<NetStatus> {
 }
 
 pub(super) fn current() -> NetStatus {
-    let hosted = *host().borrow();
-    if let Some(status) = hosted {
-        return status;
-    }
     let receiver = status();
     if receiver.has_changed().is_err() {
         imp::fallback()
@@ -72,25 +47,19 @@ pub(super) fn current() -> NetStatus {
 
 pub(super) struct Watch {
     portal: watch::Receiver<NetStatus>,
-    host: watch::Receiver<Option<NetStatus>>,
 }
 
 impl Watch {
     pub(super) fn new() -> Self {
         Self {
             portal: status().clone(),
-            host: host().subscribe(),
         }
     }
 
     pub(super) async fn wait(&mut self) {
-        let failed = tokio::select! {
-            result = self.portal.changed() => result.is_err(),
-            result = self.host.changed() => result.is_err(),
-        };
-        if failed {
+        if self.portal.changed().await.is_err() {
             // A failed thread/runtime start leaves the route-only answer usable.
-            let _ = tokio::time::timeout(imp::POLL, self.host.changed()).await;
+            tokio::time::sleep(imp::POLL).await;
         }
     }
 }
@@ -107,7 +76,7 @@ fn publish(sender: &watch::Sender<NetStatus>, status: NetStatus) {
 }
 
 async fn monitor(sender: &watch::Sender<NetStatus>) {
-    let mut host_changes = host().subscribe();
+    let mut host_changes = super::host().subscribe();
     loop {
         // A rich host owns this process's hints. Do not also keep retrying an
         // unavailable portal or reading routes while that transport is alive.
@@ -217,23 +186,15 @@ mod tests {
     use zbus::object_server::SignalEmitter;
 
     #[tokio::test]
-    async fn authenticated_host_preserves_unknown_and_unmetered_and_clears_on_loss() {
-        set_host(None, None);
-        assert_eq!(
-            current(),
-            NetStatus {
-                connectivity: Connectivity::Unknown,
-                metered: None
-            }
-        );
+    async fn a_hosted_status_suspends_the_portal_and_wakes_the_watcher() {
+        crate::status::clear_host_status();
         let (portal_sender, mut portable_updates) = watch::channel(NetStatus {
             connectivity: Connectivity::Online,
             metered: Some(false),
         });
         let monitor_task = tokio::spawn(async move { monitor(&portal_sender).await });
-        // Past the fallback's poll on the runtime's clock, which runs ahead
-        // while every task waits.
         tokio::time::pause();
+        crate::status::set_host_status(Some(true), Some(true));
         assert!(
             tokio::time::timeout(imp::POLL * 2, portable_updates.changed())
                 .await
@@ -241,45 +202,18 @@ mod tests {
             "a supported rich host must suspend fallback route reads and portal retries"
         );
         tokio::time::resume();
-        let (_portal, portal) = watch::channel(imp::fallback());
-        let mut changes = Watch {
-            portal,
-            host: host().subscribe(),
-        };
-        set_host(Some(true), Some(true));
-        changes.wait().await;
-        assert_eq!(
-            current(),
-            NetStatus {
-                connectivity: Connectivity::Online,
-                metered: Some(true)
-            }
-        );
-        set_host(Some(true), Some(false));
-        changes.wait().await;
-        assert_eq!(current().metered, Some(false));
-        set_host(Some(false), None);
-        changes.wait().await;
-        assert_eq!(
-            current(),
-            NetStatus {
-                connectivity: Connectivity::Offline,
-                metered: None
-            }
-        );
-        clear_host();
-        changes.wait().await;
+        let mut changes = crate::status::watch();
+        crate::status::set_host_status(Some(true), Some(false));
+        assert_eq!(changes.changed().await.metered, Some(false));
+        crate::status::set_host_status(Some(false), None);
+        assert_eq!(changes.changed().await.connectivity, Connectivity::Offline);
+        crate::status::clear_host_status();
         monitor_task.abort();
         assert!(monitor_task.await.unwrap_err().is_cancelled());
         assert_eq!(
-            *host().borrow(),
+            *crate::status::host().borrow(),
             None,
             "host loss must release the rich snapshot"
-        );
-        assert_ne!(
-            current().metered,
-            Some(false),
-            "portable fallback cannot promise unmetered"
         );
     }
 

@@ -11,7 +11,7 @@
 //!      distinct — and A never receives its own presence back.
 //!
 
-use crate::support_collab::TypedBroker;
+use crate::support_collab::{TypedBroker, change_carrying, changes_of};
 use ui_core::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui_core::presence::PresenceKey;
 
@@ -26,14 +26,16 @@ fn n_peer_fanout_and_per_peer_attribution() {
     let _ = b.poll();
     let _ = c.poll();
 
-    a.send(CollabRequest::document_incremental(b"X".to_vec()));
+    // A record takes real changes: the store reads every write as one.
+    let x = change_carrying(b"X".to_vec());
+    a.send(CollabRequest::document_incremental(x.clone()));
 
     let count_incremental = |evs: &[CollabEvent]| {
         evs.iter()
             .filter(|event| {
                 matches!(
                     event.document_mutation().cloned(),
-                    Some(collab_types::DocumentMutation::Incremental(data)) if data == b"X"
+                    Some(collab_types::DocumentMutation::Incremental(data)) if changes_of(&data) == changes_of(&x)
                 )
             })
             .count()

@@ -355,6 +355,9 @@ fn phone_home() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
     (dir, env)
 }
 
+/// The app a workspace installs: Notes, by the id every device and view names it.
+const NOTES: &str = "so.tilo.notes";
+
 /// A host installs Notes into its workspace, and a phone that joins it by its laptop's ticket
 /// lists Notes, by its name, and nothing that is not an app the workspace installed.
 #[test]
@@ -391,7 +394,7 @@ fn a_phone_that_joins_lists_its_workspaces_installed_apps_by_name_and_no_others(
             let apps = phone
                 .apps(&server.workspace)
                 .map_err(|error| format!("{error:#}"))?;
-            if apps.iter().any(|app| app.key == "notes") {
+            if apps.iter().any(|app| app.key == NOTES) {
                 Ok(apps)
             } else {
                 Err(format!("the phone lists {apps:?}"))
@@ -403,7 +406,7 @@ fn a_phone_that_joins_lists_its_workspaces_installed_apps_by_name_and_no_others(
         1,
         "nothing that is not an app the workspace installed is listed: {apps:?}"
     );
-    assert_eq!(apps[0].key, "notes", "the app the workspace runs: {apps:?}");
+    assert_eq!(apps[0].key, NOTES, "the app the workspace runs: {apps:?}");
     assert_eq!(apps[0].name, "Notes", "Notes is listed by its name: {apps:?}");
 
     phone.stop().expect("the phone's daemon stops");

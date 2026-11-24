@@ -146,6 +146,35 @@ pub struct ShellServices {
     /// device's live session, which runs its relay. `None` where the device runs none, and a
     /// link is refused.
     pub live: Option<LiveLinks>,
+    /// The device's one word in each workspace's live session, which the shell tells what the
+    /// person says of themselves and which call they are in. `None` where the device runs no
+    /// live session, and the shell's word is refused.
+    pub speaking: Option<Arc<dyn ShellSpeaking>>,
+}
+
+/// The device's one word in each of its workspaces' live sessions, as the person's shell tells
+/// it: the daemon says it, beside what the device's apps say, and holds the media keys of the
+/// call the person is in.
+pub trait ShellSpeaking: Send + Sync {
+    /// The person says `word` of themselves in `workspace` now, or nothing any more (`None`),
+    /// and the device executes `agents` there.
+    ///
+    /// # Errors
+    /// The device takes no part in `workspace`'s live session.
+    fn say(
+        &self,
+        workspace: &str,
+        word: Option<runtime_collab::wire::shell::ShellWord>,
+        agents: Vec<runtime_collab::wire::shell::SpokenFor>,
+    ) -> Result<(), String>;
+
+    /// The person joins `call` in `workspace`, or leaves the call they are in (`None`): the
+    /// call's channel and its rule's generation once the device holds its media keys.
+    fn join(
+        &self,
+        workspace: &str,
+        call: Option<runtime_collab::wire::shell::ShellInCall>,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<(String, u64)>, String>> + Send>>;
 }
 
 /// What carries one admitted link of a shell's live session until it ends.

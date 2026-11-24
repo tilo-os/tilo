@@ -195,8 +195,8 @@ pub fn described(ty: &Ty) -> String {
         }
         Ty::Bytes => "text, len".to_owned(),
         Ty::File => {
-            "text, files, image_info, cropped, turned, resized, encoded, thumbnail (and the members \
-             name, media, size, url, path)"
+            "text, files, here, image_info, cropped, turned, resized, encoded, thumbnail (and the \
+             members name, media, size, url, path)"
                 .to_owned()
         }
         Ty::Json => "a document whose shape code asks as it reads, `match` on `.object(fields)`, `.array(items)`, `.string(text)`, `.number(number)`, `.bool(flag)`, `.null`".to_owned(),

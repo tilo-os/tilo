@@ -14,8 +14,8 @@
 
 use collab_types::presence::Shown;
 use iroh::EndpointId;
-use tilo_session_core::desktop::host::chrome::ActiveExposure;
 use tilo_desktop_model::TabId;
+use tilo_session_core::desktop::host::chrome::ActiveExposure;
 
 use super::WindowShares;
 use crate::sync::Client;

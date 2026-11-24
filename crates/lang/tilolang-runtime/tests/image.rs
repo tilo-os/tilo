@@ -71,6 +71,10 @@ action nothing(s: Shelf, f: File) uses image {
     s.note = said
 }
 
+action here(s: Shelf, f: File) uses image {
+    s.note = if f.here() { "here" } else { "arriving" }
+}
+
 action thumb(s: Shelf, f: File) uses image {
     let said = match f.thumbnail(64) {
         .some(preview) => preview.name,
@@ -282,6 +286,16 @@ view shelf(s: Shelf) {
             .expect("the file's media type and address");
         assert_eq!(media, "image/webp");
         assert!(bench.device.bytes_at(url).starts_with(b"RIFF"));
+    }
+
+    #[test]
+    fn a_file_says_whether_this_device_holds_its_bytes() {
+        let bench = Bench::new();
+        let photo = bench.photo();
+        assert_eq!(bench.call("here", &photo), "here");
+        // A record whose bytes another device still holds: its address is all this one has.
+        let away = FileValue::new("away.png", "image/png", 12, "not-in-this-store");
+        assert_eq!(bench.call("here", &away), "arriving");
     }
 
     #[test]

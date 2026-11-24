@@ -8,7 +8,9 @@
 //! and a tone instead of a microphone.
 
 use std::sync::Arc;
+
 use std::time::{Duration, Instant};
+use tilo_live::live_session::LiveSession;
 
 use crate::platform::fabric::Continuity;
 use crate::sync::Event;
@@ -433,7 +435,7 @@ fn live_session(
     device: [u8; 32],
     devices: &[[u8; 32]],
     keys: &key_group::ContentKeys,
-) -> Arc<LiveSession> {
+) -> crate::live::Sessions {
     Arc::new(
         LiveSession::local(
             relay,
@@ -447,10 +449,14 @@ fn live_session(
             },
         )
         .expect("a local live session"),
-    )
+    ) as crate::live::Sessions
 }
 
-fn carrier(client: &Client, keys: &KeyProvider, heard_on: Option<Arc<LiveSession>>) -> Carrier {
+fn carrier(
+    client: &Client,
+    keys: &KeyProvider,
+    heard_on: Option<crate::live::Sessions>,
+) -> Carrier {
     let calls = Calls::new();
     calls.follow(client, None);
     let probe = Arc::new(Mutex::new(Vec::new()));

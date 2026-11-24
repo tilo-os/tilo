@@ -111,28 +111,57 @@ async fn kept_on_disk(workspaces: &Workspaces, invocation: InvocationId) -> Stri
     .await
 }
 
-/// Ada's Passwords entry titled `title`, secrets included, as she reads it.
+/// Ada's item titled `title`, its secret, note and fields shown to her one by one.
 async fn entry_titled(
     service: &ServiceWorkspaceActions,
     workspace_id: tilo_server_protocol::WorkspaceId,
     ada: &DeviceCert,
     title: &str,
 ) -> Option<Value> {
-    let entries = ask(
+    let as_ada = caller(ada);
+    let listed = ask(
         service,
         workspace_id,
-        (ada, &caller(ada)),
-        person_vault::ENTRIES,
+        (ada, &as_ada),
+        person_vault::LIST,
         json!({}),
     )
     .await
-    .expect("Ada reads her entries");
-    entries["entries"]
+    .expect("Ada lists the vault");
+    let item = listed["items"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|entry| entry["title"] == title)
-        .cloned()
+        .find(|item| item["title"] == title)?
+        .clone();
+    let mut shown = serde_json::Map::new();
+    let mut parts = vec![("password".to_owned(), "secret".to_owned())];
+    parts.push(("notes".to_owned(), "notes".to_owned()));
+    for label in item["fields"].as_array().into_iter().flatten() {
+        let label = label.as_str().unwrap();
+        parts.push((format!("field:{label}"), format!("field:{label}")));
+    }
+    for (name, part) in parts {
+        let value = ask(
+            service,
+            workspace_id,
+            (ada, &as_ada),
+            person_vault::REVEAL,
+            json!({"item": item["reference"], "part": part}),
+        )
+        .await
+        .expect("Ada is shown her item");
+        shown.insert(name, value["value"].clone());
+    }
+    let fields: serde_json::Map<String, Value> = shown
+        .iter()
+        .filter_map(|(name, value)| Some((name.strip_prefix("field:")?.to_owned(), value.clone())))
+        .collect();
+    Some(json!({
+        "password": shown["password"],
+        "notes": shown["notes"],
+        "fields": fields,
+    }))
 }
 
 #[tokio::test]

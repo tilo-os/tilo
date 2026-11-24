@@ -36,8 +36,6 @@ pub const HELD: &str = "held";
 
 /// The desktop's voice: one voice object per object.
 pub const AUDIO: &str = "audio";
-/// The desktop's presence words, each one encoded presence frame.
-pub const PRESENCE: &str = "presence";
 /// The desktop's activity words, each one encoded as presence carries it.
 pub const ACTIVITY: &str = "activity";
 /// What the desktop says in a shared window: one encoded [`crate::share::Said`] per object.
@@ -262,9 +260,7 @@ async fn take_capture(from: moq_net::origin::Consumer, live: Arc<LiveSession>) {
     let Ok(broadcast) = from.routed_broadcast(CAPTURE).await else {
         return;
     };
-    let names = [
-        AUDIO, PRESENCE, ACTIVITY, SHARE, SHOW, HEARING, PICTURE, WINDOW, PAGE,
-    ];
+    let names = [AUDIO, ACTIVITY, SHARE, SHOW, HEARING, PICTURE, WINDOW, PAGE];
     let mut readers = Vec::new();
     for name in names {
         readers.push(Task::spawn(take_one(
@@ -340,9 +336,6 @@ async fn opened(
 fn do_object(live: &LiveSession, name: &str, sequence: u32, body: &[u8]) {
     match name {
         AUDIO => send_audio(live, body),
-        PRESENCE => {
-            let _ = live.publish_burst(Track::Presence, &[(sequence, body)]);
-        }
         ACTIVITY => {
             let _ = live.publish_burst(Track::Activity, &[(sequence, body)]);
         }

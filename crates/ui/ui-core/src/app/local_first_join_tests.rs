@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
                     on_behalf_of: None,
                     invocation: tilo_actions::InvocationId::new(),
                     target: tilo_actions::remote::person_vault::target(
-                        tilo_actions::remote::person_vault::ENTRIES,
+                        tilo_actions::remote::person_vault::LIST,
                     ),
                     argument: tilo_actions::remote::InvokeArgument::None,
                     context: None,

@@ -18,6 +18,12 @@
 //! - this device may read the workspace's vault for the app;
 //! - the vault keeps the item, and a grant of the workspace's lets the app read it.
 //!
+//! An app's held connection also keeps a secret it obtained or made itself ([`Workspaces::keep_for`],
+//! [`person_vault::KEEP`]): an OAuth token, a key it generated. The item is the app's own, tagged
+//! with its app and purpose, under the app's install grant as a login a page of its own keeps is,
+//! so keeping it asks nobody, and neither does releasing it to that app again. Any other app is
+//! asked for it as for every item.
+//!
 //! An app's held connection reaches the vault's web call the same way
 //! ([`Workspaces::web_call_to`]): the vault makes the request, so the key never reaches the app,
 //! and the grant "Approve and grant" writes covers that item at that place alone.
@@ -32,12 +38,12 @@
 
 use std::sync::Arc;
 
-use accounts::vault_items::{Allowance, ItemId, UsedFor};
+use accounts::vault_items::{Allowance, ItemFacts, ItemId, ItemKind, NewItem, Place, UsedFor};
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::asked::{AskedDispatch, AskedFacts, AskedRecords, Fact};
-use tilo_actions::remote::person_vault::{self, Found, ItemRef, Released};
+use tilo_actions::remote::person_vault::{self, Found, ItemRef, Kept, Released};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use zeroize::Zeroizing;
 
@@ -51,15 +57,30 @@ const VAULT_ASKS: &str = "vault-asks";
 /// What a release is written down as among the item's uses.
 const RELEASE_USE: &str = "tilo.vault/release";
 
-/// What a person's, or a page's, call of a release is refused with.
-pub const BY_A_PERSON: &str = "This call is a person's, or a page's they opened. A person reads a \
-                               vault item's secret in Passwords; a release hands one only to a \
-                               sandboxed process of an app's own.";
+/// What a person's, or a page's, call of a release or of an app's keep is refused with.
+pub const BY_A_PERSON: &str = "This call is a person's, or a page's they opened. A person reads \
+                               and keeps vault items in Passwords; the vault releases an item's \
+                               secret to, and keeps an app's own secret for, only a sandboxed \
+                               process of an app's own.";
 
-/// What an agent's call of a release is refused with.
-pub const BY_AN_AGENT: &str = "An agent never holds a vault item's secret. Use the item by its \
-                               reference, as vault#web-call does, and the vault adds the secret \
-                               where it is.";
+/// What an agent's call of a release or of an app's keep is refused with.
+pub const BY_AN_AGENT: &str = "An agent never holds a vault item's secret, and keeps none as an \
+                               app's own. Use the item by its reference, as vault#web-call does, \
+                               and the vault adds the secret where it is.";
+
+/// What a keep that names no purpose, or one that is not a single short line, is refused with.
+pub const NOT_A_PURPOSE: &str =
+    "A secret an app keeps names what it keeps it for, such as `oauth-token`: one short line.";
+
+/// What a keep whose `replacing` names an item the app did not keep for that purpose is refused
+/// with.
+#[must_use]
+pub fn not_its_own(app: &str) -> String {
+    format!(
+        "{app} did not keep this item for that purpose, so it does not renew it. An app renews \
+         only a secret it kept itself."
+    )
+}
 
 /// What a release addressed at something that is no vault item is refused with.
 pub const NOT_AN_ITEM: &str =
@@ -76,9 +97,9 @@ pub const NOT_KEPT: &str = "This workspace's vault keeps no such item.";
 pub fn from_a_shared_process(app: &str) -> String {
     format!(
         "{app} asked from code running in a process apps share: the desktop session, or this \
-         computer's daemon, where a tilolang app's connector runs. A vault item is released only \
-         to a sandboxed process of {app}'s own that a turn placed on this device; a connector \
-         gets one once it runs in a process of its own."
+         computer's daemon, where a tilolang app's connector runs. The vault releases an item \
+         to, and keeps an app's own secret for, only a sandboxed process of {app}'s own that a \
+         turn placed on this device; a connector gets one once it runs in a process of its own."
     )
 }
 
@@ -87,8 +108,8 @@ pub fn from_a_shared_process(app: &str) -> String {
 pub fn from_a_tilolang_process(app: &str) -> String {
     format!(
         "{app} asked from a tilolang process, which runs the code of the language every app \
-         shares. A vault item is released only to a sandboxed process of {app}'s own that a \
-         turn placed on this device."
+         shares. The vault releases an item to, and keeps an app's own secret for, only a \
+         sandboxed process of {app}'s own that a turn placed on this device."
     )
 }
 
@@ -98,14 +119,18 @@ pub fn from_a_tilolang_process(app: &str) -> String {
 pub fn from_an_unplaced_process(app: &str) -> String {
     format!(
         "{app} asked from a window or a process started for a call, which no turn placed on this \
-         device. A vault item is released only to {app}'s held connection."
+         device. The vault releases an item to, and keeps a secret of {app}'s own for, only \
+         {app}'s held connection."
     )
 }
 
 /// What a release to a connection this device no longer holds is refused with.
 #[must_use]
 pub fn held_elsewhere(app: &str) -> String {
-    format!("{app}'s connection is held by another device now, so this device releases it nothing.")
+    format!(
+        "{app}'s connection is held by another device now, so this device releases it nothing \
+         and keeps nothing for it."
+    )
 }
 
 /// What a release on a device that may not read the workspace's vault for the app is refused
@@ -182,6 +207,21 @@ fn read_node(workspace: &str, item: &ItemRef) -> TreePath {
         .action(person_vault::RELEASE)
 }
 
+/// Whether `app` kept the item `facts` describe itself, for a purpose of its own: on its held
+/// connection ([`person_vault::KEEP`]), or as a login a page of its own kept. An item adopted from
+/// a device's old keeper also names the entry it was kept as, and the person kept it, so a
+/// release of it still asks them.
+pub(super) fn kept_by_app(facts: &ItemFacts, app: &str) -> bool {
+    let purpose = person_vault::purpose_tag("");
+    let adopted = person_vault::item_tag("");
+    facts.tags.contains(&person_vault::app_tag(app))
+        && facts.tags.iter().any(|tag| tag.starts_with(&purpose))
+        && !facts.tags.iter().any(|tag| tag.starts_with(&adopted))
+}
+
+/// The longest purpose an app keeps a secret for, in characters.
+const MAX_PURPOSE_CHARS: usize = 64;
+
 /// What kind of item a person reads it as.
 pub(super) const fn kind_word(kind: accounts::vault_items::ItemKind) -> &'static str {
     use accounts::vault_items::ItemKind;
@@ -191,6 +231,8 @@ pub(super) const fn kind_word(kind: accounts::vault_items::ItemKind) -> &'static
         ItemKind::CodeGenerator => "Code generator",
         ItemKind::SshKey => "SSH key",
         ItemKind::Value => "Value",
+        ItemKind::Note => "Note",
+        ItemKind::Wifi => "Wi-Fi password",
     }
 }
 
@@ -343,6 +385,7 @@ impl Workspaces {
             return Ok(kept);
         }
         let adding = person_vault::AddItem {
+            item: None,
             kind: person_vault::ItemKind::Value,
             belongs_to: vec![format!("https://{app}")],
             username: String::new(),
@@ -410,7 +453,9 @@ impl Workspaces {
         let caller = Caller::local_app(app)
             .acting_for(person.clone())
             .in_workspace(workspace);
-        if !self.app_reads(workspace, app, &item).await {
+        // What the app kept itself is its own, under its install grant: releasing it asks nobody.
+        let own = kept_by_app(&facts, app);
+        if !own && !self.app_reads(workspace, app, &item).await {
             self.ask_release(workspace, &caller, request, &item, &facts)
                 .map_err(refused)?;
             return Err(refused(asked_first(app)));
@@ -425,7 +470,7 @@ impl Workspaces {
                     UsedFor {
                         using: RELEASE_USE,
                         what: &what,
-                        allowed: Some(Allowance::Always),
+                        allowed: (!own).then_some(Allowance::Always),
                     },
                 )
             })
@@ -435,6 +480,92 @@ impl Workspaces {
         Ok(Released {
             secret: String::clone(&secret),
         })
+    }
+
+    /// Keep the secret `request` carries ([`person_vault::KeepValue`]) in `workspace`'s vault as
+    /// `app`'s own, for `process`, a process of `app`'s own as the daemon that started it vouches
+    /// for it: a value item tagged with the app and the purpose, titled with both for its
+    /// person, answered by its reference and never by its secret. Where `replacing` names an
+    /// item, or the app already keeps a value for that purpose, that item's secret is renewed in
+    /// place. Nobody is asked: it is the app's own, under its install grant. The call is written
+    /// down as the app's, acting for the device's person, and nothing writes the secret down.
+    ///
+    /// # Errors
+    /// Refused, in words a person reads, as a release is for a process that is not the app's
+    /// held connection here, and for a purpose that is no short line, a `replacing` the app did
+    /// not keep for that purpose, and a secret the vault does not keep (empty, too long).
+    pub async fn keep_for(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &AppProcess,
+        request: &InvokeRequest,
+    ) -> Result<Kept, ActionCallError> {
+        let refused = ActionCallError::refused;
+        self.held_connection((app, workspace), process).await?;
+        let mut keeping: person_vault::KeepValue = super::person_vault::argument(
+            request,
+            "a secret an app keeps names its purpose and its value",
+        )?;
+        let purpose = keeping.purpose.trim().to_owned();
+        if purpose.is_empty()
+            || purpose.chars().count() > MAX_PURPOSE_CHARS
+            || purpose.chars().any(char::is_control)
+        {
+            return Err(refused(NOT_A_PURPOSE.to_owned()));
+        }
+        let tags = [
+            person_vault::app_tag(app),
+            person_vault::purpose_tag(&purpose),
+        ];
+        let own = |facts: &ItemFacts| {
+            kept_by_app(facts, app) && tags.iter().all(|tag| facts.tags.contains(tag))
+        };
+        let kept = self
+            .open_vault(workspace)
+            .await
+            .map_err(|why| refused(device_may_not_read(app, &why)))?
+            .items()
+            .facts();
+        let replacing = match &keeping.replacing {
+            Some(item) => {
+                let id = ItemId::parse(item.id()).ok_or_else(|| refused(NOT_KEPT.to_owned()))?;
+                let facts = kept
+                    .iter()
+                    .find(|facts| facts.id == id)
+                    .ok_or_else(|| refused(NOT_KEPT.to_owned()))?;
+                if !own(facts) {
+                    return Err(refused(not_its_own(app)));
+                }
+                Some(id)
+            }
+            None => kept
+                .iter()
+                .filter(|facts| facts.kind == ItemKind::Value && own(facts))
+                .max_by_key(|facts| facts.added_unix)
+                .map(|facts| facts.id.clone()),
+        };
+        let place = Place::parse(&format!("https://{app}"))
+            .map_err(|_| refused(format!("{app} is no app the vault keeps a secret for")))?;
+        let item = NewItem::new(
+            ItemKind::Value,
+            vec![place],
+            String::new(),
+            std::mem::take(&mut keeping.value),
+        );
+        let title = format!("{app} · {}", purpose.replace(['-', '_'], " "));
+        let person = hex::encode(self.device_cert().user_public_key);
+        let caller = Caller::local_app(app)
+            .acting_for(person)
+            .in_workspace(workspace);
+        let kept = self
+            .changing_vault(workspace, (Some(caller.acting()), None), |items| {
+                items.keep_tagged(&tags, replacing.as_ref(), item, &title)
+            })
+            .await
+            .map_err(refused)?;
+        let reference = ItemRef::from_id(kept.id.as_str())
+            .ok_or_else(|| refused("the kept item has no reference".to_owned()))?;
+        Ok(Kept { reference })
     }
 
     /// Ask the person `caller` acts for whether its app may read `item`, as an asked record

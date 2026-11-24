@@ -26,7 +26,8 @@ const CONNECT: Duration = Duration::from_secs(30);
 /// The smallest step a download of unknown size is told at.
 const UNKNOWN_STEP: u64 = 1024 * 1024;
 
-/// What a page hands over to download an address.
+/// What an app asks to download: the address, the name the page suggested, and the handle the
+/// page's window kept the request's context under.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Ask {
     /// The address to fetch.
@@ -34,6 +35,19 @@ pub struct Ask {
     /// The name the page suggested; the server's or the address's when empty.
     #[serde(default)]
     pub name: String,
+    /// The one-use handle of the request's context the page's window kept in this process;
+    /// empty for an address the person typed.
+    #[serde(default)]
+    pub request: String,
+    /// What the page's own request would have carried, redeemed from `request`: never read
+    /// from the ask itself, which an app writes and a record may keep.
+    #[serde(skip)]
+    pub context: Context,
+}
+
+/// What the page's own request for a download would have carried.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Context {
     /// The page the download came from, sent as its `Referer`.
     #[serde(default)]
     pub referrer: String,
@@ -46,18 +60,31 @@ pub struct Ask {
 }
 
 impl Ask {
-    /// The ask a job's input says, with an address a download can fetch.
+    /// The ask a job's input says, with an address a download can fetch. Its context is the one
+    /// `redeem` gives for its handle.
     ///
     /// # Errors
     ///
-    /// The input does not read, or names no web address.
-    pub fn read(input: &str) -> Result<(Self, Url), String> {
-        let ask: Self = serde_json::from_str(input)
+    /// The input does not read, names no web address, or names a handle that no longer holds
+    /// the page's context.
+    pub fn read(
+        input: &str,
+        redeem: impl FnOnce(&str) -> Option<String>,
+    ) -> Result<(Self, Url), String> {
+        let mut ask: Self = serde_json::from_str(input)
             .map_err(|error| format!("the ask does not read: {error}"))?;
         let url = Url::parse(ask.url.trim())
             .map_err(|_| format!("“{}” is not a web address", ask.url.trim()))?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(format!("“{url}” is not a web address a download can fetch"));
+        }
+        if !ask.request.is_empty() {
+            let kept = redeem(&ask.request).ok_or_else(|| {
+                "The page that offered this download has closed: download it from the page again"
+                    .to_owned()
+            })?;
+            ask.context = serde_json::from_str(&kept)
+                .map_err(|error| format!("the page's request does not read: {error}"))?;
         }
         Ok((ask, url))
     }
@@ -215,14 +242,14 @@ async fn fetch(
         .build()
         .map_err(|error| Ended::Failed(format!("The download could not start: {error}")))?;
     let mut request = client.get(url.as_str());
-    if !ask.cookies.is_empty() {
-        request = request.header(header::COOKIE, ask.cookies.as_str());
+    if !ask.context.cookies.is_empty() {
+        request = request.header(header::COOKIE, ask.context.cookies.as_str());
     }
-    if !ask.referrer.is_empty() {
-        request = request.header(header::REFERER, ask.referrer.as_str());
+    if !ask.context.referrer.is_empty() {
+        request = request.header(header::REFERER, ask.context.referrer.as_str());
     }
-    if !ask.user_agent.is_empty() {
-        request = request.header(header::USER_AGENT, ask.user_agent.as_str());
+    if !ask.context.user_agent.is_empty() {
+        request = request.header(header::USER_AGENT, ask.context.user_agent.as_str());
     }
     let mut response = or_stopped(stop, request.send())
         .await?

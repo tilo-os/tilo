@@ -1,6 +1,7 @@
 so-tilo-vision-image-model-describe = Ein Bild beschreiben
 so-tilo-vision-image-model-ocr = Den Text in einem Bild lesen
 so-tilo-vision-image-model-tags = Benennen, was ein Bild zeigt
+so-tilo-vision-image-model-shows = Sagen, was ein Bild zeigt
 so-tilo-vision-image-model-faces = Bilder desselben Gesichts finden
 so-tilo-vision-analysis-start = Die Bilder der Bibliothek analysieren
 so-tilo-vision-analysis-pause = Die Analyse pausieren

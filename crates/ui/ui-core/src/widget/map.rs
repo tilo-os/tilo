@@ -965,7 +965,7 @@ impl Map {
 
     /// Report where the camera came to rest: the place at its middle, its zoom, and the degrees
     /// at what it shows are its northern, southern, eastern and western edges.
-    fn report_rest(&mut self) {
+    fn report_rest(&self) {
         let corner = self.rect.origin();
         let camera = self.camera;
         let (latitude, longitude) =
@@ -1000,8 +1000,9 @@ impl Map {
     /// layout after the view changed it. The person's own pan and zoom stand after that.
     fn ask_centre(&self) {
         self.centre.set(
-            self.focus
-                .map(|(latitude, longitude)| (mercator_project(latitude, longitude), self.focus_zoom)),
+            self.focus.map(|(latitude, longitude)| {
+                (mercator_project(latitude, longitude), self.focus_zoom)
+            }),
         );
     }
 
@@ -1476,7 +1477,10 @@ impl Map {
             // The centre the view set is taken here, where the viewport's size is known, so the
             // places are laid out about it in this same solve.
             if let Some((at, zoom)) = centre.take() {
-                let size = vello::kurbo::Size::new(f64::from(available.width), f64::from(available.height));
+                let size = vello::kurbo::Size::new(
+                    f64::from(available.width),
+                    f64::from(available.height),
+                );
                 match centred_camera(at, zoom, shown.get().zoom, world, size) {
                     Some(camera) => {
                         shown.set(camera);

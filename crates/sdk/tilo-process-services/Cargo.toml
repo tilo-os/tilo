@@ -33,6 +33,9 @@ portal = ["native", "dep:ashpd"]
 # foreign desktop. A Tilo app process reaches the session's chooser and opener over their
 # sockets and never enables this.
 host-portals = ["tilo-dialogs/portal-client"]
+# The desktop's NetworkMonitor portal, for a runner hosting an app on a foreign desktop. An app
+# process inside Tilo takes the network's state over its window's shell-ui connection.
+system-status = ["tilo-net/system-status"]
 # Desktop media integration: the system's now-playing controls on macOS,
 # MPRIS (`org.mpris.MediaPlayer2`) on the Unix session bus elsewhere. zbus
 # runs on the workspace's tokio backend; the server lives on its own thread

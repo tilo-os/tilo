@@ -6,7 +6,8 @@ app so.tilo.passwords "Passwords" (
     splash_budget: 250,
 )
 
-use tilo.vault as vault
+use tilo.actions as actions
+use tilo.invocations as invocations
 
 /// What kind of secret an item is: what it is for, which sets the fields it has and the words
 /// that name them.
@@ -23,21 +24,33 @@ enum Kind {
     secret (icon: .shield)
 }
 
-/// One saved secret, as the person finds it: what it is called, its kind and tags, and the entry
+/// One saved secret, as the person finds it: what it is called, its kind and tags, and the item
 /// of the workspace's vault that keeps everything else.
 ///
-/// The vault keeps who it signs in as, where, its password, its notes and the fields a person
-/// added, sealed; this record never holds them. The window reads them through the vault, which
-/// answers Passwords alone, and shows a secret only when the person asks. Every member the
-/// workspace lets read Passwords reads the same vault.
+/// The vault keeps who it signs in as, its password, its notes and the values of the fields a
+/// person added, sealed; this record never holds them. It holds what the vault says of the item
+/// that is safe to say, as the vault last listed it, and the window shows a secret only when the
+/// person asks, for a while, where no capture reaches. Every member the workspace lets read
+/// Passwords reads the same vault.
 type Item (untitled: "Untitled item") {
-    /// The entry of the workspace's vault this item stands for: its id there.
+    /// The item of the workspace's vault this record stands for: its id there, which the
+    /// reference `vault.item:<id>` names.
     entry: Text
     /// What it is called: a site, a network, a service.
     title: Text
     kind: Kind = .login
     tags: Set<Text>
     favorite: Bool = false
+    /// Where it signs in, as the vault lists it.
+    places: Set<Text>
+    /// The labels of the fields it keeps, as the vault lists them: never their values.
+    labels: Set<Text>
+    /// Whether it keeps a note.
+    noted: Bool = false
+    /// When it last changed, in seconds since 1970.
+    changed: Int = 0
+    /// What the vault finds wrong with its password: `weak`, `reused`, `stale`.
+    concerns: Set<Text>
     /// What an older Passwords kept in this record before its secrets moved into the vault. The
     /// vault takes each once and these are emptied as it does; nothing writes them now.
     username: Text
@@ -69,8 +82,8 @@ type ImportRow {
     skip: Bool
 }
 
-/// The workspace's vault as Passwords lists it: an item for each entry, and what the window
-/// learned of what it tried to do.
+/// The workspace's vault as Passwords lists it: an item for each of the vault's, and what the
+/// window learned of what it tried to do.
 type Vault {
     items: Collection<Item>
     /// The ids of device-vault items an older Passwords took in.
@@ -87,15 +100,33 @@ root vault_items: Vault
 
 default view vault_window for Vault
 
-/// The vault's entry `item` stands for, as the vault reads it now: none until it is read, or once
-/// another device forgot it.
-// ---------------------------------------------------------------- the vault
-fn entry_of(item: Item) -> Option<vault.Entry> {
-    vault.vault.entries.find(e -> e.id == item.entry)
+// ---------------------------------------------------------------- the vault's calls
+/// The address of the vault's own call `verb`.
+fn vault_at(verb: Text) -> Text {
+    "tilo.vault/vault#{verb}"
+}
+
+/// The reference the vault names an item by.
+fn reference(item: Item) -> Text {
+    "vault.item:{item.entry}"
+}
+
+/// The id a vault's reference names.
+fn id_of(reference: Text) -> Text {
+    if reference.starts_with("vault.item:") { reference.slice(11, reference.len()) } else { "" }
 }
 
 /// The kind as the vault names it.
 fn kind_word(kind: Kind) -> Text {
+    if kind == .api_key {
+        "key"
+    } else if kind == .note {
+        "note"
+    } else if kind == .wifi { "wifi" } else if kind == .secret { "value" } else { "login" }
+}
+
+/// The kind as a file a browser or a backup holds names it.
+fn file_kind(kind: Kind) -> Text {
     if kind == .api_key {
         "api_key"
     } else if kind == .note {
@@ -103,34 +134,273 @@ fn kind_word(kind: Kind) -> Text {
     } else if kind == .wifi { "wifi" } else if kind == .secret { "secret" } else { "login" }
 }
 
-/// The kind a vault's word names.
+/// The kind a word names: the vault's, or what a file an older Passwords or a browser wrote says.
 fn kind_of(word: Text) -> Kind {
-    if word == "api_key" or word == "api-key" {
+    if word == "key" or word == "api_key" or word == "api-key" {
         .api_key
     } else if word == "note" {
         .note
-    } else if word == "wifi" {
-        .wifi
-    } else if word == "secret" or word == "other" { .secret } else { .login }
+    } else if word == "wifi" { .wifi } else if word == "login" { .login } else { .secret }
 }
 
-/// Starts an item: an entry of the vault and the item that lists it, named by what is typed
-/// first. Its secret is typed on the system's card, never here.
-primary action new_item(v: Vault, title: Text = "") -> Item uses random (
+/// `text` as JSON.
+fn js(text: Text) -> Text {
+    json.encode(text)
+}
+
+/// `texts` as a JSON list.
+fn js_list(texts: List<Text>) -> Text {
+    "[" + texts.map(t -> js(t)).join(",") + "]"
+}
+
+fn brace_open() -> Text {
+    "\{"
+}
+
+fn brace_close() -> Text {
+    "\}"
+}
+
+/// A JSON object of `pairs`, each already written as `"name":value`.
+fn object(pairs: List<Text>) -> Text {
+    brace_open() + pairs.filter(p -> p != "").join(",") + brace_close()
+}
+
+/// What the person typed in place `place` on the system's card for the call being run, named
+/// where it is: the host fills it in on its way to the vault.
+fn typed(place: Int) -> Text {
+    object(["\"$typed\":{place}"])
+}
+
+/// What the host holds under `token`, named where it is.
+fn held(token: Text) -> Text {
+    object(["\"$held\":" + js(token)])
+}
+
+/// A field of an add: its label, and its value as written (a name for a secret, or `""` to keep
+/// the one the item has).
+fn field_of(label: Text, value: Text) -> Text {
+    object(["\"label\":" + js(label), "\"value\":" + value])
+}
+
+/// The vault's add for `item` as it is now, with `kind`, `title`, `places` and `labels` in place
+/// of its own and `more` (`"name":value` pairs) beside them: the item changed in place, every
+/// secret it does not name kept as it was.
+fn change_of(
+    item: Item,
+    kind: Kind,
+    title: Text,
+    places: List<Text>,
+    labels: List<Text>,
+    more: List<Text>,
+) -> Text {
+    object(
+        [
+            [
+                "\"item\":" + js(reference(item)),
+                "\"kind\":" + js(kind_word(kind)),
+                "\"title\":" + js(title),
+                "\"belongsTo\":" + js_list(places),
+                "\"tags\":" + js_list(item.tags.map(t -> t)),
+                "\"fields\":[" + labels.map(l -> field_of(l, "\"\"")).join(",") + "]",
+            ],
+            more,
+        ]
+            .flat_map(x -> x),
+    )
+}
+
+/// `text` as the JSON value it writes, or nothing for what does not read.
+fn parsed(text: Text) -> Option<json.Value> {
+    match json.parse(text) {
+        .ok(value) => .some(value),
+        .err(why) => .none,
+    }
+}
+
+fn at(value: json.Value, key: Text) -> Option<json.Value> {
+    match value {
+        .object(fields) => fields.get(key),
+        .array(items) => .none,
+        .string(text) => .none,
+        .number(number) => .none,
+        .bool(flag) => .none,
+        .null => .none,
+    }
+}
+
+/// A JSON value as the text it holds, and nothing for anything else.
+fn text_of(value: json.Value) -> Text {
+    match value {
+        .string(text) => text,
+        .object(fields) => "",
+        .array(items) => "",
+        .number(number) => "",
+        .bool(flag) => "",
+        .null => "",
+    }
+}
+
+fn at_text(value: json.Value, key: Text) -> Text {
+    match at(value, key) {
+        .none => "",
+        .some(found) => text_of(found),
+    }
+}
+
+fn at_int(value: json.Value, key: Text) -> Int {
+    match at(value, key) {
+        .none => 0,
+        .some(found) => match found {
+            .number(number) => number.to_int(),
+            .string(text) => 0,
+            .object(fields) => 0,
+            .array(items) => 0,
+            .bool(flag) => 0,
+            .null => 0,
+        },
+    }
+}
+
+fn at_flag(value: json.Value, key: Text) -> Bool {
+    match at(value, key) {
+        .none => false,
+        .some(found) => match found {
+            .bool(flag) => flag,
+            .number(number) => false,
+            .string(text) => false,
+            .object(fields) => false,
+            .array(items) => false,
+            .null => false,
+        },
+    }
+}
+
+fn at_list(value: json.Value, key: Text) -> List<json.Value> {
+    match at(value, key) {
+        .none => [],
+        .some(found) => match found {
+            .array(items) => items,
+            .object(fields) => [],
+            .string(text) => [],
+            .number(number) => [],
+            .bool(flag) => [],
+            .null => [],
+        },
+    }
+}
+
+fn at_texts(value: json.Value, key: Text) -> List<Text> {
+    at_list(value, key).map(one -> text_of(one)).filter(one -> one != "")
+}
+
+/// Writes what the vault says of an item (`listed`, one of what it lists) into its record, where
+/// it differs: its name, kind and tags, where it signs in, its fields' labels, whether it keeps a
+/// note, when it changed and what is wrong with it.
+action learn(item: Item, listed: json.Value) (
+    icon: .refresh,
+    label: "Read the item from the vault",
+) {
+    let title = at_text(listed, "title")
+    if title != "" and title != item.title {
+        item.title = title
+    }
+    let kind = kind_of(at_text(listed, "kind"))
+    if kind != item.kind {
+        item.kind = kind
+    }
+    let tags = at_texts(listed, "tags")
+    for t in item.tags.map(t -> t) {
+        if not tags.contains(t) { item.tags.remove(t) }
+    }
+    for t in tags {
+        if not item.tags.contains(t) { item.tags.add(t) }
+    }
+    let places = at_texts(listed, "belongsTo")
+    for p in item.places.map(p -> p) {
+        if not places.contains(p) { item.places.remove(p) }
+    }
+    for p in places {
+        if not item.places.contains(p) { item.places.add(p) }
+    }
+    let labels = at_texts(listed, "fields")
+    for l in item.labels.map(l -> l) {
+        if not labels.contains(l) { item.labels.remove(l) }
+    }
+    for l in labels {
+        if not item.labels.contains(l) { item.labels.add(l) }
+    }
+    let concerns = at_texts(listed, "concerns")
+    for c in item.concerns.map(c -> c) {
+        if not concerns.contains(c) { item.concerns.remove(c) }
+    }
+    for c in concerns {
+        if not item.concerns.contains(c) { item.concerns.add(c) }
+    }
+    let noted = at_flag(listed, "hasNotes")
+    if noted != item.noted {
+        item.noted = noted
+    }
+    let changed = at_int(listed, "changedAt")
+    if changed != item.changed {
+        item.changed = changed
+    }
+}
+
+/// Asks the vault to keep `ask` (its add, as JSON) and writes what it answers into `item`.
+/// Answers why it could not, or nothing.
+action keep(item: Item, ask: Text) -> Text (icon: .key, label: "Keep the item in the vault") {
+    if let arguments = parsed(ask) {
+        let answer = actions.call(address: vault_at("add"), arguments: arguments)
+        if answer.output != .none {
+            if let out = answer.output { learn(item, out) }
+            ""
+        } else if let why = answer.failure { why } else { "The vault did not keep it" }
+    } else {
+        "The vault was asked for something it does not read"
+    }
+}
+
+/// Adds a new item to the vault from `ask` (its add, as JSON) and lists it: the item, or nothing
+/// where the vault did not keep it, with why in the vault's notice.
+action add_new(v: Vault, ask: Text) -> Option<Item> (icon: .plus, label: "Add to the vault") {
+    if let arguments = parsed(ask) {
+        let answer = actions.call(address: vault_at("add"), arguments: arguments)
+        if answer.output != .none {
+            if let out = answer.output {
+                let id = id_of(at_text(out, "reference"))
+                if id != "" {
+                    let made = v.items.insert(Item(entry: id, title: at_text(out, "title")))
+                    learn(made, out)
+                    return .some(made)
+                }
+            }
+        }
+        v.notice = if let why = answer.failure { why } else { "The vault did not keep it" }
+    }
+    .none
+}
+
+/// Starts a login: an item of the vault named by what is typed first, with a strong password
+/// drawn where the vault is, which nobody types or sees. The person changes it on the item.
+primary action new_item(v: Vault, title: Text = "") -> Option<Item> (
     icon: .plus,
     label: "New item",
     key: "Ctrl+N",
     did: "added an item",
 ) {
-    let id = random.id()
-    vault.keep(vault.vault, id: id, kind: "login", title: title.trim())
-    v.items.insert(Item(entry: id, title: title.trim()))
+    add_new(
+        v,
+        object(
+            ["\"kind\":\"login\"", "\"title\":" + js(title.trim()), "\"generate\":" + object([])],
+        ),
+    )
 }
 
 /// Adds a login in one step: what an agent, a script or the VM's own end-to-end check asks of the
 /// vault. The person types its password on the system's card, so whoever asked never holds it,
 /// and the vault keeps it. An address is checked as a web address.
-action save_login(v: Vault, name: Text, origin: Text, username: Text) -> Item uses random (
+action save_login(v: Vault, name: Text, origin: Text, username: Text) -> Option<Item> (
     icon: .key,
     label: "Save a login",
     did: "saved a login",
@@ -138,22 +408,22 @@ action save_login(v: Vault, name: Text, origin: Text, username: Text) -> Item us
 ) {
     require not name.trim().is_empty() "A login needs a name"
     require origin.trim().is_empty() or origin_of(origin) != "" "{origin.trim()} is not a web address, such as https://example.com"
-    let id = random.id()
     let places: List<Text> = if origin.trim().is_empty() { [] } else { [origin_of(origin)] }
-    vault.keep(
-        vault.vault,
-        id: id,
-        kind: "login",
-        title: name.trim(),
-        username: username.trim(),
-        origins: places,
+    add_new(
+        v,
+        object(
+            [
+                "\"kind\":\"login\"",
+                "\"title\":" + js(name.trim()),
+                "\"username\":" + js(username.trim()),
+                "\"belongsTo\":" + js_list(places),
+                "\"secret\":" + typed(0),
+            ],
+        ),
     )
-    let why = keep_typed(id, "password")
-    v.notice = why
-    v.items.insert(Item(entry: id, title: name.trim(), kind: .login))
 }
 
-/// The vault's logins, by name and by the entry that holds each: what a script, an agent or
+/// The vault's logins, by name and by the item that holds each: what a script, an agent or
 /// another device's window lists. The passwords are never part of it.
 action list_logins(v: Vault) -> LoginList (icon: .list, label: "List logins") {
     LoginList(
@@ -164,7 +434,7 @@ action list_logins(v: Vault) -> LoginList (icon: .list, label: "List logins") {
     )
 }
 
-/// What a list of logins says: each by the vault entry that holds it, and its name.
+/// What a list of logins says: each by the vault item that holds it, and its name.
 type LoginList {
     logins: List<LoginEntry>
 }
@@ -175,45 +445,28 @@ type LoginEntry {
     name: Text
 }
 
-/// Hands what the person typed on the system's card to the vault as `part` of the entry `id`:
-/// the host passes it on, so it never becomes a value here. Answers why it could not, or nothing.
-action keep_typed(id: Text, part: Text) -> Text (icon: .key, label: "Keep what was typed") {
-    match engine.call("vault-keep-typed", json.encode(TypedAsk(id: id, part: part))) {
-        .ok(_) => "",
-        .err(why) => why,
-    }
-}
-
-/// Writes what is safe to say of an item into its vault entry: who it signs in as and where,
-/// with the item's name, kind and tags.
-action keep_facts(item: Item, username: Text, origins: List<Text>) (
+/// Writes the item as it is, with `title`, `kind` and `places` in place of its own and `more`
+/// beside them. Answers why it could not, or nothing.
+action rewrite(item: Item, title: Text, kind: Kind, places: List<Text>, more: List<Text>) -> Text (
     icon: .key,
     label: "Write the item into the vault",
 ) {
-    vault.keep(
-        vault.vault,
-        id: item.entry,
-        kind: kind_word(item.kind),
-        title: item.title.trim(),
-        username: username.trim(),
-        origins: origins,
-        tags: item.tags.map(t -> t),
-    )
-}
-
-/// The places an item's entry belongs to now.
-fn places_of(item: Item) -> List<Text> {
-    if let e = entry_of(item) { e.origins } else { [] }
-}
-
-/// The name an item's entry signs in with now.
-fn username_of(item: Item) -> Text {
-    if let e = entry_of(item) { e.username } else { "" }
+    keep(item, change_of(item, kind, title, places, item.labels.map(l -> l), more))
 }
 
 /// Writes who the item signs in as.
-action set_username(item: Item, username: Text) (icon: .user, label: "Change the username") {
-    keep_facts(item, username, places_of(item))
+action set_username(item: Item, username: Text) -> Text (
+    icon: .user,
+    label: "Change the username",
+) {
+    require not username.trim().is_empty() "Add the username"
+    rewrite(
+        item,
+        item.title,
+        item.kind,
+        item.places.map(p -> p),
+        ["\"username\":" + js(username.trim())],
+    )
 }
 
 /// Changes the item's password, key or secret: the person types it on the system's card, and the
@@ -224,7 +477,7 @@ action change_secret(item: Item) -> Text (
     did: "changed a password",
     takes: [("Password", .secret)],
 ) {
-    keep_typed(item.entry, "password")
+    rewrite(item, item.title, item.kind, item.places.map(p -> p), ["\"secret\":" + typed(0)])
 }
 
 /// Writes the item's note: typed on the system's card, kept in the vault.
@@ -234,7 +487,7 @@ action write_note(item: Item) -> Text (
     did: "wrote a note",
     takes: [("Note", .secret)],
 ) {
-    keep_typed(item.entry, "notes")
+    rewrite(item, item.title, item.kind, item.places.map(p -> p), ["\"notes\":" + typed(0)])
 }
 
 /// Adds a field to the item, such as a PIN: its value typed on the system's card.
@@ -244,21 +497,42 @@ action add_field(item: Item, label: Text = "") -> Text (
     takes: [("Value", .secret)],
 ) {
     require not label.trim().is_empty() "A field needs a label"
-    keep_typed(item.entry, "field:{label.trim()}")
+    let kept = item.labels.map(l -> l).filter(l -> l != label.trim())
+    keep(
+        item,
+        change_of(
+            item,
+            item.kind,
+            item.title,
+            item.places.map(p -> p),
+            [],
+            [
+                "\"fields\":["
+                    + [kept.map(l -> field_of(l, "\"\"")), [field_of(label.trim(), typed(0))]]
+                        .flat_map(x -> x)
+                        .join(",")
+                    + "]",
+            ],
+        ),
+    )
 }
 
 /// Takes a field off the item.
 action remove_field(item: Item, label: Text) -> Text (icon: .x, label: "Remove the field") {
-    match engine.call(
-        "vault-forget-field",
-        json.encode(TypedAsk(id: item.entry, part: "field:{label}")),
-    ) {
-        .ok(_) => "",
-        .err(why) => why,
-    }
+    keep(
+        item,
+        change_of(
+            item,
+            item.kind,
+            item.title,
+            item.places.map(p -> p),
+            item.labels.map(l -> l).filter(l -> l != label),
+            [],
+        ),
+    )
 }
 
-/// Draws a strong password for the item where the vault is: 20 characters by default, with a
+/// Draws a strong password for the login where the vault is: 20 characters by default, with a
 /// capital, a small letter, a digit and a symbol. Nobody types or sees it.
 action generate_password(
     item: Item,
@@ -266,15 +540,25 @@ action generate_password(
     capitals: Bool = true,
     digits: Bool = true,
     symbols: Bool = true,
-) (icon: .refresh, label: "Generate strong password", did: "generated a password") {
+) -> Text (icon: .refresh, label: "Generate strong password", did: "generated a password") {
     require length >= 12 and length <= 128 "A password is 12 to 128 characters long"
-    vault.generate(
-        vault.vault,
-        id: item.entry,
-        length: length,
-        capitals: capitals,
-        digits: digits,
-        symbols: symbols,
+    require item.kind == .login "Only a login's password is drawn by the vault"
+    rewrite(
+        item,
+        item.title,
+        item.kind,
+        item.places.map(p -> p),
+        [
+            "\"generate\":"
+                + object(
+                    [
+                        "\"length\":{length}",
+                        "\"capitals\":{capitals}",
+                        "\"digits\":{digits}",
+                        "\"symbols\":{symbols}",
+                    ],
+                ),
+        ],
     )
 }
 
@@ -288,115 +572,275 @@ action favorite(item: Item, favorite: Bool = not item.favorite) (
 }
 
 /// Gives an item a tag, as the words beside its tags are typed.
-action add_tag(item: Item, tag: Text = "") (icon: .tag, label: "Add a tag") {
+action add_tag(item: Item, tag: Text = "") -> Text (icon: .tag, label: "Add a tag") {
     require not tag.trim().is_empty() "A tag needs a name"
     item.tags.add(tag.trim())
-    keep_facts(item, username_of(item), places_of(item))
+    rewrite(item, item.title, item.kind, item.places.map(p -> p), [])
 }
 
 /// Takes a tag off an item.
-action remove_tag(item: Item, tag: Text) (icon: .x, label: "Remove the tag") {
+action remove_tag(item: Item, tag: Text) -> Text (icon: .x, label: "Remove the tag") {
     item.tags.remove(tag)
-    keep_facts(item, username_of(item), places_of(item))
+    rewrite(item, item.title, item.kind, item.places.map(p -> p), [])
 }
 
 /// Gives an item an address it signs in to, checked as a web address, as typed beside them.
-action add_origin(item: Item, origin: Text = "") (icon: .globe, label: "Add a web address") {
+action add_origin(item: Item, origin: Text = "") -> Text (
+    icon: .globe,
+    label: "Add a web address",
+) {
     require not origin.trim().is_empty() "Add the address"
     require origin_of(origin) != "" "{origin.trim()} is not a web address, such as https://example.com"
-    let held = places_of(item)
     let added = origin_of(origin)
-    let places = if held.contains(added) { held } else { [held, [added]].flat_map(x -> x) }
-    keep_facts(item, username_of(item), places)
+    let places = item.places.map(p -> p).filter(p -> p != added)
+    rewrite(item, item.title, item.kind, [places, [added]].flat_map(x -> x), [])
 }
 
 /// Takes an address off an item.
-action remove_origin(item: Item, origin: Text) (icon: .x, label: "Remove the address") {
-    keep_facts(item, username_of(item), places_of(item).filter(o -> o != origin))
+action remove_origin(item: Item, origin: Text) -> Text (icon: .x, label: "Remove the address") {
+    rewrite(item, item.title, item.kind, item.places.map(p -> p).filter(o -> o != origin), [])
 }
 
-/// Renames an item, in its record and its vault entry.
-action rename(item: Item, title: Text) (icon: .pencil, label: "Rename") {
+/// Renames an item, in its record and in the vault.
+action rename(item: Item, title: Text) -> Text (icon: .pencil, label: "Rename") {
     require not title.trim().is_empty() "Add a name so you can find this item"
     item.title = title.trim()
-    keep_facts(item, username_of(item), places_of(item))
+    rewrite(item, title.trim(), item.kind, item.places.map(p -> p), [])
 }
 
 /// Changes what kind of secret an item is.
-action set_kind(item: Item, kind: Kind) (icon: .shield, label: "Change the kind") {
+action set_kind(item: Item, kind: Kind) -> Text (icon: .shield, label: "Change the kind") {
     item.kind = kind
-    keep_facts(item, username_of(item), places_of(item))
+    rewrite(item, item.title, kind, item.places.map(p -> p), [])
 }
 
-/// Copies the item's secret to the person's clipboard, which forgets it again after a while.
-/// Copying reads the vault and keeps nothing.
-action copy_secret(item: Item) uses clipboard (
+/// Puts the item's secret on the person's clipboard from the vault, which forgets it again after
+/// a while. It never passes through Passwords, and the vault records the copy as a use.
+action copy_secret(item: Item) -> Text (
     icon: .copy,
     label: "Copy {secret_label(item.kind).lower()}",
 ) {
-    if let e = entry_of(item) { clipboard.copy_secret(secret_value(e)) }
+    copy_part(item, "secret")
 }
 
-/// Copies what identifies the person to the account: a login's username, an API key's account,
-/// a Wi-Fi network's name.
-action copy_identity(item: Item) uses clipboard (
+/// Puts what identifies the person to the account on their clipboard from the vault: a login's
+/// username, an API key's account.
+action copy_identity(item: Item) -> Text (
     icon: .user,
     label: "Copy {identity_label(item.kind).lower()}",
 ) {
-    if let e = entry_of(item) {
-        let who = identity(e)
-        if not who.is_empty() { clipboard.copy(who) }
-    }
+    copy_part(
+        item,
+        if item.kind == .wifi and item.labels.contains("network") {
+            "field:network"
+        } else { "username" },
+    )
+}
+
+/// Asks the vault to put `part` of the item on the person's clipboard. Answers why it could not,
+/// or nothing.
+action copy_part(item: Item, part: Text) -> Text (icon: .copy, label: "Copy from the vault") {
+    if let arguments = parsed(object(["\"item\":" + js(reference(item)), "\"part\":" + js(part)])) {
+        let answer = actions.call(address: vault_at("copy"), arguments: arguments)
+        if answer.output != .none {
+            ""
+        } else if let why = answer.failure { why } else { "Nothing was copied" }
+    } else { "Nothing was copied" }
 }
 
 /// Copies the addresses the item signs in to, one a line.
 action copy_origins(item: Item) uses clipboard (icon: .copy, label: "Copy web addresses") {
-    let places = places_of(item)
+    let places = item.places.map(p -> p)
     if not places.is_empty() { clipboard.copy(places.join("\n")) }
 }
 
-/// Deletes an item, and the entry it stands for, from the vault.
+/// What the vault shows of an item for a while, each part by the name the window shows it under:
+/// never the secret itself, which only a view no capture reaches puts in the name's place.
+type Shown {
+    secret: Text
+    identity: Text
+    notes: Text
+    fields: List<ShownField>
+}
+
+/// One field shown: its label, and the name its value is shown under.
+type ShownField {
+    label: Text
+    value: Text
+}
+
+/// Asks the vault to show `part` of the item for a while, where `how` says (`show` for the
+/// window, `hold` for the host): the name it is shown under, or nothing where the item keeps
+/// none. The vault records each showing as a use.
+action shown_part(item: Item, part: Text, how: Text) -> Text (
+    icon: .eye,
+    label: "Show from the vault",
+) {
+    if let arguments = parsed(
+            object(["\"${how}\":true", "\"item\":" + js(reference(item)), "\"part\":" + js(part)]),
+        ) {
+        let answer = actions.call(address: vault_at("reveal"), arguments: arguments)
+        if answer.output != .none {
+            if let out = answer.output { at_text(out, "value") } else { "" }
+        } else { "" }
+    } else { "" }
+}
+
+/// Shows the item's secret, who it signs in as, its note and its fields in the window, for 30
+/// seconds at most: each part by a name only the window reads it under.
+action reveal(item: Item) -> Shown (icon: .eye, label: "Reveal") {
+    Shown(
+        secret: shown_part(item, "secret", "show"),
+        identity: if item.kind == .note { "" } else { shown_part(item, "username", "show") },
+        notes: if item.noted and item.kind != .note {
+            shown_part(item, "notes", "show")
+        } else { "" },
+        fields: item.labels.map(
+            l -> ShownField(label: l, value: shown_part(item, "field:{l}", "show")),
+        ),
+    )
+}
+
+/// Deletes an item from the vault.
 destructive action delete(v: Vault, item: Item) (
     icon: .trash,
     key: "Delete",
     did: "deleted an item",
 ) {
     if item.entry != "" {
-        vault.forget(vault.vault, id: item.entry)
+        if let arguments = parsed(object(["\"item\":" + js(reference(item))])) {
+            let answer = actions.call(address: vault_at("remove"), arguments: arguments)
+            if answer.output == .none {
+                v.notice = if let why = answer.failure {
+                    why
+                } else { "The vault did not forget it" }
+            }
+        }
     }
     v.items.remove(item)
 }
 
-/// Brings the vault and its items together: an entry kept elsewhere (a mail account's password,
-/// a connector's token, one another device added) gets an item, an item's name, kind and tags
-/// reach its entry, and what an older Passwords kept in its own records moves into the vault and
-/// leaves the record. Runs while Passwords is open, and changes nothing when all is settled.
-action settle(v: Vault) uses random (icon: .refresh, label: "Settle the vault") {
+// ---------------------------------------------------------------- who used an item
+/// Who used an item, and who may use it without its person being asked again.
+type Access {
+    uses: List<Use>
+    leaves: List<Leave>
+    /// Why the vault did not say, or nothing.
+    trouble: Text
+}
+
+/// One use of an item: when, by whom, what for and where.
+type Use {
+    at: Int
+    by: Text
+    what: Text
+    places: Text
+}
+
+/// One leave a person gave: who it is for, by agent or app, what for and since when.
+type Leave {
+    agent: Text
+    for_app: Text
+    by: Text
+    using: Text
+    since: Int
+}
+
+/// Reads who used the item, and the leaves its person gave: what the item's access page shows.
+action access(item: Item) -> Access (icon: .shield_check, label: "Who used it") {
+    if let arguments = parsed(object(["\"item\":" + js(reference(item))])) {
+        let answer = actions.call(address: vault_at("uses"), arguments: arguments)
+        if answer.output != .none {
+            if let out = answer.output {
+                return Access(
+                    uses: at_list(out, "uses")
+                        .map(
+                            u -> Use(
+                                at: at_int(u, "at"),
+                                by: at_text(u, "by"),
+                                what: if at_text(u, "what") != "" {
+                                    at_text(u, "what")
+                                } else { at_text(u, "using") },
+                                places: at_texts(u, "places").map(p -> host_of(p)).join(", "),
+                            ),
+                        )
+                        .sort_by(u -> u.at, desc),
+                    leaves: at_list(out, "always")
+                        .map(
+                            l -> Leave(
+                                agent: at_text(l, "agent"),
+                                for_app: at_text(l, "app"),
+                                by: at_text(l, "by"),
+                                using: at_text(l, "using"),
+                                since: at_int(l, "since"),
+                            ),
+                        ),
+                    trouble: "",
+                )
+            }
+        }
+        return Access(
+            uses: [],
+            leaves: [],
+            trouble: if let why = answer.failure { why } else { "The vault did not say" },
+        )
+    }
+    Access(uses: [], leaves: [], trouble: "The vault did not say")
+}
+
+/// Takes back a leave the item's person gave: the agent or app it names asks again next time.
+action take_back(item: Item, leave: Leave) -> Access (icon: .x, label: "Take back") {
+    let who = if leave.agent != "" {
+        "\"agent\":" + js(leave.agent)
+    } else { "\"app\":" + js(leave.for_app) }
+    if let arguments = parsed(object(["\"item\":" + js(reference(item)), who])) {
+        actions.call(address: vault_at("take-back"), arguments: arguments)
+    }
+    access(item)
+}
+
+// ---------------------------------------------------------------- keeping the list with the vault
+/// Brings the vault and its items together: an item the vault keeps that is not listed (a mail
+/// account's password, a connector's token, one another device added) gets a record, what the
+/// vault says of each listed one reaches its record, one the vault no longer keeps leaves the
+/// list, and what an older Passwords kept in its own records moves into the vault and leaves the
+/// record. Runs while Passwords is open, and changes nothing when all is settled.
+action settle(v: Vault) (icon: .refresh, label: "Settle the vault") {
     if not v.pending.is_empty() and v.pending.any(r -> r.title != "" and v.importing == "") {
         clear_pending(v)
     }
-    for item in v.items {
-        if holds_old_secrets(item) {
-            carry(item)
-        } else if let e = entry_of(item) {
-            if e.title != item.title or e.kind != kind_word(item.kind) or not same_tags(e, item) {
-                keep_facts(item, e.username, e.origins)
-            }
-        }
+    for item in v.items.map(i -> i) {
+        if holds_old_secrets(item) { carry(v, item) }
     }
-    let known = v.items.map(i -> i.entry)
-    for e in vault.vault.entries {
-        if not known.contains(e.id) {
-            let made = v.items.insert(Item(entry: e.id, title: e.title, kind: kind_of(e.kind)))
-            for tag in e.tags {
-                made.tags.add(tag)
+    if let arguments = parsed(object([])) {
+        let answer = actions.call(address: vault_at("list"), arguments: arguments)
+        if answer.output != .none {
+            if let out = answer.output {
+                let listed = at_list(out, "items")
+                let ids = listed.map(one -> id_of(at_text(one, "reference")))
+                for one in listed {
+                    let id = id_of(at_text(one, "reference"))
+                    if let item = v.items.find(i -> i.entry == id) {
+                        learn(item, one)
+                    } else if id != "" {
+                        let made = v.items.insert(Item(entry: id, title: at_text(one, "title")))
+                        learn(made, one)
+                    }
+                }
+                for item in v.items.map(i -> i) {
+                    if item.entry != ""
+                        and not ids.contains(item.entry)
+                        and not holds_old_secrets(item) {
+                        v.items.remove(item)
+                    }
+                }
             }
         }
     }
 }
 
 /// The vault settles every few seconds while Passwords is open.
-trigger settling(v: Vault) every 5s: settle(v)
+trigger settling(v: Vault) every 10s: settle(v)
 
 /// Whether an item still keeps what an older Passwords put in its record.
 fn holds_old_secrets(item: Item) -> Bool {
@@ -407,29 +851,52 @@ fn holds_old_secrets(item: Item) -> Bool {
         or not item.fields.keys().is_empty()
 }
 
-/// Whether an entry carries the item's tags.
-fn same_tags(e: vault.Entry, item: Item) -> Bool {
-    e.tags.len() == item.tags.len() and e.tags.all(t -> item.tags.contains(t))
-}
-
-/// Moves what an item's record keeps into the vault, once, and empties the record: an entry the
-/// vault already keeps under the item's id stays as it is.
-action carry(item: Item) uses random (icon: .key, label: "Move the secret into the vault") {
-    if item.entry == "" {
-        item.entry = random.id()
+/// Moves what an item's record keeps into the vault, once, and empties the record. A record that
+/// names an item the vault keeps changes that item; one that names none adds one.
+action carry(v: Vault, item: Item) (icon: .key, label: "Move the secret into the vault") {
+    let places = item.origins.map(o -> origin_of(o)).filter(o -> o != "")
+    let secret = if item.kind == .note and item.password.is_empty() {
+        item.notes
+    } else { item.password }
+    let notes = if item.kind == .note and item.password.is_empty() { "" } else { item.notes }
+    let pairs = [
+        "\"kind\":" + js(kind_word(item.kind)),
+        "\"title\":" + js(item.title),
+        "\"username\":" + js(item.username),
+        "\"belongsTo\":" + js_list(places),
+        "\"tags\":" + js_list(item.tags.map(t -> t)),
+        if secret.is_empty() {
+            if item.kind == .login {
+                "\"generate\":" + object([])
+            } else { "\"secret\":" + js("-") }
+        } else { "\"secret\":" + js(secret) },
+        if notes.is_empty() { "" } else { "\"notes\":" + js(notes) },
+        "\"fields\":["
+            + item.fields.keys().map(k -> field_of(k, js(item.fields.get(k) ?? ""))).join(",")
+            + "]",
+    ]
+    let why = if item.entry != "" {
+        keep(item, object([["\"item\":" + js(reference(item))], pairs].flat_map(x -> x)))
+    } else { "no item" }
+    if why != "" {
+        // The vault keeps no item of that id: it is added anew, and the record names it.
+        if let arguments = parsed(object(pairs)) {
+            let answer = actions.call(address: vault_at("add"), arguments: arguments)
+            if answer.output != .none {
+                if let out = answer.output {
+                    item.entry = id_of(at_text(out, "reference"))
+                    learn(item, out)
+                }
+            } else {
+                v.notice = if let found = answer.failure {
+                    found
+                } else {
+                    "An older item could not move into the vault"
+                }
+                return
+            }
+        }
     }
-    vault.carry(
-        vault.vault,
-        id: item.entry,
-        kind: kind_word(item.kind),
-        title: item.title,
-        username: item.username,
-        origins: item.origins.map(o -> o),
-        tags: item.tags.map(t -> t),
-        password: item.password,
-        notes: item.notes,
-        fields: item.fields.keys().map(k -> vault.Field(label: k, value: item.fields.get(k) ?? "")),
-    )
     item.password = ""
     item.notes = ""
     item.username = ""
@@ -441,78 +908,7 @@ action carry(item: Item) uses random (icon: .key, label: "Move the secret into t
     }
 }
 
-/// Whether an entry holds a password a person chose: a login or a Wi-Fi key, not an issued API
-/// key or licence code.
 // ---------------------------------------------------------------- what the window reads
-fn is_password(e: vault.Entry) -> Bool {
-    (e.kind == "login" or e.kind == "wifi") and not e.password.is_empty()
-}
-
-/// A password a person chose is weak when it is shorter than 12 characters or misses a capital,
-/// a small letter or a digit.
-fn is_weak(password: Text) -> Bool {
-    password.len() < 12
-        or not has_class(password, 1)
-        or not has_class(password, 2)
-        or not has_class(password, 3)
-}
-
-/// Whether `text` holds a character of the class `of`: 1 a capital, 2 a small letter, 3 a digit.
-fn has_class(text: Text, of: Int) -> Bool {
-    let seen = false
-    for c in text.split("") {
-        if of == 1 and c.upper() == c and c.lower() != c {
-            seen = true
-        } else if of == 2 and c.lower() == c and c.upper() != c {
-            seen = true
-        } else if of == 3 and not c.is_empty() and "0123456789".contains(c) {
-            seen = true
-        }
-    }
-    seen
-}
-
-/// Whether another entry holds the same password, so the password is reused.
-fn is_reused(entries: List<vault.Entry>, e: vault.Entry) -> Bool {
-    entries.any(other -> other.id != e.id and is_password(other) and other.password == e.password)
-}
-
-/// Whether the entry was last changed more than a year ago.
-fn is_old(e: vault.Entry) -> Bool {
-    e.stale
-}
-
-/// What is wrong with the entry's password, in one phrase: "Reused and weak", "Not changed in a
-/// year". Empty for a password nothing is wrong with.
-fn reasons(v: Vault, entries: List<vault.Entry>, e: vault.Entry) -> Text {
-    let said: List<Text> = []
-    if is_reused(entries, e) {
-        said = [said, ["reused"]].flat_map(x -> x)
-    }
-    if is_weak(e.password) {
-        said = [said, ["weak"]].flat_map(x -> x)
-    }
-    if is_old(e) {
-        said = [said, ["not changed in a year"]].flat_map(x -> x)
-    }
-    let first = said.first() ?? ""
-    let second = said.at(1) ?? ""
-    let third = said.at(2) ?? ""
-    let joined = if second == "" {
-        first
-    } else if third == "" { "{first} and {second}" } else { "{first}, {second} and {third}" }
-    capitalized(joined)
-}
-
-/// `text` with its first letter a capital.
-fn capitalized(text: Text) -> Text {
-    if text.is_empty() {
-        ""
-    } else {
-        "{text.slice(0, 1).upper()}{text.slice(1, text.len())}"
-    }
-}
-
 /// What a kind is called in the window.
 fn kind_label(kind: Kind) -> Text {
     if kind == .login {
@@ -544,30 +940,36 @@ fn origin_label(kind: Kind, count: Int) -> Text {
     if kind == .api_key { "Service" } else if count > 1 { "Websites" } else { "Website" }
 }
 
-/// The identity a row shows: the network for a Wi-Fi password, else the username.
-fn identity(e: vault.Entry) -> Text {
-    if e.kind == "wifi" {
-        e.fields.find(f -> f.label == "network")?.value ?? e.username
-    } else { e.username }
-}
-
-/// The secret an entry hands out: its password, or a secure note's text.
-fn secret_value(e: vault.Entry) -> Text {
-    if e.kind == "note" { e.notes } else { e.password }
-}
-
-/// The one secondary fact a row shows: who it signs in as, else the site, else its kind.
+/// The one secondary fact a row shows: the site it signs in to, else its kind.
 fn summary(item: Item) -> Text {
-    if let e = entry_of(item) {
-        let who = identity(e)
-        if not who.is_empty() {
-            return who
-        }
-        if let site = e.origins.first() {
-            return host_of(site)
-        }
+    if let site = item.places.map(p -> p).first() { host_of(site) } else { kind_label(item.kind) }
+}
+
+/// What is wrong with the item's password, in one phrase: "Reused and weak", "Not changed in a
+/// year". Empty for a password nothing is wrong with.
+fn reasons(item: Item) -> Text {
+    let said: List<Text> = [
+        if item.concerns.contains("reused") { "reused" } else { "" },
+        if item.concerns.contains("weak") { "weak" } else { "" },
+        if item.concerns.contains("stale") { "not changed in a year" } else { "" },
+    ]
+        .filter(s -> s != "")
+    let first = said.first() ?? ""
+    let second = said.at(1) ?? ""
+    let third = said.at(2) ?? ""
+    let joined = if second == "" {
+        first
+    } else if third == "" { "{first} and {second}" } else { "{first}, {second} and {third}" }
+    capitalized(joined)
+}
+
+/// `text` with its first letter a capital.
+fn capitalized(text: Text) -> Text {
+    if text.is_empty() {
+        ""
+    } else {
+        "{text.slice(0, 1).upper()}{text.slice(1, text.len())}"
     }
-    kind_label(item.kind)
 }
 
 /// `bank.example` for `https://bank.example`.
@@ -605,22 +1007,31 @@ fn origin_of(value: Text) -> Text {
     if full.starts_with("https://") { "https://{bare}" } else { "http://{bare}" }
 }
 
-/// The items in the order the window lists them, by name ignoring case: those whose entry the
-/// vault reads now.
+/// The items in the order the window lists them, by name ignoring case: those the vault keeps.
 fn listed(v: Vault) -> List<Item> {
-    v.items.filter(i -> entry_of(i) != .none).sort_by(i -> i.title.lower())
+    v.items.filter(i -> i.entry != "").sort_by(i -> i.title.lower())
 }
 
+/// When `seconds` since 1970 is.
+fn moment(seconds: Int) -> Option<Time> {
+    if let epoch = Time.from_wall("UTC", "1970-01-01T00:00:00") {
+        .some(epoch + Duration(seconds))
+    } else { .none }
+}
+
+// ---------------------------------------------------------------- the window
 /// The vault window: its places in the sidebar, the items of the one chosen in the overview, and
 /// the open item, the review or the transfers in the content.
-// ---------------------------------------------------------------- the window
 view vault_window(v: Vault) {
     // The place chosen: a kind of item, the favorites, or one of the tools.
     state place: Text = "all"
     state opened: Option<Item> = listed(v).first()
     state searched: Text = ""
-    // What the window asks over the open item: its secret shown, or it about to be deleted.
+    // What the window shows over the open item: its secrets for a while, who used it, or it about
+    // to be deleted.
     state showing: Option<Item> = .none
+    state shown: Option<Shown> = .none
+    state seen: Option<Access> = .none
     state ask_delete: Option<Item> = .none
     let all = listed(v)
     let here = if place == "favorites" {
@@ -766,7 +1177,9 @@ view vault_window(v: Vault) {
                     )
                 } else {
                     ui.VirtualList(selection_follows_focus: true, in_column: true) {
-                        on select(x: Item): set(opened, x).then(set(showing, .none))
+                        on select(x: Item): set(opened, x)
+                            .then(set(showing, .none))
+                            .then(set(seen, .none))
                         for i in found {
                             ui.ListItem(item: i, opens: false) {
                                 ui.ListRow(
@@ -789,8 +1202,8 @@ view vault_window(v: Vault) {
             } else if place == "transfer" {
                 transfer_page(v)
             } else if let item = opened {
-                if let e = entry_of(item) {
-                    item_page(v, item, e, showing, ask_delete)
+                if item.entry != "" {
+                    item_page(v, item, showing, shown, seen, ask_delete)
                 } else {
                     ui.EmptyState("This item is no longer in the vault", icon: .shield)
                 }
@@ -826,20 +1239,27 @@ view vault_window(v: Vault) {
 }
 
 /// An item's own page: its name, what it signs in as, its secret, the addresses it signs in to,
-/// its tags, notes, custom fields and when it last changed, with the controls that write them.
-/// The secret shows only while the person asked for it.
+/// its tags, notes, custom fields and when it last changed, with the controls that write them,
+/// and who used it. Its secrets show only while the person asked for them, for 30 seconds at
+/// most, and never in a capture or a stream.
 // ---------------------------------------------------------------- the open item
 view item_page(
     v: Vault,
     item: Item,
-    e: vault.Entry,
     showing: State<Option<Item>>,
+    shown: State<Option<Shown>>,
+    seen: State<Option<Access>>,
     ask_delete: State<Option<Item>>,
 ) {
+    protect capture
     state draft_title: Text = item.title
-    state draft_username: Text = e.username
-    let shown = if let s = showing { s == item } else { false }
+    state draft_username: Text = ""
+    let open = if let s = showing { s == item } else { false }
+    let said = if open { shown } else { .none }
     stack(gap: .group) {
+        if open {
+            after Duration(30): set(showing, .none).then(set(shown, .none))
+        }
         row(gap: .related, align: .center) {
             ui.TextInput(bind: draft_title, title: true, placeholder: "What it is called", fill) {
                 on submit(t: Text): rename(item, t)
@@ -860,30 +1280,39 @@ view item_page(
         std.body() {
             ui.PropertyList {
                 if item.kind != .note {
-                    ui.Property(identity_label(item.kind), identity(e), copyable: true)
+                    ui.Property(
+                        identity_label(item.kind),
+                        if let s = said {
+                            if s.identity == "" { "Not set" } else { s.identity }
+                        } else { "Hidden" },
+                    )
                 }
                 ui.Property(
                     secret_label(item.kind),
-                    if secret_value(e).is_empty() {
-                        "Not set"
-                    } else if shown {
-                        secret_value(e)
-                    } else { "••••••••••••" },
+                    if let s = said { s.secret } else { "••••••••••••" },
                 )
-                if not e.origins.is_empty() {
-                    ui.Property(origin_label(item.kind, e.origins.len()), e.origins.join("\n"))
+                if not item.places.is_empty() {
+                    ui.Property(
+                        origin_label(item.kind, item.places.len()),
+                        item.places.map(p -> p).join("\n"),
+                    )
                 }
                 if not item.tags.is_empty() {
                     ui.Property("Tags", item.tags.map(t -> t).join(", "))
                 }
-                if item.kind != .note and not e.notes.trim().is_empty() {
-                    ui.Property("Notes", if shown { e.notes } else { "Hidden" })
+                if item.kind != .note and item.noted {
+                    ui.Property("Notes", if let s = said { s.notes } else { "Hidden" })
                 }
-                for f in e.fields {
-                    ui.Property(f.label, if shown { f.value } else { "••••••" })
+                for label in item.labels {
+                    ui.Property(
+                        label,
+                        if let s = said {
+                            s.fields.find(f -> f.label == label)?.value ?? "••••••"
+                        } else { "••••••" },
+                    )
                 }
             }
-            if let changed = Time.from_wall("UTC", e.changed.slice(0, 19)) {
+            if let changed = moment(item.changed) {
                 row(gap: .related, align: .center) {
                     text("Last changed", role: .label)
                     ui.Time(at: changed, past: true)
@@ -893,18 +1322,27 @@ view item_page(
                 ui.Button("Copy {secret_label(item.kind).lower()}", icon: .copy) {
                     on press: copy_secret(item)
                 }
-                if not identity(e).is_empty() and item.kind != .note {
+                if item.kind != .note {
                     ui.Button("Copy {identity_label(item.kind).lower()}", icon: .copy) {
                         on press: copy_identity(item)
                     }
                 }
-                if not e.origins.is_empty() {
+                if not item.places.is_empty() {
                     ui.Button("Copy web addresses", icon: .copy) {
                         on press: copy_origins(item)
                     }
                 }
-                ui.Button(if shown { "Hide" } else { "Reveal" }, icon: .eye) {
-                    on press: if shown { set(showing, .none) } else { set(showing, item) }
+                if open {
+                    ui.Button("Hide", icon: .eye) {
+                        on press: set(showing, .none).then(set(shown, .none))
+                    }
+                } else {
+                    ui.Button("Reveal", icon: .eye) {
+                        on press: {
+                            let answer = reveal(item)
+                            set(shown, .some(answer)).then(set(showing, .some(item)))
+                        }
+                    }
                 }
                 if item.kind == .note {
                     ui.Button("Write the note", icon: .file_text) {
@@ -914,8 +1352,10 @@ view item_page(
                     ui.Button("Change the {secret_label(item.kind).lower()}", icon: .key) {
                         on press: change_secret(item)
                     }
-                    ui.Button("Generate strong password", icon: .refresh) {
-                        on press: generate_password(item)
+                    if item.kind == .login {
+                        ui.Button("Generate strong password", icon: .refresh) {
+                            on press: generate_password(item)
+                        }
                     }
                 }
             }
@@ -948,7 +1388,7 @@ view item_page(
             }
             if item.kind == .login or item.kind == .api_key {
                 section(origin_label(item.kind, 2)) {
-                    for origin in e.origins {
+                    for origin in item.places {
                         row(gap: .tight, align: .center) {
                             ui.Link(origin, label: host_of(origin))
                             spacer
@@ -966,16 +1406,33 @@ view item_page(
                 }
             }
             section("Fields") {
-                for f in e.fields {
+                for label in item.labels {
                     row(gap: .tight, align: .center) {
-                        text(f.label, role: .label)
+                        text(label, role: .label)
                         spacer
                         ui.Button("Remove the field", icon: .x, icon_only: true, role: .plain) {
-                            on press: remove_field(item, f.label)
+                            on press: remove_field(item, label)
                         }
                     }
                 }
                 std.add_entry("Add a field, such as PIN", add_field(item))
+            }
+            section("Access") {
+                if let a = seen {
+                    access_list(item, a, seen)
+                } else {
+                    text(
+                        "Every time the item is shown, copied or handed to an app or an agent, the vault notes it.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                    ui.Button("Who used it", icon: .shield_check) {
+                        on press: {
+                            let read = access(item)
+                            set(seen, .some(read))
+                        }
+                    }
+                }
             }
             row(gap: .related, wrap: true) {
                 ui.Button("Delete item", icon: .trash, role: .destructive) {
@@ -986,16 +1443,61 @@ view item_page(
     }
 }
 
+/// Who used an item, newest first, and the leaves its person gave, each taken back from here.
+view access_list(item: Item, a: Access, seen: State<Option<Access>>) {
+    stack(gap: .related) {
+        if a.trouble != "" {
+            ui.Banner(a.trouble, kind: .warning)
+        }
+        if not a.leaves.is_empty() {
+            text("May use it without asking", role: .label)
+            for leave in a.leaves {
+                row(gap: .tight, align: .center) {
+                    ui.ListRow(
+                        title: if leave.by != "" {
+                            leave.by
+                        } else if leave.for_app != "" { leave.for_app } else { leave.agent },
+                        secondary: leave.using,
+                        icon: .shield_check,
+                    )
+                    spacer
+                    ui.Button("Take back", icon: .x, role: .plain) {
+                        on press: {
+                            let after = take_back(item, leave)
+                            set(seen, .some(after))
+                        }
+                    }
+                }
+            }
+        }
+        if a.uses.is_empty() {
+            text("Nobody used it yet.", role: .caption, secondary: true)
+        } else {
+            for one_use in a.uses.take(20) {
+                ui.ListRow(
+                    title: if one_use.by != "" { one_use.by } else { "You" },
+                    secondary: if one_use.places != "" {
+                        "{one_use.what} · {one_use.places}"
+                    } else { one_use.what },
+                    icon: .clock,
+                )
+            }
+        }
+        ui.Button("Close", role: .plain) {
+            on press: set(seen, .none)
+        }
+    }
+}
+
 /// The review: the passwords that are reused, weak or old, each opening its item.
 // ---------------------------------------------------------------- the review
 view review_page(v: Vault) {
-    let entries = vault.vault.entries
-    let checked = entries.filter(e -> is_password(e))
+    let checked = listed(v).filter(i -> i.kind == .login or i.kind == .wifi)
     let total = checked.len()
-    let reused = checked.filter(e -> is_reused(entries, e)).len()
-    let weak = checked.filter(e -> is_weak(e.password)).len()
-    let old = checked.filter(e -> is_old(e)).len()
-    let troubled = checked.filter(e -> is_reused(entries, e) or is_weak(e.password) or is_old(e))
+    let reused = checked.filter(i -> i.concerns.contains("reused")).len()
+    let weak = checked.filter(i -> i.concerns.contains("weak")).len()
+    let old = checked.filter(i -> i.concerns.contains("stale")).len()
+    let troubled = checked.filter(i -> not i.concerns.is_empty())
     ui.Scroll {
         page {
             stack(gap: .group) {
@@ -1032,15 +1534,13 @@ view review_page(v: Vault) {
                     }
                 } else {
                     ui.Section("Needs attention") {
-                        for e in troubled {
-                            if let item = v.items.find(i -> i.entry == e.id) {
-                                ui.ListRow(
-                                    title: item.title,
-                                    secondary: reasons(v, entries, e),
-                                    item: item,
-                                    icon: item.kind.icon(),
-                                )
-                            }
+                        for item in troubled {
+                            ui.ListRow(
+                                title: item.title,
+                                secondary: reasons(item),
+                                item: item,
+                                icon: item.kind.icon(),
+                            )
                         }
                     }
                 }
@@ -1162,7 +1662,7 @@ action preview_csv(v: Vault, file: File) (icon: .file_plus, label: "Import from 
                             title: row.title,
                             username: row.username,
                             origin: row.origin,
-                            skip: holds_login(row.title, row.username, row.origin),
+                            skip: holds_login(v, row.title, row.origin),
                         ),
                     )
                 }
@@ -1181,32 +1681,65 @@ action preview_csv(v: Vault, file: File) (icon: .file_plus, label: "Import from 
     }
 }
 
-/// Whether the vault already holds that login: the same name and username, and the same address.
-fn holds_login(title: Text, username: Text, origin: Text) -> Bool {
+/// Whether the vault already holds that login: the same name, and the same address.
+fn holds_login(v: Vault, title: Text, origin: Text) -> Bool {
     let wanted = origin_of(origin)
-    vault.vault.entries.any(
-        e -> e.title.lower() == title.trim().lower()
-            and e.username.lower() == username.trim().lower()
-            and if wanted == "" { e.origins.is_empty() } else { e.origins.contains(wanted) },
+    v.items.any(
+        i -> i.title.lower() == title.trim().lower()
+            and if wanted == "" { i.places.is_empty() } else { i.places.contains(wanted) },
     )
 }
 
+/// Adds an item the host read from a file the person chose: `item`, its secrets each named by the
+/// token the host holds it under. Answers whether the vault kept it.
+action add_read(v: Vault, item: HeldItem) -> Bool (icon: .plus, label: "Add what was read") {
+    let kind = kind_of(item.kind)
+    let places = item.origins.map(o -> origin_of(o)).filter(o -> o != "")
+    let secret = if item.password != "" {
+        item.password
+    } else if kind == .note { item.notes } else { "" }
+    let notes = if item.password != "" { item.notes } else { "" }
+    if secret == "" {
+        return false
+    }
+    let made = add_new(
+        v,
+        object(
+            [
+                "\"kind\":" + js(kind_word(kind)),
+                "\"title\":" + js(item.title),
+                "\"username\":" + js(item.username),
+                "\"belongsTo\":" + js_list(places),
+                "\"tags\":" + js_list(item.tags),
+                "\"secret\":" + held(secret),
+                if notes == "" { "" } else { "\"notes\":" + held(notes) },
+                "\"fields\":["
+                    + item.fields
+                        .filter(f -> f.value != "")
+                        .map(f -> field_of(f.label, held(f.value)))
+                        .join(",")
+                    + "]",
+            ],
+        ),
+    )
+    made != .none
+}
+
 /// Brings the rows the person agreed to into the vault, skipping the ones the vault holds. The
-/// vault reads their passwords from the file.
+/// host reads their passwords from the file and the vault takes them from the host.
 action apply_import(v: Vault) (icon: .check, label: "Import the logins") {
     let rows = v.pending.map(r -> r)
     let skip = rows
-        .filter(r -> r.skip or holds_login(r.title, r.username, r.origin))
+        .filter(r -> r.skip or holds_login(v, r.title, r.origin))
         .map(r -> rows.index_of(r) ?? 0)
-    match engine.call("vault-import-csv", json.encode(ImportAsk(url: v.importing, skip: skip))) {
-        .ok(text) => match json.decode<CountAnswer>(text) {
+    match engine.call("vault-read-csv", json.encode(ImportAsk(url: v.importing, skip: skip))) {
+        .ok(text) => match json.decode<HeldItems>(text) {
             .ok(answer) => {
+                let kept = answer.items.filter(item -> add_read(v, item)).len()
                 v.notice = if skip.is_empty() {
-                    if answer.imported == 1 {
-                        "Imported 1 login"
-                    } else { "Imported {answer.imported} logins" }
+                    if kept == 1 { "Imported 1 login" } else { "Imported {kept} logins" }
                 } else {
-                    "Imported {answer.imported} logins and skipped {skip.len()}"
+                    "Imported {kept} logins and skipped {skip.len()}"
                 }
             }
             .err(why) => {
@@ -1235,9 +1768,35 @@ action clear_pending(v: Vault) -> Bool (icon: .x, label: "Clear the waiting rows
     true
 }
 
+/// Every listed item with its secrets, each named by the token the host holds it under: what the
+/// host writes into a file the person chose. The vault records each part handed over as a use.
+action held_items(v: Vault) -> List<HeldItem> (
+    icon: .download,
+    label: "Read the vault for a file",
+) {
+    listed(v)
+        .map(
+            i -> HeldItem(
+                kind: file_kind(i.kind),
+                title: i.title,
+                username: if i.kind == .note { "" } else { shown_part(i, "username", "hold") },
+                origins: i.places.map(p -> p),
+                tags: i.tags.map(t -> t),
+                password: shown_part(i, "secret", "hold"),
+                notes: if i.noted and i.kind != .note {
+                    shown_part(i, "notes", "hold")
+                } else { "" },
+                fields: i.labels.map(
+                    l -> HeldField(label: l, value: shown_part(i, "field:{l}", "hold")),
+                ),
+            ),
+        )
+}
+
 /// The vault as a browser's CSV: the person chooses where it goes.
 action export_csv(v: Vault) -> File (icon: .download, label: "Export to CSV") {
-    match engine.call("vault-export-csv", "") {
+    let items = held_items(v)
+    match engine.call("vault-export-csv", json.encode(ToFile(items: items, passphrase: ""))) {
         .ok(text) => match json.decode<UrlAnswer>(text) {
             .ok(answer) => File.at("passwords.csv", answer.url),
             .err(why) => File.of_text("The export could not be made.txt", why),
@@ -1253,9 +1812,21 @@ action export_backup(v: Vault) -> File (
     label: "Back up the vault",
     takes: [("Backup password", .secret), ("The backup password again", .secret)],
 ) {
-    match engine.call("vault-export-backup", "") {
-        .ok(text) => match json.decode<UrlAnswer>(text) {
-            .ok(answer) => File.at("passwords-backup.tilopw", answer.url),
+    match engine.call("vault-hold-typed", json.encode(TypedAsk(place: 0))) {
+        .ok(text) => match json.decode<TokenAnswer>(text) {
+            .ok(passphrase) => {
+                let items = held_items(v)
+                match engine.call(
+                    "vault-export-backup",
+                    json.encode(ToFile(items: items, passphrase: passphrase.token)),
+                ) {
+                    .ok(made) => match json.decode<UrlAnswer>(made) {
+                        .ok(answer) => File.at("passwords-backup.tilopw", answer.url),
+                        .err(why) => File.of_text("The backup could not be made.txt", why),
+                    },
+                    .err(why) => File.of_text("The backup could not be made.txt", why),
+                }
+            }
             .err(why) => File.of_text("The backup could not be made.txt", why),
         },
         .err(why) => File.of_text("The backup could not be made.txt", why),
@@ -1263,20 +1834,26 @@ action export_backup(v: Vault) -> File (
 }
 
 /// Brings the entries a backup holds into the vault with the password the person types on the
-/// system's card, and answers how many came in. An entry the vault already keeps is left as it
-/// is, so restoring twice adds nothing.
+/// system's card, and answers how many came in. An item the vault already lists under its name
+/// and address is left as it is, so restoring twice adds nothing.
 action restore_backup(v: Vault, file: File) -> Int (
     icon: .lock_open,
     label: "Restore from a backup",
     takes: [("Backup password", .secret)],
 ) {
-    match engine.call("vault-restore-backup", json.encode(AskedFile(url: file.url))) {
-        .ok(text) => match json.decode<RestoredAnswer>(text) {
+    match engine.call("vault-read-backup", json.encode(AskedFile(url: file.url))) {
+        .ok(text) => match json.decode<HeldItems>(text) {
             .ok(answer) => {
-                v.notice = if answer.restored == 1 {
+                let restored = answer.items
+                    .filter(
+                        item -> not holds_login(v, item.title, item.origins.first() ?? "")
+                            and add_read(v, item),
+                    )
+                    .len()
+                v.notice = if restored == 1 {
                     "Restored 1 item"
-                } else { "Restored {answer.restored} items" }
-                answer.restored
+                } else { "Restored {restored} items" }
+                restored
             }
             .err(why) => {
                 v.notice = why
@@ -1295,16 +1872,32 @@ action restore_backup(v: Vault, file: File) -> Int (
 /// leaves the device's service once the vault keeps it.
 // ---------------------------------------------------------------- this device's vault
 action absorb_device(v: Vault) (icon: .key, label: "Import this device's vault") {
-    match engine.call("vault-absorb-device", "") {
-        .ok(text) => match json.decode<CarriedAnswer>(text) {
+    match engine.call("vault-device-items", "") {
+        .ok(text) => match json.decode<DeviceItems>(text) {
             .ok(answer) => {
-                v.notice = if answer.error != "" {
-                    answer.error
-                } else if answer.carried == 1 {
-                    "Imported 1 login from this device"
-                } else if answer.carried > 1 {
-                    "Imported {answer.carried} logins from this device"
-                } else { "" }
+                if answer.error != "" {
+                    v.notice = answer.error
+                } else {
+                    let carried = answer.items
+                        .filter(item -> add_read(v, item))
+                        .map(item -> item.id)
+                    if not carried.is_empty() {
+                        match engine.call(
+                            "vault-device-remove",
+                            json.encode(DeviceRemove(ids: carried)),
+                        ) {
+                            .ok(_) => {}
+                            .err(why) => {
+                                v.notice = why
+                            }
+                        }
+                    }
+                    if carried.len() == 1 {
+                        v.notice = "Imported 1 login from this device"
+                    } else if carried.len() > 1 {
+                        v.notice = "Imported {carried.len()} logins from this device"
+                    }
+                }
             }
             .err(why) => {
                 v.notice = why
@@ -1316,11 +1909,15 @@ action absorb_device(v: Vault) (icon: .key, label: "Import this device's vault")
     }
 }
 
-/// Which secret of which entry the host hands the vault what the person typed for.
 // ---------------------------------------------------------------- what the host is asked
+/// Which thing the person typed on the card the host holds for a later step.
 type TypedAsk {
-    id: Text
-    part: Text
+    place: Int
+}
+
+/// The token the host holds a secret under.
+type TokenAnswer {
+    token: Text
 }
 
 /// What the CSV engine is asked: the file the person chose.
@@ -1346,20 +1943,46 @@ type RowsAnswer {
     rows: List<CsvRow>
 }
 
-/// How many rows an import brought.
-type CountAnswer {
-    imported: Int
+/// An item read from or written to a file, its secrets each named by the token the host holds it
+/// under.
+type HeldItem {
+    id: Text = ""
+    kind: Text
+    title: Text
+    username: Text
+    origins: List<Text>
+    tags: List<Text>
+    password: Text
+    notes: Text
+    fields: List<HeldField>
 }
 
-/// How many entries a restore brought.
-type RestoredAnswer {
-    restored: Int
+/// A field of such an item: its label, and the token its value is held under.
+type HeldField {
+    label: Text
+    value: Text
 }
 
-/// How many entries the device's own vault carried in, or why it could not be read.
-type CarriedAnswer {
-    carried: Int
+/// The items a backup holds, as the host holds them.
+type HeldItems {
+    items: List<HeldItem>
+}
+
+/// What this device's own older vault holds, as the host holds it, or why it could not be read.
+type DeviceItems {
+    items: List<HeldItem>
     error: Text
+}
+
+/// The entries of this device's own older vault to take out of it.
+type DeviceRemove {
+    ids: List<Text>
+}
+
+/// What a file is made of: the items, and for a backup the token of its passphrase.
+type ToFile {
+    items: List<HeldItem>
+    passphrase: Text
 }
 
 /// Where an engine kept what it made.

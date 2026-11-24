@@ -900,7 +900,6 @@ inputs = [
   "crates/core/tilo-workspace-service/models-surface.json",
   "crates/core/tilo-workspace-service/styles-surface.json",
   "crates/core/tilo-workspace-service/accounts-surface.json",
-  "crates/core/tilo-workspace-service/vault-surface.json",
   "apps/tl/passwords/",
   "crates/core/actions/src/remote/invocations-surface.json",
   "crates/services/vision/surface.json",

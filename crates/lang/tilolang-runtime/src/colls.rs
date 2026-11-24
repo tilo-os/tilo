@@ -269,6 +269,9 @@ fn lit_of_value(v: &Value) -> Option<tilolang::pred::Lit> {
         Value::Bool(b) => Lit::Bool(*b),
         Value::Text(t) => Lit::Text(t.clone()),
         Value::Ref(r) => Lit::Ref(r.target.id_string()),
+        // A case with nothing in it is the case a field holds (`x -> x.status == status`); one
+        // that carries values is more than the field's case, and the loop compares it whole.
+        Value::Enum(e) if e.fields.is_empty() => Lit::Variant(e.variant.clone()),
         Value::Opt(None) => Lit::Absent,
         Value::Opt(Some(inner)) => return lit_of_value(inner),
         _ => return None,

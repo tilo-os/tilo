@@ -7,6 +7,7 @@
 //! daemon publishes it here, to the person's shell on its own shell link alone: the desktop keeps
 //! no broker of its own to read it from.
 
+#[cfg(feature = "apps")]
 use crate::apps::route::CrdtRoute;
 
 /// The resource the device's daemon publishes what its windows hold as, to the desktop on its shell
@@ -35,6 +36,7 @@ pub struct WindowNotes {
 
 impl WindowNotes {
     /// The notes `held` names: what the broker's windows show, by instance.
+    #[cfg(feature = "apps")]
     #[must_use]
     pub fn of(held: &[(u64, CrdtRoute)]) -> Self {
         Self {
@@ -51,6 +53,7 @@ impl WindowNotes {
     }
 
     /// What each window holds, as the broker names it: the instance and the record's route.
+    #[cfg(feature = "apps")]
     #[must_use]
     pub fn routes(&self) -> Vec<(u64, CrdtRoute)> {
         self.windows
@@ -84,7 +87,7 @@ impl WindowNotes {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "apps"))]
 mod tests {
     use super::*;
 

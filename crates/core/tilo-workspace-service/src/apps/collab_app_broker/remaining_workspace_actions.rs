@@ -2,6 +2,7 @@
 use super::host_action_admission::{AdmittedHostAction, HostActionAdmission};
 use super::{AppBrokerState, BrokerActor, InvocationCaller};
 use std::sync::Arc;
+use tilo_actions::remote::asked::AskedFacts;
 use tilo_actions::remote::{ActionCallError, Caller, Confirmation, InvokeRequest};
 use tilo_actions::{ActionDescriptor, ActionFailure, InvocationUpdate};
 use tilo_desktop_model::Workspace;
@@ -332,13 +333,9 @@ impl AppBrokerState {
         match answer {
             tilo_action_policy::Answer::Deny => return Err(ActionCallError::NotPermitted),
             tilo_action_policy::Answer::Ask
-                if !(approved
-                    || matches!(confirmation, Some(Confirmation::Asked(_)))
-                    // An ask is made of the person: the person's own connection to their
-                    // device's daemon is them, so their call is their answer. Anyone else
-                    // acting as them — an app, a program through a shell — keeps asking.
-                    || (actor.direct() && actor.own_connection())
-                    || (actor.direct() && confirmation == Some(&Confirmation::Confirmed))) =>
+                // Only the person's approve of the asked record this call was kept as answers
+                // an ask: never the call itself, nor a confirmation its caller wrote.
+                if !(approved || matches!(confirmation, Some(Confirmation::Asked(_)))) =>
             {
                 return Err(ActionCallError::confirmation_required());
             }
@@ -594,6 +591,23 @@ impl AppBrokerState {
         let descriptor =
             governance_descriptor(service.as_ref(), authority.0, &request.target.address)
                 .ok_or(ActionCallError::UnknownAction)?;
+        // What the person is shown where this call waits for their yes: the declaration the
+        // workspace offers them, not just its address.
+        let asking = |descriptor: &ActionDescriptor| {
+            ActionCallError::asks(super::approval::described(
+                AskedFacts::by(crate::workspaces::asking::asked_by(caller)),
+                descriptor.clone(),
+                &request.argument,
+            ))
+        };
+        // A refusal from the checks below that states nothing is filled in from that
+        // declaration, as the catalogue lookup fills an ask of a published action.
+        let stating = |descriptor: &ActionDescriptor, error: ActionCallError| match error {
+            ActionCallError::ConfirmationRequired(facts) if *facts == AskedFacts::default() => {
+                asking(descriptor)
+            }
+            other => other,
+        };
         // Owner actions retain their explicit direct-person confirmation floor.
         if owner_action && !authority.1.direct() {
             return Err(ActionCallError::NotPermitted);
@@ -601,7 +615,7 @@ impl AppBrokerState {
         let approved =
             owner_action && super::approval::approved_by_person(request.confirmation.as_ref());
         if owner_action && !approved && request.confirmation != Some(Confirmation::Confirmed) {
-            return Err(ActionCallError::confirmation_required());
+            return Err(asking(&descriptor));
         }
         // Convert only the exact consumed owner approval; ordinary governance
         // retains its legacy phrase/confirmation semantics at the service.
@@ -616,7 +630,8 @@ impl AppBrokerState {
             checked.confirmation.as_ref(),
             approved,
             false,
-        )?;
+        )
+        .map_err(|error| stating(&descriptor, error))?;
         if owner_action
             && !Self::confirmed_as_asked(
                 authority.1,
@@ -626,7 +641,7 @@ impl AppBrokerState {
                 approved,
             )
         {
-            return Err(ActionCallError::confirmation_required());
+            return Err(asking(&descriptor));
         }
         let admitted = self.admit_host_action(
             caller,
@@ -668,7 +683,8 @@ impl AppBrokerState {
                 checked.confirmation.as_ref(),
                 approved,
                 true,
-            )?;
+            )
+            .map_err(|error| stating(&fresh, error))?;
             Ok(actor)
         })?;
         let started = service.start(&crate::apps::services::WorkspaceGovernanceRequest {

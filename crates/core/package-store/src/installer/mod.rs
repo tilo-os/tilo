@@ -722,7 +722,14 @@ fn bundle_status(raw: &str) -> Result<(String, bool), Error> {
     let (_, version) = raw
         .split_once('/')
         .ok_or_else(|| Error::RuntimeReferenceMalformed(raw.to_string()))?;
-    Ok((version.to_string(), runtime_bundle_present(version)))
+    Ok((version.to_string(), runtime_present(raw, version)))
+}
+
+/// Whether the runtime `raw` (`<name>/<version>`) is here: a build this device carries in itself
+/// (a phone's APK ships its runtimes inside itself) or one installed for this user or in the
+/// image. A carried build answers only for the builds it is exact for, never for a name.
+fn runtime_present(raw: &str, version: &str) -> bool {
+    runtime_bundle::carried(raw).is_some() || runtime_bundle_present(version)
 }
 
 /// Whether runtime build `version` is installed for this user or in the image.

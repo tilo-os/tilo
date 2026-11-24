@@ -427,6 +427,9 @@ impl Workspaces {
         // that exists: it writes the list as part of the take-in, before it
         // answers, and waits for no group still to be founded. A group this
         // device does not found is the founders' to hand it, as any join is.
+        // Only a host that holds the workspace's keys opens its group, and waits
+        // for the key service to admit it.
+        #[cfg(feature = "device-keys")]
         if role == CopyRole::KeyHolder
             && workspace
                 == tilo_server_protocol::servers::person_workspace_id(&host.cert.user_public_key)

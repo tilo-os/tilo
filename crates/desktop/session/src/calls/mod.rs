@@ -22,7 +22,7 @@ use runtime_collab::native_media::{
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::live::Track;
-use tilo_live::live_session::{Heard, LiveSession};
+use tilo_live::live_session::Heard;
 use tilo_live::roster::Roster as LiveRoster;
 use tilo_live::voice::{self, VoiceObject};
 use tilo_lock::MutexRecover as _;
@@ -74,7 +74,7 @@ pub(crate) struct Calls {
     arrived: Arc<tokio::sync::Notify>,
     /// This session's live session in each workspace, as it stands: what a call's voice is published
     /// into and heard from.
-    live_sessions: Mutex<BTreeMap<String, Arc<LiveSession>>>,
+    live_sessions: Mutex<BTreeMap<String, crate::live::Sessions>>,
     /// What each workspace's live session heard since the last call, newest last: the calls of that
     /// workspace play it.
     heard: Mutex<BTreeMap<String, VecDeque<Heard>>>,
@@ -214,7 +214,7 @@ impl Calls {
 
     /// The live session `workspace` 's call's voice runs on, while this session is in the workspace's
     /// live session.
-    pub(crate) fn live_session(&self, workspace: &str) -> Option<Arc<LiveSession>> {
+    pub(crate) fn live_session(&self, workspace: &str) -> Option<crate::live::Sessions> {
         self.live_sessions.lock_recover().get(workspace).cloned()
     }
 
@@ -389,7 +389,7 @@ fn roster_of(channel: &tilo_live::calls::Channel) -> Roster {
 
 /// The workspace live sessions this session is in now: a call's voice and pictures run on the one its
 /// workspace is in, and are no longer carried once this device leaves the workspace.
-pub(crate) fn live_sessions_of(sync: &sync::Client) -> BTreeMap<String, Arc<LiveSession>> {
+pub(crate) fn live_sessions_of(sync: &sync::Client) -> BTreeMap<String, crate::live::Sessions> {
     sync.live_sessions()
 }
 

@@ -13,6 +13,8 @@ pub mod control_hints;
 pub mod desktop;
 pub mod device_vpn;
 pub mod identity;
+#[cfg(any(test, feature = "test-support"))]
+pub mod in_memory;
 pub mod network_usage;
 pub mod osk;
 pub mod personal_dictionary;
@@ -22,6 +24,7 @@ pub mod search;
 pub mod service;
 pub mod shell_views;
 pub mod shortcuts;
+pub mod workspace;
 
 /// The app whose settings they are, whose controls change them and under
 /// which a change is admitted.

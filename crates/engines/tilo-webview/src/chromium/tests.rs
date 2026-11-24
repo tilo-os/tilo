@@ -331,10 +331,6 @@ tilo_test_env::scenario! {
             })
         );
         assert_eq!(
-            encode_command(WebViewCommand::RetryDownload { id: 9 }),
-            Some(json!({"op":"download_retry","id":9}))
-        );
-        assert_eq!(
             encode_command(WebViewCommand::StartDownload {
                 uri: "https://downloads.test/archive.zip".into(),
             }),
@@ -345,9 +341,28 @@ tilo_test_env::scenario! {
                 uri: uri.into(),
             }));
         }
+        let request = json!({
+            "event":"download_request","tab":2,"id":9,"url":"https://downloads.test/archive.zip",
+            "name":"archive.zip","referrer":"https://downloads.test/","cookies":"session=abc",
+            "user_agent":"Chromium"
+        });
+        assert!(validate_event(&request).is_ok());
         assert_eq!(
-            encode_command(WebViewCommand::CancelAllDownloads),
-            Some(json!({"op":"download_cancel_all"}))
+            decode_event(&request),
+            Some(WebViewEvent::DownloadRequest {
+                id: 9,
+                url: "https://downloads.test/archive.zip".into(),
+                name: "archive.zip".into(),
+                referrer: "https://downloads.test/".into(),
+                cookies: "session=abc".into(),
+                user_agent: "Chromium".into(),
+            })
+        );
+        let mut untabbed = request.clone();
+        untabbed.as_object_mut().unwrap().remove("tab");
+        assert!(
+            validate_event(&untabbed).is_err(),
+            "a page's cookies go to the tab that offered its download, never to every window"
         );
     }
 

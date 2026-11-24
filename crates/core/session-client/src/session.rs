@@ -877,7 +877,7 @@ impl Task {
         self.enter_if_entering().await;
         // A workspace this session was asked to join before its host placed it is asked for
         // again on every new connection ([`Cmd::JoinPlaced`]).
-        for workspace_id in self.placing.keys().copied().collect::<Vec<_>>() {
+        for workspace_id in self.placing.keys().copied() {
             self.place(workspace_id);
         }
         for workspace_id in self.workspaces.clone() {
@@ -1529,7 +1529,9 @@ impl Task {
                     }
                 }
                 _ = tick.tick() => {
-                    self.retry_links().await;
+                    if let Some(exit) = self.retry_links().await {
+                        return exit;
+                    }
                     self.check_admission();
                     self.ask_behind_again(tilo_clock::unix_now_ms());
                     self.live_sessions_due.extend(self.workspaces.iter().copied());
@@ -1539,13 +1541,23 @@ impl Task {
     }
 
     /// Try again each workspace's link that is not up, and take up a member copy that came up
-    /// after the session asked for it.
-    async fn retry_links(&mut self) {
+    /// after the session asked for it. Answers how the session ends, when a link's dial is
+    /// refused for a reason asking again cannot change: the session stops with it, as it does
+    /// when its server refuses the first dial.
+    async fn retry_links(&mut self) -> Option<Exit> {
         for workspace_id in self.workspaces.clone() {
             if self.links.contains_key(&workspace_id) || self.dialing.contains(&workspace_id) {
                 continue;
             }
             if let Err(error) = self.dial_link(workspace_id).await {
+                if stops_session(&error) {
+                    tracing::info!(
+                        %workspace_id,
+                        %error,
+                        "a workspace's link is refused for good; the session stops"
+                    );
+                    return Some(Exit::Reconnect);
+                }
                 tracing::info!(%workspace_id, %error, "a workspace's link is not up yet");
             }
         }
@@ -1570,6 +1582,7 @@ impl Task {
                 });
             }
         }
+        None
     }
 
     /// Take one command while connected. Returns how the session ends, if it does.
@@ -1881,9 +1894,13 @@ impl Task {
             Some(tilo_server_protocol::refusal::Refusal::WorkspaceDeleted) => {
                 self.left(workspace_id, WORKSPACE_DELETED);
             }
-            // The host ended the link with the root's entry that retires this device's key: the
-            // device was removed, and asking the workspace again changes nothing.
-            Some(tilo_server_protocol::refusal::Refusal::Revoked(_)) => {
+            // The host ended the link with the root's entry that retires this device's key, or
+            // with the removal alone: the device was removed, and asking the workspace again
+            // changes nothing.
+            Some(
+                tilo_server_protocol::refusal::Refusal::Revoked(_)
+                | tilo_server_protocol::refusal::Refusal::DeviceRevoked,
+            ) => {
                 self.stop(DEVICE_REVOKED.0, DEVICE_REVOKED.1.to_owned());
             }
             Some(tilo_server_protocol::refusal::Refusal::NotAMember(_)) => {
@@ -1979,7 +1996,7 @@ impl Task {
                             &output.value.unwrap_or_default(),
                         )
                     }
-                    ReceiptStatus::Rejected { error } => Err(error.to_string()),
+                    ReceiptStatus::Rejected { error } => Err(error.own_words()),
                     ReceiptStatus::Failed { error } => Err(error.message),
                     ReceiptStatus::Cancelled { message } => {
                         Err(message.unwrap_or_else(|| "the host gave the request up".into()))
@@ -2526,7 +2543,8 @@ fn stops_session(error: &LinkError) -> bool {
 /// ([`LinkError::DeviceRevoked`]), and every other reason is the host's words.
 fn dialed_refusal(refusal: tilo_server_protocol::refusal::Refusal) -> LinkError {
     match refusal {
-        tilo_server_protocol::refusal::Refusal::Revoked(_) => LinkError::DeviceRevoked,
+        tilo_server_protocol::refusal::Refusal::Revoked(_)
+        | tilo_server_protocol::refusal::Refusal::DeviceRevoked => LinkError::DeviceRevoked,
         other => LinkError::Refused(other.to_string()),
     }
 }
@@ -4327,7 +4345,7 @@ pub async fn ask_ticket(
                 return Ok(Ok(output.value.unwrap_or(serde_json::Value::Null)));
             }
             ReceiptStatus::Failed { error } => return Ok(Err(error.message)),
-            ReceiptStatus::Rejected { error } => return Ok(Err(error.to_string())),
+            ReceiptStatus::Rejected { error } => return Ok(Err(error.own_words())),
             ReceiptStatus::Cancelled { message } => {
                 return Ok(Err(
                     message.unwrap_or_else(|| "the call was stopped".to_owned())
@@ -4368,6 +4386,25 @@ impl TicketLink {
             dialer: tilo_server_client::link::Dialer::new(host, None),
             link: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// Dial the link without asking an action, so a page's next ask only waits
+    /// for its answer. A dial that fails is the caller's to keep quiet: [`Self::ask`]
+    /// dials again.
+    ///
+    /// # Errors
+    ///
+    /// As [`tilo_server_client::link::Dialer::link`].
+    pub async fn warm(&self) -> Result<(), tilo_server_client::LinkError> {
+        let mut kept = self.link.lock().await;
+        if kept.is_none() {
+            *kept = Some(
+                self.dialer
+                    .link(tilo_server_client::link::Purpose::Actions)
+                    .await?,
+            );
+        }
+        Ok(())
     }
 
     /// [`ask_ticket`] over the link kept here, dialling it first when there is none.
@@ -4780,7 +4817,7 @@ async fn ask_entry_once(
         }
         ReceiptStatus::Rejected { error } => Err(EntryFailure {
             code: "refused",
-            message: error.to_string(),
+            message: error.own_words(),
         }),
         ReceiptStatus::Failed { error } => Err(EntryFailure {
             code: "failed",
@@ -4897,6 +4934,12 @@ mod tests {
         )));
         assert!(matches!(refused, LinkError::DeviceRevoked), "{refused:?}");
         assert!(stops_session(&refused));
+        let removed = dialed_refusal(tilo_server_protocol::refusal::Refusal::DeviceRevoked);
+        assert!(
+            matches!(removed, LinkError::DeviceRevoked),
+            "a removal told without its entry is the same removal: {removed:?}"
+        );
+        assert!(stops_session(&removed));
         let other = dialed_refusal(tilo_server_protocol::refusal::Refusal::Offline);
         assert!(!stops_session(&other));
         assert!(

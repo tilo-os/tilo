@@ -2357,8 +2357,8 @@ tilo_test_env::scenario! {
 
     // Moving the pointer from one destination to the next repaints those two
     // rows, not the sidebar, the content beside it or the window: each frame's
-    // damage stays within the two rows the hover moved between, and no frame
-    // asks for a layout.
+    // damage stays within the two rows the hover moved between, no frame asks
+    // for a layout, and a host that repaints only that damage shows the hover.
     phase a_hover_moving_between_destinations_damages_only_those_two_rows;
     {
         assert_sidebar_hovers_damage_only_their_rows(Box::new(
@@ -2390,77 +2390,186 @@ tilo_test_env::scenario! {
 }
 
 /// Move the pointer from one destination to the next of a sidebar beside
-/// `content`: each hover's damage stays within the two rows it moved
-/// between, and no hover asks for a layout. Each move's tint is let arrive
-/// or go before the next move, so a frame answers for the two rows the
-/// pointer moved between and not an earlier row still fading.
+/// `content`, in a host that repaints only each frame's damage: each hover's
+/// damage stays within the two rows it moved between, no hover asks for a
+/// layout, and once the tint's motion has run what the host shows is what a
+/// full render of the frame shows, the hover included.
 #[cfg(feature = "native")]
 fn assert_sidebar_hovers_damage_only_their_rows(content: crate::widget::Element) {
     use crate::a11y::Role;
+    use crate::offscreen::OffscreenRenderer;
     use crate::time::testing::with_monotonic_time;
+
+    struct Window;
+    impl crate::app::AppSurface for Window {
+        fn scale_factor(&self) -> f64 {
+            1.0
+        }
+        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+            winit::dpi::PhysicalSize::new(720, 900)
+        }
+        fn request_redraw(&self) {}
+        fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
+    }
+
+    /// One frame of the host: the app's frame, its damage, and the scene it drew.
+    fn frame(
+        app: &mut crate::app::App,
+        damage: &mut crate::app::SurfaceDamage,
+        scene: &mut vello::Scene,
+    ) -> Option<Vec<Rect>> {
+        scene.reset();
+        app.surface_frame_with_damage(&Window, scene, damage);
+        let _ = app.refresh_semantic_tree();
+        damage.take()
+    }
+
+    let theme = Theme::dark();
+    let background = theme.tokens.colors.surfaces.content;
     let shell = crate::widget::NavShell::new()
         .sidebar(Box::new(NavList::new(destinations(12))))
         .content(content);
     let mut app = crate::app::App::new_with_controlled_inputs(State::new(), Box::new(shell));
+    app.set_theme(theme);
     let mut damage = crate::app::SurfaceDamage::default();
+    let mut scene = vello::Scene::new();
     app.init_layout();
-    // The frames run on a clock this test steps itself, so a tint on its way
-    // is shown at rest by the frames before the next move rather than by the
-    // next move's frame.
-    let at = std::cell::Cell::new(crate::time::now());
-    let frame = |app: &mut crate::app::App, damage: &mut crate::app::SurfaceDamage| {
-        with_monotonic_time(at.get(), || host_frame(app, damage));
-    };
-    for _ in 0..4 {
-        at.set(at.get() + crate::time::Duration::from_millis(100));
-        frame(&mut app, &mut damage);
-    }
-    let rows: Vec<Rect> = app
+    let size = crate::app::AppSurface::inner_size(&Window);
+    let mut shown = OffscreenRenderer::try_new(size.width, size.height)
+        .expect("a hover's pixels are checked on the GPU the toolkit renders with");
+    let mut full = OffscreenRenderer::new(size.width, size.height);
+    let mut clock = crate::time::now();
+    with_monotonic_time(clock, || {
+        for _ in 0..4 {
+            let _ = frame(&mut app, &mut damage, &mut scene);
+        }
+    });
+    let _ = shown.render(&scene, background);
+    let mut before = full.render(&scene, background);
+    // The rows, and of each whether it is a place (a group's heading, at the list's first level,
+    // shows no tint of its own under the pointer).
+    let placed: Vec<(Rect, bool)> = app
         .semantic_tree()
         .iter()
         .filter(|node| node.role == Role::TreeItem)
-        .filter_map(|node| node.bounds)
+        .filter_map(|node| Some((node.bounds?, node.place.level != Some(1))))
         .take(8)
         .collect();
+    let rows: Vec<Rect> = placed.iter().map(|(row, _)| *row).collect();
     assert!(rows.len() >= 4, "the sidebar shows its rows: {rows:?}");
+    assert!(
+        placed.iter().any(|(_, place)| !place),
+        "the walk crosses a group's heading too: {placed:?}"
+    );
     let sidebar_right = rows.iter().map(|row| row.x1).fold(0.0, f64::max);
-    let mut hover = |app: &mut crate::app::App, at_rect: Rect| {
-        let centre = at_rect.center();
-        app.surface_input(
-            &Region,
-            crate::synthetic_input::cursor_moved(centre.x, centre.y),
-            false,
-        );
-        let unsettled = app.unsettled();
-        at.set(at.get() + crate::time::Duration::from_millis(500));
-        with_monotonic_time(at.get(), || host_frame(app, &mut damage));
-        let rects = damage.take();
-        let why = damage.repainted();
-        // The frames that show this move's tints at rest are this move's, not
-        // the next move's: take what they damage and keep the move's own.
-        at.set(at.get() + crate::time::Duration::from_millis(1_000));
-        with_monotonic_time(at.get(), || {
-            host_frame(app, &mut damage);
-            let _ = damage.take();
-        });
-        (unsettled, rects, why)
-    };
-    let _ = hover(&mut app, rows[0]);
-    for pair in rows.windows(2) {
-        let (unsettled, rects, why) = hover(&mut app, pair[1]);
-        assert!(!unsettled, "a hover asked for a layout");
-        let rects = rects.unwrap_or_else(|| panic!("a hover repainted the window: {why:?}"));
-        let (top, bottom) = (pair[0].y0.min(pair[1].y0), pair[0].y1.max(pair[1].y1));
-        assert!(!rects.is_empty(), "the hover shows");
-        for rect in rects.iter().filter(|rect| rect.area() > 0.0) {
-            assert!(
-                rect.y0 >= top - 2.0 && rect.y1 <= bottom + 2.0 && rect.x1 <= sidebar_right + 16.0,
-                "hovering from {:?} to {:?} damaged {rect:?}, outside the two rows",
-                pair[0],
-                pair[1],
-            );
+    let width = usize::try_from(size.width).unwrap_or(usize::MAX);
+    for (step, pair) in std::iter::once([rows[0], rows[0]])
+        .chain(rows.windows(2).map(|pair| [pair[0], pair[1]]))
+        .enumerate()
+    {
+        let (from, to) = (pair[0], pair[1]);
+        let (top, bottom) = (from.y0.min(to.y0) - 2.0, from.y1.max(to.y1) + 2.0);
+        let right = sidebar_right + 16.0;
+        // The frame the pointer arrives in, and the one past the end of the tint's motion.
+        let mut repainted = Vec::new();
+        for (index, at) in [clock, clock + crate::time::Duration::from_millis(1_000)]
+            .into_iter()
+            .enumerate()
+        {
+            let (unsettled, rects) = with_monotonic_time(at, || {
+                if index == 0 {
+                    let centre = to.center();
+                    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+                    app.surface_input(
+                        &Window,
+                        crate::synthetic_input::cursor_moved(centre.x, centre.y),
+                        false,
+                    );
+                }
+                let unsettled = app.unsettled();
+                (unsettled, frame(&mut app, &mut damage, &mut scene))
+            });
+            assert!(!unsettled, "a hover asked for a layout");
+            let rects = rects.unwrap_or_else(|| {
+                panic!("a hover repainted the window: {:?}", damage.repainted())
+            });
+            for rect in rects.iter().filter(|rect| rect.area() > 0.0) {
+                assert!(
+                    rect.y0 >= top && rect.y1 <= bottom && rect.x1 <= right,
+                    "hovering from {from:?} to {to:?} damaged {rect:?}, outside the two rows",
+                );
+            }
+            let _ = shown.render_copies_and_damage_gpu_wait(&scene, background, &[], &rects);
+            repainted.extend(rects);
         }
+        clock += crate::time::Duration::from_millis(2_000);
+        if step == 0 {
+            before = full.render(&scene, background);
+            continue;
+        }
+        let after = full.render(&scene, background);
+        let on_screen = shown.readback_current();
+        let stale = OffscreenRenderer::pixels_differing_beyond_aa(&on_screen, &after);
+        assert_eq!(
+            stale, 0,
+            "hovering from {from:?} to {to:?} left {stale} pixels on screen that the frame no \
+             longer draws: its damage missed what the hover painted"
+        );
+        assert!(
+            repainted.iter().any(|rect| rect.area() > 0.0),
+            "hovering from {from:?} to {to:?} repainted nothing: the hover never shows"
+        );
+        let place = placed.iter().any(|&(row, place)| row == to && place);
+        let band = Rect::new(0.0, top, right, bottom);
+        assert_hover_seen(&before, &after, width, place.then_some(to), band);
+        before = after;
     }
+}
+
+/// The hover is seen: between the full renders `before` and `after` (RGBA rows `width` pixels
+/// long), pixels of the place it reached (`to`, when it reached one) change, and none outside
+/// `band`, the two rows.
+#[cfg(feature = "native")]
+fn assert_hover_seen(before: &[u8], after: &[u8], width: usize, to: Option<Rect>, band: Rect) {
+    let changed: Vec<(f64, f64)> = before
+        .chunks_exact(4)
+        .zip(after.chunks_exact(4))
+        .enumerate()
+        .filter(|(_, (was, is))| {
+            was.iter()
+                .zip(is.iter())
+                .any(|(was, is)| was.abs_diff(*is) > 1)
+        })
+        .map(|(pixel, _)| {
+            (
+                crate::num::f64_of_usize(pixel % width),
+                crate::num::f64_of_usize(pixel / width),
+            )
+        })
+        .collect();
+    let inside =
+        |rect: Rect, (x, y): (f64, f64)| x >= rect.x0 && x < rect.x1 && y >= rect.y0 && y < rect.y1;
+    let changed_bounds = changed.iter().fold(None, |bounds: Option<Rect>, &(x, y)| {
+        let pixel = Rect::new(x, y, x + 1.0, y + 1.0);
+        Some(bounds.map_or(pixel, |bounds| bounds.union(pixel)))
+    });
+    if let Some(to) = to {
+        assert!(
+            changed.iter().any(|&pixel| inside(to, pixel)),
+            "the hover changed no pixel of the place it reached, {to:?}: {} pixels changed, \
+             within {changed_bounds:?}",
+            changed.len()
+        );
+    }
+    let outside: Vec<_> = changed
+        .iter()
+        .filter(|&&pixel| !inside(band, pixel))
+        .take(4)
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "the hover changed pixels outside the two rows {band:?}: {outside:?}"
+    );
 }
 
 /// The pointer's tint comes in over the theme's motion instead of switching on in one frame: the

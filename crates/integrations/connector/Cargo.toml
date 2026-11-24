@@ -14,7 +14,7 @@ test-worker = []
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-actions = { path = "../../core/actions" }
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
-tilo-live = { path = "../../core/tilo-live", features = ["relay"] }
+tilo-live = { path = "../../core/tilo-live", features = ["relay", "app_call"] }
 hex.workspace = true
 base64.workspace = true
 serde.workspace = true

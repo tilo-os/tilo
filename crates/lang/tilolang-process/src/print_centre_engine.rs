@@ -130,8 +130,8 @@ fn options(input: &str) -> Result<String, String> {
         queue: String,
     }
     let ask: Ask = reads(input)?;
-    let reported = os_actions::printing::printer_options(&ask.queue).unwrap_or_default();
-    let choices = |list: &[os_actions::printing::OptionChoice]| {
+    let reported = tilo_printing::printing::printer_options(&ask.queue).unwrap_or_default();
+    let choices = |list: &[tilo_printing::printing::OptionChoice]| {
         list.iter()
             .map(|choice| {
                 serde_json::json!({
@@ -169,12 +169,12 @@ fn print(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Result
     let bytes = bytes_of(store, &ask.url)?;
     let path = scratch(&ask.name.replace(['/', '\\'], "_"));
     std::fs::write(&path, &bytes).map_err(|error| error.to_string())?;
-    let settings = os_actions::printing::PrintSettings {
+    let settings = tilo_printing::printing::PrintSettings {
         copies: ask.copies.unwrap_or(1).clamp(1, 99),
         two_sided: ask.two_sided.unwrap_or(false),
         page_range: match ask.pages.as_deref().map(str::trim) {
             Some(pages) if !pages.is_empty() => {
-                Some(os_actions::printing::PageRange::parse(pages)?)
+                Some(tilo_printing::printing::PageRange::parse(pages)?)
             }
             _ => None,
         },
@@ -184,7 +184,7 @@ fn print(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Result
         orientation: ask.orientation,
     };
     run(job, moved, "print-centre-print", move || {
-        let result = os_actions::printing::print_document(&ask.queue, &path, &settings);
+        let result = tilo_printing::printing::print_document(&ask.queue, &path, &settings);
         let _ = std::fs::remove_file(&path);
         result.map(|()| String::new())
     })

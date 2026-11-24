@@ -132,7 +132,7 @@ fn live_sessions() -> &'static LiveSessions {
 
 /// `device` 's live session in the test workspace, with every live session joined before it hearing it, and it
 /// hearing them.
-fn live_session(device: EndpointId) -> BTreeMap<String, Arc<LiveSession>> {
+fn live_session(device: EndpointId) -> BTreeMap<String, crate::live::Sessions> {
     let live = live_sessions();
     let _entered = live.runtime.enter();
     let mut joined = live.joined.lock().expect("the joined live sessions");
@@ -159,7 +159,7 @@ fn live_session(device: EndpointId) -> BTreeMap<String, Arc<LiveSession>> {
         other.set_roster(LiveRoster::new(devices.iter().copied()));
     }
     joined.push((*device.as_bytes(), Arc::clone(&live_session)));
-    BTreeMap::from([(WORKSPACE.to_owned(), live_session)])
+    BTreeMap::from([(WORKSPACE.to_owned(), live_session as crate::live::Sessions)])
 }
 
 fn device(seed: u8) -> EndpointId {
@@ -2916,7 +2916,7 @@ fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
         }
         for encoded in share.pump(Instant::now()) {
             encoding.push(wall_us().saturating_sub(share.captured_at_us(&encoded)));
-            let _ = super::send_picture(&sharing, TAB, &share, encoded);
+            let _ = super::send_picture(sharing.as_ref(), TAB, &share, encoded);
         }
         std::thread::sleep(Duration::from_millis(1));
     }

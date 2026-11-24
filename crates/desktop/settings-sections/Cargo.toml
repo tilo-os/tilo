@@ -34,6 +34,18 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-actions = { path = "../../core/actions" }
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-service = { path = "../../desktop/service" }
+tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tracing.workspace = true
+# The workspace store the sections are kept in: its commands, stamps and versions.
+tilo-resource-store = { path = "../../core/resource-store" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types", optional = true }
+# The invocation one change's writes share.
+uuid.workspace = true
+
+[features]
+# Settings over the person's and the device owner's workspaces in memory, for tests.
+test-support = ["dep:collab-types"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -41,7 +53,9 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # The settings over the person's and the device owner's workspaces in memory, with their history.
-settings-store = { package = "tilo-settings-store", path = "../settings", features = ["model", "test-support"] }
+# The settings over workspaces in memory, for the tests of what reads and sets them.
+settings-sections = { path = ".", features = ["test-support"] }
+tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # A view of another language reading the sections and setting them through their setters.
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }

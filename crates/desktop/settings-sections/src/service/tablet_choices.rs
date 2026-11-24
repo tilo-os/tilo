@@ -139,13 +139,15 @@ mod tests {
 
     #[test]
     fn a_tablets_controls_read_as_the_ids_their_verbs_take() {
-        let mut config = TabletConfig::default();
-        config.upper_button = StylusButtonAction::Shortcut(ShortcutAction::Search);
-        config.eraser = settings_store::hardware::EraserAction::Shortcut(ShortcutAction::Lock);
+        let mut config = TabletConfig {
+            upper_button: StylusButtonAction::Shortcut(ShortcutAction::Search),
+            eraser: settings_store::hardware::EraserAction::Shortcut(ShortcutAction::Lock),
+            pad_map_button: Some(4),
+            ..TabletConfig::default()
+        };
         config
             .pad_buttons
             .insert(2, ShortcutAction::FocusPreviousWindow);
-        config.pad_map_button = Some(4);
         config.pad_rings.insert(
             0,
             vec![

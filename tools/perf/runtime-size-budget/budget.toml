@@ -80,9 +80,11 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # 119558): x86_64 151648352 bytes, 5152768 dirtied per process, 6439 symbol
 # relocations; aarch64 137517640, 4935680, 6470. The two engines are
 # 900880 + 2789552 bytes on x86_64 and 760616 + 2600216 on aarch64.
-# Moving account credentials, the contact directory and the time-zone database
-# into their own engines leaves 148084128 / 134312888 bytes in the runtime,
-# with 4100096 / 3887104 bytes dirtied per process (x86_64 / aarch64).
+# Moving the contact directory and the time-zone database into their own
+# engines, and the account credentials out of the runtime and Settings into
+# the workspace service, leaves the runtime smaller than 148084128 /
+# 134312888 bytes, with fewer than 4100096 / 3887104 bytes dirtied per
+# process (x86_64 / aarch64).
 # Native app-build checks also exercise the engine probes and loader traces;
 # the budgets below adopt their suggested one-percent headroom.
 #
@@ -141,7 +143,6 @@ bytes = 2490368
 bytes = 2490368
 
 [engines.x86_64]
-"libtilo_accounts_engine.so" = 2752512
 "libtilo_adblock_engine.so" = 262144
 "libtilo_browser_engine.so" = 196608
 "libtilo_camera_engine.so" = 1245184
@@ -158,7 +159,6 @@ bytes = 2490368
 "libtilo_wasm_engine.so" = 2621440
 
 [engines.aarch64]
-"libtilo_accounts_engine.so" = 2490368
 "libtilo_adblock_engine.so" = 262144
 "libtilo_browser_engine.so" = 196608
 "libtilo_camera_engine.so" = 1245184

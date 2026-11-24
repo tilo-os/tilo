@@ -843,15 +843,19 @@ impl Instance {
         ))
     }
 
-    /// How long until a trigger of this app next has something to run: what a window that runs
-    /// the app's triggers waits for. `None` when no trigger will come due, or this window does
-    /// not run them.
+    /// How long until a trigger of this app next has something to run, or a secret the window
+    /// shows is to be hidden again: what a window that runs the app's triggers waits for. `None`
+    /// when neither will come due, or this window does not run them.
     fn trigger_in(&self) -> Option<std::time::Duration> {
         if self.mode != Mode::Live {
             return None;
         }
         let now = self.now()?;
-        let at = self.host()?.next_trigger(now)?;
+        let trigger = self.host().and_then(|host| host.next_trigger(now));
+        let at = match (trigger, crate::page::next_lapse()) {
+            (Some(trigger), Some(lapse)) => trigger.min(lapse),
+            (trigger, lapse) => trigger.or(lapse)?,
+        };
         Some(std::time::Duration::from_secs(
             u64::try_from(at.saturating_sub(now)).unwrap_or(0),
         ))
@@ -2755,6 +2759,13 @@ impl Instance {
             && host.run_triggers(now) > 0
         {
             self.moved = true;
+        }
+        // A secret shown for its time is hidden again, in every window showing it.
+        if let Some(now) = self.now()
+            && crate::page::lapse_shown(now)
+        {
+            self.resend(Level::Root);
+            self.resend(Level::Detail);
         }
         if self.staged.is_some() {
             self.run_staged(&host);

@@ -39,22 +39,13 @@ tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional
 tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model" }
-# The workspace store the sections are resources of: its commands, stamps and versions.
-tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
-collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types", optional = true }
-# The invocation one change's writes share.
-uuid.workspace = true
 
 [features]
 # Directory watches: the identity and dictionary directories.
 watch = ["tilo-files/watch"]
 model = ["dep:tilo-resource"]
-# Settings over the person's and the device owner's workspaces in memory, for tests.
-test-support = ["dep:collab-types"]
 
 [dev-dependencies]
-# The settings surface, read as every holder reads it.
-collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # Thread-scoped wall-clock scopes for the tests that place a row in time.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }

@@ -48,6 +48,10 @@ class Downloads final : public CefDownloadHandler {
     return std::any_of(transfers_.begin(),transfers_.end(),[tab](const auto& entry){return entry.second.owner==tab && entry.second.approved;});
   }
   static std::string FileName(std::string name) {return DownloadFileName(std::move(name));}
+  // Where a saved download goes instead of Chromium's own transfer: the tab that offered it
+  // hands the app its address, its name, and what its request carried.
+  using Fetch=std::function<void(int owner,int id,const std::string& url,const std::string& name)>;
+  void SetFetch(Fetch fetch) {fetch_=std::move(fetch);}
   // An extension asked for `url` to be downloaded (`chrome.downloads`), on
   // `owner`'s page, under `name` when it is not empty. The download it
   // starts asks the person as any other does; `done` learns its id once it
@@ -101,6 +105,7 @@ class Downloads final : public CefDownloadHandler {
     const bool was_busy=OwnerBusy(owner);
     slots_.Promote(id);
     Transfer transfer;if(staged){transfer=early->second;early_.erase(early);}transfer.owner=owner;transfer.before=callback;transfer.name=name;transfer.chosen=chosen;transfer.url=url;transfer.retryable=retryable;
+    if(tell.expected) transfer.extension=true;
     transfers_[id]=std::move(transfer);
     OwnerStateChanged(owner,was_busy);
     auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("url",url);d->SetString("name",name);emit_("download_prompt",d);Changed();
@@ -120,6 +125,14 @@ class Downloads final : public CefDownloadHandler {
     auto it=transfers_.find(id);if(it==transfers_.end() || it->second.approved) return;
     if(it->second.held) {it->second.held=false;TellHold(it->second,HoldEnding(allow,reason),false,{});}
     if(!allow) { CancelDownload(id);return; }
+    // A page's download Chromium does not save: the Browser's own download fetches the file,
+    // as a job that outlives this tab, with what the page's request would have carried.
+    if(!it->second.extension) {
+      const int owner=it->second.owner;const std::string url=it->second.url,name=it->second.name;
+      CancelDownload(id);
+      if(fetch_) fetch_(owner,id,url,name);
+      return;
+    }
     std::error_code ec;std::filesystem::create_directories(downloads_,ec);
     // A download must never fill the disk; refuse it before writing a byte.
     if(!ec) {
@@ -171,7 +184,7 @@ class Downloads final : public CefDownloadHandler {
       // it goes, as Chrome names a download that failed as it started.
       const int owner=owner_(browser);
       auto expected=TakeExpected(owner,item);
-      Stage(owner,id,item,callback,expected?expected->name:std::string());
+      Stage(owner,id,item,callback,expected?expected->name:std::string(),expected.has_value());
       if(expected) expected->done(id,"");
       return;
     }
@@ -195,14 +208,14 @@ class Downloads final : public CefDownloadHandler {
     Finish(id,state,state=="failed"?InterruptMessage(item->GetInterruptReason()):"");
   }
   // A download Chromium reports before asking where to save it.
-  void Stage(int owner,int id,CefRefPtr<CefDownloadItem> item,CefRefPtr<CefDownloadItemCallback> callback,const std::string& chosen) {
+  void Stage(int owner,int id,CefRefPtr<CefDownloadItem> item,CefRefPtr<CefDownloadItemCallback> callback,const std::string& chosen,bool extension) {
     if(!item->IsInProgress()) return;
     if(!accepting_ || !owner || !eligible_(owner) || !can_reserve_(owner)) {
       callback->Cancel();TerminalWithoutTransfer(id,FileName(item->GetSuggestedFileName()),item->GetURL(),false,"failed","Download owner unavailable");return;
     }
     if(!slots_.Stage(id,owner)){callback->Cancel();TerminalWithoutTransfer(id,FileName(item->GetSuggestedFileName()),item->GetURL(),false,"failed","Download limit reached (32 active transfers)");return;}
     const bool was_busy=OwnerBusy(owner);
-    Transfer transfer;transfer.owner=owner;transfer.active=callback;
+    Transfer transfer;transfer.owner=owner;transfer.active=callback;transfer.extension=extension;
     if(!chosen.empty()) transfer.chosen=FileName(chosen);
     Merge(transfer,item);early_[id]=std::move(transfer);
     OwnerStateChanged(owner,was_busy);
@@ -211,10 +224,6 @@ class Downloads final : public CefDownloadHandler {
   static std::string InterruptMessage(cef_download_interrupt_reason_t reason) {
     if(reason==CEF_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE) return "Not enough space to finish the download";
     return "Chromium interrupted download ("+std::to_string(reason)+")";
-  }
-  void Retry(int id,CefRefPtr<CefBrowser> browser) {
-    auto found=history_.find(id);if(!accepting_ || !browser || found==history_.end() || !found->second.retryable) return;
-    browser->GetHost()->StartDownload(found->second.url);
   }
   void CancelAll() {
     accepting_=false;
@@ -230,6 +239,8 @@ class Downloads final : public CefDownloadHandler {
  private:
   // `chosen`: the name an extension asked for, which the download keeps.
   struct Transfer {int owner=0;CefRefPtr<CefBeforeDownloadCallback> before;CefRefPtr<CefDownloadItemCallback> active;std::string name,chosen,url,path;int64_t received=0,total=0;bool retryable=false,approved=false,cancel_requested=false,cancel_sent=false;std::string space_error;
+    // An extension asked for it (`chrome.downloads`) and follows it: Chromium saves it.
+    bool extension=false;
     // A window an agent operates holds it for the person, and nobody has answered yet.
     bool held=false;};
   // What the record of the tab that started a held download is told of it:
@@ -308,6 +319,7 @@ class Downloads final : public CefDownloadHandler {
   std::function<int(CefRefPtr<CefBrowser>)> owner_;
   std::function<bool(int)> eligible_,can_reserve_;
   std::function<void(int,bool)> owner_busy_;std::function<void(int)> owner_idle_;std::function<void()> changed_;std::function<int64_t(int)> hold_wait_ms_;NoteHold note_hold_;
+  Fetch fetch_;
   bool accepting_=true;
   DownloadSlots slots_;std::map<int,Transfer> transfers_,early_;std::map<int,RetryRecord> history_;std::set<int> terminal_;std::deque<int> terminal_order_;
   DownloadProvenance provenance_;

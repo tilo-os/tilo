@@ -65,11 +65,14 @@ run_lounge() {
 
 # Wait for the Lounge run_lounge started to serve, as the deployment's probe
 # asking it. The daemon answers on its native endpoint from its start, where
-# the device's own actions are served; one that stops first, or does not
-# answer within LOUNGE_ANSWER_SECONDS (default 30), fails.
+# the device's own actions are served, wherever its profile keeps it: one that
+# stops first, or does not answer within LOUNGE_ANSWER_SECONDS (default 30),
+# fails.
 await_lounge() {
-  local deadline=$((SECONDS + ${LOUNGE_ANSWER_SECONDS:-30}))
-  while [[ ! -S $lounge_volume/native.sock ]]; do
+  local deadline=$((SECONDS + ${LOUNGE_ANSWER_SECONDS:-30})) socket
+  while :; do
+    socket=$(find "$lounge_volume" -name native.sock -print -quit 2>/dev/null)
+    [[ -n $socket ]] && break
     kill -0 "$lounge_pid" 2>/dev/null || lounge_fail 'the Lounge stopped before it answered'
     ((SECONDS < deadline)) \
       || lounge_fail "the Lounge did not answer in ${LOUNGE_ANSWER_SECONDS:-30}s"

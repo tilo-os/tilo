@@ -98,8 +98,12 @@ tilo_test_env::scenario! {
         else {
             panic!("a private window's settings are its profile's");
         };
+        // A throwaway profile lives in memory where the system has one, else in its temporary
+        // directory; the person's own profile is in neither.
         assert!(
-            profile.starts_with(std::env::temp_dir()),
+            ["/dev/shm".into(), std::env::temp_dir()]
+                .iter()
+                .any(|scratch: &std::path::PathBuf| profile.starts_with(scratch)),
             "the profile is not the person's: {}",
             profile.display()
         );

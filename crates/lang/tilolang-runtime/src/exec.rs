@@ -436,6 +436,14 @@ impl Core {
         Ok(self.authority.decide(&ctx.invoker, &ctx.chain, &info))
     }
 
+    /// What `aref`'s action does, as its package declares it: `None` for one no package here
+    /// declares.
+    fn class_of(&self, aref: &ActionRef) -> Option<EffectClass> {
+        let registry = self.registry.borrow();
+        let pkg = registry.action_package(&aref.action)?;
+        pkg.action(&aref.action).map(|meta| meta.class)
+    }
+
     pub(crate) fn decide_with(&self, ctx: &ExecCtx, info: &ActionInfo) -> Decision {
         self.authority.decide(&ctx.invoker, &ctx.chain, info)
     }
@@ -1210,7 +1218,7 @@ impl Core {
             aref,
             aref.from.as_ref(),
             gesture,
-            false,
+            Admission::Not,
         )
     }
 
@@ -1229,13 +1237,14 @@ impl Core {
         aref: &ActionRef,
         from: Option<&ResourceRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as_in(identity, (invoker, None), aref, from, None, false)
+        self.invoke_direct_as_in(identity, (invoker, None), aref, from, None, Admission::Not)
     }
 
     /// [`Core::invoke_direct`] of a call already admitted for `invoker`, as one part of the act
-    /// `gesture`: the dispatch asked whoever had to say yes before it delivered the call, or the
-    /// person pressed it themselves, in their app's window, its bar, the palette or search. The
-    /// run does not ask again for the call itself.
+    /// `gesture`: the dispatch asked whoever had to say yes before it delivered the call, and
+    /// decided it for them, whether the person pressed it in their app's bar, the palette or
+    /// search, or answered it where the system asked them. The run does not ask again for the
+    /// call itself.
     ///
     /// A person's own press is the person acting: what the app's code goes on to call runs as
     /// theirs too, as an answer they gave runs on ([`Core::run_answered`]). What an agent, an
@@ -1253,7 +1262,33 @@ impl Core {
         from: Option<&ResourceRef>,
         gesture: Option<&str>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as_in(None, (invoker, app), aref, from, gesture, true)
+        self.invoke_direct_as_in(None, (invoker, app), aref, from, gesture, Admission::Answered)
+    }
+
+    /// [`Core::invoke_direct`] of the person `invoker`'s own press in their app's window, as one
+    /// part of the act `gesture`: the person acting, so what the app's code goes on to call runs
+    /// as theirs. A press is not their answer to what the workspace asks them first: that waits
+    /// for their yes on the system's confirm, unless they held Shift (`shift`) and the action
+    /// can be undone, where the press itself is the yes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::invoke_direct`].
+    pub(crate) fn invoke_pressed(
+        &self,
+        invoker: &Actor,
+        aref: &ActionRef,
+        from: Option<&ResourceRef>,
+        (gesture, shift): (Option<&str>, bool),
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        self.invoke_direct_as_in(
+            None,
+            (invoker, None),
+            aref,
+            from,
+            gesture,
+            Admission::Pressed { shift },
+        )
     }
 
     /// [`Core::invoke_direct_as`] as one part of the person's act `gesture`.
@@ -1264,8 +1299,9 @@ impl Core {
         aref: &ActionRef,
         from: Option<&ResourceRef>,
         gesture: Option<&str>,
-        admitted: bool,
+        admission: Admission,
     ) -> Result<InvokeOutcome, RuntimeError> {
+        let admitted = admission != Admission::Not;
         // One action over many items is one change: its references are the change's own.
         if aref.action == MANY_ACTION {
             return self.invoke_many(invoker, app, aref, from);
@@ -1320,9 +1356,10 @@ impl Core {
         match decision {
             Decision::Allow => ran(self.run_as(&ctx, aref, person)?),
             Decision::Deny => Ok(InvokeOutcome::Denied),
-            // It was admitted before it got here: the yes is for this call, and for what it
-            // calls on the way only when the person made the call themselves.
-            Decision::Ask if admitted => {
+            // It was admitted before it got here, on whoever had to say yes, or pressed with
+            // Shift on what can be undone: the yes is for this call, and for what it calls on the
+            // way only when the person made the call themselves. A press alone is not the yes.
+            Decision::Ask if admitted && admission.answers(self.class_of(aref)) => {
                 let ctx = ExecCtx {
                     approved_by: Some(invoker.clone()),
                     ..ctx
@@ -3540,4 +3577,31 @@ fn target_of(
         resource: format!("tl:{}:{}", meta.app, reference.target.id_string()),
         kind: format!("tl.{}.{}", meta.app, ty.name),
     })
+}
+
+/// How a direct call reached the runtime, which says whether what the workspace asks first was
+/// answered before it got here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Admission {
+    /// Nobody admitted it: decided here as the invoker's call.
+    Not,
+    /// The dispatch admitted it, having asked whoever had to say yes.
+    Answered,
+    /// The person pressed it in their app's window, with Shift held or not.
+    Pressed { shift: bool },
+}
+
+impl Admission {
+    /// Whether this admission is the answer to what the workspace asks first of an action that
+    /// does `class`: the dispatch's, or a press with Shift on what can be undone. Shift never
+    /// skips the confirm of what reaches outside, which nothing takes back.
+    fn answers(self, class: Option<EffectClass>) -> bool {
+        match self {
+            Self::Not => false,
+            Self::Answered => true,
+            Self::Pressed { shift } => {
+                shift && class.is_some_and(|class| class != EffectClass::Outside)
+            }
+        }
+    }
 }

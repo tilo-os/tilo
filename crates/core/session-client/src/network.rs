@@ -20,7 +20,38 @@ pub struct Transport {
     pub enrolled: std::sync::mpsc::Receiver<crate::Enrolled>,
     /// The workspace presence tracks this host says on: this desktop's live session, or a page's own
     /// endpoint. `None` where the host says presence nowhere.
-    pub saying: Option<std::sync::Arc<dyn SayPresence>>,
+    pub saying: Option<Saying>,
+}
+
+/// Where a host's word of its device goes.
+#[derive(Clone, Debug)]
+pub enum Saying {
+    /// A host that publishes its own presence frames: a page, on its own endpoint.
+    Frames(std::sync::Arc<dyn SayPresence>),
+    /// A desktop, whose device's daemon says the device's one word: the host tells it the whole
+    /// word, and the daemon diffs and publishes it beside what the device's apps say.
+    Word(std::sync::Arc<dyn TellWord>),
+}
+
+/// What a desktop tells its device's daemon of the person, for the daemon to say as the
+/// device's word. Presence is ephemeral: what does not arrive is said again with the next word.
+pub trait TellWord: std::fmt::Debug + collab_types::signer::MaybeSendSync {
+    /// The person says `word` in `workspace` now, or nothing any more (`None`), and the device
+    /// executes `agents` there, each `(session, member, face)`.
+    fn tell(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        word: Option<tilo_live::presence::Own>,
+        agents: Vec<(String, String, collab_types::presence::ShellPresence)>,
+    );
+
+    /// The person joined `call` in `workspace`, or left the call they were in (`None`): the
+    /// daemon holds the device to that call's rule and fetches its media keys.
+    fn join(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        call: Option<tilo_live::presence::Call>,
+    );
 }
 
 /// The transport a command was said to is gone.

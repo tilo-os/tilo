@@ -1,6 +1,6 @@
-//! What a workspace's vault publishes at `workspace/vault`: the person's items
-//! and the entries of their Passwords, as actions of the workspace's own tree,
-//! reached by a path as every other action is. Each is decided by the
+//! What a workspace's vault publishes at `workspace/vault`: the person's items,
+//! as actions of the workspace's own tree, reached by a path as every other
+//! action is, and by Passwords as its person's window on them. Each is decided by the
 //! workspace's policy on its vault as any call of it is; what an agent asks by
 //! reference is offered elsewhere ([`person_vault::use_rows`]).
 
@@ -10,12 +10,19 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 
-use super::Verb;
+use super::{Publisher, Verb};
 use crate::workspaces::workspace_stores::Store;
+
+/// The vault as Passwords reaches it: `tilo.vault`'s own calls, which the app calls by their
+/// address (`tilo.vault/vault#list`) as its person, on their device.
+pub(super) const VAULT: Publisher = Publisher {
+    provider: person_vault::PROVIDER,
+    kind: person_vault::RESOURCE,
+};
 
 /// The `tilo.vault` actions a person asks of the workspace's vault, in
 /// catalogue order.
-const VERBS: [Verb; 8] = [
+const VERBS: [Verb; 7] = [
     Verb {
         id: person_vault::LIST,
         label: "List vault items",
@@ -52,53 +59,55 @@ const VERBS: [Verb; 8] = [
         params: take_back_params,
     },
     Verb {
-        id: person_vault::ENTRIES,
-        label: "List Passwords entries",
+        id: person_vault::COPY,
+        label: "Copy a vault item's secret",
         check: "",
         kind: ActionKind::Read,
-        params: Vec::new,
+        params: show_params,
     },
     Verb {
-        id: person_vault::KEEP_ENTRY,
-        label: "Keep a Passwords entry",
+        id: person_vault::REVEAL,
+        label: "Show a vault item's secret",
         check: "",
-        kind: ActionKind::Undoable,
-        params: keep_entry_params,
-    },
-    Verb {
-        id: person_vault::FORGET_ENTRY,
-        label: "Forget a Passwords entry",
-        check: "",
-        kind: ActionKind::Undoable,
-        params: forget_entry_params,
+        kind: ActionKind::Read,
+        params: show_params,
     },
 ];
 
 /// Each verb and the `tilo.vault` action it is.
-const VAULT_VERBS: [(&Verb, &str); 8] = [
+const VAULT_VERBS: [(&Verb, &str); 7] = [
     (&VERBS[0], person_vault::LIST),
     (&VERBS[1], person_vault::ADD),
     (&VERBS[2], person_vault::REMOVE),
     (&VERBS[3], person_vault::USES),
     (&VERBS[4], person_vault::TAKE_BACK),
-    (&VERBS[5], person_vault::ENTRIES),
-    (&VERBS[6], person_vault::KEEP_ENTRY),
-    (&VERBS[7], person_vault::FORGET_ENTRY),
+    (&VERBS[5], person_vault::COPY),
+    (&VERBS[6], person_vault::REVEAL),
 ];
 
 fn add_params() -> Vec<ActionParam> {
     vec![
+        ActionParam::optional(
+            "item",
+            ParamType::Resource,
+            "The item this changes, by its reference (`vault.item:…`): it keeps its reference and \
+             its uses, and each of its secrets, its username, title, note and field values left \
+             out stays as it was. Left out for a new item.",
+        )
+        .of_resource_kind(person_vault::ITEM_KIND),
         ActionParam::required(
             "kind",
             ParamType::Text,
-            "What it is: `login`, `key`, `code-generator`, `ssh-key` or `value`.",
+            "What it is: `login`, `key`, `code-generator`, `ssh-key`, `note`, `wifi` or `value`.",
         ),
-        ActionParam::required(
+        ActionParam::optional(
             "belongsTo",
             ParamType::Array,
             "Where it belongs, each a web address such as https://example.com or a server such \
-             as imap://mail.example.com:993.",
+             as imap://mail.example.com:993. A note, a Wi-Fi password or a licence code may \
+             belong nowhere.",
         ),
+        ActionParam::optional("title", ParamType::Text, "What it is called."),
         ActionParam::optional("username", ParamType::Text, "The name it signs in with."),
         ActionParam::optional(
             "title",
@@ -112,15 +121,54 @@ fn add_params() -> Vec<ActionParam> {
              `header:<name>` or `query:<name>`.",
         ),
         ActionParam::optional(
+            "secret",
+            ParamType::Secret,
+            "The secret: sealed in the workspace's vault, never answered back. Left out where \
+             `generate` draws a login's password.",
+        ),
+        ActionParam::optional(
+            "notes",
+            ParamType::Secret,
+            "A note kept with it, sealed as the secret is.",
+        ),
+        ActionParam::optional(
+            "fields",
+            ParamType::Secret,
+            "The fields kept with it, such as a PIN, each `{label, value}`: each value sealed as \
+             its secret is, only the labels ever answered back.",
+        )
+        .with_schema(serde_json::json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"label": {"type": "string"}, "value": {"type": "string"}},
+                "required": ["label", "value"],
+            },
+        })),
+        ActionParam::optional(
             "tags",
             ParamType::Array,
             "What the item is tagged with. A secret an app was moved to is tagged with the app \
              and purpose it was kept for, and the app finds it by those.",
         ),
-        ActionParam::required(
-            "secret",
-            ParamType::Secret,
-            "The secret: sealed in the workspace's vault, never answered back.",
+        ActionParam::optional(
+            "generate",
+            ParamType::Object,
+            "For a login without a secret: draw a strong password where the vault is, `length` \
+             (12 to 128, 20 when not said) characters, with `capitals`, `digits` and `symbols` \
+             unless one is false.",
+        ),
+    ]
+}
+
+fn show_params() -> Vec<ActionParam> {
+    vec![
+        person_vault::item_param("item", "The item, by its reference (`vault.item:…`)."),
+        ActionParam::optional(
+            "part",
+            ParamType::Text,
+            "Which part: `secret` (the password, key or value; a note's text) when not said, \
+             `notes`, `username` or `field:<label>`.",
         ),
         ActionParam::optional(
             "notes",
@@ -147,6 +195,11 @@ fn add_params() -> Vec<ActionParam> {
 /// The parameters the vault's action `action` (a `tilo.vault` action, or a verb of the vault in
 /// a workspace's governance tree) is published with.
 pub(super) fn params_of(action: &str) -> Option<Vec<ActionParam>> {
+    // An app keeps its own secret on its held connection alone, so no catalogue offers it; it
+    // is described all the same, so what keeps a call of it leaves its value out.
+    if action == person_vault::KEEP {
+        return Some(person_vault::keep_params());
+    }
     VAULT_VERBS
         .iter()
         .find(|(verb, named)| verb.id == action || *named == action)
@@ -174,23 +227,6 @@ fn take_back_params() -> Vec<ActionParam> {
              every leave of the item goes.",
         ),
     ]
-}
-
-fn keep_entry_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "entry",
-        ParamType::Object,
-        "The entry of Passwords: its id, title, name, password, notes, fields, tags and \
-         origins, as Passwords reads and writes it.",
-    )]
-}
-
-fn forget_entry_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "id",
-        ParamType::Text,
-        "The id of the Passwords entry to forget.",
-    )]
 }
 
 /// The `tilo.vault` action `address` asks of a workspace's vault in its
@@ -231,6 +267,30 @@ impl crate::workspaces::Workspaces {
                     descriptor.effects = person_vault::effects(action);
                 }
                 rows.push(row);
+            }
+        }
+        rows
+    }
+
+    /// The rows of the vault Passwords is offered as `asked`, by its own provider: each call of
+    /// it the workspace's policy lets its person ask. No other caller is offered them here.
+    pub(super) async fn passwords_rows(&self, asked: super::Asked<'_>) -> Vec<CatalogueRow> {
+        let (_, caller, _) = asked;
+        if caller
+            .acting()
+            .app()
+            .is_none_or(|app| app.as_str() != tilo_app_id::apps::PASSWORDS)
+        {
+            return Vec::new();
+        }
+        let mut rows = Vec::new();
+        for (verb, action) in VAULT_VERBS {
+            if self
+                .reaching(asked, Store::VAULT, action, verb.kind)
+                .await
+                .is_ok()
+            {
+                rows.push(verb.row(VAULT, person_vault::RESOURCE, "Vault"));
             }
         }
         rows

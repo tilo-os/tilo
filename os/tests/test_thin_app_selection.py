@@ -131,12 +131,6 @@ crate-type = ["dylib"]
 name = "tilo-fixture-engine-check"
 path = "src/check.rs"
 required-features = ["thin"]
-# build-thin-apps.sh builds the runtime's account probe with every selection, as the accounts
-# engine ships it.
-[[bin]]
-name = "tilo-runtime-account-capability"
-path = "src/probe.rs"
-required-features = ["thin"]
 [features]
 thin = ["dep:runtime-dylib", "dep:tilo-fixture-deep-engine", "tilo-fixture-deep-engine/thin"]
 [dependencies]
@@ -146,8 +140,6 @@ tilo-fixture-deep-engine = { path = "../../engine-parts/fixture-deep", optional 
         self.write("crates/engines/loadable/fixture/src/lib.rs", """#[cfg(feature = "thin")]
 pub fn engine_value() -> usize { runtime_dylib::value() + tilo_fixture_deep_engine::deep_value() + 40 }
 """)
-        self.write("crates/engines/loadable/fixture/src/probe.rs",
-                   'fn main() { println!("{}", tilo_fixture_engine::engine_value()); }\n')
         self.write("crates/engines/loadable/fixture/src/check.rs",
                    'fn main() { assert_eq!(tilo_fixture_engine::engine_value() & 1, 0); '
                    'println!("engine-runs-against-runtime"); }\n')

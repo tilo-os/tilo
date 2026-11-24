@@ -1126,16 +1126,13 @@ async fn a_step_the_grant_leaves_to_the_person_asks_before_the_run_starts() {
     asked.ran_nothing();
 }
 
-/// One guarded shortcut, one call, four callers: the person's own connection to their device's
-/// daemon is their own act, so their call answers the ask and the run starts; a program of
-/// theirs on the device, a request another device forwarded for them, and an agent acting for
-/// them are each held as the ask, and nothing of the run starts.
-/// One action the workspace's grants leave to the person, answered once: the person's own
-/// connection to their device's daemon is their own act, so their call answers the ask; a
-/// program of theirs on the device, a call another device forwarded for them and an agent
-/// acting for them are each held as the ask.
+/// One action the workspace's grants leave to the person, called by four callers: the person on
+/// their own connection to their device's daemon, a program of theirs on the device, a call
+/// another device forwarded for them and an agent acting for them. Making the call answers the
+/// ask for none of them, nor does a confirmation the caller wrote itself: each is held as the
+/// ask, and only the person's approve of the asked record it was kept as admits it.
 #[tokio::test(flavor = "current_thread")]
-async fn a_workspace_ask_is_held_only_for_anyone_but_the_persons_own_connection() {
+async fn a_workspace_ask_is_answered_only_by_the_persons_approve_of_its_record() {
     use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Role};
 
     let person = hex::encode([0xaa; 32]);
@@ -1193,26 +1190,40 @@ async fn a_workspace_ask_is_held_only_for_anyone_but_the_persons_own_connection(
     let (state, _bridge) = AppBrokerState::test_state(None, ProcessServices::default());
     let now = tilo_clock::unix_now_ns() / 1_000_000_000;
     let workspace_id = workspace.id().to_string();
-    let answer = |caller: &Caller| {
+    let answer_with = |caller: &Caller, confirmation: Option<&tilo_actions::remote::Confirmation>| {
         let actor = BrokerActor::for_caller(caller);
         state.framework_policy(
             (&workspace, &actor, now),
             (tilo_automation::SHORTCUTS_APP_ID, &descriptor),
-            None,
+            confirmation,
             false,
             false,
         )
     };
+    let answer = |caller: &Caller| answer_with(caller, None);
 
     let here = Caller::own_person(&person).in_workspace(&workspace_id);
-    let answered = answer(&here);
+    let written = tilo_actions::remote::Confirmation::Confirmed;
+    let approved = crate::apps::collab_app_broker::approval::person_approved(
+        &workspace_id,
+        tilo_actions::InvocationId::new(),
+    );
+    assert!(
+        matches!(
+            answer_with(&here, Some(&written)),
+            Err(ActionCallError::ConfirmationRequired(_))
+        ),
+        "a confirmation the person's call writes itself is none"
+    );
+    let answered = answer_with(&here, Some(&approved));
     assert!(
         answered.is_ok(),
-        "the person's own connection answers the ask with their call: {answered:?}"
+        "their approve of the asked record answers the ask: {answered:?}"
     );
 
     let elsewhere = || Caller::local_person(person.clone()).in_workspace(&workspace_id);
     for (how, caller) in [
+        ("the person's own connection", here.clone()),
         ("a program of the person's", elsewhere()),
         (
             "a request another device forwarded for the person",

@@ -79,8 +79,8 @@ pub struct Caller {
     // The device's operating system (`Self::local_system`), which acts for nobody.
     system: bool,
     // The person on a plain connection to their own device's daemon, which the kernel says is
-    // their own account (`Self::own_person`): such a call is the person's own act, and an ask
-    // the workspace makes of them is answered by their being there.
+    // their own account (`Self::own_person`): such a call is the person's own act, and the
+    // CLI's own prompt on it may confirm what the workspace asks them. The call never does.
     own_connection: bool,
     // The invitation a visitor redeems (`Self::invited`): it acts by its issuer's authority,
     // which the action checks against the issuer's grant when it runs.
@@ -172,8 +172,9 @@ impl Caller {
     }
 
     /// The person on a plain connection to their own device's daemon, which the kernel says is
-    /// their own account ([`crate::remote::Caller`]): their calls are their own act, so an ask
-    /// the workspace makes of them is their call's, not a question nobody can answer.
+    /// their own account ([`crate::remote::Caller`]): their calls are their own act, and the
+    /// answer their CLI's own prompt gives on it to what the workspace asks them is their
+    /// confirmation ([`crate::remote::asked`]). Making the call is never that answer.
     #[must_use]
     pub fn own_person(person: impl Into<tilo_action_policy::PersonId>) -> Self {
         Self {
@@ -189,8 +190,7 @@ impl Caller {
         self.own_connection
     }
 
-    /// The same caller, as the person on their own device's daemon connection: what a
-    /// provider marked so hands the workspace's asks to.
+    /// The same caller, as the person on their own device's daemon connection.
     #[must_use]
     pub const fn on_own_connection(mut self) -> Self {
         self.own_connection = true;

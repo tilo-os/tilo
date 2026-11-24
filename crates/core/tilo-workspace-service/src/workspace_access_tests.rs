@@ -847,6 +847,48 @@ fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
     );
 }
 
+/// A revoked device is told it was removed, never that it lost its membership: with the entry
+/// its root signed when the person retired it, and without one when the reason is theirs.
+#[test]
+fn a_revoked_device_is_refused_as_revoked_and_only_a_retirement_carries_its_entry() {
+    let root = SigningKey::from_bytes(&[0x61; 32]);
+    let device = [0x62; 32];
+    let user = root.verifying_key().to_bytes();
+    let entry = |reason: RevocationReason| {
+        let mut entry = RevocationEntry {
+            user_public_key: user,
+            revoked_device_public_key: device,
+            revoked_at_ns: 1,
+            reason,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, &root).expect("the root signs");
+        entry
+    };
+    let refused = |list: &RevocationList| {
+        DenyReason::Revoked.refusal_for(&peer(user, device, true, None), list)
+    };
+    let retired = entry(RevocationReason::Retired);
+    let mut revocations = RevocationList::new();
+    revocations
+        .insert(retired.clone())
+        .expect("the entry verifies");
+    assert_eq!(
+        refused(&revocations),
+        tilo_server_protocol::refusal::Refusal::Revoked(Box::new(retired.clone())),
+        "a retired device keeps the entry its root signed"
+    );
+
+    let mut lost = RevocationList::new();
+    lost.insert(entry(RevocationReason::Lost))
+        .expect("the entry verifies");
+    assert_eq!(
+        refused(&lost),
+        tilo_server_protocol::refusal::Refusal::DeviceRevoked,
+        "a lost key is told it was removed, and no more"
+    );
+}
+
 /// A device the record of its person's devices holds the root's revocation for is refused as
 /// revoked, as the entry arrives. The root of that record signs nothing about another person's
 /// device, so a record holding an entry it did not sign refuses nothing.

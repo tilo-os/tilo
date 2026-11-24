@@ -132,29 +132,14 @@ impl PhoneView {
         any
     }
 
-    /// Open what the shell asked to open: the app of that id from the bundles the APK carries,
-    /// in the workspace the person chose.
+    /// Open what the shell asked to open, in the workspace the person chose.
     fn open_asked(&mut self) -> bool {
         let Some(app) = self.to_open.borrow_mut().take() else {
             return false;
         };
         let Seen { workspace, .. } = self.worker.seen();
-        let Some(bundle) = self.bundles.get(&app).cloned() else {
-            tracing::error!(app, "the phone carries no bundle of this app");
-            return false;
-        };
         let workspace = workspace.unwrap_or_default();
-        let id = uuid::Uuid::parse_str(&workspace).unwrap_or_else(|_| {
-            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes())
-        });
-        let route = tilolang_process::route_of(&bundle.meta, id, ME);
-        let spec = tilolang_process::hosted::Spec::new(app.clone(), workspace, 1, ME);
-        match tilolang_process::window::hosted::HostedWindow::in_process(
-            spec,
-            route,
-            bundle,
-            self.storage.clone(),
-        ) {
+        match open(&app, &workspace, &self.bundles, self.storage.clone()) {
             Ok(window) => {
                 self.opened = Some((app, window));
                 true
@@ -247,6 +232,35 @@ impl ui::widget::Decorator for PhoneView {
             (a, b) => a.or(b),
         }
     }
+}
+
+/// The app `app` of `workspace`, run in this process: the bundle the APK carries, or the tilolang
+/// package this device installed from the workspace and verified as a launch of it verifies it,
+/// shown in tilolang-process's in-process window. One path for either: the phone starts no
+/// process, and a fetched app is as much the app's own threads as a carried one.
+///
+/// # Errors
+/// The phone carries no bundle of the app and holds no verified install of it, or the app's
+/// instance does not start.
+pub fn open(
+    app: &str,
+    workspace: &str,
+    bundles: &BTreeMap<String, Arc<Bundle>>,
+    storage: Option<PathBuf>,
+) -> Result<tilolang_process::window::hosted::HostedWindow, String> {
+    let bundle = match bundles.get(app) {
+        Some(bundle) => Arc::clone(bundle),
+        None => {
+            let payload = tilo_runtime::device::package_runs::verified_payload(app)?;
+            Arc::new(Bundle::read(&payload).map_err(|error| format!("{app}: {error}"))?)
+        }
+    };
+    let id = uuid::Uuid::parse_str(workspace)
+        .unwrap_or_else(|_| uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes()));
+    let route = tilolang_process::route_of(&bundle.meta, id, ME);
+    let spec = tilolang_process::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, ME);
+    tilolang_process::window::hosted::HostedWindow::in_process(spec, route, bundle, storage)
+        .map_err(|error| format!("{app} did not start: {error}"))
 }
 
 /// The phone's device as the origin of what the shell's view reads of it.

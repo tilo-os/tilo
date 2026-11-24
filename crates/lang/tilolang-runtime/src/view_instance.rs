@@ -143,6 +143,9 @@ pub struct ViewInstance {
     /// What follows a step that waited (`a.then(b)`, whose `a` waits on a call): the
     /// invocation it waits on to end, and `b` with the act it is part of, run once `a` is done.
     then_waiting: RefCell<Vec<(crate::ids::RunId, ActionRef, Option<String>)>>,
+    /// Whether the person held Shift with the press whose action runs now: on what can be
+    /// undone, that press is their yes to what the workspace asks first.
+    shift_held: std::cell::Cell<bool>,
 }
 
 /// Take what the streams pushed since this view last looked into the slots its views read: a
@@ -219,6 +222,7 @@ impl ViewInstance {
             begun: RefCell::default(),
             streams,
             then_waiting: RefCell::default(),
+            shift_held: std::cell::Cell::new(false),
         };
         me.subscribe_new();
         Ok(me)
@@ -623,7 +627,10 @@ impl ViewInstance {
                 }
             }
         }
-        let outcome = self.run_in(&aref, gesture)?;
+        let shift = self.shift_held.replace(held.shift);
+        let outcome = self.run_in(&aref, gesture);
+        self.shift_held.set(shift);
+        let outcome = outcome?;
         match event {
             // The first change made the item; the field edits that item's name from now on.
             "begin" => {
@@ -1047,16 +1054,22 @@ impl ViewInstance {
                     }
                 });
                 let held = self.core.invoking_window.replace(context);
-                // A person's press in their window is the person acting, as a press of the
-                // window's bar is: it runs admitted, through the one path both take. Anyone
-                // else's (an agent driving a view) is decided as a call of theirs.
+                // A person's press in their window is the person acting: what it calls on the
+                // way runs as theirs. It is not their answer to what the workspace asks them
+                // first, which waits for their yes on the system's confirm, unless Shift was held
+                // on what can be undone. Anyone else's (an agent driving a view) is decided as a
+                // call of theirs.
                 let viewer = &self.live.viewer;
                 let outcome = if viewer
                     .member_id()
                     .is_some_and(crate::ids::MemberId::is_person)
                 {
-                    self.core
-                        .invoke_admitted((viewer, None), aref, aref.from.as_ref(), gesture)
+                    self.core.invoke_pressed(
+                        viewer,
+                        aref,
+                        aref.from.as_ref(),
+                        (gesture, self.shift_held.get()),
+                    )
                 } else {
                     self.core.invoke_direct_in(viewer, aref, gesture)
                 };

@@ -12,10 +12,10 @@ const PERSON: &str = "\"me\"";
 const AGENT: &str = "\"agent\"";
 
 fn object(value: Value) -> Map<String, Value> {
-    match value {
-        Value::Object(map) => map,
-        _ => unreachable!(),
-    }
+    let Value::Object(map) = value else {
+        panic!("{value} is no object")
+    };
+    map
 }
 
 fn by(actor: &str) -> ChangeOrigin {
@@ -114,7 +114,7 @@ tilo_test_env::scenario! {
         settings.sync();
         let rung = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&rung);
-        let listener: Arc<crate::Listener> = Arc::new(move || {
+        let listener: Arc<settings_store::Listener> = Arc::new(move || {
             counter.fetch_add(1, Ordering::Relaxed);
         });
         settings.changes().listen(&listener);
@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
 
     phase each_device_places_its_own_displays_and_keeps_the_others_places;
     {
-        use crate::person_displays::{PLACEMENTS_LEAF, PLACEMENTS_SECTION, PlacedDisplay};
+        use settings_store::person_displays::{PLACEMENTS_LEAF, PLACEMENTS_SECTION, PlacedDisplay};
         let placed = |device: &str, x: i32, y: i32| PlacedDisplay {
             device: device.to_owned(),
             output: "panel".to_owned(),

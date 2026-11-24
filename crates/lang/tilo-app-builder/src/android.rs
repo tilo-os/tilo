@@ -1613,6 +1613,10 @@ fn stage_apk(
     let packages = tilolang_apps(app_dir)?;
     pack_tilolang_apps(&packages, &assets.join("tilo").join("apps"))
         .with_context(|| format!("packing the tilolang apps of {}", app_dir.display()))?;
+    // The app reads its own signed manifest from the APK it runs from: the runtime builds it
+    // carries are the ones its build stamps into it, never words written by hand.
+    write_signed_manifest(app_dir, &content, &assets, !packages.is_empty())
+        .with_context(|| format!("writing the manifest of {}", app_dir.display()))?;
     let icon = compile_icon(tools, app_dir, metadata, stage)?;
     let debuggable = matches!(request.signing, Signing::Debug);
     let manifest_path = stage.join("AndroidManifest.xml");
@@ -1771,6 +1775,66 @@ fn write_apps_index(root: &Path) -> Result<()> {
     }
     let path = root.join(APPS_INDEX);
     std::fs::write(&path, index).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Write the app's own signed package manifest into the APK's assets (`tilo/manifest.toml`). The
+/// app reads it from the APK it runs from, and nothing else, for the runtime builds it carries:
+/// packaging stamps `package.runtime` to the exact build of the libraries this build staged
+/// (`<release>+native.<abi digest>` over their content) and signs the manifest with the
+/// publisher key, so no field of it is hand-written and the app carries what it was built
+/// against.
+fn write_signed_manifest(
+    app_dir: &Path,
+    content: &Path,
+    assets: &Path,
+    packs_tilolang: bool,
+) -> Result<()> {
+    let path = crate::package_manifest_path(app_dir);
+    let source =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut manifest = tilo_app_package::Manifest::from_toml_str(&source)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    // The APK that packs tilolang apps carries the tilolang runtime in itself: its manifest names
+    // the build it is, which is this builder's.
+    if packs_tilolang
+        && !manifest
+            .package
+            .required_runtimes
+            .iter()
+            .any(|runtime| runtime == tilolang_tilo::RUNTIME)
+    {
+        manifest.package.required_runtimes = vec![tilolang_tilo::RUNTIME.to_owned()];
+    }
+    // An app that names no Tilo runtime links none: its manifest is still its own, unsigned of a
+    // build, and says nothing about a runtime it does not carry.
+    if let Some(authored) = manifest.package.runtime.clone() {
+        let (name, version) = authored
+            .split_once('/')
+            .ok_or_else(|| anyhow::anyhow!("{authored} is no `tilo-runtime/<version>`"))?;
+        let release =
+            runtime_bundle::split_abi_version(version).map_or(version, |(release, _)| release);
+        let root = runtime_bundle::tree_root_hash(&content.join("lib"))
+            .with_context(|| format!("hashing the libraries of {}", app_dir.display()))?;
+        manifest.package.runtime = Some(format!(
+            "{name}/{}",
+            runtime_bundle::abi_version(release, &root)
+        ));
+    }
+    // The publisher key this machine signs with, when it has one: the manifest is its build's,
+    // and the daemon reads the runtime it names only from it.
+    let identity = app_registry::publisher::key::discover(&app_registry::publisher::key::machine_store())?
+        .map(|key| tilo_app_package::pack::SigningIdentity::from_seed(&key.to_bytes()))
+        .unwrap_or_else(tilo_app_package::pack::SigningIdentity::generate);
+    manifest.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
+    manifest
+        .sign(&identity)
+        .map_err(|error| anyhow::anyhow!("{}: {error}", path.display()))?;
+    let destination = assets.join("tilo").join("manifest.toml");
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&destination, manifest.to_toml_string()?)
+        .with_context(|| format!("writing {}", destination.display()))
 }
 
 /// Link, align and sign the staged APK into `apk`.

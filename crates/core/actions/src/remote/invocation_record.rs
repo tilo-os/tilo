@@ -123,13 +123,29 @@ impl Invocations {
     }
 
     /// `request` as its record keeps it: without the arguments its action declares secret, or
-    /// any where no descriptor of it is found, beside their names.
+    /// any where no descriptor of it is found, beside their names. A call of the vault's add by
+    /// its address through the action registry carries the add's own arguments inside its
+    /// `arguments`, and keeps none of the add's secrets either.
     fn journaled(&self, request: &InvokeRequest) -> (InvokeRequest, Vec<String>) {
         let names = self.secrets.get().map_or_else(Vec::new, |secrets| {
             secret_arguments(request, secrets(&request.target))
         });
-        let (kept, taken) = without_secrets(request, &names);
-        (kept, taken.keys().cloned().collect())
+        let (mut kept, taken) = without_secrets(request, &names);
+        let mut sealed: Vec<String> = taken.keys().cloned().collect();
+        if super::person_vault::calls_by_address(request, super::person_vault::ADD)
+            && let Some(secrets) = self.secrets.get()
+            && let InvokeArgument::Json(arguments) = &mut kept.argument
+            && let Some(serde_json::Value::Object(inner)) = arguments.get_mut("arguments")
+        {
+            let add = super::person_vault::target(super::person_vault::ADD);
+            let names = secrets(&add).unwrap_or_else(|| inner.keys().cloned().collect());
+            for name in names {
+                if inner.remove(&name).is_some() {
+                    sealed.push(format!("arguments.{name}"));
+                }
+            }
+        }
+        (kept, sealed)
     }
 
     /// Record that `caller` asked for `request` in `workspace`, running at `route`, as `asked`
@@ -174,7 +190,7 @@ impl Invocations {
             retries,
             spend: None,
             undone: false,
-            secret: false,
+            secret: super::person_vault::answers_secret(request),
             route,
         };
         let mut kept = self.kept();
@@ -943,7 +959,11 @@ mod tests {
         ];
         let target = super::super::person_vault::target(super::super::person_vault::ADD);
         let described = target.clone();
+        // The registry's own `call` is described too: its address and arguments are no secrets.
         invocations.keep_no_secrets(Arc::new(move |asked: &RemoteActionTarget| {
+            if asked.provider == crate::remote::ACTIONS_PROVIDER {
+                return Some(Vec::new());
+            }
             (*asked == described)
                 .then(|| super::super::secret_arguments::secret_parameters(&params))
         }));
@@ -960,11 +980,26 @@ mod tests {
         }) else {
             unreachable!("an object");
         };
+        // Passwords' code calls the same add by its address, through the action registry.
+        let mut called = request.clone();
+        called.invocation = InvocationId::new();
+        called.target = RemoteActionTarget {
+            provider: crate::remote::ACTIONS_PROVIDER.to_owned(),
+            address: crate::ActionAddress::new("actions", "call"),
+        };
+        let mut by_address = serde_json::Map::new();
+        by_address.insert("address".into(), "tilo.vault/vault#add".into());
+        by_address.insert("arguments".into(), arguments.clone().into());
+        called.argument = InvokeArgument::Json(by_address);
         request.argument = InvokeArgument::Json(arguments);
         let runs = Arc::new(Runs::default());
         invocations.record(&asked, &asked, &request, Some("w1"), (runs, asked.clone()));
+        let runs = Arc::new(Runs::default());
+        invocations.record(&asked, &asked, &called, Some("w1"), (runs, asked.clone()));
         let kept = invocations.get(&asked, &request.invocation).unwrap();
+        let kept_call = invocations.get(&asked, &called.invocation).unwrap();
         let written = serde_json::to_string(&kept.request).unwrap()
+            + &serde_json::to_string(&kept_call.request).unwrap()
             + &invocations
                 .listed("w1")
                 .iter()
@@ -1007,6 +1042,44 @@ mod tests {
         match answered(&invocations, &asked, &record_action(&id, RETRY), &never) {
             Err(ActionCallError::Refused { reason }) => assert_eq!(reason, NOT_KEPT),
             other => panic!("run again without what it was asked with: {other:?}"),
+        }
+    }
+
+    /// A vault reveal answers a secret, asked of the vault or through the action registry by
+    /// its address, so its record keeps only that it was answered.
+    #[test]
+    fn a_vault_reveal_is_recorded_as_answering_a_secret() {
+        use super::super::person_vault;
+        let invocations = Arc::new(Invocations::default());
+        let asked = Caller::local_person("ada").in_new_execution();
+        let mut reveal = request();
+        reveal.target = person_vault::target(person_vault::REVEAL);
+        let mut called = request();
+        called.target = RemoteActionTarget {
+            provider: "tilo.actions".to_owned(),
+            address: crate::ActionAddress::new("actions", "call"),
+        };
+        let serde_json::Value::Object(arguments) = serde_json::json!({
+            "address": "tilo.workspace/workspace.permissions:w1/vault#reveal",
+            "arguments": {"item": "vault.item:00"},
+        }) else {
+            unreachable!("an object");
+        };
+        called.argument = InvokeArgument::Json(arguments);
+        let mut listed = called.clone();
+        listed.invocation = InvocationId::new();
+        let serde_json::Value::Object(listing) = serde_json::json!({
+            "address": "tilo.workspace/workspace.permissions:w1/vault#list",
+        }) else {
+            unreachable!("an object");
+        };
+        listed.argument = InvokeArgument::Json(listing);
+        for (request, secret) in [(&reveal, true), (&called, true), (&listed, false)] {
+            assert_eq!(person_vault::answers_secret(request), secret);
+            let runs = Arc::new(Runs::default());
+            invocations.record(&asked, &asked, request, Some("w1"), (runs, asked.clone()));
+            let kept = invocations.get(&asked, &request.invocation).unwrap();
+            assert_eq!(kept.secret, secret, "{:?}", request.target);
         }
     }
 

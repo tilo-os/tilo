@@ -146,9 +146,6 @@ type Page (title: title) {
     /// download, a sign-in, a request leaving) is asked as the system's asked record instead.
     dialog: Option<DialogAsk> = .none
     menu: Option<MenuAsk> = .none
-    /// The files the page downloads, as its window last read them: engine state, never the
-    /// page's own record.
-    downloads: Collection<Download>
     /// Whether the page's sound is muted.
     muted: Bool = false
     /// The video the page shows, as its window last read it: the picture "Picture in picture"
@@ -263,29 +260,40 @@ type PageMedia (title: label) {
     label: Text = ""
 }
 
-/// One file a page downloads: where it comes from, where it went, and how far it has come.
-/// Device state like the page's own questions: read from the engine when the page's window
-/// opens it and after each answer, never the page's own record.
+/// One file the Browser downloads, from any of its windows: where it comes from, what it is
+/// called, and the device job that fetches it into the person's Downloads. How far it has come
+/// and where it went are the job's, read as it moves; the job goes on when the window closes.
 type Download (title: name) {
-    /// The engine's number for the transfer, which what the person does to it names.
-    transfer: Int
-    /// `awaiting`, `downloading`, `completed`, `failed` or `cancelled`.
-    state: Text
-    name: Text
     url: Text
-    /// Where it was saved, once it is complete.
-    path: Text
-    /// Whether the engine can start it again after it failed.
-    retryable: Bool
-    /// How many bytes have come, of how many the engine knows: none when it does not.
-    received: Int
-    total: Int
-    error: Text
+    name: Text
+    /// The job fetching it: a retry starts another, which the download keeps instead.
+    job: Text = ""
 
     search {
         sort name a_z
         hide url
     }
+}
+
+/// Where a download's job stands, as the job tells it: `running`, `done`, `failed` or
+/// `cancelled`, how many bytes of how many (0 while the size is unknown), where it was saved and
+/// as what, and why it failed.
+type DownloadJob {
+    state: Text
+    done: Int
+    total: Int
+    path: Text
+    name: Text
+    error: Text
+}
+
+/// What the Browser asks its engine to download: the address, the name the page suggested, and
+/// the handle the page's window keeps the request's context under (the site's cookies never
+/// travel in a call).
+type DownloadAsk {
+    url: Text
+    name: Text
+    request: Text
 }
 
 /// What a site's connection, its permissions and its stored data are, as the page's window last
@@ -600,6 +608,8 @@ type Browser {
     addresses_enabled: Bool = false
     /// The extensions installed on this device, as a page's window last listed them.
     extensions: Collection<Extension>
+    /// The files downloaded from every window, newest last: each outlives the page it came from.
+    downloads: Collection<Download>
     /// What installing, turning on or removing an extension came to, in the person's words:
     /// empty while there is nothing to say.
     extension_notice: Text = ""
@@ -909,46 +919,6 @@ action submit_page(
     ask_page(p, request)
 }
 
-/// Writes what the page last said of one of its downloads into the page's record, as its window
-/// hands it over while the transfer moves. The window raises it, never a person, agent or script.
-action update_download(
-    p: Page,
-    id: Int,
-    state: Text,
-    name: Text,
-    url: Text,
-    path: Text,
-    retryable: Bool,
-    received: Int,
-    total: Int,
-    error: Text,
-) {
-    if let held = p.downloads.find(d -> d.transfer == id) {
-        held.state = state
-        held.name = name
-        held.url = url
-        held.path = path
-        held.retryable = retryable
-        held.received = received
-        held.total = total
-        held.error = error
-    } else {
-        p.downloads.insert(
-            Download(
-                transfer: id,
-                state: state,
-                name: name,
-                url: url,
-                path: path,
-                retryable: retryable,
-                received: received,
-                total: total,
-                error: error,
-            ),
-        )
-    }
-}
-
 /// Keeps a page the page opened in a window of its own as a page of this browser, as its window
 /// hands it over: a popup a site sized, or a plain new tab.
 action open_from_page(p: Page, url: Text, popup: Bool) {
@@ -1187,11 +1157,6 @@ action refresh_page(p: Page) -> Answer uses page (
     let found = json_field(value, "find") ?? value
     p.find_at = json_number(found, "active").to_int()
     p.find_count = json_number(found, "count").to_int()
-    let held = downloads_of(value)
-    p.downloads.remove_where(d -> true)
-    for d in held {
-        p.downloads.insert(d)
-    }
     p.muted = json_flag(value, "muted")
     p.fullscreen = json_flag(value, "fullscreen")
     if let video = media_of(value) {
@@ -1266,37 +1231,57 @@ action discard_download(p: Page, id: Int, name: Text = "") -> Answer uses page (
     page_answered(page.call(json.encode(Ask(op: "answer_download", id: .some(id), allow: false))))
 }
 
-/// Saves what an address serves into the browser's downloads.
-action download(p: Page, url: Text) -> Answer uses page (
+/// Downloads what an address serves into the person's Downloads, as a job of the Browser's own
+/// that goes on when the window closes. A page's window raises it for a download the person
+/// saved there, naming the handle its request waits under; a person or agent names an address.
+action download(p: Page, url: Text, name: Text = "", request: Text = "") -> Answer (
     icon: .download,
     label: "Download an address",
 ) {
     require url.trim() != "" "Type the address to download"
-    ask_page(p, json.encode(Ask(op: "start_download", url: .some(url.trim()))))
+    let address = url.trim()
+    let called = if name == "" { address.split("/").last() ?? address } else { name }
+    match engine.start(
+        "download",
+        json.encode(DownloadAsk(url: address, name: name, request: request)),
+    ) {
+        .ok(job) => {
+            let b = root Browser
+            b.downloads.insert(Download(url: address, name: called, job: job))
+            Answer(ok: true, message: std.say("Downloading {called}"))
+        }
+        .err(why) => Answer(message: why),
+    }
 }
 
-/// Stops a download that is still going.
-action cancel_download(p: Page, d: Download) -> Answer uses page (
-    icon: .x,
-    label: "Cancel the download",
-) {
-    ask_page(p, json.encode(Ask(op: "cancel_download", id: .some(d.transfer))))
+/// Stops a download that is still going: what it saved so far is removed.
+action cancel_download(d: Download) -> Answer (icon: .x, label: "Cancel the download") {
+    require d.job != "" "The download has not started"
+    if engine.cancel(d.job) {
+        Answer(ok: true, message: std.say("Cancelled {d.name}"))
+    } else {
+        Answer(message: std.say("{d.name} is no longer downloading"))
+    }
 }
 
-/// Starts a failed download again from the beginning.
-action retry_download(p: Page, d: Download) -> Answer uses page (
-    icon: .refresh,
-    label: "Retry the download",
-) {
-    ask_page(p, json.encode(Ask(op: "retry_download", id: .some(d.transfer))))
+/// Starts a download that failed or was cancelled again, from the beginning.
+action retry_download(d: Download) -> Answer (icon: .refresh, label: "Retry the download") {
+    match engine.start("download", json.encode(DownloadAsk(url: d.url, name: d.name, request: ""))) {
+        .ok(job) => {
+            d.job = job
+            Answer(ok: true, message: std.say("Downloading {d.name}"))
+        }
+        .err(why) => Answer(message: why),
+    }
 }
 
-/// Stops every download this page has going.
-action cancel_all_downloads(p: Page) -> Answer uses page (
-    icon: .x,
-    label: "Cancel every download",
-) {
-    ask_page(p, json.encode(Ask(op: "cancel_all_downloads")))
+/// Stops every download still going, from every window.
+action cancel_all_downloads() -> Answer (icon: .x, label: "Cancel every download") {
+    let b = root Browser
+    for d in b.downloads {
+        if d.job != "" { engine.cancel(d.job) }
+    }
+    Answer(ok: true, message: std.say("Every download was stopped"))
 }
 
 /// Opens the engine's developer tools for this page: its console, its elements and its network.
@@ -2812,34 +2797,6 @@ fn panel_site(url: Text) -> Text {
     origin.split("://").last() ?? origin
 }
 
-/// The downloads the page last reported, as its window reads them.
-fn downloads_of(value: json.Value) -> List<Download> {
-    let found: List<Download> = []
-    for held in json_arrays(json_field(value, "downloads") ?? value) {
-        let id = json_number(held, "id").to_int()
-        if id != 0 {
-            found = [
-                found,
-                [
-                    Download(
-                        transfer: id,
-                        state: json_text(held, "state"),
-                        name: json_text(held, "name"),
-                        url: json_text(held, "url"),
-                        path: json_text(held, "path"),
-                        retryable: json_flag(held, "retryable"),
-                        received: json_number(held, "received").to_int(),
-                        total: json_number(held, "total").to_int(),
-                        error: json_text(held, "error"),
-                    ),
-                ],
-            ]
-                .flat_map(x -> x)
-        }
-    }
-    found
-}
-
 /// The site the page last reported, when it reported one.
 fn site_of(value: json.Value) -> Option<SiteInfo> {
     match json_field(value, "site") {
@@ -3639,14 +3596,14 @@ view page_view(p: Page) {
                             }
                         }
                     }
-                    if not p.downloads.is_empty() {
+                    if not b.downloads.is_empty() {
                         stack(padding: .group) {
                             ui.Section("Downloads") {
-                                for d in p.downloads {
-                                    download_row(p, d)
+                                for d in b.downloads {
+                                    download_row(d)
                                 }
                                 ui.Button("Cancel every download", icon: .x, role: .plain) {
-                                    on press: cancel_all_downloads(p)
+                                    on press: cancel_all_downloads()
                                 }
                             }
                         }
@@ -4070,54 +4027,68 @@ view history_list(b: Browser, query: Text) {
     }
 }
 
-/// One file the page downloads: what it is called, how far it has come, and what the person may
-/// do with it now.
-view download_row(p: Page, d: Download) {
-    stack(padding: .related) {
-        ui.ListRow(
-            title: d.name,
-            secondary: download_secondary(d),
-            mark: if d.state == "failed" { .triangle_alert } else { .download },
-        )
-        if d.state == "downloading" and d.total > 0 {
-            ui.ProgressBar(value: d.received.to_float() / d.total.to_float(), label: "Downloading")
-        }
-        if d.state == "downloading" or d.state == "awaiting" {
-            ui.Button("Cancel", icon: .x, role: .plain) {
-                on press: cancel_download(p, d)
+/// One file the Browser downloads: what it is called, how far its job has come, and what the
+/// person may do with it now.
+view download_row(d: Download) {
+    let job = json.decode<DownloadJob>(if d.job == "" { "" } else { engine.state(d.job) })
+    match job {
+        .ok(now) => {
+            stack(padding: .related) {
+                ui.ListRow(
+                    title: if now.name == "" { d.name } else { now.name },
+                    secondary: download_secondary(now),
+                    mark: if now.state == "failed" { .triangle_alert } else { .download },
+                )
+                if now.state == "running" and now.total > 0 {
+                    ui.ProgressBar(
+                        value: now.done.to_float() / now.total.to_float(),
+                        label: "Downloading",
+                    )
+                }
+                if now.state == "running" {
+                    ui.Button("Cancel", icon: .x, role: .plain) {
+                        on press: cancel_download(d)
+                    }
+                }
+                if now.state == "failed" or now.state == "cancelled" {
+                    ui.Button("Retry", icon: .refresh, role: .plain) {
+                        on press: retry_download(d)
+                    }
+                }
+                if now.state == "done" and now.path != "" {
+                    ui.Button("Open", icon: .external_link, role: .plain) {
+                        on press: open_download(now.name, now.path)
+                    }
+                    ui.Button("Show in Files", icon: .folder, role: .plain) {
+                        on press: reveal_download(now.path)
+                    }
+                }
             }
         }
-        if d.state == "failed" and d.retryable {
-            ui.Button("Retry", icon: .refresh, role: .plain) {
-                on press: retry_download(p, d)
-            }
-        }
-        if d.state == "completed" and d.path != "" {
-            ui.Button("Open", icon: .external_link, role: .plain) {
-                on press: open_download(d.name, d.path)
-            }
-            ui.Button("Show in Files", icon: .folder, role: .plain) {
-                on press: reveal_download(d.path)
+        .err => {
+            stack(padding: .related) {
+                ui.ListRow(title: d.name, secondary: std.say("Not on this device"), mark: .download)
+                ui.Button("Retry", icon: .refresh, role: .plain) {
+                    on press: retry_download(d)
+                }
             }
         }
     }
 }
 
 /// What a download says under its name: how far it has come, or how it ended.
-fn download_secondary(d: Download) -> Text {
-    if d.state == "downloading" {
-        let received = size_text(d.received)
-        if d.total > 0 {
-            let total = size_text(d.total)
-            std.say("{received} of {total}")
-        } else { std.say("{received} downloaded") }
-    } else if d.state == "awaiting" {
-        std.say("Waiting for where to save it")
-    } else if d.state == "completed" {
-        if d.path == "" { std.say("Download complete") } else { std.say("Saved to {d.path}") }
-    } else if d.state == "failed" {
-        if d.error == "" { std.say("The download failed") } else { d.error }
-    } else if d.state == "cancelled" { std.say("Cancelled") } else { std.say("Unknown state") }
+fn download_secondary(now: DownloadJob) -> Text {
+    if now.state == "running" {
+        let done = size_text(now.done)
+        if now.total > 0 {
+            let total = size_text(now.total)
+            std.say("{done} of {total}")
+        } else { std.say("{done} downloaded") }
+    } else if now.state == "done" {
+        std.say("Saved to {now.path}")
+    } else if now.state == "failed" {
+        if now.error == "" { std.say("The download failed") } else { now.error }
+    } else if now.state == "cancelled" { std.say("Cancelled") } else { std.say("Waiting to start") }
 }
 
 /// The next size up: 1.2 times the page's font, kept between a quarter and five times its own.

@@ -215,7 +215,7 @@ impl Workspaces {
                 );
                 let kept = self
                     .changing_vault(workspace, (Some(caller.acting()), Some(request)), |items| {
-                        items.keep_tagged(&own_tags(app), replacing.as_ref(), item)
+                        items.keep_tagged(&own_tags(app), replacing.as_ref(), item, "")
                     })
                     .await
                     .map_err(refused)?;

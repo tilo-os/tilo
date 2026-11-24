@@ -237,8 +237,9 @@ class PageHolds(unittest.TestCase):
         self.click(host, 'link "Receipt"')
         prompt = host.until(lambda e: e['event'] == 'download_prompt', timeout=90)
         host.send(op='download_answer', tab=1, id=prompt['id'], allow=True)
-        host.until(lambda e: e['event'] == 'download' and e['id'] == prompt['id']
-                   and e['state'] == 'complete', timeout=90)
+        # Saved, it goes to the tab that offered it, for the Browser to fetch.
+        host.until(lambda e: e['event'] == 'download_request' and e['id'] == prompt['id']
+                   and e['tab'] == 1, timeout=90)
 
     def test_a_held_submission_is_set_down_with_whose_action_reached_it_and_that_it_left(self):
         # A reviewer reads in the tab's record that the submission waited for

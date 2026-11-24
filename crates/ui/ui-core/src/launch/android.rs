@@ -17,6 +17,23 @@ pub fn app() -> Option<&'static AndroidApp> {
     APP.get()
 }
 
+/// The APK's asset `name` (`tilo/manifest.toml`), read: what an app reads of itself from the APK
+/// it was installed from, which no file of the app's own can stand in for.
+///
+/// # Errors
+/// No activity runs yet, or the APK has no such asset.
+pub fn read_asset(name: &str) -> std::io::Result<Vec<u8>> {
+    let app = app().ok_or_else(|| std::io::Error::other("no Android activity"))?;
+    let c_name = CString::new(name).map_err(std::io::Error::other)?;
+    let mut asset = app
+        .asset_manager()
+        .open(&c_name)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "missing from the APK"))?;
+    let mut bytes = Vec::new();
+    std::io::copy(&mut asset, &mut bytes)?;
+    Ok(bytes)
+}
+
 /// Copy the APK's asset `name` (`tilo/fonts/manifest.toml`) to `to`, making its directory: what
 /// an app copies out of its APK on first start, since Android hands assets out as streams only.
 ///

@@ -50,8 +50,9 @@ pub struct BrokerActor {
     /// to reach: what goes further asks first
     /// ([`tilo_action_policy::Reach`]).
     pub ceiling: Option<tilo_action_policy::Reach>,
-    /// The person on a plain connection to their own device's daemon: an ask the workspace
-    /// makes of them is their own call's to answer, and their call is the answer.
+    /// The person on a plain connection to their own device's daemon, by peer credential: the
+    /// connection whose own prompt (the CLI's) may confirm what the workspace asks them. Their
+    /// call is never the answer.
     own_connection: bool,
 }
 
@@ -349,8 +350,7 @@ impl BrokerActor {
     }
 
     /// Whether this is the person on their own device's daemon connection
-    /// ([`Caller::own_person`]): their call is their own answer to what the workspace asks of
-    /// them.
+    /// ([`Caller::own_person`]).
     #[must_use]
     pub const fn own_connection(&self) -> bool {
         self.own_connection

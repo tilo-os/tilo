@@ -27,13 +27,49 @@ pub use crate::daemon_args::{Mode, default_profile, parse_args, validate_profile
 
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
+/// Every socket the daemon serving a profile binds, named in the one directory its clients
+/// derive from [`sockets_dir`]: what it listens on and what an app it starts connects to are
+/// this one value, never a path each side works out for itself.
+#[derive(Clone, Debug)]
+pub(crate) struct Sockets {
+    /// The daemon's native endpoint, which a program it started calls as itself.
+    pub(crate) native: PathBuf,
+    pub(crate) collab: PathBuf,
+    pub(crate) identity: PathBuf,
+    pub(crate) blobs: PathBuf,
+}
+
+impl Sockets {
+    /// The names a daemon's sockets have in the directory serving a profile keeps them in.
+    pub(crate) fn in_dir(dir: &Path) -> Self {
+        Self {
+            native: dir.join(tilo_paths::machine::DAEMON_NATIVE),
+            collab: dir.join(COLLAB_SOCKET),
+            identity: dir.join(IDENTITY_SOCKET),
+            blobs: dir.join(BLOB_SOCKET),
+        }
+    }
+
+    fn all(&self) -> [&Path; 4] {
+        [&self.native, &self.collab, &self.identity, &self.blobs]
+    }
+}
+
+/// The sockets the daemon serving `profile` binds.
+///
+/// # Errors
+/// The directory cannot be made, or a socket's path is longer than a socket's address holds.
+pub(crate) fn sockets(profile: &Path) -> io::Result<Sockets> {
+    Ok(Sockets::in_dir(&sockets_dir(profile)?))
+}
+
 /// The directory the daemon serving `profile` keeps its sockets in: this computer's own listens
 /// where every client finds it ([`tilo_api::daemon::this_computer`]), never inside a profile whose
 /// path the home folder lengthens; a profile named apart (a test's, a VM host's, a stack's) keeps
 /// its own directory beside that one ([`tilo_api::daemon::profile_sockets`]), named by its path,
 /// so no profile's path ever becomes a socket's path. Either way a socket whose path its address
 /// cannot hold is refused, by name.
-pub(crate) fn sockets(profile: &Path) -> io::Result<PathBuf> {
+fn sockets_dir(profile: &Path) -> io::Result<PathBuf> {
     let dir = if crate::daemon_args::own_profile().is_ok_and(|own| own == profile) {
         tilo_api::daemon::this_computer()
             .map_err(io::Error::other)?
@@ -42,20 +78,15 @@ pub(crate) fn sockets(profile: &Path) -> io::Result<PathBuf> {
     } else {
         tilo_api::daemon::profile_sockets(profile).map_err(io::Error::other)?
     };
-    for name in [
-        tilo_paths::machine::DAEMON_NATIVE,
-        COLLAB_SOCKET,
-        IDENTITY_SOCKET,
-        BLOB_SOCKET,
-    ] {
-        tilo_api::daemon::socket_fits(&dir.join(name)).map_err(io::Error::other)?;
+    for socket in Sockets::in_dir(&dir).all() {
+        tilo_api::daemon::socket_fits(socket).map_err(io::Error::other)?;
     }
     Ok(dir)
 }
 
 /// The native endpoint of the daemon serving `profile`, in its [`sockets`].
 fn native_socket(profile: &Path) -> io::Result<PathBuf> {
-    Ok(sockets(profile)?.join(tilo_paths::machine::DAEMON_NATIVE))
+    Ok(sockets(profile)?.native)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

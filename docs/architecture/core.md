@@ -1042,7 +1042,12 @@ workspace vault, despite their names.
   Which servers keep a workspace is recorded in that workspace, the own one
   included: a server keeping the person's own workspace reads that there. Only
   the person's own devices, their own servers included, hold its keys; a server
-  of anyone else stores its sealed frames and writes nothing.
+  of anyone else stores its sealed frames and writes nothing. The device that writes a record
+  pushes the blobs it references to the workspace's hosts with the record, sealed
+  like it, and the hosts keep them: no host walks a record for references, and no
+  blob address is listed outside the sealed frame. The push never holds up the
+  write; leaving, or a device's removal, waits for the hosts to hold every blob
+  that device still owes.
 
 ### What goes
 

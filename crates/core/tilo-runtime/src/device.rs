@@ -56,6 +56,7 @@ pub(crate) mod layout;
 mod live;
 mod live_call;
 mod live_relay;
+mod live_speaking;
 pub(crate) mod local;
 mod mcp_server;
 pub(crate) mod migrate;
@@ -69,8 +70,6 @@ pub mod packages;
 mod page_media;
 #[cfg(test)]
 mod page_ticket_tests;
-/// The workspace's vault, read and changed by Passwords' window here as `vault`.
-mod passwords_vault;
 pub mod peer;
 pub(crate) mod presence;
 pub mod processes;
@@ -83,6 +82,7 @@ pub(crate) mod records;
 #[cfg(test)]
 mod root_holder_login_tests;
 mod search;
+mod secret_clipboard;
 pub mod serve;
 pub mod server_settings;
 pub mod services;

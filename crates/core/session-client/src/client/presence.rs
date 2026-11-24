@@ -4,7 +4,6 @@
 //! thread-bound parts stay behind.
 
 use std::cell::{Cell, RefCell};
-use std::sync::Arc;
 use std::time::Duration;
 use tilo_clock::time::Instant;
 
@@ -14,7 +13,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_live::presence;
 use tilo_live::presence::Board;
 
-use crate::network::{Device, Event, SayPresence, Topic};
+use crate::network::{Device, Event, Saying, Topic};
 use crate::presence::{OwnPresence, Present, Workspace, now_ms};
 
 /// Where this person is here: their pointer over a tile, and their shell.
@@ -57,9 +56,13 @@ pub struct Presence {
     said: RefCell<Vec<Frame>>,
     /// The wave this person sent last, for their own row to say sent.
     sent_wave: RefCell<Option<presence::Wave>>,
-    /// Where this device's word of itself goes on each workspace's presence track, as the transport
-    /// it says on carries it: `None` on a host that says presence nowhere.
-    saying: Option<Arc<dyn SayPresence>>,
+    /// Where this device's word of itself goes: frames on each workspace's presence track, as the
+    /// transport it says on carries them, or the whole word to the device's daemon, which says
+    /// it. `None` on a host that says presence nowhere.
+    saying: Option<Saying>,
+    /// The runs this device executes, by workspace, each `(session, member, face)`: told to the
+    /// daemon with the word where the daemon says it.
+    agents: RefCell<Vec<(String, String, String, ShellPresence)>>,
     /// Why the last word was not said on the live session, while it was not: told once when saying
     /// starts failing or fails for another reason, and once when it is said again.
     unsaid: RefCell<Option<String>>,
@@ -80,7 +83,7 @@ impl Presence {
     /// A presence saying this device's word of itself on `saying`'s tracks, for the device
     /// `device` names. What the transport heard reaches it through [`Self::heard`].
     #[must_use]
-    pub fn over(saying: Option<Arc<dyn SayPresence>>, device: &Device, own: OwnPresence) -> Self {
+    pub fn over(saying: Option<Saying>, device: &Device, own: OwnPresence) -> Self {
         Self {
             present: RefCell::new(Present::new(device.publisher)),
             own: RefCell::new(own),
@@ -91,6 +94,7 @@ impl Presence {
             said: RefCell::new(Vec::new()),
             sent_wave: RefCell::new(None),
             saying,
+            agents: RefCell::default(),
             unsaid: RefCell::new(None),
             device: device.name.clone(),
         }
@@ -230,7 +234,12 @@ impl Presence {
         if own.call == call {
             return false;
         }
-        own.call = call;
+        let joined = own.call.as_ref().map(|call| &call.call.channel)
+            != call.as_ref().map(|call| &call.call.channel);
+        own.call.clone_from(&call);
+        if joined && let (Some(Saying::Word(tell)), Some(front)) = (&self.saying, self.front()) {
+            tell.join(front, call);
+        }
         self.set_own(own)
     }
 
@@ -307,7 +316,11 @@ impl Presence {
         for (ws, id) in leaving {
             // The members take this device down where it was.
             if let Some(workspace) = WorkspaceId::parse(&id) {
-                self.say_frames(workspace, &[(0, Frame::desktop(&id, Payload::Left))]);
+                if let Some(Saying::Word(tell)) = &self.saying {
+                    tell.tell(workspace, None, Vec::new());
+                } else {
+                    self.say_frames(workspace, &[(0, Frame::desktop(&id, Payload::Left))]);
+                }
             }
             left(ws);
             changed = true;
@@ -515,8 +528,13 @@ impl Presence {
                 })
                 .collect()
         };
+        sessions.clone_into(&mut self.agents.borrow_mut());
         for workspace in &changed {
-            self.due_in(workspace);
+            if let Some(Saying::Word(_)) = &self.saying {
+                self.say_into(workspace);
+            } else {
+                self.due_in(workspace);
+            }
         }
         !changed.is_empty()
     }
@@ -589,6 +607,14 @@ impl Presence {
     /// words leaves, under the board's one schedule.
     fn say_own(&self) {
         let word = self.own_word();
+        if let Some(Saying::Word(tell)) = &self.saying {
+            let Some(front) = self.front() else {
+                return;
+            };
+            self.seed(&front.to_string(), &word);
+            tell.tell(front, Some(word), self.agents_in(&front.to_string()));
+            return;
+        }
         let now = now_ms();
         let Some((layout, frames)) = self.present.borrow_mut().say_in_front(&word, now) else {
             return;
@@ -600,6 +626,14 @@ impl Presence {
     /// workspace says who it is at once, so the people already there read it from the first frame.
     fn say_into(&self, workspace: &str) {
         let word = self.own_word();
+        if let Some(Saying::Word(tell)) = &self.saying {
+            let Some(layout) = WorkspaceId::parse(workspace) else {
+                return;
+            };
+            self.seed(workspace, &word);
+            tell.tell(layout, Some(word), self.agents_in(workspace));
+            return;
+        }
         let now = now_ms();
         let (layout, frames) = {
             let mut present = self.present.borrow_mut();
@@ -638,6 +672,41 @@ impl Presence {
         (true, forgot)
     }
 
+    /// The workspace in front, while there is one.
+    fn front(&self) -> Option<WorkspaceId> {
+        let present = self.present.borrow();
+        let active = present.active?;
+        present
+            .workspaces
+            .iter()
+            .find(|held| held.ws == active)
+            .and_then(|held| WorkspaceId::parse(&held.id))
+    }
+
+    /// Take `word` as what this device says in `workspace`, without saying it there: the
+    /// device's daemon says it, and this board draws it.
+    fn seed(&self, workspace: &str, word: &presence::Own) {
+        if let Some(held) = self
+            .present
+            .borrow_mut()
+            .workspaces
+            .iter_mut()
+            .find(|held| held.id == workspace)
+        {
+            held.board.seed(word.clone());
+        }
+    }
+
+    /// The runs this device executes in `workspace`, each `(session, member, face)`.
+    fn agents_in(&self, workspace: &str) -> Vec<(String, String, ShellPresence)> {
+        self.agents
+            .borrow()
+            .iter()
+            .filter(|(held, _, _, _)| held == workspace)
+            .map(|(_, session, member, face)| (session.clone(), member.clone(), face.clone()))
+            .collect()
+    }
+
     /// What this device says of itself, as its board carries it.
     fn own_word(&self) -> presence::Own {
         let wave = self.sent_wave.borrow().as_ref().map(|wave| presence::Wave {
@@ -659,7 +728,8 @@ impl Presence {
         self.said
             .borrow_mut()
             .extend(frames.iter().map(|(_, frame)| frame.clone()));
-        let Some(saying) = &self.saying else {
+        // A word the daemon says leaves no frame here.
+        let Some(Saying::Frames(saying)) = &self.saying else {
             return;
         };
         if frames.is_empty() {

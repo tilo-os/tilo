@@ -187,9 +187,10 @@ tilo_test_env::scenario! {
     phase describe_answers_with_the_model_that_said_it;
     {
         let store = tilo_content::ContentStore::memory();
-        // `describe` and `tags` are two questions about one picture, so the
-        // fixture answers twice.
+        // `describe`, `tags` and `shows` are three questions about one picture,
+        // so the fixture answers three times.
         let model = Fixture::answering([
+            Ok(analysis("A dog beside a bicycle", "42 North Street", &["dog", "bicycle"], &["dog"])),
             Ok(analysis("A dog beside a bicycle", "42 North Street", &["dog", "bicycle"], &["dog"])),
             Ok(analysis("A dog beside a bicycle", "42 North Street", &["dog", "bicycle"], &["dog"])),
         ]);
@@ -216,7 +217,7 @@ tilo_test_env::scenario! {
             &person(),
             IMAGE_MODEL_RESOURCE,
             "tags",
-            &Map::from_iter([("image".to_owned(), Value::String(reference))]),
+            &Map::from_iter([("image".to_owned(), Value::String(reference.clone()))]),
         )
         .expect("the model answers") else {
             panic!("tags answers at once");
@@ -226,6 +227,29 @@ tilo_test_env::scenario! {
         assert_eq!(
             value,
             serde_json::json!({"list": ["dog", "bicycle", "dog"]})
+        );
+
+        let Started::Done(output) = invoke(
+            &mut service,
+            &person(),
+            IMAGE_MODEL_RESOURCE,
+            "shows",
+            &Map::from_iter([("image".to_owned(), Value::String(reference))]),
+        )
+        .expect("the model answers") else {
+            panic!("shows answers at once");
+        };
+        // Everything one picture was found to show, each part named apart: the app records a
+        // photo's description, its words, its objects and its pets from one call.
+        let value = output.value.expect("shows answers with a value");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "description": "A dog beside a bicycle",
+                "text": "42 North Street",
+                "objects": ["dog", "bicycle"],
+                "pets": ["dog"],
+            })
         );
     }
 
@@ -446,17 +470,25 @@ tilo_test_env::scenario! {
 
 #[test]
 fn the_surface_file_is_what_this_crate_publishes() {
-    let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": crate::surfaces() }))
-        .expect("a surface writes as JSON");
+    let published = serde_json::json!({ "resources": crate::surfaces() });
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("surface.json");
-    let committed = std::fs::read_to_string(&path).ok();
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
-        std::fs::write(&path, &text).expect("the surface file is written");
+        serde_json::to_string_pretty(&published)
+            .map(|text| std::fs::write(&path, text))
+            .expect("the surface file is written");
         return;
     }
+    let committed = std::fs::read_to_string(&path).ok();
+    // The values a package publishes, not the order their keys are written in: that order is
+    // the writer's, and a build that unifies its dependencies differently keeps the same surface.
+    let written: serde_json::Value = committed
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .expect("the committed surface is JSON")
+        .unwrap_or(serde_json::Value::Null);
     assert_eq!(
-        committed.as_deref(),
-        Some(text.as_str()),
+        written, published,
         "crates/services/vision/surface.json is not what this crate publishes; \
          regenerate it with UPDATE_SNAPSHOTS=1"
     );
@@ -468,7 +500,7 @@ fn the_declared_actions_are_the_published_ones() {
         .iter()
         .map(|decl| decl.id)
         .collect();
-    assert_eq!(declared, ["describe", "ocr", "tags", "faces"]);
+    assert_eq!(declared, ["describe", "ocr", "tags", "shows", "faces"]);
     let declared: Vec<&str> = crate::AnalysisEffect::declarations()
         .iter()
         .map(|decl| decl.id)

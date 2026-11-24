@@ -1672,6 +1672,25 @@ impl<R: Resource> Dispatcher<R> {
         self.apply_now_as(edits, action, self.core.context(), false)
     }
 
+    /// Apply `action` now as content from outside: the system finishing a
+    /// call the person made (an outbox settlement), never a gesture of
+    /// theirs. The change is marked external and is no step, so the person's
+    /// undo never takes it back and it starts no step of its own.
+    ///
+    /// # Errors
+    /// As [`apply_now`](Self::apply_now).
+    pub(crate) fn apply_now_external(
+        &self,
+        edits: &mut Edits<'_>,
+        action: &R::Action,
+    ) -> Result<(), ActionError> {
+        let context = self
+            .core
+            .context()
+            .with_change(tilo_actions::ChangeKind::External);
+        self.apply_now_with(edits, action, context, true, Some(false))
+    }
+
     /// [`Self::apply_now`] of an action the person already confirmed, as
     /// the host applies it once they agreed: what a test resolving the
     /// queue as confirmed applies.
@@ -1709,6 +1728,19 @@ impl<R: Resource> Dispatcher<R> {
         context: ActionContext,
         confirmed: bool,
     ) -> Result<(), ActionError> {
+        self.apply_now_with(edits, action, context, confirmed, None)
+    }
+
+    /// [`Self::apply_now_as`], as a step of the person's unless `step` says
+    /// otherwise: content from outside is no step of theirs.
+    fn apply_now_with(
+        &self,
+        edits: &mut Edits<'_>,
+        action: &R::Action,
+        context: ActionContext,
+        confirmed: bool,
+        step: Option<bool>,
+    ) -> Result<(), ActionError> {
         #[cfg(debug_assertions)]
         not_painting();
         let _nonlocal = capture_nonlocal();
@@ -1724,7 +1756,7 @@ impl<R: Resource> Dispatcher<R> {
         }
         // Content from outside is nobody's step: it neither continues the
         // open one nor ends it.
-        let step = tilo_actions::Action::change_kind(action).is_step();
+        let step = step.unwrap_or_else(|| tilo_actions::Action::change_kind(action).is_step());
         // Only an action right after this dispatcher's last one, with nothing
         // in between, can continue it.
         let serial = self.core.serial.get();

@@ -78,7 +78,7 @@ fn a_phone_signs_in_with_a_ticket_and_sees_its_workspace_and_its_apps() {
         let apps = phone
             .apps(&server.workspace)
             .map_err(|error| format!("{error:#}"))?;
-        if apps.iter().any(|app| app.key == "notes") {
+        if apps.iter().any(|app| app.key == server::NOTES) {
             Ok(apps)
         } else {
             Err(format!("{apps:?}"))

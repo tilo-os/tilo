@@ -47,8 +47,8 @@ use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, peer_salt_of,
 };
 use tilo_device_surfaces::shares::ShareEffect;
+use tilo_live::capture::Session as CaptureSession;
 use tilo_live::live::Track;
-use tilo_live::live_session::LiveSession;
 use tilo_live::share::{
     Control, DecodeLimit, InputEvent as SharedInput, MAX_DECODERS, MAX_VIEW_SIDE, Said, View,
 };
@@ -257,7 +257,7 @@ pub(crate) struct WindowShares {
     /// as its daemon publishes them.
     turned: crate::live::TurnedAwayLists,
     live_seen: u64,
-    live_sessions: BTreeMap<String, std::sync::Weak<LiveSession>>,
+    live_sessions: BTreeMap<String, std::sync::Weak<dyn CaptureSession>>,
     streaming: BTreeSet<TabId>,
     /// The windows a member shows whose app was asked for its page and has not handed it over
     /// ([`crate::page_track::PageTracks::withheld`]).
@@ -1400,9 +1400,14 @@ impl WindowShares {
                     // the tab of this session that pictures it.
                     let place = self.pictured_in(named);
                     let (title, sharer) = session.read(|tree| tab_title(tree, place));
-                    let Some(mut start) =
-                        PeerStreamStart::announced(&control, from, sync.peer(), sharer, title, true)
-                    else {
+                    let Some(mut start) = PeerStreamStart::announced(
+                        &control,
+                        from,
+                        sync.peer(),
+                        sharer,
+                        title,
+                        true,
+                    ) else {
                         continue;
                     };
                     start.tab = place;
@@ -1468,7 +1473,7 @@ impl WindowShares {
                 };
                 for (host, tracks) in hosts {
                     let tracks: Vec<Track> = tracks.iter().copied().collect();
-                    sync.show_tracks(live_session, *host.as_bytes(), &tracks);
+                    sync.show_tracks(live_session.as_ref(), *host.as_bytes(), &tracks);
                 }
             }
             // A device whose windows this session showed and no longer does stops publishing them.
@@ -1481,7 +1486,7 @@ impl WindowShares {
                         .get(workspace)
                         .is_none_or(|showing| !showing.contains_key(host))
                     {
-                        sync.show_tracks(live_session, *host.as_bytes(), &[]);
+                        sync.show_tracks(live_session.as_ref(), *host.as_bytes(), &[]);
                     }
                 }
             }
@@ -1742,10 +1747,7 @@ impl WindowShares {
     ) -> bool {
         // The live session opened only what the share profile bounds; a window of no size is
         // nothing to stream.
-        if views
-            .iter()
-            .any(|view| view.width == 0 || view.height == 0)
-        {
+        if views.iter().any(|view| view.width == 0 || view.height == 0) {
             return false;
         }
         let now = Instant::now();
@@ -2119,7 +2121,8 @@ impl WindowShares {
                 // A still window sends its new viewer the keyframe it stands on; otherwise the next
                 // frame is one, captured now.
                 if let Some(state) = hosted.share.start_reader()
-                    && let Err(error) = send_picture(live_session, tab, &hosted.share, state)
+                    && let Err(error) =
+                        send_picture(live_session.as_ref(), tab, &hosted.share, state)
                 {
                     tracing::warn!(%error, tab, "a shared window's state keyframe did not go out");
                 }
@@ -2153,7 +2156,7 @@ impl WindowShares {
             }
             for frame in hosted.share.pump(now) {
                 let seq = frame.seq;
-                if let Err(error) = send_picture(live_session, tab, &hosted.share, frame) {
+                if let Err(error) = send_picture(live_session.as_ref(), tab, &hosted.share, frame) {
                     // The window's group is past what one carries, or the picture past what an
                     // object does: the next frame starts it over at a keyframe.
                     tilo_failure::ignored!(
@@ -2225,7 +2228,7 @@ fn decode_alike(one: &[CodecCapabilities], other: &[CodecCapabilities]) -> bool 
 
 /// Send one encoded picture of the window `tab` on `live_session`, as its share describes it.
 fn send_picture(
-    live_session: &LiveSession,
+    live_session: &dyn CaptureSession,
     tab: TabId,
     share: &SharedFlatpakSession,
     frame: EncodedFrame,

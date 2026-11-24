@@ -770,6 +770,59 @@ pub(crate) fn follow(
     });
 }
 
+/// Declare the runtime builds this host carries in itself, as the signed manifest it was packaged
+/// with names them: the exact Tilo runtime build it links and the runtimes it was built against
+/// (`optional-runtimes`). A phone calls this with the manifest the APK it runs from carries,
+/// before its daemon starts. The follower then installs an app that names one of those builds
+/// without fetching it, and refuses one that names another: the device starts no process a
+/// fetched runtime bundle could run in.
+///
+/// # Errors
+/// The manifest names no exact build for the Tilo runtime it links, or the host declared its
+/// carried runtimes already.
+pub fn carry_runtimes(manifest: &tilo_app_package::Manifest) -> Result<(), String> {
+    // The builds are the host's because its own signed manifest names them: an unsigned or
+    // rewritten manifest claims nothing this device may run an app on.
+    manifest
+        .verify_signature()
+        .map_err(|error| format!("this host's manifest is not its publisher's: {error}"))?;
+    let mut builds: Vec<String> = Vec::new();
+    if let Some(runtime) = manifest
+        .package
+        .runtime
+        .as_deref()
+        .filter(|runtime| !runtime.is_empty())
+    {
+        let version = runtime.split_once('/').map_or(runtime, |(_, version)| version);
+        if runtime_bundle::split_abi_version(version).is_none() {
+            return Err(format!(
+                "the app's manifest names {runtime}, and a host must declare the exact Tilo runtime \
+                 build it carries (`tilo-runtime/<release>+native.<digest>`)"
+            ));
+        }
+        builds.push(runtime.to_owned());
+    }
+    builds.extend(
+        manifest
+            .package
+            .required_runtimes
+            .iter()
+            .filter(|runtime| !runtime.is_empty())
+            .cloned(),
+    );
+    runtime_bundle::carry_in_host(builds).map_err(|error| error.to_string())
+}
+
+/// The runtime builds this device carries, for the words a refusal says.
+fn carried_list() -> String {
+    let builds = runtime_bundle::carried_builds();
+    if builds.is_empty() {
+        "no runtime in itself".to_owned()
+    } else {
+        builds.join(", ")
+    }
+}
+
 /// Where the cache keeps the Flatpak references its daemon installed.
 const FLATPAKS_FILE: &str = "flatpaks.json";
 
@@ -1195,23 +1248,45 @@ impl PackageCache {
         )
         .map_err(|error| error.to_string())?;
         let manifest = &tapp.meta.manifest;
+        let runtime_package = registry_types::is_runtime_package_id(&release.app);
         let mut wanted: Vec<String> = manifest
             .target
             .as_ref()
             .map(|target| target.runtime.clone())
-            .filter(|runtime| {
-                !runtime.is_empty() && !registry_types::is_runtime_package_id(&release.app)
-            })
+            .filter(|runtime| !runtime.is_empty() && !runtime_package)
             .into_iter()
             .collect();
+        // The Tilo runtime the manifest binds to is what the store's install demands too, so an
+        // app it is not here for is refused here, where the words can say which it is.
+        wanted.extend(
+            manifest
+                .package
+                .runtime
+                .clone()
+                .filter(|runtime| !runtime.is_empty() && !runtime_package),
+        );
         wanted.extend(
             tilo_app_package::desktop::required_runtime_dependencies(manifest)
                 .iter()
                 .cloned(),
         );
+        let mut seen = std::collections::BTreeSet::new();
+        wanted.retain(|runtime| seen.insert(runtime.clone()));
         for runtime in wanted {
             if package_store::runtime_installed(&runtime) {
                 continue;
+            }
+            // A host that carries its runtimes in itself (a phone's APK) runs the app on the
+            // exact builds its own signed manifest names; one it does not carry is never fetched
+            // for it, since the device starts no process to run a fetched bundle in.
+            if runtime_bundle::carried(&runtime).is_some() {
+                continue;
+            }
+            if !runtime_bundle::carried_builds().is_empty() {
+                return Err(format!(
+                    "this app needs the runtime {runtime}, and this device carries {}",
+                    carried_list()
+                ));
             }
             let offer = app_cli::config::with_registries(registries.clone(), || {
                 app_cli::runtime_offer_from_enabled(&runtime)

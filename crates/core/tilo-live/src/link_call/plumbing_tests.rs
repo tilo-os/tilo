@@ -94,7 +94,7 @@ async fn both_ends_publish_and_read_over_one_link() {
         .unwrap();
     held.announce(moq_net::origin::Route::default()).unwrap();
     let capture = client_out.create_broadcast("capture").unwrap();
-    let audio = capture
+    let _audio = capture
         .create_track("audio", moq_net::track::Info::default())
         .unwrap();
     capture.announce(moq_net::origin::Route::default()).unwrap();

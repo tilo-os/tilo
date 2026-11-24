@@ -1,7 +1,7 @@
 //! Typed CUPS integration for Settings and Print Centre: a narrow vocabulary, so
 //! callers cannot pass command fragments or arbitrary option strings.
 
-use crate::process::{run, run_capture};
+use bounded_command::command::{run, run_capture};
 use std::collections::{BTreeMap, BTreeSet};
 
 const PRINTER_ATTRIBUTES_TEST: &str = "/usr/share/cups/ipptool/get-printer-attributes.test";
@@ -910,19 +910,37 @@ mod tests {
     }
 }
 
+#[cfg(feature = "follow")]
+/// The system bus a follow may ask, or why not: this machine's daemons belong to its own desktop
+/// only when it owns the machine.
+async fn system_bus() -> Result<zbus::Connection, String> {
+    if !tilo_paths::machine::owns_the_machine() {
+        return Err(
+            "this session reaches no machine: its daemons belong to the desktop it runs in".into(),
+        );
+    }
+    zbus::Connection::system()
+        .await
+        .map_err(|error| format!("cannot reach the system bus: {error}"))
+}
+
+#[cfg(feature = "follow")]
 /// The user data of the subscription [`follow_changes`] makes: whose it is, by process.
 const FOLLOWER: &str = "tilo-follow:";
 
+#[cfg(feature = "follow")]
 /// Queues added, removed or changed, and jobs made, moving on or done.
 const FOLLOWED_EVENTS: &str = "printer-added,printer-deleted,printer-state-changed,\
 printer-config-changed,job-created,job-state-changed,job-completed";
 
+#[cfg(feature = "follow")]
 #[derive(Debug, Default)]
 struct Subscribed {
     id: Option<u32>,
     dropped: bool,
 }
 
+#[cfg(feature = "follow")]
 /// Stops, and cancels its subscription, when dropped.
 #[derive(Debug)]
 pub struct PrintFollow {
@@ -930,6 +948,7 @@ pub struct PrintFollow {
     subscribed: std::sync::Arc<std::sync::Mutex<Subscribed>>,
 }
 
+#[cfg(feature = "follow")]
 impl Drop for PrintFollow {
     fn drop(&mut self) {
         self.task.abort();
@@ -947,18 +966,20 @@ impl Drop for PrintFollow {
     }
 }
 
+#[cfg(feature = "follow")]
 /// Calls `on_change` on the app runtime whenever the print service reports a queue or a job changed.
 pub fn follow_changes(on_change: impl Fn() + Send + Sync + 'static) -> Result<PrintFollow, String> {
     follow_boxed(Box::new(on_change))
 }
 
+#[cfg(feature = "follow")]
 fn follow_boxed(on_change: Box<dyn Fn() + Send + Sync>) -> Result<PrintFollow, String> {
     let runtime = tilo_rt::try_app().map_err(|error| error.to_string())?;
     let subscribed = std::sync::Arc::new(std::sync::Mutex::new(Subscribed::default()));
     let task = runtime.spawn(async move {
         use futures_util::StreamExt as _;
         let signals = async {
-            let connection = crate::system_bus().await.map_err(zbus::Error::Failure)?;
+            let connection = system_bus().await.map_err(zbus::Error::Failure)?;
             zbus::MessageStream::for_match_rule(
                 zbus::MatchRule::builder()
                     .msg_type(zbus::message::Type::Signal)
@@ -1006,8 +1027,11 @@ fn follow_boxed(on_change: Box<dyn Fn() + Send + Sync>) -> Result<PrintFollow, S
     Ok(PrintFollow { task, subscribed })
 }
 
+#[cfg(feature = "follow")]
 fn ipp_request(test: &str, values: &[(&str, &str)]) -> Result<String, String> {
-    if !crate::process::which("ipptool") {
+    use bounded_command::command::{DEFAULT_TIMEOUT, MAX_CAPTURE_BYTES, which};
+
+    if !which("ipptool") {
         return Err("ipptool not installed".into());
     }
     let defines: Vec<String> = values
@@ -1023,8 +1047,8 @@ fn ipp_request(test: &str, values: &[(&str, &str)]) -> Result<String, String> {
         "ipptool",
         &args,
         Some(test.as_bytes()),
-        crate::process::MAX_CAPTURE_BYTES,
-        crate::DEFAULT_TIMEOUT,
+        MAX_CAPTURE_BYTES,
+        DEFAULT_TIMEOUT,
     )
     .map_err(|error| error.to_string())?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -1035,6 +1059,7 @@ fn ipp_request(test: &str, values: &[(&str, &str)]) -> Result<String, String> {
     }
 }
 
+#[cfg(feature = "follow")]
 const SUBSCRIBE_TEST: &str = "{
  OPERATION Create-Printer-Subscriptions
  GROUP operation-attributes-tag
@@ -1051,6 +1076,7 @@ const SUBSCRIBE_TEST: &str = "{
 }
 ";
 
+#[cfg(feature = "follow")]
 const LIST_TEST: &str = "{
  OPERATION Get-Subscriptions
  GROUP operation-attributes-tag
@@ -1063,6 +1089,7 @@ const LIST_TEST: &str = "{
 }
 ";
 
+#[cfg(feature = "follow")]
 const CANCEL_TEST: &str = "{
  OPERATION Cancel-Subscription
  GROUP operation-attributes-tag
@@ -1075,6 +1102,7 @@ const CANCEL_TEST: &str = "{
 }
 ";
 
+#[cfg(feature = "follow")]
 fn subscribe() -> Result<u32, String> {
     let follower = format!("{FOLLOWER}{}", std::process::id());
     let output = ipp_request(
@@ -1088,12 +1116,14 @@ fn subscribe() -> Result<u32, String> {
         .ok_or_else(|| "the print service named no subscription".to_owned())
 }
 
+#[cfg(feature = "follow")]
 fn cancel_subscription(id: u32) {
     if let Err(error) = ipp_request(CANCEL_TEST, &[("id", &id.to_string())]) {
         tracing::warn!(%error, id, "a print service subscription stayed");
     }
 }
 
+#[cfg(feature = "follow")]
 /// Cancels the subscriptions a follower whose process has ended left.
 fn cancel_left_behind() {
     let Ok(listed) = ipp_request(LIST_TEST, &[]) else {
@@ -1111,6 +1141,7 @@ fn cancel_left_behind() {
     }
 }
 
+#[cfg(feature = "follow")]
 fn subscriptions(output: &str) -> Vec<(u32, Option<String>)> {
     output
         .split("-- separator --")
@@ -1128,6 +1159,7 @@ fn subscriptions(output: &str) -> Vec<(u32, Option<String>)> {
         .collect()
 }
 
+#[cfg(feature = "follow")]
 #[cfg(test)]
 mod follow_tests {
     /// The ids and user data `ipptool -tv` prints for two subscriptions, each group on its own.

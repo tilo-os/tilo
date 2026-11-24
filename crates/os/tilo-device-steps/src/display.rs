@@ -288,7 +288,9 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         // The session's settings, which the step stages its change in and the compositor
         // answers in.
-        let _settings = settings_store::in_memory::installed();
+        settings_store::install_source(Some(std::sync::Arc::new(
+            settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+        )));
         let (publisher_pid, publisher_start_ticks) =
             settings_store::hardware::publisher_identity().unwrap();
         DisplayHardwareSnapshot {

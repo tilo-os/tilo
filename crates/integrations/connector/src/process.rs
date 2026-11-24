@@ -14,8 +14,7 @@ use tokio::sync::{Mutex, broadcast, oneshot, watch};
 use crate::EventLog;
 use crate::framing::{read_frame_async, write_frame_async};
 use crate::protocol::{
-    ATTACH_FIELD, Bytes, CallLink, FromWorker, Outcome, OutsideCall, PROTOCOL_VERSION,
-    PUBLISH_FIELD, ToWorker,
+    ATTACH_FIELD, Bytes, FromWorker, Outcome, PROTOCOL_VERSION, PUBLISH_FIELD, ToWorker,
 };
 
 /// The host's content store, as far as a worker's ops need it. The worker
@@ -67,20 +66,7 @@ type Answer = oneshot::Sender<Result<serde_json::Value, PerformError>>;
 /// it misses the oldest: live audio is dropped, never queued.
 const AUDIO_BACKLOG: usize = 256;
 
-/// The service's calls and the worker's place in them, as it last said.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CallsReport {
-    pub calls: Vec<OutsideCall>,
-    pub link: CallLink,
-}
-
-/// One Opus frame a person said in the outside call the worker is in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OutsideAudio {
-    /// Their account on the service.
-    pub speaker: String,
-    pub opus: Vec<u8>,
-}
+pub use tilo_live::app_call::{CallsReport, OutsideAudio};
 
 struct Shared {
     state_dir: PathBuf,

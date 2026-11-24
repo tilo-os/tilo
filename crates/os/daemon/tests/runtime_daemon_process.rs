@@ -701,10 +701,16 @@ fn dev_app_build(
 ) -> Result<PathBuf> {
     let dir = profile.join(format!("dev-app-{}", app.replace('.', "-")));
     std::fs::create_dir_all(&dir)?;
-    std::fs::copy(
-        tilo_test_env::package_binary!("tilo-sdk-app"),
-        dir.join("app"),
-    )?;
+    let program = dir.join("app");
+    std::fs::copy(tilo_test_env::package_binary!("tilo-sdk-app"), &program)?;
+    // The build is a debug one, far over the local-build ceiling a package installs under: its
+    // debug sections go, and the program is the same.
+    let _ = std::process::Command::new("strip")
+        .args(["--strip-debug", "--strip-unneeded"])
+        .arg(&program)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
     std::fs::write(dir.join("tilo-app-lifetime-ms"), format!("{lifetime_ms}\n"))?;
     if spawn_child {
         std::fs::write(dir.join("tilo-app-spawn-child"), b"")?;

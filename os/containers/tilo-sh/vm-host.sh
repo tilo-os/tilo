@@ -71,7 +71,7 @@ secrets=${TILO_SH_SERVER_SECRETS:-$state/secrets}
 pod=vm-host-0
 host_container=tilo-sh-$pod
 server_iroh=${TILO_SH_SERVER_IROH:-127.0.0.1:24104}
-server_web_host=${TILO_SH_SERVER_WEB_HOST:-$state/server/state/tilo/device/own/web-host.json}
+server_web_host=${TILO_SH_SERVER_WEB_HOST:-$state/server/state/tilo/device/own/service/web-host.json}
 # What the host holds awake at once: the size's warm template (a template is
 # counted at its size's whole memory, since warming it fills its guest), a
 # clone of that template awake beside it (a third of a gigabyte, measured), and

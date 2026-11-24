@@ -98,6 +98,7 @@ impl ActionProvider for OwnProcess {
         let (app, workspace) = (self.app.clone(), self.workspace.clone());
         let find = tilo_actions::remote::person_vault::is_find(&request.target);
         let call = tilo_actions::remote::person_vault::is_web_call(&request.target);
+        let keep = tilo_actions::remote::person_vault::is_keep(&request.target);
         let (completer, answer) = pending();
         tilo_rt::app().spawn(async move {
             let invocation = request.invocation;
@@ -118,6 +119,15 @@ impl ActionProvider for OwnProcess {
                 workspaces
                     .web_call_to((&app, &workspace), &process, &request)
                     .await
+            } else if keep {
+                workspaces
+                    .keep_for((&app, &workspace), &process, &request)
+                    .await
+                    .and_then(|kept| {
+                        serde_json::to_value(&kept).map_err(|_| ActionCallError::Unavailable {
+                            reason: "the kept item could not be answered".into(),
+                        })
+                    })
             } else {
                 workspaces
                     .release_to((&app, &workspace), &process, &request)
@@ -150,8 +160,8 @@ impl ActionProvider for OwnProcess {
     }
 }
 
-/// Whether `frame` is a release, a find or a web call this connection's own process asks for,
-/// the ways an app's held connection reaches its vault item, or one of the page login actions a
+/// Whether `frame` is a release, a find, a web call or a keep this connection's own process asks
+/// for, the ways an app's held connection reaches its vault items, or one of the page login actions a
 /// window of the app's own asks for its page ([`tilo_actions::remote::person_vault::is_page_login`]).
 pub(crate) fn is_answered_for_this_process(
     frame: &tilo_actions::remote::RemoteActionFrame,
@@ -162,6 +172,7 @@ pub(crate) fn is_answered_for_this_process(
             if tilo_actions::remote::person_vault::is_release(&request.target)
                 || tilo_actions::remote::person_vault::is_find(&request.target)
                 || tilo_actions::remote::person_vault::is_web_call(&request.target)
+                || tilo_actions::remote::person_vault::is_keep(&request.target)
                 || tilo_actions::remote::person_vault::is_page_login(&request.target)
     )
 }

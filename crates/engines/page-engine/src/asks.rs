@@ -11,21 +11,6 @@ use tilo_webview::{
     NavigationEntry, PageDialog, WebViewEvent,
 };
 
-/// One download the page started, as its last update said.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Download {
-    pub id: u32,
-    /// `awaiting`, `downloading`, `completed`, `failed` or `cancelled`.
-    pub state: String,
-    pub name: String,
-    pub url: String,
-    pub path: String,
-    pub retryable: bool,
-    pub received: u64,
-    pub total: u64,
-    pub error: String,
-}
-
 /// A context menu the page showed, where it was shown, and what it offers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Menu {
@@ -94,7 +79,6 @@ pub struct Asks {
     pub progress: f64,
     pub title: String,
     pub loading: bool,
-    pub downloads: Vec<Download>,
     /// Whether the page's sound is muted.
     pub muted: bool,
     /// The video the page shows, in the viewport it is drawn in, as the engine last reported
@@ -231,35 +215,7 @@ impl Asks {
                 self.media = None;
                 self.loading = true;
             }
-            WebViewEvent::DownloadUpdated {
-                id,
-                state,
-                path,
-                name,
-                url,
-                retryable,
-                received,
-                total,
-                error,
-            } => self.downloaded(Download {
-                id: *id,
-                state: state.clone(),
-                name: name.clone(),
-                url: url.clone(),
-                path: path.clone(),
-                retryable: *retryable,
-                received: *received,
-                total: *total,
-                error: error.clone(),
-            }),
             _ => {}
-        }
-    }
-
-    fn downloaded(&mut self, held: Download) {
-        match self.downloads.iter_mut().find(|known| known.id == held.id) {
-            Some(known) => *known = held,
-            None => self.downloads.push(held),
         }
     }
 }

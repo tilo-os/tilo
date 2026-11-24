@@ -36,7 +36,7 @@ pub fn device(cert: &DeviceCert) -> Option<Device> {
 pub fn enter(peer: &Link, cert: &DeviceCert, label: &str, workspace: &str) -> Option<Presence> {
     let workspace_id = WorkspaceId::parse(workspace)?;
     let presence = Presence::over(
-        Some(saying(peer)),
+        Some(crate::Saying::Frames(saying(peer))),
         &device(cert)?,
         OwnPresence {
             label: label.to_owned(),

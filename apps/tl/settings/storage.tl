@@ -97,10 +97,7 @@ view storage_pane() {
                     on check(on): device.set_prefetch(device.storage, on)
                 }
             }
-            setting(
-                "Space for fetched files",
-                "How much of this disk fetched files may take",
-            ) {
+            setting("Space for fetched files", "How much of this disk fetched files may take") {
                 ui.Dropdown(
                     value: cache_size_label(policy.budget_bytes),
                     options: cache_sizes(),
@@ -306,9 +303,7 @@ fn cache_sizes() -> List<Text> {
 fn cache_size_label(budget: Option<Int>) -> Text {
     if let bytes = budget {
         cache_sizes().find(s -> s != "Automatic" and size_bytes(s) == bytes) ?? size_words(bytes)
-    } else {
-        "Automatic"
-    }
+    } else { "Automatic" }
 }
 
 /// The bytes a space of the dropdown names: `10 GB` is ten thousand million.

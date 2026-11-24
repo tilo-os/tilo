@@ -53,6 +53,11 @@ pub fn admit_frame(
     }
 }
 
+/// What a resolve from anything but the system's own confirmation is refused with: the
+/// person's shell asks them, and the CLI asks them at its own prompt.
+pub const CONFIRMED_BY_THE_SYSTEM: &str =
+    "Only you answer this, where Tilo asks you: on your screen, or at tilo's own prompt";
+
 /// Answer an asked record: `<record>#resolve` with a [`Resolve`], on the
 /// [`super::workspace_invocations::PROVIDER`] provider.
 pub const RESOLVE: &str = "resolve";
@@ -597,12 +602,12 @@ pub fn asked_person(caller: &super::Caller) -> Option<String> {
 }
 
 /// The person `caller` answers as: a person acting themselves, or a view acting for the
-/// person it was opened for. An agent, a bot or an automation answers for nobody, whoever it
-/// acts for.
+/// person it was opened for. An agent, a bot, an automation or an app answers for nobody,
+/// whoever it acts for: the confirmation is always the system's.
 #[must_use]
 pub fn answering_person(caller: &super::Caller) -> Option<&str> {
     let acting = caller.acting();
-    if acting.is_agent() || acting.is_bot() || acting.is_automation() {
+    if acting.is_agent() || acting.is_bot() || acting.is_automation() || acting.app.is_some() {
         return None;
     }
     acting.person_id().filter(|person| !person.is_empty())

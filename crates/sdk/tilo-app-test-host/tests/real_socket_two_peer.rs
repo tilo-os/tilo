@@ -1,4 +1,4 @@
-use crate::support_collab::TypedBroker;
+use crate::support_collab::{TypedBroker, change_carrying, changes_of};
 use ui_core::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
 use ui_core::presence::PresenceKey;
 use uuid::Uuid;
@@ -10,14 +10,16 @@ fn typed_socket_fans_out_on_its_own_route_only() {
         let mut peer_a = broker.manager("peer-a");
         let mut peer_b = broker.manager("peer-b");
 
-        peer_a.send(CollabRequest::document_incremental(b"hello".to_vec()));
+        // A record takes real changes: the store reads every write as one.
+        let hello = change_carrying(b"hello".to_vec());
+        peer_a.send(CollabRequest::document_incremental(hello.clone()));
         let mut events = Vec::new();
         tilo_test_env::wait_until("the incremental at peer B", || {
             events.extend(peer_b.poll());
             events.iter().any(|event| {
                 matches!(
                     event.document_mutation().cloned(),
-                    Some(collab_types::DocumentMutation::Incremental(data)) if data == b"hello"
+                    Some(collab_types::DocumentMutation::Incremental(data)) if changes_of(&data) == changes_of(&hello)
                 )
             })
         });
@@ -27,7 +29,7 @@ fn typed_socket_fans_out_on_its_own_route_only() {
                 .filter(|event| {
                     matches!(
                         event.document_mutation().cloned(),
-                        Some(collab_types::DocumentMutation::Incremental(data)) if data == b"hello"
+                        Some(collab_types::DocumentMutation::Incremental(data)) if changes_of(&data) == changes_of(&hello)
                     )
                 })
                 .count(),
@@ -38,7 +40,7 @@ fn typed_socket_fans_out_on_its_own_route_only() {
             peer_a.poll().iter().all(|event| {
                 !matches!(
                     event.document_mutation().cloned(),
-                    Some(collab_types::DocumentMutation::Incremental(data)) if data == b"hello"
+                    Some(collab_types::DocumentMutation::Incremental(data)) if changes_of(&data) == changes_of(&hello)
                 )
             }),
             "the sender is not echoed"
@@ -62,6 +64,7 @@ fn typed_socket_fans_out_on_its_own_route_only() {
         let mut sender = broker.manager("agent");
         let mut primary_observer = broker.manager("primary-observer");
         let mut photos = broker.route_manager("photos", "photos");
+        let photo_edit = change_carrying(b"photo-edit".to_vec());
 
         // A route refuses documents until it is joined and its document mode is
         // resolved; the refused attempt starts that join.
@@ -69,7 +72,7 @@ fn typed_socket_fans_out_on_its_own_route_only() {
             sender
                 .try_send_to_route(
                     RouteSpec::app("photos", Uuid::nil()),
-                    CollabRequest::document_incremental(b"photo-edit".to_vec()),
+                    CollabRequest::document_incremental(photo_edit.clone()),
                 )
                 .is_ok()
         });
@@ -77,13 +80,13 @@ fn typed_socket_fans_out_on_its_own_route_only() {
             photos.poll().iter().any(|event| {
                 matches!(
                     event.document_mutation().cloned(),
-                    Some(collab_types::DocumentMutation::Incremental(data)) if data == b"photo-edit"
+                    Some(collab_types::DocumentMutation::Incremental(data)) if changes_of(&data) == changes_of(&photo_edit)
                 )
             })
         });
         assert!(primary_observer.poll().iter().all(|event| !matches!(
             event.document_mutation().cloned(),
-            Some(collab_types::DocumentMutation::Incremental(data)) if data == b"photo-edit"
+            Some(collab_types::DocumentMutation::Incremental(data)) if changes_of(&data) == changes_of(&photo_edit)
         )));
     }
 }

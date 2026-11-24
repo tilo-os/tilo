@@ -60,6 +60,18 @@ kind = "undoable"
 
 /// A signed package of `app` at `version` that carries `surface`, when it publishes one.
 fn author_carrying(app: &str, version: &str, surface: Option<&str>) -> Vec<u8> {
+    author_bound_to(app, version, surface, None, &[])
+}
+
+/// A signed package of `app` at `version` that runs on `runtime`, the Tilo runtime its manifest
+/// binds to, and needs `optional` beside it.
+fn author_bound_to(
+    app: &str,
+    version: &str,
+    surface: Option<&str>,
+    runtime: Option<&str>,
+    optional: &[&str],
+) -> Vec<u8> {
     let identity = SigningIdentity::from_signing_key(SigningKey::from_bytes(&PUBLISHER));
     let publisher = hex::encode(identity.public_key_bytes());
     let dir = tempfile::tempdir().unwrap();
@@ -70,6 +82,14 @@ fn author_carrying(app: &str, version: &str, surface: Option<&str>) -> Vec<u8> {
         std::fs::write(payload.join("surface.toml"), surface).unwrap();
     }
     let (architecture, isa, _) = native_target();
+    let mut bound = String::new();
+    if let Some(runtime) = runtime {
+        bound.push_str(&format!("runtime = \"{runtime}\"\n"));
+    }
+    if !optional.is_empty() {
+        let listed: Vec<String> = optional.iter().map(|runtime| format!("\"{runtime}\"")).collect();
+        bound.push_str(&format!("optional-runtimes = [{}]\n", listed.join(", ")));
+    }
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
         r#"
 [package]
@@ -78,6 +98,7 @@ version = "{version}"
 kind = "app"
 name = "Sheets"
 category = "Office"
+{bound}
 
 [package.isa]
 {architecture} = "{isa}"
@@ -492,5 +513,142 @@ fn a_package_carrying_another_surface_than_its_release_names_installs_nothing() 
     assert!(
         collab_types::app_surface::bytes_of(APP).is_none(),
         "nothing of a refused package is published"
+    );
+}
+
+/// The exact Tilo runtime build the test's host links, and the tilolang runtime it was built
+/// against: what a phone's own signed manifest names.
+const HOST_TILO_RUNTIME: &str = "tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef";
+const HOST_TILOLANG_RUNTIME: &str = tilolang_cli::package::DEFAULT_TILOLANG_RUNTIME;
+
+/// Declare the runtimes this test binary's host carries in itself, once for the binary, as the
+/// phone declares the ones its APK carries: the process declares them once, as its manifest is
+/// fixed for its life.
+fn host_carries() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let host = author_carrying("so.tilo.phone", "0.1.0", None);
+        let read = tilo_app_package::tapp::read(
+            std::io::Cursor::new(host),
+            &mut tilo_app_package::DiscardBlobs,
+        )
+        .unwrap();
+        let mut manifest = read.meta.manifest;
+        manifest.package.runtime = Some(HOST_TILO_RUNTIME.into());
+        manifest.package.required_runtimes = vec![HOST_TILOLANG_RUNTIME.into()];
+        manifest
+            .sign(&SigningIdentity::from_signing_key(SigningKey::from_bytes(&PUBLISHER)))
+            .expect("the host signs the manifest it carries");
+        super::carry_runtimes(&manifest).expect("the host declares the runtimes it carries");
+    });
+}
+
+#[test]
+fn an_app_running_on_a_build_the_host_carries_installs_without_its_runtime_being_fetched() {
+    const APP: &str = "so.tilo.follower-host-runtime";
+    host_carries();
+    let (dir, cache, _env) = device();
+    let tapp = author_bound_to(
+        APP,
+        "1.0.0",
+        None,
+        Some("tilo-runtime/2026.07"),
+        &[HOST_TILOLANG_RUNTIME],
+    );
+    let mut release = release_of(APP, "1.0.0", &tapp);
+    release.file = Some(blake3::hash(&tapp).to_hex().to_string());
+
+    cache.install_named(
+        &release,
+        &tapp,
+        &TrustLists::default(),
+        &app_cli::config::RegistriesFile::default(),
+    );
+    assert!(
+        cache.runs(&release.package),
+        "the app installed although its runtimes are not bundles under a bundle root"
+    );
+    let installed = package_store::Catalog::at(dir.path().join("apps"), None)
+        .find(APP)
+        .unwrap()
+        .expect("the device holds the app the workspace runs");
+    assert!(
+        installed.payload_root.join("bin/app").exists(),
+        "the app's own package was installed, verified as any device verifies it"
+    );
+    assert!(
+        !package_store::runtime_installed("tilo-runtime/2026.07"),
+        "the runtime the host carries in itself is not fetched into the device's bundle root"
+    );
+}
+
+#[test]
+fn an_app_needing_a_runtime_this_host_does_not_carry_is_refused_legibly() {
+    const APP: &str = "so.tilo.follower-other-runtime";
+    host_carries();
+    let (_dir, cache, _env) = device();
+    let tapp = author_bound_to(APP, "1.0.0", None, Some("tilo-runtime/2027.01"), &[]);
+    let mut release = release_of(APP, "1.0.0", &tapp);
+    release.file = Some(blake3::hash(&tapp).to_hex().to_string());
+
+    let refused = cache
+        .keep_runtimes(
+            &release,
+            &tapp,
+            &TrustLists::default(),
+            &app_cli::config::RegistriesFile::default(),
+        )
+        .unwrap_err();
+    assert!(
+        refused.contains("tilo-runtime/2027.01") && refused.contains(HOST_TILO_RUNTIME),
+        "the refusal names the runtime the app needs and the one this device carries: {refused}"
+    );
+    cache.install_named(
+        &release,
+        &tapp,
+        &TrustLists::default(),
+        &app_cli::config::RegistriesFile::default(),
+    );
+    assert!(
+        !cache.runs(&release.package),
+        "an app this device cannot run is not installed"
+    );
+}
+
+#[test]
+fn a_host_speaks_for_the_runtimes_it_carries_only_through_its_signed_manifest() {
+    let unsigned = tilo_app_package::Manifest::from_toml_str(&format!(
+        r#"
+[package]
+id = "so.tilo.phone"
+version = "0.1.0"
+kind = "app"
+runtime = "{HOST_TILO_RUNTIME}"
+optional-runtimes = ["{HOST_TILOLANG_RUNTIME}"]
+
+[publisher]
+identity = "ed25519:{publisher}"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "bin/tilo-phone"
+type = "gui"
+"#,
+        publisher = hex::encode(SigningKey::from_bytes(&PUBLISHER).verifying_key().to_bytes()),
+    ))
+    .unwrap();
+    let refused = super::carry_runtimes(&unsigned)
+        .expect_err("an unsigned manifest claims no runtime this device may run an app on");
+    assert!(
+        refused.contains("unsigned"),
+        "the refusal says the manifest is unsigned: {refused}"
     );
 }

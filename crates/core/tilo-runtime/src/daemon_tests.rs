@@ -2557,7 +2557,7 @@ fn a_long_profile_path_keeps_its_sockets_where_every_client_finds_them() {
         tilo_api::daemon::socket_fits(&profile.join(tilo_paths::machine::DAEMON_NATIVE)).is_err(),
         "the test's profile is long enough that a socket cannot live in it"
     );
-    let sockets = super::sockets(&profile).unwrap();
+    let sockets = super::sockets_dir(&profile).unwrap();
     assert_ne!(sockets, profile, "{}", sockets.display());
     assert!(!sockets.starts_with(&profile), "{}", sockets.display());
     tilo_api::daemon::socket_fits(&sockets.join(tilo_paths::machine::DAEMON_NATIVE)).unwrap();
@@ -2641,11 +2641,9 @@ fn a_restarted_daemons_own_account_lists_its_workspaces_without_asking() {
             ),
             Err(error) => {
                 let said = format!("{error:#}");
-                let awaiting = tilo_api::calls::Refusal::of(&error)
-                    .is_some_and(|refusal| {
-                        refusal.code() == tilo_actions::remote::AWAITING_APPROVAL
-                    })
-                    || said.contains("Waiting for your approval");
+                let awaiting = tilo_api::calls::Refusal::of(&error).is_some_and(|refusal| {
+                    refusal.code() == tilo_actions::remote::AWAITING_APPROVAL
+                }) || said.contains("Waiting for your approval");
                 assert!(
                     !awaiting,
                     "the person's own account asked their own daemon and was told it waits for an \

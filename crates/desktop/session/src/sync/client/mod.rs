@@ -33,7 +33,7 @@ use tilo_session_client::client::Shell as PolicyShell;
 use tilo_session_client::message_policy::WorkspaceAction;
 use tilo_session_client::{Client as SessionClient, Device, OwnPresence, Transport};
 #[cfg(target_os = "linux")]
-use tilo_session_client::{Cmd, Enrolled, Event, Outbox, SayPresence, Topic};
+use tilo_session_client::{Cmd, Enrolled, Event, Outbox, Topic};
 #[cfg(target_os = "linux")]
 use tilo_session_core::desktop::here::{Here, LiveMember, Person};
 #[cfg(target_os = "linux")]
@@ -308,8 +308,7 @@ pub(crate) struct Local {
     /// Live sessions a test joined this session to, by workspace, in place of the live session's, and the
     /// runtime they run on.
     #[cfg(test)]
-    test_live_sessions:
-        RefCell<std::collections::BTreeMap<String, Arc<tilo_live::live_session::LiveSession>>>,
+    test_live_sessions: RefCell<std::collections::BTreeMap<String, crate::live::Sessions>>,
     #[cfg(test)]
     test_runtime: RefCell<Option<tokio::runtime::Handle>>,
     /// Everything this device said on the share tracks, in order: what a test counts.
@@ -530,7 +529,7 @@ impl Local {
     #[cfg(target_os = "linux")]
     pub(crate) fn live_sessions(
         &self,
-    ) -> std::collections::BTreeMap<String, Arc<tilo_live::live_session::LiveSession>> {
+    ) -> std::collections::BTreeMap<String, crate::live::Sessions> {
         #[cfg(test)]
         if !self.test_live_sessions.borrow().is_empty() {
             return self.test_live_sessions.borrow().clone();
@@ -611,7 +610,7 @@ impl Local {
     #[cfg(target_os = "linux")]
     pub(crate) fn show_tracks(
         &self,
-        live_session: &tilo_live::live_session::LiveSession,
+        live_session: &dyn tilo_live::capture::Session,
         sender: [u8; 32],
         tracks: &[Track],
     ) {
@@ -1248,10 +1247,12 @@ impl Client {
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
         attach_bound(link.as_ref(), link_outbox, endpoint_handle.get());
-        // This device's presence is the live session's own.
-        let saying = live
-            .as_ref()
-            .map(|live| Arc::new(live.saying()) as Arc<dyn SayPresence>);
+        // This device's presence is its daemon's to say: the session tells it the person's word.
+        let saying = live.as_ref().map(|live| {
+            tilo_session_client::Saying::Word(
+                Arc::new(live.telling()) as Arc<dyn tilo_session_client::TellWord>
+            )
+        });
         let inner = SessionClient::over(
             Transport {
                 outgoing: Arc::clone(&outgoing),
@@ -1480,7 +1481,7 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn live_sessions(
         &self,
-    ) -> std::collections::BTreeMap<String, Arc<tilo_live::live_session::LiveSession>> {
+    ) -> std::collections::BTreeMap<String, crate::live::Sessions> {
         self.hosting.local.live_sessions()
     }
 
@@ -1514,10 +1515,7 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn on_live_sessions(
         self,
-        live_sessions: std::collections::BTreeMap<
-            String,
-            Arc<tilo_live::live_session::LiveSession>,
-        >,
+        live_sessions: std::collections::BTreeMap<String, crate::live::Sessions>,
         runtime: tokio::runtime::Handle,
     ) -> Self {
         *self.hosting.local.test_live_sessions.borrow_mut() = live_sessions;
@@ -1529,7 +1527,7 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn show_tracks(
         &self,
-        live_session: &tilo_live::live_session::LiveSession,
+        live_session: &dyn tilo_live::capture::Session,
         sender: [u8; 32],
         tracks: &[Track],
     ) {
@@ -1595,12 +1593,15 @@ impl Client {
         &self,
         daemon: runtime_collab::ShellClient,
         turned: crate::followed_resource::FollowedReading<crate::live::TurnedAwayLists>,
+        sessions: crate::followed_resource::FollowedReading<crate::live::SessionRows>,
     ) {
         let mut held = self.hosting.local.live.borrow_mut();
         let Some(live) = held.as_mut() else {
             return;
         };
         live.follow_turned_away(turned);
+        live.follow_sessions(sessions);
+        live.tell_through(daemon.clone());
         live.open_links(Arc::new(move || {
             let daemon = daemon.clone();
             Box::pin(async move {
@@ -1615,18 +1616,6 @@ impl Client {
                 ))
             })
         }));
-    }
-
-    /// Have this session's live session lent its own streams' media keys by `lender` in every
-    /// workspace whose keys it may hold none of ([`crate::live::Live::lend_media_keys`]): false when
-    /// it has no live session yet, and nothing was handed over.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn lend_media_keys(&self, lender: Arc<dyn crate::live::MediaKeysLender>) -> bool {
-        let Some(live) = self.hosting.local.live() else {
-            return false;
-        };
-        live.lend_media_keys(lender);
-        true
     }
 
     /// Dial the person's other devices as this session's siblings, and wake the session when
@@ -1670,10 +1659,7 @@ impl Client {
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn own_devices(&self) -> Option<crate::live::OwnDevices> {
-        self.hosting
-            .local
-            .live()
-            .map(|live| live.own_devices())
+        self.hosting.local.live().map(|live| live.own_devices())
     }
 
     /// The person's presence as the surfaces here read it.

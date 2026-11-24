@@ -10,10 +10,15 @@
   <link rel="manifest" href="../manifest.json">
   <!-- The runtime module streams from the first moment, not once every page
        module has loaded and run; see index.html. -->
-  <link rel="preload" href="../pkg/tilo_browser_runtime_bg.wasm" as="fetch" crossorigin>
+  <link rel="preload" href="../pkg/tilo_browser_runtime_bg.wasm" as="fetch" crossorigin fetchpriority="high">
   <!-- The entry page's own module, asked for beside the runtime rather than
        after it: see the same line in the desktop entry page. -->
-  <link rel="modulepreload" href="../entry-page.mjs">
+  <link rel="modulepreload" fetchpriority="low" href="../entry-page.mjs">
+  <!-- What the first screen's buttons reach: see the same list in the desktop
+       entry page. -->
+  <link rel="modulepreload" fetchpriority="low" href="../host.mjs">
+  <link rel="modulepreload" fetchpriority="low" href="../peer.mjs">
+  <link rel="modulepreload" fetchpriority="low" href="../entry.mjs">
 <script>
 (()=>{
 // The entry pages' first script, inlined verbatim into each so it runs

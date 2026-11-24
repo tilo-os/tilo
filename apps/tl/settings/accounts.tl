@@ -77,7 +77,11 @@ view accounts_pane() {
                             } else if account.status == .syncing {
                                 "Syncing"
                             } else { "Not synced yet" },
-                            tone: if account.status == .error or account.status == .needs-reconnect or account.paused { .warning } else { .neutral },
+                            tone: if account.status == .error
+                                or account.status == .needs-reconnect
+                                or account.paused {
+                                .warning
+                            } else { .neutral },
                         )
                         if account.paused {
                             ui.Chip("Paused", tone: .warning)
@@ -129,10 +133,7 @@ view accounts_pane() {
                                                 account: account.id,
                                                 mail: true,
                                             )
-                                            set(sign_in, step.id)
-                                                .then(
-                                                    set(sign_in_open, step.open),
-                                                )
+                                            set(sign_in, step.id).then(set(sign_in_open, step.open))
                                         }
                                     }
                                 } else {
@@ -383,9 +384,7 @@ view accounts_pane() {
                                 mail: true,
                             )
                             set(sign_in, step.id)
-                                .then(
-                                    set(sign_in_open, step.open),
-                                )
+                                .then(set(sign_in_open, step.open))
                                 .then(
                                     set(sign_in_prompt, step.code),
                                 )
@@ -401,9 +400,7 @@ view accounts_pane() {
                                 mail: true,
                             )
                             set(sign_in, step.id)
-                                .then(
-                                    set(sign_in_open, step.open),
-                                )
+                                .then(set(sign_in_open, step.open))
                                 .then(
                                     set(sign_in_prompt, step.code),
                                 )
@@ -423,7 +420,10 @@ view accounts_pane() {
                     )
                     ui.Button("Cancel the sign-in") {
                         on press: accounts
-                            .cancel_sign_in(accounts.accounts, signIn: sign_in)
+                            .cancel_sign_in(
+                                accounts.accounts,
+                                signIn: sign_in,
+                            )
                             .then(set(sign_in, ""))
                             .then(set(sign_in_open, ""))
                             .then(set(sign_in_prompt, ""))
@@ -435,7 +435,9 @@ view accounts_pane() {
                     choice.title,
                     secondary: if choice.username == "" {
                         choice.places.join(", ")
-                    } else { "{choice.username} · {choice.places.join(", ")}" },
+                    } else {
+                        "{choice.username} · {choice.places.join(", ")}"
+                    },
                     icon: .key,
                 ) {
                     trailing: {
@@ -445,9 +447,15 @@ view accounts_pane() {
                         ) {
                             on press: set(sign_in_item, choice.id)
                                 .then(set(address, choice.title))
-                                .then(set(username, choice.username))
-                                .then(set(incoming, imap_place(choice.places)))
-                                .then(set(outgoing, smtp_place(choice.places)))
+                                .then(
+                                    set(username, choice.username),
+                                )
+                                .then(
+                                    set(incoming, imap_place(choice.places)),
+                                )
+                                .then(
+                                    set(outgoing, smtp_place(choice.places)),
+                                )
                         }
                     }
                 }
@@ -731,9 +739,7 @@ fn import_source(provider: Text) -> Text {
         "dropbox"
     } else if provider == "icloud-drive" {
         "icloud"
-    } else if provider == "nextcloud" {
-        "nextcloud"
-    } else { "webdav" }
+    } else if provider == "nextcloud" { "nextcloud" } else { "webdav" }
 }
 
 /// The incoming server a vault logins's places name, without its scheme.

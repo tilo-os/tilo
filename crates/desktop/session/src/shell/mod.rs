@@ -1442,6 +1442,13 @@ impl ShellChrome {
                     .open(tilo_session_core::desktop::overlays::Overlay::People.name());
                 true
             }
+            // The person's own face: the roster opens on their own card.
+            "show-self" => {
+                crate::people_device::SELF.clone_into(&mut self.surfaces.person.borrow_mut());
+                self.surfaces
+                    .open(tilo_session_core::desktop::overlays::Overlay::People.name());
+                true
+            }
 
             // The workspaces are the shell's one workspace surface: the shell's menu, the workspaces
             // a person switches between and the actions on them.
@@ -1468,7 +1475,6 @@ impl ShellChrome {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
-        use tilo_session_core::desktop::host::chrome::ChromeIntent;
         use tilo_session_core::desktop::host::contract::DesktopAsk;
         use tilo_session_core::desktop::navigation::{ChromeEffect, Verb};
         use tilo_session_core::desktop::state::chrome_verbs::Carried;
@@ -1497,9 +1503,6 @@ impl ShellChrome {
             }
             Carried::Shell => {
                 let intent = match verb {
-                    ChromeEffect::ShowPerson { person } => ChromeIntent::ShowPerson(person),
-                    ChromeEffect::ShowSelf => ChromeIntent::ShowSelf,
-                    ChromeEffect::TogglePeople => ChromeIntent::TogglePeople,
                     // The strips of the workspace shown, each where it stands: the overview.
                     ChromeEffect::ShowStrips => {
                         self.surfaces

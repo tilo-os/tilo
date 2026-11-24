@@ -95,18 +95,17 @@ ENGINES = {
     "rquickjs": "rustypipe's JavaScript engine",
     "rquickjs-core": "rustypipe's JavaScript engine",
     "rquickjs-sys": "QuickJS, rustypipe's JavaScript engine",
-    "tilo-accounts-engine": "the online-account engine library (libtilo_accounts_engine.so)",
-    "account-credentials": "online-account credentials, which Mail, Settings and Calendar load from "
-                       "libtilo_accounts_engine.so",
-    "tilo-oauth": "the OAuth client under account-credentials, in libtilo_accounts_engine.so",
-    "tilo-cloud-source-dropbox": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
-    "tilo-cloud-source-gdrive": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
-    "tilo-cloud-source-icloud": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
-    "tilo-cloud-source-onedrive": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
-    "async-imap": "the IMAP client Mail and Settings load from libtilo_accounts_engine.so",
-    "imap-proto": "the IMAP parser under async-imap, in libtilo_accounts_engine.so",
-    "tilo-dav": "the WebDAV/CalDAV client, whose calendar sign-in reaches account credentials, which "
-                "Calendar and Settings load from libtilo_accounts_engine.so",
+    "account-credentials": "online-account credentials, which the workspace service signs in "
+                       "with on its own",
+    "tilo-oauth": "the OAuth client under account-credentials",
+    "tilo-cloud-source-dropbox": "a cloud-storage provider ownership signs in to",
+    "tilo-cloud-source-gdrive": "a cloud-storage provider ownership signs in to",
+    "tilo-cloud-source-icloud": "a cloud-storage provider ownership signs in to",
+    "tilo-cloud-source-onedrive": "a cloud-storage provider ownership signs in to",
+    "async-imap": "the IMAP client the workspace service and Mail's host open",
+    "imap-proto": "the IMAP parser under async-imap",
+    "tilo-dav": "the WebDAV/CalDAV client, whose calendar sign-in reaches account credentials, "
+                "which the workspace service links on its own",
     "jiff-tzdb": "the time-zone database, which only a program that reads a named zone carries",
     "tilo-contact-directory-engine": "the contact directory's engine library "
                                      "(libtilo_contact_directory_engine.so)",

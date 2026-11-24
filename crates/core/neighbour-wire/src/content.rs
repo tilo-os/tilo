@@ -835,7 +835,7 @@ mod tests {
                     hash,
                     total: named.len() as u64,
                     offset: 0,
-                    bytes: named.clone(),
+                    bytes: named,
                 })
                 .unwrap()
             ),

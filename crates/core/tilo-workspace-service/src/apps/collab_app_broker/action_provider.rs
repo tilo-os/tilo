@@ -2920,17 +2920,11 @@ impl AppBrokerState {
                 );
                 return Err(ActionCallError::NotPermitted);
             }
-            tilo_action_policy::Answer::Ask => match confirmation {
-                // Their approve of the asked record this call was kept as: the dispatch admitted
-                // it again with it.
-                Some(Confirmation::Asked(_)) => true,
-                Some(Confirmation::Confirmed) => policy.direct(),
-                // An ask is made of the person: the person's own connection to their device's
-                // daemon is them, so their call is their answer. Anyone else acting as them —
-                // an app, a program through a shell — keeps asking, as its press does.
-                None => policy.direct() && policy.own_connection(),
-                _ => false,
-            },
+            // An ask is answered only by the person's approve of the asked record this call was
+            // kept as, which the dispatch admitted it again with: the system's confirm view or
+            // the CLI's own prompt gives it. Making the call is not the answer, on any
+            // connection, and a confirmation the caller wrote itself is none.
+            tilo_action_policy::Answer::Ask => matches!(confirmation, Some(Confirmation::Asked(_))),
         };
         if !confirmed {
             return Err(ActionCallError::confirmation_required());

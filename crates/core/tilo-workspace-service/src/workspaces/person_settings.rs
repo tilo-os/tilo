@@ -445,10 +445,11 @@ impl Workspaces {
                     if let Some(sent) = self.recorded_mail_send(Some(&here), &staged).await {
                         return answer(&Ok::<_, String>(sent));
                     }
-                    caller
-                        .acting()
-                        .agent_id()
-                        .ok_or(ActionCallError::NotPermitted)?;
+                    // Only a person, or an agent acting for one, has someone to ask.
+                    let acting = caller.acting();
+                    if acting.agent_id().is_none() && acting.person_id().is_none() {
+                        return Err(ActionCallError::NotPermitted);
+                    }
                     // What leaves on their yes is what they were shown: the rows are kept
                     // apart from the message, which its agent may still change.
                     let kept = root.join(SHOWN_DIR).join(&sending.send);

@@ -62,8 +62,7 @@ fn session_serving(
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
         .expect("the profile is this user's");
     let within = tilo_test_env::hang_bound();
-    let daemon =
-        tilo_runtime::daemon::Running::start(profile.path()).expect("the device's daemon starts");
+    let daemon = crate::common::start_daemon(profile.path());
     let person = daemon.person(within).expect("its person's services run");
     let shell_link = daemon
         .link_shell(within)

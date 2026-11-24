@@ -15,7 +15,7 @@ default = []
 live_session = ["dep:moq-net", "dep:hex", "dep:n0-future"]
 # An app's call lane: the call one app's connection carries into a workspace's call, published
 # through the session the device's daemon holds.
-app_call = ["live_session", "dep:tilo-actions"]
+app_call = ["live_session", "dep:tilo-actions", "dep:tokio", "tokio/rt"]
 # The relay: the copying and admitting half, which runs on the device that
 # serves a live session.
 relay = ["live_session", "dep:bytes", "dep:tokio", "dep:serde_json"]
@@ -30,6 +30,8 @@ collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../co
 # An app's call lane speaks the action wire its connection carries, and the call's own messages.
 tilo-actions = { path = "../actions", optional = true }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# Presence stamps and the clock a call bridge keeps its frames by.
+tilo-clock = { path = "../../platform/tilo-clock" }
 thiserror.workspace = true
 bytes = { workspace = true, optional = true }
 # The relay's copying and admission run on whatever executor the host drives them from, so the

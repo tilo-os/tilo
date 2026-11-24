@@ -115,12 +115,12 @@ RUN test -s /out/fonts/manifest.toml
 # stage's root filesystem, so the guest needs none of those libraries itself.
 RUN set -eu; \
     python3 /build/os/scripts/collect-runtime-dependencies.py --library-dir /out \
-        /out/libruntime_dylib.so /out/tilo-runtime-account-capability \
+        /out/libruntime_dylib.so \
         $(sed "s|^|/out/|" /out/runtime-engines) > /tmp/dependencies; \
     libstd="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)"; \
     test -n "$libstd"; \
     /out/tilo-runtime-bundle key generate --out /tmp/runtime-identity.json; \
-    set -- --include /out/libruntime_dylib.so --include-bin /out/tilo-runtime-account-capability \
+    set -- --include /out/libruntime_dylib.so \
         --include /out/fonts --include "$libstd"; \
     while IFS= read -r engine; do set -- "$@" --include "/out/$engine"; done < /out/runtime-engines; \
     while IFS= read -r dependency; do set -- "$@" --include "$dependency"; done < /tmp/dependencies; \
@@ -130,8 +130,7 @@ RUN set -eu; \
     /out/tilo-runtime-bundle verify "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)"; \
     bash /build/os/scripts/verify-runtime-bundle-closure.sh \
-        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
-        /out/tilo-runtime-account-capability; \
+        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)"; \
     rm -f /tmp/runtime-identity.json
 # The Chromium engine's own runtime bundle, signed here too: Browser's manifest
 # lists it in `[package].optional-runtimes`, so the launcher mounts it into the

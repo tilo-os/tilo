@@ -614,6 +614,11 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
         why: "marks the tree stale inside the app, which the next frame takes up.",
     },
     QuietEntry {
+        file: "app/driver.rs",
+        entry: "state_mut",
+        why: "hands the document out; the caller runs the frame that shows the change it made.",
+    },
+    QuietEntry {
         file: "app/driver/uicore.rs",
         entry: "set_retained_geometry_check",
         why: "sets how often frames verify retained geometry; nothing a frame reads.",

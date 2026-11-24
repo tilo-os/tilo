@@ -34,6 +34,7 @@ use tilo_actions::remote::{
     ActionCallError, Caller, Pending, RemoteActionMessage, ResourceAddress, ResourceCopy,
     ResourceReadRequest, ResourceReads, ResourceWake,
 };
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::grant;
 use tilo_live::link;
@@ -264,6 +265,36 @@ fn bind(
 /// * This device's own scope admits its person's devices as the record of them keeps them, less
 ///   the ones they took back and the ones whose certificate ran out, and only in their own
 ///   workspace. `person` is that record, `own` this device's certificate.
+/// The keys a workspace's live session seals under here, or why it holds none.
+enum SessionKeys {
+    Ready(tilo_live::frame::LiveKeys),
+    Waiting,
+    Keyless,
+}
+
+/// What this device's key service says of `workspace`'s media channel now.
+fn session_keys(workspaces: &ServiceWorkspaces, workspace: WorkspaceId) -> SessionKeys {
+    match workspaces.keys().get().map(|keys| keys.access(workspace).0) {
+        Some(tilo_workspace_keys::KeyAccess::Ready(keys)) => {
+            SessionKeys::Ready(tilo_live::frame::LiveKeys::from(keys))
+        }
+        Some(
+            tilo_workspace_keys::KeyAccess::Waiting | tilo_workspace_keys::KeyAccess::Unavailable,
+        ) => SessionKeys::Waiting,
+        _ => SessionKeys::Keyless,
+    }
+}
+
+/// The epoch `workspace`'s media channel is at here, for a refusal that names it.
+fn keys_epoch_held(workspaces: &ServiceWorkspaces, workspace: WorkspaceId) -> u64 {
+    match workspaces.keys().get().map(|keys| keys.access(workspace).0) {
+        Some(tilo_workspace_keys::KeyAccess::Ready(keys)) => {
+            tilo_live::frame::LiveKeys::from(keys).epoch()
+        }
+        _ => 0,
+    }
+}
+
 fn members(
     workspaces: &ServiceWorkspaces,
     person: Option<&PersonResources>,
@@ -274,9 +305,9 @@ fn members(
     let workspace = WorkspaceId::parse(scope.workspace_id())?;
     let Some(device) = scope.device_of() else {
         let (held, devices) = read(workspaces, workspace)?;
-        let relays = devices.as_ref().is_ok_and(|devices| {
-            relays_here(Some(held), devices, own.device_public_key, now_ns)
-        });
+        let relays = devices
+            .as_ref()
+            .is_ok_and(|devices| relays_here(Some(held), devices, own.device_public_key, now_ns));
         return Some((relays, devices));
     };
     let root = own.user_public_key;
@@ -292,9 +323,7 @@ fn members(
     let devices: Vec<Device> = record
         .listed(&root)
         .into_iter()
-        .filter(|listed| {
-            !listed.device.revoked(&listed.cert) && !listed.cert.is_expired_at(now_ns)
-        })
+        .filter(|listed| !listed.device.revoked(&listed.cert) && !listed.cert.is_expired_at(now_ns))
         .map(|listed| Device {
             device: listed.cert.device_public_key,
             cert: listed.cert,
@@ -425,6 +454,70 @@ fn read(
         .read_now(&workspace.to_string(), admitted_devices)
 }
 
+/// How far this device's place in one workspace's live session came, as its daemon publishes it
+/// ([`link::SESSIONS`]): what the desktop session shows beside the workspace, and what decides
+/// whether a call, a shared window or presence carries there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SessionState {
+    /// In the live session, through `relay`, sealing under `epoch`.
+    Open {
+        relay: [u8; 32],
+        name: String,
+        epoch: u64,
+    },
+    /// The workspace's media keys are not here yet.
+    WaitingForKeys,
+    /// This device holds no keys of the workspace and none are coming.
+    Keyless,
+    /// Who is in the workspace cannot be read here.
+    Unread,
+    /// The workspace names no device that relays it.
+    NoRelay,
+    /// The relay was not reached.
+    Unreached { relay: [u8; 32], name: String },
+    /// The relay was admitting as many devices as it takes at once.
+    Busy { relay: [u8; 32], name: String },
+    /// The relay answered and did not admit this device, which presented `epoch`'s keys.
+    Refused {
+        relay: [u8; 32],
+        name: String,
+        epoch: u64,
+    },
+}
+
+impl SessionState {
+    /// This state as the reading says it, with `own` this device.
+    fn row(&self, own: [u8; 32]) -> serde_json::Value {
+        let word = match self {
+            Self::Open { .. } => "open",
+            Self::WaitingForKeys => "waiting-for-keys",
+            Self::Keyless => "no-keys",
+            Self::Unread => "membership-unread",
+            Self::NoRelay => "no-relay",
+            Self::Unreached { .. } => "relay-unreached",
+            Self::Busy { .. } => "relay-busy",
+            Self::Refused { .. } => "refused",
+        };
+        let (relay, name, epoch) = match self {
+            Self::Open { relay, name, epoch } | Self::Refused { relay, name, epoch } => {
+                (Some(*relay), name.clone(), Some(*epoch))
+            }
+            Self::Unreached { relay, name } | Self::Busy { relay, name } => {
+                (Some(*relay), name.clone(), None)
+            }
+            _ => (None, String::new(), None),
+        };
+        serde_json::json!({
+            "state": word,
+            "relay": relay.map(hex::encode).unwrap_or_default(),
+            "relay_name": name,
+            "relay_here": relay.is_some_and(|relay| relay == own),
+            "epoch": epoch,
+            "lent": false,
+        })
+    }
+}
+
 /// What the relay's judgement shares with the sessions it admitted: the device's workspaces, the
 /// epochs, rosters and calls it last read, and the endpoints it turned away.
 struct Shared {
@@ -452,6 +545,12 @@ struct Shared {
     turned_revision: AtomicU64,
     /// The reads of [`Self::turned`] waiting for it to move.
     turned_waiting: Mutex<Vec<ResourceWake>>,
+    /// How far this device's place in each workspace's live session came, as the reading says it.
+    sessions: Mutex<BTreeMap<WorkspaceId, SessionState>>,
+    /// Moves with every change to [`Self::sessions`].
+    sessions_revision: AtomicU64,
+    /// The reads of [`Self::sessions`] waiting for it to move.
+    sessions_waiting: Mutex<Vec<ResourceWake>>,
 }
 
 impl RelayAuthority for Shared {
@@ -476,9 +575,15 @@ impl RelayAuthority for Shared {
             person_workspace(&self.cert.user_public_key).to_string(),
             self.device,
         );
-        !members(&self.workspaces, self.person.get(), &self.cert, &own, now_ns())
-            .and_then(|(_, devices)| devices.ok())
-            .is_some_and(|devices| devices.iter().any(|device| device.device == endpoint))
+        !members(
+            &self.workspaces,
+            self.person.get(),
+            &self.cert,
+            &own,
+            now_ns(),
+        )
+        .and_then(|(_, devices)| devices.ok())
+        .is_some_and(|devices| devices.iter().any(|device| device.device == endpoint))
     }
 }
 
@@ -708,12 +813,21 @@ pub(crate) struct Live {
     /// This device's own place in each workspace's live session, as this daemon holds it: what
     /// an app's call lane joins through, and what the person's desktop drives over its link.
     calls: Mutex<BTreeMap<WorkspaceId, Arc<super::live_call::CallSession>>>,
+    /// What the device's apps and the person's shell say in each workspace, kept to say again in
+    /// a live session that opens later, and the apps that hear the others' words.
+    pub(super) speaking: super::live_speaking::Speaking,
+    /// This live session itself, for what answers on its behalf later.
+    this: std::sync::Weak<Live>,
 }
 
 impl Live {
     /// The live session of `workspaces`' device, on `relay` when its keeping already runs one (a
     /// server's), and on a relay of its own otherwise. Must be called inside the daemon's runtime.
-    pub(crate) fn new(workspaces: &Arc<ServiceWorkspaces>, relay: Option<Relay>) -> Arc<Self> {
+    pub(crate) fn new(
+        workspaces: &Arc<ServiceWorkspaces>,
+        relay: Option<Relay>,
+        fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
+    ) -> Arc<Self> {
         let (changed, _) = tokio::sync::watch::channel(0);
         let shared = Arc::new(Shared {
             workspaces: Arc::clone(workspaces),
@@ -727,6 +841,9 @@ impl Live {
             turned: Mutex::default(),
             turned_revision: AtomicU64::new(0),
             turned_waiting: Mutex::default(),
+            sessions: Mutex::default(),
+            sessions_revision: AtomicU64::new(0),
+            sessions_waiting: Mutex::default(),
         });
         // Whom the relay turned away, and why: what the person's desktop session shows. It is
         // this computer's relay alone that turned them away.
@@ -735,18 +852,50 @@ impl Live {
             tilo_workspace_service::workspaces::OwnReaders::ThisDevice,
             Arc::new(TurnedAwayReads(Arc::clone(&shared))),
         );
+        // How far this device's place in each workspace's live session came: what the desktop
+        // shows beside the workspace, and what its link tells it to carry.
+        workspaces.copies().publish_own(
+            link::SESSIONS,
+            tilo_workspace_service::workspaces::OwnReaders::ThisDevice,
+            Arc::new(SessionReads(Arc::clone(&shared))),
+        );
         let serves = relay.is_none();
         let relay =
             relay.unwrap_or_else(|| Relay::new(Arc::clone(&shared) as Arc<dyn RelayAuthority>));
-        let live = Arc::new(Self {
+        let live = Arc::new_cyclic(|this| Self {
             shared,
             relay,
             endpoint: workspaces.endpoint(),
             serves,
             calls: Mutex::default(),
+            speaking: super::live_speaking::Speaking::new(fanout),
+            this: this.clone(),
         });
+        live.speaking.hear_apps(&live);
+        // An app joins and leaves a call through the device's one dispatch, as any action.
+        workspaces.copies().providers().provide(
+            super::live_speaking::PROVIDER,
+            super::live_speaking::PROVIDER,
+            tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
+            Arc::new(super::live_speaking::LiveCalls(Arc::downgrade(&live))),
+        );
         live.follow();
         live
+    }
+
+    /// This live session, while it runs.
+    pub(super) fn weak(&self) -> std::sync::Weak<Self> {
+        self.this.clone()
+    }
+
+    /// The person this device belongs to, by their root key.
+    pub(super) fn person(&self) -> [u8; 32] {
+        self.shared.workspaces.device_cert().user_public_key
+    }
+
+    /// The workspaces this device holds.
+    pub(super) fn workspaces(&self) -> &Arc<ServiceWorkspaces> {
+        &self.shared.workspaces
     }
 
     /// Admit this device's person's devices to its own scope by `person`, the record of them, from
@@ -796,6 +945,7 @@ impl Live {
                     return;
                 };
                 let held = live.shared.workspaces.copies().ids().await;
+                live.speaking.follow_workspaces(&held);
                 if live.serves {
                     let observing = Arc::clone(&live.shared);
                     let workspaces = held.clone();
@@ -829,66 +979,194 @@ impl Live {
     /// either is no longer so. A workspace another device serves is left to the person's desktop
     /// until this daemon is the one that carries its devices.
     async fn reconcile_call(self: &Arc<Self>, workspace: WorkspaceId) {
+        let own = self.shared.device;
         let Some((held, devices)) = read(&self.shared.workspaces, workspace) else {
             self.drop_call(workspace);
+            self.shared.note_session(workspace, SessionState::Unread);
             return;
         };
         let Ok(devices) = devices else {
             self.drop_call(workspace);
+            self.shared.note_session(workspace, SessionState::Unread);
             return;
         };
-        if !matches!(held, Held::Governs) {
+        let keys = session_keys(&self.shared.workspaces, workspace);
+        // Where this device takes part: its own relay when it serves the workspace, the relay of
+        // the device that holds it otherwise, whose signed address its governance names.
+        let toward = match held {
+            Held::Governs => Some((own, None)),
+            Held::MemberCopy => self
+                .host_relay(workspace)
+                .await
+                .map(|(device, addr)| (device, Some(addr))),
+        };
+        let Some((serving, away)) = toward else {
             self.drop_call(workspace);
+            self.shared.note_session(workspace, SessionState::NoRelay);
+            return;
+        };
+        let relay_name = name_of(&devices, serving);
+        let kept = {
+            let calls = self.calls.lock_recover();
+            calls
+                .get(&workspace)
+                .filter(|call| !call.ended() && call.relay() == serving)
+                .cloned()
+        };
+        if let Some(call) = kept {
+            match keys {
+                SessionKeys::Ready(keys) => {
+                    let gate = self.call_gate(workspace);
+                    call.refresh(keys, &devices, gate);
+                    call.hand_call_keys(self.shared.workspaces.copies()).await;
+                    self.shared.note_session(
+                        workspace,
+                        SessionState::Open {
+                            relay: serving,
+                            name: relay_name,
+                            epoch: call.epoch(),
+                        },
+                    );
+                }
+                SessionKeys::Waiting => self
+                    .shared
+                    .note_session(workspace, SessionState::WaitingForKeys),
+                SessionKeys::Keyless => self.shared.note_session(workspace, SessionState::Keyless),
+            }
             return;
         }
-        let Some(keys) = super::live_call::channel_keys(&self.shared.workspaces, workspace) else {
-            self.drop_call(workspace);
+        self.drop_call(workspace);
+        let SessionKeys::Ready(keys) = keys else {
+            self.shared.note_session(
+                workspace,
+                match keys {
+                    SessionKeys::Keyless => SessionState::Keyless,
+                    _ => SessionState::WaitingForKeys,
+                },
+            );
             return;
         };
-        let gate = self
-            .shared
+        let gate = self.call_gate(workspace);
+        let roster = Roster::new(devices.iter().map(|device| device.device));
+        let local = matches!(held, Held::Governs).then_some(&self.relay);
+        let certificate = self.shared.workspaces.device_cert().clone();
+        match super::live_call::CallSession::join(
+            local,
+            away,
+            &self.endpoint,
+            &certificate,
+            serving,
+            own,
+            workspace,
+            keys,
+            roster,
+            self.base_word(&devices),
+        )
+        .await
+        {
+            Ok(call) => {
+                let call = Arc::new(call);
+                let (rules, persons) = gate;
+                call.session().set_calls(rules, persons);
+                {
+                    let live = Arc::downgrade(self);
+                    let relay = serving;
+                    let name = relay_name.clone();
+                    call.session().set_ended(Arc::new(move || {
+                        if let Some(live) = live.upgrade() {
+                            live.call_ended(workspace, relay, name.clone());
+                        }
+                    }));
+                }
+                self.speaking.speak_in(workspace, call.speaker());
+                self.calls
+                    .lock_recover()
+                    .insert(workspace, Arc::clone(&call));
+                call.hand_call_keys(self.shared.workspaces.copies()).await;
+                self.shared.note_session(
+                    workspace,
+                    SessionState::Open {
+                        relay: serving,
+                        name: relay_name,
+                        epoch: call.epoch(),
+                    },
+                );
+                tracing::debug!(%workspace, relay = %hex::encode(serving),
+                    "the device's live session is held by its daemon");
+            }
+            Err(error) => {
+                let state = match error {
+                    tilo_live::live_session::LiveError::Denied => SessionState::Refused {
+                        relay: serving,
+                        name: relay_name,
+                        epoch: keys_epoch_held(&self.shared.workspaces, workspace),
+                    },
+                    tilo_live::live_session::LiveError::Busy => SessionState::Busy {
+                        relay: serving,
+                        name: relay_name,
+                    },
+                    _ => SessionState::Unreached {
+                        relay: serving,
+                        name: relay_name,
+                    },
+                };
+                self.shared.note_session(workspace, state);
+                tracing::debug!(%workspace, relay = %hex::encode(serving), %error,
+                    "this device took no part in its workspace's live session");
+            }
+        }
+    }
+
+    /// What this device says of itself with no person's shell running: its name, as its
+    /// certificate gives it, and its person.
+    fn base_word(&self, devices: &[Device]) -> tilo_live::presence::Own {
+        let cert = self.shared.workspaces.device_cert();
+        let name = tilo_user_identity::device_name(&cert.device_label)
+            .map(str::to_owned)
+            .unwrap_or_else(|| name_of(devices, self.shared.device));
+        tilo_live::presence::Own {
+            label: name.clone(),
+            device: name,
+            user: Some(hex::encode(cert.user_public_key)),
+            ..tilo_live::presence::Own::default()
+        }
+    }
+
+    /// What the workspace's calls allow now, and the person each of its member devices is.
+    pub(super) fn call_gate(&self, workspace: WorkspaceId) -> super::live_call::CallGate {
+        self.shared
             .workspaces
             .copies()
             .read_now(&workspace.to_string(), |peer| {
                 peer.governance().call_gate(tilo_clock::wall())
             })
             .and_then(|(_, gate)| gate.ok())
-            .unwrap_or_default();
-        let kept = self
-            .calls
-            .lock_recover()
-            .get(&workspace)
-            .filter(|call| !call.ended())
-            .cloned();
-        if let Some(call) = kept {
-            call.refresh(keys, &devices, gate);
-            call.hand_call_keys(self.shared.workspaces.copies()).await;
-            return;
-        }
+            .unwrap_or_default()
+    }
+
+    /// Where the device holding `workspace` is reached, from the signed address its governance
+    /// names, and which device it is.
+    async fn host_relay(&self, workspace: WorkspaceId) -> Option<([u8; 32], iroh::EndpointAddr)> {
+        let peer = self
+            .shared
+            .workspaces
+            .copies()
+            .state(&workspace.to_string())
+            .await?;
+        let hints = peer.governance().keeping_devices();
+        hints.into_iter().find_map(|hint| {
+            let host = WorkspaceDeviceHintV1::from_transport_hint(&hint).ok()?;
+            let device = host.device_certificate.device_public_key;
+            Some((device, host.endpoint_addr))
+        })
+    }
+
+    /// `workspace`'s live session ended: what this device shows waits for the relay again, and
+    /// the workspace is settled afresh.
+    fn call_ended(&self, workspace: WorkspaceId, relay: [u8; 32], name: String) {
         self.drop_call(workspace);
-        let roster = Roster::new(devices.iter().map(|device| device.device));
-        match super::live_call::CallSession::join(
-            &self.relay,
-            self.shared.device,
-            workspace,
-            keys,
-            roster,
-        ) {
-            Ok(call) => {
-                let call = Arc::new(call);
-                let (rules, persons) = gate;
-                call.session().set_calls(rules, persons);
-                self.calls
-                    .lock_recover()
-                    .insert(workspace, Arc::clone(&call));
-                call.hand_call_keys(self.shared.workspaces.copies()).await;
-                tracing::debug!(%workspace, "the device's live session is held by its daemon");
-            }
-            Err(error) => {
-                tracing::warn!(%workspace, %error,
-                    "this device took no part in its workspace's live session");
-            }
-        }
+        self.shared
+            .note_session(workspace, SessionState::Unreached { relay, name });
     }
 
     /// Stop taking part in `workspace`'s live session here: the session's readers and carrier
@@ -992,6 +1270,87 @@ impl ResourceReads for TurnedAwayReads {
         waiting.push(wake.clone());
         drop(waiting);
         Ok(())
+    }
+}
+
+/// How far this device's place in each workspace's live session came: this device's own resource
+/// [`link::SESSIONS`] (`record` empty), read in the person's own workspace by this device's own
+/// person alone, as a JSON object by workspace.
+struct SessionReads(Arc<Shared>);
+
+impl SessionReads {
+    fn rows(shared: &Shared) -> BTreeMap<String, serde_json::Value> {
+        shared
+            .sessions
+            .lock_recover()
+            .iter()
+            .map(|(workspace, state)| (workspace.to_string(), state.row(shared.device)))
+            .collect()
+    }
+
+    fn moved(shared: &Shared) {
+        shared.sessions_revision.fetch_add(1, Ordering::Relaxed);
+        let waiting = std::mem::take(&mut *shared.sessions_waiting.lock_recover());
+        for wake in waiting {
+            wake.wake();
+        }
+    }
+}
+
+impl ResourceReads for SessionReads {
+    fn read(
+        &self,
+        _caller: &Caller,
+        address: &ResourceAddress,
+    ) -> Result<ResourceCopy, ActionCallError> {
+        if address.app != link::SESSIONS || !address.record.is_empty() {
+            return Ok(ResourceCopy::Absent);
+        }
+        let revision = self.0.sessions_revision.load(Ordering::Relaxed).to_string();
+        serde_json::to_value(Self::rows(&self.0))
+            .map(|value| ResourceCopy::reading(value, Some(revision)))
+            .map_err(|error| ActionCallError::Unavailable {
+                reason: error.to_string(),
+            })
+    }
+
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: ResourceReadRequest,
+    ) -> Pending<RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
+    fn watch(
+        &self,
+        _caller: &Caller,
+        _address: &ResourceAddress,
+        wake: &ResourceWake,
+    ) -> Result<(), ActionCallError> {
+        let mut waiting = self.0.sessions_waiting.lock_recover();
+        waiting.retain(ResourceWake::waiting);
+        waiting.push(wake.clone());
+        drop(waiting);
+        Ok(())
+    }
+}
+
+impl Shared {
+    /// Note how far this device's place in `workspace`'s live session came, and tell the reading
+    /// when it moved.
+    fn note_session(&self, workspace: WorkspaceId, state: SessionState) {
+        let moved = {
+            let mut sessions = self.sessions.lock_recover();
+            sessions.get(&workspace) != Some(&state) && {
+                sessions.insert(workspace, state);
+                true
+            }
+        };
+        if moved {
+            SessionReads::moved(self);
+        }
     }
 }
 

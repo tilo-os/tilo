@@ -10021,6 +10021,7 @@ dependencies = [
  "tilo-nm",
  "tilo-paths",
  "tilo-power-mgmt",
+ "tilo-printing",
  "tilo-rt",
  "tilo-runtime-portal",
  "tilo-seal",
@@ -13392,6 +13393,8 @@ dependencies = [
  "jiff",
  "serde",
  "serde_json",
+ "settings-sections",
+ "tempfile",
  "tilo-accessibility-settings",
  "tilo-actions",
  "tilo-agent-provider-config",
@@ -13399,15 +13402,21 @@ dependencies = [
  "tilo-app-fleet",
  "tilo-app-id",
  "tilo-automerge-fork",
+ "tilo-clock",
+ "tilo-collab-types",
  "tilo-default-apps",
  "tilo-locale",
+ "tilo-lock",
  "tilo-resource",
+ "tilo-resource-store",
  "tilo-service",
  "tilo-settings-model",
  "tilo-settings-store",
  "tilo-test-env",
  "tilo-wallpapers",
  "tilolang-tilo",
+ "tracing",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -14876,18 +14885,6 @@ dependencies = [
  "uuid",
  "workspace-hack",
  "zeroize",
-]
-
-[[package]]
-name = "tilo-accounts-engine"
-version = "0.1.0"
-dependencies = [
- "account-credentials",
- "async-imap",
- "runtime-dylib",
- "tilo-dav",
- "tilo-oauth",
- "workspace-hack",
 ]
 
 [[package]]
@@ -17931,6 +17928,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tilo-actions",
+ "tilo-clock",
  "tilo-collab-types",
  "tilo-key-group",
  "tilo-lock",
@@ -18873,6 +18871,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "serde_json",
+ "tilo-engine-loader",
  "tilo-webview",
  "workspace-hack",
 ]
@@ -19201,6 +19200,21 @@ dependencies = [
  "tilo-wgpu",
  "tilo-winit",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-printing"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "tilo-bounded-command",
+ "tilo-paths",
+ "tilo-rt",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -19613,6 +19627,7 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-broker-core",
  "tilo-capture",
+ "tilo-clipboard",
  "tilo-clock",
  "tilo-collab-types",
  "tilo-content",
@@ -20586,7 +20601,6 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-app-id",
  "tilo-clock",
- "tilo-collab-types",
  "tilo-control",
  "tilo-files",
  "tilo-formats",
@@ -20595,12 +20609,10 @@ dependencies = [
  "tilo-platform-caps",
  "tilo-process",
  "tilo-resource",
- "tilo-resource-store",
  "tilo-settings-model",
  "tilo-test-env",
  "tracing",
  "unicode-normalization",
- "uuid",
  "workspace-hack",
 ]
 
@@ -22252,7 +22264,6 @@ dependencies = [
  "libc",
  "mail-engine",
  "notify",
- "os-actions",
  "passwords-engine",
  "publisher-engine",
  "runtime-dylib",
@@ -22298,6 +22309,7 @@ dependencies = [
  "tilo-ocr",
  "tilo-paths",
  "tilo-pdf-reader",
+ "tilo-printing",
  "tilo-recurrence",
  "tilo-render-protocol",
  "tilo-resource",
@@ -22329,7 +22341,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
- "workspace-hack",
 ]
 
 [[package]]
@@ -26015,7 +26026,6 @@ dependencies = [
 name = "workspace-hack"
 version = "0.1.0"
 dependencies = [
- "accesskit",
  "adblock",
  "aead 0.5.2",
  "aead 0.6.1",
@@ -26025,7 +26035,6 @@ dependencies = [
  "anyhow",
  "arrayvec",
  "ash",
- "ashpd",
  "async-channel 2.5.0",
  "base16ct 0.2.0",
  "base16ct 1.0.0",
@@ -26054,7 +26063,6 @@ dependencies = [
  "const-oid 0.9.6",
  "constant_time_eq",
  "crossbeam-epoch",
- "crossbeam-utils",
  "crypto-bigint 0.7.11",
  "crypto-common 0.1.7",
  "crypto-common 0.2.2",
@@ -26079,8 +26087,6 @@ dependencies = [
  "elliptic-curve 0.13.8",
  "elliptic-curve 0.14.1",
  "enumflags2",
- "event-listener 5.4.1",
- "event-listener-strategy",
  "fastrand",
  "ff 0.13.1",
  "flate2",
@@ -26092,7 +26098,6 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-io",
- "futures-lite",
  "futures-sink",
  "futures-task",
  "futures-util",
@@ -26269,8 +26274,6 @@ dependencies = [
  "x11rb-protocol",
  "x25519-dalek 3.0.0",
  "yoke",
- "zbus",
- "zbus_macros",
  "zerocopy",
  "zerofrom",
  "zeroize",
@@ -26371,6 +26374,7 @@ dependencies = [
  "bitflags 1.3.2",
  "bitflags 2.11.0",
  "bitpacking",
+ "blake2 0.10.6",
  "blake2 0.11.0",
  "blake3",
  "block-buffer 0.10.4",
@@ -26573,6 +26577,7 @@ dependencies = [
  "enum_dispatch",
  "enumflags2",
  "enumflags2_derive",
+ "enumn",
  "env-tools",
  "equivalent",
  "erased-serde",
@@ -27320,6 +27325,7 @@ dependencies = [
  "smithay-client-toolkit",
  "smol_str",
  "smoothutf8",
+ "snow",
  "socket-pktinfo",
  "socket2",
  "sorted-index-buffer",
@@ -27463,6 +27469,7 @@ dependencies = [
  "tilo-cloud-source-gdrive",
  "tilo-cloud-source-icloud",
  "tilo-cloud-source-onedrive",
+ "tilo-collab-admission",
  "tilo-collab-types",
  "tilo-collaboration",
  "tilo-color-params",
@@ -27554,6 +27561,7 @@ dependencies = [
  "tilo-location",
  "tilo-lock",
  "tilo-mail-session",
+ "tilo-maps-engine",
  "tilo-mcp",
  "tilo-media",
  "tilo-media-controls",
@@ -27603,6 +27611,7 @@ dependencies = [
  "tilo-portal",
  "tilo-power-mgmt",
  "tilo-presentation",
+ "tilo-printing",
  "tilo-process",
  "tilo-process-services",
  "tilo-projector",
@@ -27696,6 +27705,7 @@ dependencies = [
  "tilo-vm",
  "tilo-wake",
  "tilo-wallpapers",
+ "tilo-wasm-aot",
  "tilo-wasm-host",
  "tilo-wayland-ext",
  "tilo-web-search",
@@ -27718,15 +27728,18 @@ dependencies = [
  "tilolang",
  "tilolang-calendar",
  "tilolang-cli",
+ "tilolang-grayjay",
  "tilolang-lex",
  "tilolang-mail",
  "tilolang-music",
  "tilolang-process",
+ "tilolang-records",
  "tilolang-runtime",
  "tilolang-service",
  "tilolang-tilo",
  "tilolang-web",
  "tilolang-window",
+ "tilolang-workspace",
  "tilolang-youtube",
  "time",
  "time-core",
@@ -27758,6 +27771,7 @@ dependencies = [
  "toml_parser",
  "toml_write",
  "toml_writer",
+ "totp-engine",
  "tower",
  "tower-http",
  "tower-layer",

@@ -115,7 +115,7 @@ pub struct ShellPress {
 }
 
 /// What a shell asks of the device's documents and actions.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ShellCall {
     /// Whether `app`'s `resource` of `workspace` reads now: held here, nothing it waits for still
     /// on its way.
@@ -220,6 +220,78 @@ pub enum ShellCall {
     /// that connection opens with after [`PROCESSES_MAGIC`]. The link itself is a byte stream that
     /// many calls share, so the descriptors of a hand-over travel on that connection instead.
     Processes,
+    /// What the person says of themselves in `workspace` now, as their shell knows it
+    /// ([`ShellWord`]), or nothing any more (`None`), and the runs this device executes there,
+    /// each said as a member of its own: the device's daemon says it as the device's one word in
+    /// the workspace's live session, beside what its apps say.
+    Say {
+        workspace: String,
+        word: Option<Box<ShellWord>>,
+        agents: Vec<SpokenFor>,
+    },
+    /// The person joins the call `call` names in `workspace`: answered with its channel and the
+    /// generation of its rule once the daemon holds its media keys
+    /// ([`ShellReply::Joined`]), or with why the call does not take this device.
+    Join {
+        workspace: String,
+        call: ShellInCall,
+    },
+    /// The person leaves the call they are in in `workspace`.
+    Leave { workspace: String },
+}
+
+/// What the person says of themselves in one workspace, as their shell knows it: what the
+/// device's daemon says on the workspace's live session as the device's word
+/// (`tilo_live::presence::Own`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ShellWord {
+    /// Their name, as everyone sees it.
+    pub label: String,
+    /// What this device calls itself.
+    pub device: String,
+    /// The person this device belongs to, their root key as hex.
+    pub user: Option<String>,
+    /// When they last changed their profile, in Unix milliseconds; `0` for none known.
+    pub profile_ms: u64,
+    /// What they are doing, and whether the device read it off their steps.
+    pub status: Option<(String, bool)>,
+    /// How available they say they are.
+    pub availability: collab_types::presence::Availability,
+    /// The call they are in here.
+    pub call: Option<ShellInCall>,
+    /// Whose view they follow, by that member's publisher.
+    pub following: Option<String>,
+    /// The last wave they sent here.
+    pub wave: Option<collab_types::presence::ShownWave>,
+    /// Their pointer over a tile: its tab and the point in the tile's pixels.
+    pub pointer: Option<(u64, f32, f32)>,
+    /// Their screen, as a shell draws it.
+    pub shell: Option<Box<collab_types::presence::ShellPresence>>,
+    /// What each app the shell runs itself last said of them, under each of its keys.
+    pub apps: Vec<collab_types::presence::Presence>,
+}
+
+/// A call the person is in, as their presence says it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "camera, screen, muted and deafened are each their own flag a person shows in a call"
+)]
+pub struct ShellInCall {
+    pub call: collab_types::presence::CallPresence,
+    pub camera: bool,
+    pub screen: bool,
+    pub muted: bool,
+    pub deafened: bool,
+}
+
+/// One run this device executes, said as a member of its own in a workspace: its session, the
+/// member it is, and its face.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpokenFor {
+    pub session: String,
+    pub member: String,
+    pub face: collab_types::presence::ShellPresence,
 }
 
 /// What the name of every provider a shell serves begins with, besides the session's own actions
@@ -402,6 +474,11 @@ pub enum ShellReply {
     Writes(Option<Vec<DocumentWritten>>),
     /// A [`ShellCall::Press`]: the press is recorded, and proves one call.
     Pressed,
+    /// A [`ShellCall::Say`]: the daemon says it from now on.
+    Said,
+    /// A [`ShellCall::Join`]: the call's channel and the generation of its rule, or why the call
+    /// does not take this device. A [`ShellCall::Leave`] is answered `Ok(None)`.
+    Joined(Result<Option<(String, u64)>, String>),
     /// A [`ShellCall::Resources`]: the store's `tilo_resource_store::wire::Reply` as JSON, or why
     /// the command was not run.
     Resources(Result<String, String>),

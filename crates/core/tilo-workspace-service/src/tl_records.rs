@@ -36,6 +36,7 @@ use serde_json::{Map, Value as Json};
 use tilo_action_policy::{MemberAccess, WorkspacePolicy};
 use tilo_actions::remote::{CataloguePage, CatalogueQuery, CatalogueRow};
 use tilo_actions::{ActionAddress, ActionContext, ActionInvoker, ActionOutput, ApiError};
+#[cfg(any(feature = "apps", feature = "agents"))]
 use tilo_resource_store::wire::{Command, Reply};
 
 use crate::workspaces::Workspaces;
@@ -316,6 +317,7 @@ impl Record {
     }
 
     /// `command` carried out by the workspace service, a refusal kept as [`Self::refused`].
+    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn carry(
         workspaces: Workspaces,
         (workspace, app, reader): (String, String, String),
@@ -339,6 +341,8 @@ impl Record {
     }
 }
 
+/// The port a record is read and written through, on the host that serves apps or runs agents.
+#[cfg(any(feature = "apps", feature = "agents"))]
 impl Port for Record {
     fn held(&self, document: &str) -> Option<Vec<(String, String)>> {
         self.workspaces.held_resources(&self.workspace, document)

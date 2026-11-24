@@ -64,8 +64,8 @@
         },
         {
           "id": "tags",
-          "label": "Name what a picture shows",
-          "description": "Name what a picture shows The objects and pets in it, as words: the objects first, then the pets, from the same model `describe` asks.",
+          "label": "Say what a picture shows",
+          "description": "Say what a picture shows A sentence saying it, the words in it, and the objects and pets it holds, from the same model `describe` asks.",
           "kind": "outside",
           "params": [
             {
@@ -86,6 +86,56 @@
             },
             "type": {
               "list": "text"
+            }
+          }
+        },
+        {
+          "id": "shows",
+          "label": "Say what a picture shows",
+          "description": "Say what a picture shows A sentence saying it, the words in it, and the objects and pets it holds, from the same model `describe` asks: one answer an app records a photo's description, its words and what it holds from.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "image",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ],
+          "returns": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "description": {
+                  "type": "string",
+                  "description": "What the picture shows, in a sentence."
+                },
+                "text": {
+                  "type": "string",
+                  "description": "The words in the picture."
+                },
+                "objects": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "What it holds, by name."
+                },
+                "pets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The pets in it, by name."
+                }
+              },
+              "additionalProperties": false,
+              "description": "What a picture shows, as the device's model reads it: a sentence saying it, the words in it, and the objects and pets it holds, each named. One answer for one picture, so an app that records what a photo shows writes all of it from a single call to the device."
+            },
+            "type": {
+              "named": "Shown"
             }
           }
         },
@@ -163,6 +213,34 @@
           "stored": "value",
           "type": "text",
           "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Shown",
+          "doc": "What a picture shows, as the device's model reads it: a sentence saying it, the words in it, and the objects and pets it holds, each named.",
+          "fields": [
+            {
+              "name": "description",
+              "type": "text"
+            },
+            {
+              "name": "text",
+              "type": "text"
+            },
+            {
+              "name": "objects",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "pets",
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
         }
       ]
     },

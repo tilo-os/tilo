@@ -1213,26 +1213,20 @@ impl App {
         resource.workspace.is_some() && invocation.is_none() && (has_delivery || connected)
     }
 
+    /// Ask the workspace's broker for the bound call `target` names with these `arguments`,
+    /// under the component's alias. The component's published surface is checked as it is
+    /// published, where the live host withdraws one whose actions break their contract; the
+    /// one resource the API resolved is not checked again, since an item's views may share the
+    /// record's opener and a check of that one resource refuses what the component publishes as
+    /// one surface.
     fn route_bound_invocation_to_broker(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
-        resources: &[tilo_actions::ResourceSpec],
         arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
         broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.require_bound_broker_route(&target.binding)?;
-        if !crate::bound_dispatch::validate_bound_resources(
-            self.root_widget.as_mut(),
-            &target.binding,
-            resources,
-        )
-        .unwrap_or(false)
-        {
-            return Err(tilo_actions::ApiError::Unknown(
-                target.address.address.clone(),
-            ));
-        }
         let alias = self
             .actions
             .bound_publication
@@ -1416,8 +1410,13 @@ impl App {
             },
         );
         let started = match started {
-            Err(crate::bound_dispatch::BoundActionError::Rerouted) => {
-                return self.route_resolved_invocation_to_broker(target, request, broker_delivery);
+            Err(crate::bound_dispatch::BoundActionError::Rerouted { arguments }) => {
+                return self.route_resolved_invocation_to_broker(
+                    target,
+                    request,
+                    broker_delivery,
+                    arguments,
+                );
             }
             // The broker delivers only what this app publishes, never
             // another provider's action.
@@ -1511,34 +1510,20 @@ impl App {
 
     /// Route through the broker an invocation the API resolved as one that
     /// runs there ([`crate::bound_dispatch::BoundActionError::Rerouted`]):
-    /// the component's published resources are discovered and the broker
-    /// is asked under the component's alias, exactly as before the API
-    /// decided the route. Nothing ran locally.
+    /// the broker is asked under the component's alias with the arguments the
+    /// API bound, exactly as before it decided the route. Nothing ran locally,
+    /// and nothing is resolved twice: the component's published tree need not
+    /// list what its own resolution found (an item its view builds only when
+    /// asked for).
     fn route_resolved_invocation_to_broker(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
         request: &ResourceInvocation<'_>,
         broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        let snapshots = crate::bound_dispatch::discover_bound_resources(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            Some(&target.address.address),
-        )
-        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_api())?;
-        let snapshot = snapshots
-            .iter()
-            .find(|snapshot| snapshot.binding.same_component(&target.binding))
-            .ok_or_else(|| tilo_actions::ApiError::Unknown(target.address.address.clone()))?;
-        let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
-            snapshot.resources(),
-            &target.address.address,
-            request.argument,
-            None,
-        )?;
         self.route_bound_invocation_to_broker(
             target,
-            snapshot.resources(),
             arguments.as_ref(),
             request.argument,
             broker_delivery,
