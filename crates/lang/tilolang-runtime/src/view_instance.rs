@@ -15,8 +15,9 @@ use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
     ANSWER_ACTION, CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION,
-    CHOOSE_FOLDER_ACTION, COPY_LINK_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION,
-    RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION, UNDO_ACTION,
+    CHOOSE_FOLDER_ACTION, COPY_LINK_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION,
+    REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION,
+    UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
@@ -1050,17 +1051,16 @@ impl ViewInstance {
     }
 
     fn review_mark(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-            let (Some(Value::Text(run)), Some(Value::Ref(r))) =
-                (aref.args.first(), aref.args.get(1))
-            else {
-                return Err(RuntimeError::BadArgs("a malformed change mark".into()));
-            };
-            self.events.borrow_mut().push(ViewEvent::Review {
-                run: run.clone(),
-                target: ResourceRef::clone(&r.target),
-            });
-            Ok(InvokeOutcome::Done(Value::Unit))
-            }
+        let (Some(Value::Text(run)), Some(Value::Ref(r))) = (aref.args.first(), aref.args.get(1))
+        else {
+            return Err(RuntimeError::BadArgs("a malformed change mark".into()));
+        };
+        self.events.borrow_mut().push(ViewEvent::Review {
+            run: run.clone(),
+            target: ResourceRef::clone(&r.target),
+        });
+        Ok(InvokeOutcome::Done(Value::Unit))
+    }
 
     /// Copy link was chosen on a resource: the window's host mints its link and copies it.
     fn copy_link(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
@@ -1075,125 +1075,125 @@ impl ViewInstance {
     }
 
     fn undo_step(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-            let ask = match aref.args.as_slice() {
-                [Value::Text(kind), Value::Text(change), Value::Ref(r)] if kind == "step" => {
-                    UndoAsk::Step {
-                        change: change.clone(),
-                        target: ResourceRef::clone(&r.target),
-                    }
+        let ask = match aref.args.as_slice() {
+            [Value::Text(kind), Value::Text(change), Value::Ref(r)] if kind == "step" => {
+                UndoAsk::Step {
+                    change: change.clone(),
+                    target: ResourceRef::clone(&r.target),
                 }
-                [Value::Text(kind), Value::Text(run), _] if kind == "run" => {
-                    UndoAsk::Run { run: run.clone() }
-                }
-                _ => return Err(RuntimeError::BadArgs("a malformed `undo`".into())),
-            };
-            self.events.borrow_mut().push(ViewEvent::Undo(ask));
-            Ok(InvokeOutcome::Done(Value::Unit))
             }
+            [Value::Text(kind), Value::Text(run), _] if kind == "run" => {
+                UndoAsk::Run { run: run.clone() }
+            }
+            _ => return Err(RuntimeError::BadArgs("a malformed `undo`".into())),
+        };
+        self.events.borrow_mut().push(ViewEvent::Undo(ask));
+        Ok(InvokeOutcome::Done(Value::Unit))
+    }
 
     fn mark_seen(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-            let [Value::List(ids)] = aref.args.as_slice() else {
-                return Err(RuntimeError::BadArgs("a malformed `mark seen`".into()));
-            };
-            let ids: Vec<String> = ids
-                .iter()
-                .filter_map(|id| id.as_text().map(str::to_owned))
-                .collect();
-            let count = self
-                .core
-                .mark_all_seen(&self.live.viewer, &ids)
-                .map_err(|error| RuntimeError::Package(error.to_string()))?;
-            if count > 0 {
-                self.events.borrow_mut().push(ViewEvent::Seen { count });
-            }
-            Ok(InvokeOutcome::Done(Value::Unit))
-            }
+        let [Value::List(ids)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed `mark seen`".into()));
+        };
+        let ids: Vec<String> = ids
+            .iter()
+            .filter_map(|id| id.as_text().map(str::to_owned))
+            .collect();
+        let count = self
+            .core
+            .mark_all_seen(&self.live.viewer, &ids)
+            .map_err(|error| RuntimeError::Package(error.to_string()))?;
+        if count > 0 {
+            self.events.borrow_mut().push(ViewEvent::Seen { count });
+        }
+        Ok(InvokeOutcome::Done(Value::Unit))
+    }
 
-    fn run_then(&self, aref: &ActionRef, gesture: Option<&str>) -> Result<InvokeOutcome, RuntimeError> {
-            let [Value::Action(first), Value::Action(next)] = aref.args.as_slice() else {
-                return Err(RuntimeError::BadArgs("a malformed `then`".into()));
-            };
-            match self.run_in(first, gesture)? {
-                InvokeOutcome::Done(_) if !self.applies_here(next) => {
-                    Ok(InvokeOutcome::Done(Value::Unit))
-                }
-                InvokeOutcome::Done(_) => self.run_in(next, gesture),
-                // The step waits on a call: what follows it runs when the step is done, not
-                // now, while it is paused.
-                InvokeOutcome::Waits { run, call } => {
-                    let invocation = self.core.await_end(&run)?;
-                    self.then_waiting.borrow_mut().push((
-                        invocation,
-                        ActionRef::clone(next),
-                        gesture.map(str::to_owned),
-                    ));
-                    Ok(InvokeOutcome::Waits { run, call })
-                }
-                other => Ok(other),
+    fn run_then(
+        &self,
+        aref: &ActionRef,
+        gesture: Option<&str>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let [Value::Action(first), Value::Action(next)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed `then`".into()));
+        };
+        match self.run_in(first, gesture)? {
+            InvokeOutcome::Done(_) if !self.applies_here(next) => {
+                Ok(InvokeOutcome::Done(Value::Unit))
             }
+            InvokeOutcome::Done(_) => self.run_in(next, gesture),
+            // The step waits on a call: what follows it runs when the step is done, not
+            // now, while it is paused.
+            InvokeOutcome::Waits { run, call } => {
+                let invocation = self.core.await_end(&run)?;
+                self.then_waiting.borrow_mut().push((
+                    invocation,
+                    ActionRef::clone(next),
+                    gesture.map(str::to_owned),
+                ));
+                Ok(InvokeOutcome::Waits { run, call })
             }
+            other => Ok(other),
+        }
+    }
 
     fn call_input(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-            let [Value::Ref(r), Value::Text(input)] = aref.args.as_slice() else {
-                return Err(RuntimeError::BadArgs("a malformed call input".into()));
-            };
-            self.events.borrow_mut().push(ViewEvent::Call {
-                target: ResourceRef::clone(&r.target),
-                step: CallStep::SelectInput(input.clone()),
-            });
-            Ok(InvokeOutcome::Done(Value::Unit))
-            }
+        let [Value::Ref(r), Value::Text(input)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed call input".into()));
+        };
+        self.events.borrow_mut().push(ViewEvent::Call {
+            target: ResourceRef::clone(&r.target),
+            step: CallStep::SelectInput(input.clone()),
+        });
+        Ok(InvokeOutcome::Done(Value::Unit))
+    }
 
     fn call_volume(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-            let [Value::Ref(r), Value::Actor(member), Value::Float(percent)] =
-                aref.args.as_slice()
-            else {
-                return Err(RuntimeError::BadArgs("a malformed call volume".into()));
-            };
-            let percent = crate::host_ui::call_volume_percent(*percent)
-                .map_err(|why| RuntimeError::BadArgs(why.into()))?;
-            let member = member
-                .member_id()
-                .and_then(|member| member.person_id().map(str::to_owned))
-                .ok_or_else(|| {
-                    RuntimeError::BadArgs(
-                        "a call's volume is a member's, a person of the call".into(),
-                    )
-                })?;
-            self.events.borrow_mut().push(ViewEvent::Call {
-                target: ResourceRef::clone(&r.target),
-                step: CallStep::Volume { member, percent },
-            });
-            Ok(InvokeOutcome::Done(Value::Unit))
-            }
+        let [Value::Ref(r), Value::Actor(member), Value::Float(percent)] = aref.args.as_slice()
+        else {
+            return Err(RuntimeError::BadArgs("a malformed call volume".into()));
+        };
+        let percent = crate::host_ui::call_volume_percent(*percent)
+            .map_err(|why| RuntimeError::BadArgs(why.into()))?;
+        let member = member
+            .member_id()
+            .and_then(|member| member.person_id().map(str::to_owned))
+            .ok_or_else(|| {
+                RuntimeError::BadArgs("a call's volume is a member's, a person of the call".into())
+            })?;
+        self.events.borrow_mut().push(ViewEvent::Call {
+            target: ResourceRef::clone(&r.target),
+            step: CallStep::Volume { member, percent },
+        });
+        Ok(InvokeOutcome::Done(Value::Unit))
+    }
 
     fn call_step(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-            let [Value::Ref(r), Value::Text(step), Value::Bool(on)] = aref.args.as_slice()
-            else {
-                return Err(RuntimeError::BadArgs("a malformed call step".into()));
-            };
-            let step = CallStep::named(step, *on)
-                .ok_or_else(|| RuntimeError::BadArgs(format!("no call step `{step}`")))?;
-            self.events.borrow_mut().push(ViewEvent::Call {
-                target: ResourceRef::clone(&r.target),
-                step,
-            });
-            Ok(InvokeOutcome::Done(Value::Unit))
-            }
+        let [Value::Ref(r), Value::Text(step), Value::Bool(on)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed call step".into()));
+        };
+        let step = CallStep::named(step, *on)
+            .ok_or_else(|| RuntimeError::BadArgs(format!("no call step `{step}`")))?;
+        self.events.borrow_mut().push(ViewEvent::Call {
+            target: ResourceRef::clone(&r.target),
+            step,
+        });
+        Ok(InvokeOutcome::Done(Value::Unit))
+    }
 
     fn run_line(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-            let [Value::Ref(r), Value::Text(line)] = aref.args.as_slice() else {
-                return Err(RuntimeError::BadArgs("a malformed line to run".into()));
-            };
-            // A line of nothing runs nothing.
-            if !line.trim().is_empty() {
-                self.events.borrow_mut().push(ViewEvent::RunLine {
-                    target: ResourceRef::clone(&r.target),
-                    line: line.trim().to_owned(),
-                });
-            }
-            Ok(InvokeOutcome::Done(Value::Unit))
-            }
+        let [Value::Ref(r), Value::Text(line)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed line to run".into()));
+        };
+        // A line of nothing runs nothing.
+        if !line.trim().is_empty() {
+            self.events.borrow_mut().push(ViewEvent::RunLine {
+                target: ResourceRef::clone(&r.target),
+                line: line.trim().to_owned(),
+            });
+        }
+        Ok(InvokeOutcome::Done(Value::Unit))
+    }
 
     /// The steps of a handler after it binds an action's answer: the action runs first, and only
     /// an answer it gives runs the steps, as the view's own code in a frame of its window. An
@@ -1204,8 +1204,7 @@ impl ViewInstance {
         aref: &ActionRef,
         gesture: Option<&str>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        let [Value::Action(first), Value::Text(id), Value::List(captures)] =
-            aref.args.as_slice()
+        let [Value::Action(first), Value::Text(id), Value::List(captures)] = aref.args.as_slice()
         else {
             return Err(RuntimeError::BadArgs("a malformed handler answer".into()));
         };

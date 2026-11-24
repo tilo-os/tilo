@@ -634,13 +634,11 @@ impl Instance {
                 .map(|(path, _, blocks)| ui::Patch::SetProp {
                     path,
                     name: REVEAL.to_owned(),
-                    value: Some(ui::Value::Opt(Some(Box::new(ui::Value::Text(
-                        if blocks {
-                            block_ask.clone()
-                        } else {
-                            line_ask.clone()
-                        },
-                    ))))),
+                    value: Some(ui::Value::Opt(Some(Box::new(ui::Value::Text(if blocks {
+                        block_ask.clone()
+                    } else {
+                        line_ask.clone()
+                    }))))),
                 })
                 .collect();
             if patches.is_empty() {
