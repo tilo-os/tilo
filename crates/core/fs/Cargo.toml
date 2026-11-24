@@ -26,7 +26,7 @@ default = ["filesystem", "tree-sync"]
 # External licensed simulator; never enabled by ordinary filesystem tests.
 rystic-tests = ["filesystem"]
 # The document-media capability over the content store, without the mount.
-document-media = ["dep:runtime-fs", "dep:tilo-net", "dep:serde_json", "dep:fs-protocol", "dep:thiserror"]
+document-media = ["dep:runtime-fs", "dep:tilo-net", "dep:serde_json", "dep:fs-protocol", "dep:thiserror", "dep:tilo-content", "dep:tilo-seal"]
 # Keeping a workspace's tree records converged with a peer's, over that peer's own document
 # reads and writes (the CLI's folder, a server's member copy).
 tree-sync = ["filesystem", "dep:tilo-server-protocol"]
@@ -112,6 +112,7 @@ tilo-automerge = { workspace = true, optional = true }
 # Conflict members can come from peers: the tilo-doc merge decodes them only here.
 tilo-automerge-isolate = { version = "0.1.0", path = "../tilo-automerge-isolate", optional = true }
 tilo-content = { version = "0.1.0", path = "../content", optional = true }
+tilo-seal = { version = "0.1.0", path = "../tilo-seal", optional = true }
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types", optional = true }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy", optional = true }
 # A capability may name the app whose sandbox it is; the pre-rename list is read into it.

@@ -86,6 +86,16 @@ fn convergent_hasher(secret: &tilo_seal::SymmetricKey) -> blake3::Hasher {
     ))
 }
 
+/// The key `bytes` are sealed under by whoever holds the members' content `secret`: the same
+/// bytes take the same key, so they are one item under one reference however often they are kept
+/// ([`ContentBackend::content_secret`]).
+#[must_use]
+pub fn part_key(secret: &tilo_seal::SymmetricKey, bytes: &[u8]) -> tilo_seal::SymmetricKey {
+    let mut hasher = convergent_hasher(secret);
+    hasher.update(bytes);
+    tilo_seal::SymmetricKey::from_bytes(*hasher.finalize().as_bytes())
+}
+
 const KEEP_PLAINTEXT: usize = 1024 * 1024;
 
 static SPILL_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -391,6 +401,20 @@ pub trait ContentBackend: Send + Sync {
         None
     }
 
+    /// Seal and keep what `reader` yields, when the store behind this backend seals what it is
+    /// handed itself, under the members' secret it holds and this backend does not (a session's
+    /// store, whose device's daemon holds the workspace's keys): the sealed reference it answers
+    /// is what a sealing store hands back. `None`, reading nothing, when the backend keeps only
+    /// what is sealed before it reaches it.
+    fn put_sealed(
+        &self,
+        reader: &mut dyn Read,
+        mime: &str,
+    ) -> Option<Result<Stored, ContentError>> {
+        let _ = (reader, mime);
+        None
+    }
+
     /// The largest item this store accepts: a write that hashes before it seals refuses a larger
     /// one as it reads it, rather than holding it whole first ([`ContentStore::put_reader`]).
     fn max_item_bytes(&self) -> usize {
@@ -678,6 +702,9 @@ impl ContentStore {
     pub fn put_reader(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
         if !self.seals {
             return self.backend.put(reader, mime);
+        }
+        if let Some(stored) = self.backend.put_sealed(reader, mime) {
+            return stored;
         }
         // With the members' secret the key is the bytes' keyed hash, so they are read once to
         // hash them, kept in memory while they are small and in a file beside the store's own

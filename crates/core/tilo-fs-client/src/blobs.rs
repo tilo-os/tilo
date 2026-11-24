@@ -318,6 +318,17 @@ enum PublicJob {
 }
 
 /// Storing content: one message, or an upload of several.
+/// What an upload keeps.
+#[derive(Clone, Copy)]
+enum UploadKind {
+    /// Document media, under its own address.
+    Media,
+    /// A file's content, with no media bound.
+    File,
+    /// A record's part, sealed by the device.
+    Sealed,
+}
+
 enum StoreJob {
     Put {
         target: u64,
@@ -327,12 +338,7 @@ enum StoreJob {
     },
     Begin {
         target: u64,
-        mime: String,
-        reply: Answer<u64>,
-    },
-    /// A file's content: streamed like [`Self::Begin`], with no media bound.
-    BeginFile {
-        target: u64,
+        kind: UploadKind,
         mime: String,
         reply: Answer<u64>,
     },
@@ -571,6 +577,7 @@ impl BlobClient {
                     let id = self.call(|reply| {
                         Job::Store(StoreJob::Begin {
                             target,
+                            kind: UploadKind::Media,
                             mime,
                             reply,
                         })
@@ -646,8 +653,9 @@ impl BlobClient {
                 }
                 None => {
                     let id = self.call(|reply| {
-                        Job::Store(StoreJob::BeginFile {
+                        Job::Store(StoreJob::Begin {
                             target,
+                            kind: UploadKind::File,
                             mime: FILE_MIME.to_owned(),
                             reply,
                         })
@@ -686,6 +694,61 @@ impl BlobClient {
         checked_ref(stored, &hasher, total)
     }
 
+    /// Store everything `reader` yields as a record's part the device seals, [`UPLOAD_PIECE`] at a
+    /// time: under a key the members' secret of the scope's workspace derives from the bytes when
+    /// the device holds it, and a fresh one otherwise. Answers the sealed reference the record
+    /// keeps; the members' secret never leaves the device's daemon.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::TooLarge`] past [`MAX_BLOB_BYTES`], [`BlobError::Input`] when `reader`
+    /// fails, the service's refusal, or a connection error. A failed put stores nothing.
+    pub fn put_sealed(&self, reader: &mut dyn io::Read, mime: &str) -> Result<String, BlobError> {
+        let target = self.data_target()?;
+        let mut reader = reader.take(MAX_BLOB_BYTES.saturating_add(1));
+        let mime = mime.to_owned();
+        let id = self.call(|reply| {
+            Job::Store(StoreJob::Begin {
+                target,
+                kind: UploadKind::Sealed,
+                mime,
+                reply,
+            })
+        })?;
+        let mut open = OpenUpload {
+            client: self,
+            id,
+            open: true,
+        };
+        let mut total: u64 = 0;
+        loop {
+            let chunk = next_chunk(&mut reader)?;
+            total = total.saturating_add(chunk.len() as u64);
+            if total > MAX_BLOB_BYTES {
+                return Err(BlobError::TooLarge {
+                    len: total,
+                    limit: MAX_BLOB_BYTES,
+                });
+            }
+            let last = chunk.len() < UPLOAD_PIECE;
+            if !chunk.is_empty() {
+                self.call(|reply| {
+                    Job::Store(StoreJob::Write {
+                        upload: id,
+                        bytes: chunk,
+                        reply,
+                    })
+                })?;
+            }
+            if last {
+                break;
+            }
+        }
+        open.open = false;
+        let stored = self.call(|reply| Job::Store(StoreJob::Finish { upload: id, reply }))?;
+        Ok(stored.hash)
+    }
+
     /// Begin storing content handed over piece by piece
     /// ([`BlobUpload::append`]): for a caller that receives the content
     /// over its own transport rather than holding a reader. Hashed as it
@@ -702,6 +765,7 @@ impl BlobClient {
         let id = self.call(|reply| {
             Job::Store(StoreJob::Begin {
                 target,
+                kind: UploadKind::Media,
                 mime,
                 reply,
             })
@@ -1495,32 +1559,18 @@ async fn store(job: StoreJob, session: &Session) {
         }
         StoreJob::Begin {
             target,
+            kind,
             mime,
             reply,
         } => {
             let result = async {
                 let client = session.scopes(target)?;
-                match client.call(FsRequest::Upload { mime }).await? {
-                    FsReply::Handle(handle) => {
-                        let upload = session.child(handle)?;
-                        let id = session.issue_id();
-                        session.uploads.borrow_mut().insert(id, upload);
-                        Ok(id)
-                    }
-                    _ => Err(BlobError::Refused("unexpected media reply".into())),
-                }
-            }
-            .await;
-            let _ = reply.send(result);
-        }
-        StoreJob::BeginFile {
-            target,
-            mime,
-            reply,
-        } => {
-            let result = async {
-                let client = session.scopes(target)?;
-                match client.call(FsRequest::UploadFile { mime }).await? {
+                let request = match kind {
+                    UploadKind::Media => FsRequest::Upload { mime },
+                    UploadKind::File => FsRequest::UploadFile { mime },
+                    UploadKind::Sealed => FsRequest::UploadSealed { mime },
+                };
+                match client.call(request).await? {
                     FsReply::Handle(handle) => {
                         let upload = session.child(handle)?;
                         let id = session.issue_id();

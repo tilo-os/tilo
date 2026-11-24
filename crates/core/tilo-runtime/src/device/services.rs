@@ -2204,6 +2204,16 @@ impl Daemon {
                 },
             ));
         }
+        // A session holds no workspace's keys: the parts it keeps are sealed here, under the
+        // members' secret of their workspace, so the same bytes kept twice are one item.
+        let keys = workspaces.keys();
+        media.seal_content_with(Arc::new(move |scope: &runtime_fs::blobs::BlobScope| {
+            let workspace = scope.workspace().parse().ok()?;
+            match keys.get()?.access(workspace).0 {
+                tilo_workspace_keys::KeyAccess::Ready(keys) => keys.document_content_secret().ok(),
+                _ => None,
+            }
+        }));
         // The device's record of every invocation it was asked for is what the workspace's
         // dispatch reads and follows; the workspace service writes what a model call cost into
         // it as it answers.

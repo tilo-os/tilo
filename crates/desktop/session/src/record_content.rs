@@ -239,23 +239,29 @@ struct Scope {
     app: String,
 }
 
+/// A part as `reader` yields it, refused past what one record's part may hold.
+fn read_part(reader: &mut dyn std::io::Read) -> Result<Vec<u8>, tilo_content::ContentError> {
+    let limit = neighbour_wire::content::MAX_CONTENT_BYTES;
+    let mut bytes = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(tilo_content::ContentError::ItemTooLarge {
+            actual: bytes.len(),
+            limit: usize::try_from(limit).unwrap_or(usize::MAX),
+        });
+    }
+    Ok(bytes)
+}
+
 impl tilo_content::ContentBackend for Scope {
     fn put(
         &self,
         reader: &mut dyn std::io::Read,
         _mime: &str,
     ) -> Result<tilo_content::Stored, tilo_content::ContentError> {
-        let limit = neighbour_wire::content::MAX_CONTENT_BYTES;
-        let mut bytes = Vec::new();
-        reader
-            .take(limit.saturating_add(1))
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > limit {
-            return Err(tilo_content::ContentError::ItemTooLarge {
-                actual: bytes.len(),
-                limit: usize::try_from(limit).unwrap_or(usize::MAX),
-            });
-        }
+        let bytes = read_part(reader)?;
         let hash = self
             .content
             .keep_in(&self.workspace, &self.app, &bytes)
@@ -264,6 +270,30 @@ impl tilo_content::ContentBackend for Scope {
             hash,
             len: bytes.len() as u64,
         })
+    }
+
+    /// The daemon seals what the session keeps: it holds the members' secret, so the same bytes
+    /// kept twice are one item under one reference.
+    fn put_sealed(
+        &self,
+        reader: &mut dyn std::io::Read,
+        mime: &str,
+    ) -> Option<Result<tilo_content::Stored, tilo_content::ContentError>> {
+        let bytes = match read_part(reader) {
+            Ok(bytes) => bytes,
+            Err(error) => return Some(Err(error)),
+        };
+        let sealed = self.content.on(&self.workspace, &self.app, |scoped| {
+            scoped.put_sealed(&mut bytes.as_slice(), mime)
+        });
+        Some(
+            sealed
+                .map(|hash| tilo_content::Stored {
+                    hash,
+                    len: bytes.len() as u64,
+                })
+                .map_err(tilo_content::ContentError::Io),
+        )
     }
 
     fn open(

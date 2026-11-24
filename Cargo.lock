@@ -17487,6 +17487,7 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-rt",
  "tilo-runtime-fs",
+ "tilo-seal",
  "tilo-server-protocol",
  "tilo-socket",
  "tilo-test-env",

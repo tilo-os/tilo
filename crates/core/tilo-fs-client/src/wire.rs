@@ -195,6 +195,12 @@ pub enum FsRequest {
     UploadFile {
         mime: String,
     },
+    /// Store a record's part sealed by the device: streamed like an upload, sealed under a key
+    /// the members' secret of the scope's workspace derives from the bytes when the device holds
+    /// it, so the same bytes kept twice are one item, and answered as the sealed reference.
+    UploadSealed {
+        mime: String,
+    },
 }
 
 /// A reply's content. Each request has one shape: the caller decodes the

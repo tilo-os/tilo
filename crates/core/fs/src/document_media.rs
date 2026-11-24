@@ -73,6 +73,8 @@ async fn document_reference_tag(store: &ContentStore, tag: String, hash: Hash) -
 
 /// Fetches content this device does not keep, given the scope that references it and its address.
 type ContentFetcher = Arc<dyn Fn(&BlobScope, &str) + Send + Sync>;
+/// The content secret the members of a scope's workspace hold, when this device holds it.
+pub type ContentSecrets = Arc<dyn Fn(&BlobScope) -> Option<tilo_seal::SymmetricKey> + Send + Sync>;
 /// When each open scope's address was last asked for.
 type AskedAt = std::collections::HashMap<(BlobScope, String), std::time::Instant>;
 
@@ -84,6 +86,9 @@ pub struct DocumentMedia {
     /// content, which asks the workspace's other devices and keeps what they answer here, where
     /// the session's next read finds it.
     fetching: std::sync::RwLock<Option<ContentFetcher>>,
+    /// The members' content secret a part this device seals for a session derives its key from:
+    /// the device's daemon holds the workspace's keys, and its sessions do not.
+    secrets: std::sync::RwLock<Option<ContentSecrets>>,
     /// When each scope's address was last asked for among those open: a session reads again as it
     /// waits, and the host is asked once a moment rather than once a read.
     asked: std::sync::Mutex<AskedAt>,
@@ -101,6 +106,7 @@ impl DocumentMedia {
             store,
             public: None,
             fetching: std::sync::RwLock::new(None),
+            secrets: std::sync::RwLock::new(None),
             asked: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -111,6 +117,7 @@ impl DocumentMedia {
             store,
             public: Some(public),
             fetching: std::sync::RwLock::new(None),
+            secrets: std::sync::RwLock::new(None),
             asked: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -122,6 +129,21 @@ impl DocumentMedia {
         if let Ok(mut held) = self.fetching.write() {
             *held = Some(fetch);
         }
+    }
+
+    /// Seal the parts a session keeps under keys `secrets` derives from the members' secret from
+    /// now on: the same bytes kept twice are then one item under one reference. Until a host
+    /// installs one, each part is sealed under a fresh key.
+    pub fn seal_with(&self, secrets: ContentSecrets) {
+        if let Ok(mut held) = self.secrets.write() {
+            *held = Some(secrets);
+        }
+    }
+
+    /// The members' content secret of `scope`'s workspace, when the host holds it.
+    fn secret(&self, scope: &BlobScope) -> Option<tilo_seal::SymmetricKey> {
+        let secrets = self.secrets.read().ok()?.clone()?;
+        secrets(scope)
     }
 
     /// Start fetching `hash` of `scope` from elsewhere, when a host fetches at all, once a moment:
@@ -336,6 +358,43 @@ impl BlobBackend for DocumentMedia {
             let (hash, len) = self.store_stream(&scope, pieces).await?;
             Ok(BlobRef {
                 hash: hash.to_hex(),
+                len,
+                mime,
+            })
+        })
+    }
+
+    fn put_sealed_stream(
+        self: Arc<Self>,
+        scope: BlobScope,
+        mut chunks: BlobChunks,
+        mime: String,
+    ) -> BlobFuture<Result<BlobRef, BlobError>> {
+        Box::pin(async move {
+            // The key derives from the whole plaintext, so it is held before it is sealed: a
+            // part is at most MAX_BLOB_BYTES.
+            let mut bytes = Vec::new();
+            while let Some(piece) = chunks.next().await {
+                let piece = piece.map_err(|error| BlobError::Refused(error.to_string()))?;
+                bytes.extend_from_slice(&piece);
+                if bytes.len() as u64 > MAX_BLOB_BYTES {
+                    return Err(BlobError::TooLarge {
+                        len: bytes.len() as u64,
+                        limit: MAX_BLOB_BYTES,
+                    });
+                }
+            }
+            let key = match self.secret(&scope) {
+                Some(secret) => tilo_content::part_key(&secret, &bytes),
+                None => tilo_seal::SymmetricKey::generate()
+                    .map_err(|error| BlobError::Refused(error.to_string()))?,
+            };
+            let len = bytes.len() as u64;
+            let sealed = tilo_seal::content::seal(&key, &bytes)
+                .map_err(|error| BlobError::Refused(error.to_string()))?;
+            let hash = self.store(&scope, sealed).await?;
+            Ok(BlobRef {
+                hash: tilo_content::ContentRef::sealed(&hash.to_hex(), key).to_string(),
                 len,
                 mime,
             })

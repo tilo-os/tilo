@@ -117,6 +117,13 @@ impl MediaHost {
     pub fn fetch_content_through(&self, fetch: FetchContent) {
         self.media.fetch_through(fetch);
     }
+
+    /// Seal the parts a session keeps under keys derived from the members' secret `secrets`
+    /// answers for a scope's workspace from now on, so the same bytes kept twice are one item:
+    /// the workspace's keys stay in the daemon, which seals for its sessions.
+    pub fn seal_content_with(&self, secrets: tilo_fs::document_media::ContentSecrets) {
+        self.media.seal_with(secrets);
+    }
 }
 
 /// How long a media host that ends may take to close its store.

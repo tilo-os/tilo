@@ -53,6 +53,15 @@ impl Device {
         }
     }
 
+    /// The members' secret of the workspace, as the daemon holds it: what it seals for its
+    /// sessions derives its keys from it.
+    fn content_secret(&self, secret: tilo_seal::SymmetricKey) {
+        self.media
+            .seal_content_with(Arc::new(move |_: &tilo_fs_client::blobs::BlobScope| {
+                Some(secret.clone())
+            }));
+    }
+
     /// This session's content, as a session that restarted sees it.
     fn restarted(&self) -> Arc<RecordContent> {
         open(Some(self.socket.clone()))
@@ -128,6 +137,9 @@ fn what_an_app_kept_through_its_workspace_outlives_the_session() {
 fn a_record_the_session_keeps_itself_keeps_its_parts_sealed_on_the_shelf() {
     let device = Device::open();
     let bytes = picture();
+    // The daemon holds the members' secret of the workspace, and seals what the session keeps.
+    let secret = tilo_seal::SymmetricKey::generate().expect("a content secret");
+    device.content_secret(secret);
     let mine = device.content.store(WORKSPACE, APP);
     let reference = mine.put(&bytes).expect("the record's store keeps the part");
     assert!(
@@ -139,6 +151,11 @@ fn a_record_the_session_keeps_itself_keeps_its_parts_sealed_on_the_shelf() {
         Some(bytes.as_slice()),
         "the device that kept the part reads it back"
     );
+
+    // The same bytes kept again are the same reference, and one item: the members' secret, not the
+    // bytes alone, is what derives each keep's key.
+    let again = device.content.store(WORKSPACE, APP).put(&bytes);
+    assert_eq!(again.expect("kept again").as_str(), reference.as_str());
 }
 
 /// What this device does not keep is asked for by the daemon, which asks the workspace's other

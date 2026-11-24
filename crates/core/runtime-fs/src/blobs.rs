@@ -109,6 +109,19 @@ pub trait BlobBackend: Send + Sync + 'static {
     ) -> BlobFuture<Result<BlobRef, BlobError>> {
         self.put_stream(scope, chunks, mime)
     }
+    /// Seal and keep a record's part that arrives in pieces: under a key the members' secret of
+    /// the scope's workspace derives from the bytes when this device holds it, so the same bytes
+    /// kept twice are one item, and a fresh key otherwise. Answers the sealed reference, whose
+    /// `len` is the plaintext's. A backend that seals nothing refuses.
+    fn put_sealed_stream(
+        self: Arc<Self>,
+        scope: BlobScope,
+        chunks: BlobChunks,
+        mime: String,
+    ) -> BlobFuture<Result<BlobRef, BlobError>> {
+        let _ = (scope, chunks, mime);
+        Box::pin(async { Err(BlobError::Refused("this store seals nothing".into())) })
+    }
     fn read(
         self: Arc<Self>,
         scope: BlobScope,
@@ -290,7 +303,15 @@ impl ServeObject for ScopedBlobs {
                     &capabilities,
                     scope.clone(),
                     mime,
-                    false,
+                    UploadKind::Media,
+                )),
+                FsRequest::UploadSealed { mime } => Ok(start_upload(
+                    &self.backend,
+                    &self.runtime,
+                    &capabilities,
+                    scope.clone(),
+                    mime,
+                    UploadKind::Sealed,
                 )),
                 FsRequest::UploadFile { mime } => Ok(start_upload(
                     &self.backend,
@@ -298,7 +319,7 @@ impl ServeObject for ScopedBlobs {
                     &capabilities,
                     scope.clone(),
                     mime,
-                    true,
+                    UploadKind::File,
                 )),
                 FsRequest::Get {
                     hash,
@@ -408,20 +429,33 @@ struct Uploading {
 
 /// Begin an upload of `scope`'s content, media or file: the backend consumes
 /// the pieces as they are written, so nothing here holds the whole payload.
+/// What an upload keeps.
+#[derive(Clone, Copy)]
+enum UploadKind {
+    /// Document media, under its own address.
+    Media,
+    /// A file's content, which the media capability's size does not bound.
+    File,
+    /// A record's part, which the backend seals.
+    Sealed,
+}
+
 fn start_upload(
     backend: &Arc<dyn BlobBackend>,
     runtime: &tokio::runtime::Handle,
     capabilities: &Capabilities,
     scope: BlobScope,
     mime: String,
-    file: bool,
+    kind: UploadKind,
 ) -> FsReply {
     let (pieces, chunks) = BlobChunks::channel(UPLOAD_PIECES_IN_FLIGHT);
-    let stored = if file {
-        runtime.spawn(Arc::clone(backend).put_file_stream(scope, chunks, mime))
-    } else {
-        runtime.spawn(Arc::clone(backend).put_stream(scope, chunks, mime))
-    };
+    let backend = Arc::clone(backend);
+    let stored = runtime.spawn(match kind {
+        UploadKind::Media => backend.put_stream(scope, chunks, mime),
+        UploadKind::File => backend.put_file_stream(scope, chunks, mime),
+        UploadKind::Sealed => backend.put_sealed_stream(scope, chunks, mime),
+    });
+    let file = matches!(kind, UploadKind::File);
     let (ended, writing) = tokio::sync::watch::channel(false);
     let upload = Arc::new(Upload {
         state: tokio::sync::Mutex::new(Some(Uploading {
