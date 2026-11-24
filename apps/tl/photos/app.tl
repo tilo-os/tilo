@@ -65,12 +65,27 @@ type Person (untitled: "Person") {
     photos: Set<Text>
 }
 
+/// One face the device found, and the photos it is in. A face has no name until the person who
+/// scanned gives it one, so it is that person's alone (`readers: author`) until then; approving a
+/// name sends it to the workspace, and from that moment everyone in it reads it.
+type Suggestion (readers: author until sent) {
+    /// The person's name, empty while the suggestion has none.
+    name: Text
+    /// The photos this face is in, by their ids in the library.
+    photos: Set<Text>
+    /// Whether a name was approved: a sent suggestion is the workspace's, not only its author's.
+    sent: Bool = false
+}
+
 /// The workspace's photo library: every photo, the albums people made of them, and the people
 /// the photos show.
 type Library {
     photos: Collection<Photo>
     albums: Collection<Album>
     people: Collection<Person>
+    /// Faces the image model found and nobody has named yet: each is its scanner's alone until
+    /// they approve a name, which sends it to the workspace.
+    suggestions: Collection<Suggestion>
     /// The last folder import: how many files it looked at, how many became photos, and what it
     /// could not read, so a person knows what arrived and what did not.
     import_found: Int = 0
@@ -438,6 +453,94 @@ action rename_person(lib: Library, person: Person, to: Text) (
     }
 }
 
+/// The faces the device finds in `photos`, kept as suggestions of the person's own: a face has
+/// no name, so nothing of it reaches another member until a name is approved.
+action find_faces(lib: Library, photos: List<Photo>) uses image {
+    let images = photos.map(p -> shown_picture(p))
+    if images.is_empty() {
+        return
+    }
+    match try vision.faces(vision.image_model, images: images) {
+        .ok(groups) => {
+            for group in groups {
+                let ids = photos.filter(p -> group.contains(shown_picture(p))).map(p -> p.id)
+                if not ids.is_empty() and not known_face(lib, ids) {
+                    let made = lib.suggestions.insert(Suggestion())
+                    for id in ids {
+                        made.photos.add(id)
+                    }
+                }
+            }
+        }
+        .err(_) => {}
+    }
+}
+
+/// Scans the next photos on this device nobody is named on yet: the model takes twelve at a
+/// time, so a scan is one batch, and each face it finds is a suggestion of the scanner's own.
+action scan_faces(lib: Library) uses image (icon: .scan_line, label: "Scan for faces") {
+    let batch = lib.photos.filter(p -> p.people.is_empty() and p.picture != "").take(12)
+    find_faces(lib, batch)
+}
+
+/// Whether a group of photos is already a suggestion, or already on a person: the same face read
+/// again does not become a second suggestion.
+fn known_face(lib: Library, ids: List<Text>) -> Bool {
+    for s in lib.suggestions {
+        if s.photos.len() == ids.len() and ids.all(id -> s.photos.contains(id)) {
+            return true
+        }
+    }
+    for p in lib.people {
+        if ids.all(id -> p.photos.contains(id)) {
+            return true
+        }
+    }
+    false
+}
+
+/// Names a face: its photos join the person with that name, and the suggestion is sent, so the
+/// workspace keeps it.
+action approve_suggestion(lib: Library, s: Suggestion, name: Text = s.name) (
+    icon: .check,
+    label: "Approve the name",
+) {
+    require name != "" "Enter a name first"
+    s.name = name
+    let person = person_named(lib, name)
+    for id in s.photos {
+        person.photos.add(id)
+        if let p = lib.photos.find(x -> x.id == id) { p.people.add(name) }
+    }
+    s.sent = true
+}
+
+/// Puts a face's photos on a person the library already knows, and sends the suggestion.
+action merge_suggestion(lib: Library, s: Suggestion, person: Person) (icon: .users) {
+    s.name = person.name
+    for id in s.photos {
+        person.photos.add(id)
+        if let p = lib.photos.find(x -> x.id == id) { p.people.add(person.name) }
+    }
+    s.sent = true
+}
+
+/// Takes a suggestion away: the face is not offered again, since the photos are not rescanned
+/// into one while they are unnamed only by choice.
+destructive action dismiss_suggestion(lib: Library, s: Suggestion) (
+    icon: .x,
+    label: "Dismiss the suggestion",
+) {
+    lib.suggestions.remove(s)
+}
+
+/// The person the library knows by `name`, started where it knows none.
+action person_named(lib: Library, name: Text) -> Person {
+    if let held = lib.people.find(p -> p.name == name) {
+        held
+    } else { lib.people.insert(Person(name: name)) }
+}
+
 /// Starts a person the library knows, with the photos it already has of them.
 action new_person(lib: Library, name: Text, photos: List<Text>) -> Person (
     icon: .user,
@@ -659,6 +762,13 @@ view library(lib: Library) {
                         on press: vision.start(vision.analysis)
                     }
                 }
+                if not lib.photos.is_empty() {
+                    if vision.analysis.phase != "running" and vision.analysis.phase != "paused" {
+                        ui.Button("Scan for faces", icon: .scan_line) {
+                            on press: scan_faces(lib)
+                        }
+                    }
+                }
             }
         }
         sidebar: {
@@ -780,18 +890,59 @@ view present(lib: Library, slide: State<Int>, presenting: State<Bool>) {
 
 /// The people the library knows, each a row opening the photos they are on.
 view people_list(lib: Library, place: State<Text>, viewing: State<Text>) {
-    if lib.people.is_empty() {
-        ui.EmptyState(
-            "No people yet",
-            message: "The vision service proposes the people in your photos; name them, merge them and split them here.",
-            icon: .users,
-        )
-    } else {
-        ui.VirtualList(selection_follows_focus: true, fill) {
-            on select(person: Person): open(person)
-            for person in lib.people {
-                ui.ListItem(item: person) {
-                    person_row(person)
+    stack(gap: .section, fill) {
+        // The faces nobody has named: each is this device's own until its name is approved, so
+        // another member's suggestions never appear here.
+        if not lib.suggestions.is_empty() {
+            ui.Section("Faces to name") {
+                for s in lib.suggestions {
+                    stack(gap: .tight) {
+                        row(gap: .tight, align: .center) {
+                            ui.Avatar(name: s.name)
+                            ui.TextInput(bind: s.name, placeholder: "Name this person", fill)
+                            ui.Button("Approve", icon: .check, role: .primary) {
+                                on press: approve_suggestion(lib, s, s.name)
+                            }
+                            if not lib.people.is_empty() {
+                                ui.MenuButton("Merge", icon: .users) {
+                                    for person in lib.people {
+                                        ui.MenuItem(person.name) {
+                                            on choose: merge_suggestion(lib, s, person)
+                                        }
+                                    }
+                                }
+                            }
+                            ui.Button(
+                                "",
+                                icon: .x,
+                                icon_only: true,
+                                accessible_name: "Dismiss the suggestion",
+                            ) {
+                                on press: dismiss_suggestion(lib, s)
+                            }
+                        }
+                        ui.Text(
+                            "{s.photos.len()} photos suggested on this device, shared only once you name it.",
+                            role: .caption,
+                            secondary: true,
+                        )
+                    }
+                }
+            }
+        }
+        if lib.people.is_empty() and lib.suggestions.is_empty() {
+            ui.EmptyState(
+                "No people yet",
+                message: "The vision service proposes the people in your photos; name them, merge them and split them here.",
+                icon: .users,
+            )
+        } else if not lib.people.is_empty() {
+            ui.VirtualList(selection_follows_focus: true, fill) {
+                on select(person: Person): open(person)
+                for person in lib.people {
+                    ui.ListItem(item: person) {
+                        person_row(person)
+                    }
                 }
             }
         }

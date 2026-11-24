@@ -97,6 +97,27 @@ d-vbzsnqg5 = Fotos
 
 d-hc736lwy-filter-photos = Fotos
 
+d-xea2av67 = Vorschlag
+    .doc = Ein Gesicht, das das Gerät gefunden hat, und die Fotos, auf denen es zu sehen ist.
+    .noun = { $count ->
+        [one] Vorschlag
+       *[other] Vorschläge
+    }
+
+d-qracadw6 = Name
+    .doc = Der Name der Person, leer, solange der Vorschlag keinen hat.
+
+d-ehc6rrhm = Fotos
+    .doc = Die Fotos, auf denen dieses Gesicht zu sehen ist, nach ihren Kennungen in der Bibliothek.
+
+d-2adnxzro = Gesendet
+    .doc = Ob ein Name bestätigt wurde: ein gesendeter Vorschlag gehört dem Arbeitsbereich, nicht nur seinem Autor.
+
+d-xea2av67-filter-photos = Fotos
+
+d-xea2av67-filter-sent = Gesendet
+
+
 d-j45kskqf = Bibliothek
     .doc = Die Fotobibliothek des Arbeitsbereichs: jedes Foto, die Alben, die Menschen daraus machten, und die Menschen, die die Fotos zeigen.
     .noun = { $count ->
@@ -109,6 +130,9 @@ d-moeuycny = Fotos
 d-tqa4lyow = Alben
 
 d-xr5mtp2m = Personen
+
+d-r7k2giak = Vorschläge
+    .doc = Gesichter, die das Bildmodell gefunden hat und die noch niemand benannt hat: jedes gehört allein dem, der es gescannt hat, bis er einen Namen bestätigt und es damit in den Arbeitsbereich gibt.
 
 d-z2bwvzat = Foto importieren
     .doc = Importiert ein Foto, das die Person auswählt: die Bibliothek behält die Adresse seiner Bytes und den Namen, mit dem es kam.
@@ -211,6 +235,39 @@ d-fltwmykq-person = Person
 
 d-fltwmykq-to = An
 
+d-qwdie7fn = Gesichter finden
+    .doc = Die Gesichter, die das Gerät in `photos` findet, als Vorschläge der Person selbst: ein Gesicht hat keinen Namen, also erreicht nichts davon ein anderes Mitglied, bis ein Name bestätigt ist.
+
+d-qwdie7fn-photos = Fotos
+
+d-7223fwrx = Nach Gesichtern suchen
+    .doc = Sucht die nächsten Fotos auf diesem Gerät, auf denen noch niemand benannt ist: das Modell nimmt zwölf auf einmal, also ist eine Suche ein Durchgang, und jedes Gesicht, das sie findet, ist ein Vorschlag des Suchenden selbst.
+
+d-x3kp75qe = Den Namen bestätigen
+    .doc = Benennt ein Gesicht: seine Fotos kommen zu der Person mit diesem Namen, und der Vorschlag wird gesendet, sodass der Arbeitsbereich ihn behält.
+    .w-enter-a-name-first = Gib zuerst einen Namen ein
+
+d-x3kp75qe-s = V
+
+d-x3kp75qe-name = Name
+
+d-zsaipz5s = Vorschlag zusammenführen
+    .doc = Legt die Fotos eines Gesichts auf eine Person, die die Bibliothek schon kennt, und sendet den Vorschlag.
+
+d-zsaipz5s-s = V
+
+d-zsaipz5s-person = Person
+
+d-zpg34mwz = Den Vorschlag verwerfen
+    .doc = Nimmt einen Vorschlag weg: das Gesicht wird nicht wieder angeboten, da die Fotos nicht erneut zu einem zusammengefasst werden, solange sie nur aus freier Wahl unbenannt sind.
+
+d-zpg34mwz-s = V
+
+d-diaii65m = Person mit Namen
+    .doc = Die Person, die die Bibliothek unter `name` kennt, angelegt, wenn sie keine kennt.
+
+d-diaii65m-name = Name
+
 d-fdh5jyv7 = Neue Person
     .doc = Beginnt eine Person, die die Bibliothek kennt, mit den Fotos, die sie schon von ihr hat.
 
@@ -248,6 +305,8 @@ d-4ufdgmft = Ort löschen
 d-i45tq7ne = Foto speichern
     .doc = Das Originalbild als Datei, zum Speichern, wo die Person es sagt.
 
+d-7ktbi2nd = Vorschlag bestätigen~present
+
 d-2i7i3as5 = Bearbeitet
     .doc = Das Bild nach den Drehungen der Person, wo sie welche gemacht hat: was das Fenster zeigt und ein Speichern schreibt.
 
@@ -280,6 +339,7 @@ d-hfgcskel = Bibliothek
     .w-analyzing-of = Analysiere { $completed } von { $total }
     .w-analysis-paused = Analyse pausiert
     .w-analyze-photos = Fotos analysieren
+    .w-scan-for-faces = Nach Gesichtern suchen
     .w-library = Bibliothek
     .w-favorites = Favoriten
     .w-timeline = Zeitleiste
@@ -309,6 +369,12 @@ d-hfgcskel = Bibliothek
     .w-cancel = Abbrechen
     .w-drag-the-corners-to-the-part = Ziehe die Ecken auf den Teil, den du behalten willst.
     .w-apply-crop = Zuschnitt übernehmen
+    .w-faces-to-name = Zu benennende Gesichter
+    .w-name-this-person = Diese Person benennen
+    .w-approve = Bestätigen
+    .w-merge = Zusammenführen
+    .w-dismiss-the-suggestion = Den Vorschlag verwerfen
+    .w-photos-suggested-on-this-device-shared = { $len } Fotos auf diesem Gerät vorgeschlagen, erst mit dem Namen geteilt.
     .w-no-people-yet = Noch keine Personen
     .w-no-capture-date = Kein Aufnahmedatum
     .w-named-places = Benannte Orte

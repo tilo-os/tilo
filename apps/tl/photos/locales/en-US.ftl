@@ -92,6 +92,26 @@ d-vbzsnqg5 = Photos
 
 d-hc736lwy-filter-photos = Photos
 
+d-xea2av67 = Suggestion
+    .doc = One face the device found, and the photos it is in.
+    .noun = { $count ->
+        [one] suggestion
+       *[other] suggestions
+    }
+
+d-qracadw6 = Name
+    .doc = The person's name, empty while the suggestion has none.
+
+d-ehc6rrhm = Photos
+    .doc = The photos this face is in, by their ids in the library.
+
+d-2adnxzro = Sent
+    .doc = Whether a name was approved: a sent suggestion is the workspace's, not only its author's.
+
+d-xea2av67-filter-photos = Photos
+
+d-xea2av67-filter-sent = Sent
+
 d-j45kskqf = Library
     .doc = The workspace's photo library: every photo, the albums people made of them, and the people the photos show.
     .noun = { $count ->
@@ -104,6 +124,9 @@ d-moeuycny = Photos
 d-tqa4lyow = Albums
 
 d-xr5mtp2m = People
+
+d-r7k2giak = Suggestions
+    .doc = Faces the image model found and nobody has named yet: each is its scanner's alone until they approve a name, which sends it to the workspace.
 
 d-tp7e7pzd = Import found
     .doc = The last folder import: how many files it looked at, how many became photos, and what it could not read, so a person knows what arrived and what did not.
@@ -257,6 +280,39 @@ d-fltwmykq-person = Person
 
 d-fltwmykq-to = To
 
+d-qwdie7fn = Find faces
+    .doc = The faces the device finds in `photos`, kept as suggestions of the person's own: a face has no name, so nothing of it reaches another member until a name is approved.
+
+d-qwdie7fn-photos = Photos
+
+d-7223fwrx = Scan for faces
+    .doc = Scans the next photos on this device nobody is named on yet: the model takes twelve at a time, so a scan is one batch, and each face it finds is a suggestion of the scanner's own.
+
+d-x3kp75qe = Approve the name
+    .doc = Names a face: its photos join the person with that name, and the suggestion is sent, so the workspace keeps it.
+    .w-enter-a-name-first = Enter a name first
+
+d-x3kp75qe-s = S
+
+d-x3kp75qe-name = Name
+
+d-zsaipz5s = Merge suggestion
+    .doc = Puts a face's photos on a person the library already knows, and sends the suggestion.
+
+d-zsaipz5s-s = S
+
+d-zsaipz5s-person = Person
+
+d-zpg34mwz = Dismiss the suggestion
+    .doc = Takes a suggestion away: the face is not offered again, since the photos are not rescanned into one while they are unnamed only by choice.
+
+d-zpg34mwz-s = S
+
+d-diaii65m = Person named
+    .doc = The person the library knows by `name`, started where it knows none.
+
+d-diaii65m-name = Name
+
 d-fdh5jyv7 = New person
     .doc = Starts a person the library knows, with the photos it already has of them.
 
@@ -294,6 +350,8 @@ d-4ufdgmft = Clear place
 d-i45tq7ne = Save photograph
     .doc = The original picture as a file, to save where the person says.
 
+d-7ktbi2nd = Approve suggestion~present
+
 d-hfgcskel = Library
     .w-photos = Photos
     .w-select-all = Select all
@@ -310,6 +368,7 @@ d-hfgcskel = Library
     .w-analyzing-of = Analyzing { $completed } of { $total }
     .w-analysis-paused = Analysis paused
     .w-analyze-photos = Analyze photos
+    .w-scan-for-faces = Scan for faces
     .w-library = Library
     .w-favorites = Favorites
     .w-timeline = Timeline
@@ -345,6 +404,12 @@ d-hfgcskel = Library
     .w-cancel = Cancel
     .w-drag-the-corners-to-the-part = Drag the corners to the part you keep.
     .w-apply-crop = Apply crop
+    .w-faces-to-name = Faces to name
+    .w-name-this-person = Name this person
+    .w-approve = Approve
+    .w-merge = Merge
+    .w-dismiss-the-suggestion = Dismiss the suggestion
+    .w-photos-suggested-on-this-device-shared = { $len } photos suggested on this device, shared only once you name it.
     .w-no-people-yet = No people yet
     .w-the-vision-service-proposes-the-people = The vision service proposes the people in your photos; name them, merge them and split them here.
     .w-no-capture-date = No capture date
