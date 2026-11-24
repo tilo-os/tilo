@@ -65,16 +65,42 @@ fn context(workspace: &str, cert: &tilo_user_identity::DeviceCert) -> ResourceRe
 }
 
 /// A member device writing a workspace's resources through a store of its own, sealing each
-/// document's change under the workspace's keys as its engine does.
+/// document's change under the workspace's keys as its engine does. Its changes name `of`, the
+/// member whose device it is, as who made them: every change says who made it, and one that
+/// names no one is refused.
 struct Writer {
     key: SigningKey,
     keys: ContentKeys,
     store: Store,
     seq: u64,
+    of: Option<tilo_action_policy::PersonId>,
 }
 
 impl Writer {
+    /// A writer whose device is not a member names no one.
     async fn new(workspaces: &Workspaces, workspace: &str, key: SigningKey) -> Self {
+        Self::naming(workspaces, workspace, key, None).await
+    }
+
+    /// A writer whose device is `member`'s, its changes that person's.
+    async fn for_member(
+        workspaces: &Workspaces,
+        workspace: &str,
+        key: SigningKey,
+        member: &tilo_user_identity::DeviceCert,
+    ) -> Self {
+        let of = Some(tilo_action_policy::PersonId::from_root(
+            member.user_public_key,
+        ));
+        Self::naming(workspaces, workspace, key, of).await
+    }
+
+    async fn naming(
+        workspaces: &Workspaces,
+        workspace: &str,
+        key: SigningKey,
+        of: Option<tilo_action_policy::PersonId>,
+    ) -> Self {
         let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: APP.into(),
             cluster_id: workspace.into(),
@@ -90,6 +116,7 @@ impl Writer {
             keys,
             store: Store::new(),
             seq: 0,
+            of,
         }
     }
 
@@ -147,7 +174,13 @@ impl Writer {
             order: None,
             fields,
         };
-        let written = self.store.put(KIND, id, resource, &create()).unwrap();
+        let mut stamp = create();
+        if let Some(person) = &self.of {
+            stamp.invoker = Stamp::by(&tilo_action_policy::Actor::Member(
+                tilo_action_policy::MemberId::person(person.clone()),
+            ));
+        }
+        let written = self.store.put(KIND, id, resource, &stamp).unwrap();
         let mut placed = String::new();
         let mut bodies = Vec::new();
         for write in written {
@@ -367,6 +400,7 @@ async fn assert_sealed_claims_the_issue(workspaces: &Workspaces, workspace: &str
 async fn assert_scribed_as_agent(
     workspaces: &Workspaces,
     context: &ResourceRequestContext,
+    cert: &tilo_user_identity::DeviceCert,
     resource: Resource,
     stamp: &Stamp,
 ) -> tilo_actions::Actor {
@@ -380,6 +414,20 @@ async fn assert_scribed_as_agent(
             .user_public_key()
             .expect("the device's person"),
     );
+    // An agent writes what its person handed it: the delegation this workspace's member list
+    // holds for `scribe`, as the person gives it from their own device.
+    let grant = tilo_action_policy::Grant::new(
+        "scribe-writes-the-issues",
+        tilo_action_policy::Grantee::agent("scribe"),
+        tilo_action_policy::TreePath::workspace(context.workspace_id()),
+        tilo_action_policy::KindSet::UNDOABLE,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(acted_for.clone()),
+    );
+    workspaces
+        .put_workspace_grants(context.workspace_id(), cert, [23; 32], vec![grant])
+        .await
+        .unwrap();
     workspaces
         .resource_command(
             &context.clone().serving(vec![(delivered, agent.clone())]),
@@ -458,7 +506,8 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
         );
     }
     assert_sealed_claims_the_issue(&workspaces, &workspace).await;
-    let agent = assert_scribed_as_agent(&workspaces, &context, issue("Scribed"), &stamp).await;
+    let agent =
+        assert_scribed_as_agent(&workspaces, &context, &cert, issue("Scribed"), &stamp).await;
     assert_replica_holds_issue(&workspaces, &workspace).await;
     // A reader the issue's set leaves out reads nothing of it.
     assert!(
@@ -690,8 +739,8 @@ async fn a_members_resource_writes_are_queryable_on_the_governor_and_after_a_res
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Tasks").await.unwrap();
     let workspace = created.workspace;
-    let (member_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
-    let mut writer = Writer::new(&workspaces, &workspace, member_key).await;
+    let (member_key, member) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let mut writer = Writer::for_member(&workspaces, &workspace, member_key, &member).await;
 
     let mut woken = workspaces.document_writes();
     writer.put(&workspaces, &workspace, "i-1", "First").await;
@@ -948,8 +997,8 @@ async fn a_members_store_document_reads_back_the_content_its_cells_name() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Photos").await.unwrap();
     let workspace = created.workspace;
-    let (member_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
-    let mut writer = Writer::new(&workspaces, &workspace, member_key).await;
+    let (member_key, member) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let mut writer = Writer::for_member(&workspaces, &workspace, member_key, &member).await;
     let hash = "ab".repeat(32);
     let reference = format!("blake3:{hash}:4096");
     let document = writer
@@ -978,9 +1027,10 @@ async fn index_retained_checkpoint(
     workspace: &str,
     workspace_id: tilo_server_protocol::WorkspaceId,
     member_key: SigningKey,
+    member: &tilo_user_identity::DeviceCert,
 ) -> String {
     let author = member_key.verifying_key().to_bytes();
-    let mut writer = Writer::new(workspaces, workspace, member_key).await;
+    let mut writer = Writer::for_member(workspaces, workspace, member_key, member).await;
     let (document, bodies) = writer.draft(
         workspace,
         "i-1",
@@ -1467,8 +1517,14 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
     let created = workspaces.create("Tasks").await.unwrap();
     let workspace = created.workspace;
     let (member_key, member) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
-    let document =
-        index_retained_checkpoint(&workspaces, &workspace, created.workspace_id, member_key).await;
+    let document = index_retained_checkpoint(
+        &workspaces,
+        &workspace,
+        created.workspace_id,
+        member_key,
+        &member,
+    )
+    .await;
     drop(workspaces);
     server.shutdown().await;
 
