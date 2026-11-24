@@ -739,7 +739,7 @@ mod tests {
             // The starter's own key signs the sub-agent's work: it keeps the preset, as work
             // handed on whose chain names the person the key belongs to.
             let signer = Acting::agent("scout").acting_for(Acting::person("ada"));
-            let signed = helper.clone().signed_by(&signer);
+            let signed = helper.signed_by(&signer);
             assert!(signed.handed, "{signed:?}");
         }
 

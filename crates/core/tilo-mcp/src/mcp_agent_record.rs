@@ -37,8 +37,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let listing = answered(reads, &caller, read)
             .await
             .map_err(|error| error.to_string())?;
-        let listed: Vec<(&str, &str)> = listing["records"]
-            .as_array()
+        let listed: Vec<(&str, &str)> = listing
+            .get("records")
+            .and_then(serde_json::Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(|listed| Some((listed["app"].as_str()?, listed["record"].as_str()?)))
@@ -104,8 +105,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .map_err(|error| error.to_string())?;
         // A document the workspace holds none of is not an address to go on with: what the
         // app does hold is, and the answer names it.
-        if let Some(document) = answer["records"]
-            .as_array()
+        if let Some(document) = answer
+            .get("records")
+            .and_then(serde_json::Value::as_array)
             .into_iter()
             .flatten()
             .find(|reading| reading["absent"] == true)
