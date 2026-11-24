@@ -9,7 +9,9 @@ use ui::icons::Icon;
 
 pub use tilo_session_core::desktop::now_playing::Offer as MediaOffer;
 
-pub use tilo_device_surfaces::devices::ClipboardCopy;
+pub use tilo_device_surfaces::devices::{
+    ClipboardCopy, DeviceWorkspace, RowPart, SendableSound, SoundAsk, SoundRoute,
+};
 
 /// One of the person's devices a Bluetooth accessory can move to.
 #[derive(Clone, Debug, PartialEq, Eq)]

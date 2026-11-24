@@ -23,6 +23,7 @@ use tilo_app::tilo_workspace_agent::{
 use tilo_desktop_model::{Layout, Workspace};
 use tilo_resource::Id;
 use tilo_session_client::daemon_documents::DaemonShell;
+use tilo_session_core::desktop::authority::WorkspaceAuthority as _;
 use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_session_core::desktop::people::PeopleNames;
 use tilo_session_core::desktop::workspace_settings::{self as domain, agent_access};

@@ -171,29 +171,11 @@ fn power_menu_choice(effect: &PowerMenuEffect) -> Option<crate::power_menu::Effe
     })
 }
 
-/// The power menu as a view of another language reads it.
-#[must_use]
-pub fn power_menu_surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<PowerMenuReadingSurface, PowerMenuEffect>(
-        "power_menu",
-        "Power menu",
-    )
-}
-
 /// The power menu as it reads: whether it stands over the windows, and what this session offers.
 #[derive(Debug, Serialize)]
 struct PowerMenuReadingValue {
     open: bool,
     offers: Vec<String>,
-}
-
-/// The surface stack as a view of another language reads it: the surface the shell shows over
-/// the windows and the switcher's walk.
-#[must_use]
-pub fn overlays_surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<OverlaysSurface, OverlayEffect>(
-        "overlays", "Overlays",
-    )
 }
 
 /// The window menu as it reads: the window it is for, where it stands, and what that window offers
