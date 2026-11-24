@@ -90,7 +90,7 @@ view window(d: Disks) {
                     ui.StatusLine(error, status: .error)
                 }
                 if disks.drives.is_empty() {
-                    ui.EmptyState("No drives", icon: .hard_drive, inline: true)
+                    ui.EmptyState("No drives on this device", icon: .hard_drive, inline: true)
                 }
                 stack(gap: .none) {
                     for each in disks.drives {

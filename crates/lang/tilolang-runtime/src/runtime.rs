@@ -594,6 +594,38 @@ impl Runtime {
         Ok(self.core.take_reading(target, json))
     }
 
+    /// Say this host publishes nothing of `target`, and nothing is coming: a device without the
+    /// resource, or a host with no service that publishes it at all.
+    ///
+    /// A view that reads a field of it reads the field as its type starts — an empty list, none,
+    /// off, the empty text, an enum's first case, a record whose own fields read so — and draws
+    /// the empty state it draws for a device that has none of the resource. It never waits for a
+    /// reading no host will hand in, and never draws a skeleton that cannot fill. A reading the
+    /// host hands in later stands in its place ([`Self::set_reading`]).
+    ///
+    /// # Errors
+    ///
+    /// `Package` when `target` is a resource this runtime holds (its fields run from its own
+    /// record).
+    pub fn set_absent(&self, target: &ResourceRef) -> Result<(), RuntimeError> {
+        if !crate::foreign::is_foreign(target) {
+            return Err(RuntimeError::Package(format!(
+                "`{}` is held here: its fields run from its own record",
+                target.id_string()
+            )));
+        }
+        self.core.foreign.borrow_mut().absent(target);
+        Ok(())
+    }
+
+    /// Say this host publishes nothing of any resource of the app `app`, and none is coming: what
+    /// a host none of whose services runs the app says (a browser page, which has no session).
+    /// Its resources read as their types start, as [`Self::set_absent`] says, including the ones
+    /// a view names by an id rather than a root.
+    pub fn set_app_absent(&self, app: &str) {
+        self.core.foreign.borrow_mut().absent_app(app);
+    }
+
     /// The reading of `target` as this runtime's host serves it itself, from what it decides by
     /// (the workspace's members, from its member list): set as [`Self::set_reading`] sets one,
     /// and from now on a resource [`Self::serves`] answers true for, so a reading published for

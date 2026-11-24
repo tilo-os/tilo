@@ -45,6 +45,10 @@ enum Reading {
     /// Where a record inside another app's reading stands (a menu's row): the reading it stands
     /// in, and the fields and items down to it. It reads as that reading says now.
     Inside(Inside),
+    /// The host publishes nothing of it, and none is coming: a resource this device has none of
+    /// ([`crate::Runtime::set_absent`]). Its fields read as its type starts, so a view draws the
+    /// empty state it draws for a device without the resource, never a skeleton no reading fills.
+    Absent,
 }
 
 /// The way down to a record inside a reading: a field's name, or an item's index.
@@ -86,6 +90,10 @@ pub struct Foreign {
     /// from the member list it decides by), by key: a reading published elsewhere never stands
     /// in for one ([`crate::Runtime::serves`]).
     served: std::collections::BTreeSet<String>,
+    /// The apps whose resources no host here publishes at all (the device's, the session's, on a
+    /// host that has neither): each resource of one reads as its type starts
+    /// ([`crate::Runtime::set_app_absent`]).
+    absent_apps: std::collections::BTreeSet<String>,
 }
 
 impl Foreign {
@@ -97,6 +105,32 @@ impl Foreign {
     /// Whether the host serves `target`'s reading itself.
     pub(crate) fn serves(&self, target: &ResourceRef) -> bool {
         self.served.contains(&Self::key(target))
+    }
+
+    /// Say the host publishes nothing of `target`, and none is coming: reading a field of it
+    /// reads the field as its type starts, and the view that read it is drawn, never left
+    /// waiting. A reading the host hands in later stands in its place.
+    pub(crate) fn absent(&mut self, target: &ResourceRef) {
+        let key = Self::key(target);
+        self.clock = self.clock.saturating_add(1);
+        self.readings.insert(key, Reading::Absent);
+        self.asked.remove(&Self::key(target));
+        self.wanted.remove(&Self::key(target));
+    }
+
+    /// Say the host publishes nothing of any resource of the app `app`, and none is coming: what
+    /// a host whose device has no such app at all says ([`crate::Runtime::set_app_absent`]).
+    pub(crate) fn absent_app(&mut self, app: &str) {
+        self.absent_apps.insert(app.to_owned());
+    }
+
+    /// Whether the host publishes nothing of `target`: said of the resource itself, or of its app.
+    fn publishes_nothing(&self, target: &ResourceRef) -> bool {
+        if matches!(self.readings.get(&Self::key(target)), Some(Reading::Absent)) {
+            return true;
+        }
+        crate::foreign::foreign_type(&target.ty)
+            .is_some_and(|key| self.absent_apps.contains(&key.app))
     }
 
     /// The host asks for the reading of a resource the code meets and this holds none of, while
@@ -325,6 +359,10 @@ impl Foreign {
     ) -> Result<Vec<(ResourceRef, crate::store::LinkHow)>, String> {
         let at = Self::key(target);
         if !self.arrive(target)? {
+            // A resource no host here publishes has no links, as it holds no fields.
+            if self.publishes_nothing(target) {
+                return Ok(Vec::new());
+            }
             return Err(self.not_arrived(target));
         }
         let Some((json, _)) = self.source(&at) else {
@@ -403,6 +441,11 @@ impl Foreign {
     /// read a field of it does.
     pub(crate) fn whole(&mut self, target: &ResourceRef) -> Option<(Json, u64)> {
         let key = Self::key(target);
+        if self.publishes_nothing(target) && self.source(&key).is_none() {
+            // Nothing of it is published: a Rust view over it is handed no fields, as one over a
+            // device without the resource reads, and no reading is asked for.
+            return Some((Json::Object(serde_json::Map::new()), self.generation(target)));
+        }
         if !self.arrive(target).unwrap_or(false) {
             // The host is asked for the resource's reading, as a field read of one yet to arrive
             // asks for it; the boundary runs again when it comes.
@@ -471,7 +514,7 @@ impl Foreign {
         // A record stands inside another at most as deep as there are readings.
         for _ in 0..=self.readings.len() {
             match self.readings.get(&at)? {
-                Reading::Set { .. } => return Some(at),
+                Reading::Set { .. } | Reading::Absent => return Some(at),
                 Reading::Inside(inside) => at.clone_from(&inside.parent),
             }
         }
@@ -498,6 +541,8 @@ impl Foreign {
         let held = self.readings.get(at)?;
         let inside = match held {
             Reading::Set { json, generation } => return Some((json, *generation)),
+            // Nothing of it is published, so the reading has no JSON for any field to come from.
+            Reading::Absent => return None,
             Reading::Inside(inside) => inside,
         };
         let (mut json, generation) = self.source(&inside.parent)?;
@@ -527,15 +572,19 @@ impl Foreign {
         self.arrive(target)?;
         // The reading a record stands in, and where it stands: a field of it stands one step
         // further down.
-        let (parent, base) = match self.readings.get(&at) {
-            Some(Reading::Inside(inside)) => (inside.parent.clone(), inside.steps.clone()),
-            _ => (at.clone(), Vec::new()),
+        let (parent, base, left_out) = match self.readings.get(&at) {
+            Some(Reading::Inside(inside)) => {
+                (inside.parent.clone(), inside.steps.clone(), true)
+            }
+            _ => (at.clone(), Vec::new(), false),
         };
         let found = match self.source(&at) {
             Some((json, _)) => held(json, field),
-            // A record the reading leaves out stands where the reading would hold it: it has
-            // no fields of its own there.
-            None if matches!(self.readings.get(&at), Some(Reading::Inside(_))) => None,
+            // A resource no host here publishes, and none is coming ([`crate::Runtime::set_absent`]),
+            // or a record the reading leaves out (a device without Wi-Fi publishes its network
+            // with none): its fields read as their types start, and the view goes on to the
+            // empty state it draws for a device without the resource.
+            None if self.publishes_nothing(target) || left_out => None,
             // A record of an app whose code runs here is a resource of its own, published by
             // its id (an item of a collection the reading lists): the host is asked for its
             // reading, and until it comes the record reads as it would start. The view that
@@ -578,6 +627,9 @@ impl Foreign {
                     self.place(&record.target, steps, parent);
                 }
                 return Ok(value);
+            }
+            if self.publishes_nothing(target) || left_out {
+                return start_value(&field.ty, field.default.as_ref(), registry);
             }
             return crate::host_res::declared_default(&field.ty, field.default.as_ref())
                 .map_err(|why| format!("`{}` has no `{}`: {why}", target.id_string(), field.name));
@@ -721,6 +773,33 @@ fn pending(ty: &Ty, default: Option<&Json>) -> Result<Value, String> {
         (Ty::Identifier, None) => Ok(Value::text("")),
         _ => crate::host_res::declared_default(ty, default),
     }
+}
+
+/// What a field of a resource no host publishes reads as: what its type starts as, as a root
+/// nobody opened yet reads. An enum with no declared default starts as its first case, which the
+/// language says a field of it starts as.
+fn start_value(ty: &Ty, default: Option<&Json>, registry: &Registry) -> Result<Value, String> {
+    if let (Ty::Enum(key), None) = (ty, default) {
+        let declared = registry
+            .enum_of(key)
+            .ok_or_else(|| format!("`{}` is not declared by any loaded package", key.name))?;
+        let first = declared
+            .variants
+            .first()
+            .filter(|case| case.fields.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "`{}` starts as no case: its first case carries values",
+                    key.name
+                )
+            })?;
+        return Ok(Value::Enum(crate::value::EnumValue {
+            ty: declared.id.clone(),
+            variant: first.id.clone(),
+            fields: BTreeMap::new(),
+        }));
+    }
+    crate::host_res::declared_default(ty, default)
 }
 
 /// The value a field of a record of another app holds, as a filter compares it: what

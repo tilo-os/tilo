@@ -105,6 +105,22 @@ pub(crate) fn part_children<'a>(shell: &'a UiNode, name: &str) -> &'a [UiNode] {
         .map_or(&[], |child| child.children.as_slice())
 }
 
+/// The content the shell's views give: their named `content` part where one stands, else the
+/// children they gave without a part's name, which are the shell's default part.
+fn content_children(shell: &UiNode) -> Vec<UiNode> {
+    let named = part_children(shell, "content");
+    if named.is_empty() {
+        shell
+            .children
+            .iter()
+            .filter(|child| child.kind != PART)
+            .cloned()
+            .collect()
+    } else {
+        named.to_vec()
+    }
+}
+
 fn with_part(mut shell: UiNode, name: &str, children: Vec<UiNode>) -> UiNode {
     let owner = shell.key.clone();
     shell.children.retain(|child| {
@@ -306,15 +322,21 @@ pub fn nothing_listed(mut shell: UiNode) -> UiNode {
         return shell;
     }
     // The places' state first, since it says what the list would hold; then the overview's, the
-    // list's own; then the content's, which says what would stand there.
+    // list's own; then the content's, which says what would stand there. A view gives its
+    // content without a part's name (the shell's default part), so the shell's unnamed children
+    // are its content when no named content part stands beside them.
     let mut state = None;
     for name in ["sidebar", "overview", "content"] {
-        let children = part_children(&shell, name);
+        let children: Vec<UiNode> = if name == "content" {
+            content_children(&shell)
+        } else {
+            part_children(&shell, name).to_vec()
+        };
         if !children.iter().all(only_states) {
             return shell;
         }
         if state.is_none() {
-            state = first_state(children).cloned();
+            state = first_state(&children).cloned();
         }
     }
     let Some(state) = state else {
@@ -328,6 +350,9 @@ pub fn nothing_listed(mut shell: UiNode) -> UiNode {
     } else {
         offered_actions.to_vec()
     };
+    // The state stands where the content stood: a content given without a name goes with it,
+    // so the one column never holds the app's state and what it replaced alike.
+    shell.children.retain(|child| child.kind == PART);
     shell = with_part(shell, "sidebar", Vec::new());
     shell = with_part(shell, "overview", Vec::new());
     shell = with_part(shell, "actions", bar);
@@ -1211,5 +1236,29 @@ mod tests {
             Some("shell"),
             "a body that fills the window keeps the column"
         );
+    }
+
+    #[test]
+    fn a_window_with_nothing_listed_gives_its_content_once() {
+        // An app gives its content without a part's name, and its sidebar holds only the empty
+        // state of the place: the window folds to that one state, and its content column holds
+        // it once, never the state beside what it replaced.
+        let mut window = node("NavShell", "window", &[("title", Value::text("Disks"))]);
+        window
+            .children
+            .push(part("sidebar", "window", vec![node("EmptyState", "none", &[])]));
+        window.children.push(node("EmptyState", "content", &[]));
+        let folded = nothing_listed(window);
+        assert!(
+            folded.props.contains_key(NOTHING_LISTED),
+            "the window folds to its one state"
+        );
+        let content = content_children(&folded);
+        assert_eq!(
+            content.len(),
+            1,
+            "one content view, never two: {content:?}"
+        );
+        assert_eq!(content[0].key, "none", "the sidebar's state stands in content");
     }
 }

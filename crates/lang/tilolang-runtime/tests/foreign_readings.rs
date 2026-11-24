@@ -978,4 +978,101 @@ view asking() {
             assert_eq!(rt.read(&ask, "words").unwrap(), Value::text("Delete the draft?"));
         }
     }
+
+    /// A view over a device resource no host here publishes at all (a page has no drives and no
+    /// Windows apps): it reads each field as its type starts — an empty list, off, an enum's
+    /// first case, a record whose own fields read so — and draws the empty state it draws for a
+    /// device without the resource, rather than waiting for a reading that cannot come.
+    const ABSENT_VIEW: &str = r#"app test.absent "Absent"
+
+use so.tilo.device as device
+
+view window(ws: device.WindowsApps) {
+    if ws.apps.is_empty() {
+        ui.EmptyState("No Windows apps on this device")
+    }
+    for each in ws.apps {
+        text(each.name)
+    }
+    if ws.serving {
+        text("answering")
+    } else {
+        text("not answering")
+    }
+    if ws.appliance.phase == .not-set-up {
+        text("no appliance")
+    } else {
+        text("an appliance")
+    }
+    if ws.support.state == .ready {
+        text("support is here")
+    } else {
+        text("support is missing")
+    }
+    if ws.appliance.shared_session.contributors.is_empty() {
+        text("nobody in it")
+    }
+}
+"#;
+
+    #[test]
+    fn a_view_over_an_absent_reading_reads_the_empty_state() {
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let app = App::compile(ABSENT_VIEW, &[]);
+        app.load(&rt);
+        // No service of this host publishes the device's resources: nothing is coming.
+        rt.set_app_absent("so.tilo.device");
+        let ws = ResourceRef::parse_id("windows-apps", "so.tilo.device#WindowsApps")
+            .expect("a resource id");
+        let mut opened = rt
+            .open_view(&me(), &app.view("window"), vec![Value::resource(&ws)])
+            .unwrap_or_else(|why| panic!("the view reads the absent resource: {why}"));
+        assert!(
+            of_kind(opened.tree(), "ui.Skeleton").is_empty(),
+            "the view draws, never waiting on a reading that cannot come: {}",
+            dump(opened.tree())
+        );
+        assert!(rt.take_wanted().is_empty(), "no reading is asked for");
+        assert_eq!(
+            drawn(&opened),
+            [
+                "not answering",
+                "no appliance",
+                "support is here",
+                "nobody in it",
+            ],
+            "each field as its type starts: {}",
+            dump(opened.tree())
+        );
+        let empty = of_kind(opened.tree(), "ui.EmptyState");
+        assert_eq!(
+            empty
+                .first()
+                .and_then(|node| node.props.get("title"))
+                .cloned(),
+            Some(Value::text("No Windows apps on this device")),
+            "the app's own empty state is drawn, in its words: {}",
+            dump(opened.tree())
+        );
+        // A reading the host publishes later stands in the absent one's place.
+        rt.set_reading(
+            &ws,
+            r#"{"serving": true, "summary": "", "apps": [],
+                "support": {"available": true, "state": "ready", "summary": "", "pending": []},
+                "appliance": {"configured": false, "phase": "ready",
+                              "power_state": "unknown", "license": "unknown",
+                              "published_applications": 0, "recovery_available": false,
+                              "shared_session": {"active": false, "grants": [],
+                                                 "contributors": []}}}"#,
+        )
+        .expect("a reading of the Windows apps");
+        opened.poll_patches().unwrap_or_else(|why| panic!("{why}"));
+        let after = drawn(&opened);
+        assert!(
+            after.contains(&"answering".to_owned())
+                && after.contains(&"support is here".to_owned())
+                && after.contains(&"an appliance".to_owned()),
+            "the reading stands in place of what its absence read as: {after:?}"
+        );
+    }
 }
