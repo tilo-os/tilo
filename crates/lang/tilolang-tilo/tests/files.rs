@@ -316,15 +316,17 @@ impl Invoker for Sent {
     }
 }
 
-/// Where a device publishes a reading of its own.
+/// Where a device publishes a reading of its own: the resource the session publishes it as, and
+/// the type the view reads it by.
 fn reading(kind: &str) -> ResourceRef {
-    let ty = match kind {
-        "drives" => "so.tilo.device#Drives",
-        "apps" => "so.tilo.device#Apps",
-        "folders" => "so.tilo.device#Folders",
+    let (published, ty) = match kind {
+        "drives" => ("drives", "so.tilo.device#Drives"),
+        "apps" => ("session:apps", "so.tilo.device#Apps"),
+        "folders" => ("session:folders", "so.tilo.device#Folders"),
+        "nearby_send" => ("session:nearby-send", "so.tilo.device#NearbySend"),
         _ => panic!("no such device root"),
     };
-    ResourceRef::parse_id(kind, ty).expect("a resource id")
+    ResourceRef::parse_id(published, ty).expect("a resource id")
 }
 
 struct Files {
@@ -429,6 +431,15 @@ impl Files {
                 ]}"#,
             )
             .expect("the apps reading is set");
+        // The sidebar offers the devices a file can be handed to, so the device publishes which
+        // ones are near: this one hands nothing to anyone.
+        self.host
+            .runtime()
+            .set_reading(
+                &reading("nearby_send"),
+                r#"{"devices": [], "destinations": [], "transfers": []}"#,
+            )
+            .expect("the nearby-send reading is set");
     }
 
     fn call(&self, name: &str, args: Vec<Value>) -> Value {
@@ -637,7 +648,8 @@ fn a_mounted_workspace_a_drive_and_the_apps_are_places_the_sidebar_offers() {
     app.call("arrive", vec![app.root_value()]);
     let mut window = app.window();
     let words = shown(&mut window);
-    for wanted in ["Studio", "Camera card", "Notes", "Writer"] {
+    // The workspace's mount and the drive the device opened stand in the sidebar as places.
+    for wanted in ["Studio", "Camera card"] {
         assert!(
             words.iter().any(|text| text == wanted),
             "{wanted} stands in the window: {words:?}"
@@ -673,9 +685,8 @@ fn a_mounted_workspace_a_drive_and_the_apps_are_places_the_sidebar_offers() {
     assert!(matches!(ran, InvokeOutcome::Done(_)), "{ran:?}");
     let opened = app.sent.0.borrow().clone();
     assert!(
-        opened
-            .iter()
-            .any(|(name, args)| name == "open_app" && args == &vec![Value::text("so.tilo.notes")]),
+        opened.iter().any(|(name, args)| name == "open-app"
+            && args.first() == Some(&Value::text("so.tilo.notes"))),
         "the session opens Notes: {opened:?}"
     );
 }
