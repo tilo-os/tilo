@@ -204,8 +204,9 @@ capability they carry has no place in Tilo yet:
   no Tilo app on Apple's platforms runs Chat natively. `AssistantClosed` and `AssistantNotice`, and
   the bundle files they need, stay until a native Chat app receives a push.
 
-What no longer has a caller is still compiled by `build.sh test`, because the package builds every
-target it declares and the tests above cover these parts.
+The tests still build these parts: `AssistantCoreTests` and `TiloLiveTests` reach AssistantCore,
+AssistantTilo and TiloLive, and `AssistantClosedTests` reaches AssistantClosed. AssistantNotice is
+built only as part of a bundle, and `build.sh` makes none while Chat has no Apple app.
 
 ## Build, check, run
 
