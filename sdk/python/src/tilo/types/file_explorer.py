@@ -107,7 +107,7 @@ ListChunkArgs = TypedDict("ListChunkArgs", {
 
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@511cdc6be846faa8"
+    __surface__ = "so.tilo.file-explorer@3561502507e2cdf8"
     places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
@@ -194,26 +194,6 @@ class Folder(Resource):
         args["entries"] = entries
         args["to"] = to
         return self.action("copy-into", **args)
-
-    def import_mounted(self,
-        *,
-        device: str,
-        paths: list[str],
-        folder: str,
-    ) -> Any:
-        """Runs the app's action."""
-        return self.action("import-mounted", device=device, paths=paths, folder=folder)
-
-    def cloud_import(self,
-        *,
-        device: str,
-        job_id: str,
-        account: str,
-        entries: list[Any],
-        destination: Any,
-    ) -> Any:
-        """Runs the app's action."""
-        return self.action("cloud-import", device=device, job_id=job_id, account=account, entries=entries, destination=destination)
 
     def write_file(self,
         *,
@@ -318,18 +298,14 @@ class Folder(Resource):
         """Runs the app's action."""
         return self.action("open-terminal")
 
-    def cloud_progress(self) -> None:
-        """Runs the app's action."""
-        return self.action("cloud-progress")
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"add_bookmark", "add_bookmark_many", "remove_bookmark", "remove_bookmark_many", "new_folder", "rename", "trash", "move", "copy_into", "import_mounted", "cloud_import", "write_file", "compress", "extract", "record_clipboard_transfer", "record_trash_restore", "revert", "hand_over", "read_text", "copy_selection", "clipboard_status", "open_terminal", "cloud_progress"})
+    __actions__ = frozenset({"add_bookmark", "add_bookmark_many", "remove_bookmark", "remove_bookmark_many", "new_folder", "rename", "trash", "move", "copy_into", "write_file", "compress", "extract", "record_clipboard_transfer", "record_trash_restore", "revert", "hand_over", "read_text", "copy_selection", "clipboard_status", "open_terminal"})
 
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@511cdc6be846faa8"
+    __surface__ = "so.tilo.file-explorer@3561502507e2cdf8"
     def new_folder(self,
         *,
         parent: Any,
@@ -423,7 +399,7 @@ class Tree(Resource):
 
 class Workspace(Resource):
     """Files window — `files.workspace`."""
-    __surface__ = "so.tilo.file-explorer@511cdc6be846faa8"
+    __surface__ = "so.tilo.file-explorer@3561502507e2cdf8"
     def up(self) -> None:
         """Runs the app's action."""
         return self.action("up")

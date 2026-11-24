@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Conversations` is the app's `tl.so.tilo.chat.Conversations` at `chat/<resource>`, read with
+`Workspace` is the app's `chat.workspace` at `chat/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,721 +20,1912 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "Conversations",
     "Category",
-    "VoiceChannel",
-    "TextChannel",
-    "Message",
-    "Report",
-    "Thread",
-    "Direct",
-    "Attached",
+    "ChannelKind",
+    "ChannelPlace",
+    "ContextField",
+    "Conversation",
+    "CropRef",
+    "Destination",
+    "FeedbackReport",
+    "FrameTimings",
+    "Hidden",
+    "Interaction",
+    "Outcome",
     "Part",
-    "Skill",
+    "ReadMark",
+    "RecordingRef",
+    "ResourceRef",
+    "ReviewedFeedback",
+    "ReviewedSelection",
+    "ReviewedText",
+    "ScreenshotRef",
+    "Span",
+    "SpanUnit",
+    "Submission",
+    "Summary",
+    "TextKind",
+    "Triage",
+    "TriageUpdate",
+    "WorkspaceFiles",
+    "AgentFinish",
+    "AgentStepOutcome",
+    "AgentWorkState",
+    "Anchor",
+    "Answered",
+    "Answered2",
+    "Attached",
+    "Cause",
+    "Choice",
+    "ClipAttr",
+    "ClipBlock",
+    "Earlier",
+    "MarkSpan",
+    "MarkValue",
+    "Mention",
+    "Message",
+    "NewMessage",
+    "Origin",
+    "MessagesOutcome",
+    "ProviderStream",
+    "Question",
+    "Quote",
+    "ResourceAt",
+    "Revision",
+    "ShareAccess",
+    "ShownAs",
+    "ShownPersona",
+    "Starting",
+    "Step",
+    "StepUpdate",
+    "Stopped",
+    "Transition",
+    "View",
+    "WindowShare",
+    "Withdrawn",
+    "Work",
+    "WorkUpdate",
+    "Decision",
+    "ModerationOutcome",
+    "Report",
+    "Reverted",
+    "Ruling",
+    "Emoji",
     "Example",
-    "Chat",
-    "DeleteChannelArgs",
+    "Skill",
+    "Workspace",
+    "Messages",
+    "Drafts",
+    "Moderation",
+    "WorkspaceEmoji",
+    "Skills",
+    "BeginChatArgs",
+    "CreateCategoryArgs",
+    "CreateChannelArgs",
+    "CreateChannelWithIdArgs",
     "DeleteCategoryArgs",
     "MoveChannelArgs",
     "MoveCategoryArgs",
-    "CategoryDeleteChannelArgs",
-    "DeleteArgs",
+    "ArrangeChannelsArgs",
+    "SetChannelCategoryArgs",
+    "RenameChannelArgs",
+    "SetChannelTopicArgs",
+    "ArchiveChannelArgs",
+    "RenameCategoryArgs",
+    "DeleteChannelArgs",
+    "MarkReadArgs",
+    "KeepSummaryArgs",
+    "SubmitFeedbackArgs",
+    "TriageArgs",
+    "PostArgs",
+    "PostFileArgs",
+    "ShareResourceArgs",
+    "ShareWindowArgs",
+    "StopSharingArgs",
+    "SetShareAccessArgs",
+    "ShareOpenArgs",
+    "DeliverMessageArgs",
+    "ImportMessageArgs",
+    "EditMessageArgs",
+    "DeleteMessageArgs",
+    "RemoveMessageArgs",
     "PinArgs",
-    "ReactArgs",
-    "DecideArgs",
-    "ThreadDeleteArgs",
-    "DirectDeleteArgs",
+    "RetryArgs",
+    "RecordWorkArgs",
+    "AskArgs",
+    "AnswerQuestionArgs",
+    "WithdrawQuestionArgs",
+    "SettleQuestionArgs",
+    "AskAgentArgs",
+    "StopAgentArgs",
+    "PostViewArgs",
+    "AnswerWithViewArgs",
+    "RewriteViewArgs",
+    "CarryCountsArgs",
+    "StreamOutputArgs",
+    "StartDraftArgs",
+    "ImportPreviousArgs",
+    "ReportMessageArgs",
+    "ReportPersonArgs",
+    "DecideReportsArgs",
+    "OverturnDecisionArgs",
+    "AddEmojiArgs",
+    "RemoveEmojiArgs",
+    "RemoveAnyEmojiArgs",
+    "WriteSkillArgs",
     "CorrectSkillArgs",
-    "ForgetSkillArgs",
     "KeepExampleArgs",
     "DropExampleArgs",
+    "ForgetSkillArgs",
 ]
 
-DeleteChannelArgs = TypedDict("DeleteChannelArgs", {
-    "ch": "TextChannel",
+class Category(TypedDict):
+    name: str
+
+ChannelKind = Literal["text", "voice"]
+
+class ChannelPlace(TypedDict):
+    channel: str
+    category: str | None
+
+class ContextField(TypedDict):
+    key: str
+    value: str
+
+class Conversation(TypedDict):
+    category: str | None
+    name: str
+    topic: str
+    kind: ChannelKind
+    archived: bool
+    members: list[str]
+
+class CropRef(TypedDict):
+    x: int
+    y: int
+    width: int
+    height: int
+
+class Destination(TypedDict):
+    workspace: str
+    provider: str
+    channel: str
+
+class FeedbackReport(TypedDict):
+    submission: Submission | None
+    author: str
+    ts: int
+    triage: list[Entry[Triage]]
+    reactions: Any
+
+class FrameTimings(TypedDict):
+    frames: list[int]
+    budget: int
+
+Hidden = Literal["name", "email", "phone", "address", "account", "credential", "personal"]
+
+class Interaction(TypedDict):
+    at: int
+    app: str
+    action: str
+    resource: str
+    label: str | None
+    outcome: Outcome
+
+Outcome = Literal["done", "refused", "failed"]
+
+class Part(TypedDict):
+    text: str
+    hidden: Hidden | None
+
+class ReadMark(TypedDict):
+    part: int
+    seen: int
+
+class RecordingRef(TypedDict):
+    hash: str
+    app: str
+    app_name: str
+    kind: str
+    from_ms: int
+    to_ms: int
+    steps: int
+    bytes: int
+
+class ResourceRef(TypedDict):
+    kind: str
+    id: str
+    label: str
+    span: Span | None
+
+class ReviewedFeedback(TypedDict):
+    text: str
+    context: list[ContextField]
+    screenshot: ScreenshotRef | None
+    selections: list[ReviewedSelection]
+    interactions: list[Interaction]
+    timings: FrameTimings | None
+    recording: RecordingRef | None
+
+class ReviewedSelection(TypedDict):
+    app: str
+    app_name: str
+    build: str | None
+    path: str
+    role: str
+    kind: str | None
+    record: str | None
+    label: ReviewedText | None
+    texts: list[ReviewedText]
+    note: ReviewedText | None
+    crop: CropRef | None
+
+class ReviewedText(TypedDict):
+    kind: TextKind
+    parts: list[Part]
+
+class ScreenshotRef(TypedDict):
+    hash: str
+    width: int
+    height: int
+
+class Span(TypedDict):
+    start: int
+    end: int
+    unit: SpanUnit
+
+SpanUnit = Literal["Chars", "Bytes"]
+
+class Submission(TypedDict):
+    id: str
+    destination: Destination
+    feedback: ReviewedFeedback
+
+class Summary(TypedDict):
+    text: str
+    through: str
+    through_ts: int
+
+TextKind = Literal["interface", "content"]
+
+class Triage(TypedDict):
+    author: str
+    ts: int
+    update: TriageUpdate | None
+
+TriageUpdate = dict[str, Any]
+"""One of investigating, resolved, reopen, duplicate, task: an object whose case the app tags it with."""
+
+class WorkspaceFiles(TypedDict):
+    largest: int
+    member_hourly: int
+
+AgentFinish = Literal["complete", "truncated", "refused", "cancelled", "failed"]
+
+AgentStepOutcome = dict[str, Any]
+"""One of asked, applied, no_change, refused: an object whose case the app tags it with."""
+
+AgentWorkState = dict[str, Any]
+"""One of taken, waiting, doing, provider_finished, done, refused: an object whose case the app tags it with."""
+
+Anchor = dict[str, Any]
+"""One of Item, Items, Text: an object whose case the app tags it with."""
+
+class Answered(TypedDict):
+    provider: str
+    model: str
+    label: str
+    cost_micros: int
+    tokens: int
+
+class Answered2(TypedDict):
+    answer: str
+    device: str
+    at: int
+
+Attached = dict[str, Any]
+"""One of resource, text, image, video, file: an object whose case the app tags it with."""
+
+class Cause(TypedDict):
+    kind: str
+    label: str
+    key: str
+    person: str
+
+class Choice(TypedDict):
+    id: str
+    label: str
+
+ClipAttr = dict[str, Any]
+"""One of Bool, Int, Str: an object whose case the app tags it with."""
+
+class ClipBlock(TypedDict):
+    kind: str
+    text: str
+    marks: list[MarkSpan]
+    level: int | None
+    ordered: bool | None
+    align: str | None
+    attrs: dict[str, ClipAttr]
+
+class Earlier(TypedDict):
+    version: int
+    source: str
+    reads: list[str]
+    at: int
+
+class MarkSpan(TypedDict):
+    start: int
+    end: int
+    name: str
+    value: MarkValue
+
+MarkValue = dict[str, Any]
+"""One of Bool, Int, Str: an object whose case the app tags it with."""
+
+class Mention(TypedDict):
+    user: str
+    start: int
+    len: int
+    is_agent: bool
+
+class Message(TypedDict):
+    channel: str
+    author: str
+    ts: int
+    text: str
+    body: list[ClipBlock]
+    edited: bool
+    history: list[Revision]
+    parent: str | None
+    quoted: Quote | None
+    reactions: Any
+    mentions: list[Mention]
+    attachments: list[Attached]
+    pinned: bool
+    work: Work | None
+    appearance: ShownAs | None
+    acting: Any | None
+    author_name: str | None
+    origin: Origin | None
+    share: WindowShare | None
+    question: Question | None
+    cause: Cause | None
+    stopped: Stopped | None
+    view: View | None
+    attempts: int
+
+class NewMessage(TypedDict):
+    id: str | None
+    channel: str
+    text: str
+    parent: str | None
+    quoted: Quote | None
+    body: list[ClipBlock] | None
+    attachments: list[Attached]
+    mentions: list[Mention] | None
+    written: int | None
+    origin: Origin | None
+
+class Origin(TypedDict):
+    author: str
+    handle: str | None
+    source: str
+    url: str | None
+    reference: str | None
+    created_ms: int | None
+    updated_ms: int | None
+
+class MessagesOutcome(TypedDict):
+    outcome: str
+    at: int
+    detail: str
+
+class ProviderStream(TypedDict):
+    run: str
+    sequence: int
+    reasoning: str
+    progress: str
+    finish: AgentFinish | None
+    detail: str
+
+class Question(TypedDict):
+    kind: str
+    person: str
+    answers: list[Choice]
+    detail: str
+    answered: Answered2 | None
+    outcome: MessagesOutcome | None
+    withdrawn: Withdrawn | None
+
+class Quote(TypedDict):
+    text: str
+    start: int
+    end: int
+
+class ResourceAt(TypedDict):
+    app: str
+    record: str | None
+    reference: ResourceRef
+
+class Revision(TypedDict):
+    ts: int
+    text: str
+
+ShareAccess = Literal["view", "edit"]
+
+class ShownAs(TypedDict):
+    name: str
+    avatar: str | None
+    persona: ShownPersona | None
+
+class ShownPersona(TypedDict):
+    service: str
+    account: str
+    linked: str | None
+
+class Starting(TypedDict):
+    kind: str
+    label: str
+    key: str
+
+class Step(TypedDict):
+    id: str
+    sequence: int
+    resource: str
+    label: str
+    outcome: AgentStepOutcome | None
+
+class StepUpdate(TypedDict):
+    id: str
+    sequence: int
+    resource: str
+    label: str
+    outcome: str
+    why: str | None
+
+class Stopped(TypedDict):
+    attempt: int
+    at: int
+
+class Transition(TypedDict):
+    state: AgentWorkState
+    since: int
+
+class View(TypedDict):
+    source: str
+    reads: list[str]
+    version: int
+    at: int
+    earlier: list[Earlier]
+
+class WindowShare(TypedDict):
+    access: ShareAccess
+    open: bool
+    ended: bool
+
+class Withdrawn(TypedDict):
+    at: int
+    why: str
+
+class Work(TypedDict):
+    stream: ProviderStream | None
+    state: Transition | None
+    trace: list[Entry[Step]]
+    failure_detail: str | None
+    answered: Answered | None
+
+class WorkUpdate(TypedDict):
+    state: str
+    app: str | None
+    did: str | None
+    about: str | None
+    trace: list[StepUpdate]
+    detail: str | None
+    answered: Answered | None
+
+class Decision(TypedDict):
+    id: str
+    person: str
+    reports: list[str]
+    outcome: ModerationOutcome
+    until_ms: int | None
+    reasoning: str
+    model: str
+    reverted: list[Reverted]
+    by: str
+    at_ms: int
+    overturned_by: str | None
+    overturn_note: str | None
+    overturned_at_ms: int | None
+
+ModerationOutcome = Literal["no-action", "restrict", "ban"]
+
+class Report(TypedDict):
+    id: str
+    reporter: str
+    person: str
+    app: str | None
+    record: str | None
+    item: str | None
+    reason: str
+    at_ms: int
+    decision: str | None
+
+class Reverted(TypedDict):
+    app: str
+    record: str
+    run: str
+    changes: int
+
+class Ruling(TypedDict):
+    outcome: ModerationOutcome
+    until_ms: int | None
+    reasoning: str
+    model: str
+    reverted: list[Reverted]
+
+class Emoji(TypedDict):
+    image: Any
+    added_by: str
+    added_at: int
+
+class Example(TypedDict):
+    id: str
+    accepted: bool
+    text: str
+    note: str
+    at: int
+
+class Skill(TypedDict):
+    name: str
+    work: str
+    how: str
+    form: str
+    model: str | None
+    examples: list[Example]
+    at: int
+    by: str | None
+
+BeginChatArgs = TypedDict("BeginChatArgs", {
 })
-"""The arguments of `delete_channel`."""
+"""The arguments of `begin-chat`."""
+
+CreateCategoryArgs = TypedDict("CreateCategoryArgs", {
+    "name": "str",
+})
+"""The arguments of `create-category`."""
+
+CreateChannelArgs = TypedDict("CreateChannelArgs", {
+    "name": "str",
+    "category": NotRequired["str | None"],
+    "kind": NotRequired["ChannelKind | None"],
+    "topic": NotRequired["str | None"],
+})
+"""The arguments of `create-channel`."""
+
+CreateChannelWithIdArgs = TypedDict("CreateChannelWithIdArgs", {
+    "id": "str",
+    "name": "str",
+    "category": NotRequired["str | None"],
+    "kind": NotRequired["ChannelKind | None"],
+    "topic": NotRequired["str | None"],
+    "members": NotRequired["list[Any] | None"],
+})
+"""The arguments of `create-channel-with-id`."""
 
 DeleteCategoryArgs = TypedDict("DeleteCategoryArgs", {
-    "c": "Category",
+    "category": "str",
 })
-"""The arguments of `delete_category`."""
+"""The arguments of `delete-category`."""
 
 MoveChannelArgs = TypedDict("MoveChannelArgs", {
-    "ch": "TextChannel | VoiceChannel",
-    "category": NotRequired["Category | None"],
-    "at": NotRequired["int | None"],
+    "channel": "str",
+    "up": "bool",
 })
-"""The arguments of `move_channel`."""
+"""The arguments of `move-channel`."""
 
 MoveCategoryArgs = TypedDict("MoveCategoryArgs", {
-    "c": "Category",
-    "at": NotRequired["int | None"],
+    "category": "str",
+    "up": "bool",
 })
-"""The arguments of `move_category`."""
+"""The arguments of `move-category`."""
 
-CategoryDeleteChannelArgs = TypedDict("CategoryDeleteChannelArgs", {
-    "ch": "TextChannel",
+ArrangeChannelsArgs = TypedDict("ArrangeChannelsArgs", {
+    "categories": "list[str]",
+    "channels": "list[ChannelPlace]",
 })
-"""The arguments of `delete_channel`."""
+"""The arguments of `arrange-channels`."""
 
-DeleteArgs = TypedDict("DeleteArgs", {
-    "m": "Message",
+SetChannelCategoryArgs = TypedDict("SetChannelCategoryArgs", {
+    "channel": "str",
+    "category": NotRequired["str | None"],
 })
-"""The arguments of `delete`."""
+"""The arguments of `set-channel-category`."""
+
+RenameChannelArgs = TypedDict("RenameChannelArgs", {
+    "channel": "str",
+    "name": "str",
+})
+"""The arguments of `rename-channel`."""
+
+SetChannelTopicArgs = TypedDict("SetChannelTopicArgs", {
+    "channel": "str",
+    "topic": "str",
+})
+"""The arguments of `set-channel-topic`."""
+
+ArchiveChannelArgs = TypedDict("ArchiveChannelArgs", {
+    "channel": "str",
+    "archived": "bool",
+})
+"""The arguments of `archive-channel`."""
+
+RenameCategoryArgs = TypedDict("RenameCategoryArgs", {
+    "category": "str",
+    "name": "str",
+})
+"""The arguments of `rename-category`."""
+
+DeleteChannelArgs = TypedDict("DeleteChannelArgs", {
+    "channel": "str",
+})
+"""The arguments of `delete-channel`."""
+
+MarkReadArgs = TypedDict("MarkReadArgs", {
+    "channel": "str",
+    "part": "int",
+    "seen": "int",
+})
+"""The arguments of `mark-read`."""
+
+KeepSummaryArgs = TypedDict("KeepSummaryArgs", {
+    "through": "str",
+    "through_ts": "int",
+    "text": "str",
+    "conversation": "str",
+})
+"""The arguments of `keep-summary`."""
+
+SubmitFeedbackArgs = TypedDict("SubmitFeedbackArgs", {
+    "channel": "str",
+    "submission": "Any",
+})
+"""The arguments of `submit-feedback`."""
+
+TriageArgs = TypedDict("TriageArgs", {
+    "report": "str",
+    "update": "Any",
+})
+"""The arguments of `triage`."""
+
+PostArgs = TypedDict("PostArgs", {
+    "id": NotRequired["str | None"],
+    "channel": "str",
+    "text": "str",
+    "parent": NotRequired["str | None"],
+    "quoted": NotRequired["Quote | None"],
+    "body": NotRequired["list[ClipBlock] | None"],
+    "attachments": NotRequired["list[Attached] | None"],
+    "mentions": NotRequired["list[Mention] | None"],
+    "written": NotRequired["int | None"],
+    "origin": NotRequired["Origin | None"],
+})
+"""The arguments of `post`."""
+
+PostFileArgs = TypedDict("PostFileArgs", {
+    "channel": "str",
+    "content": "str",
+    "name": "str",
+    "text": NotRequired["str | None"],
+    "attachment": NotRequired["Attached | None"],
+    "mentions": NotRequired["list[Mention] | None"],
+})
+"""The arguments of `post-file`."""
+
+ShareResourceArgs = TypedDict("ShareResourceArgs", {
+    "channel": "str",
+    "attached": "ResourceAt",
+    "text": NotRequired["str | None"],
+    "mentions": NotRequired["list[Mention] | None"],
+})
+"""The arguments of `share-resource`."""
+
+ShareWindowArgs = TypedDict("ShareWindowArgs", {
+    "channel": "str",
+    "attached": "ResourceAt",
+    "access": NotRequired["ShareAccess | None"],
+    "text": NotRequired["str | None"],
+    "mentions": NotRequired["list[Mention] | None"],
+})
+"""The arguments of `share-window`."""
+
+StopSharingArgs = TypedDict("StopSharingArgs", {
+    "message": "str",
+})
+"""The arguments of `stop-sharing`."""
+
+SetShareAccessArgs = TypedDict("SetShareAccessArgs", {
+    "message": "str",
+    "access": "ShareAccess",
+})
+"""The arguments of `set-share-access`."""
+
+ShareOpenArgs = TypedDict("ShareOpenArgs", {
+    "message": "str",
+    "open": "bool",
+})
+"""The arguments of `share-open`."""
+
+DeliverMessageArgs = TypedDict("DeliverMessageArgs", {
+    "channel": "str",
+    "author": "str",
+    "body": "str",
+    "ts": NotRequired["int | None"],
+})
+"""The arguments of `deliver-message`."""
+
+ImportMessageArgs = TypedDict("ImportMessageArgs", {
+    "channel": "str",
+    "text": "str",
+    "origin": "Origin",
+    "parent": NotRequired["str | None"],
+    "attachments": NotRequired["list[Attached] | None"],
+})
+"""The arguments of `import-message`."""
+
+EditMessageArgs = TypedDict("EditMessageArgs", {
+    "message": "str",
+    "text": "str",
+    "body": NotRequired["list[ClipBlock] | None"],
+    "mentions": NotRequired["list[Mention] | None"],
+})
+"""The arguments of `edit-message`."""
+
+DeleteMessageArgs = TypedDict("DeleteMessageArgs", {
+    "message": "str",
+})
+"""The arguments of `delete-message`."""
+
+RemoveMessageArgs = TypedDict("RemoveMessageArgs", {
+    "message": "str",
+})
+"""The arguments of `remove-message`."""
 
 PinArgs = TypedDict("PinArgs", {
-    "pinned": NotRequired["bool | None"],
+    "message": "str",
+    "pinned": "bool",
 })
 """The arguments of `pin`."""
 
-ReactArgs = TypedDict("ReactArgs", {
-    "emoji": "str",
+RetryArgs = TypedDict("RetryArgs", {
+    "message": "str",
+    "reply": "str",
 })
-"""The arguments of `react`."""
+"""The arguments of `retry`."""
 
-DecideArgs = TypedDict("DecideArgs", {
+RecordWorkArgs = TypedDict("RecordWorkArgs", {
+    "message": "str",
+    "work": "WorkUpdate",
+    "say": NotRequired["str | None"],
+})
+"""The arguments of `record-work`."""
+
+AskArgs = TypedDict("AskArgs", {
+    "channel": "str",
+    "text": "str",
+    "answers": NotRequired["list[Choice] | None"],
+    "kind": NotRequired["str | None"],
+    "detail": NotRequired["Any | None"],
+    "parent": NotRequired["str | None"],
+})
+"""The arguments of `ask`."""
+
+AnswerQuestionArgs = TypedDict("AnswerQuestionArgs", {
+    "message": "str",
+    "answer": "str",
+    "device": NotRequired["str | None"],
+})
+"""The arguments of `answer-question`."""
+
+WithdrawQuestionArgs = TypedDict("WithdrawQuestionArgs", {
+    "message": "str",
+    "why": NotRequired["str | None"],
+})
+"""The arguments of `withdraw-question`."""
+
+SettleQuestionArgs = TypedDict("SettleQuestionArgs", {
+    "message": "str",
+    "outcome": "str",
+    "detail": NotRequired["str | None"],
+})
+"""The arguments of `settle-question`."""
+
+AskAgentArgs = TypedDict("AskAgentArgs", {
+    "text": "str",
+    "channel": "str",
+    "cause": "Starting",
+    "members": NotRequired["list[Any] | None"],
+    "message": NotRequired["str | None"],
+})
+"""The arguments of `ask-agent`."""
+
+StopAgentArgs = TypedDict("StopAgentArgs", {
+    "message": "str",
+})
+"""The arguments of `stop-agent`."""
+
+PostViewArgs = TypedDict("PostViewArgs", {
+    "channel": "str",
+    "text": "str",
+    "source": "str",
+    "reads": "list[str]",
+    "parent": NotRequired["str | None"],
+})
+"""The arguments of `post-view`."""
+
+AnswerWithViewArgs = TypedDict("AnswerWithViewArgs", {
+    "message": "str",
+    "source": "str",
+    "reads": "list[str]",
+    "say": NotRequired["str | None"],
+})
+"""The arguments of `answer-with-view`."""
+
+RewriteViewArgs = TypedDict("RewriteViewArgs", {
+    "message": "str",
+    "source": "str",
+    "reads": "list[str]",
+})
+"""The arguments of `rewrite-view`."""
+
+CarryCountsArgs = TypedDict("CarryCountsArgs", {
+    "earlier": "dict[str, dict[str, int]]",
+})
+"""The arguments of `carry-counts`."""
+
+StreamOutputArgs = TypedDict("StreamOutputArgs", {
+    "channel": "str",
+    "reply": "str",
+    "name": NotRequired["str | None"],
+    "event": "Any",
+})
+"""The arguments of `stream-output`."""
+
+StartDraftArgs = TypedDict("StartDraftArgs", {
+    "key": "str",
+})
+"""The arguments of `start-draft`."""
+
+ImportPreviousArgs = TypedDict("ImportPreviousArgs", {
+    "receipt": "str",
+    "key": "str",
+    "markdown": "str",
+})
+"""The arguments of `import-previous`."""
+
+ReportMessageArgs = TypedDict("ReportMessageArgs", {
+    "message": "str",
+    "author": "Any",
+    "reason": "str",
+})
+"""The arguments of `report-message`."""
+
+ReportPersonArgs = TypedDict("ReportPersonArgs", {
+    "person": "Any",
+    "reason": "str",
+})
+"""The arguments of `report-person`."""
+
+DecideReportsArgs = TypedDict("DecideReportsArgs", {
+    "id": "str",
+    "person": "Any",
+    "reports": "list[str]",
+    "ruling": "Ruling",
+})
+"""The arguments of `decide-reports`."""
+
+OverturnDecisionArgs = TypedDict("OverturnDecisionArgs", {
     "decision": "str",
+    "note": "str",
 })
-"""The arguments of `decide`."""
+"""The arguments of `overturn-decision`."""
 
-ThreadDeleteArgs = TypedDict("ThreadDeleteArgs", {
-    "m": "Message",
+AddEmojiArgs = TypedDict("AddEmojiArgs", {
+    "name": "str",
+    "image": "str",
 })
-"""The arguments of `delete`."""
+"""The arguments of `add-emoji`."""
 
-DirectDeleteArgs = TypedDict("DirectDeleteArgs", {
-    "m": "Message",
+RemoveEmojiArgs = TypedDict("RemoveEmojiArgs", {
+    "name": "str",
 })
-"""The arguments of `delete`."""
+"""The arguments of `remove-emoji`."""
+
+RemoveAnyEmojiArgs = TypedDict("RemoveAnyEmojiArgs", {
+    "name": "str",
+})
+"""The arguments of `remove-any-emoji`."""
+
+WriteSkillArgs = TypedDict("WriteSkillArgs", {
+    "name": "str",
+    "work": "str",
+    "how": "str",
+    "form": NotRequired["str | None"],
+    "model": NotRequired["str | None"],
+})
+"""The arguments of `write-skill`."""
 
 CorrectSkillArgs = TypedDict("CorrectSkillArgs", {
+    "skill": "str",
     "name": NotRequired["str | None"],
     "work": NotRequired["str | None"],
     "how": NotRequired["str | None"],
     "form": NotRequired["str | None"],
     "model": NotRequired["str | None"],
 })
-"""The arguments of `correct_skill`."""
-
-ForgetSkillArgs = TypedDict("ForgetSkillArgs", {
-})
-"""The arguments of `forget_skill`."""
+"""The arguments of `correct-skill`."""
 
 KeepExampleArgs = TypedDict("KeepExampleArgs", {
+    "skill": "str",
     "text": "str",
     "accepted": "bool",
     "note": NotRequired["str | None"],
 })
-"""The arguments of `keep_example`."""
+"""The arguments of `keep-example`."""
 
 DropExampleArgs = TypedDict("DropExampleArgs", {
-    "example": "Example",
+    "skill": "str",
+    "example": "str",
 })
-"""The arguments of `drop_example`."""
+"""The arguments of `drop-example`."""
 
-class Conversations(Resource):
-    """Conversations — `tl.so.tilo.chat.Conversations`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
+ForgetSkillArgs = TypedDict("ForgetSkillArgs", {
+    "skill": "str",
+})
+"""The arguments of `forget-skill`."""
+
+class Workspace(Resource):
+    """Chat — `chat.workspace`."""
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
     @property
-    def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel | VoiceChannel]]:
-        """channels (`5kzdptyg` on the wire)."""
-        return self.fields["5kzdptyg"]
+    def categories(self) -> list[Entry[Category]]:
+        """Read only."""
+        return self.fields["categories"]
+    @property
+    def channels(self) -> list[Entry[Conversation]]:
+        """Read only."""
+        return self.fields["channels"]
+    read: dict[str, dict[str, ReadMark]]
+    feedback: list[Entry[FeedbackReport]]
+    @property
+    def files(self) -> WorkspaceFiles:
+        """Read only."""
+        return self.fields["files"]
+    @property
+    def summaries(self) -> dict[str, dict[str, Summary]]:
+        """Read only."""
+        return self.fields["summaries"]
 
-    @_5kzdptyg.setter
-    def _5kzdptyg(self, value: list[Entry[Category | Direct | TextChannel | VoiceChannel]]) -> None:
-        self.edit("5kzdptyg", value=value)
-    n2xgh234: list[Entry[Skill]]  # skills
+    def begin_chat(self) -> None:
+        """Runs the app's action."""
+        return self.action("begin-chat")
 
-    def new_channel(self,
+    def begin_chat_many(self, items: list[BeginChatArgs]) -> list[dict[str, Any]]:
+        """Runs `begin-chat` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("begin-chat", items)
+
+    def create_category(self, *, name: str) -> None:
+        """Runs the app's action."""
+        return self.action("create-category", name=name)
+
+    def create_category_many(self, items: list[CreateCategoryArgs]) -> list[dict[str, Any]]:
+        """Runs `create-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("create-category", items)
+
+    def create_channel(self,
         *,
-        name: str | None = None,
+        name: str,
+        category: str | None = None,
+        kind: ChannelKind | None = None,
         topic: str | None = None,
-    ) -> TextChannel:
-        """Adds a text channel to the sidebar, about `topic` when it is given."""
+    ) -> None:
+        """Runs the app's action."""
         args: dict[str, Any] = {}
-        if name is not None:
-            args["name"] = name
+        args["name"] = name
+        if category is not None:
+            args["category"] = category
+        if kind is not None:
+            args["kind"] = kind
         if topic is not None:
             args["topic"] = topic
-        return self.action("new_channel", **args)
+        return self.action("create-channel", **args)
 
-    def new_category(self,
+    def create_channel_many(self, items: list[CreateChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `create-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("create-channel", items)
+
+    def create_channel_with_id(self,
         *,
-        name: str | None = None,
-    ) -> Category:
-        """Adds a category to the sidebar."""
+        id: str,
+        name: str,
+        category: str | None = None,
+        kind: ChannelKind | None = None,
+        topic: str | None = None,
+        members: list[Any] | None = None,
+    ) -> None:
+        """Runs the app's action."""
         args: dict[str, Any] = {}
-        if name is not None:
-            args["name"] = name
-        return self.action("new_category", **args)
+        args["id"] = id
+        args["name"] = name
+        if category is not None:
+            args["category"] = category
+        if kind is not None:
+            args["kind"] = kind
+        if topic is not None:
+            args["topic"] = topic
+        if members is not None:
+            args["members"] = members
+        return self.action("create-channel-with-id", **args)
 
-    def new_voice_channel(self,
-        *,
-        name: str | None = None,
-    ) -> VoiceChannel:
-        """Adds a voice channel to the sidebar."""
-        args: dict[str, Any] = {}
-        if name is not None:
-            args["name"] = name
-        return self.action("new_voice_channel", **args)
+    def create_channel_with_id_many(self, items: list[CreateChannelWithIdArgs]) -> list[dict[str, Any]]:
+        """Runs `create-channel-with-id` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("create-channel-with-id", items)
 
-    def new_skill(self,
-        *,
-        name: str | None = None,
-    ) -> Skill:
-        """Starts a skill, called `name`. What it is for and how its work is done are written on its page, or by an agent told to share the guidance with the workspace."""
-        args: dict[str, Any] = {}
-        if name is not None:
-            args["name"] = name
-        return self.action("new_skill", **args)
-
-    def report_problem(self, *, body: str) -> Message:
-        """Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens. The people who read the reports there answer, react and start a thread under one as under any message. The channel is made under one key on every device, so reports filed apart open one."""
-        return self.action("report_problem", body=body)
-
-    def message_person(self, *, who: str) -> Direct:
-        """Opens the direct message between the invoker and `who`, in the sidebar, or the one already open between the two of them: two people have one conversation, not a new empty one each time. With yourself it is your notes to self."""
-        return self.action("message_person", who=who)
-
-    def write_to(self,
-        *,
-        who: str,
-        body: str,
-    ) -> Message:
-        """Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the one already open, else a new one in the sidebar. The message is sent as every message is."""
-        return self.action("write_to", who=who, body=body)
-
-    def delete_channel(self, *, ch: TextChannel) -> None:
-        """Deletes a channel and what was said in it, from the sidebar or the category it is in."""
-        return self.action("delete_channel", ch=ch)
-
-    def delete_channel_many(self, items: list[DeleteChannelArgs]) -> list[dict[str, Any]]:
-        """Runs `delete_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete_channel", items)
-
-    def delete_category(self, *, c: Category) -> None:
-        """Deletes a category that holds no channel."""
-        return self.action("delete_category", c=c)
+    def delete_category(self, *, category: str) -> None:
+        """Runs the app's action."""
+        return self.action("delete-category", category=category)
 
     def delete_category_many(self, items: list[DeleteCategoryArgs]) -> list[dict[str, Any]]:
-        """Runs `delete_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete_category", items)
+        """Runs `delete-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete-category", items)
 
     def move_channel(self,
         *,
-        ch: TextChannel | VoiceChannel,
-        category: Category | None = None,
-        at: int | None = None,
+        channel: str,
+        up: bool,
     ) -> None:
-        """Moves a channel to a place in the sidebar: under `category`, or outside any, at `at` among the channels listed there (the end when it is negative). A move keeps the channel and what was written in it."""
-        args: dict[str, Any] = {}
-        args["ch"] = ch
-        if category is not None:
-            args["category"] = category
-        if at is not None:
-            args["at"] = at
-        return self.action("move_channel", **args)
+        """Runs the app's action."""
+        return self.action("move-channel", channel=channel, up=up)
 
     def move_channel_many(self, items: list[MoveChannelArgs]) -> list[dict[str, Any]]:
-        """Runs `move_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("move_channel", items)
+        """Runs `move-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move-channel", items)
 
     def move_category(self,
         *,
-        c: Category,
-        at: int | None = None,
+        category: str,
+        up: bool,
     ) -> None:
-        """Moves a category to a place in the sidebar, at `at` among the categories and channels listed there (the end when it is negative). Its own channels move with it."""
-        args: dict[str, Any] = {}
-        args["c"] = c
-        if at is not None:
-            args["at"] = at
-        return self.action("move_category", **args)
+        """Runs the app's action."""
+        return self.action("move-category", category=category, up=up)
 
     def move_category_many(self, items: list[MoveCategoryArgs]) -> list[dict[str, Any]]:
-        """Runs `move_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("move_category", items)
+        """Runs `move-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move-category", items)
+
+    def arrange_channels(self,
+        *,
+        categories: list[str],
+        channels: list[ChannelPlace],
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("arrange-channels", categories=categories, channels=channels)
+
+    def arrange_channels_many(self, items: list[ArrangeChannelsArgs]) -> list[dict[str, Any]]:
+        """Runs `arrange-channels` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("arrange-channels", items)
+
+    def set_channel_category(self,
+        *,
+        channel: str,
+        category: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["channel"] = channel
+        if category is not None:
+            args["category"] = category
+        return self.action("set-channel-category", **args)
+
+    def set_channel_category_many(self, items: list[SetChannelCategoryArgs]) -> list[dict[str, Any]]:
+        """Runs `set-channel-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-channel-category", items)
+
+    def rename_channel(self,
+        *,
+        channel: str,
+        name: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("rename-channel", channel=channel, name=name)
+
+    def rename_channel_many(self, items: list[RenameChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `rename-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename-channel", items)
+
+    def set_channel_topic(self,
+        *,
+        channel: str,
+        topic: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("set-channel-topic", channel=channel, topic=topic)
+
+    def set_channel_topic_many(self, items: list[SetChannelTopicArgs]) -> list[dict[str, Any]]:
+        """Runs `set-channel-topic` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-channel-topic", items)
+
+    def archive_channel(self,
+        *,
+        channel: str,
+        archived: bool,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("archive-channel", channel=channel, archived=archived)
+
+    def archive_channel_many(self, items: list[ArchiveChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `archive-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("archive-channel", items)
+
+    def rename_category(self,
+        *,
+        category: str,
+        name: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("rename-category", category=category, name=name)
+
+    def rename_category_many(self, items: list[RenameCategoryArgs]) -> list[dict[str, Any]]:
+        """Runs `rename-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename-category", items)
+
+    def delete_channel(self, *, channel: str) -> None:
+        """Runs the app's action."""
+        return self.action("delete-channel", channel=channel)
+
+    def delete_channel_many(self, items: list[DeleteChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete-channel", items)
+
+    def mark_read(self,
+        *,
+        channel: str,
+        part: int,
+        seen: int,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("mark-read", channel=channel, part=part, seen=seen)
+
+    def mark_read_many(self, items: list[MarkReadArgs]) -> list[dict[str, Any]]:
+        """Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("mark-read", items)
+
+    def keep_summary(self,
+        *,
+        through: str,
+        through_ts: int,
+        text: str,
+        conversation: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("keep-summary", through=through, through_ts=through_ts, text=text, conversation=conversation)
+
+    def keep_summary_many(self, items: list[KeepSummaryArgs]) -> list[dict[str, Any]]:
+        """Runs `keep-summary` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep-summary", items)
+
+    def submit_feedback(self,
+        *,
+        channel: str,
+        submission: Any,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("submit-feedback", channel=channel, submission=submission)
+
+    def submit_feedback_many(self, items: list[SubmitFeedbackArgs]) -> list[dict[str, Any]]:
+        """Runs `submit-feedback` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("submit-feedback", items)
+
+    def triage(self,
+        *,
+        report: str,
+        update: Any,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("triage", report=report, update=update)
+
+    def triage_many(self, items: list[TriageArgs]) -> list[dict[str, Any]]:
+        """Runs `triage` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("triage", items)
+
+    def export_content(self,
+        *,
+        channel: str,
+        format: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["channel"] = channel
+        if format is not None:
+            args["format"] = format
+        return self.action("export-content", **args)
+
+    def start_call(self) -> None:
+        """Runs the app's action."""
+        return self.action("start-call")
+
+    def select_input(self,
+        *,
+        channel: str,
+        input: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("select-input", channel=channel, input=input)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "write_to", "delete_channel", "delete_channel_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many"})
+    __actions__ = frozenset({"begin_chat", "begin_chat_many", "create_category", "create_category_many", "create_channel", "create_channel_many", "create_channel_with_id", "create_channel_with_id_many", "delete_category", "delete_category_many", "move_channel", "move_channel_many", "move_category", "move_category_many", "arrange_channels", "arrange_channels_many", "set_channel_category", "set_channel_category_many", "rename_channel", "rename_channel_many", "set_channel_topic", "set_channel_topic_many", "archive_channel", "archive_channel_many", "rename_category", "rename_category_many", "delete_channel", "delete_channel_many", "mark_read", "mark_read_many", "keep_summary", "keep_summary_many", "submit_feedback", "submit_feedback_many", "triage", "triage_many", "export_content", "start_call", "select_input"})
 
 
-class Category(Resource):
-    """Category — `tl.so.tilo.chat.Category`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
-    hbhrds5c: str  # name
-    hvqgmwrk: list[Entry[TextChannel | VoiceChannel]]  # channels
+class Messages(Resource):
+    """Messages — `chat.messages`."""
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
+    @property
+    def messages(self) -> list[Entry[Message]]:
+        """Read only."""
+        return self.fields["messages"]
+    @property
+    def earlier(self) -> dict[str, dict[str, int]]:
+        """Read only."""
+        return self.fields["earlier"]
 
-    def add_channel(self,
+    def post(self,
         *,
-        name: str | None = None,
-        topic: str | None = None,
-    ) -> TextChannel:
-        """Adds a text channel to a category, about `topic` when it is given."""
+        channel: str,
+        text: str,
+        id: str | None = None,
+        parent: str | None = None,
+        quoted: Quote | None = None,
+        body: list[ClipBlock] | None = None,
+        attachments: list[Attached] | None = None,
+        mentions: list[Mention] | None = None,
+        written: int | None = None,
+        origin: Origin | None = None,
+    ) -> None:
+        """Runs the app's action."""
         args: dict[str, Any] = {}
-        if name is not None:
-            args["name"] = name
-        if topic is not None:
-            args["topic"] = topic
-        return self.action("add_channel", **args)
-
-    def add_voice_channel(self,
-        *,
-        name: str | None = None,
-    ) -> VoiceChannel:
-        """Adds a voice channel to a category."""
-        args: dict[str, Any] = {}
-        if name is not None:
-            args["name"] = name
-        return self.action("add_voice_channel", **args)
-
-    def delete_channel(self, *, ch: TextChannel) -> None:
-        """Deletes a channel and what was said in it, from the sidebar or the category it is in."""
-        return self.action("delete_channel", ch=ch)
-
-    def delete_channel_many(self, items: list[CategoryDeleteChannelArgs]) -> list[dict[str, Any]]:
-        """Runs `delete_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete_channel", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"add_channel", "add_voice_channel", "delete_channel", "delete_channel_many"})
-
-
-class VoiceChannel(Resource):
-    """VoiceChannel — `tl.so.tilo.chat.VoiceChannel`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
-    olqjezxu: str  # name
-
-
-class TextChannel(Resource):
-    """TextChannel — `tl.so.tilo.chat.TextChannel`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
-    x3haugpo: str  # name
-    u6b35mgm: str  # topic
-    ksuxpopi: list[Entry[Message]]  # messages
-    ztou5nin: list[Entry[Thread]]  # threads
-    kgihivmr: list[Entry[Report]]  # reports
-
-    def send(self,
-        *,
-        body: str,
-        reply_to: Message | None = None,
-        attachments: list[Any] | None = None,
-    ) -> Message:
-        """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds."""
-        args: dict[str, Any] = {}
-        args["body"] = body
-        if reply_to is not None:
-            args["reply_to"] = reply_to
+        if id is not None:
+            args["id"] = id
+        args["channel"] = channel
+        args["text"] = text
+        if parent is not None:
+            args["parent"] = parent
+        if quoted is not None:
+            args["quoted"] = quoted
+        if body is not None:
+            args["body"] = body
         if attachments is not None:
             args["attachments"] = attachments
-        return self.action("send", **args)
-
-    def send_view(self,
-        *,
-        title: str,
-        definition: str,
-    ) -> Message:
-        """Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views."""
-        return self.action("send_view", title=title, definition=definition)
-
-    def relay(self,
-        *,
-        body: str,
-        by: str,
-        written_in: str,
-        written: int | None = None,
-        attachments: list[Any] | None = None,
-        reply_to: Message | None = None,
-    ) -> Message:
-        """Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays."""
-        args: dict[str, Any] = {}
-        args["body"] = body
-        args["by"] = by
-        args["written_in"] = written_in
+        if mentions is not None:
+            args["mentions"] = mentions
         if written is not None:
             args["written"] = written
+        if origin is not None:
+            args["origin"] = origin
+        return self.action("post", **args)
+
+    def post_many(self, items: list[PostArgs]) -> list[dict[str, Any]]:
+        """Runs `post` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("post", items)
+
+    def post_file(self,
+        *,
+        channel: str,
+        content: str,
+        name: str,
+        text: str | None = None,
+        attachment: Attached | None = None,
+        mentions: list[Mention] | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["channel"] = channel
+        args["content"] = content
+        args["name"] = name
+        if text is not None:
+            args["text"] = text
+        if attachment is not None:
+            args["attachment"] = attachment
+        if mentions is not None:
+            args["mentions"] = mentions
+        return self.action("post-file", **args)
+
+    def post_file_many(self, items: list[PostFileArgs]) -> list[dict[str, Any]]:
+        """Runs `post-file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("post-file", items)
+
+    def share_resource(self,
+        *,
+        channel: str,
+        attached: ResourceAt,
+        text: str | None = None,
+        mentions: list[Mention] | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["channel"] = channel
+        args["attached"] = attached
+        if text is not None:
+            args["text"] = text
+        if mentions is not None:
+            args["mentions"] = mentions
+        return self.action("share-resource", **args)
+
+    def share_resource_many(self, items: list[ShareResourceArgs]) -> list[dict[str, Any]]:
+        """Runs `share-resource` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("share-resource", items)
+
+    def share_window(self,
+        *,
+        channel: str,
+        attached: ResourceAt,
+        access: ShareAccess | None = None,
+        text: str | None = None,
+        mentions: list[Mention] | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["channel"] = channel
+        args["attached"] = attached
+        if access is not None:
+            args["access"] = access
+        if text is not None:
+            args["text"] = text
+        if mentions is not None:
+            args["mentions"] = mentions
+        return self.action("share-window", **args)
+
+    def share_window_many(self, items: list[ShareWindowArgs]) -> list[dict[str, Any]]:
+        """Runs `share-window` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("share-window", items)
+
+    def stop_sharing(self, *, message: str) -> None:
+        """Runs the app's action."""
+        return self.action("stop-sharing", message=message)
+
+    def stop_sharing_many(self, items: list[StopSharingArgs]) -> list[dict[str, Any]]:
+        """Runs `stop-sharing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("stop-sharing", items)
+
+    def set_share_access(self,
+        *,
+        message: str,
+        access: ShareAccess,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("set-share-access", message=message, access=access)
+
+    def set_share_access_many(self, items: list[SetShareAccessArgs]) -> list[dict[str, Any]]:
+        """Runs `set-share-access` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-share-access", items)
+
+    def share_open(self,
+        *,
+        message: str,
+        open: bool,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("share-open", message=message, open=open)
+
+    def share_open_many(self, items: list[ShareOpenArgs]) -> list[dict[str, Any]]:
+        """Runs `share-open` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("share-open", items)
+
+    def deliver_message(self,
+        *,
+        channel: str,
+        author: str,
+        body: str,
+        ts: int | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["channel"] = channel
+        args["author"] = author
+        args["body"] = body
+        if ts is not None:
+            args["ts"] = ts
+        return self.action("deliver-message", **args)
+
+    def deliver_message_many(self, items: list[DeliverMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `deliver-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("deliver-message", items)
+
+    def import_message(self,
+        *,
+        channel: str,
+        text: str,
+        origin: Origin,
+        parent: str | None = None,
+        attachments: list[Attached] | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["channel"] = channel
+        args["text"] = text
+        args["origin"] = origin
+        if parent is not None:
+            args["parent"] = parent
         if attachments is not None:
             args["attachments"] = attachments
-        if reply_to is not None:
-            args["reply_to"] = reply_to
-        return self.action("relay", **args)
+        return self.action("import-message", **args)
 
-    def delete(self, *, m: Message) -> None:
-        """Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted."""
-        return self.action("delete", m=m)
+    def import_message_many(self, items: list[ImportMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `import-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-message", items)
 
-    def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
-        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete", items)
-
-    def report(self,
+    def edit_message(self,
         *,
-        m: Message,
-        reason: str | None = None,
-    ) -> Report:
-        """Reports a message of a conversation to the workspace's moderators, saying why when the reporter does. Who reported it is the report's history's, so moderators see who asked; the conversation keeps it, with who wrote the message and what it said, after the message is deleted."""
+        message: str,
+        text: str,
+        body: list[ClipBlock] | None = None,
+        mentions: list[Mention] | None = None,
+    ) -> None:
+        """Runs the app's action."""
         args: dict[str, Any] = {}
-        args["m"] = m
-        if reason is not None:
-            args["reason"] = reason
-        return self.action("report", **args)
+        args["message"] = message
+        args["text"] = text
+        if body is not None:
+            args["body"] = body
+        if mentions is not None:
+            args["mentions"] = mentions
+        return self.action("edit-message", **args)
 
-    def start_thread(self,
-        *,
-        m: Message,
-        name: str | None = None,
-    ) -> Thread:
-        """Starts a thread from a message of a channel or a direct conversation, named after what the message says."""
-        args: dict[str, Any] = {}
-        args["m"] = m
-        if name is not None:
-            args["name"] = name
-        return self.action("start_thread", **args)
+    def edit_message_many(self, items: list[EditMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit-message", items)
 
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"send", "send_view", "relay", "delete", "delete_many", "report", "start_thread"})
+    def delete_message(self, *, message: str) -> None:
+        """Runs the app's action."""
+        return self.action("delete-message", message=message)
 
+    def delete_message_many(self, items: list[DeleteMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete-message", items)
 
-class Message(Resource):
-    """Message — `tl.so.tilo.chat.Message`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
-    xfrqdy3y: str  # body
-    @property
-    def _4uwxpnw2(self) -> Message | None:
-        """reply_to (`4uwxpnw2` on the wire)."""
-        return self.fields["4uwxpnw2"]
+    def remove_message(self, *, message: str) -> None:
+        """Runs the app's action."""
+        return self.action("remove-message", message=message)
 
-    @_4uwxpnw2.setter
-    def _4uwxpnw2(self, value: Message | None) -> None:
-        self.edit("4uwxpnw2", value=value)
-    kxekobh6: Thread | None  # thread
-    mwily5kw: list[Entry[Part]]  # parts
-    @property
-    def _4zr7hti6(self) -> bool:
-        """pinned (`4zr7hti6` on the wire)."""
-        return self.fields["4zr7hti6"]
+    def remove_message_many(self, items: list[RemoveMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove-message", items)
 
-    @_4zr7hti6.setter
-    def _4zr7hti6(self, value: bool) -> None:
-        self.edit("4zr7hti6", value=value)
-    ofad24rc: dict[str, list[str]]  # reactions
-    dh6346no: str  # sent_view
-    tz5yw5dt: str  # by
-    @property
-    def _4da5gcom(self) -> str:
-        """written_in (`4da5gcom` on the wire)."""
-        return self.fields["4da5gcom"]
-
-    @_4da5gcom.setter
-    def _4da5gcom(self, value: str) -> None:
-        self.edit("4da5gcom", value=value)
-    mmlcexsa: int  # written
-    jcgolgdf: str  # reacted
-    n7d27huf: list[Entry[Attached]]  # attachments
-
-    # the app's `edit` action is the SDK's own: run it with `action("edit")`.
     def pin(self,
         *,
-        pinned: bool | None = None,
+        message: str,
+        pinned: bool,
     ) -> None:
-        """Pins a message to its channel, or unpins it."""
-        args: dict[str, Any] = {}
-        if pinned is not None:
-            args["pinned"] = pinned
-        return self.action("pin", **args)
+        """Runs the app's action."""
+        return self.action("pin", message=message, pinned=pinned)
 
     def pin_many(self, items: list[PinArgs]) -> list[dict[str, Any]]:
         """Runs `pin` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("pin", items)
 
-    def react(self, *, emoji: str) -> None:
-        """Adds your reaction with an emoji to a message, or takes it back when you had reacted with it."""
-        return self.action("react", emoji=emoji)
-
-    def react_many(self, items: list[ReactArgs]) -> list[dict[str, Any]]:
-        """Runs `react` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("react", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"pin", "pin_many", "react", "react_many"})
-
-
-class Report(Resource):
-    """Report — `tl.so.tilo.chat.Report`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
-    jqcabz2h: Message | None  # message
-    e3zqz33a: str | None  # person
-    adip7bw4: str  # said
-    bmfbgqt6: str  # reason
-    @property
-    def _3oner4zg(self) -> str:
-        """decision (`3oner4zg` on the wire)."""
-        return self.fields["3oner4zg"]
-
-    @_3oner4zg.setter
-    def _3oner4zg(self, value: str) -> None:
-        self.edit("3oner4zg", value=value)
-
-    def decide(self, *, decision: str) -> None:
-        """Settles a report: what a moderator, or the moderation agent, decided about it."""
-        return self.action("decide", decision=decision)
-
-    def decide_many(self, items: list[DecideArgs]) -> list[dict[str, Any]]:
-        """Runs `decide` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("decide", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"decide", "decide_many"})
-
-
-class Thread(Resource):
-    """Thread — `tl.so.tilo.chat.Thread`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
-    xuvfifa5: str  # name
-    ijy454g6: list[Entry[Message]]  # messages
-    @property
-    def _2ki7h2z5(self) -> bool:
-        """archived (`2ki7h2z5` on the wire)."""
-        return self.fields["2ki7h2z5"]
-
-    @_2ki7h2z5.setter
-    def _2ki7h2z5(self, value: bool) -> None:
-        self.edit("2ki7h2z5", value=value)
-    ep7fvntj: list[Entry[Report]]  # reports
-
-    def send(self,
+    def retry(self,
         *,
-        body: str,
-        reply_to: Message | None = None,
-        attachments: list[Any] | None = None,
-    ) -> Message:
-        """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds."""
+        message: str,
+        reply: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("retry", message=message, reply=reply)
+
+    def retry_many(self, items: list[RetryArgs]) -> list[dict[str, Any]]:
+        """Runs `retry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("retry", items)
+
+    def record_work(self,
+        *,
+        message: str,
+        work: WorkUpdate,
+        say: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
         args: dict[str, Any] = {}
-        args["body"] = body
-        if reply_to is not None:
-            args["reply_to"] = reply_to
-        if attachments is not None:
-            args["attachments"] = attachments
-        return self.action("send", **args)
+        args["message"] = message
+        args["work"] = work
+        if say is not None:
+            args["say"] = say
+        return self.action("record-work", **args)
 
-    def send_view(self,
-        *,
-        title: str,
-        definition: str,
-    ) -> Message:
-        """Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views."""
-        return self.action("send_view", title=title, definition=definition)
+    def record_work_many(self, items: list[RecordWorkArgs]) -> list[dict[str, Any]]:
+        """Runs `record-work` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("record-work", items)
 
-    def relay(self,
+    def ask(self,
         *,
-        body: str,
-        by: str,
-        written_in: str,
-        written: int | None = None,
-        attachments: list[Any] | None = None,
-        reply_to: Message | None = None,
-    ) -> Message:
-        """Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays."""
+        channel: str,
+        text: str,
+        answers: list[Choice] | None = None,
+        kind: str | None = None,
+        detail: Any | None = None,
+        parent: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
         args: dict[str, Any] = {}
-        args["body"] = body
-        args["by"] = by
-        args["written_in"] = written_in
-        if written is not None:
-            args["written"] = written
-        if attachments is not None:
-            args["attachments"] = attachments
-        if reply_to is not None:
-            args["reply_to"] = reply_to
-        return self.action("relay", **args)
+        args["channel"] = channel
+        args["text"] = text
+        if answers is not None:
+            args["answers"] = answers
+        if kind is not None:
+            args["kind"] = kind
+        if detail is not None:
+            args["detail"] = detail
+        if parent is not None:
+            args["parent"] = parent
+        return self.action("ask", **args)
 
-    def delete(self, *, m: Message) -> None:
-        """Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted."""
-        return self.action("delete", m=m)
+    def ask_many(self, items: list[AskArgs]) -> list[dict[str, Any]]:
+        """Runs `ask` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("ask", items)
 
-    def delete_many(self, items: list[ThreadDeleteArgs]) -> list[dict[str, Any]]:
-        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete", items)
-
-    def report(self,
+    def answer_question(self,
         *,
-        m: Message,
-        reason: str | None = None,
-    ) -> Report:
-        """Reports a message of a conversation to the workspace's moderators, saying why when the reporter does. Who reported it is the report's history's, so moderators see who asked; the conversation keeps it, with who wrote the message and what it said, after the message is deleted."""
+        message: str,
+        answer: str,
+        device: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
         args: dict[str, Any] = {}
-        args["m"] = m
-        if reason is not None:
-            args["reason"] = reason
-        return self.action("report", **args)
+        args["message"] = message
+        args["answer"] = answer
+        if device is not None:
+            args["device"] = device
+        return self.action("answer-question", **args)
 
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"send", "send_view", "relay", "delete", "delete_many", "report"})
+    def answer_question_many(self, items: list[AnswerQuestionArgs]) -> list[dict[str, Any]]:
+        """Runs `answer-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("answer-question", items)
 
-
-class Direct(Resource):
-    """Direct — `tl.so.tilo.chat.Direct`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
-    @property
-    def _5stv6ro7(self) -> str:
-        """name (`5stv6ro7` on the wire)."""
-        return self.fields["5stv6ro7"]
-
-    @_5stv6ro7.setter
-    def _5stv6ro7(self, value: str) -> None:
-        self.edit("5stv6ro7", value=value)
-    wph25aa5: list[str]  # people
-    ycadyqh5: str  # person
-    y65whtrn: list[Entry[Message]]  # messages
-    @property
-    def _3p73kpuw(self) -> list[Entry[Thread]]:
-        """threads (`3p73kpuw` on the wire)."""
-        return self.fields["3p73kpuw"]
-
-    @_3p73kpuw.setter
-    def _3p73kpuw(self, value: list[Entry[Thread]]) -> None:
-        self.edit("3p73kpuw", value=value)
-    doiukw5i: list[Entry[Report]]  # reports
-
-    def send(self,
+    def withdraw_question(self,
         *,
-        body: str,
-        reply_to: Message | None = None,
-        attachments: list[Any] | None = None,
-    ) -> Message:
-        """Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds."""
+        message: str,
+        why: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
         args: dict[str, Any] = {}
-        args["body"] = body
-        if reply_to is not None:
-            args["reply_to"] = reply_to
-        if attachments is not None:
-            args["attachments"] = attachments
-        return self.action("send", **args)
+        args["message"] = message
+        if why is not None:
+            args["why"] = why
+        return self.action("withdraw-question", **args)
 
-    def send_view(self,
-        *,
-        title: str,
-        definition: str,
-    ) -> Message:
-        """Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views."""
-        return self.action("send_view", title=title, definition=definition)
+    def withdraw_question_many(self, items: list[WithdrawQuestionArgs]) -> list[dict[str, Any]]:
+        """Runs `withdraw-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("withdraw-question", items)
 
-    def relay(self,
+    def settle_question(self,
         *,
-        body: str,
-        by: str,
-        written_in: str,
-        written: int | None = None,
-        attachments: list[Any] | None = None,
-        reply_to: Message | None = None,
-    ) -> Message:
-        """Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays."""
+        message: str,
+        outcome: str,
+        detail: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
         args: dict[str, Any] = {}
-        args["body"] = body
-        args["by"] = by
-        args["written_in"] = written_in
-        if written is not None:
-            args["written"] = written
-        if attachments is not None:
-            args["attachments"] = attachments
-        if reply_to is not None:
-            args["reply_to"] = reply_to
-        return self.action("relay", **args)
+        args["message"] = message
+        args["outcome"] = outcome
+        if detail is not None:
+            args["detail"] = detail
+        return self.action("settle-question", **args)
 
-    def delete(self, *, m: Message) -> None:
-        """Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted."""
-        return self.action("delete", m=m)
+    def settle_question_many(self, items: list[SettleQuestionArgs]) -> list[dict[str, Any]]:
+        """Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("settle-question", items)
 
-    def delete_many(self, items: list[DirectDeleteArgs]) -> list[dict[str, Any]]:
-        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete", items)
-
-    def report(self,
+    def ask_agent(self,
         *,
-        m: Message,
-        reason: str | None = None,
-    ) -> Report:
-        """Reports a message of a conversation to the workspace's moderators, saying why when the reporter does. Who reported it is the report's history's, so moderators see who asked; the conversation keeps it, with who wrote the message and what it said, after the message is deleted."""
+        text: str,
+        channel: str,
+        cause: Starting,
+        members: list[Any] | None = None,
+        message: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
         args: dict[str, Any] = {}
-        args["m"] = m
-        if reason is not None:
-            args["reason"] = reason
-        return self.action("report", **args)
+        args["text"] = text
+        args["channel"] = channel
+        args["cause"] = cause
+        if members is not None:
+            args["members"] = members
+        if message is not None:
+            args["message"] = message
+        return self.action("ask-agent", **args)
 
-    def start_thread(self,
+    def ask_agent_many(self, items: list[AskAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `ask-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("ask-agent", items)
+
+    def stop_agent(self, *, message: str) -> None:
+        """Runs the app's action."""
+        return self.action("stop-agent", message=message)
+
+    def stop_agent_many(self, items: list[StopAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `stop-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("stop-agent", items)
+
+    def post_view(self,
         *,
-        m: Message,
+        channel: str,
+        text: str,
+        source: str,
+        reads: list[str],
+        parent: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["channel"] = channel
+        args["text"] = text
+        args["source"] = source
+        args["reads"] = reads
+        if parent is not None:
+            args["parent"] = parent
+        return self.action("post-view", **args)
+
+    def post_view_many(self, items: list[PostViewArgs]) -> list[dict[str, Any]]:
+        """Runs `post-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("post-view", items)
+
+    def answer_with_view(self,
+        *,
+        message: str,
+        source: str,
+        reads: list[str],
+        say: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["message"] = message
+        args["source"] = source
+        args["reads"] = reads
+        if say is not None:
+            args["say"] = say
+        return self.action("answer-with-view", **args)
+
+    def answer_with_view_many(self, items: list[AnswerWithViewArgs]) -> list[dict[str, Any]]:
+        """Runs `answer-with-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("answer-with-view", items)
+
+    def rewrite_view(self,
+        *,
+        message: str,
+        source: str,
+        reads: list[str],
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("rewrite-view", message=message, source=source, reads=reads)
+
+    def rewrite_view_many(self, items: list[RewriteViewArgs]) -> list[dict[str, Any]]:
+        """Runs `rewrite-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rewrite-view", items)
+
+    def carry_counts(self, *, earlier: dict[str, dict[str, int]]) -> None:
+        """Runs the app's action."""
+        return self.action("carry-counts", earlier=earlier)
+
+    def carry_counts_many(self, items: list[CarryCountsArgs]) -> list[dict[str, Any]]:
+        """Runs `carry-counts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("carry-counts", items)
+
+    def stream_output(self,
+        *,
+        channel: str,
+        reply: str,
+        event: Any,
         name: str | None = None,
-    ) -> Thread:
-        """Starts a thread from a message of a channel or a direct conversation, named after what the message says."""
+    ) -> None:
+        """Runs the app's action."""
         args: dict[str, Any] = {}
-        args["m"] = m
+        args["channel"] = channel
+        args["reply"] = reply
         if name is not None:
             args["name"] = name
-        return self.action("start_thread", **args)
+        args["event"] = event
+        return self.action("stream-output", **args)
+
+    def stream_output_many(self, items: list[StreamOutputArgs]) -> list[dict[str, Any]]:
+        """Runs `stream-output` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("stream-output", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"send", "send_view", "relay", "delete", "delete_many", "report", "start_thread"})
+    __actions__ = frozenset({"post", "post_many", "post_file", "post_file_many", "share_resource", "share_resource_many", "share_window", "share_window_many", "stop_sharing", "stop_sharing_many", "set_share_access", "set_share_access_many", "share_open", "share_open_many", "deliver_message", "deliver_message_many", "import_message", "import_message_many", "edit_message", "edit_message_many", "delete_message", "delete_message_many", "remove_message", "remove_message_many", "pin", "pin_many", "retry", "retry_many", "record_work", "record_work_many", "ask", "ask_many", "answer_question", "answer_question_many", "withdraw_question", "withdraw_question_many", "settle_question", "settle_question_many", "ask_agent", "ask_agent_many", "stop_agent", "stop_agent_many", "post_view", "post_view_many", "answer_with_view", "answer_with_view_many", "rewrite_view", "rewrite_view_many", "carry_counts", "carry_counts_many", "stream_output", "stream_output_many"})
 
 
-class Attached(Resource):
-    """Attached — `tl.so.tilo.chat.Attached`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
-    qsdc77jc: str  # name
-    h5lqkkjt: str  # media
-    g7nx7a7g: int  # size
-    wu2n7dpm: str  # blob
-
-
-class Part(Resource):
-    """Part — `tl.so.tilo.chat.Part`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
-    zevnbs3i: str  # kind
+class Drafts(Resource):
+    """Chat drafts — `chat.drafts`."""
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
+    drafts: dict[str, str]
     @property
-    def _3hkzkqvr(self) -> str:
-        """body (`3hkzkqvr` on the wire)."""
-        return self.fields["3hkzkqvr"]
+    def imported(self) -> list[str]:
+        """Read only."""
+        return self.fields["imported"]
 
-    @_3hkzkqvr.setter
-    def _3hkzkqvr(self, value: str) -> None:
-        self.edit("3hkzkqvr", value=value)
+    def start_draft(self, *, key: str) -> None:
+        """Runs the app's action."""
+        return self.action("start-draft", key=key)
+
+    def start_draft_many(self, items: list[StartDraftArgs]) -> list[dict[str, Any]]:
+        """Runs `start-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("start-draft", items)
+
+    def import_previous(self,
+        *,
+        receipt: str,
+        key: str,
+        markdown: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("import-previous", receipt=receipt, key=key, markdown=markdown)
+
+    def import_previous_many(self, items: list[ImportPreviousArgs]) -> list[dict[str, Any]]:
+        """Runs `import-previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-previous", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"start_draft", "start_draft_many", "import_previous", "import_previous_many"})
 
 
-class Skill(Resource):
-    """Skill — `tl.so.tilo.chat.Skill`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
-    gfk6pm4a: str  # name
-    gnfldsvz: str  # work
-    bn3w5doj: str  # how
-    ijpa4i7d: str  # form
+class Moderation(Resource):
+    """Moderation — `tilo.moderation`."""
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
     @property
-    def _3wlkwi6k(self) -> str:
-        """model (`3wlkwi6k` on the wire)."""
-        return self.fields["3wlkwi6k"]
+    def reports(self) -> list[Entry[Report]]:
+        """Read only."""
+        return self.fields["reports"]
+    @property
+    def decisions(self) -> list[Entry[Decision]]:
+        """Read only."""
+        return self.fields["decisions"]
 
-    @_3wlkwi6k.setter
-    def _3wlkwi6k(self, value: str) -> None:
-        self.edit("3wlkwi6k", value=value)
-    bxx5rykt: list[Entry[Example]]  # examples
+    def report_message(self,
+        *,
+        message: str,
+        author: Any,
+        reason: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("report-message", message=message, author=author, reason=reason)
+
+    def report_message_many(self, items: list[ReportMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("report-message", items)
+
+    def report_person(self,
+        *,
+        person: Any,
+        reason: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("report-person", person=person, reason=reason)
+
+    def report_person_many(self, items: list[ReportPersonArgs]) -> list[dict[str, Any]]:
+        """Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("report-person", items)
+
+    def decide_reports(self,
+        *,
+        id: str,
+        person: Any,
+        reports: list[str],
+        ruling: Ruling,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("decide-reports", id=id, person=person, reports=reports, ruling=ruling)
+
+    def decide_reports_many(self, items: list[DecideReportsArgs]) -> list[dict[str, Any]]:
+        """Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("decide-reports", items)
+
+    def overturn_decision(self,
+        *,
+        decision: str,
+        note: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("overturn-decision", decision=decision, note=note)
+
+    def overturn_decision_many(self, items: list[OverturnDecisionArgs]) -> list[dict[str, Any]]:
+        """Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("overturn-decision", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"report_message", "report_message_many", "report_person", "report_person_many", "decide_reports", "decide_reports_many", "overturn_decision", "overturn_decision_many"})
+
+
+class WorkspaceEmoji(Resource):
+    """Workspace emoji — `tilo.workspace.emoji`."""
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
+    emoji: dict[str, Emoji]
+
+    def add_emoji(self,
+        *,
+        name: str,
+        image: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("add-emoji", name=name, image=image)
+
+    def add_emoji_many(self, items: list[AddEmojiArgs]) -> list[dict[str, Any]]:
+        """Runs `add-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("add-emoji", items)
+
+    def remove_emoji(self, *, name: str) -> None:
+        """Runs the app's action."""
+        return self.action("remove-emoji", name=name)
+
+    def remove_emoji_many(self, items: list[RemoveEmojiArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove-emoji", items)
+
+    def remove_any_emoji(self, *, name: str) -> None:
+        """Runs the app's action."""
+        return self.action("remove-any-emoji", name=name)
+
+    def remove_any_emoji_many(self, items: list[RemoveAnyEmojiArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-any-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove-any-emoji", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add_emoji", "add_emoji_many", "remove_emoji", "remove_emoji_many", "remove_any_emoji", "remove_any_emoji_many"})
+
+
+class Skills(Resource):
+    """Workspace Skills — `chat.skills`."""
+    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
+    @property
+    def skills(self) -> list[Entry[Skill]]:
+        """Read only."""
+        return self.fields["skills"]
+
+    def write_skill(self,
+        *,
+        name: str,
+        work: str,
+        how: str,
+        form: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["name"] = name
+        args["work"] = work
+        args["how"] = how
+        if form is not None:
+            args["form"] = form
+        if model is not None:
+            args["model"] = model
+        return self.action("write-skill", **args)
+
+    def write_skill_many(self, items: list[WriteSkillArgs]) -> list[dict[str, Any]]:
+        """Runs `write-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("write-skill", items)
 
     def correct_skill(self,
         *,
+        skill: str,
         name: str | None = None,
         work: str | None = None,
         how: str | None = None,
         form: str | None = None,
         model: str | None = None,
     ) -> None:
-        """Corrects a skill: only what is given changes, and what is left out stays as it is."""
+        """Runs the app's action."""
         args: dict[str, Any] = {}
+        args["skill"] = skill
         if name is not None:
             args["name"] = name
         if work is not None:
@@ -745,75 +1936,54 @@ class Skill(Resource):
             args["form"] = form
         if model is not None:
             args["model"] = model
-        return self.action("correct_skill", **args)
+        return self.action("correct-skill", **args)
 
     def correct_skill_many(self, items: list[CorrectSkillArgs]) -> list[dict[str, Any]]:
-        """Runs `correct_skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("correct_skill", items)
-
-    def forget_skill(self) -> None:
-        """Forgets a skill: no later turn reads it."""
-        return self.action("forget_skill")
-
-    def forget_skill_many(self, items: list[ForgetSkillArgs]) -> list[dict[str, Any]]:
-        """Runs `forget_skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("forget_skill", items)
+        """Runs `correct-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("correct-skill", items)
 
     def keep_example(self,
         *,
+        skill: str,
         text: str,
         accepted: bool,
         note: str | None = None,
     ) -> None:
-        """Keeps an example of a skill: a result the person accepted (more like this) or rejected (less like this), with what they said about it. The same result said again is that example, moved newest, and a skill keeps its newest twelve."""
+        """Runs the app's action."""
         args: dict[str, Any] = {}
+        args["skill"] = skill
         args["text"] = text
         args["accepted"] = accepted
         if note is not None:
             args["note"] = note
-        return self.action("keep_example", **args)
+        return self.action("keep-example", **args)
 
     def keep_example_many(self, items: list[KeepExampleArgs]) -> list[dict[str, Any]]:
-        """Runs `keep_example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("keep_example", items)
+        """Runs `keep-example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep-example", items)
 
-    def drop_example(self, *, example: Example) -> None:
-        """Takes an example out of a skill."""
-        return self.action("drop_example", example=example)
+    def drop_example(self,
+        *,
+        skill: str,
+        example: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("drop-example", skill=skill, example=example)
 
     def drop_example_many(self, items: list[DropExampleArgs]) -> list[dict[str, Any]]:
-        """Runs `drop_example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("drop_example", items)
+        """Runs `drop-example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("drop-example", items)
+
+    def forget_skill(self, *, skill: str) -> None:
+        """Runs the app's action."""
+        return self.action("forget-skill", skill=skill)
+
+    def forget_skill_many(self, items: list[ForgetSkillArgs]) -> list[dict[str, Any]]:
+        """Runs `forget-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("forget-skill", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"correct_skill", "correct_skill_many", "forget_skill", "forget_skill_many", "keep_example", "keep_example_many", "drop_example", "drop_example_many"})
+    __actions__ = frozenset({"write_skill", "write_skill_many", "correct_skill", "correct_skill_many", "keep_example", "keep_example_many", "drop_example", "drop_example_many", "forget_skill", "forget_skill_many"})
 
-
-class Example(Resource):
-    """Example — `tl.so.tilo.chat.Example`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
-    fspydtu6: str  # text
-    @property
-    def _2u2ngevv(self) -> bool:
-        """accepted (`2u2ngevv` on the wire)."""
-        return self.fields["2u2ngevv"]
-
-    @_2u2ngevv.setter
-    def _2u2ngevv(self, value: bool) -> None:
-        self.edit("2u2ngevv", value=value)
-    agcun6lt: str  # note
-    @property
-    def _3ccutu3r(self) -> int:
-        """at (`3ccutu3r` on the wire)."""
-        return self.fields["3ccutu3r"]
-
-    @_3ccutu3r.setter
-    def _3ccutu3r(self, value: int) -> None:
-        self.edit("3ccutu3r", value=value)
-
-
-class Chat(Resource):
-    """Chat — `tl.so.tilo.chat`."""
-    __surface__ = "so.tilo.chat@d21a7a397512be3f"
 

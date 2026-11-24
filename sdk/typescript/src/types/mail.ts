@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@8a0eb552953c706f";
+export const SURFACE = "so.tilo.mail@ba1d8ef8586d61fd";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -88,10 +88,6 @@ export interface MarkReadArgs {
   unread?: boolean;
 }
 
-/** The arguments of `announce`. */
-export interface AnnounceArgs {
-}
-
 /** The arguments of `attach`. */
 export interface AttachArgs {
   file: unknown;
@@ -139,7 +135,6 @@ export interface Account extends tilo.Resource {
   "4lo3ei5n": string;  // address
   j6nqqrit: string;  // name
   b5k7mvka: string;  // trouble
-  pnt3r5fh: string;  // trouble_kind
   "33f3rqw2": boolean;  // online
   hzbwof46: string;  // fetched
   jxc5rufs: string;  // signature
@@ -154,14 +149,8 @@ export interface Account extends tilo.Resource {
   set_signatureMany(items: SetSignatureArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Asks the account's server for its mail now: what a person presses when the window says the server could not be reached, or that what it fetched could not be saved. The account says how it stands once it answers. */
   check_now(): Promise<void>;
-  /** Asks the account's server to search its mail for `text`: what finds mail the workspace does not hold, and mail in folders it does not sync. What it finds comes in as the account's conversations, as a fetch's mail does, so it is read and searched here from then on. */
-  search_server(args: {
-    text: string;
-  }): Promise<void>;
   /** Starts a message from the account. */
   new_message(): Promise<Draft>;
-  /** Deletes every conversation in the account's trash from the mailbox and its server for good, each as `purge` does. A view offers this behind a confirmation, as nothing undoes it. */
-  empty_trash(): Promise<void>;
   /** Marks every conversation of the account read. */
   mark_all_read(): Promise<void>;
   /** Runs `mark_all_read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -170,7 +159,7 @@ export interface Account extends tilo.Resource {
 
 /** The actions `Account` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ACCOUNT_ACTIONS = ["set_signature", "set_signatureMany", "check_now", "search_server", "new_message", "empty_trash", "mark_all_read", "mark_all_readMany"] as const;
+export const ACCOUNT_ACTIONS = ["set_signature", "set_signatureMany", "check_now", "new_message", "mark_all_read", "mark_all_readMany"] as const;
 
 /** The `tl.so.tilo.mail.Account` kind at `path`. */
 export function account(ws: tilo.Workspace, path: string): Account {
@@ -214,7 +203,6 @@ export interface Thread extends tilo.Resource {
   gy7z7du3: string[];  // labels
   bdoh33hs: string;  // snoozed_until
   z7qxz544: boolean;  // muted
-  upzs3qkn: string | null;  // arrived
   /** Answers the conversation's newest message, to whoever wrote it, quoting it under what is written. */
   reply(): Promise<Draft>;
   /** Answers the conversation's newest message, to everyone it went to, quoting it. */
@@ -239,7 +227,7 @@ export interface Thread extends tilo.Resource {
   delete(): Promise<void>;
   /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Deletes the conversation's trashed messages for good, from its server too, and the conversation with them when no message of it is left. This is the one deletion there is no trash to take back from: what is deleted for good is gone from the server, and this app's record of it leaves once the server says it is. */
+  /** Deletes the conversation's trashed messages for good, from its server too, and the conversation with them when no message of it is left. This is the one deletion there is no trash to take back from: what is deleted for good is gone from the server, and the platform takes back this app's record of it only. */
   purge(): Promise<void>;
   /** Flags or unflags the conversation. */
   flag(args?: {
@@ -284,10 +272,6 @@ export interface Thread extends tilo.Resource {
   }): Promise<void>;
   /** Runs `mark_read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   mark_readMany(items: MarkReadArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Tells everyone who reads the conversation that mail came to it: who wrote, what it is called, and which account it came to while the workspace reads several of them, opening the conversation. It is run once for each arrival, on the device that governs the workspace, so each person is told once however many of their devices are open. */
-  announce(): Promise<void>;
-  /** Runs `announce` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  announceMany(items: AnnounceArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Answers the conversation with what was typed: the message goes to whoever wrote its newest, as a reply to it, quoted. */
   answer(args: {
     body: string;
@@ -296,7 +280,7 @@ export interface Thread extends tilo.Resource {
 
 /** The actions `Thread` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const THREAD_ACTIONS = ["reply", "reply_all", "forward", "archive", "archiveMany", "to_inbox", "to_inboxMany", "move_to", "move_toMany", "delete", "deleteMany", "purge", "flag", "flagMany", "snooze", "snoozeMany", "snooze_an_hour", "snooze_an_hourMany", "snooze_until_tomorrow", "snooze_until_tomorrowMany", "unsnooze", "unsnoozeMany", "label", "labelMany", "mute", "muteMany", "mark_read", "mark_readMany", "announce", "announceMany", "answer"] as const;
+export const THREAD_ACTIONS = ["reply", "reply_all", "forward", "archive", "archiveMany", "to_inbox", "to_inboxMany", "move_to", "move_toMany", "delete", "deleteMany", "purge", "flag", "flagMany", "snooze", "snoozeMany", "snooze_an_hour", "snooze_an_hourMany", "snooze_until_tomorrow", "snooze_until_tomorrowMany", "unsnooze", "unsnoozeMany", "label", "labelMany", "mute", "muteMany", "mark_read", "mark_readMany", "answer"] as const;
 
 /** The `tl.so.tilo.mail.Thread` kind at `path`. */
 export function thread(ws: tilo.Workspace, path: string): Thread {
@@ -376,7 +360,6 @@ export interface Draft extends tilo.Resource {
   d5u2c7jm: string;  // body
   w6twdkob: string;  // in_reply_to
   w26tzvt4: string;  // references
-  pkrsaacd: string;  // conversation
   yfyt2cfh: boolean;  // sent
   lgrwf5yf: string;  // send_at
   h2nvr2op: boolean;  // recalled
@@ -415,8 +398,6 @@ export interface Draft extends tilo.Resource {
   }): Promise<void>;
   /** Runs `send_as` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   send_asMany(items: SendAsArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Sends a message the account's server refused again, from where it stands: the version that failed did not leave, so it goes once. A message whose outcome nobody knows is not tried again, since it may have gone. */
-  retry(): Promise<void>;
   /** Sends the message from its account. It leaves the system, so it goes once, and waits in the outbox until the server took it; it is held back for the person's hold first, so they can take it back. The effect is an argument the action records, so the wait survives a window closing and an agent takes it back the same way. */
   send(): Promise<void>;
   /** Takes back a message that was sent and has not gone yet: it never leaves, and the message is a draft again, as it was. Once it went it cannot be taken back. */
@@ -425,7 +406,7 @@ export interface Draft extends tilo.Resource {
 
 /** The actions `Draft` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DRAFT_ACTIONS = ["attach", "attachMany", "detach", "detachMany", "cancel_later", "send_later", "send_in_the_morning", "send_from", "send_fromMany", "send_as", "send_asMany", "retry", "send", "undo_send"] as const;
+export const DRAFT_ACTIONS = ["attach", "attachMany", "detach", "detachMany", "cancel_later", "send_later", "send_in_the_morning", "send_from", "send_fromMany", "send_as", "send_asMany", "send", "undo_send"] as const;
 
 /** The `tl.so.tilo.mail.Draft` kind at `path`. */
 export function draft(ws: tilo.Workspace, path: string): Draft {
@@ -445,7 +426,7 @@ export interface Mail extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_hold` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_holdMany(items: SetHoldArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Starts a message. A message is written before the workspace has an account to send it from: it waits in Drafts, and goes once the person adds one. */
+  /** Starts a message from the first account. */
   new_draft(): Promise<Draft>;
   /** Writes a message for the person to read and send: to whom, its subject and what it says, answering `in_reply_to` (a Message-ID) when it names one. Every call makes a draft of its own beside the others; nothing is written over and nothing is sent. Where an agent drafts a message, the person finds it in Drafts and sends it. */
   draft_message(args: {
@@ -502,15 +483,11 @@ export interface Mail extends tilo.Resource {
   }): Promise<void>;
   /** Runs `discard` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   discardMany(items: DiscardArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Keeps the message in the account's server Drafts folder as it is written now, so another mail client of the account sees it there too. What the server says comes back with the account's next mail, and the server's Drafts are read like its other folders. */
-  save_to_drafts(args: {
-    d: Draft;
-  }): Promise<void>;
 }
 
 /** The actions `Mail` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MAIL_ACTIONS = ["set_hold", "set_holdMany", "new_draft", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany", "save_to_drafts"] as const;
+export const MAIL_ACTIONS = ["set_hold", "set_holdMany", "new_draft", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany"] as const;
 
 /** The `tl.so.tilo.mail.Mail` kind at `path`. */
 export function mail(ws: tilo.Workspace, path: string): Mail {

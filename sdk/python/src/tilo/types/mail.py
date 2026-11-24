@@ -42,7 +42,6 @@ __all__ = [
     "LabelArgs",
     "MuteArgs",
     "MarkReadArgs",
-    "AnnounceArgs",
     "AttachArgs",
     "DetachArgs",
     "SendFromArgs",
@@ -117,10 +116,6 @@ MarkReadArgs = TypedDict("MarkReadArgs", {
 })
 """The arguments of `mark_read`."""
 
-AnnounceArgs = TypedDict("AnnounceArgs", {
-})
-"""The arguments of `announce`."""
-
 AttachArgs = TypedDict("AttachArgs", {
     "file": "Any",
 })
@@ -164,7 +159,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@8a0eb552953c706f"
+    __surface__ = "so.tilo.mail@ba1d8ef8586d61fd"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -176,7 +171,6 @@ class Account(Resource):
         self.edit("4lo3ei5n", value=value)
     j6nqqrit: str  # name
     b5k7mvka: str  # trouble
-    pnt3r5fh: str  # trouble_kind
     @property
     def _33f3rqw2(self) -> bool:
         """online (`33f3rqw2` on the wire)."""
@@ -203,17 +197,9 @@ class Account(Resource):
         """Asks the account's server for its mail now: what a person presses when the window says the server could not be reached, or that what it fetched could not be saved. The account says how it stands once it answers."""
         return self.action("check_now")
 
-    def search_server(self, *, text: str) -> None:
-        """Asks the account's server to search its mail for `text`: what finds mail the workspace does not hold, and mail in folders it does not sync. What it finds comes in as the account's conversations, as a fetch's mail does, so it is read and searched here from then on."""
-        return self.action("search_server", text=text)
-
     def new_message(self) -> Draft:
         """Starts a message from the account."""
         return self.action("new_message")
-
-    def empty_trash(self) -> None:
-        """Deletes every conversation in the account's trash from the mailbox and its server for good, each as `purge` does. A view offers this behind a confirmation, as nothing undoes it."""
-        return self.action("empty_trash")
 
     def mark_all_read(self) -> None:
         """Marks every conversation of the account read."""
@@ -225,12 +211,12 @@ class Account(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_signature", "set_signature_many", "check_now", "search_server", "new_message", "empty_trash", "mark_all_read", "mark_all_read_many"})
+    __actions__ = frozenset({"set_signature", "set_signature_many", "check_now", "new_message", "mark_all_read", "mark_all_read_many"})
 
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@8a0eb552953c706f"
+    __surface__ = "so.tilo.mail@ba1d8ef8586d61fd"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -249,7 +235,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@8a0eb552953c706f"
+    __surface__ = "so.tilo.mail@ba1d8ef8586d61fd"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -278,7 +264,6 @@ class Thread(Resource):
     gy7z7du3: list[str]  # labels
     bdoh33hs: str  # snoozed_until
     z7qxz544: bool  # muted
-    upzs3qkn: str | None  # arrived
 
     def reply(self) -> Draft:
         """Answers the conversation's newest message, to whoever wrote it, quoting it under what is written."""
@@ -325,7 +310,7 @@ class Thread(Resource):
         return self.many("delete", items)
 
     def purge(self) -> None:
-        """Deletes the conversation's trashed messages for good, from its server too, and the conversation with them when no message of it is left. This is the one deletion there is no trash to take back from: what is deleted for good is gone from the server, and this app's record of it leaves once the server says it is."""
+        """Deletes the conversation's trashed messages for good, from its server too, and the conversation with them when no message of it is left. This is the one deletion there is no trash to take back from: what is deleted for good is gone from the server, and the platform takes back this app's record of it only."""
         return self.action("purge")
 
     def flag(self,
@@ -418,32 +403,24 @@ class Thread(Resource):
         """Runs `mark_read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("mark_read", items)
 
-    def announce(self) -> None:
-        """Tells everyone who reads the conversation that mail came to it: who wrote, what it is called, and which account it came to while the workspace reads several of them, opening the conversation. It is run once for each arrival, on the device that governs the workspace, so each person is told once however many of their devices are open."""
-        return self.action("announce")
-
-    def announce_many(self, items: list[AnnounceArgs]) -> list[dict[str, Any]]:
-        """Runs `announce` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("announce", items)
-
     def answer(self, *, body: str) -> Draft:
         """Answers the conversation with what was typed: the message goes to whoever wrote its newest, as a reply to it, quoted."""
         return self.action("answer", body=body)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"reply", "reply_all", "forward", "archive", "archive_many", "to_inbox", "to_inbox_many", "move_to", "move_to_many", "delete", "delete_many", "purge", "flag", "flag_many", "snooze", "snooze_many", "snooze_an_hour", "snooze_an_hour_many", "snooze_until_tomorrow", "snooze_until_tomorrow_many", "unsnooze", "unsnooze_many", "label", "label_many", "mute", "mute_many", "mark_read", "mark_read_many", "announce", "announce_many", "answer"})
+    __actions__ = frozenset({"reply", "reply_all", "forward", "archive", "archive_many", "to_inbox", "to_inbox_many", "move_to", "move_to_many", "delete", "delete_many", "purge", "flag", "flag_many", "snooze", "snooze_many", "snooze_an_hour", "snooze_an_hour_many", "snooze_until_tomorrow", "snooze_until_tomorrow_many", "unsnooze", "unsnooze_many", "label", "label_many", "mute", "mute_many", "mark_read", "mark_read_many", "answer"})
 
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@8a0eb552953c706f"
+    __surface__ = "so.tilo.mail@ba1d8ef8586d61fd"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@8a0eb552953c706f"
+    __surface__ = "so.tilo.mail@ba1d8ef8586d61fd"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -513,7 +490,7 @@ class Message(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@8a0eb552953c706f"
+    __surface__ = "so.tilo.mail@ba1d8ef8586d61fd"
     m2g6zrle: str  # from
     zx2b4ax2: str  # from_address
     hd3o4gkq: str  # to
@@ -523,7 +500,6 @@ class Draft(Resource):
     d5u2c7jm: str  # body
     w6twdkob: str  # in_reply_to
     w26tzvt4: str  # references
-    pkrsaacd: str  # conversation
     yfyt2cfh: bool  # sent
     lgrwf5yf: str  # send_at
     h2nvr2op: bool  # recalled
@@ -582,10 +558,6 @@ class Draft(Resource):
         """Runs `send_as` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("send_as", items)
 
-    def retry(self) -> None:
-        """Sends a message the account's server refused again, from where it stands: the version that failed did not leave, so it goes once. A message whose outcome nobody knows is not tried again, since it may have gone."""
-        return self.action("retry")
-
     def send(self) -> None:
         """Sends the message from its account. It leaves the system, so it goes once, and waits in the outbox until the server took it; it is held back for the person's hold first, so they can take it back. The effect is an argument the action records, so the wait survives a window closing and an agent takes it back the same way."""
         return self.action("send")
@@ -596,12 +568,12 @@ class Draft(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"attach", "attach_many", "detach", "detach_many", "cancel_later", "send_later", "send_in_the_morning", "send_from", "send_from_many", "send_as", "send_as_many", "retry", "send", "undo_send"})
+    __actions__ = frozenset({"attach", "attach_many", "detach", "detach_many", "cancel_later", "send_later", "send_in_the_morning", "send_from", "send_from_many", "send_as", "send_as_many", "send", "undo_send"})
 
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@8a0eb552953c706f"
+    __surface__ = "so.tilo.mail@ba1d8ef8586d61fd"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -624,7 +596,7 @@ class Mail(Resource):
         return self.many("set_hold", items)
 
     def new_draft(self) -> Draft:
-        """Starts a message. A message is written before the workspace has an account to send it from: it waits in Drafts, and goes once the person adds one."""
+        """Starts a message from the first account."""
         return self.action("new_draft")
 
     def draft_message(self,
@@ -738,16 +710,12 @@ class Mail(Resource):
         """Runs `discard` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("discard", items)
 
-    def save_to_drafts(self, *, d: Draft) -> None:
-        """Keeps the message in the account's server Drafts folder as it is written now, so another mail client of the account sees it there too. What the server says comes back with the account's next mail, and the server's Drafts are read like its other folders."""
-        return self.action("save_to_drafts", d=d)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_hold", "set_hold_many", "new_draft", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many", "save_to_drafts"})
+    __actions__ = frozenset({"set_hold", "set_hold_many", "new_draft", "draft_message", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many"})
 
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@8a0eb552953c706f"
+    __surface__ = "so.tilo.mail@ba1d8ef8586d61fd"
 

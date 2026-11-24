@@ -22,7 +22,67 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@d4364d82d8a5ad57";
+export const SURFACE = "so.tilo.settings@a4351b2f913dd425";
+
+export interface Ink {
+  primary: number;
+  secondary: number;
+  tertiary: number;
+}
+
+export interface Presence {
+  lightness: number;
+  chroma: number;
+}
+
+export interface Status {
+  danger: StatusTone;
+  warning: StatusTone;
+  success: StatusTone;
+  info: StatusTone;
+}
+
+export interface StatusTone {
+  lightness: number;
+  chroma: number;
+}
+
+export interface Surfaces {
+  base: number;
+  content: number;
+  sidebar: number;
+  inspector: number;
+  raised: number;
+  overlay: number;
+}
+
+export interface ThemeRecord {
+  name: string;
+  dark: boolean;
+  high_contrast: boolean;
+  hue: number | null;
+  chroma: number;
+  surfaces: Surfaces;
+  ink: Ink;
+  status: Status;
+  tint: number | null;
+  monochrome: boolean;
+  presence: Presence;
+  window_radius: number;
+  density: number;
+  face: string;
+  base_size: number;
+  distinct_letters: boolean | null;
+  motion: number;
+  blur: number;
+  refraction: number;
+  tint_opacity: number;
+  frosted_strip: boolean;
+  rim_span: number;
+  rim_alpha: number;
+  hover_alpha: number;
+  origin: string | null;
+}
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
@@ -204,6 +264,39 @@ export interface ChooseThemeArgs {
 /** The arguments of `set-dark-mode`. */
 export interface SetDarkModeArgs {
   on: boolean;
+}
+
+/** The arguments of `use-theme`. */
+export interface UseThemeArgs {
+  theme: string;
+}
+
+/** The arguments of `new-theme`. */
+export interface NewThemeArgs {
+  id: string;
+  base: string;
+}
+
+/** The arguments of `import-theme`. */
+export interface ImportThemeArgs {
+  id: string;
+  document: string;
+}
+
+/** The arguments of `reset-theme`. */
+export interface ResetThemeArgs {
+  theme: string;
+}
+
+/** The arguments of `delete-theme`. */
+export interface DeleteThemeArgs {
+  theme: string;
+}
+
+/** The arguments of `switch-polarity`. */
+export interface SwitchPolarityArgs {
+  theme: string;
+  dark: boolean;
 }
 
 /** The arguments of `step-magnifier`. */
@@ -508,16 +601,6 @@ export interface ForgetDataUsedArgs {
   connection?: string;
 }
 
-/** The arguments of `set-accept-own-devices`. */
-export interface SetAcceptOwnDevicesArgs {
-  on: boolean;
-}
-
-/** The arguments of `set-act-without-asking`. */
-export interface SetActWithoutAskingArgs {
-  on: boolean;
-}
-
 /** The arguments of `publish-browser-identity`. */
 export interface PublishBrowserIdentityArgs {
   root: string;
@@ -588,7 +671,7 @@ export interface Appearance extends tilo.Resource {
   mode: string;
   dark_theme: string;
   light_theme: string;
-  readonly themes: Record<string, unknown>;
+  themes: Array<tilo.Entry<ThemeRecord>>;
   density: number;
   high_contrast: boolean;
   reduce_motion: boolean;
@@ -617,11 +700,44 @@ export interface Appearance extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-dark-mode` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setDarkModeMany(items: SetDarkModeArgs[]): Promise<tilo.ActionAnswer[]>;
+  useTheme(args: {
+    theme: string;
+  }): Promise<void>;
+  /** Runs `use-theme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  useThemeMany(items: UseThemeArgs[]): Promise<tilo.ActionAnswer[]>;
+  newTheme(args: {
+    id: string;
+    base: string;
+  }): Promise<void>;
+  /** Runs `new-theme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  newThemeMany(items: NewThemeArgs[]): Promise<tilo.ActionAnswer[]>;
+  importTheme(args: {
+    id: string;
+    document: string;
+  }): Promise<void>;
+  /** Runs `import-theme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importThemeMany(items: ImportThemeArgs[]): Promise<tilo.ActionAnswer[]>;
+  resetTheme(args: {
+    theme: string;
+  }): Promise<void>;
+  /** Runs `reset-theme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  resetThemeMany(items: ResetThemeArgs[]): Promise<tilo.ActionAnswer[]>;
+  deleteTheme(args: {
+    theme: string;
+  }): Promise<void>;
+  /** Runs `delete-theme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteThemeMany(items: DeleteThemeArgs[]): Promise<tilo.ActionAnswer[]>;
+  switchPolarity(args: {
+    theme: string;
+    dark: boolean;
+  }): Promise<void>;
+  /** Runs `switch-polarity` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  switchPolarityMany(items: SwitchPolarityArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Appearance` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const APPEARANCE_ACTIONS = ["chooseTheme", "chooseThemeMany", "setDarkMode", "setDarkModeMany"] as const;
+export const APPEARANCE_ACTIONS = ["chooseTheme", "chooseThemeMany", "setDarkMode", "setDarkModeMany", "useTheme", "useThemeMany", "newTheme", "newThemeMany", "importTheme", "importThemeMany", "resetTheme", "resetThemeMany", "deleteTheme", "deleteThemeMany", "switchPolarity", "switchPolarityMany"] as const;
 
 /** The `settings.appearance` kind at `path`. */
 export function appearance(ws: tilo.Workspace, path: string): Appearance {
@@ -1495,31 +1611,6 @@ export const NETWORKUSAGE_ACTIONS = ["countDataUsed", "countDataUsedMany", "rese
 /** The `settings.network-usage` kind at `path`. */
 export function networkUsage(ws: tilo.Workspace, path: string): NetworkUsage {
   return resourceProxy(ws, path, SURFACE, NETWORKUSAGE_ACTIONS) as unknown as NetworkUsage;
-}
-
-/** Agents from your other devices — `settings.mcp-server`. */
-export interface McpServer extends tilo.Resource {
-  readonly accept_own_devices: boolean;
-  readonly act_without_asking: boolean;
-  setAcceptOwnDevices(args: {
-    on: boolean;
-  }): Promise<void>;
-  /** Runs `set-accept-own-devices` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setAcceptOwnDevicesMany(items: SetAcceptOwnDevicesArgs[]): Promise<tilo.ActionAnswer[]>;
-  setActWithoutAsking(args: {
-    on: boolean;
-  }): Promise<void>;
-  /** Runs `set-act-without-asking` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setActWithoutAskingMany(items: SetActWithoutAskingArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `McpServer` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const MCPSERVER_ACTIONS = ["setAcceptOwnDevices", "setAcceptOwnDevicesMany", "setActWithoutAsking", "setActWithoutAskingMany"] as const;
-
-/** The `settings.mcp-server` kind at `path`. */
-export function mcpServer(ws: tilo.Workspace, path: string): McpServer {
-  return resourceProxy(ws, path, SURFACE, MCPSERVER_ACTIONS) as unknown as McpServer;
 }
 
 /** Accounts — `tilo.accounts`. */

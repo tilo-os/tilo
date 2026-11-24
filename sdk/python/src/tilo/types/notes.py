@@ -159,7 +159,7 @@ ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
 
 class Note(Resource):
     """Note — `tl.so.tilo.notes.Note`."""
-    __surface__ = "so.tilo.notes@0e0640a6e4f771c3"
+    __surface__ = "so.tilo.notes@0cae88f4b96a6398"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
@@ -334,7 +334,7 @@ class Note(Resource):
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.notes.Notebook`."""
-    __surface__ = "so.tilo.notes@0e0640a6e4f771c3"
+    __surface__ = "so.tilo.notes@0cae88f4b96a6398"
     tmqqtkeb: list[Entry[Note]]  # notes
     qgq6mcy7: list[Entry[Note]]  # set_aside
     dq2mnb22: list[Entry[Tag]]  # tags
@@ -424,10 +424,10 @@ class Notebook(Resource):
     def file_note(self,
         *,
         title: str,
-        tag: str,
+        name: str,
     ) -> Note:
-        """Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it."""
-        return self.action("file_note", title=title, tag=tag)
+        """Files a note titled `title` and carrying the tag `name` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it."""
+        return self.action("file_note", title=title, name=name)
 
     def new_tag(self,
         *,
@@ -464,7 +464,7 @@ class Notebook(Resource):
         return self.action("export_notebook")
 
     def export_notebook_markdown(self) -> Any:
-        """The notebook as one Markdown document: each note a heading one level deeper than the note it stands under (six at the deepest), its body beneath, and the notes under it after it. The whole notebook reads as one text, in the order the tree keeps it."""
+        """The notebook as one Markdown document, where each note is a heading one level deeper than the note it stands under (six at the deepest), its body beneath it and the notes under it after it, read as one text in the order the tree keeps it."""
         return self.action("export_notebook_markdown")
 
     def import_markdown(self, *, file: Any) -> Note:
@@ -532,13 +532,13 @@ class Notebook(Resource):
 
 class Tag(Resource):
     """Tag — `tl.so.tilo.notes.Tag`."""
-    __surface__ = "so.tilo.notes@0e0640a6e4f771c3"
+    __surface__ = "so.tilo.notes@0cae88f4b96a6398"
     itadoh74: str  # name
 
 
 class Found(Resource):
     """Found — `tl.so.tilo.notes.Found`."""
-    __surface__ = "so.tilo.notes@0e0640a6e4f771c3"
+    __surface__ = "so.tilo.notes@0cae88f4b96a6398"
     dxxdlopq: int  # at
     @property
     def _2vlaqp45(self) -> str:
@@ -552,5 +552,5 @@ class Found(Resource):
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.notes`."""
-    __surface__ = "so.tilo.notes@0e0640a6e4f771c3"
+    __surface__ = "so.tilo.notes@0cae88f4b96a6398"
 

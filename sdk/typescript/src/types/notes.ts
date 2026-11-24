@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@0e0640a6e4f771c3";
+export const SURFACE = "so.tilo.notes@0cae88f4b96a6398";
 
 /** The arguments of `pin`. */
 export interface PinArgs {
@@ -292,10 +292,10 @@ export interface Notebook extends tilo.Resource {
   }): Promise<void>;
   /** Runs `append_to_note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   append_to_noteMany(items: AppendToNoteArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it. */
+  /** Files a note titled `title` and carrying the tag `name` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it. */
   file_note(args: {
     title: string;
-    tag: string;
+    name: string;
   }): Promise<Note>;
   /** Makes a tag of the notebook named `name`, or gives the one already named that: the name is what people, agents and scripts know a tag by. */
   new_tag(args?: {
@@ -316,7 +316,7 @@ export interface Notebook extends tilo.Resource {
   delete_tagMany(items: DeleteTagArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it. That is the shape the import reads, so the notebook comes back as the tree it is, titles, bodies and pictures alike. */
   export_notebook(): Promise<unknown>;
-  /** The notebook as one Markdown document: each note a heading one level deeper than the note it stands under (six at the deepest), its body beneath, and the notes under it after it. The whole notebook reads as one text, in the order the tree keeps it. */
+  /** The notebook as one Markdown document, where each note is a heading one level deeper than the note it stands under (six at the deepest), its body beneath it and the notes under it after it, read as one text in the order the tree keeps it. */
   export_notebook_markdown(): Promise<unknown>;
   /** Imports a Markdown file as a note, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note. The note stands under the note of the folder its file's path names — `Q3 plan/Ideas.md` under `Q3 plan.md` — and at the top of the tree when its path names no folder. Its title is the document's first heading, or the file's name; the heading it says the title with is not said again in its body. */
   import_markdown(args: {
