@@ -19,7 +19,7 @@ use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc};
 use tilo_automerge::heap::{self, ThreadCounting};
 use tilo_ui::history_source::{HistoryLog, HistorySource};
-use tilo_ui::state::{DocumentReplica, State};
+use tilo_ui::state::State;
 
 #[global_allocator]
 static HEAP: ThreadCounting = ThreadCounting;
@@ -72,26 +72,6 @@ fn an_app_document_holds_what_its_saved_document_holds() {
     assert!(
         grown < loaded * 2,
         "a document fed {} remote ops holds {grown} bytes against {loaded} loaded",
-        rounds.len() * OPS_PER_ROUND
-    );
-}
-
-#[test]
-fn a_metadata_replica_holds_what_its_saved_document_holds() {
-    let mut replica = DocumentReplica::new(AutoCommit::new());
-    let rounds = remote_rounds(replica.document_mut());
-    let mut grown = 0isize;
-    for round in &rounds {
-        let before = heap::held();
-        replica.load_incremental(round).unwrap();
-        grown += heap::held() - before;
-    }
-    let saved = replica.document_mut().save();
-    let loaded = heap::held_by(|| DocumentReplica::new(AutoCommit::load(&saved).unwrap()));
-    eprintln!("metadata replica: grown {grown} bytes, loaded {loaded} bytes");
-    assert!(
-        grown < loaded * 2,
-        "a replica fed {} remote ops holds {grown} bytes against {loaded} loaded",
         rounds.len() * OPS_PER_ROUND
     );
 }

@@ -52,24 +52,6 @@ impl App {
                 .records
                 .try_flush_resource(&sync.binding.checkout.id);
         }
-        self.checkpoint_app_document()
-    }
-
-    #[cfg(feature = "native")]
-    fn checkpoint_app_document(&mut self) -> Result<(), String> {
-        match self.persistence.records.as_mut() {
-            Some(set) => set.flush(Some(&mut self.state.doc)),
-            None => Ok(()),
-        }
-    }
-
-    #[cfg(not(feature = "native"))]
-    #[allow(
-        clippy::unnecessary_wraps,
-        clippy::unused_self,
-        reason = "a host without native persistence has nothing further to make durable"
-    )]
-    fn checkpoint_app_document(&self) -> Result<(), String> {
         Ok(())
     }
 

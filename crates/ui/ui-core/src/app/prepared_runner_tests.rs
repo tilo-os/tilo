@@ -447,7 +447,6 @@ tilo_test_env::scenario! {
             let component = editable_component(&host, 11);
             let binding = component.callback_binding();
             let mut app = App::from_component(component, runner_inputs()).unwrap();
-            assert!(app.persistence.records.is_none());
             assert_saved_body(&host, &binding, "initialized");
             edit_bound_resource(&mut app, &binding);
             app.autosave_tick().unwrap();

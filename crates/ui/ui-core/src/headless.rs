@@ -600,10 +600,6 @@ pub struct FrameHarness {
     /// As the live host: where the pointer last moved, replayed before a press or release that follows
     /// a rebuild under a still pointer.
     pointer_replay: crate::pointer_replay::PointerReplay,
-    /// The records this driver has open, for apps that use them; without them a record-aware app would
-    /// be driven against its workspace index instead.
-    records: Option<crate::resource::ResourceSet>,
-    workspace_index: Option<Box<automerge::AutoCommit>>,
     /// The taffy node holding keyboard focus, or `None`; remapped on every relayout by scanning for
     /// `is_focused()`, since widget instances survive a relayout but their taffy ids do not.
     focused: Option<NodeId>,
@@ -1571,8 +1567,6 @@ impl FrameHarness {
             motions: crate::motion::MotionSurface::new(),
             scene_capture_protected: true,
             backdrop: std::sync::Arc::default(),
-            records: None,
-            workspace_index: None,
             presence: Box::new(PresenceCtx::empty()),
             presence_redraw: false,
             drawn_action_markers: Vec::new(),
@@ -2137,7 +2131,6 @@ impl FrameHarness {
             && self.pending_app_activation.is_none()
             && !self.framework_input.get()
             && self.history_hosts_rest()
-            && self.records.is_none()
             && self
                 .action_palette
                 .as_deref()
@@ -2227,8 +2220,6 @@ impl FrameHarness {
             } else {
                 "ui.loud.history_chrome"
             }
-        } else if self.records.is_some() {
-            "ui.loud.records"
         } else {
             "ui.loud.palette_or_search"
         }
@@ -3066,45 +3057,6 @@ impl FrameHarness {
         self.scene_capture_protected
     }
 
-    /// Drive a record-aware app: the live document is a record's, and the widget names which one.
-    #[must_use]
-    pub fn with_resources(
-        mut self,
-        records: crate::resource::ResourceSet,
-        workspace_index: automerge::AutoCommit,
-    ) -> Self {
-        self.attach_resources(records, workspace_index);
-        self
-    }
-
-    fn attach_resources(
-        &mut self,
-        mut records: crate::resource::ResourceSet,
-        workspace_index: automerge::AutoCommit,
-    ) {
-        records.discover_workspace(&workspace_index);
-        self.records = Some(records);
-        self.workspace_index = Some(Box::new(workspace_index));
-        self.relayout();
-    }
-
-    fn tick_resources(&mut self) {
-        if let Some(set) = self.records.as_mut() {
-            crate::resource::tick(
-                set,
-                &mut self.state,
-                self.workspace_index.as_deref_mut(),
-                &*self.root,
-            );
-        }
-    }
-
-    /// The records this driver has open, if the app under test uses them.
-    pub fn records(&self) -> Option<&crate::resource::ResourceSet> {
-        self.drain_component_wakes();
-        self.records.as_ref()
-    }
-
     /// Deliver a trusted shell operation through the mounted app adapter.
     pub fn device_shell_operation(
         &mut self,
@@ -3152,18 +3104,12 @@ impl FrameHarness {
 
     /// [`Self::persist_tick`] without taking up a wake first: a wake asks for
     /// a frame, which writing out lays none of.
-    fn write_out_documents(&mut self) -> bool {
+    fn write_out_documents(&self) -> bool {
         if let Some(wake) = &self.component_wake {
             wake.binding.records.tick();
             return true;
         }
-        match self.records.as_mut() {
-            Some(set) => {
-                set.tick(Some(&mut self.state.doc));
-                true
-            }
-            None => false,
-        }
+        false
     }
 
     /// Write out every open record and wait for it to land.
@@ -3178,11 +3124,8 @@ impl FrameHarness {
     pub fn try_persist_flush(&mut self) -> Result<(), String> {
         self.invalidate_local();
         self.pump_component_wakes();
-        if let Some(wake) = &self.component_wake {
-            return wake.binding.records.try_flush();
-        }
-        match self.records.as_mut() {
-            Some(set) => set.flush(Some(&mut self.state.doc)),
+        match &self.component_wake {
+            Some(wake) => wake.binding.records.try_flush(),
             None => Ok(()),
         }
     }
@@ -3246,8 +3189,6 @@ impl FrameHarness {
         self.idle_control_tick();
         if let Some(wake) = &self.component_wake {
             wake.binding.records.tick();
-        } else if let Some(set) = self.records.as_mut() {
-            set.tick(Some(&mut self.state.doc));
         }
         if crate::doc::settle_mark(&self.state.doc) == before {
             let _ = self.poll_frame();
@@ -3501,12 +3442,10 @@ impl FrameHarness {
         if history_at_rest.is_none() {
             crate::history_mode::embedded::capture_entries(self.root.as_mut(), &self.state.doc);
         }
-        self.tick_resources();
         let updated = {
             let _update = tilo_resource::profiling::Phase::start("ui.frame_update");
             self.update_root()
         };
-        self.tick_resources();
         if updated || woken {
             self.local_changes = self.local_changes.wrapping_add(1);
         }
@@ -11685,62 +11624,6 @@ mod tests {
             ));
             assert!(observed.pending.borrow().is_empty());
         }
-    }
-
-    struct ResourceRootProbe {
-        checkout: crate::resource::DocumentCheckout,
-    }
-    impl Widget for ResourceRootProbe {
-        crate::provides!(
-            dyn crate::widget::resources::PublishesResources,
-            dyn crate::resource::capability::ResourceScoped
-        );
-
-        crate::testing::inert_widget_methods!(leaf_layout, name = "ResourceRootProbe");
-    }
-
-    impl crate::resource::capability::ResourceScoped for ResourceRootProbe {
-        fn record_intent(&self) -> Option<crate::resource::DocumentCheckout> {
-            Some(self.checkout.clone())
-        }
-    }
-
-    impl crate::widget::resources::PublishesResources for ResourceRootProbe {
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-            vec![tilo_actions::ResourceSpec::new(
-                "probe.document:1",
-                "probe.document",
-                "Probe document",
-            )]
-        }
-    }
-
-    #[test]
-    fn standalone_record_backed_root_publishes_its_resources() {
-        use crate::resource::{DocumentCheckout, DocumentId, ResourceSet, ResourceType};
-        let checkout = DocumentCheckout::new(
-            DocumentId::for_file("standalone-record-root"),
-            ResourceType::new("document"),
-        );
-        let root = ResourceRootProbe {
-            checkout: checkout.clone(),
-        };
-        let mut harness = FrameHarness::new(State::new(), Box::new(root), (320, 240))
-            .with_resources(ResourceSet::in_memory(), automerge::AutoCommit::new());
-        harness.relayout();
-        assert_eq!(
-            crate::resource::identity(&harness.state_mut().doc).map(|record| record.id),
-            Some(checkout.id),
-            "the runner checked the root's record out as its State"
-        );
-        let resources = harness.resources();
-        assert!(
-            resources
-                .iter()
-                .any(|resource| resource.id.as_str() == "probe.document:1"),
-            "Ctrl+K sees the record-backed root's resources: {:?}",
-            resources.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
     }
 
     #[test]

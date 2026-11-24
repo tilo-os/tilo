@@ -633,22 +633,6 @@ impl AccessibilityRuntime {
     }
 }
 
-/// Persistence and record-checkout state.
-pub(super) struct PersistenceRuntime {
-    /// The live document belongs to the record selected by the root widget.
-    pub(super) records: Option<crate::resource::ResourceSet>,
-    pub(super) workspace_index: Option<crate::state::DocumentReplica>,
-}
-
-impl PersistenceRuntime {
-    pub(super) fn new() -> Self {
-        Self {
-            records: None,
-            workspace_index: None,
-        }
-    }
-}
-
 /// Continuation publication and deferred restore state.
 pub(super) struct ContinuationRuntime {
     pub(super) owner_view: crate::collaboration::owner_view::OwnerViewRuntime,
@@ -692,9 +676,6 @@ impl ContinuationRuntime {
 /// Collaboration transports and local authorship identity.
 pub(super) struct CollaborationRuntime {
     pub(super) manager: CollaborationManager,
-    /// Keeps the workspace record index subscribed while `manager` follows a
-    /// checked-out record route.
-    pub(super) workspace_manager: Option<CollaborationManager>,
     pub(super) local_author: crate::permissions::MemberId,
     /// What the primary route's end-to-end encrypted channel lets this
     /// device do, as last reported; `None` before the first report.
@@ -717,7 +698,6 @@ impl CollaborationRuntime {
         crate::history_source::authors::read_as(&local_author);
         Self {
             manager,
-            workspace_manager: None,
             local_author,
             key_access: None,
             shown_sync_status: None,

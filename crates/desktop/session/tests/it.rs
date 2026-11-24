@@ -199,6 +199,8 @@ mod person_workspace;
 mod placed_apps;
 #[path = "portal_link.rs"]
 mod portal_link;
+#[path = "poker_between_devices.rs"]
+mod poker_between_devices;
 #[path = "power.rs"]
 mod power;
 #[path = "primary_display.rs"]

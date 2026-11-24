@@ -2,4 +2,4 @@
 //! keeps is the store's ([`tilo_resource_store::history`]).
 
 mod replica;
-pub use replica::{DocumentFrontier, DocumentReplica, State, WritingActors, changes_beyond};
+pub use replica::{DocumentFrontier, State, WritingActors, changes_beyond};

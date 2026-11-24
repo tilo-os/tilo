@@ -60,20 +60,6 @@ pub(crate) fn with_mutation<T>(
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?
 }
 
-/// What merges `mutation` into an app's live document when it already holds finished local work
-/// (`ResourceSet::checkout_with_initial`): whether the document took it.
-pub(crate) fn merge_into_state(
-    mutation: &DocumentMutation,
-) -> impl FnOnce(&mut crate::state::State) -> bool + '_ {
-    use crate::state::StateHistory as _;
-    move |state| {
-        matches!(
-            with_mutation(mutation, |incoming| state.merge_remote_committed(incoming)),
-            Ok(Some(_))
-        )
-    }
-}
-
 /// Apply what the host has already committed to `candidate`: changes whole or not at all, a whole
 /// document by merging only what it adds. Bytes from peers reach an app only after the host admitted
 /// them through `tilo_automerge_isolate`, so this applies in the app's own process.

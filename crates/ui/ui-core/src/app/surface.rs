@@ -1157,11 +1157,10 @@ impl App {
         let replaced = self.swap_requested_component();
         // The model's own work, as a hosted worker's pump runs it:
         // collaboration (inbound edits, directory requests, publication),
-        // invocations, idle model work and the record. A different record
-        // is a different document under the same widgets.
+        // invocations and idle model work.
         #[cfg(test)]
         let pump_probe = crate::profiling::frame_probe::span("frame.pump");
-        let resource_changed = self.pump_hosted_model_record_changed();
+        self.pump_hosted_model();
         #[cfg(test)]
         drop(pump_probe);
         // The model's pass took in what landed from elsewhere; the frame
@@ -1271,7 +1270,6 @@ impl App {
         let themed = self.theme_changed();
         let full = [
             (replaced, "another component"),
-            (resource_changed, "another record"),
             (structure_rebuilt && !described, "a rebuilt tree"),
             (rebuilt_since_frame && !structure_rebuilt, "a rebuilt tree"),
             (themed, "a new theme"),

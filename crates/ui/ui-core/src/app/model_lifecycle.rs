@@ -105,14 +105,6 @@ impl super::App {
             .presentation_changed
     }
 
-    /// [`Self::pump_hosted_model`], answering whether the app's record
-    /// changed: a different document under the same widgets, which their
-    /// damage does not describe.
-    #[cfg(feature = "native")]
-    pub(super) fn pump_hosted_model_record_changed(&mut self) -> bool {
-        self.pump_hosted_model_with_record(host_perf_baseline()).1
-    }
-
     /// Advance the ordinary dirty-tracked native worker without a window.
     /// This never forces synchronization or layout to mask a missing wake.
     #[cfg(any(test, feature = "test-support"))]
@@ -141,11 +133,6 @@ impl super::App {
     /// no due widget deadline and no model progress keeps the resource cache
     /// and skips the action-surface rebuild.
     pub(super) fn pump_hosted_model_as(&mut self, always_refresh: bool) -> HostedPumpReport {
-        self.pump_hosted_model_with_record(always_refresh).0
-    }
-
-    /// [`Self::pump_hosted_model_as`], and whether the record changed.
-    fn pump_hosted_model_with_record(&mut self, always_refresh: bool) -> (HostedPumpReport, bool) {
         #[cfg(test)]
         {
             self.actions.hosted.calls += 1;
@@ -158,7 +145,6 @@ impl super::App {
         // Retire expired/cancelled jobs before their later model continuation.
         // A completion produced below is polled on the following host pass.
         let invocations = self.poll_model_invocations();
-        let record = self.record_tick();
         // The owner retains wake flags even when its sink schedules a frame.
         // A presentation-only frame must not force model synchronization.
         // Detached or closed scopes remain conservatively model-dirty.
@@ -184,7 +170,6 @@ impl super::App {
         };
         if force_sync
             || invocations
-            || record
             || self.needs_sync
             || wakes.is_some_and(|(pending, _)| pending)
         {
@@ -232,7 +217,7 @@ impl super::App {
         self.finish_model_directory_refresh(directory);
         if let Some(started) = started {
             crate::diag!(
-                "[hosted-pump] app={} late_us={:?} us={} updated={} synced={} published={} inbound={inbound} wakes={wakes:?} authority={authority_changed} in_flight={in_flight} deadline={deadline_due} invocations={invocations} record={record}",
+                "[hosted-pump] app={} late_us={:?} us={} updated={} synced={} published={} inbound={inbound} wakes={wakes:?} authority={authority_changed} in_flight={in_flight} deadline={deadline_due} invocations={invocations}",
                 self.publication_app_id(),
                 next_deadline.map(|deadline| crate::time::now()
                     .saturating_duration_since(deadline)
@@ -243,7 +228,7 @@ impl super::App {
                 report.published
             );
         }
-        (report, record)
+        report
     }
 
     fn take_hosted_wakes(&self) -> Option<(bool, bool)> {
@@ -444,7 +429,7 @@ impl super::App {
         // model wake advances their owner; presentation notifications stay on
         // the redraw path. Prepare the checked owner exactly as a frame does.
         if self.take_hosted_wakes().is_some_and(|(_, sync)| sync) {
-            changed |= self.swap_requested_component() | self.record_tick();
+            changed |= self.swap_requested_component();
             changed |= self.update_model();
             changed |= self.sync_model(true);
         }

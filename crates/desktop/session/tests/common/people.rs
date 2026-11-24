@@ -622,6 +622,9 @@ pub const FILES_APP: &str = "so.tilo.file-explorer";
 /// The example app whose one checklist is the workspace's record: a hand-written Rust app.
 pub const SHARED_CHECKLIST: &str = "so.tilo.example.shared-checklist";
 
+/// Poker, a default Rust app: its one table is the workspace's record.
+pub const POKER: &str = "so.tilo.poker";
+
 /// The two people's laptops in the site's workspace, each carrying what `install` puts in its
 /// store before its session starts, and the workspace letting `authored` author its records.
 pub fn two_people_at_a_site_carrying(
@@ -2002,6 +2005,12 @@ impl Device {
         self.install(SHARED_CHECKLIST, shared_checklist_install());
     }
 
+    /// Install Poker in this device's store: the Rust app whose one table is the workspace's
+    /// record, so a seat taken on either device is taken in the other's window.
+    pub fn install_poker(&self) {
+        self.install(POKER, poker_install());
+    }
+
     /// What this device publishes now, every page of it: its resources and their actions.
     pub fn actions(&self) -> Vec<CatalogueRow> {
         let mut query = CatalogueQuery {
@@ -2403,6 +2412,18 @@ fn shared_checklist_install() -> &'static (PathBuf, String) {
                 ),
                 "example-shared-checklist",
             )],
+        )
+    })
+}
+
+fn poker_install() -> &'static (PathBuf, String) {
+    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/poker");
+        stage_app(
+            "poker",
+            &directory,
+            &[(tilo_test_env::sibling_binary("poker", "poker"), "poker")],
         )
     })
 }

@@ -189,71 +189,6 @@ pub fn changes_beyond(doc: &mut AutoCommit, payload: &[u8]) -> Vec<ChangeHash> {
         .collect()
 }
 
-/// A CRDT document paired with the explicit frontier for one collaboration route.
-pub struct DocumentReplica {
-    doc: AutoCommit,
-    outbound: DocumentFrontier,
-}
-
-impl DocumentReplica {
-    #[must_use]
-    pub fn new(mut doc: AutoCommit) -> Self {
-        let outbound = DocumentFrontier::at_document(&mut doc);
-        Self { doc, outbound }
-    }
-
-    #[must_use]
-    pub fn document(&self) -> &AutoCommit {
-        &self.doc
-    }
-
-    pub fn document_mut(&mut self) -> &mut AutoCommit {
-        &mut self.doc
-    }
-
-    pub fn pending_outbound_delta(&mut self) -> (Vec<u8>, Vec<ChangeHash>) {
-        self.outbound
-            .pending_delta(&mut self.doc, &WritingActors::default())
-    }
-
-    pub fn advance_outbound(&mut self, heads: Vec<ChangeHash>) {
-        self.outbound.advance(heads);
-    }
-
-    /// Apply incremental Automerge bytes, whole or not at all, and retain them in the
-    /// outbound frontier. Returns an error when `data` is not a valid incremental
-    /// Automerge payload for this document; nothing of it is applied then.
-    pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
-        let before = self.doc.get_heads();
-        let loaded = self.doc.load_incoming_whole(data)?;
-        self.outbound.observe_changes_after(&mut self.doc, &before);
-        self.outbound.observe_undelivered(&mut self.doc, data);
-        Ok(loaded)
-    }
-
-    /// Merge a complete Automerge snapshot and retain its observed frontier. Returns an
-    /// error when `data` is not a valid Automerge snapshot or cannot be merged into this
-    /// document.
-    pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
-        let load = tilo_resource::profiling::Phase::start("committed.load");
-        let mut incoming = AutoCommit::load(data)?;
-        load.end();
-        self.merge_loaded(&mut incoming)
-    }
-
-    /// Merge a whole document another thread loaded ([`ApplyIncoming::take_loaded`]) and
-    /// retain its observed frontier.
-    pub fn merge_loaded(
-        &mut self,
-        loaded: &mut AutoCommit,
-    ) -> Result<(), automerge::AutomergeError> {
-        let before = self.doc.get_heads();
-        self.doc.take_loaded(loaded)?;
-        self.outbound.observe_changes_after(&mut self.doc, &before);
-        Ok(())
-    }
-}
-
 /// An app's state: the CRDT document `App` merges and saves.
 pub struct State {
     pub doc: AutoCommit,
@@ -536,11 +471,6 @@ impl State {
 
     pub fn advance_outbound(&mut self, heads: Vec<ChangeHash>) {
         self.outbound.advance(heads);
-    }
-
-    /// Reset the primary route after an address/record change.
-    pub fn rebase_outbound(&mut self) {
-        self.outbound.rebase(&mut self.doc);
     }
 
     /// Serialize the changes made since the last `save/save_incremental` call.

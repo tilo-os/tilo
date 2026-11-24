@@ -205,22 +205,12 @@ impl App {
     /// when it recovers (what was refused meanwhile goes out then); the real
     /// broker still authorizes retry.
     pub(super) fn restore_failed_document_publications(&mut self) {
-        let primary_changed = self
+        if self
             .collaboration
             .manager
-            .take_document_publication_change();
-        let workspace_changed = self
-            .collaboration
-            .workspace_manager
-            .as_mut()
-            .is_some_and(CollaborationManager::take_document_publication_change);
-        if primary_changed {
-            self.restore_primary_publication_obligations();
-        }
-        if (primary_changed || workspace_changed)
-            && let Some(workspace) = self.persistence.workspace_index.as_mut()
+            .take_document_publication_change()
         {
-            workspace.advance_outbound(Vec::new());
+            self.restore_primary_publication_obligations();
         }
     }
 
@@ -442,9 +432,6 @@ impl App {
                     "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
                 ));
                 self.restore_primary_publication_obligations();
-                if let Some(workspace) = self.persistence.workspace_index.as_mut() {
-                    workspace.advance_outbound(Vec::new());
-                }
                 self.collaboration.manager.stop_after_publication_failure();
                 self.layout.layout_dirty = true;
                 Handoff::Stopped
@@ -587,15 +574,6 @@ impl App {
         route: &crate::collaboration::RouteSpec,
         mutation: collab_types::DocumentMutation,
     ) {
-        // Before the first record checkout the launcher's unqualified route
-        // carries workspace-index discovery, never the editable record document.
-        if self.persistence.records.is_some()
-            && self.collaboration.workspace_manager.is_none()
-            && self.native_workspace_route.is_none()
-        {
-            let _ = self.apply_workspace_index_mutation(mutation);
-            return;
-        }
         self.refresh_document_routes();
         if self.document_routes.observation.is_none() {
             return;
@@ -615,19 +593,7 @@ impl App {
         };
         let active = observation.route() == route
             && !self.document_routes.retired_route(route)
-            && match route.document.as_deref() {
-                Some(record) => self
-                    .persistence
-                    .records
-                    .as_ref()
-                    .and_then(|set| set.active())
-                    .is_some_and(|id| id.as_str() == record),
-                None => self
-                    .persistence
-                    .records
-                    .as_ref()
-                    .is_none_or(|set| set.active().is_none()),
-            };
+            && route.document.is_none();
         if !active {
             return;
         }

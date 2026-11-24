@@ -6,7 +6,6 @@ use std::path::Path;
 use crate::resource::{
     BlobRef, add_blob_reference, blob_references, children_resource_id, genesis_actor_of, init,
 };
-use crate::state::State;
 
 const APP: &str = "so.tilo.test-documents";
 
@@ -791,55 +790,6 @@ fn records_that_do_not_fit_one_answer_are_read_in_the_next() {
     expected.sort();
     assert_eq!(listed, expected);
     assert_eq!(port.1.get(), 3, "each answer carried one record");
-}
-
-#[test]
-fn a_checkout_of_a_record_the_workspace_holds_keeps_its_history() {
-    let port = Rc::new(MemoryWorkspace::default());
-    let workspace = workspace_id();
-    let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
-    {
-        let mut owners = ResourceOwners::writing(port.clone());
-        let store = owners.open(APP, &workspace).unwrap();
-        store.create_resource(&want).unwrap();
-        store.with(&want.id, |doc| {
-            put_text(doc, "body", "actual committed content");
-            doc.commit();
-        });
-        store.flush().unwrap();
-    }
-    let held = port
-        .read(
-            APP,
-            &workspace,
-            Some(vec![DocumentAsk {
-                id: want.id.route().to_owned(),
-                since: None,
-            }]),
-        )
-        .unwrap()
-        .into_iter()
-        .find_map(|(_, read)| match read {
-            DocumentRead::Whole { bytes, .. } => {
-                Some(AutoCommit::load(&bytes).unwrap().get_heads())
-            }
-            _ => None,
-        })
-        .unwrap();
-    let mut owners = ResourceOwners::reading(port);
-    let store = owners.open(APP, &workspace).unwrap();
-    let mut set = store.0.borrow_mut();
-    let mut state = State::new();
-    assert!(set.checkout(&mut state, None, &want));
-    assert_eq!(
-        state.doc.get_heads(),
-        held,
-        "no empty graph before the record's history"
-    );
-    assert_eq!(
-        text(&state.doc, "body").as_deref(),
-        Some("actual committed content")
-    );
 }
 
 mod undo_without_the_toolkit {
