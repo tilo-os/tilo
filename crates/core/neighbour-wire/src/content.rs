@@ -705,6 +705,7 @@ mod tests {
                 .collect(),
             lacked: false,
             woken: false,
+            fresh_since_ask: 0,
         }
     }
 
@@ -957,13 +958,18 @@ mod tests {
             for piece in &pieces {
                 whole = wants.piece(&host, piece, now_ms).or(whole);
             }
-            now_ms += PIECE_PATIENCE_MS;
+            // The answer's last piece asks for the next window at once, not
+            // once the transfer seems to have stalled.
+            let continued = wants.take_continued();
             let again = wants.reask(&host, now_ms);
             if whole.is_some() {
+                assert!(!continued, "a whole file asks for nothing more");
                 assert!(again.is_empty(), "nothing is asked for once whole");
                 break;
             }
-            assert_eq!(again.len(), 1, "the next window is asked for");
+            assert!(continued, "the asker is told to ask for the next window");
+            assert_eq!(again.len(), 1, "the next window is asked for at once");
+            now_ms += 1;
             request = again[0].1.clone();
         }
         assert_eq!(answered, windows * PIECES_PER_ANSWER, "each piece once");
@@ -1046,6 +1052,62 @@ mod tests {
             arrived,
             Some(bytes),
             "what was owed still finds its request"
+        );
+    }
+
+    /// A link that starts again asks at once for all still being gathered in its workspace,
+    /// saying what arrived of each, rather than waiting out each want's silence: what the link
+    /// that ended carried of the asks and their answers ended with it.
+    #[test]
+    fn a_link_that_starts_again_asks_at_once_for_all_still_being_gathered() {
+        let (host, member) = ([1; 32], [2; 32]);
+        let workspace = ("so.tilo.files", "workspace");
+        let mut wants = ContentWants::default();
+        let large = vec![0x5a; PIECE_BYTES * 3];
+        let started = blake3::hash(&large).to_hex().to_string();
+        let unanswered = blake3::hash(b"asked, the link ended").to_hex().to_string();
+        let elsewhere = blake3::hash(b"another workspace's").to_hex().to_string();
+        let now_ms = 1_000;
+        let ask = wants.ask(&host, (), workspace, &started, now_ms).unwrap();
+        wants.ask(&host, (), workspace, &unanswered, now_ms).unwrap();
+        wants
+            .ask(&host, (), ("so.tilo.files", "elsewhere"), &elsewhere, now_ms)
+            .unwrap();
+        let first = answer(&member, &host, &ask, |_, _, _| Some(large.clone()))
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(wants.piece(&host, &first, now_ms).is_none());
+        assert!(
+            wants.reask(&host, now_ms + 1).is_empty(),
+            "nothing is asked again before its silence"
+        );
+
+        wants.relinked(workspace.1);
+        let again: BTreeMap<String, Vec<Span>> = wants
+            .reask(&host, now_ms + 1)
+            .into_iter()
+            .map(|((), ask)| match crate::NeighbourMsg::decode(&ask) {
+                Ok(crate::NeighbourMsg::DocumentContentWant { hash, have, .. }) => (hash, have),
+                _ => panic!("an ask"),
+            })
+            .collect();
+        assert_eq!(
+            again.keys().cloned().collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([started.clone(), unanswered]),
+            "both of the workspace's wants are asked at once, the other workspace's not"
+        );
+        assert_eq!(
+            again[&started],
+            vec![Span {
+                offset: 0,
+                len: PIECE_BYTES as u64
+            }],
+            "saying what arrived"
+        );
+        assert!(
+            wants.reask(&host, now_ms + 1).is_empty(),
+            "and only once"
         );
     }
 

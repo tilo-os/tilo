@@ -606,8 +606,10 @@ pub struct Heard {
 /// there, after where it stands, before it reads on: each once, judged by the
 /// workspace again, never one this device wrote itself, and a frame the
 /// channel still held after the catch-up handed it is not read twice. What
-/// the store never keeps — presence, asks for content and their answers,
-/// channel governance — is asked again by whoever wants it.
+/// the store never keeps — presence, channel governance — is asked again by
+/// whoever wants it. Content, the asks for it and their answers, comes on a
+/// queue of its own that drops nothing: a reader that falls behind it holds
+/// the links that bring it back instead.
 pub struct Reader {
     link: DirectSync,
     heard: broadcast::Receiver<Heard>,
@@ -819,9 +821,9 @@ impl Dialed {
 }
 
 /// Where this device's answers to the other device's writes go, and what
-/// writes them on the stream it opens for them: after its frames', so the
-/// other device takes the two in that order. A device that keeps no copy of
-/// the workspace (`answers` false) answers nothing and opens no stream.
+/// writes them on the stream it opens for them ([`ANSWERS_STREAM`]). A device
+/// that keeps no copy of the workspace (`answers` false) answers nothing and
+/// opens no stream.
 async fn answering(
     transport: &dyn Transport,
     answers: bool,
@@ -3084,9 +3086,10 @@ impl DirectSync {
     }
 
     /// Take what the device at the link's other end answers of this device's
-    /// writes, on the stream it opens after its frames', and keep each at this
-    /// device's store ([`crate::reach`]). A device that answers nothing opens
-    /// no such stream, and this waits for the link to end.
+    /// writes, on the stream it opens for them (`stream`, once
+    /// [`sort_streams`] has it), and keep each at this device's store
+    /// ([`crate::reach`]). A device that answers nothing opens no such stream,
+    /// and this waits for the link to end.
     async fn take_answers(
         &self,
         stream: tokio::sync::oneshot::Receiver<StreamRecv>,
@@ -4464,6 +4467,65 @@ mod tests {
         )
         .unwrap();
         DirectSync::new(peer, key.clone())
+    }
+
+    /// An ask for content from `from`, naming `requester` as its asker.
+    fn want(from: [u8; 32], requester: [u8; 32], hash: &str) -> Authored {
+        Authored {
+            from,
+            message: NeighbourMsg::DocumentContentWant {
+                requester: peer_handle(&requester),
+                app_id: "files".into(),
+                cluster_id: WORKSPACE.into(),
+                hash: hash.into(),
+                have: Vec::new(),
+            },
+            published: false,
+        }
+    }
+
+    /// Each content frame a link brings is judged on its own: a stranger's ask,
+    /// and one a member sends in another device's name, are refused, and the
+    /// member's own ask beside them reaches the device's readers all the same.
+    #[tokio::test]
+    async fn a_content_frame_refused_leaves_the_others_on_the_link_as_they_were() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let roster = [device(&root, 2), device(&root, 3)];
+        let member = roster[1].1.device_public_key;
+        let stranger = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
+        let sync = link(&roster, RevocationList::new(), Vec::new());
+        let mut reader = sync.reader();
+        // A link from a device that keeps no copy of the workspace carries its
+        // own frames alone.
+        let admit = LinkAdmit {
+            own_frames_only: true,
+            ..LinkAdmit::dialling()
+        };
+
+        // A host carries its members' frames on: one whose author is no device
+        // of the workspace is refused all the same.
+        sync.take_content(member, LinkAdmit::dialling(), want(stranger, stranger, "aa"))
+            .await;
+        sync.take_content(member, admit, want(member, stranger, "bb"))
+            .await;
+        sync.take_content(member, admit, want(member, member, "cc"))
+            .await;
+
+        let heard = tokio::time::timeout(std::time::Duration::from_secs(5), reader.recv())
+            .await
+            .expect("the member's own ask reaches the reader")
+            .expect("the link is up");
+        assert!(
+            matches!(&heard.message, NeighbourMsg::DocumentContentWant { hash, .. } if hash == "cc"),
+            "the member's own ask is what arrived"
+        );
+        assert_eq!(heard.author, member);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), reader.recv())
+                .await
+                .is_err(),
+            "neither refused ask reached the reader"
+        );
     }
 
     /// A revocation refuses the device of the root that signed it, and no

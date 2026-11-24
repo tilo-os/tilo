@@ -33,6 +33,10 @@ const WITHIN_COPY: u32 = 2;
 /// second, and setting up the first asks of a sync is not what is measured.
 const AT_LEAST: Duration = Duration::from_secs(3);
 
+/// How long a record written while the files move takes to reach the server: a frame. Content
+/// travels apart from the workspace's records, so a bulk transfer holds no write back.
+const LIVE_WITHIN: Duration = Duration::from_millis(16);
+
 /// The files a run moves.
 struct Size {
     files: usize,
@@ -259,6 +263,9 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
     let copied = plain_copy(&from, &to, &names);
     drop(plain);
 
+    // Subscribed before the move: the write made while the files move is the first the server
+    // takes after it, since moving content writes no record.
+    let mut writes = hosted.document_writes();
     // The move: the tree names the files, and the server takes in all they are made of.
     let started = Instant::now();
     tree.change(None, |namespace| {
@@ -298,8 +305,36 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
         .max(allowed);
     let mut lacking = blobs;
     let mut told = Instant::now();
+    let mut live = None;
     while !lacking.is_empty() && started.elapsed() < waited {
         lacking.retain(|blob| !kept.has(blob));
+        // Once a quarter of the pieces are kept, with the rest on their way, the laptop writes a
+        // record, and the server takes it in as fast as when nothing else moves.
+        if live.is_none() && lacking.len() * 4 <= pieces * 3 && !lacking.is_empty() {
+            while writes.try_recv().is_ok() {}
+            let edited = Instant::now();
+            tree.change(None, |namespace| {
+                namespace
+                    .create_dir(tilo_fs::namespace::ROOT_INO, "written-while-files-move", 1)
+                    .map(|_| ())
+                    .ok_or("the folder could not be made")
+            })
+            .await
+            .expect("the workspace takes the laptop's write");
+            tilo_test_env::within("the server takes in the record written meanwhile", async {
+                loop {
+                    match writes.recv().await {
+                        Ok(write) if write.workspace == workspace => return,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            panic!("the server stopped telling its writes")
+                        }
+                        _ => {}
+                    }
+                }
+            })
+            .await;
+            live = Some(edited.elapsed());
+        }
         if told.elapsed() >= Duration::from_secs(1) {
             told = Instant::now();
             eprintln!(
@@ -319,15 +354,22 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
     let report = format!(
         "{} files, {pieces} pieces, {} MB: the plain copy took {copied:.2?}; the move named \
          them in {named:.2?} and the server kept {arrived} of {pieces} pieces in {took:.2?} \
-         ({rate:.0} pieces/s, {:.1} MB/s)",
+         ({rate:.0} pieces/s, {:.1} MB/s, {:.1}x the copy); a record written meanwhile took \
+         {live:.2?}",
         size.files,
         total / 1_000_000,
         (total as f64 * arrived as f64 / pieces as f64) / 1_000_000.0 / took.as_secs_f64(),
+        took.as_secs_f64() / copied.as_secs_f64(),
     );
     eprintln!("{report}");
     assert!(
         lacking.is_empty() && took <= allowed,
         "the move took more than {WITHIN_COPY}x the plain copy ({allowed:.2?}): {report}"
+    );
+    let live = live.expect("a record was written while the files moved");
+    assert!(
+        live <= LIVE_WITHIN,
+        "a record written while the files moved took longer than a frame: {report}"
     );
 
     drop(tree);
