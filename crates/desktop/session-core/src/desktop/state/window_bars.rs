@@ -281,6 +281,32 @@ impl DesktopHandle {
     pub fn bar_takes_typing(&self) -> bool {
         self.shared.borrow().bars.typing
     }
+    /// The member who opened each window of the shared desktop, by tab, as its record says:
+    /// whose hands opened it. Information the shell shows; workspace permissions decide who may
+    /// close or move it. Whether that changed anything.
+    pub fn set_authors(&self, authors: std::collections::BTreeMap<u64, String>) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        if shared.authors == authors {
+            return false;
+        }
+        shared.authors = authors;
+        shared.changed();
+        true
+    }
+
+    /// The member who opened the window `tab`, by their member id; `None` for a window nobody's
+    /// record names.
+    #[must_use]
+    pub fn author_of(&self, tab: TabId) -> Option<String> {
+        self.shared.borrow().authors.get(&tab).cloned()
+    }
+
+    /// The agent run that opened the window `tab`, when an agent opened it on its person's behalf.
+    #[must_use]
+    pub fn opened_by(&self, tab: TabId) -> Option<tilo_desktop_model::ownership::OpenedBy> {
+        self.shared.borrow().opened_by.get(&tab).cloned()
+    }
+
     /// The parts the window `tab`'s app declared for its bar, as the shell's views draw them:
     /// its leading controls, actions, views, notice and reactions.
     #[must_use]

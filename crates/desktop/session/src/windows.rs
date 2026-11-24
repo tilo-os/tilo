@@ -90,6 +90,30 @@ pub struct Window {
     pub bar_typing: bool,
     /// The parts its app declared for its bar, when it declared any.
     pub bar: Option<Bar>,
+    /// Who opened it, person or agent, when the workspace's shared desktop says.
+    pub author: Option<Author>,
+}
+
+/// Who opened a window: the member whose hands opened it, person or agent, and the agent's run
+/// when one did. The window's bar says whose it is; what it may be done to is the workspace's
+/// permissions, never this.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct Author {
+    /// The member's id: a person's, or the agent's member id when an agent opened it.
+    pub identity: String,
+    /// `person` or `agent`.
+    pub kind: String,
+    /// What they are called, when the one who opened it set a label: the agent's name.
+    /// Empty for a person, whose name is the workspace's to say.
+    pub name: String,
+    /// The presence colour they wear, as `#rrggbb`: the one every surface draws them in.
+    pub colour: String,
+    /// The agent session whose run opened the window, when one did.
+    pub agent: String,
+    /// That run, as History groups its changes.
+    pub run: String,
+    /// What the agent called the step that opened the window; empty when it titled none.
+    pub title: String,
 }
 
 /// The parts an app declares for its window's bar, as the shell's views draw them.
@@ -302,7 +326,43 @@ fn window_reading(
         bar_field: bar_field(handle.bar_field(tab.id)).to_owned(),
         bar_typing: handle.bar_takes_typing() && handle.bar_field(tab.id).is_some(),
         bar: handle.bar_toolbar(tab.id).as_ref().map(bar_of),
+        author: author_of(handle, tab.id),
     }
+}
+
+/// Who opened the window `tab`, as the shared desktop's record says: the agent whose run opened
+/// it when one did, and the member who opened it otherwise.
+fn author_of(handle: &DesktopHandle, tab: u64) -> Option<Author> {
+    use tilo_action_policy::MemberId;
+    let person = handle.author_of(tab);
+    let run = handle.opened_by(tab);
+    match (person, run) {
+        (None, None) => None,
+        (Some(person), None) => Some(Author {
+            identity: person.clone(),
+            kind: "person".to_owned(),
+            name: String::new(),
+            colour: author_colour(MemberId::parsed_person(&person).unwrap_or(MemberId::Agent(person))),
+            agent: String::new(),
+            run: String::new(),
+            title: String::new(),
+        }),
+        (person, Some(run)) => Some(Author {
+            identity: run.agent.clone(),
+            kind: "agent".to_owned(),
+            name: run.label.clone(),
+            colour: author_colour(MemberId::Agent(run.agent.clone())),
+            agent: run.agent,
+            run: run.run,
+            title: run.title,
+        }),
+    }
+}
+
+/// The presence colour `member` wears, as `#rrggbb`: the one every surface draws them in.
+fn author_colour(member: tilo_action_policy::MemberId) -> String {
+    let (red, green, blue) = ui::presence::identity_rgb(ui::tokens::PresenceHue::of_member(&member));
+    format!("#{red:02x}{green:02x}{blue:02x}")
 }
 
 /// The parts `toolbar` declares, as the reading spells them: each action with the id its app

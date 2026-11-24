@@ -644,6 +644,8 @@ pub(crate) struct Layouts {
     /// The agent run that opened each window an agent opened, by workspace and tab, as each
     /// workspace's layout last said.
     opened_by: RefCell<HashMap<WorkspaceId, BTreeMap<u64, OpenedBy>>>,
+    /// The member who opened each of a workspace's windows, by tab, as its shared desktop says.
+    authors: RefCell<HashMap<WorkspaceId, BTreeMap<u64, String>>>,
     /// The windows each workspace's layout holds that this session showed, as it last wrote or
     /// laid them in: a window there that this session no longer holds is one this device closed,
     /// and its entry goes when the device writes again rather than the fold laying it back into
@@ -1256,6 +1258,9 @@ impl Layouts {
             self.opened_by
                 .borrow_mut()
                 .insert(workspace_id, layout.opened_by);
+            self.authors
+                .borrow_mut()
+                .insert(workspace_id, layout.authors);
             self.items.borrow_mut().extend(layout.items);
             changed |= self.fold_into(workspace_id, &doc, &layout.tree, workspace, salt, device);
             changed |= self.owed(workspace_id, workspace);
@@ -1509,6 +1514,16 @@ impl Layouts {
             .borrow()
             .values()
             .flat_map(|runs| runs.iter().map(|(tab, run)| (*tab, run.clone())))
+            .collect()
+    }
+
+    /// The member who opened each window of the workspaces this device shows, by tab: what each
+    /// window's bar says of whose hands opened it.
+    pub(crate) fn authors(&self) -> BTreeMap<u64, String> {
+        self.authors
+            .borrow()
+            .values()
+            .flat_map(|people| people.iter().map(|(tab, person)| (*tab, person.clone())))
             .collect()
     }
 

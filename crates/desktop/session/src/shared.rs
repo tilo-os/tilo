@@ -144,6 +144,7 @@ impl Shared {
             }
             self.handle.replace_tree(tree.clone());
             self.handle.set_opened_by(self.desktops.opened_by());
+            self.handle.set_authors(self.desktops.authors());
         }
         if self.desktops.all_read(&tree) {
             self.restore.borrow_mut().layouts_read();

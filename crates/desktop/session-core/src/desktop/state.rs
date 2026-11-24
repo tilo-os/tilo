@@ -193,6 +193,10 @@ pub struct Shared {
     /// The agent run that opened each window an agent opened, by tab
     /// ([`DesktopHandle::set_opened_by`]).
     pub opened_by: std::collections::BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>,
+    /// The member who opened each window of the shared desktop, by tab
+    /// ([`DesktopHandle::set_authors`]): whose hands opened it, which the shell shows and no
+    /// permission reads.
+    pub authors: std::collections::BTreeMap<TabId, String>,
     /// The person each of those agents opened its window for, by tab, by the name its server knows
     /// them by ([`DesktopHandle::set_opened_for`]).
     pub opened_for: std::collections::BTreeMap<TabId, String>,

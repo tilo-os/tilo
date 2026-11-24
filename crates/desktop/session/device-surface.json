@@ -3137,6 +3137,14 @@
                   "named": "Bar"
                 }
               }
+            },
+            {
+              "name": "author",
+              "type": {
+                "option": {
+                  "named": "Author"
+                }
+              }
             }
           ]
         },
@@ -3354,6 +3362,40 @@
             },
             {
               "name": "action",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Author",
+          "doc": "Who opened a window: the member whose hands opened it, person or agent, and the agent's run when one did.",
+          "fields": [
+            {
+              "name": "identity",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "colour",
+              "type": "text"
+            },
+            {
+              "name": "agent",
+              "type": "text"
+            },
+            {
+              "name": "run",
+              "type": "text"
+            },
+            {
+              "name": "title",
               "type": "text"
             }
           ]

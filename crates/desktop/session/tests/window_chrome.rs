@@ -823,3 +823,48 @@ fn a_window_that_controls_the_desktop_offers_to_stop() {
         on_screen(session, "Stop controlling the desktop").is_none()
     });
 }
+
+#[test]
+fn a_windows_author_is_who_opened_it_person_or_agent() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let one = place(&mut session, &notes[0]);
+    let two = place(&mut session, &notes[1]);
+    // The workspace's shared desktop says who opened each window: a person, and an agent's run.
+    let authors = std::collections::BTreeMap::from([
+        (one, "ada".to_owned()),
+        (two, "ada".to_owned()),
+    ]);
+    session.handle().set_authors(authors);
+    let run = tilo_desktop_model::ownership::OpenedBy {
+        run: "agent-run:1".to_owned(),
+        agent: "claude".to_owned(),
+        label: "Claude".to_owned(),
+        title: "Sort the notes".to_owned(),
+    };
+    session
+        .handle()
+        .set_opened_by(std::collections::BTreeMap::from([(two, run)]));
+    let key_one = one.to_string();
+    let key_two = two.to_string();
+    until(&mut session, "the windows' authors", |session| {
+        window(session, &key_one)["author"]["kind"] == json!("person")
+            && window(session, &key_two)["author"]["kind"] == json!("agent")
+    });
+    let person = window(&session, &key_one)["author"].clone();
+    assert_eq!(person["identity"], json!("ada"), "a person by their id");
+    assert!(
+        person["colour"]
+            .as_str()
+            .is_some_and(|colour| colour.starts_with('#')),
+        "the colour they wear everywhere: {person:?}"
+    );
+    let agent = window(&session, &key_two)["author"].clone();
+    assert_eq!(agent["identity"], json!("claude"), "an agent by its member id");
+    assert_eq!(agent["name"], json!("Claude"));
+    assert_eq!(agent["run"], json!("agent-run:1"));
+    assert_eq!(agent["title"], json!("Sort the notes"));
+}

@@ -548,7 +548,37 @@ fn shown_window(p: LayoutPlace) -> Option<device.Window> {
     return device.windows.all.find(w -> w.key == p.key)
 }
 
-/// The parts a window's app declared for its bar, drawn in its own order before the shell's
+/// The chip that says who opened a window: their name (the workspace's, where its people say
+/// it), the glyph that says a person from an agent, and the live dot while they are here.
+view author_chip(a: device.Author) {
+    ui.Chip(
+        author_name(a),
+        icon: if a.kind == "agent" { .bot } else { .user },
+        tone: .neutral,
+    )
+    if author_here(a) {
+        ui.Badge(dot: true, tone: .success)
+    }
+}
+
+/// What `a` is called: the label it came with (an agent's), the workspace's name for the member
+/// when they are here, and their id for nobody's name to say.
+fn author_name(a: device.Author) -> Text {
+    if a.name != "" {
+        return a.name
+    }
+    if let p = layout.people.find(p -> p.key == a.identity) {
+        return p.name
+    }
+    return a.identity
+}
+
+/// Whether the member who opened the window is here now.
+fn author_here(a: device.Author) -> Bool {
+    return layout.people.any(p -> p.key == a.identity)
+}
+
+/// The parts a window's app declared for its bar, drawn in its own order before the shell's/// The parts a window's app declared for its bar, drawn in its own order before the shell's
 /// controls. An action the bar is too narrow for folds into one menu, its menu items under it.
 view bar_parts(w: device.Window, bar: device.Bar) {
     for a in bar.leading {
@@ -698,6 +728,11 @@ view bar_search(w: device.Window) {
 /// the same app, the window's own search, and the way back and forward through what it showed.
 /// Each is one session action, so a press, a key and an agent move the window the same way.
 view window_bar_actions(w: device.Window) {
+    // Whose hands opened the window, person or agent, with the live presence of whoever is here:
+    // whose window it is, never who may close it.
+    if let a = w.author {
+        author_chip(a)
+    }
     // What the window's app puts in its bar, before the shell's own controls: its leading
     // controls, its way back and forward, its sidebar, its actions and views, a line it says to
     // the person, and the reactions to what it shows. Every press is the app's own action, sent
