@@ -71,6 +71,10 @@ enum Cmd {
         /// this device's own daemon connection may ask for one.
         #[arg(long)]
         dev: bool,
+        /// Write the id the development build runs under here, as `--dev` installs it: the
+        /// device names it, and a tool that installed the build starts the app by it.
+        #[arg(long, requires = "dev")]
+        id_file: Option<PathBuf>,
         /// Mark the package pinned (exempt from future GC eviction).
         #[arg(long)]
         pinned: bool,
@@ -478,6 +482,11 @@ fn wire_trust(flags: &TrustFlags) -> package_actions::Trust {
 /// Make `change` and show what it did: in this process for the store `--offline-store` names, else
 /// through this computer's daemon.
 fn make(change: Change) -> Result<(), String> {
+    make_report(change).map(|_| ())
+}
+
+/// [`make`], answering what the change did: the id a development build installed under among it.
+fn make_report(change: Change) -> Result<package_actions::Report, String> {
     let report = match OFFLINE_STORE.get() {
         Some(root) => {
             let store = PackageStore::at(root);
@@ -501,7 +510,7 @@ fn make(change: Change) -> Result<(), String> {
     for line in &report.lines {
         println!("{line}");
     }
-    Ok(())
+    Ok(report)
 }
 
 fn uploaded(path: &Path) -> Uploaded {
@@ -1027,6 +1036,7 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
         Cmd::Install {
             tapp,
             dev,
+            id_file,
             pinned,
             force,
             preserve_held,
@@ -1043,10 +1053,21 @@ fn dispatch(cmd: Cmd) -> Result<(), String> {
                             .into(),
                     );
                 }
-                return make(Change::InstallDev {
+                let report = make_report(Change::InstallDev {
                     manifest: uploaded(&tapp.join(BUILD_MANIFEST)),
                     payload: payload_files(&tapp)?,
-                });
+                })?;
+                if let Some(path) = id_file {
+                    let id = report.installed.ok_or_else(|| {
+                        format!(
+                            "the device installed {} but named no id it runs under",
+                            tapp.display()
+                        )
+                    })?;
+                    fs::write(&path, format!("{id}\n"))
+                        .map_err(|error| format!("{}: {error}", path.display()))?;
+                }
+                return Ok(());
             }
             make(Change::Install {
                 file: uploaded(&tapp),

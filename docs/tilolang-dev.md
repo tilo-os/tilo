@@ -15,10 +15,11 @@ There are two ways to run them:
   Tilo session: it is the developer's own app, and its records are its local store. This
   is the everyday loop, and the one an installed `tilolang` runs.
 - **In a real session.** `tilolang dev DIR --session SESSION` develops the package inside
-  a running nested session, where it runs as an installed app: launched by the launcher,
-  in its sandbox, under its own id and ownership. Use it to test a change against a real
-  session. A nested session is built and started from a Tilo checkout, so this way needs
-  one.
+  a running nested session, where it runs as this device's development build of the app:
+  installed and signed by the session's daemon with the device's own key, launched by the
+  launcher, in its sandbox, under its own id and ownership, with none of the installed
+  app's grants. Use it to test a change against a real session. A nested session is built
+  and started from a Tilo checkout, so this way needs one.
 
 ## On this desktop
 
@@ -116,10 +117,11 @@ The examples below call the result `tilolang` (`target/nested/tilolang`).
 tilolang run apps/tl/notes --search apps/tl --headless --software
 ```
 
-`tilolang run` opens the app once the session's catalogue offers it (`applications
-<id>`): it asks the shell for the applications listing and the shell holds the answer
-until the listing has settled or changed. If the run fails at any point after the session
-started, the tool stops the session: the shell, its apps and its services.
+`tilolang run` stages the build, starts the session, and asks the session's daemon to
+install and start it (`packages#install-dev`, then `--run-app <id>`): the daemon marks,
+packs and signs the build with the device's key, and the launcher runs it. If the run fails
+at any point after the session started, the tool stops the session: the shell, its apps
+and its services.
 
 To work in a session that is already running, attach to it:
 
@@ -147,8 +149,10 @@ There, on every save `tilolang dev`:
 1. compiles the package in-process (tens of milliseconds);
 2. on an error, prints the diagnostics and stops: the app keeps running the last good
    build;
-3. signs the build into a `.tapp` and installs it with `tilo-install`, like any
-   install;
+3. stages the build as the app's manifest and payload, and the session's daemon installs
+   it as this device's development build (`packages#install-dev`): the daemon marks it,
+   packs it and signs it with the device's key, under the id its marking derives
+   (`<app>.dev.<device key>`). The tool reads no publisher key and signs nothing;
 4. says in one line what the running app does with it.
 
 ## The gallery
@@ -193,9 +197,11 @@ where they run.
 
 ### How the swap stays inside ownership in a session
 
-A dev-mode swap installs a package exactly as any install does: verified by
-`tilo-install`, its old version kept while it runs. Then the session hands the new
-module to the tilolang process that runs the app's instances. Nothing else can.
+A dev-mode swap installs a package as the device's own development build
+(`packages#install-dev`): the session's daemon marks the staged build, packs and signs it
+with the device's key, and installs it verified, its old version kept while it runs. Then
+the session hands the new module to the tilolang process that runs the app's instances.
+Nothing else can.
 
 - **Development sessions only.** The session follows reinstalls only when two things
   hold:
@@ -240,29 +246,14 @@ open item come back from the checkpoint.
 
 ### In a session
 
-```sh
-tilolang dev apps/tl/notes --search apps/tl --session /tmp/s.json --build-runtime
-```
+A session runs the tilolang runtime it baked when it started, from the checkout's own
+`tilolang-process`, signed by the session for its own launcher. `--runtime BIN` and
+`--build-runtime` belong to the desktop loop, where the tool runs the window itself; with
+`--session` they are refused. To change the runtime in a session, restart the session on a new
+`dist/dev/nested-session-build.sh` build: its script bakes the runtime bundle again. Saved `.tl`
+files reach the app the same way, and those builds name the same runtime and are taken in place.
 
-`tilolang dev` then:
-
-1. builds `tilolang-process` thin with `dist/dev/tilolang-runtime-build.sh` (cargo). It builds again on every
-   change of `tilolang-process`, `tilolang-tilo`, `tilolang-runtime` or `tilolang`;
-   a failed build leaves the apps on the last good runtime;
-2. bakes the binary into a runtime bundle signed by a key the launcher trusts;
-3. packs it as a runtime package (`so.tilo.runtime.tilolang.dev`, providing
-   `tilolang/0.1.0+dev`) and installs it with `tilo-install`;
-4. builds the apps naming `tilolang/0.1.0+dev`;
-5. restarts each of their windows: to the front, `tab.close`, and once the window is
-   gone `tab.reopen`, which relaunches it in place as a session restore does.
-
-`--runtime BIN` instead follows a binary you build yourself, and re-bakes on every
-new build of it.
-
-Every new build re-bakes and reinstalls the bundle, and the apps restart on it. Save `.tl` files as before: those builds name the same runtime
-and are taken in place.
-
-The binary is built thin, as the session's own runtime bundle carries it: a few
+The binary the session bakes is built thin, as its runtime bundle carries it: a few
 megabytes, linked against the session's `libruntime_dylib.so`. A thin build runs only on
 the runtime library of its own Cargo graph, because a Rust dylib's symbols carry crate
 hashes, so it is built with the default collection's runtime plan, as the
@@ -287,10 +278,10 @@ it with its state`, and the app logs when it drew the new build. The first save 
 start is the app's first take-over, so its module is interpreted and drawn for the first
 time; every warm save takes the build in place with its state.
 
-In the app loop, compiling and packing take 1 to 2 ms. `tilo-install` takes
-140 to 170 ms, but the app takes the build as soon as the install commits its
-registry row, before the installer has finished. A slow run is normally an install
-that waited on the disk.
+In the app loop, compiling and packing take 1 to 2 ms. The install is the session
+daemon's, and the app takes the build as soon as the install commits its registry row,
+before the installer has finished. A slow run is normally an install that waited on the
+disk.
 
 - **The app loop** is timed from the save to two points:
   - the app's own first frame of the new build: the app logs `draws build N at <ms>`
@@ -321,8 +312,8 @@ so a changed build there still needs two things a release launcher does not gran
    records like other grants, in place of an environment variable. The session follows
    reinstalls of a granted app's package with the checks it makes now: same author,
    same runtimes, verified like a launch.
-3. **Open and restart from a terminal.** The tool opens and restarts apps through the
-   session's test control socket, which only developer builds serve. On a desktop it
-   needs the person's action API: `applications <id>`, `tab.close` and `tab.reopen`,
-   invoked as the person. The admin socket refuses processes the shell launched, and a
-   terminal is one.
+3. **Open and restart from a terminal.** The tool asks the session's daemon to start the
+   app (`--run-app <id>`), the launch a person's own command takes. Restarting a window in
+   place would still need the person's action API (`tab.close` and `tab.reopen`), invoked
+   as the person: the admin socket refuses processes the shell launched, and a terminal is
+   one.

@@ -1,9 +1,9 @@
 use super::*;
 use collab_types::caps::{Access, CapOverride, Scope};
 use ed25519_dalek::{Signer as _, SigningKey};
-use package_store::{Catalog, InstalledPackage, Layout};
+use package_store::{Catalog, InstalledPackage, Layout, PackageStore};
 use tilo_action_policy::Grantee;
-use tilo_app_package::{BlobHash, Collection, SignedRoot};
+use tilo_app_package::{BlobHash, Collection, SignedRoot, SigningIdentity};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 const WORKSPACE: &str = "0b7c7a52-6f7e-4a55-9a51-1c2f4b3f7e10";
@@ -688,10 +688,6 @@ tilo_test_env::scenario! {
         let of = "org.example.notes";
         store.install(of, &manifest(of, "gui", ""), &[("probe", b"binary")]);
         let dev = store.install_dev(of, &device);
-        let display = root.join("wayland-0");
-        std::fs::write(&display, b"").unwrap();
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("WAYLAND_DISPLAY", &display);
         let launcher = tilo_test_env::stand_in(root.join("tilo-launcher"), "sleep 600\n").unwrap();
         let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
         let app = apps
@@ -753,6 +749,167 @@ tilo_test_env::scenario! {
             apps.app_grants(&dev_app, WORKSPACE).sandbox.len(),
             1,
             "the grant the person gave the dev build reaches it"
+        );
+    }
+}
+
+// The tool's own staging of a build, installed through the cache's action the device runs: the
+// manifest and payload go in unsigned, the device packs and signs them under the id its marking
+// derives, and the app starts from there as itself, with none of the grants of the app it builds.
+#[cfg(target_os = "linux")]
+tilo_test_env::scenario! {
+    fn a_staged_development_build_is_installed_and_starts_under_the_device_id;
+
+    phase a_staged_build_installs_under_the_device_id_and_starts_with_no_grants;
+    {
+        let (_temp, root) = canonical_temp();
+        let store = Store::new(&root);
+        let device = SigningIdentity::from_signing_key(SigningKey::from_bytes(&[7_u8; 32]));
+        let of = "org.example.dev";
+        // The app as its sources write it: a value a person changes, shown in its window.
+        let source = root.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("app.ids"), "").unwrap();
+        std::fs::write(
+            source.join("app.tl"),
+            r#"app org.example.dev "Dev build" (category: .utility)
+
+/// What the app shows.
+type Value {
+    /// The value.
+    value: Int merge counter
+}
+
+root Value
+
+default view value for Value
+
+/// Show the value.
+view value(v: Value) {
+    std.page(v) {
+        ui.Text("{v.value}", role: .title, numeric: true)
+    }
+}
+"#,
+        )
+        .unwrap();
+        let options = tilolang_cli::package::BuildOptions {
+            dir: source,
+            search: Vec::new(),
+            out: root.join("stage"),
+            tilo_runtime: tilolang_cli::package::DEFAULT_TILO_RUNTIME.to_owned(),
+            tilolang_runtime: tilolang_cli::package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
+            version: "0.1.0".to_owned(),
+            locked: false,
+        };
+        let staged = tilolang_cli::package::stage_dev(&options)
+            .unwrap()
+            .pop()
+            .expect("the app is staged");
+        // The Tilo runtime the app names, as a session bakes it: the cache refuses an app whose
+        // runtime this computer does not have.
+        let display = root.join("wayland-0");
+        std::fs::write(&display, b"").unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("WAYLAND_DISPLAY", &display);
+        let runtimes = root.join("runtimes");
+        let tilo_runtime = tilolang_cli::package::DEFAULT_TILO_RUNTIME
+            .split_once('/')
+            .unwrap()
+            .1;
+        std::fs::create_dir_all(runtimes.join(tilo_runtime)).unwrap();
+        std::fs::write(
+            runtimes
+                .join(tilo_runtime)
+                .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME),
+            "",
+        )
+        .unwrap();
+        environment.set(runtime_bundle::RUNTIME_DIR_ENV, &runtimes);
+        assert_eq!(staged.app, of);
+        let unsigned =
+            tilo_app_package::Manifest::from_toml_str(
+                &std::fs::read_to_string(&staged.manifest).unwrap(),
+            )
+            .unwrap();
+        assert!(
+            unsigned.publisher.signature.is_empty() && unsigned.package.dev.is_none(),
+            "the tool stages it unsigned: the device signs and marks it"
+        );
+        let report = package_actions::apply(
+            &package_actions::Target {
+                store: &PackageStore::at(&store.root),
+                catalog: &store.catalog(),
+                max_store_bytes: package_store::DEFAULT_MAX_STORE_BYTES,
+                device: Some(&device),
+            },
+            package_actions::Change::InstallDev {
+                manifest: package_actions::Uploaded {
+                    source: staged.manifest.display().to_string(),
+                },
+                payload: staged
+                    .payload
+                    .iter()
+                    .map(|(path, file)| package_actions::HostFile {
+                        path: path.clone(),
+                        file: package_actions::Uploaded {
+                            source: file.display().to_string(),
+                        },
+                    })
+                    .collect(),
+            },
+            &package_actions::Entry::Here,
+        )
+        .unwrap_or_else(|error| panic!("the device installs the staged build: {error}"));
+        let id = tilo_app_package::dev_app_id(of, &device.public_key_bytes());
+        assert_eq!(
+            report.installed.as_deref(),
+            Some(id.as_str()),
+            "the device answers the id it installed: {:?}",
+            report.lines
+        );
+        let installed = store
+            .catalog()
+            .find(&id)
+            .unwrap()
+            .expect("installed under the device's dev id");
+        let manifest = tilo_app_package::Manifest::from_toml_str(
+            &std::fs::read_to_string(&installed.manifest_path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.package.dev.as_ref().map(|dev| dev.of.as_str()),
+            Some(of),
+            "the device's marking travels with the installed build"
+        );
+        assert!(
+            store.catalog().find(of).unwrap().is_none(),
+            "the app it builds is not the app it ran as"
+        );
+        let launcher = tilo_test_env::stand_in(root.join("tilo-launcher"), "sleep 600\n").unwrap();
+        let apps = installed(&store, &root, vec![launcher.path().to_owned()]);
+        // What the workspace granted the app this is a build of.
+        let to_the_app = CapOverride::grant(
+            Grantee::person("person-7"),
+            Scope::NetHost("mail.example.com".into()),
+            Access::Write,
+        )
+        .through(of);
+        apps.keep_launch_grants(Arc::new(Granted(vec![to_the_app])));
+        let dev = apps
+            .launchable(&id)
+            .expect("the device launches the build it installed");
+        let launch = apps
+            .start(&id, WORKSPACE)
+            .expect("the staged build starts");
+        assert_eq!(
+            apps.attested(launch.pid),
+            Some((id.clone(), WORKSPACE.to_owned())),
+            "it runs under its own id, not the app's"
+        );
+        assert!(
+            apps.app_grants(&dev, WORKSPACE).sandbox.is_empty(),
+            "it starts with no grants of its own, and none of the app it builds reach it"
         );
     }
 }

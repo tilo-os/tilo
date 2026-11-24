@@ -2,11 +2,11 @@
 //!
 //! The session is `dist/dev/nested-session.sh` over the build in `target/nested-session`,
 //! which carries the tilolang runtime binary beside the Tilo runtime.
-//! The session bakes and signs the tilolang runtime bundle itself. This tool builds each package
-//! into a `.tapp` naming the session's exact Tilo runtime, installs it into each session's state,
-//! starts the sessions and opens the app through the session's own action
-//! (`applications <id>`), so the launcher starts it: its own id, window, ownership, record and
-//! permissions, as on a real system.
+//! The session bakes and signs the tilolang runtime bundle itself. This tool stages each package
+//! as the session's own Tilo runtime names it, starts the session, and hands the builds to the
+//! daemon that runs beside its desktop: the device installs each as its own development build and
+//! starts it, so the launcher runs it as on a real system, under its own id, window, ownership,
+//! record and permissions.
 //!
 //! From then on it is `tilolang dev` over those sessions ([`crate::dev`]): every saved `.tl`
 //! file reaches the running app, with its state.
@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use tilo_files::native::Watcher;
 
@@ -68,7 +69,6 @@ fn session_command(
     options: &RunOptions,
     base: &std::path::Path,
     ready: &std::path::Path,
-    apps: &[crate::package::BuiltApp],
 ) -> Command {
     let mut command = Command::new(repo.join(session::SESSION_SCRIPT));
     command.arg("--state").arg(base.join("a"));
@@ -76,9 +76,6 @@ fn session_command(
         .args(["--no-build", "--until-stdin-closes", "--apps", ""])
         .arg("--ready")
         .arg(ready);
-    for app in apps {
-        command.arg("--install-tapp").arg(&app.tapp);
-    }
     if options.headless {
         command.arg("--headless");
     }
@@ -182,21 +179,23 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         version: "0.1.0".to_owned(),
         locked: false,
     };
-    let identity = crate::publisher_identity()?;
-    let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"), Some(&repo));
-    let apps = dev.build_for_start()?;
+    let mut dev = Dev::in_session(build, peers, build_dir.join("bin"), Some(&repo));
+    // The session's daemon runs after it starts, so its builds are staged here and installed
+    // once it answers: the daemon signs each as this device's development build.
+    let staged = dev.stage_for_start()?;
 
     let (sender, wakes) = mpsc::channel();
     // Watched before the session opens the app, so that a save made while it starts reaches it.
     dev.start_watching(&sender)?;
     let ready = base.join("ready.json");
     let _ = std::fs::remove_file(&ready);
-    let mut command = session_command(&repo, options, &base, &ready, &apps);
+    let mut command = session_command(&repo, options, &base, &ready);
     let starting = |error| format!("starting the nested session: {error}");
     let lifeline = lifeline(&mut command).map_err(starting)?;
     let child = command.spawn().map_err(starting)?;
     let _session = Started::watch(child, lifeline, sender.clone());
     wait_for_file(&ready, &wakes, &sender)?;
+    dev.install_staged(&staged, Instant::now())?;
     dev.open()?;
     if let Some(bin) = dev.bin() {
         for peer in dev.peers() {
@@ -209,7 +208,7 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
     }
     eprintln!(
         "==> {} is open; a saved .tl file reaches it, with its state",
-        dev.opened
+        dev.installed.last().unwrap_or(&dev.opened)
     );
     dev.follow(&wakes, &sender)
 }

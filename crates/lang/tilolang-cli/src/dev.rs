@@ -23,16 +23,13 @@
 //! and starts the window again on the new program once it has stopped growing.
 //!
 //! With `--session` the package is developed inside a running nested session: a good build is
-//! signed into a `.tapp` and installed with `tilo-install`, exactly as any install: verified,
-//! recorded, its old version kept while something runs it. The session follows reinstalls of
-//! the apps its tilolang hosts run (`crates/core/tilo-runtime/src/device/processes.rs`), verifies
-//! the new installation as a launch would, and hands its module to the host running the app,
-//! whose instances take it over in place or start over, as on the desktop.
-//! With `--runtime BIN` the apps run on a tilolang runtime binary of the developer's own build
-//! instead of the session's: the tool bakes it into a signed runtime bundle, installs that as a
-//! runtime package (`tilolang/<version>+dev`) with `tilo-install`, builds the apps naming it, and
-//! restarts their windows on it. Each later change of the binary re-bakes and reinstalls the
-//! bundle and restarts the apps that use it; the session keeps running.
+//! staged as the app's manifest and payload, and the session's daemon installs it as this
+//! device's own development build (`packages#install-dev`), which marks it, signs it with the
+//! device's key and runs it under its own id, apart from any installed app and its grants. The
+//! session follows reinstalls of the apps its tilolang hosts run
+//! (`crates/core/tilo-runtime/src/device/processes.rs`), verifies the new installation as a launch
+//! would, and hands its module to the host running the app, whose instances take it over in place
+//! or start over, as on the desktop. The tool never reads the device's key and signs nothing.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -42,13 +39,12 @@ use std::time::{Duration, Instant};
 
 use bounded_command::{WakeFd, Wakeup, wait_child_or};
 use tilo_app_module::UPDATES_ENV;
-use tilo_app_package::pack::SigningIdentity;
 use tilo_files::ChangeKind;
 use tilo_files::native::{ChangeWatch, WatchEvent, Watcher};
 use tilolang::PackageMeta;
 use tilolang_tilo::upgrade::{Upgrade, compare};
 
-use crate::package::{self, BuildOptions, BuiltApp};
+use crate::package::{self, BuildOptions};
 use crate::session::{self, Peer};
 
 /// The sources of the tilolang runtime binary: what a rebuild of it is watched on.
@@ -205,7 +201,6 @@ pub struct DevOptions {
     pub runtime: Option<PathBuf>,
     /// Build the runtime from the checkout and rebuild it on every change of its sources.
     pub build_runtime: bool,
-    pub runtime_identity: Option<PathBuf>,
     pub repo: Option<PathBuf>,
 }
 
@@ -223,17 +218,6 @@ pub(crate) fn ended(status: std::io::Result<std::process::ExitStatus>) -> Result
     }
 }
 
-/// The version of the runtime bundle `--runtime` makes: the
-/// tool's tilolang runtime version with `+dev` for its
-/// build.
-fn dev_runtime_version() -> String {
-    format!("{}+dev", env!("CARGO_PKG_VERSION"))
-}
-
-/// The package id of the development runtime: its own, so installing it never touches the tilolang
-/// runtime package a system has.
-const DEV_RUNTIME_PACKAGE: &str = "so.tilo.runtime.tilolang.dev";
-
 struct DevRuntime {
     /// The binary; `None` until the tool built it.
     binary: Option<PathBuf>,
@@ -248,8 +232,6 @@ struct DevRuntime {
     /// programs link: where the running process finds
     /// them.
     loaders: Vec<PathBuf>,
-    identity_file: Option<PathBuf>,
-    version: String,
 }
 
 impl DevRuntime {
@@ -514,9 +496,12 @@ fn remove_superseded_libraries(session: &Path, current: u64) {
 
 pub(crate) struct Dev {
     pub(crate) build: BuildOptions,
-    pub(crate) identity: SigningIdentity,
     delivery: Delivery,
+    /// The app's own id, as its sources name it.
     pub(crate) opened: String,
+    /// The id each session's daemon installed the app under, in the sessions' order: a
+    /// development build is its own on each device, and only that device names it.
+    pub(crate) installed: Vec<String>,
     delivered: HashMap<String, (String, PackageMeta)>,
     runtime: Option<DevRuntime>,
     /// The library the running window was handed, and when the
@@ -533,17 +518,12 @@ pub(crate) struct Dev {
 }
 
 impl Dev {
-    fn new(
-        build: BuildOptions,
-        identity: SigningIdentity,
-        delivery: Delivery,
-        repo: Option<&Path>,
-    ) -> Self {
+    fn new(build: BuildOptions, delivery: Delivery, repo: Option<&Path>) -> Self {
         Self {
             build,
-            identity,
             delivery,
             opened: String::new(),
+            installed: Vec::new(),
             delivered: HashMap::new(),
             runtime: None,
             reload_pending: None,
@@ -557,26 +537,15 @@ impl Dev {
 
     pub(crate) fn in_session(
         build: BuildOptions,
-        identity: SigningIdentity,
         peers: Vec<Peer>,
         bin: PathBuf,
         repo: Option<&Path>,
     ) -> Self {
-        Self::new(build, identity, Delivery::Session { peers, bin }, repo)
+        Self::new(build, Delivery::Session { peers, bin }, repo)
     }
 
-    fn on_desktop(
-        build: BuildOptions,
-        identity: SigningIdentity,
-        root: &Path,
-        repo: Option<&Path>,
-    ) -> Result<Self, String> {
-        Ok(Self::new(
-            build,
-            identity,
-            Delivery::Local(Local::new(root)?),
-            repo,
-        ))
+    fn on_desktop(build: BuildOptions, root: &Path, repo: Option<&Path>) -> Result<Self, String> {
+        Ok(Self::new(build, Delivery::Local(Local::new(root)?), repo))
     }
 
     fn is_local(&self) -> bool {
@@ -604,7 +573,8 @@ impl Dev {
         }
     }
 
-    /// The session's tools: `tilo-install`, `tilo-control`, `tilo-runtime-bundle`.
+    /// The session's tools: `tilo-install` and `tilo-runtime` (a build, and its start), and
+    /// `tilo-control` for the shell's windows.
     pub(crate) fn bin(&self) -> Option<&Path> {
         match &self.delivery {
             Delivery::Session { bin, .. } => Some(bin),
@@ -612,24 +582,20 @@ impl Dev {
         }
     }
 
-    /// Build, as a session that installs the apps as it starts will have them installed; the apps.
-    pub(crate) fn build_for_start(&mut self) -> Result<Vec<BuiltApp>, String> {
-        let apps = package::build(&self.build, &self.identity)?;
-        for app in &apps {
-            self.delivered
-                .insert(app.app.clone(), (app.digest.clone(), app.meta.clone()));
-        }
-        if let Some(last) = apps.last() {
+    /// Stage the builds a session installs as it starts, before its daemon runs; the builds.
+    pub(crate) fn stage_for_start(&mut self) -> Result<Vec<package::StagedDev>, String> {
+        let staged = package::stage_dev(&self.build)?;
+        if let Some(last) = staged.last() {
             self.opened.clone_from(&last.app);
         }
-        Ok(apps)
+        Ok(staged)
     }
 
     /// Build the bundles the desktop app reads from its
     /// generations, as starting it will have them published;
     /// the apps.
     pub(crate) fn build_for_start_local(&mut self) -> Result<Vec<package::Published>, String> {
-        let apps = package::published(&self.build, &self.identity)?;
+        let apps = package::published(&self.build)?;
         for app in &apps {
             self.delivered
                 .insert(app.app.clone(), (app.digest.clone(), app.meta.clone()));
@@ -640,41 +606,54 @@ impl Dev {
         Ok(apps)
     }
 
-    /// Build, and take what changed to what runs it; the apps built, or the compile errors.
-    fn build_and_deliver(&mut self, saved: Instant) -> Result<Vec<BuiltApp>, String> {
-        if self.is_local() {
-            self.publish_local(saved)?;
-            return Ok(Vec::new());
-        }
-        let apps = package::build(&self.build, &self.identity)?;
+    /// Install `staged` on every session of the delivery: each build whose sources changed goes
+    /// to the daemon as this device's development build, which names the id it runs under.
+    pub(crate) fn install_staged(
+        &mut self,
+        staged: &[package::StagedDev],
+        saved: Instant,
+    ) -> Result<(), String> {
         let built = saved.elapsed();
-        for app in &apps {
+        for app in staged {
             let previous = self.delivered.get(&app.app);
             if previous.is_some_and(|(digest, _)| *digest == app.digest) {
                 continue;
             }
             let plan = previous.map(|(_, meta)| compare(meta, &app.meta));
-            let Delivery::Session { peers, bin } = &mut self.delivery else {
-                return Ok(Vec::new());
+            let Delivery::Session { peers, bin } = &self.delivery else {
+                return Ok(());
             };
-            for peer in peers.iter() {
-                peer.install(bin, &app.tapp)?;
+            let mut installed = Vec::with_capacity(peers.len());
+            for peer in peers {
+                installed.push(peer.install_dev(bin, app)?);
             }
+            self.installed = installed;
             report(&app.title, plan, built, saved.elapsed(), "installed");
             self.delivered
                 .insert(app.app.clone(), (app.digest.clone(), app.meta.clone()));
         }
-        if let Some(last) = apps.last() {
+        Ok(())
+    }
+
+    /// Build, and take what changed to what runs it; the builds staged, or the compile errors.
+    fn build_and_deliver(&mut self, saved: Instant) -> Result<Vec<package::StagedDev>, String> {
+        if self.is_local() {
+            self.publish_local(saved)?;
+            return Ok(Vec::new());
+        }
+        let staged = package::stage_dev(&self.build)?;
+        self.install_staged(&staged, saved)?;
+        if let Some(last) = staged.last() {
             self.opened.clone_from(&last.app);
         }
-        Ok(apps)
+        Ok(staged)
     }
 
     /// Build, and publish each changed build of the app
     /// the window shows into the generations it follows.
     fn publish_local(&mut self, saved: Instant) -> Result<(), String> {
         let opened = self.opened.clone();
-        let apps = package::published(&self.build, &self.identity)?;
+        let apps = package::published(&self.build)?;
         let built = saved.elapsed();
         for app in &apps {
             let previous = self.delivered.get(&app.app);
@@ -705,15 +684,13 @@ impl Dev {
         Ok(())
     }
 
+    /// Ask the session's daemon to start the app it installed, as a person's window starts.
     pub(crate) fn open(&self) -> Result<(), String> {
         let Delivery::Session { peers, bin } = &self.delivery else {
             return Ok(());
         };
-        for peer in peers {
-            if !peer.is_open(bin, &self.opened) {
-                peer.wait_offered(bin, &self.opened)?;
-                peer.open(bin, &self.opened)?;
-            }
+        for (peer, app) in peers.iter().zip(&self.installed) {
+            peer.start_app(bin, app)?;
         }
         Ok(())
     }
@@ -755,72 +732,18 @@ impl Dev {
             .any(|newest| newest > built)
     }
 
-    /// Bake the runtime binary into a signed bundle and install it as the development runtime
-    /// package; the session's apps name it from now on.
-    fn install_runtime(&mut self) -> Result<(), String> {
-        let Some(runtime) = &self.runtime else {
-            return Ok(());
-        };
-        let (Some(binary), Some(identity_file)) =
-            (runtime.binary.as_ref(), runtime.identity_file.as_ref())
-        else {
-            return Err("the runtime has no binary to install".to_owned());
-        };
-        let version = runtime.version.clone();
-        let started = Instant::now();
-        let work = self.build.out.join("runtime");
-        let bundle = work.join("bundle");
-        let bin = self
-            .bin()
-            .ok_or_else(|| "installing the runtime needs a session".to_owned())?;
-        if bundle.exists() {
-            std::fs::remove_dir_all(&bundle)
-                .map_err(|error| format!("{}: {error}", bundle.display()))?;
-        }
-        session::status(
-            Command::new(bin.join("tilo-runtime-bundle"))
-                .args(["build", "--binaries-only", "--version", &version, "--out"])
-                .arg(&bundle)
-                .arg("--include-bin")
-                .arg(binary)
-                .arg("--identity")
-                .arg(identity_file)
-                .stdout(std::process::Stdio::null()),
-            "baking the runtime bundle",
-        )?;
-        let baked = started.elapsed();
-        let tapp = runtime_package(&bundle, &version, &self.identity, &work)?;
-        for peer in self.peers() {
-            peer.install(bin, &tapp)?;
-        }
-        eprintln!(
-            "==> runtime tilolang/{version}: baked in {} ms, installed in {} ms",
-            baked.as_millis(),
-            started.elapsed().as_millis()
-        );
-        self.build.tilolang_runtime = format!("tilolang/{version}");
-        Ok(())
-    }
-
     /// The runtime binary changed (or the tool just started on it): take it to the app.
     fn runtime_changed(&mut self, restart: bool) {
+        if !self.is_local() {
+            // A session's runtime is the one it baked and runs; only the window on this desktop
+            // takes a program of the developer's own.
+            return;
+        }
         let started = Instant::now();
-        let result = if self.is_local() {
-            if restart {
-                self.restart_here(started)
-            } else {
-                self.changed_here(started)
-            }
+        let result = if restart {
+            self.restart_here(started)
         } else {
-            self.install_runtime()
-                .and_then(|()| self.build_and_deliver(started))
-                .and_then(|apps| self.restart(&apps))
-                .map(|()| {
-                    eprintln!(
-                        "==> the app runs on the new runtime, {} ms after it changed",
-                        started.elapsed().as_millis()
-                    );
-                })
+            self.changed_here(started)
         };
         if let Err(error) = result {
             eprintln!("{error}");
@@ -868,21 +791,6 @@ impl Dev {
             "==> the app runs on the new runtime, {} ms after it changed",
             started.elapsed().as_millis()
         );
-        Ok(())
-    }
-
-    /// Start every app of `apps` that has a window again, on what is installed now.
-    fn restart(&self, apps: &[BuiltApp]) -> Result<(), String> {
-        let Delivery::Session { peers, bin } = &self.delivery else {
-            return Ok(());
-        };
-        for peer in peers {
-            for app in apps {
-                if peer.is_open(bin, &app.app) {
-                    peer.restart(bin, &app.app)?;
-                }
-            }
-        }
         Ok(())
     }
 
@@ -1445,63 +1353,6 @@ pub(crate) fn watch_into(
     })
 }
 
-/// The signed runtime package that offers the baked bundle
-/// in `bundle` as `tilolang/<version>`, written into
-/// `work`.
-fn runtime_package(
-    bundle: &Path,
-    version: &str,
-    identity: &SigningIdentity,
-    work: &Path,
-) -> Result<PathBuf, String> {
-    let isa = match std::env::consts::ARCH {
-        "x86_64" => "x86_64 = \"v3\"",
-        "aarch64" => "aarch64 = \"aarch64\"",
-        other => return Err(format!("no runtime package for the architecture {other}")),
-    };
-    let publisher = hex::encode(identity.public_key_bytes());
-    let text = format!(
-        r#"# Generated by `tilolang dev --runtime`: a tilolang runtime of the developer's own build.
-
-[package]
-id = "{DEV_RUNTIME_PACKAGE}"
-name = "tilolang development runtime"
-category = "System"
-version = "{package_version}"
-kind = "runtime"
-provides = "tilolang/{version}"
-
-[package.isa]
-{isa}
-
-[publisher]
-identity = "ed25519:{publisher}"
-signature = ""
-
-[sandbox]
-namespaces = []
-seccomp = "tilo-default"
-landlock = "strict"
-
-[sandbox.net]
-mode = "off"
-
-[entrypoint]
-type = "cli"
-bin = "{bin}"
-"#,
-        package_version = env!("CARGO_PKG_VERSION"),
-        bin = package::RUNTIME_BIN,
-    );
-    let manifest = tilo_app_package::manifest::Manifest::from_toml_str(&text)
-        .map_err(|error| format!("the runtime package's manifest: {error}"))?;
-    let packed = tilo_app_package::pack::pack(bundle, &manifest, identity)
-        .map_err(|error| format!("packing the runtime: {error}"))?;
-    let tapp = work.join("tilolang-dev-runtime.tapp");
-    package::write_tapp(&tapp, &packed)?;
-    Ok(tapp)
-}
-
 /// A build of the runtime a desktop's window runs on: the program, whether a rebuild of the
 /// runtime's sources can be handed to the window in place, and the directories the program finds
 /// the shared toolkit and `libstd` in.
@@ -1734,49 +1585,29 @@ fn build_local_runtime_binary(repo: &Path) -> Result<PathBuf, String> {
 /// `options.session`, or on this desktop when there is none,
 /// until interrupted.
 pub fn dev(options: &DevOptions) -> Result<(), String> {
-    let identity = crate::publisher_identity()?;
     let (sender, wakes) = mpsc::channel();
     let Some(session) = &options.session else {
         let repo = session::checkout(options.repo.as_deref(), &options.dir)?;
-        return dev_on_desktop(options, repo.as_deref(), identity, &sender, &wakes);
+        return dev_on_desktop(options, repo.as_deref(), &sender, &wakes);
     };
     let repo = session::repo_root(
         options.repo.as_deref(),
         &options.dir,
         "tilolang dev --session",
     )?;
-    dev_in_session(options, &repo, session, identity, &sender, &wakes)
+    dev_in_session(options, &repo, session, &sender, &wakes)
 }
 
 fn dev_in_session(
     options: &DevOptions,
     repo: &Path,
     session: &Path,
-    identity: SigningIdentity,
     sender: &mpsc::Sender<Wake>,
     wakes: &mpsc::Receiver<Wake>,
 ) -> Result<(), String> {
     let bin = session::tools(repo)?;
     let peer = Peer::attach(session, repo)?;
     let (tilo_runtime, tilolang_runtime) = peer.runtimes_baked()?;
-    let built_in = options.build_runtime.then(|| repo.to_path_buf());
-    let binary = options
-        .runtime
-        .clone()
-        .or_else(|| built_in.as_ref().map(|repo| repo.join(RUNTIME_BINARY)));
-    let runtime = binary.map(|binary| DevRuntime {
-        binary: Some(std::path::absolute(&binary).unwrap_or(binary)),
-        built_in,
-        reloads_in_place: false,
-        loaders: Vec::new(),
-        identity_file: Some(
-            options
-                .runtime_identity
-                .clone()
-                .unwrap_or_else(|| peer.runtime_publisher()),
-        ),
-        version: dev_runtime_version(),
-    });
     let build = BuildOptions {
         dir: options.dir.clone(),
         search: options.search.clone(),
@@ -1786,27 +1617,14 @@ fn dev_in_session(
         version: "0.1.0".to_owned(),
         locked: false,
     };
-    let mut dev = Dev::in_session(build, identity, vec![peer], bin, Some(repo));
-    dev.runtime = runtime;
-    if dev.runtime.is_some() {
-        dev.build_runtime()?;
-        dev.install_runtime()?;
-    }
-    let apps = dev.build_and_deliver(Instant::now())?;
+    let mut dev = Dev::in_session(build, vec![peer], bin, Some(repo));
+    dev.build_and_deliver(Instant::now())?;
     // Watched before anything of the app runs, so that a save made while it starts is delivered.
     dev.start_watching(sender)?;
-    if dev.runtime.is_some() {
-        dev.restart(&apps)?;
-    }
     dev.open()?;
     eprintln!(
-        "==> {} is open; a saved .tl file reaches it{}",
-        dev.opened,
-        if dev.runtime.is_some() {
-            ", and so does a new build of the runtime"
-        } else {
-            ""
-        }
+        "==> {} is open; a saved .tl file reaches it",
+        dev.installed.last().unwrap_or(&dev.opened)
     );
     dev.follow(wakes, sender)
 }
@@ -1816,7 +1634,6 @@ fn dev_in_session(
 fn dev_on_desktop(
     options: &DevOptions,
     repo: Option<&Path>,
-    identity: SigningIdentity,
     sender: &mpsc::Sender<Wake>,
     wakes: &mpsc::Receiver<Wake>,
 ) -> Result<(), String> {
@@ -1851,14 +1668,12 @@ fn dev_on_desktop(
         version: "0.1.0".to_owned(),
         locked: false,
     };
-    let mut dev = Dev::on_desktop(build, identity, &root, repo)?;
+    let mut dev = Dev::on_desktop(build, &root, repo)?;
     dev.runtime = Some(DevRuntime {
         binary: runtime,
         built_in,
         reloads_in_place: false,
         loaders,
-        identity_file: None,
-        version: dev_runtime_version(),
     });
     if dev
         .runtime

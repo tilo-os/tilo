@@ -54,8 +54,14 @@ tilo_test_env::scenario! {
             (&["run", "--no-such-flag"], "unknown option --no-such-flag"),
             (&["dev", "--no-such-flag"], "unknown option --no-such-flag"),
             (
-                &["dev", "--runtime-identity", "identity.json"],
-                "--runtime-identity signs a session's runtime bundle: give --session too",
+                &[
+                    "dev",
+                    "--session",
+                    "session.json",
+                    "--runtime",
+                    "tilolang-process",
+                ],
+                "A session runs the runtime it baked",
             ),
             (
                 &["dev", "--runtime", "tilolang-process", "--build-runtime"],

@@ -50,8 +50,7 @@ const USAGE: &[(&str, &str)] = &[
         "dev",
         "\
   tilolang dev [DIR] [--search DIR]... [--runtime BIN | --build-runtime] [--repo DIR]
-  tilolang dev [DIR] --session SESSION [--search DIR]... [--runtime BIN | --build-runtime]
-               [--runtime-identity FILE] [--repo DIR]
+  tilolang dev [DIR] --session SESSION [--search DIR]... [--repo DIR]
       develop the package as an ordinary window on this desktop: every saved .tl file is
       compiled, published to the running app and taken over with its state (the same window,
       its records, scroll and selection); a compile error is printed and the app keeps running.
@@ -60,10 +59,10 @@ const USAGE: &[(&str, &str)] = &[
       directory's, --repo's or $TILO_REPO's) the tool builds tilolang-process from it with cargo
       instead, and again on every change of its sources, restarting the window on it with its
       state.
-      With --session (in a Tilo checkout), develop it in a running nested session instead (SESSION: its --ready
-      file, runtime directory, control socket or state directory): every saved .tl file is compiled, installed
-      and taken over by the app there, and --runtime BIN bakes the runtime binary into a signed
-      runtime bundle installed in that session. See docs/tilolang-dev.md.",
+      With --session (in a Tilo checkout), develop it in a running nested session instead (SESSION:
+      its --ready file, runtime directory, control socket or state directory): every saved .tl
+      file is installed as this device's own development build by the session's daemon, without
+      a publisher key, and taken over by the app there. See docs/tilolang-dev.md.",
     ),
     (
         "profile",
@@ -281,7 +280,7 @@ fn dispatch(verb: &str, argv: Vec<OsString>, help: bool) -> ExitCode {
 /// first argument that is no flag nor a flag's value, else the working directory) holds `.tl`
 /// files. A Rust app's command line reads the same way: no flag of its names a package.
 fn names_package(args: &[String]) -> bool {
-    const VALUE_FLAGS: [&str; 12] = [
+    const VALUE_FLAGS: [&str; 11] = [
         "--search",
         "--path",
         "--out",
@@ -292,7 +291,6 @@ fn names_package(args: &[String]) -> bool {
         "--repo",
         "--session",
         "--runtime",
-        "--runtime-identity",
         "--allow",
     ];
     let mut dir = None;
@@ -595,7 +593,6 @@ fn dev_command(args: &[String]) -> Result<(), String> {
     let mut session: Option<PathBuf> = None;
     let mut runtime = None;
     let mut build_runtime = false;
-    let mut runtime_identity = None;
     let mut repo = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -604,7 +601,6 @@ fn dev_command(args: &[String]) -> Result<(), String> {
             "--session" => session = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--runtime" => runtime = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--build-runtime" => build_runtime = true,
-            "--runtime-identity" => runtime_identity = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--repo" => repo = Some(PathBuf::from(value(&mut iter, arg)?)),
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown option {flag}\n{}", usage("dev")));
@@ -612,15 +608,17 @@ fn dev_command(args: &[String]) -> Result<(), String> {
             named => dir = named.into(),
         }
     }
-    if runtime_identity.is_some() && session.is_none() {
-        return Err(format!(
-            "--runtime-identity signs a session's runtime bundle: give --session too\n{}",
-            usage("dev")
-        ));
-    }
     if runtime.is_some() && build_runtime {
         return Err(format!(
             "--runtime names a binary built by hand, --build-runtime builds one: give one\n{}",
+            usage("dev")
+        ));
+    }
+    if session.is_some() && (runtime.is_some() || build_runtime) {
+        return Err(format!(
+            "--runtime and --build-runtime run the app on a program of your own, as a window on \
+             this desktop. A session runs the runtime it baked and signed for its launcher: \
+             develop it without either\n{}",
             usage("dev")
         ));
     }
@@ -630,7 +628,6 @@ fn dev_command(args: &[String]) -> Result<(), String> {
         session,
         runtime,
         build_runtime,
-        runtime_identity,
         repo,
     })
 }

@@ -16,7 +16,6 @@ fn a_saved_build_is_the_generation_the_app_reads() {
     let scratch = tempfile::tempdir().unwrap();
     let source = scratch.path().join("counter");
     copy_package(&packages().join("counter"), &source);
-    let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
     let out = scratch.path().join("out");
     let options = BuildOptions {
         dir: source.clone(),
@@ -35,7 +34,7 @@ fn a_saved_build_is_the_generation_the_app_reads() {
         })
         .unwrap()
     };
-    let first = package::published(&options, &identity).unwrap();
+    let first = package::published(&options).unwrap();
     let app = first.last().unwrap();
     let updates = scratch.path().join("updates");
     assert_eq!(publish(app, &updates), 1);
@@ -47,14 +46,39 @@ fn a_saved_build_is_the_generation_the_app_reads() {
         !options.out.exists() || std::fs::read_dir(&options.out).unwrap().next().is_none(),
         "a desktop build stages, packs and signs nothing"
     );
+    // A device stages the same build it publishes here: the digest is what a save is compared
+    // by, and staging signs nothing.
+    let mut staging = options.clone();
+    staging.out = scratch.path().join("stage");
+    let staged = package::stage_dev(&staging).unwrap().pop().unwrap();
     assert_eq!(
-        package::build(&options, &identity)
+        staged.digest, app.digest,
+        "the same build has the same digest whether staged for a device or published here"
+    );
+    assert!(
+        staged.dir.join("tilo-app.toml").is_file(),
+        "the device reads the app's manifest"
+    );
+    assert!(
+        std::fs::read_dir(&staged.dir)
             .unwrap()
-            .last()
-            .unwrap()
-            .digest,
-        app.digest,
-        "the same build has the same digest whether or not it is installed"
+            .flatten()
+            .all(|entry| entry
+                .path()
+                .extension()
+                .is_none_or(|extension| extension != "tapp")),
+        "staging packs no .tapp"
+    );
+    let manifest = tilo_app_package::manifest::Manifest::from_toml_str(
+        &std::fs::read_to_string(&staged.manifest).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest.package.id, app.app, "the app's own id, unsigned");
+    assert_eq!(manifest.publisher.identity, "", "no publisher signs it");
+    assert!(manifest.publisher.signature.is_empty());
+    assert!(
+        manifest.package.dev.is_none(),
+        "the device marks it, not the tool"
     );
 
     // A save inside the package's views: the next build is published as the next generation, and
@@ -69,7 +93,7 @@ fn a_saved_build_is_the_generation_the_app_reads() {
         ),
     )
     .unwrap();
-    let second = package::published(&options, &identity).unwrap();
+    let second = package::published(&options).unwrap();
     let app = second.last().unwrap();
     assert_eq!(
         compare(&first.last().unwrap().meta, &app.meta),

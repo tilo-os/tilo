@@ -44,6 +44,7 @@ fn ask(daemon: &mut Daemon, change: &Change) -> Result<Report, String> {
     Ok(report_in(&answer).unwrap_or_else(|| Report {
         lines: vec![answer.to_string()],
         warnings: Vec::new(),
+        installed: None,
     }))
 }
 
@@ -58,6 +59,7 @@ pub fn make(asked: Change) -> Result<Report, String> {
     let said = |answer: serde_json::Value| Report {
         lines: vec![answer.to_string()],
         warnings: Vec::new(),
+        installed: None,
     };
     let not_offline = |what: &str| {
         Err(format!(

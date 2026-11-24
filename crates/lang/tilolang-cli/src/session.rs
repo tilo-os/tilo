@@ -1,14 +1,15 @@
 //! A nested Tilo session the tool drives: where it is, the environment its own tools act on it
-//! in, and the session's actions the tool uses (open an app, restart it, install a package).
+//! in, and the device's daemon that runs beside its desktop.
 //!
 //! The session is `dist/dev/nested-session.sh` over the build in
-//! `target/nested-session`. Everything here goes through the session's own tools and actions:
-//! `tilo-install` installs, the launcher starts apps, the shell's actions open and close them.
+//! `target/nested-session`. A build goes to the daemon's package cache as the device's own
+//! development build (`packages#install-dev`), and the daemon starts it as it starts any app a
+//! window shows.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use ui::tilo_actions::remote::{self, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget};
+use crate::package::StagedDev;
 
 pub(crate) const SESSION_SCRIPT: &str = "dist/dev/nested-session.sh";
 pub(crate) const BUILD_DIR: &str = "target/nested-session";
@@ -114,27 +115,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(sha2::Sha256::digest(bytes))
 }
 
-/// How long a window may take to close when its app is asked to let it go.
-const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-
 /// The interfaces a nested session serves: the checkout's own declaration, which nested-session.sh
 /// hands its shell as `TILO_SYSTEM_INTERFACES`, not the host image's.
 const SYSTEM_INTERFACES: &str = "os/usr/share/tilo/system-interfaces.toml";
-
-/// How long a session may take to offer an app it installed.
-const OFFER_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-/// How long the session may hold an action's answer while it runs, in milliseconds.
-const ACTION_WAIT: u32 = 5_000;
-/// The prefix of a window's resource address, before its tab.
-const WINDOW_PREFIX: &str = "desktop:tab:";
-
-/// The session's own `action` of `resource`.
-fn shell(resource: &str, action: &str) -> RemoteActionTarget {
-    RemoteActionTarget {
-        provider: remote::SESSION_ACTIONS_PROVIDER.to_owned(),
-        address: ui::tilo_actions::ActionAddress::new(resource, action),
-    }
-}
 
 pub(crate) struct Peer {
     pub(crate) state: PathBuf,
@@ -292,11 +275,6 @@ impl Peer {
         self.state.join("runtimes")
     }
 
-    /// The key the session's runtime bundles are signed with: the one its launcher trusts.
-    pub(crate) fn runtime_publisher(&self) -> PathBuf {
-        self.state.join("keys/publisher.json")
-    }
-
     /// The Tilo runtime and the tilolang runtime the session baked, as packages name them.
     pub(crate) fn runtimes_baked(&self) -> Result<(String, String), String> {
         let tilo = read_trimmed(&self.runtimes().join(".version"))?;
@@ -307,178 +285,36 @@ impl Peer {
         ))
     }
 
-    /// Install the signed package `tapp`, replacing the installed one of the same id. A development
-    /// session runs no device daemon's package cache, so the install names the session's store and is made in
-    /// `tilo-install`'s own process.
-    pub(crate) fn install(&self, bin: &Path, tapp: &Path) -> Result<(), String> {
+    /// Install `staged` on the session's daemon as this device's development build, and answer the
+    /// id it runs under. The session's `tilo-install` asks the daemon (`packages#install-dev`),
+    /// which marks the build, packs it and signs it with the device's key: neither the tool nor
+    /// the session ever reads that key.
+    pub(crate) fn install_dev(&self, bin: &Path, staged: &StagedDev) -> Result<String, String> {
+        let id_file = staged.dir.with_extension("id");
+        let _ = std::fs::remove_file(&id_file);
         status(
             self.command(&bin.join("tilo-install"))
-                .arg("--offline-store")
-                .arg(self.state.join("apps"))
                 .arg("install")
-                .arg(tapp)
-                .args(["--allow-self-signed", "--force"])
+                .arg(&staged.dir)
+                .args(["--dev", "--id-file"])
+                .arg(&id_file)
                 .stdout(Stdio::null()),
-            &format!("installing {}", tapp.display()),
+            &format!("installing {} as its development build", staged.app),
+        )?;
+        let id = std::fs::read_to_string(&id_file)
+            .map_err(|error| format!("{}: {error}", id_file.display()))?;
+        Ok(id.trim().to_owned())
+    }
+
+    /// Start `app` through the session's daemon, as a person's window starts: the launch the
+    /// installed package names, with its sandbox and grants.
+    pub(crate) fn start_app(&self, bin: &Path, app: &str) -> Result<(), String> {
+        status(
+            self.command(&bin.join("tilo-runtime"))
+                .args(["--run-app", app])
+                .stdout(Stdio::null()),
+            &format!("starting {app}"),
         )
-    }
-
-    /// Open `app` through the workspace's own open of it, or bring its window to the front when it
-    /// has one.
-    pub(crate) fn open(&self, bin: &Path, app: &str) -> Result<(), String> {
-        let open = self.wait_offered(bin, app)?;
-        self.invoke(bin, open, &format!("opening {app}"))
-    }
-
-    /// Wait until the session's catalogue offers to open `app`, and answer that open: a session
-    /// just started indexes the apps it installed as it comes up, and an app it has not indexed
-    /// yet cannot be opened.
-    pub(crate) fn wait_offered(&self, bin: &Path, app: &str) -> Result<RemoteActionTarget, String> {
-        let resource = format!("{}{app}", remote::APPLICATION_RESOURCE_PREFIX);
-        let started = std::time::Instant::now();
-        loop {
-            if let Some(open) =
-                self.offered(bin, app, &resource, remote::APPLICATION_OPEN_ACTION)?
-            {
-                return Ok(open);
-            }
-            if started.elapsed() > OFFER_WAIT {
-                return Err(format!("the session does not offer to open {app}"));
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-    }
-
-    /// What the session lists, among the rows that mention `needle`, as `resource`'s `action`.
-    fn offered(
-        &self,
-        bin: &Path,
-        needle: &str,
-        resource: &str,
-        action: &str,
-    ) -> Result<Option<RemoteActionTarget>, String> {
-        let mut query = remote::CatalogueQuery {
-            needle: needle.to_owned(),
-            max_results: remote::MAX_CATALOGUE_PAGE,
-            ..remote::CatalogueQuery::default()
-        };
-        loop {
-            let asked = RemoteActionMessage::CatalogueRequest {
-                correlation: 1,
-                query: query.clone(),
-            };
-            let RemoteActionMessage::CatalogueResponse { result, .. } =
-                self.ask(bin, asked, "listing the session's actions")?
-            else {
-                return Err("the session answered a listing with something else".to_owned());
-            };
-            let page = result.map_err(|error| format!("listing the session's actions: {error}"))?;
-            let found = page.rows.into_iter().find_map(|row| {
-                let address = row.action?.address;
-                (address.resource == resource && address.action == action).then_some(
-                    RemoteActionTarget {
-                        provider: row.provider,
-                        address,
-                    },
-                )
-            });
-            if found.is_some() || page.exhausted || page.next_cursor.is_empty() {
-                return Ok(found);
-            }
-            query.revision = Some(page.revision);
-            query.cursor = page.next_cursor;
-        }
-    }
-
-    /// Invoke `target`, and wait until it ran.
-    fn invoke(&self, bin: &Path, target: RemoteActionTarget, what: &str) -> Result<(), String> {
-        let invocation = ui::tilo_actions::InvocationId::new();
-        let asked = RemoteActionMessage::Invoke(remote::InvokeRequest {
-            invocation,
-            target,
-            argument: remote::InvokeArgument::None,
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: Some(ACTION_WAIT),
-            appearance: None,
-            signed: None,
-        });
-        let RemoteActionMessage::Receipt(receipt) = self.ask(bin, asked, what)? else {
-            return Err(format!("{what}: the session answered with something else"));
-        };
-        match receipt.status {
-            remote::ReceiptStatus::Accepted | remote::ReceiptStatus::Completed { .. } => Ok(()),
-            remote::ReceiptStatus::Failed { error } => Err(format!("{what}: {}", error.message)),
-            remote::ReceiptStatus::Rejected { error } => Err(format!("{what}: {error}")),
-            remote::ReceiptStatus::Cancelled { .. } => Err(format!("{what}: cancelled")),
-        }
-    }
-
-    /// Ask `message` of the session's control socket, as `tilo-control` sends a frame there.
-    fn ask(
-        &self,
-        bin: &Path,
-        message: RemoteActionMessage,
-        what: &str,
-    ) -> Result<RemoteActionMessage, String> {
-        let frame = RemoteActionFrame::new(message)
-            .encode()
-            .map_err(|error| format!("{what}: {error}"))?;
-        let answer = output(
-            self.command(&bin.join("tilo-control"))
-                .arg("raw")
-                .arg(String::from_utf8_lossy(&frame).as_ref()),
-            what,
-        )?;
-        RemoteActionFrame::decode(answer.trim().as_bytes())
-            .map(|frame| frame.message)
-            .map_err(|error| format!("{what}: {error}: {answer}"))
-    }
-
-    /// The tabs showing a window of `app`: each as its group and tab id.
-    fn tabs_of(&self, bin: &Path, app: &str) -> Result<Vec<(u64, u64)>, String> {
-        let listed = output(
-            self.command(&bin.join("tilo-control"))
-                .args(["windows", "--json"]),
-            "listing windows",
-        )?;
-        let windows: Vec<serde_json::Value> =
-            serde_json::from_str(&listed).map_err(|error| format!("listing windows: {error}"))?;
-        Ok(windows
-            .iter()
-            .filter(|window| window["app_id"] == app)
-            .filter_map(|window| Some((window["group"].as_u64()?, window["tab"].as_u64()?)))
-            .collect())
-    }
-
-    /// Whether a window of `app` is open.
-    pub(crate) fn is_open(&self, bin: &Path, app: &str) -> bool {
-        self.tabs_of(bin, app).is_ok_and(|tabs| !tabs.is_empty())
-    }
-
-    /// Start every window of `app` again in its place: each brought to the front, closed, and
-    /// reopened where it was, which relaunches it as a session restore does: on the installed
-    /// package and the runtime it names, with its data.
-    pub(crate) fn restart(&self, bin: &Path, app: &str) -> Result<(), String> {
-        for (group, tab) in self.tabs_of(bin, app)? {
-            self.invoke(
-                bin,
-                shell(&format!("{WINDOW_PREFIX}{tab}"), "close-tab"),
-                "closing",
-            )?;
-            // A window closes when its app has let it go: the tab is reopenable once it is gone.
-            let asked = std::time::Instant::now();
-            while self.tabs_of(bin, app)?.contains(&(group, tab)) {
-                if asked.elapsed() > CLOSE_WAIT {
-                    return Err(format!("{app} did not close its window"));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            self.invoke(bin, shell("desktop:chrome", "reopen-closed"), "reopening")?;
-        }
-        Ok(())
     }
 }
 
@@ -490,18 +326,6 @@ pub(crate) fn status(command: &mut Command, what: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{what} failed ({status})"))
-    }
-}
-
-pub(crate) fn output(command: &mut Command, what: &str) -> Result<String, String> {
-    let output = command
-        .stderr(Stdio::inherit())
-        .output()
-        .map_err(|error| format!("{what}: {error}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    } else {
-        Err(format!("{what} failed ({})", output.status))
     }
 }
 

@@ -13,18 +13,15 @@ Before the first run a note is created and opened, so the detail, the list's sel
 window's state are there to keep; after each run the app must have taken the build in place
 (`runs the new build, with its state`) and the note must still be open.
 
-The runtime loop: `tilolang dev --build-runtime` runs the apps on a tilolang runtime it builds
-from this checkout (through `cargo`, on the build server) and builds again on every change of
-the runtime's sources. Each run edits a line of the runtime's source and waits until the app was
-restarted on the new runtime and presented a frame, end to end.
+The runtime loop belongs to the desktop only: a session runs the tilolang runtime it baked when
+it started, and `tilolang dev --build-runtime` is a window on this desktop.
 
 The session is headless and renders with lavapipe only (`--software`); its state lives in
 OUT/state and the session is stopped at the end. Prints the medians of the runs and writes every
 sample to OUT/loops.json.
 
 With `--session READY` it attaches to a session that is already running (its `--ready` file)
-instead of starting one, and leaves it running. `--app-only` runs the app loop on the built
-runtime without timing the runtime loop; `--skip-runtime` uses the session's own runtime.
+instead of starting one, and leaves it running.
 
 The desktop loop: `--desktop` times `tilolang dev DIR --search DIR`, which runs the app as an
 ordinary window with no session. Its first save (cold) and the warm saves are measured from the
@@ -42,7 +39,7 @@ so the numbers include the compositor's presentation. It runs the checkout's `fa
 the medians also show the loop under load; the load average is printed with every sample.
 
   scripts/headless-examples/tilolang-dev-loops.py [--runs 5] [--session READY]
-      [--app-only | --skip-runtime] [--no-build] [--desktop] [--busy N]
+      [--no-build] [--desktop] [--busy N]
 """
 
 import argparse
@@ -74,8 +71,6 @@ PRESENTED = re.compile(r"tilo-display-frame \{.*\}")
 BUILT = re.compile(r"built in (\d+) ms, (\w+) in (\d+) ms")
 # The line of the runtime's source each runtime run edits: a comment, so the build is a real
 # incremental rebuild of the crate with nothing else changed.
-RUNTIME_SOURCE = REPO / "crates/lang/tilolang-process/src/window/updates.rs"
-RUNTIME_MARK = "// tilolang-dev-loops: runtime run"
 
 
 class Failed(Exception):
@@ -181,36 +176,6 @@ class Tail:
         return data[:cut].decode(errors="replace").split("\n")
 
 
-def tilolang_app_pids(session_pid: int) -> set[int]:
-    """The tilolang windows' processes under the session."""
-    found = set()
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit():
-            continue
-        try:
-            if (os.readlink(proc / "exe").endswith("/tilolang-process")
-                    and b"TILO_PACKAGE_ID=" in (proc / "environ").read_bytes()
-                    and descends(int(proc.name), session_pid)):
-                found.add(int(proc.name))
-        except OSError:
-            continue
-    return found
-
-
-def descends(pid: int, ancestor: int) -> bool:
-    for _ in range(64):
-        if pid == ancestor:
-            return True
-        try:
-            stat = (Path("/proc") / str(pid) / "stat").read_text()
-        except OSError:
-            return False
-        pid = int(stat.rsplit(")", 1)[1].split()[1])
-        if pid <= 1:
-            return False
-    return False
-
-
 def edit_placeholder(source: Path, text: str, package: str = "notes"):
     body = source.read_text()
     new, n = re.subn(PLACEHOLDER[package], f'placeholder: "{text}"', body)
@@ -283,39 +248,6 @@ PROFILE_ARGS = ["--profile", "nested",
                 "--config", "profile.nested.lto=false",
                 "--config", "profile.nested.codegen-units=16",
                 "--config", "profile.nested.incremental=true"]
-
-
-def runtime_loop(session_pid: int, dev_log: Log, shell_log: Log, runs: int) -> list[dict]:
-    original = RUNTIME_SOURCE.read_text()
-    samples = []
-    try:
-        for index in range(runs):
-            old = tilolang_app_pids(session_pid)
-            shell_log.new()
-            started = time.time()
-            RUNTIME_SOURCE.write_text(original.rstrip("\n") + f"\n{RUNTIME_MARK} {index + 1} at {started}\n")
-            # `tilolang dev` builds the runtime, re-bakes and reinstalls it and restarts the app.
-            said = []
-            def built_s():
-                said.append(dev_log.new())
-                found = re.search(r"the runtime built in ([0-9.]+) s", "".join(said))
-                return float(found.group(1)) if found else None
-            build_s = until("the runtime's build", built_s, 1800, 0.25)
-            new = until("the app on the new runtime", lambda: (tilolang_app_pids(session_pid) - old) or None, 120)
-            until("a frame of the restarted app",
-                  lambda: any(PRESENTED.search(line) for line in shell_log.new().splitlines()), 60, 0.25)
-            total = time.time() - started
-            text = "".join(said) + dev_log.new()
-            baked = re.findall(r"baked in (\d+) ms, installed in (\d+) ms", text)
-            samples.append({"total_s": round(total, 2), "build_s": build_s,
-                            "after_build_s": round(total - build_s, 2),
-                            "bake_ms": int(baked[-1][0]) if baked else None,
-                            "bake_install_ms": int(baked[-1][1]) if baked else None,
-                            "pids": sorted(new)})
-            print(f"    runtime loop {index + 1}: {total:.1f} s (build {build_s:.1f} s)", file=sys.stderr)
-    finally:
-        RUNTIME_SOURCE.write_text(original)
-    return samples
 
 
 def start_session(state: Path, out: Path):
@@ -465,8 +397,6 @@ def stop_all(processes: list):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--skip-runtime", action="store_true")
-    parser.add_argument("--app-only", action="store_true")
     parser.add_argument("--session", type=Path)
     parser.add_argument("--out", type=Path, default=REPO / "target/tilolang-dev-loops")
     parser.add_argument("--no-build", action="store_true")
@@ -514,11 +444,9 @@ def main() -> int:
             attached = json.loads(ready.read_text())
             state = Path(attached["state"])
             session = Session(state, attached)
-            session_pid = int((state / "session.pid").read_text())
         else:
             run([SESSION, "--no-build", "--prepare-only", "--apps", "", "--state", state])
             session_proc, session, ready = start_session(state, out)
-            session_pid = session_proc.pid
         if args.desktop:
             print("==> desktop loop", file=sys.stderr)
             result["desktop"] = desktop_loops(session, out, source, args.runs, tool, runtime, busy)
@@ -526,8 +454,6 @@ def main() -> int:
             shell_log = Log(state / "logs/session.log")
             dev_log_path = out / "dev.log"
             dev_argv = [tool, "dev", out / "src/notes", "--session", ready, "--repo", REPO]
-            if not args.skip_runtime:
-                dev_argv += ["--build-runtime"]
             dev = subprocess.Popen([str(a) for a in dev_argv], stdout=subprocess.DEVNULL,
                                    stderr=open(dev_log_path, "w"), start_new_session=True)
             dev_log = Log(dev_log_path)
@@ -549,9 +475,6 @@ def main() -> int:
             shell_log.new()
             print("==> app loop", file=sys.stderr)
             result["app"] = app_loop(dev_log, shell_log, source, args.runs)
-            if not (args.skip_runtime or args.app_only):
-                print("==> runtime loop", file=sys.stderr)
-                result["runtime"] = runtime_loop(session_pid, dev_log, shell_log, args.runs)
     finally:
         stop(dev)
         stop(session_proc)
@@ -570,12 +493,6 @@ def main() -> int:
     if app:
         print(f"app loop, median of {len(app)}: draws {statistics.median(s['draw_ms'] for s in app):.0f} ms, "
               f"presented {statistics.median(s['presented_ms'] for s in app):.0f} ms")
-    rt = result.get("runtime", [])
-    if rt:
-        print(f"runtime loop, median of {len(rt)}: "
-              f"{statistics.median(s['total_s'] for s in rt):.1f} s end to end, "
-              f"build {statistics.median(s['build_s'] for s in rt):.1f} s, "
-              f"after the build {statistics.median(s['after_build_s'] for s in rt):.1f} s")
     return 0
 
 
