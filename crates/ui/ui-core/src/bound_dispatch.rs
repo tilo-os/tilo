@@ -99,8 +99,12 @@ pub(crate) enum BoundActionError {
         address: tilo_actions::ActionAddress,
     },
     /// The resolved action runs through the workspace broker, so the API handed it back before
-    /// anything ran ([`ResourceActionRequest::route`]).
-    Rerouted,
+    /// anything ran ([`ResourceActionRequest::route`]): the arguments it bound to the resource,
+    /// so the host routes the same call instead of resolving it a second time from a tree that
+    /// need not list what its own resolution found.
+    Rerouted {
+        arguments: Option<serde_json::Map<String, serde_json::Value>>,
+    },
     /// The resolved action is another provider's ([`tilo_actions::ActionSpec::run_by`]): nothing ran
     /// here, and the host invokes it at that provider.
     Hosted(HostedInvocation),
@@ -123,7 +127,7 @@ impl BoundActionError {
             Self::Dispatch(BoundDispatchError::ClosedLifetime) => "closed_lifetime",
             Self::Dispatch(_) => "resource_unavailable",
             Self::AmbiguousTarget { .. } => "ambiguous_action_target",
-            Self::Rerouted => "bound_broker_route_required",
+            Self::Rerouted { .. } => "bound_broker_route_required",
             Self::Hosted(_) => "provider_unavailable",
         }
     }
@@ -140,7 +144,7 @@ impl std::fmt::Display for BoundActionError {
                     address.encode()
                 )
             }
-            Self::Rerouted => write!(f, "the action runs through the workspace broker"),
+            Self::Rerouted { .. } => write!(f, "the action runs through the workspace broker"),
             Self::Hosted(hosted) => write!(f, "the action runs at `{}`", hosted.provider),
         }
     }
@@ -2947,7 +2951,7 @@ fn perform_resource_action(
                         return Err(BoundActionError::Hosted(hosted));
                     }
                     if reroute.is_some_and(|reroute| reroute(resource, spec)) {
-                        return Err(BoundActionError::Rerouted);
+                        return Err(BoundActionError::Rerouted { arguments });
                     }
                     let (answer, spent) = binding.permissions.borrow().invocation_verdict(
                         &binding.app_id,
