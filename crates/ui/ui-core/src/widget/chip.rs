@@ -173,12 +173,22 @@ impl PillMetrics {
         (self.height - 8.0).max(self.glyph)
     }
 
-    fn remove_rect(&self, pill: Rect) -> Rect {
-        let x1 = pill.x1 - self.pad_x;
+    /// Where the "×" stands in `pill`: at its inset, or centred in a trailing end `reach` wide
+    /// where its target is that wide ([`Chip::remove_reach`]).
+    fn remove_rect(&self, pill: Rect, reach: f64) -> Rect {
         Rect::from_center_size(
-            Point::new(x1 - self.glyph / 2.0, pill.center().y),
+            Point::new(
+                remove_centre(pill.x1, self.pad_x, self, reach),
+                pill.center().y,
+            ),
             (self.glyph, self.glyph),
         )
+    }
+
+    /// How much room past the label a trailing control takes before the pill's inset: its gap
+    /// and glyph, or a target `reach` wide, less the inset it stands in.
+    fn trailing(&self, inset: f64, reach: f64) -> f64 {
+        (self.gap + self.glyph).max(reach - inset)
     }
 
     fn lead_width(&self, lead: ChipLead) -> f64 {
@@ -195,6 +205,7 @@ impl PillMetrics {
         label: &str,
         lead: ChipLead,
         trailing: bool,
+        reach: f64,
         text: &mut TextRenderer,
     ) -> f64 {
         let lead_w = self.lead_width(lead);
@@ -208,9 +219,19 @@ impl PillMetrics {
             width += lead_w + self.gap;
         }
         if trailing {
-            width += self.gap + self.glyph;
+            width += self.trailing(self.pad_x, reach);
         }
         width.ceil().max(self.height)
+    }
+}
+
+/// The middle of a trailing "×" in a pill ending at `x1`: its glyph at the `inset`, or the middle
+/// of a trailing end `reach` wide where that is wider.
+fn remove_centre(x1: f64, inset: f64, metrics: &PillMetrics, reach: f64) -> f64 {
+    if reach - inset > metrics.gap + metrics.glyph {
+        x1 - reach / 2.0
+    } else {
+        x1 - inset - metrics.glyph / 2.0
     }
 }
 
@@ -307,14 +328,14 @@ impl<'a> ChipFace<'a> {
         text: &mut TextRenderer,
         theme: &Theme,
     ) -> f64 {
-        PillMetrics::of(theme, TextRole::Label).intrinsic_width(label, lead, removable, text)
+        PillMetrics::of(theme, TextRole::Label).intrinsic_width(label, lead, removable, 0.0, text)
     }
 
     pub fn remove_rect(&self, theme: &Theme) -> Rect {
         if !self.removable {
             return Rect::ZERO;
         }
-        PillMetrics::of(theme, TextRole::Label).remove_rect(self.rect)
+        PillMetrics::of(theme, TextRole::Label).remove_rect(self.rect, 0.0)
     }
 
     pub fn paint(
@@ -328,6 +349,7 @@ impl<'a> ChipFace<'a> {
             self.label,
             self.lead,
             self.removable || self.menu,
+            0.0,
             text_renderer,
         );
         paint_pill(
@@ -367,6 +389,9 @@ pub(crate) struct PillPaint<'a> {
     pub selecting: Option<f32>,
     pub hovered: bool,
     pub remove: Option<bool>,
+    /// How wide the "×"'s target is at the pill's trailing end, where that is wider than its
+    /// glyph and inset ([`Chip::remove_reach`]): the glyph stands in its middle.
+    pub remove_reach: f64,
     pub menu: bool,
     pub bare: bool,
     pub opacity: f32,
@@ -390,6 +415,7 @@ impl<'a> PillPaint<'a> {
             selecting: None,
             hovered: false,
             remove: None,
+            remove_reach: 0.0,
             menu: false,
             bare: false,
             opacity: 1.0,
@@ -472,7 +498,9 @@ pub(crate) fn paint_pill(
         metrics.pad_x.min(rect.width() / 4.0)
     };
     let lead_w = metrics.lead_width(pill.lead);
-    let trailing = if pill.remove.is_some() || pill.menu {
+    let trailing = if pill.remove.is_some() {
+        metrics.trailing(inset, pill.remove_reach)
+    } else if pill.menu {
         metrics.gap + metrics.glyph
     } else {
         0.0
@@ -580,9 +608,11 @@ pub(crate) fn paint_pill(
         );
     }
     if let Some(hovered) = pill.remove {
-        let x1 = rect.x1 - inset;
         let glyph = Rect::from_center_size(
-            Point::new(x1 - metrics.glyph / 2.0, cy),
+            Point::new(
+                remove_centre(rect.x1, inset, &metrics, pill.remove_reach),
+                cy,
+            ),
             (metrics.glyph, metrics.glyph),
         );
         let ink = if hovered { colors.ink } else { colors.lead };
@@ -840,7 +870,25 @@ impl Chip {
         if self.x_rect.is_zero_area() {
             return self.x_rect;
         }
-        Self::grown_to_target(self.x_rect, self.pointer_target())
+        let reach = self.remove_reach();
+        let target = if reach > 0.0 {
+            let pill = self.pill_rect();
+            Rect::new(pill.x1 - reach, self.x_rect.y0, pill.x1, self.x_rect.y1)
+        } else {
+            self.x_rect
+        };
+        Self::grown_to_target(target, self.pointer_target())
+    }
+
+    /// How wide the "×"'s target is at the chip's trailing end: on a coarse pointer, a finger's
+    /// width, the pill growing by what its glyph and inset lack of it so the target never reaches
+    /// under the label; with a fine pointer, nothing past the glyph (vertical growth alone).
+    fn remove_reach(&self) -> f64 {
+        if self.removable && !self.interaction.supports_hover() {
+            self.pointer_target()
+        } else {
+            0.0
+        }
     }
 
     fn grown_to_target(rect: Rect, target: f64) -> Rect {
@@ -1006,6 +1054,7 @@ impl Chip {
             &self.label,
             self.lead,
             self.removable || self.menu,
+            self.remove_reach(),
             text_renderer,
         );
         taffy::Size {
@@ -1019,7 +1068,8 @@ impl Chip {
     /// than at the window's origin, where a control nothing placed stands.
     fn place_remove(&mut self) {
         self.x_rect = if self.removable && self.rect.width() > 0.0 {
-            self.metrics.remove_rect(self.pill_rect())
+            self.metrics
+                .remove_rect(self.pill_rect(), self.remove_reach())
         } else {
             Rect::ZERO
         };
@@ -1191,6 +1241,7 @@ impl Widget for Chip {
                 selecting,
                 hovered: shown.hovered || shown.pressed,
                 remove: self.removable.then_some(remove_hovered),
+                remove_reach: self.remove_reach(),
                 menu: self.menu,
                 ..PillPaint::new(pill, &self.label, self.style)
             },
@@ -1334,7 +1385,7 @@ impl Widget for Chip {
                 .with_key(REMOVE_KEY)
                 .with_action_target(format!("{}/remove", self.activation.id()))
                 .with_name(format!("{} {name}", crate::i18n::widget_text("Remove")))
-                .with_bounds(self.x_rect),
+                .with_bounds(self.remove_hit_rect()),
         ]))
     }
 }
@@ -2002,6 +2053,7 @@ mod activation_tests {
                 "Sort",
                 ChipLead::None,
                 true,
+                0.0,
                 &mut text,
             );
             assert!(menu > plain);
