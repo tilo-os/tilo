@@ -842,9 +842,26 @@ impl Runtime {
         action: impl Into<ActionRef>,
         from: Option<&crate::value::ResourceRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
+        self.invoke_admitted_through(actor, None, action, from)
+    }
+
+    /// [`Runtime::invoke_admitted`] of a call `actor` made through `app`'s process: the dispatch
+    /// admitted the connection as a process the device started for that app, and the action reads
+    /// it as `invoker.app()`. `None` is a call made through no app's process.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::invoke_action`].
+    pub fn invoke_admitted_through(
+        &self,
+        actor: &Actor,
+        app: Option<&str>,
+        action: impl Into<ActionRef>,
+        from: Option<&crate::value::ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
         let action = action.into();
         let from = from.or(action.from.as_ref());
-        self.core.invoke_admitted(actor, &action, from)
+        self.core.invoke_admitted((actor, app), &action, from)
     }
 
     /// The arguments of an invocation of `action` with those left out (`None`) given their

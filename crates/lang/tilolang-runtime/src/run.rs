@@ -204,6 +204,10 @@ pub struct Journal {
     pub action: Option<ActionId>,
     pub args: Vec<Value>,
     pub invoker: Actor,
+    /// The app whose process the invoker called through ([`crate::exec::ExecCtx::app`]), kept
+    /// across a suspension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
     pub chain: Vec<ModuleHash>,
     /// The resource the run was invoked from, when it was made from one: what the resources its
     /// actions create were made from, kept across a suspension.

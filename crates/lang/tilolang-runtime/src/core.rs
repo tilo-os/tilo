@@ -21,7 +21,7 @@ use crate::value::Value;
 
 use Imp::{
     Abort, ActCall, ActChoose, ActChooseFolder, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine,
-    ActSave, ActSet, ActThen, ActUndo, Actions, ActorEq, ActorId, ActorKind, ActorName, ActorRole,
+    ActSave, ActSet, ActThen, ActUndo, Actions, ActorApp, ActorEq, ActorId, ActorKind, ActorName, ActorRole,
     AgentNamed, ArgAt, Base64Decode, BytesLength, CallFn, CallMembers, CanvasExport, CanvasGrade,
     CanvasLook, CanvasOpen, CanvasSave, CanvasSvg, CanvasSvgImport, CanvasWand, ChangeView,
     ClipboardCopyImage, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText, CollCount,
@@ -667,7 +667,8 @@ impl Core {
             | Delivery | Reach | MetaOf | Versions | Links | RunChanges | Unseen | FirstUnseen
             | SeenBy | Mentions | Steps | VersionEnd | FieldChanged | Phrase | Word
             | EntryParts => self.platform_import(imp, a),
-            WorkspaceMembers | Members | MayRead | Speakers | ActorId | ActorKind | ActorRole => {
+            WorkspaceMembers | Members | MayRead | Speakers | ActorId | ActorKind | ActorRole
+            | ActorApp => {
                 self.members_import(imp, a)
             }
             EditField => self.edit_field(a),

@@ -220,6 +220,7 @@ imports! {
     InvocationPop = "invocation_pop" ([] -> []);
     ActorKind = "actor_kind" ([H] -> [I64]);
     ActorRole = "actor_role" ([H] -> [H]);
+    ActorApp = "actor_app" ([H] -> [H]);
 
     EnumNew = "enum_new" ([H, H] -> [H]);
     EnumSetI = "enum_set_i" ([H, H, I64] -> []);

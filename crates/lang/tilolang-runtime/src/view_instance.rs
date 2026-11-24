@@ -1374,6 +1374,7 @@ impl ViewInstance {
         let value = &value;
         let ctx = ExecCtx {
             invoker: self.live.viewer.clone(),
+            app: None,
             chain: vec![view_module.clone()],
             approved_by: None,
             suggested_by: None,

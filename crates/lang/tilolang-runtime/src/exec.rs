@@ -48,6 +48,9 @@ const MAX_CALL_DEPTH: usize = 32;
 #[derive(Clone, Debug)]
 pub struct ExecCtx {
     pub invoker: Actor,
+    /// The app whose process the invoker calls through, when the action API admitted the call from
+    /// a process the device started for that app: what `invoker.app()` reads.
+    pub app: Option<String>,
     pub chain: Vec<ModuleHash>,
     pub approved_by: Option<Actor>,
     /// The run this invocation already is, when something every replica reads names it: the
@@ -78,6 +81,7 @@ impl ExecCtx {
             action: Some(aref.action.clone()),
             args: aref.args.clone(),
             invoker: self.invoker.clone(),
+            app: self.app.clone(),
             chain: self.chain.clone(),
             from: self.from.clone(),
             at: self.at.clone(),
@@ -672,6 +676,7 @@ impl Core {
                 action: Some(initial.id.clone()),
                 args: vec![Value::resource(&made)],
                 invoker: app.clone(),
+                app: None,
                 chain: Vec::new(),
                 from: None,
                 at: None,
@@ -923,6 +928,7 @@ impl Core {
     fn invoke_many(
         &self,
         invoker: &Actor,
+        app: Option<&str>,
         aref: &ActionRef,
         from: Option<&ResourceRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
@@ -969,6 +975,7 @@ impl Core {
         push_chain(&mut chain, first.author.as_ref());
         let ctx = ExecCtx {
             invoker: invoker.clone(),
+            app: app.map(str::to_owned),
             chain,
             approved_by: None,
             identity: None,
@@ -1134,7 +1141,7 @@ impl Core {
         aref: &ActionRef,
         gesture: Option<&str>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as_in(None, invoker, aref, aref.from.as_ref(), gesture, false)
+        self.invoke_direct_as_in(None, (invoker, None), aref, aref.from.as_ref(), gesture, false)
     }
 
     /// [`Core::invoke_direct`] as the run `identity` when every replica can name it the same
@@ -1152,7 +1159,7 @@ impl Core {
         aref: &ActionRef,
         from: Option<&ResourceRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as_in(identity, invoker, aref, from, None, false)
+        self.invoke_direct_as_in(identity, (invoker, None), aref, from, None, false)
     }
 
     /// [`Core::invoke_direct`] of a call the dispatch already admitted for `invoker`: it asked
@@ -1166,18 +1173,18 @@ impl Core {
     /// As [`Core::invoke_direct`].
     pub(crate) fn invoke_admitted(
         &self,
-        invoker: &Actor,
+        (invoker, app): (&Actor, Option<&str>),
         aref: &ActionRef,
         from: Option<&ResourceRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as_in(None, invoker, aref, from, None, true)
+        self.invoke_direct_as_in(None, (invoker, app), aref, from, None, true)
     }
 
     /// [`Core::invoke_direct_as`] as one part of the person's act `gesture`.
     fn invoke_direct_as_in(
         &self,
         identity: Option<&RunId>,
-        invoker: &Actor,
+        (invoker, app): (&Actor, Option<&str>),
         aref: &ActionRef,
         from: Option<&ResourceRef>,
         gesture: Option<&str>,
@@ -1185,7 +1192,7 @@ impl Core {
     ) -> Result<InvokeOutcome, RuntimeError> {
         // One action over many items is one change: its references are the change's own.
         if aref.action == MANY_ACTION {
-            return self.invoke_many(invoker, aref, from);
+            return self.invoke_many(invoker, app, aref, from);
         }
         // What the invoker left out is computed now, on what they see, and recorded.
         let aref = &self.completed(aref)?;
@@ -1204,6 +1211,7 @@ impl Core {
         push_chain(&mut chain, aref.author.as_ref());
         let ctx = ExecCtx {
             invoker: invoker.clone(),
+            app: app.map(str::to_owned),
             chain,
             approved_by: None,
             suggested_by: None,
@@ -1404,6 +1412,7 @@ impl Core {
     ) -> Result<RunOutcome, RuntimeError> {
         let ctx = ExecCtx {
             invoker: invoker.clone(),
+            app: None,
             chain,
             approved_by: None,
             suggested_by: None,
@@ -1609,6 +1618,7 @@ impl Core {
     fn ctx_of(run: &RunId, journal: &Journal) -> ExecCtx {
         ExecCtx {
             invoker: journal.invoker.clone(),
+            app: journal.app.clone(),
             chain: journal.chain.clone(),
             approved_by: journal.approved_by.clone(),
             suggested_by: journal.suggested_by.clone(),
@@ -1763,6 +1773,13 @@ impl Core {
             // A scenario's `invoke(..., by:)` names who runs the call: the callee is decided and
             // recorded as that person, not as the run's own invoker.
             invoker: step.who.clone().unwrap_or_else(|| journal.invoker.clone()),
+            // The app the run's own invoker calls through; a person a scenario names calls
+            // through none.
+            app: if step.who.is_some() {
+                None
+            } else {
+                journal.app.clone()
+            },
             chain,
             approved_by: None,
             suggested_by: journal.suggested_by.clone(),

@@ -211,6 +211,57 @@ tilolang package --platform macos --arch aarch64
 On other systems an app ships as one executable with the toolkit linked in.
 [Android](android.md) covers the Android build.
 
+## A program in JavaScript or Python
+
+A package can carry a script that a runtime's interpreter runs, so that an
+existing JavaScript or Python program becomes an app:
+
+```toml
+[package]
+optional-runtimes = ["bun/1+bun"]          # or "python/3+python"
+
+[entrypoint]
+bin = "bin/bun"                            # the interpreter, in the runtime
+runtime = "bun/1+bun"
+script = "main.js"                         # a file of this package
+
+[sandbox.net]
+mode = "allowlist"
+hosts = ["discord.com", "gateway.discord.gg"]
+
+[sandbox.services]
+native = "required@40"
+```
+
+The launcher starts it the way it starts any app: in the app's sandbox, with
+the package mounted at `$TILO_APP_MODULE` and the script as the interpreter's
+first argument. The network is what `[sandbox.net]` declares and the workspace
+granted, reached through the proxy that `HTTP_PROXY`, `HTTPS_PROXY` and
+`ALL_PROXY` name. Nothing else is reachable.
+
+`$TILO_SVC_NATIVE_FD` is a socket to the device daemon that the launcher
+already connected. It carries action frames, one JSON line each, and the daemon
+admits every call on it as this app in `$TILO_WORKSPACE_ID`. A tilolang action
+reads the app through `invoker.app()`, so it can admit one app's program and
+refuse everything else:
+
+```
+fn the_bridge(who: Actor) -> Bool {
+    (who.app() ?? "") == "so.tilo.discord"
+}
+
+action relay(b: Bridge, text: Text) {
+    require the_bridge(invoker) "Only the Discord bridge relays"
+    ...
+}
+```
+
+The interpreters come as runtime packages, never from the host. Build one
+with `tools/apps/pack-runtime-package.sh` from a signed bundle holding the
+interpreter (`tilo-runtime-bundle build --binaries-only --include-bin`): bun's release binary for
+`bun/<version>+bun`, a relocatable CPython build that carries its own `lib/`
+for `python/<version>+python`.
+
 ## Publish
 
 ```sh

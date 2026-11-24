@@ -3980,6 +3980,11 @@ impl Checker<'_> {
             (Ty::Actor, "role") if args.is_empty() => {
                 Ex::host(Imp::ActorRole, vec![r], Ty::Option(Box::new(Ty::Text)))
             }
+            // The app whose process the invoker calls through (`invoker.app()`), as the action API
+            // admitted it: what an action admits one app's process by.
+            (Ty::Actor, "app") if args.is_empty() => {
+                Ex::host(Imp::ActorApp, vec![r], Ty::Option(Box::new(Ty::Text)))
+            }
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
             // `as.many()`: an action that applies each of `as` to its own item, all at once: one
             // change, one undo.

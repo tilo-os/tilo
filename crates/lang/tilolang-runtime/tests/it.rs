@@ -115,6 +115,8 @@ mod held_records;
 mod image;
 #[path = "interpolation.rs"]
 mod interpolation;
+#[path = "invoker_app.rs"]
+mod invoker_app;
 #[path = "json.rs"]
 mod json;
 #[path = "list.rs"]

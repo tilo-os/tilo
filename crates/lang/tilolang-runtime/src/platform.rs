@@ -1428,6 +1428,23 @@ impl Core {
         })
     }
 
+    /// The app whose process `who` calls the running action through: the app the action API
+    /// admitted the call from, while `who` is the action's invoker. An app acting by itself is its
+    /// own. `None` for anyone else, and for a person a scenario names.
+    pub(crate) fn app_of_invoker(&self, who: &Actor) -> Option<String> {
+        if let Some(app) = who.app() {
+            return Some(app.as_str().to_owned());
+        }
+        let frames = self.frames.borrow();
+        let frame = frames.deciding()?;
+        match &frame.kind {
+            FrameKind::Action(state) if state.invocations.is_empty() && state.invoker == *who => {
+                state.run.journal.app.clone()
+            }
+            _ => None,
+        }
+    }
+
     /// `person`'s seen mark of `resource`, as the runtime holds it.
     pub(crate) fn seen_mark(&self, person: &Actor, resource: &str) -> Option<SeenMark> {
         let key = crate::seen::seen_key(person, resource);

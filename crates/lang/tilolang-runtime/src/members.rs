@@ -1,5 +1,5 @@
 //! Who is in the workspace: `workspace.members`, `members(r)`, and what an actor is
-//! (`p.kind()`, `p.role()`).
+//! (`p.kind()`, `p.role()`, `p.app()`).
 //!
 //! The members are the platform's: the host reads them from the workspace's membership (its
 //! members, their roles and grants) and gives them to the runtime whenever they change
@@ -385,6 +385,14 @@ impl Core {
             Imp::ActorId => {
                 let who = self.actor_arg(a.h(0)?)?;
                 self.ret_h(Value::Text(crate::ids::actor_text(&who)))
+            }
+            // The app whose process the invoker calls through, as the action API admitted it.
+            Imp::ActorApp => {
+                let who = self.actor_arg(a.h(0)?)?;
+                self.ret_h(
+                    self.app_of_invoker(&who)
+                        .map_or_else(Value::none, |app| Value::some(Value::Text(app))),
+                )
             }
             Imp::ActorRole => {
                 let who = self.actor_arg(a.h(0)?)?;

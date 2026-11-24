@@ -67,6 +67,9 @@ pub struct Caller {
     pub agent: bool,
     /// The person an agent acts for.
     pub on_behalf_of: Option<String>,
+    /// The app whose process the call came through, as the API admitted the connection: what the
+    /// action reads as `invoker.app()`.
+    pub app: Option<String>,
 }
 
 impl Caller {
@@ -92,6 +95,7 @@ impl From<&tilo_actions::ActionInvoker> for Caller {
             actor: invoker.acting.by.clone(),
             agent: !invoker.acting.is_person(),
             on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
+            app: invoker.acting.app().map(|app| app.as_str().to_owned()),
         }
     }
 }

@@ -862,7 +862,12 @@ impl HostInner {
                 // first where it had to: the run does not ask them again.
                 let outcome = self
                     .runtime
-                    .invoke_admitted(&invoker, (request.action_id, args), request.from)
+                    .invoke_admitted_through(
+                        &invoker,
+                        request.caller.and_then(|caller| caller.app.as_deref()),
+                        (request.action_id, args),
+                        request.from,
+                    )
                     .map_err(|error| error.to_string())?;
                 self.returned_by(request.action_id, &outcome);
                 match outcome {

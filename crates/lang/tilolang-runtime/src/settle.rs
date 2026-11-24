@@ -581,6 +581,7 @@ impl Core {
         let (invoker, suggested_by) = (approver.clone(), Some(rec.author.clone()));
         let ctx = ExecCtx {
             invoker,
+            app: None,
             chain: vec![identity.clone()],
             approved_by: Some(approver.clone()),
             suggested_by,
