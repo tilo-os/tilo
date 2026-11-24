@@ -511,7 +511,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("api.sock");
         let _ = std::fs::remove_file(&socket);
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let listener = tilo_files::native::socket::tokio::listener(
+            tilo_files::native::socket::bind(&socket).unwrap(),
+        )
+        .unwrap();
         tokio::spawn(direct.serve(listener));
 
         let calls = crate::calls::Calls::desktop(socket);
@@ -761,11 +764,16 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("api.sock");
         let _ = std::fs::remove_file(&socket);
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let listener = tilo_files::native::socket::tokio::listener(
+            tilo_files::native::socket::bind(&socket).unwrap(),
+        )
+        .unwrap();
         tokio::spawn(direct.serve(listener));
 
         // No `Authorization` header, as `Client::session` sends none.
-        let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        let stream = tilo_files::native::socket::tokio::connect(&socket)
+            .await
+            .unwrap();
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
             .unwrap();

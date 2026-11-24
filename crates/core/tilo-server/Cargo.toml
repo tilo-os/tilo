@@ -263,11 +263,14 @@ getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
+# Linux VMs are Linux's alone: their host sandboxes with Landlock and seccomp.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# A host selling the workspaces' VMs, which keeps what each program it starts was given.
+ush = { path = "../../vm/ush", features = ["quic", "test-host"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # What an app reaches the server's content store with, as a launched app does.
 tilo-fs-client = { path = "../tilo-fs-client" }
-# A host selling the workspaces' VMs, which keeps what each program it starts was given.
-ush = { path = "../../vm/ush", features = ["quic", "test-host"] }
 # The live session a workspace's session publishes on, as the hosted Browser
 # tests open one to prove an environment whose session is on it is here.
 tilo-live = { path = "../tilo-live", features = ["relay", "iroh"] }
