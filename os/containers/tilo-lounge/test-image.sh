@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The Lounge image, before it is published: what the deployment and the
 # entrypoint rely on — the user it runs as, its entrypoint, the ports it
-# serves, the programs starting inside the image, the bot programs it installs,
-# and the product font catalog its app workers lay text out from — plus the
+# serves, the programs starting inside the image, and the product font
+# catalog its app workers lay text out from — plus the
 # revision label, which names the build the deployment pins.
 #
 # usage: test-image.sh IMAGE
@@ -84,10 +84,9 @@ for program in tilo-runtime discord-worker; do
   [[ $(head -c 4 "$root/usr/local/bin/$program" | od -An -c | tr -d ' ') == '177ELF' ]] \
     || fail "/usr/local/bin/$program is not a program"
 done
-[[ -f $root/usr/local/share/tilo/bots/discord-bridge.json ]] || fail "the bridge's bot program is missing"
 # The catalog must be this build's: a container has no system fonts, so the
-# bridge's app components would lay text out in whatever is left.
+# app components would lay text out in whatever is left.
 cmp -s "$root/usr/share/fonts/tilo/manifest.toml" "$repo_root/crates/sdk/ui-core/assets/fonts/manifest.toml" \
   || fail "the installed font catalog is not the one this build pins"
 
-echo "ok: the Lounge image runs as 10001, exposes 8443/tcp and 9782/udp, and carries the programs, the bot program and the catalog of $revision"
+echo "ok: the Lounge image runs as 10001, exposes 8443/tcp and 9782/udp, and carries the programs and the catalog of $revision"

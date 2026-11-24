@@ -267,11 +267,9 @@ die() { printf 'tilo-sh: %s\n' "$*" >&2; exit 1; }
 
 base=${TILO_SH_PORT_BASE:-24100}
 server_port=$base               # Caddy: the server's public origin (eu1.tilo.sh)
-plain_port=$((base + 1))       # the server's origin-forwarding listener (9780)
 packet_port=$((base + 2))      # the relay's packet relay (8443)
-routes_port=$((base + 3))      # the server's own routes (8790): /mode, /avatars, /discord/callback
 iroh_port=$((base + 4))        # the server's iroh endpoint, UDP (7704)
-server_web_port=$((base + 5))   # the server's own dev TLS listener, which nothing here uses
+server_web_port=$((base + 5))   # the daemon's own HTTPS listener: its pages, /mode and install
 live_port=$((base + 6))        # Caddy: the live session's origin (live-eu1.tilo.sh)
 caddy_http_port=$((base + 7))  # Caddy's HTTP port, which serves nothing here
 link_port=$((base + 8))        # the server's WebTransport listener, UDP: how pages reach it
@@ -433,7 +431,7 @@ use_mode "$(cat "$state/mode" 2>/dev/null || echo native)"
 # server, here as a forward), by the kind of socket: the ones a base reserves,
 # whether or not this bring-up uses each (the fake Discord's are forwarded).
 stack_tcp_ports() {
-  printf '%s\n' "$server_port" "$plain_port" "$routes_port" "$server_web_port" \
+  printf '%s\n' "$server_port" "$server_web_port" \
     "$live_port" "$caddy_http_port" "$api_port" "$site_port" "$web_port" \
     "$releases_port" "$mail_port" "$mail_stand_in_imap_port" \
     "$mail_stand_in_smtp_port" "$discord_rest_port" "$discord_gateway_port" \
@@ -789,7 +787,7 @@ web_env() {
     "TILO_WEB_HOME_ENTRY=$server_origin/peer/v1/directory/$workspace/" \
     "TILO_WEB_DIRECTORY=$server_origin/peer/v1/directory" \
     "TILO_WEB_API=$api_origin" \
-    "TILO_WEB_SERVER=http://127.0.0.1:$plain_port" \
+    "TILO_WEB_SERVER=http://127.0.0.1:$server_port" \
     "TILO_RELEASES_ORIGIN=http://127.0.0.1:$releases_port/tilo-cli"
 }
 
@@ -1111,8 +1109,8 @@ owner_daemon() {
 }
 
 # The user public key of the stack's own person, made the first time: the
-# Lounge's first owner, which the server is started with (TILO_WORKSPACES_OWNERS),
-# as production's deployment names its own.
+# Lounge's first owner, whose device prints the ticket the server joins with, as
+# production's deployment joins an owner's devices.
 stack_person() {
   local made
   if [[ ! -s $state/owner/key ]]; then
@@ -1932,7 +1930,7 @@ start_native_tls() {
   { private_env tls "$(dirname "$caddy")"
     printf '%s\n' "XDG_DATA_HOME=$state/tls" "XDG_CONFIG_HOME=$state/tls/config" \
       "TILO_SH_SERVER_PORT=$server_port" "TILO_SH_LIVE_PORT=$live_port" "TILO_SH_PACKET_PORT=$packet_port" \
-      "TILO_SH_ROUTES_PORT=$routes_port" "TILO_SH_PLAIN_PORT=$plain_port" "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
+      "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
       "TILO_SH_SITE_PORT=$site_port" "TILO_SH_WEB_PORT=$web_port" \
       "TILO_SH_SERVER_WEB_PORT=$server_web_port"
   } > "$runs/tls.env"
@@ -2379,7 +2377,6 @@ up_images() {
     --env XDG_DATA_HOME=/data --env XDG_CONFIG_HOME=/config \
     --env "TILO_SH_SERVER_PORT=$server_port" \
     --env "TILO_SH_LIVE_PORT=$live_port" --env "TILO_SH_PACKET_PORT=$packet_port" \
-    --env "TILO_SH_ROUTES_PORT=$routes_port" --env "TILO_SH_PLAIN_PORT=$plain_port" \
     --env "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
     --env "TILO_SH_SITE_PORT=$site_port" --env "TILO_SH_WEB_PORT=$web_port" \
     -v "$state/tls/Caddyfile:/etc/caddy/Caddyfile:ro,Z" \
@@ -2420,13 +2417,14 @@ up_images() {
   wait_for 'API server (its health check)' "http://127.0.0.1:$api_port/health" 60
 
   # The web entry: its image listens on 8080 alone, so it gets its own
-  # network, published on the port tls serves the site from, from which it reaches the server's
-  # plain listener (the pages it renders) and the releases on this machine's loopback.
+  # network, published on the port tls serves the site from, from which it
+  # reaches the server's origin (the pages it renders) and the releases on this
+  # machine's loopback.
   start_releases
   local web_args=() info
   info=$(host_info)
   mapfile -d '' web_args < <(web_env "$workspace" "$info" | env_args)
-  start web --network "pasta:-T,$plain_port,-T,$releases_port" -p "127.0.0.1:$web_port:8080" \
+  start web --network "pasta:-T,$server_port,-T,$releases_port" -p "127.0.0.1:$web_port:8080" \
     --read-only --tmpfs /tmp --user 10001 \
     "${web_args[@]}" "$web"
   wait_for 'web (its health check)' "$site_health" 60 -H "$site_host_header"
@@ -2545,16 +2543,19 @@ host_keeps_no_vault() {
 status() {
   local svc url
   printf '%-9s %-8s %s\n' service state address
-  for svc in "tls|$server_origin/mode" "server|http://127.0.0.1:$routes_port/mode" \
+  for svc in "tls|$server_origin/mode" "server|https://127.0.0.1:$server_web_port/mode" \
     "api|http://127.0.0.1:$api_port/health" "web|$site_health"; do
     local name=${svc%%|*} probe=${svc#*|} shown answer args=()
     case $name in
       tls) shown="$server_origin (server), $live_origin (live session)" ;;
-      server) shown="the Lounge, behind tls" ;;
+      server) shown="the Lounge itself, on its own listener" ;;
       api) shown="$api_origin (MCP: $api_origin/mcp)" ;;
       web) shown="$site_origin" ;;
     esac
-    [[ $name != web ]] || args=(-H "$site_host_header")
+    case $name in
+      server) args=(-k) ;;
+      web) args=(-H "$site_host_header") ;;
+    esac
     if running "$name" && curl -fsS --max-time 2 "${args[@]}" "$probe" >/dev/null 2>&1; then
       answer=up
     elif running "$name"; then answer=starting; else answer=down; fi
@@ -2636,7 +2637,7 @@ supervisor_pid() {
 # when one runs, and the fake model providers, whose sign-in page a person's
 # browser opens.
 forward_tcp() {
-  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$discord_rest_port,$discord_gateway_port,$discord_control_port,$models_port,$control_port"
+  printf '%s\n' "$server_port,$live_port,$server_web_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$discord_rest_port,$discord_gateway_port,$discord_control_port,$models_port,$control_port"
 }
 
 # The page reaches the server over QUIC (WebTransport, then iroh), which ssh
@@ -2858,12 +2859,12 @@ wait_remote_up() {
 status_remote() {
   local svc name probe shown answer args pid
   printf '%-9s %-8s %s\n' service state address
-  for svc in "tls|$server_origin/mode" "server|http://127.0.0.1:$routes_port/mode" \
+  for svc in "tls|$server_origin/mode" "server|https://127.0.0.1:$server_web_port/mode" \
     "api|$api_origin/health" "web|$site_health"; do
     name=${svc%%|*} probe=${svc#*|} args=()
     case $name in
       tls) shown="$server_origin (server), $live_origin (live origin)" ;;
-      server) shown="the Lounge, behind tls" ;;
+      server) shown="the Lounge itself, on its own listener"; args=(-k) ;;
       api) shown="$api_origin (MCP: $api_origin/mcp)" ;;
       web) shown="$site_origin"; args=(-H "$site_host_header") ;;
     esac

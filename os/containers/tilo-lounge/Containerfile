@@ -1,15 +1,14 @@
 # syntax=docker/dockerfile:1.7
 # The Lounge's host: the device's one daemon, keeping the public workspace
-# placed on it, with the Discord bridge's worker beside it. Nothing here
+# placed on it, with the Discord connector's worker beside it. Nothing here
 # compiles: the programs are built by tools/ci/publish/lounge-binaries.sh and
-# laid out with the bot programs and the product font catalog by
-# lounge-context.sh.
+# laid out with the product font catalog by lounge-context.sh.
 # Pinned on registry.fedoraproject.org, which keeps superseded digests;
 # quay.io prunes them, so a digest pinned there stops resolving.
 FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d37e4ca8d5f0ee0dd36ace04294f23b72bf9bd3475 AS runtime
 ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="Tilo Lounge" \
-      org.opencontainers.image.description="One always-on public Tilo workspace, hosted with its Discord bridge" \
+      org.opencontainers.image.description="One always-on public Tilo workspace, hosted with its Discord connector" \
       org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
 # This stage installs from live Fedora repositories, not the frozen snapshot
@@ -34,10 +33,8 @@ COPY bin/ /usr/local/bin/
 # into its content store at start: history written by an older version than this
 # build runs is decided with the surface it was written with.
 COPY surfaces/ /usr/local/share/tilo/surfaces/
-# Bot programs a workspace installs by path and the app components they run lay
-# text out from a container, which has no system fonts: the product catalog sits
-# where a Tilo binary looks for it.
-COPY bots/ /usr/local/share/tilo/bots/
+# The app components lay text out from a container, which has no system fonts:
+# the product catalog sits where a Tilo binary looks for it.
 COPY fonts/ /usr/share/fonts/tilo/
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/tilo-lounge
 USER 10001
