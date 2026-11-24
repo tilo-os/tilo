@@ -26,6 +26,12 @@ pub struct Extension {
     pub description: String,
     /// What it asks for in its manifest, as its own words (`storage`, `tabs`, a site pattern).
     pub permissions: Vec<String>,
+    /// Its keyword in the address (its manifest's `omnibox.keyword`), when it has one a person
+    /// can type: one word, without spaces.
+    pub keyword: Option<String>,
+    /// Whether it may show a page beside the page the person browses (its `sidePanel`
+    /// permission).
+    pub side_panel: bool,
     /// Where it stands on this device.
     pub path: PathBuf,
 }
@@ -628,9 +634,29 @@ fn parse_manifest(
         version,
         manifest_version,
         description,
+        side_panel: permissions.iter().any(|permission| permission == "sidePanel"),
+        keyword: keyword_of(&value),
         permissions,
         path: PathBuf::new(),
     })
+}
+
+/// The longest keyword a manifest gives, in characters.
+const MAX_KEYWORD_CHARS: usize = 64;
+
+/// The manifest's `omnibox.keyword`, when it is one a person can type: one word, without
+/// spaces, as Chrome takes it.
+fn keyword_of(manifest: &serde_json::Value) -> Option<String> {
+    let keyword = manifest
+        .get("omnibox")?
+        .get("keyword")?
+        .as_str()?
+        .trim();
+    (!keyword.is_empty()
+        && keyword.chars().count() <= MAX_KEYWORD_CHARS
+        && !keyword.chars().any(char::is_whitespace)
+        && !keyword.chars().any(char::is_control))
+    .then(|| keyword.to_owned())
 }
 
 fn bounded(value: &str, field: &str, most: usize) -> Result<String, ExtensionError> {

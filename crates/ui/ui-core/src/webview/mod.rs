@@ -2,9 +2,12 @@
 //! itself — its processes, page protocol and commands — is the `tilo-webview` crate.
 //!
 //! A `ui.WebView` node names the page it shows, and the window that draws it holds the engine:
-//! one page per window, so the engine belongs to the window and not to the app's code. Before
-//! it builds the nodes of a view, a window hands the engine it holds to [`set_window_engine`],
-//! and every `ui.WebView` it builds from those nodes shows that page.
+//! the page belongs to the window and not to the app's code. Before it builds the nodes of a
+//! view, a window hands the engine it holds to [`set_window_engine`], and every `ui.WebView` it
+//! builds from those nodes shows that page. A window that shows a second page beside or over
+//! the one the person browsed (an extension's side panel, a page it asked them to sign in on)
+//! holds that engine too, and a node marked `surface: "panel"` shows it: the window says which
+//! with [`set_window_surface`].
 pub mod paint;
 
 use std::cell::RefCell;
@@ -23,6 +26,21 @@ thread_local! {
     /// The page the window drawing now hands to the `ui.WebView` node it builds, beside the
     /// engine: the view reads its events from this session, so the engine has one reader.
     static WINDOW_PAGE: RefCell<Option<PageHandle>> = const { RefCell::new(None) };
+    /// Which of the window's pages the `ui.WebView` node being built shows.
+    static WINDOW_SURFACE: RefCell<Surface> = const { RefCell::new(Surface::Page) };
+}
+
+/// Which of a window's pages a `ui.WebView` node shows: the page the person browsed, or the
+/// window's second page beside or over it (an extension's side panel, a sign-in page). A window
+/// holds the engine of each, and hands it in while the node is built.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Surface {
+    /// The page the window browsed: its navigation is the app's to report.
+    #[default]
+    Page,
+    /// The window's second page: the window's session reads its events, so the view shows it and
+    /// reports nothing of it.
+    Panel,
 }
 
 /// The engine the window drawing now hands to its `ui.WebView` nodes.
@@ -35,6 +53,19 @@ pub fn window_engine() -> Option<SharedEngine> {
 /// the window draws no page.
 pub fn set_window_engine(engine: Option<SharedEngine>) {
     WINDOW_ENGINE.with(|held| *held.borrow_mut() = engine);
+}
+
+/// Which of the window's pages the `ui.WebView` nodes the window builds show until the next
+/// call.
+#[must_use]
+pub fn window_surface() -> Surface {
+    WINDOW_SURFACE.with(|surface| *surface.borrow())
+}
+
+/// Hand the surface to the `ui.WebView` node the window builds until the next call: the page it
+/// browsed, or its second page.
+pub fn set_window_surface(surface: Surface) {
+    WINDOW_SURFACE.with(|held| *held.borrow_mut() = surface);
 }
 
 /// The page of the window that is building its views now, so the `ui.WebView` reads its events

@@ -153,6 +153,11 @@ type Page (title: title) {
     buttons: Collection<PageButton>
     /// The notifications this page's extensions showed and have not taken back.
     notices: Collection<ExtensionNotice>
+    /// The extension's page the page's window shows beside this one, as it last said: the
+    /// extension's side panel, or the page it asked the person to sign in on.
+    panel: Option<Panel> = .none
+    /// The extension the address addresses, and what it offers for what follows its keyword.
+    omnibox: Option<Omnibox> = .none
     /// The pages before this one and the ones after it, as the engine last answered the window's
     /// request for them.
     back: Collection<HistoryEntry>
@@ -329,6 +334,49 @@ type ExtensionNotice (title: title) {
     }
 }
 
+/// An extension's own page shown beside the page the person browsed: its side panel, or the page
+/// it asked them to sign in on.
+type Panel (title: ext) {
+    /// `side` for an extension's side panel, `sign-in` for the page it asked the person to sign in
+    /// on.
+    kind: Text
+    /// The engine's identifier of the extension whose page it is.
+    ext: Text
+    /// The address the page shows.
+    url: Text
+    /// Whether the person is shown it: a sign-in they may not be asked on loads out of sight.
+    interactive: Bool = true
+}
+
+/// What the address offers the extension whose keyword it addresses: what follows the keyword,
+/// and the rows the extension says choosing leads to.
+type Omnibox (title: ext) {
+    /// The engine's identifier of the extension the address addresses.
+    ext: Text
+    /// What that extension is called.
+    name: Text
+    /// What follows its keyword.
+    text: Text
+    /// What the address offers: the first row is what Enter does, then the extension's
+    /// suggestions.
+    rows: List<OmniboxRow>
+}
+
+/// One row the address offers for an extension's keyword: what it says, and what choosing it
+/// sends the extension.
+type OmniboxRow (title: title) {
+    title: Text
+    content: Text
+}
+
+/// An extension a keyword in the address addresses: which one it is, what it is called, and what
+/// follows its keyword.
+type Addressed {
+    ext: Text
+    name: Text
+    text: Text
+}
+
 /// One extension installed on this device: what it is, what its manifest asks for, and whether
 /// the person turned it on. Chromium loads the ones that are on when a page's window starts.
 type Extension (title: name) {
@@ -341,6 +389,11 @@ type Extension (title: name) {
     /// What it asks for, as its own words, one after another.
     permissions: Text
     enabled: Bool = false
+    /// Its keyword in the address (`omnibox.keyword`), where its manifest gives one: typed with a
+    /// space after it, what follows is the extension's.
+    keyword: Text = ""
+    /// Whether it can show a page beside the page the person browses (`sidePanel`).
+    side_panel: Bool = false
 
     search {
         hide key
@@ -399,6 +452,8 @@ type Ask {
     item: Option<Text> = .none
     /// The identifier of an installed extension, which turning it on or removing names.
     extension: Option<Text> = .none
+    /// What follows an extension's keyword in the address, which the extension hears of.
+    rest: Option<Text> = .none
     /// The extension's own number for one of its notifications.
     notification: Option<Text> = .none
     level: Option<Float> = .none
@@ -965,6 +1020,21 @@ action navigate(p: Page, url: Text) -> Answer uses page (
     let answer = ask_page(p, request)
     p.url = url
     answer
+}
+
+/// What Enter in the address does: what follows an extension's keyword goes to the extension,
+/// which hears of it and goes where it sends the page; anything else is an address to go to.
+action submit_address(p: Page, typed: Text) -> Answer uses page {
+    let b = root Browser
+    match addressed_to(b, typed) {
+        .some(a) => enter_omnibox(p, a.text),
+        .none => navigate(p, typed),
+    }
+}
+
+/// The person chose one of the rows under the address: the extension hears what it stands for.
+action choose_omnibox(p: Page, content: Text) -> Answer uses page {
+    enter_omnibox(p, content)
 }
 
 /// Go back to the page before this one.
@@ -1568,6 +1638,72 @@ action remember_extensions(p: Page, installed: Text, message: Text) {
 action note_extension(p: Page, ok: Bool, kind: Text, message: Text, id: Text) {
     let b = root Browser
     b.extension_notice = if ok { "" } else { extension_trouble(kind, message) }
+}
+
+/// Asks the extension for its side panel beside the page: its own page says what the panel shows,
+/// and the page's window shows it there.
+action open_side_panel(p: Page, e: Extension) -> Answer uses page (
+    icon: .panel_right,
+    label: "Open the extension’s side panel",
+    shows: [e.name],
+) {
+    require e.enabled "The extension is off"
+    require e.side_panel "The extension has no side panel"
+    ask_page(p, json.encode(Ask(op: "open_side_panel", extension: .some(e.key))))
+}
+
+/// Closes the extension's page the page's window showed beside or over this one: its side panel,
+/// or the page it asked the person to sign in on, which ends as turned down.
+action close_panel(p: Page) -> Answer uses page (icon: .x, label: "Close the extension’s page") {
+    ask_page(p, json.encode(Ask(op: "panel_close")))
+}
+
+/// Writes the extension's page the page's window shows beside this one into its record, or takes
+/// it away. The window raises it; a person, agent or script never does.
+action remember_panel(p: Page, open: Bool, kind: Text, id: Text, url: Text, interactive: Bool) {
+    p.panel = if open {
+        .some(Panel(kind: kind, ext: id, url: url, interactive: interactive))
+    } else { .none }
+}
+
+/// Writes the extension the address addresses, and the rows it offers, into the page's record; an
+/// empty identifier takes them away, since the address no longer addresses one. The window
+/// raises it; a person, agent or script never does.
+action remember_omnibox(p: Page, id: Text, name: Text, text: Text, rows: Text) {
+    p.omnibox = if id == "" {
+        .none
+    } else {
+        .some(Omnibox(ext: id, name: name, text: text, rows: omnibox_rows(rows)))
+    }
+}
+
+/// What the person typed in the page's address: when it starts with an extension's keyword and a
+/// space, what follows is the extension's, which hears of each change.
+action typed_address(p: Page, typed: Text) -> Answer uses page {
+    let b = root Browser
+    let request = match addressed_to(b, typed) {
+        .some(a) => json.encode(
+            Ask(
+                op: "address_typed",
+                text: .some(typed),
+                extension: .some(a.ext),
+                name: .some(a.name),
+                rest: .some(a.text),
+            ),
+        ),
+        .none => json.encode(Ask(op: "address_typed", text: .some(typed))),
+    }
+    page_answered(page.call(request))
+}
+
+/// The person left the address without Enter: the extension hears of it.
+action address_left(p: Page) -> Answer uses page {
+    page_answered(page.call(json.encode(Ask(op: "address_left"))))
+}
+
+/// The person pressed Enter, or chose one of the rows: the extension hears what it was given.
+action enter_omnibox(p: Page, text: Text) -> Answer uses page {
+    page_answered(page.call(json.encode(Ask(op: "address_entered", text: .some(text)))))
 }
 
 /// Writes what asking the Chrome Web Store for newer versions came to, in the person's words.
@@ -2546,6 +2682,8 @@ fn extensions_of(installed: Text) -> List<Extension> {
                         description: json_text(held, "description"),
                         permissions: json_words(held, "permissions", ", "),
                         enabled: json_flag(held, "enabled"),
+                        keyword: json_text(held, "keyword"),
+                        side_panel: json_flag(held, "side_panel"),
                     ),
                 ],
             ]
@@ -2553,6 +2691,60 @@ fn extensions_of(installed: Text) -> List<Extension> {
         }
     }
     found
+}
+
+/// The extension whose keyword the address starts with, and what follows it: typing an
+/// extension's keyword and a space makes the rest the extension's, as in Chrome. A keyword
+/// matches whatever its case.
+fn addressed_to(b: Browser, typed: Text) -> Option<Addressed> {
+    let trimmed = typed.trim()
+    let space = trimmed.find(" ") ?? -1
+    if space <= 0 {
+        return .none
+    }
+    let keyword = trimmed.slice(0, space).lower()
+    let rest = trimmed.slice(space, trimmed.len()).trim()
+    for e in b.extensions {
+        if e.enabled and e.keyword != "" and e.keyword.lower() == keyword {
+            return .some(Addressed(ext: e.key, name: e.name, text: rest))
+        }
+    }
+    .none
+}
+
+/// The rows the extension's suggestions listed, as its window encoded them.
+fn omnibox_rows(rows: Text) -> List<OmniboxRow> {
+    let value = match json.parse(rows) {
+        .ok(value) => value,
+        .err(_) => {
+            return []
+        }
+    }
+    let found: List<OmniboxRow> = []
+    for held in json_arrays(value) {
+        found = [
+            found,
+            [OmniboxRow(title: json_text(held, "title"), content: json_text(held, "content"))],
+        ]
+            .flat_map(x -> x)
+    }
+    found
+}
+
+/// What an extension is called, as the Browser's inventory lists it: an extension's own page is
+/// named by its identifier alone.
+fn extension_named(b: Browser, id: Text) -> Text {
+    if let e = b.extensions.find(x -> x.key == id) { e.name } else { "Extension" }
+}
+
+/// The site a sign-in page asks the person to sign in on, as its address names it: they type a
+/// password there, so they see whose page it is.
+fn panel_site(url: Text) -> Text {
+    let origin = origin_of(url)
+    if origin == "" {
+        return url
+    }
+    origin.split("://").last() ?? origin
 }
 
 /// The downloads the page last reported, as its window reads them.
@@ -2675,10 +2867,7 @@ fn dialog_of(value: json.Value) -> Option<DialogAsk> {
 fn media_of(value: json.Value) -> Option<PageMedia> {
     match json_field(value, "media") {
         .some(held) => .some(
-            PageMedia(
-                element: json_text(held, "element"),
-                label: json_text(held, "label"),
-            ),
+            PageMedia(element: json_text(held, "element"), label: json_text(held, "label")),
         ),
         .none => .none,
     }
@@ -2830,6 +3019,13 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
         ui.MenuItem("Site information", icon: .shield) {
             on choose: read_site(p)
         }
+        for e in b.extensions {
+            if e.enabled and e.side_panel {
+                ui.MenuItem("Open {e.name}’s side panel", icon: .panel_right) {
+                    on choose: open_side_panel(p, e)
+                }
+            }
+        }
         ui.MenuItem("Developer tools", icon: .code) {
             on choose: developer_tools(p)
         }
@@ -2883,13 +3079,13 @@ view page_view(p: Page) {
                         ui.Button(
                             if p.pip {
                                 "Return from picture in picture"
-                            } else {
-                                "Picture in picture"
-                            },
+                            } else { "Picture in picture" },
                             icon: .picture_in_picture_2,
                             role: .plain,
                             toggled: p.pip,
-                            description: if video.label == "" { .none } else { .some(video.label) },
+                            description: if video.label == "" {
+                                .none
+                            } else { .some(video.label) },
                         ) {
                             on press: float_page_video(p, not p.pip)
                         }
@@ -2914,7 +3110,9 @@ view page_view(p: Page) {
                             placeholder: if p.url == "" { "Address and search" } else { p.url },
                             key: "l",
                         ) {
-                            on submit(typed: Text): navigate(p, typed)
+                            on changed(typed: Text): typed_address(p, typed)
+                            on blur: address_left(p)
+                            on submit(typed: Text): submit_address(p, typed)
                         }
                         ui.Button("Bookmark", icon: .star, role: .plain) {
                             on press: bookmark(b, p.url, .some(p.title))
@@ -2928,6 +3126,15 @@ view page_view(p: Page) {
                             on press: refresh_page(p)
                         }
                         page_menu(b, p, zoom, reading)
+                    }
+                    if let om = p.omnibox {
+                        stack(padding: .related) {
+                            ui.Section(if om.name == "" { "From the address" } else { om.name }) {
+                                for r in om.rows {
+                                    omnibox_row(p, r)
+                                }
+                            }
+                        }
                     }
                     if not p.buttons.is_empty() {
                         row {
@@ -2976,10 +3183,20 @@ view page_view(p: Page) {
                     if p.find_count > 0 {
                         row(gap: .related, align: .center, padding: .related) {
                             text("{p.find_at} of {p.find_count}", role: .caption, secondary: true)
-                            ui.Button("Previous match", icon: .arrow_up, role: .plain, icon_only: true) {
+                            ui.Button(
+                                "Previous match",
+                                icon: .arrow_up,
+                                role: .plain,
+                                icon_only: true,
+                            ) {
                                 on press: find_in_page(p, p.find_text, forward: false, next: true)
                             }
-                            ui.Button("Next match", icon: .arrow_down, role: .plain, icon_only: true) {
+                            ui.Button(
+                                "Next match",
+                                icon: .arrow_down,
+                                role: .plain,
+                                icon_only: true,
+                            ) {
                                 on press: find_in_page(p, p.find_text, next: true)
                             }
                             ui.Button("Clear the find", icon: .x, role: .plain, icon_only: true) {
@@ -3000,34 +3217,69 @@ view page_view(p: Page) {
                             on act: set(failed, "")
                         }
                     } else {
-                        layers(fill) {
-                            ui.WebView(title: if p.title == "" { p.url } else { p.title }, uri: p.url, pip: p.pip) {
-                                on navigate(address: Text): went_to(p, address).then(refresh_page(p))
-                                on fail(why: Text): set(failed, why)
-                            }
-                            if let menu = p.menu {
-                                ui.ContextMenu {
-                                    items: {
-                                        for row in menu.items {
-                                            if row.separator {
-                                                ui.MenuSeparator {
-                                                }
-                                            } else {
-                                                ui.MenuItem(
-                                                    row.label,
-                                                    checked: .some(row.checked),
-                                                    disabled: row.disabled,
-                                                ) {
-                                                    on choose: context_menu_action(
-                                                            p,
-                                                            menu.request,
-                                                            row.command,
-                                                        )
-                                                        .then(
-                                                            refresh_page(p),
-                                                        )
+                        row(gap: .none, align: .stretch) {
+                            layers(fill: 1.0) {
+                                ui.WebView(
+                                    title: if p.title == "" { p.url } else { p.title },
+                                    uri: p.url,
+                                    pip: p.pip,
+                                ) {
+                                    on navigate(address: Text): went_to(p, address)
+                                        .then(
+                                            refresh_page(p),
+                                        )
+                                    on fail(why: Text): set(failed, why)
+                                }
+                                if let menu = p.menu {
+                                    ui.ContextMenu {
+                                        items: {
+                                            for row in menu.items {
+                                                if row.separator {
+                                                    ui.MenuSeparator {
+                                                    }
+                                                } else {
+                                                    ui.MenuItem(
+                                                        row.label,
+                                                        checked: .some(row.checked),
+                                                        disabled: row.disabled,
+                                                    ) {
+                                                        on choose: context_menu_action(
+                                                                p,
+                                                                menu.request,
+                                                                row.command,
+                                                            )
+                                                            .then(
+                                                                refresh_page(p),
+                                                            )
+                                                    }
                                                 }
                                             }
+                                        }
+                                    }
+                                }
+                            }
+                            if let panel = p.panel {
+                                stack(min: 18rem, max: 30rem, fill: 0.0, gap: .tight) {
+                                    row(gap: .related, align: .center) {
+                                        text(
+                                            if panel.kind == "sign-in" {
+                                                panel_site(panel.url)
+                                            } else { extension_named(b, panel.ext) },
+                                            role: .label,
+                                            truncate: true,
+                                            fill: 1.0,
+                                        )
+                                        ui.Button("Close", icon: .x, role: .plain) {
+                                            on press: close_panel(p)
+                                        }
+                                    }
+                                    layers(fill: 1.0) {
+                                        ui.WebView(
+                                            title: if panel.kind == "sign-in" {
+                                                panel_site(panel.url)
+                                            } else { extension_named(b, panel.ext) },
+                                            surface: "panel",
+                                        ) {
                                         }
                                     }
                                 }
@@ -3056,7 +3308,8 @@ view page_view(p: Page) {
                                     .some(if ask.kind == "prompt" { answer_text } else { "" }),
                                 )
                                 .then(refresh_page(p))
-                            on dismiss: answer_page_dialog(p, ask.request, false).then(refresh_page(p))
+                            on dismiss: answer_page_dialog(p, ask.request, false)
+                                .then(refresh_page(p))
                         }
                     }
                     if p.login_notice != "" {
@@ -3084,7 +3337,9 @@ view page_view(p: Page) {
                                 for f in p.login_forms {
                                     stack(padding: .related) {
                                         ui.ListRow(
-                                            title: if f.username == "" { f.kind } else { f.username },
+                                            title: if f.username == "" {
+                                                f.kind
+                                            } else { f.username },
                                             secondary: f.kind,
                                             mark: .key,
                                         )
@@ -3135,7 +3390,11 @@ view page_view(p: Page) {
                             if b.extension_notice != "" {
                                 ui.Banner("Extensions", message: b.extension_notice, kind: .info)
                             }
-                            ui.Button("Read the installed extensions", icon: .puzzle, role: .plain) {
+                            ui.Button(
+                                "Read the installed extensions",
+                                icon: .puzzle,
+                                role: .plain,
+                            ) {
                                 on press: list_extensions(p)
                             }
                             for e in b.extensions {
@@ -3169,7 +3428,13 @@ view page_view(p: Page) {
                             }
                             stack(padding: .related) {
                                 ui.Button("Install from a file", icon: .file_plus, role: .plain) {
-                                    on press: file.choose(install_extension(p)).then(list_extensions(p))
+                                    on press: file
+                                        .choose(
+                                            install_extension(p),
+                                        )
+                                        .then(
+                                            list_extensions(p),
+                                        )
                                 }
                                 ui.TextInput(
                                     bind: store_link,
@@ -3177,7 +3442,10 @@ view page_view(p: Page) {
                                     key: "e",
                                 )
                                 ui.Button("Add from the store", icon: .puzzle, role: .plain) {
-                                    on press: install_store_extension(p, store_link).then(list_extensions(p))
+                                    on press: install_store_extension(p, store_link)
+                                        .then(
+                                            list_extensions(p),
+                                        )
                                 }
                                 ui.Button("Check for updates", icon: .refresh, role: .plain) {
                                     on press: update_extensions(p).then(list_extensions(p))
@@ -3188,7 +3456,11 @@ view page_view(p: Page) {
                     if let site = p.site {
                         stack(padding: .related) {
                             ui.Section("Site information") {
-                                ui.ListRow(title: site.origin, secondary: site.security, mark: .shield)
+                                ui.ListRow(
+                                    title: site.origin,
+                                    secondary: site.security,
+                                    mark: .shield,
+                                )
                                 ui.ListRow(
                                     title: "Requests blocked",
                                     secondary: "{site.blocked}",
@@ -3263,6 +3535,14 @@ view page_presented(p: Page, failed: State<Text>) {
 view suggestion_row(p: Page, v: Visit) {
     ui.ListRow(title: v.title, secondary: v.url, icon: .clock) {
         on activate: navigate(p, v.url)
+    }
+}
+
+/// One row the extension whose keyword the address addresses offers: what choosing it sends the
+/// extension.
+view omnibox_row(p: Page, r: OmniboxRow) {
+    ui.ListRow(title: r.title, secondary: r.content, icon: .puzzle) {
+        on activate: choose_omnibox(p, r.content)
     }
 }
 

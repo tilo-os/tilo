@@ -26,6 +26,10 @@ pub struct WebViewProps {
     /// shows the picture where the page draws it, and the view puts it back in the page when the
     /// app stops asking.
     pub pip: bool,
+    /// Which of the window's pages it shows: the one the person browsed, or the window's second
+    /// one beside or over it (`panel`: an extension's side panel, a sign-in page). The window
+    /// holds both engines and hands in the one this names; without it the view shows the page.
+    pub surface: Option<String>,
     /// The page navigated (the person followed a link): carries the address.
     #[component(event(value = String))]
     pub navigate: Event,
@@ -46,13 +50,17 @@ impl Described for WebView {
             title,
             uri,
             pip,
+            surface,
             navigate,
             fail,
             engine,
         } = props;
         // The window's page reports its navigation to the app; an app's own engine is read by
-        // the app, so this view takes nothing from it.
-        let window_page = engine.is_none() && crate::webview::window_engine().is_some();
+        // the app, so this view takes nothing from it. The window's second page is read by the
+        // window's session too, so this view shows it and reports nothing.
+        let shown = crate::webview::window_surface();
+        let window_page =
+            engine.is_none() && shown == crate::webview::Surface::Page && crate::webview::window_engine().is_some();
         let engine = engine
             .or_else(crate::webview::window_engine)
             .unwrap_or_else(|| {
@@ -62,6 +70,10 @@ impl Described for WebView {
                 missing
             });
         let mut view = Self::new(engine);
+        view.set_surface(match surface.as_deref() {
+            Some("panel") => crate::webview::Surface::Panel,
+            _ => shown,
+        });
         if window_page {
             view = view
                 .reporting(navigate, fail)

@@ -1393,6 +1393,12 @@ pub struct ExtensionEntry {
     pub permissions: Vec<String>,
     /// Whether the person turned it on, which is whether Chromium loads it at its next start.
     pub enabled: bool,
+    /// Its keyword in the address (its manifest's `omnibox.keyword`), when it has one: typed with
+    /// a space after it, what follows is the extension's.
+    pub keyword: Option<String>,
+    /// Whether it can show a page beside the page the person browses (its `sidePanel`
+    /// permission): its side panel.
+    pub side_panel: bool,
 }
 
 impl ExtensionEntry {
@@ -1408,6 +1414,8 @@ impl ExtensionEntry {
             description: extension.description,
             permissions: extension.permissions,
             enabled,
+            keyword: extension.keyword,
+            side_panel: extension.side_panel,
         }
     }
 }

@@ -1783,4 +1783,186 @@ mod cases {
             "the same control asks again"
         );
     }
+
+    /// An installed extension's side panel opens beside the page from the page's menu, in a page
+    /// of its own, and closes: its own record, its own Close, and the engine told each time.
+    #[test]
+    fn an_extensions_side_panel_opens_beside_the_page_and_closes() {
+        let b = Browser::new();
+        let id = "abcdefghijklmnopabcdefghijklmnop";
+        b.page(
+            "remember_extensions",
+            &[
+                (
+                    "installed",
+                    Value::text(&format!(
+                        r#"[{{"id":"{id}","name":"Reader","version":"1.0","manifest_version":3,"description":"","permissions":["sidePanel"],"enabled":true,"keyword":"","side_panel":true}}]"#
+                    )),
+                ),
+                ("message", Value::text("")),
+            ],
+        );
+
+        // The page's menu offers the extension's side panel, and choosing it asks the extension.
+        let view = b.page_view();
+        let offered = of_kind(view.tree(), "ui.MenuItem")
+            .into_iter()
+            .find(|node| {
+                matches!(node.props.get("label"), Some(Value::Text(label)) if label.contains("side panel"))
+            })
+            .unwrap_or_else(|| panic!("no side panel row in\n{}", dump(view.tree())));
+        let offered = offered.key.clone();
+        view.fire(&offered, "choose").unwrap();
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("open_side_panel"));
+        assert_eq!(b.page.last()["extension"].as_str(), Some(id));
+
+        // Its page shows beside the page the person browsed, as the window's second page.
+        let url = format!("chrome-extension://{id}/panel.html");
+        b.page(
+            "remember_panel",
+            &[
+                ("open", Value::Bool(true)),
+                ("kind", Value::text("side")),
+                ("id", Value::text(id)),
+                ("url", Value::text(&url)),
+                ("interactive", Value::Bool(true)),
+            ],
+        );
+        let view = b.page_view();
+        let panels: Vec<_> = of_kind(view.tree(), "ui.WebView")
+            .into_iter()
+            .filter(|node| node.props.get("surface") == Some(&Value::text("panel")))
+            .collect();
+        assert_eq!(panels.len(), 1, "one panel beside the page:\n{}", dump(view.tree()));
+        assert_eq!(panels[0].props.get("title"), Some(&Value::text("Reader")));
+        let close = button_key(&view, "Close");
+        view.fire(&close, "press").unwrap();
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("panel_close"));
+
+        // The window said it went: the page no longer draws it.
+        b.page(
+            "remember_panel",
+            &[
+                ("open", Value::Bool(false)),
+                ("kind", Value::text("")),
+                ("id", Value::text("")),
+                ("url", Value::text("")),
+                ("interactive", Value::Bool(false)),
+            ],
+        );
+        let view = b.page_view();
+        assert!(
+            of_kind(view.tree(), "ui.WebView")
+                .into_iter()
+                .all(|node| node.props.get("surface") != Some(&Value::text("panel"))),
+            "the panel is gone:\n{}",
+            dump(view.tree())
+        );
+    }
+
+    /// Typing an extension's keyword and a space in the address hands what follows to the
+    /// extension: its rows are drawn, choosing one or Enter runs it, and anything else is an
+    /// address.
+    #[test]
+    fn an_extensions_keyword_offers_its_rows_and_runs_what_is_chosen() {
+        let b = Browser::new();
+        let id = "abcdefghijklmnopabcdefghijklmnop";
+        b.page(
+            "remember_extensions",
+            &[
+                (
+                    "installed",
+                    Value::text(&format!(
+                        r#"[{{"id":"{id}","name":"Reader","version":"1.0","manifest_version":3,"description":"","permissions":[],"enabled":true,"keyword":"kw","side_panel":false}}]"#
+                    )),
+                ),
+                ("message", Value::text("")),
+            ],
+        );
+        let view = b.page_view();
+        let address = text_inputs(&view).first().cloned().expect("an address field");
+        view.fire_with(&address, "changed", Some(&Value::text("kw ca")))
+            .unwrap();
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("address_typed"));
+        let ask = b.page.last();
+        assert_eq!(ask["text"].as_str(), Some("kw ca"));
+        assert_eq!(ask["extension"].as_str(), Some(id));
+        assert_eq!(ask["name"].as_str(), Some("Reader"));
+        assert_eq!(ask["rest"].as_str(), Some("ca"));
+
+        // The extension offered what Enter does and two suggestions: they are rows under the
+        // address, and choosing one sends its content to the extension.
+        b.page(
+            "remember_omnibox",
+            &[
+                ("id", Value::text(id)),
+                ("name", Value::text("Reader")),
+                ("text", Value::text("ca")),
+                (
+                    "rows",
+                    Value::text(r#"[{"title":"Look up ca","content":"ca"},{"title":"cat","content":"cat"}]"#),
+                ),
+            ],
+        );
+        let view = b.page_view();
+        let rows = of_kind(view.tree(), "ui.ListRow");
+        let cat = rows
+            .iter()
+            .find(|node| node.props.get("title") == Some(&Value::text("cat")))
+            .unwrap_or_else(|| panic!("no suggestion row in\n{}", dump(view.tree())));
+        let cat = cat.key.clone();
+        view.fire(&cat, "activate").unwrap();
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("address_entered"));
+        assert_eq!(b.page.last()["text"].as_str(), Some("cat"));
+
+        // Enter goes to the extension with what follows its keyword, never to the address.
+        let view = b.page_view();
+        view.fire_with(&address, "submit", Some(&Value::text("kw cats")))
+            .unwrap();
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("address_entered"));
+        assert_eq!(b.page.last()["text"].as_str(), Some("cats"));
+
+        // Anything else is an address to go to, and leaving the address tells the extension.
+        let view = b.page_view();
+        view.fire_with(&address, "submit", Some(&Value::text("example.org")))
+            .unwrap();
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("navigate"));
+        assert_eq!(b.page.last()["url"].as_str(), Some("example.org"));
+        let view = b.page_view();
+        view.fire(&address, "blur").unwrap();
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("address_left"));
+    }
+
+    /// An extension asking the person to sign in has its page shown in the page's window, named
+    /// by the site they sign in on; turning it down answers the extension with no credentials.
+    #[test]
+    fn an_extensions_sign_in_shows_its_page_and_turning_it_down_closes_it() {
+        let b = Browser::new();
+        let id = "abcdefghijklmnopabcdefghijklmnop";
+        b.page(
+            "remember_panel",
+            &[
+                ("open", Value::Bool(true)),
+                ("kind", Value::text("sign-in")),
+                ("id", Value::text(id)),
+                ("url", Value::text("https://accounts.example.org/o/oauth?client=1")),
+                ("interactive", Value::Bool(true)),
+            ],
+        );
+        let view = b.page_view();
+        let panels: Vec<_> = of_kind(view.tree(), "ui.WebView")
+            .into_iter()
+            .filter(|node| node.props.get("surface") == Some(&Value::text("panel")))
+            .collect();
+        assert_eq!(panels.len(), 1, "the sign-in page is shown:\n{}", dump(view.tree()));
+        assert_eq!(
+            panels[0].props.get("title"),
+            Some(&Value::text("accounts.example.org")),
+            "the person sees whose page asks them to sign in"
+        );
+        let close = button_key(&view, "Close");
+        view.fire(&close, "press").unwrap();
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("panel_close"));
+    }
+
 }

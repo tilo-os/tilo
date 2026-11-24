@@ -8619,6 +8619,13 @@
           "name": "pip",
           "doc": "Whether the page's video floats above the app's window as picture-in-picture: the host shows the picture where the page draws it, and the view puts it back in the page when the app stops asking.",
           "type": "bool"
+        },
+        {
+          "name": "surface",
+          "doc": "Which of the window's pages it shows: the one the person browsed, or the window's second one beside or over it (`panel`: an extension's side panel, a sign-in page). The window holds both engines and hands in the one this names; without it the view shows the page.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [

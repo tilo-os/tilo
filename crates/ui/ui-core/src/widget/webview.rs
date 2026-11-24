@@ -114,6 +114,8 @@ pub struct WebView {
     /// Whether this view is the one that reads the engine's events: a window's page, not an
     /// app's view whose own code polls the engine it passed in.
     reports_events: bool,
+    /// Which of the window's pages it shows: the one the person browsed, or the window's second.
+    surface: crate::webview::Surface,
     /// The window's page, when this view is the window's: the one session that reads the
     /// engine's events, shared with the app's page calls, so the engine has one reader.
     session: Option<crate::webview::PageHandle>,
@@ -227,6 +229,7 @@ impl WebView {
             navigate: crate::component::Event::None,
             fail: crate::component::Event::None,
             reports_events: false,
+            surface: crate::webview::Surface::Page,
             session: None,
             opened_at: None,
             pip: false,
@@ -420,7 +423,9 @@ impl WebView {
     /// session learns that the page is too large and says so.
     fn share_page(&self) {
         use crate::webview::paint;
-        if !paint::share_watched() {
+        // Only the page the person browsed is the window's page to share: a side panel or a
+        // sign-in page beside it is not what someone watching the window came for.
+        if self.surface != crate::webview::Surface::Page || !paint::share_watched() {
             return;
         }
         let keyframe = paint::take_share_keyframe();
@@ -485,6 +490,12 @@ impl WebView {
 
     pub fn set_accessible_name(&mut self, name: impl Into<String>) {
         self.accessible_name = name.into();
+    }
+
+    /// Say which of the window's pages this view shows: the one the person browsed, or the
+    /// window's second page beside or over it.
+    pub fn set_surface(&mut self, surface: crate::webview::Surface) {
+        self.surface = surface;
     }
 
     /// Place the view at an explicit logical rect without going through a

@@ -47,6 +47,8 @@ const MAX_EXTENSION_PATH: usize = 4096;
 const BLOB_SCHEME: &str = "tilo-blob://";
 /// The longest identifier an extension is named by.
 const MAX_EXTENSION_ID: usize = 128;
+/// The longest text an extension's keyword takes after it, as the engine carries it.
+const MAX_OMNIBOX_TEXT: usize = 2048;
 
 /// What an app asked the page to do.
 #[derive(Debug, Clone)]
@@ -65,6 +67,24 @@ pub enum Ask {
     /// in this device's content store (`tilo-blob://…`). A sandboxed app never names a host
     /// path, so the window reads the bytes and hands the engine the package.
     ExtensionInstall { file: String },
+    /// What the person typed in the page's address: when it starts with an extension's keyword
+    /// and a space, what follows is the extension's, which hears of it.
+    AddressTyped {
+        /// All the address holds.
+        text: String,
+        /// The extension whose keyword it starts with, when it starts with one.
+        extension: Option<String>,
+        /// What that extension is called.
+        name: String,
+        /// What follows its keyword.
+        rest: String,
+    },
+    /// The person pressed Enter, or chose a row: what the extension is given.
+    AddressEntered { text: String },
+    /// The person left the address without Enter: the extension hears of it.
+    AddressLeft,
+    /// Close the page the extension showed beside this one.
+    PanelClose,
 }
 
 /// Read a request an app's action wrote.
@@ -377,6 +397,34 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "extension_click" => Ask::Command(WebViewCommand::ExtensionClick {
             id: extension_id(&value)?,
         }),
+        // The person asked for the extension's side panel beside the page: its worker knows
+        // which page that is, and says what the panel shows.
+        "open_side_panel" => Ask::Command(WebViewCommand::ExtensionOpenSidePanel {
+            id: extension_id(&value)?,
+        }),
+        // What the person types in the address: an extension's keyword and what follows it, the
+        // Enter or row they chose, and their leaving it. The engine tells the extension of each
+        // and lists what it suggests.
+        "address_typed" => {
+            let typed = bounded_text(&value, "text", MAX_OMNIBOX_TEXT)?;
+            let extension = text(&value, "extension");
+            if extension.as_ref().is_some_and(|id| id.is_empty() || id.len() > MAX_EXTENSION_ID) {
+                return Err("an extension is named by its identifier".to_owned());
+            }
+            Ask::AddressTyped {
+                text: typed,
+                extension,
+                name: bounded_text(&value, "name", MAX_OMNIBOX_TEXT)?,
+                rest: bounded_text(&value, "rest", MAX_OMNIBOX_TEXT)?,
+            }
+        }
+        "address_entered" => Ask::AddressEntered {
+            text: bounded_text(&value, "text", MAX_OMNIBOX_TEXT)?,
+        },
+        "address_left" => Ask::AddressLeft,
+        // The window's second page goes: the extension's side panel, or the page it asked the
+        // person to sign in on.
+        "panel_close" => Ask::PanelClose,
         // The engine's own credential store: the logins it keeps for this site, the forms it
         // reads them from, and the capture it takes of one the person typed. The password never
         // crosses this vocabulary.
@@ -562,6 +610,8 @@ pub fn asks_json(asks: &Asks) -> String {
                     "description": entry.description,
                     "permissions": entry.permissions,
                     "enabled": entry.enabled,
+                    "keyword": entry.keyword,
+                    "side_panel": entry.side_panel,
                 })
             })
             .collect::<Vec<_>>(),
@@ -731,6 +781,8 @@ pub fn extensions_note(installed: &[tilo_webview::ExtensionEntry], message: &str
                 "description": entry.description,
                 "permissions": entry.permissions,
                 "enabled": entry.enabled,
+                "keyword": entry.keyword,
+                "side_panel": entry.side_panel,
             })
         })
         .collect();
@@ -797,6 +849,64 @@ pub fn print_note(ok: bool, path: &str, name: &str, message: &str) -> String {
         "message": message,
     })
     .to_string()
+}
+
+/// What an extension's page shown beside the window's page became, for the window to hand the
+/// app as its call: which page it is and what it shows, or that it went.
+#[must_use]
+pub fn panel_note(panel: Option<&crate::PanelInfo>) -> String {
+    match panel {
+        Some(panel) => serde_json::json!({
+            "note": "panel",
+            "open": true,
+            "kind": &panel.kind,
+            "id": &panel.id,
+            "url": &panel.url,
+            "interactive": panel.interactive,
+        })
+        .to_string(),
+        None => serde_json::json!({
+            "note": "panel",
+            "open": false,
+            "kind": "",
+            "id": "",
+            "url": "",
+            "interactive": false,
+        })
+        .to_string(),
+    }
+}
+
+/// What the address offers the extension it addresses, for the window to hand the app as its
+/// call: the extension, what follows its keyword, and its rows, or that it no longer addresses
+/// one.
+#[must_use]
+pub fn omnibox_note(state: Option<&crate::omnibox::State>) -> String {
+    match state {
+        Some(state) => serde_json::json!({
+            "note": "omnibox",
+            "id": &state.id,
+            "name": &state.name,
+            "text": &state.text,
+            "rows": serde_json::Value::Array(
+                state
+                    .rows
+                    .iter()
+                    .map(|row| serde_json::json!({"title": row.title, "content": row.content}))
+                    .collect(),
+            )
+            .to_string(),
+        })
+        .to_string(),
+        None => serde_json::json!({
+            "note": "omnibox",
+            "id": "",
+            "name": "",
+            "text": "",
+            "rows": "[]",
+        })
+        .to_string(),
+    }
 }
 
 /// What a page said of one of its downloads as it moves, for the window to hand the app as its
@@ -982,6 +1092,16 @@ fn text(value: &serde_json::Value, key: &str) -> Option<String> {
         .get(key)
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
+}
+
+/// A text a request names, within what a page carries: what a person types and an engine reads
+/// stays bounded, whatever a caller wrote.
+fn bounded_text(value: &serde_json::Value, key: &str, most: usize) -> Result<String, String> {
+    let held = text(value, key).unwrap_or_default();
+    if held.len() > most {
+        return Err(format!("a request's {key} is longer than a page carries"));
+    }
+    Ok(held)
 }
 
 /// Words a wait or a find looks for: a blank is the same as leaving them out.

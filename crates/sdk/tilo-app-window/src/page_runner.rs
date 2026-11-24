@@ -29,6 +29,16 @@ pub fn engine_of(page: &Page) -> SharedEngine {
     }
 }
 
+/// The engine of the page the window shows beside or over its own — an extension's side panel,
+/// the page it asked the person to sign in on — when one is open. The window draws it in its
+/// second `ui.WebView`, and its one session reads that engine's events.
+#[must_use]
+pub fn panel_engine(page: &Page) -> Option<SharedEngine> {
+    page.borrow()
+        .as_ref()
+        .and_then(PageSession::panel_engine)
+}
+
 /// What asking the page left to do.
 pub enum Asked {
     /// The operation answered at once (a navigation, a zoom): what the app reads.
@@ -81,6 +91,47 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
                 .as_mut()
                 .ok_or_else(|| "this window has no page".to_owned())?;
             session.credential(credential);
+            Ok(Asked::Answered(codec::accepted()))
+        }
+        // What the person types in the address, presses Enter on or leaves, and the page an
+        // extension showed beside this one going: the window's session keeps the bookkeeping
+        // and tells the app through its notes.
+        codec::Ask::AddressTyped {
+            text,
+            extension,
+            name,
+            rest,
+        } => {
+            let mut held = page.borrow_mut();
+            let session = held
+                .as_mut()
+                .ok_or_else(|| "this window has no page".to_owned())?;
+            let addressed = extension.map(|id| tilo_page_engine::Addressed { id, name, text: rest });
+            session.address_typed(&text, addressed.as_ref());
+            Ok(Asked::Answered(codec::accepted()))
+        }
+        codec::Ask::AddressEntered { text } => {
+            let mut held = page.borrow_mut();
+            let Some(session) = held.as_mut() else {
+                return Ok(Asked::Answered(codec::accepted()));
+            };
+            session.address_entered(&text);
+            Ok(Asked::Answered(codec::accepted()))
+        }
+        codec::Ask::AddressLeft => {
+            let mut held = page.borrow_mut();
+            let Some(session) = held.as_mut() else {
+                return Ok(Asked::Answered(codec::accepted()));
+            };
+            session.address_left();
+            Ok(Asked::Answered(codec::accepted()))
+        }
+        codec::Ask::PanelClose => {
+            let mut held = page.borrow_mut();
+            let Some(session) = held.as_mut() else {
+                return Ok(Asked::Answered(codec::accepted()));
+            };
+            session.close_panel();
             Ok(Asked::Answered(codec::accepted()))
         }
         codec::Ask::Command(command) => {
