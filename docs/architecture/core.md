@@ -122,6 +122,10 @@ never changes an id that grants and records already name.
   Every record in a workspace is sealed; one every member reads is sealed under
   the all-members group, and a clear write is refused. So the store's frames are
   the only copy, and catching up reads them for every record.
+  A host that holds no device in the workspace stores and relays sealed frames
+  and writes no record: a member device founds the workspace, and checkpoints
+  come from the frames. A server reads content only once the workspace adds it
+  as a device.
 - A window does not decide permissions itself. The device's daemon answers
   for the actions a view shows, the window holds those answers for its
   controls and updates them live as grants change, and the call is still
