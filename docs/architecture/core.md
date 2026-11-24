@@ -172,6 +172,9 @@ Storage, sync, permissions, history, undo, search, notifications, presence,
 windows and outside effects (sending a mail, calling an API, declared by the
 action and carried out by the system under the workspace's grants) are the
 system's. An app is its resource types, its actions' code and its views.
+An app's own process reaches the records of its app id whose kinds its manifest
+declares, and its own windows' records, in any workspace it is installed in;
+another app's records or windows only through that app's actions.
 
 There is no ceiling on what an app can be, and no step down that loses the
 model. An app climbs in steps:
