@@ -25,6 +25,9 @@ unicode-segmentation = "1.12"
 # The toolkit's component descriptions, read as the package `ui`.
 tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
 wasm-encoder = "0.252"
+# Reads back every module the backend emits, so a mismatch between what the checker types and what
+# the import table or a function signature says fails where it is made, not on the device that loads it.
+wasmparser = { version = "0.252", default-features = false, features = ["std", "validate", "features", "simd"] }
 # Who an actor value names: the identity type every crate shares.
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # The clock that also reads in a browser page, where std has none.
@@ -44,7 +47,6 @@ workspace-hack = { version = "0.1" }
 tilo-test-env = { path = "../../../tools/test-env" }
 # Reads the toolkit's sources for the widgets it describes, as its registry's build does.
 tilo-component-scan = { version = "0.1.0", path = "../../ui/tilo-component-scan" }
-wasmparser = { version = "0.252", default-features = false, features = ["std", "validate", "features", "simd"] }
 
 [lints]
 workspace = true

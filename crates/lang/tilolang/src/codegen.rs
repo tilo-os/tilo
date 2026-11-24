@@ -402,5 +402,71 @@ pub fn emit(m: &IrModule, meta_json: Option<&[u8]>) -> Vec<u8> {
             data: Cow::Borrowed(json),
         });
     }
-    module.finish()
+    checked(module.finish())
+}
+
+/// The module, validated before the compiler returns it.
+///
+/// A host refuses a module that does not validate, and the reason is one the compiler made: a type
+/// the checker gives an expression, the import table gives a host call and the function signature
+/// gives a local must agree, and nothing else reads the bytes back. `tilolang check` compiles the
+/// module but never runs it, so without this a module the host cannot load reaches the device.
+fn checked(module: Vec<u8>) -> Vec<u8> {
+    let Err(error) = wasmparser::Validator::new().validate_all(&module) else {
+        return module;
+    };
+    let at = function_at(&module, error.offset())
+        .map_or_else(String::new, |export| format!(", in `{export}`"));
+    fail(&format!(
+        "the compiler emitted a wasm module its host would refuse{at}: {error}"
+    ))
+}
+
+#[expect(
+    clippy::panic,
+    reason = "an invalid module is a compiler bug with no source line to report and no correct \
+              module to hand back: failing where it is made names it, and the host would refuse \
+              the module anyway"
+)]
+fn fail(message: &str) -> ! {
+    panic!("{message}")
+}
+
+/// The export of the function whose body holds `offset`, for a validator that names bytes alone.
+fn function_at(wasm: &[u8], offset: usize) -> Option<String> {
+    use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
+    let mut imported = 0u32;
+    let mut names: HashMap<u32, &str> = HashMap::new();
+    let mut bodies = 0u32;
+    let mut held = None;
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload.ok()? {
+            Payload::ImportSection(reader) => {
+                for import in reader.into_imports() {
+                    if matches!(import.ok()?.ty, TypeRef::Func(_)) {
+                        imported = imported.saturating_add(1);
+                    }
+                }
+            }
+            Payload::ExportSection(reader) => {
+                for export in reader {
+                    let export = export.ok()?;
+                    if export.kind == ExternalKind::Func {
+                        names.insert(export.index, export.name);
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                let range = body.range();
+                if range.start <= offset && offset < range.end {
+                    held = names
+                        .get(&imported.saturating_add(bodies))
+                        .map(|name| (*name).to_owned());
+                }
+                bodies = bodies.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    held
 }

@@ -143,6 +143,20 @@ tilo_test_env::scenario! {
         assert!(names.contains(&"act_ref".to_string()));
     }
 
+    phase a_call_member_is_played_at_the_volume_the_checker_types;
+    {
+        // `set_call_volume` takes the percent as a Float (the checker types `50.to_float()` so), and
+        // the import it calls must take an f64: a table that said i32 emitted an f64 where the
+        // module declared one, and every package drawing the call view compiled to a module the
+        // host refused.
+        let src = "type Call {\n    title: Text\n}\n\
+        view member(of: Call, who: Actor) {\n    ui.MenuItem(\"volume\") {\n        on choose: set_call_volume(of, who, 50.to_float())\n    }\n}";
+        let c = crate::common::compile_body(src);
+        assert_shape(&c);
+        let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
+        assert!(names.contains(&"act_call_volume".to_string()));
+    }
+
     phase control_flow_and_scalars_validate;
     {
         let src = "type T {\n    n: Int\n    f: Float\n    b: Bool\n    s: Text\n}\n\
@@ -262,7 +276,11 @@ tilo_test_env::scenario! {
             locales[1],
             ("de-DE".to_owned(), "d-x = Zähler\n".to_owned())
         );
-        assert!(tilolang::meta::locales_from_wasm(&without.wasm).is_empty());
+        // The same package with no translations beside its sources carries its source catalogue
+        // alone: what the build writes from the sources, never a copy on disk.
+        let source = tilolang::meta::locales_from_wasm(&without.wasm);
+        assert_eq!(source.len(), 1, "{source:?}");
+        assert_eq!(source[0].0, tilolang::messages::SOURCE_LOCALE, "{source:?}");
     }
 
     phase a_file_is_a_field_and_a_parameters_type;
