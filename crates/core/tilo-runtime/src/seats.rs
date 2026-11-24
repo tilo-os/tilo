@@ -31,7 +31,8 @@ use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::process::Child;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::DeviceCert;
@@ -68,6 +69,9 @@ const WHO: &str = "account#who";
 const START: &str = "shells#start";
 /// Wait for a shell the daemon started to end: `{pid}`, answered `{code?, signal?}` once it ended.
 const WAIT: &str = "shells#wait";
+/// How long a shell's start waits for the person's services, which the daemon starts after its
+/// native endpoint answers: a sign-in as the computer boots asks before they run.
+const SERVICES_START: Duration = Duration::from_secs(120);
 /// Why anyone but root is refused the seats' actions.
 pub(crate) const ROOT_ALONE: &str = "only root says who signed in on this computer, or who left";
 
@@ -296,8 +300,8 @@ pub(crate) struct Seats {
     /// What finds the app the daemon started a peer process as, once the daemon keeps its
     /// launch records.
     app_of: Arc<Mutex<Option<AppOf>>>,
-    /// What the daemon does for its person once their services run.
-    shells: Arc<OnceLock<Arc<dyn Shells>>>,
+    /// What the daemon does for its person once their services run: `None` until they do.
+    shells: Arc<tokio::sync::watch::Sender<Option<Arc<dyn Shells>>>>,
     /// The shells this daemon started, by pid, until one is waited for.
     started: Arc<Mutex<HashMap<u32, Child>>>,
     /// The key each account signed in as another person than the device's acts as, by uid,
@@ -312,7 +316,7 @@ impl Seats {
             device,
             peer_of,
             app_of: Arc::default(),
-            shells: Arc::default(),
+            shells: Arc::new(tokio::sync::watch::channel(None).0),
             started: Arc::default(),
             keys: Arc::default(),
         }
@@ -382,7 +386,13 @@ impl Seats {
 
     /// Serve the person's shells with `shells` from now on: what a sign-in and a shell's start do.
     pub(crate) fn serve(&self, shells: Arc<dyn Shells>) {
-        let _ = self.shells.set(shells);
+        self.shells.send_if_modified(|served| {
+            let first = served.is_none();
+            if first {
+                *served = Some(shells);
+            }
+            first
+        });
     }
 
     /// Who the connection `stream` is. One whose account the kernel does not say is a stranger.
@@ -436,10 +446,7 @@ impl Seats {
         let refused = |why: String| ready(json!({"error": why}));
         match request.get("native").and_then(Value::as_str)? {
             WHO => Some(ready(self.who(seat))),
-            START => Some(
-                self.start(seat, request, received)
-                    .map_or_else(refused, |pid| ready(json!({"pid": pid}))),
-            ),
+            START => Some(self.start(seat, request, received)),
             WAIT => Some(self.wait(seat, request).unwrap_or_else(refused)),
             _ => None,
         }
@@ -456,29 +463,41 @@ impl Seats {
     /// Whether the account `seat` starts its person's shell through this daemon: the account a
     /// person's own daemon runs as. The system's daemon starts none; root starts each session,
     /// with the link `seats#signed-in` answers.
-    fn starts_shells(&self, seat: Seat) -> Result<&Arc<dyn Shells>, String> {
+    fn starts_shells(&self, seat: Seat) -> Result<(), String> {
         if self.admission.system() {
             return Err("this computer starts its person's shell when they sign in".to_owned());
         }
         if seat.admitted != Admitted::Device {
             return Err("only the account this daemon runs as starts its shell".to_owned());
         }
-        self.shells
-            .get()
-            .ok_or_else(|| "this daemon's person's services are still starting".to_owned())
+        Ok(())
     }
 
-    /// Start the person's shell as `request` says (`{args, env}`): its pid. The shell is handed
-    /// its link and, when the client sent one with the request, the connection the asking
-    /// session draws its window on (`WAYLAND_SOCKET`).
+    /// What the daemon does for its person once their services run, waiting up to
+    /// [`SERVICES_START`] for them to.
+    async fn shells(&self) -> Result<Arc<dyn Shells>, String> {
+        let mut served = self.shells.subscribe();
+        let shells = tokio::time::timeout(SERVICES_START, served.wait_for(Option::is_some))
+            .await
+            .map_err(|_| "this daemon's person's services did not start".to_owned())?
+            .map_err(|_| "this daemon is stopping".to_owned())?
+            .clone();
+        shells.ok_or_else(|| "this daemon's person's services did not start".to_owned())
+    }
+
+    /// Start the person's shell as `request` says (`{args, env}`), once their services run:
+    /// answered with its pid. The shell is handed its link and, when the client sent one with the
+    /// request, the connection the asking session draws its window on (`WAYLAND_SOCKET`).
     fn start(
         &self,
         seat: Seat,
         request: &Value,
         received: &Mutex<Vec<OwnedFd>>,
-    ) -> Result<u32, String> {
-        let shells = self.starts_shells(seat)?;
-        let args = request
+    ) -> Answer<'static> {
+        if let Err(why) = self.starts_shells(seat) {
+            return Answer::InOrder(Box::pin(async move { Ok(Some(json!({"error": why}))) }));
+        }
+        let args: Vec<OsString> = request
             .get("args")
             .and_then(Value::as_array)
             .into_iter()
@@ -486,7 +505,7 @@ impl Seats {
             .filter_map(Value::as_str)
             .map(OsString::from)
             .collect();
-        let env = request
+        let env: Vec<(OsString, OsString)> = request
             .get("env")
             .and_then(Value::as_object)
             .into_iter()
@@ -494,12 +513,22 @@ impl Seats {
             .filter_map(|(name, value)| Some((name.into(), value.as_str()?.into())))
             .collect();
         let window = received.lock_recover().pop();
-        let child = shells
-            .start(args, env, window)
-            .map_err(|error| format!("the shell did not start: {error}"))?;
-        let pid = child.id();
-        self.started.lock_recover().insert(pid, child);
-        Ok(pid)
+        let seats = self.clone();
+        Answer::InOrder(Box::pin(async move {
+            let started = seats.shells().await.and_then(|shells| {
+                shells
+                    .start(args, env, window)
+                    .map_err(|error| format!("the shell did not start: {error}"))
+            });
+            Ok(Some(match started {
+                Ok(child) => {
+                    let pid = child.id();
+                    seats.started.lock_recover().insert(pid, child);
+                    json!({"pid": pid})
+                }
+                Err(why) => json!({"error": why}),
+            }))
+        }))
     }
 
     /// Wait for the shell `request` names (`{pid}`) to end: how it ended.
@@ -682,7 +711,8 @@ impl Seats {
         let importing = request.get("importing").and_then(Value::as_bool) == Some(true);
         // The link the session root starts is admitted by: none while the person's services
         // still start, and that session then reaches nothing of theirs.
-        let link = self.shells.get().and_then(|shells| {
+        let served = self.shells.borrow().clone();
+        let link = served.and_then(|shells| {
             shells
                 .arrived(importing)
                 .inspect_err(|error| {

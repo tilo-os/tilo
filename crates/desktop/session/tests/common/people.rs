@@ -5,9 +5,11 @@
 //!
 //! A person is not a device. A person is the root their devices are certified
 //! under ([`Person`]); each of their devices is a key and a certificate the
-//! root signed ([`Person::device`]). Every device runs a session process of its
-//! own, with its own home, its own identity root and its own state, as a
-//! device on someone's shell does.
+//! root signed ([`Person::device`]). Every device runs as a device does: its
+//! own daemon (`tilo-runtime`, the person's own service) with its own home, its
+//! own identity root and its own state, holding the device's endpoint on
+//! loopback, and the session that daemon starts as the person's shell, on the
+//! link it made for it.
 //!
 //! A workspace lives at a site ([`Site`]): a server of this machine that
 //! governs it, hosts it for the people in it, admits people at the entry it
@@ -1019,6 +1021,8 @@ impl Person {
             control: root.join("control.sock"),
             home,
             child: None,
+            daemon: None,
+            shell: None,
             announced: None,
             session: None,
             seeds: std::cell::Cell::new(false),
@@ -1156,6 +1160,8 @@ impl Person {
                 control,
                 home,
                 child: None,
+                daemon: None,
+                shell: None,
                 announced: None,
                 session: None,
                 seeds: std::cell::Cell::new(source.seeds.get()),
@@ -1235,7 +1241,7 @@ fn copy_machine(from: &Path, to: &Path) {
     }
 }
 
-/// One device of one person, running a session of its own on this machine.
+/// One device of one person on this machine: its daemon, and the session that daemon started.
 pub struct Device {
     /// The person whose device this is.
     pub person: String,
@@ -1244,7 +1250,14 @@ pub struct Device {
     /// The certificate its person's root signed for it, as a workspace admits it.
     pub cert: DeviceCert,
     home: tempfile::TempDir,
+    /// The session this test started, which stands in for the shell the daemon started for it
+    /// until that shell ends.
     child: Option<Child>,
+    /// The device's daemon, while it runs: the device's endpoint and state, and what started its
+    /// shell.
+    daemon: Option<Child>,
+    /// The shell the daemon started, once it listens: the session's own process.
+    shell: Option<u32>,
     control: PathBuf,
     /// What the session [`Self::begin`] started last said of its control socket, for
     /// [`Self::ready`]: whether it announced listening, sent once when the stream it prints on
@@ -1290,40 +1303,21 @@ impl Device {
         self.extra_env.push((key.to_owned(), value.into()));
     }
 
-    /// The process of the session this device runs, while it runs.
+    /// The process of the session this device runs, while it runs: the shell its daemon started.
     pub fn session_pid(&self) -> Option<u32> {
-        self.child.as_ref().map(Child::id)
+        self.shell
     }
 
-    /// Stop this device's session, as the person closing their laptop does.
+    /// Stop this device, as the person closing their laptop does: its session, then its daemon.
     pub fn stop(&mut self) {
-        let Some(child) = self.child.take() else {
-            return;
-        };
-        // The session leads its own process group: an ending reaches everything it started.
-        let pid = i32::try_from(child.id()).unwrap_or(0);
-        if pid > 0 {
-            // SAFETY: a signal to a process group this test started.
-            unsafe {
-                libc::killpg(pid, libc::SIGTERM);
-            }
+        // The session stands in for the shell the daemon started, and hands the stop on to it.
+        if let Some(session) = self.child.take() {
+            end_group(session);
         }
-        let mut child = child;
-        let deadline = Instant::now().checked_add(Duration::from_secs(20));
-        loop {
-            if let Ok(Some(_)) = child.try_wait() {
-                break;
-            }
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                // SAFETY: as above.
-                unsafe {
-                    libc::killpg(pid, libc::SIGKILL);
-                }
-                let _ = child.wait();
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
+        if let Some(daemon) = self.daemon.take() {
+            end_group(daemon);
         }
+        self.shell = None;
     }
 
     /// The device's own directory: its home, its config, its state and the identity root its
@@ -1358,7 +1352,7 @@ impl Device {
     /// The process this device's session runs as, while it runs: what a sample of everything the
     /// session started ([`tilo_test_env::idle::idle_wakeups`]) is rooted at.
     pub fn process(&self) -> Option<u32> {
-        self.child.as_ref().map(std::process::Child::id)
+        self.shell
     }
 
     /// What this device's session logged as a warning or an error, oldest first: what a failed step
@@ -1437,29 +1431,72 @@ impl Device {
         self.ready();
     }
 
-    /// Start this device's session: its own home, its own identity root, its own state and its own
-    /// control socket, as a device's session runs.
+    /// Start this device as a device starts: its daemon first, over its own home, identity root,
+    /// state and loopback endpoints, as the person's own service starts it, and then its session,
+    /// which asks that daemon to start it as the person's shell (`shells#start`) and so runs on the
+    /// link the daemon made for it.
     ///
-    /// What the session does before it listens — its boot and the join it was handed — runs in its
-    /// own process, so a test that starts several devices together ([`start_together`],
-    /// [`join_together`]) spends that once rather than once per device.
+    /// What the daemon and the session do before the session listens — the person's services
+    /// starting, the session's boot and the join it was handed — runs in their own processes, so a
+    /// test that starts several devices together ([`start_together`], [`join_together`]) spends
+    /// that once rather than once per device.
     fn begin(&mut self, invitation: Option<&str>) {
         let root = self.home.path().to_path_buf();
         let control = self.control.clone();
         let logs = self.logs_dir();
         std::fs::create_dir_all(&logs).expect("a directory for what the device logs");
-        // A device started again keeps what its session said when it stopped: what it answered
-        // last, a crash included, is what a step that fails after the restart reads.
+        // A device started again keeps what it said when it stopped: what it answered last, a
+        // crash included, is what a step that fails after the restart reads. The daemon and the
+        // session the daemon starts write here, as a device's journal holds both.
         let mut log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(logs.join("session.log"))
             .expect("a log for the session");
-        let _ = writeln!(log, "\n--- this device's session starts ---");
+        let _ = writeln!(log, "\n--- this device starts ---");
         let program = self
             .session
             .clone()
             .unwrap_or_else(|| tilo_test_env::package_binary!("tilo-session"));
+        // What the session prints once it listens, the last thing it prints: on the daemon's
+        // output, which the shell it starts writes to.
+        let listening = format!("TILO_TEST_CONTROL={}", control.display());
+        let (tell, told) = mpsc::channel();
+
+        let mut daemon = Command::new(tilo_test_env::sibling_binary("tilo-runtime", "tilo-runtime"));
+        self.device_env(&mut daemon, &logs);
+        daemon
+            // The daemon starts this test's build of the session as the person's shell.
+            .env(tilo_runtime::daemon::TEST_SHELL_ENV, &program)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(log.try_clone().expect("the log's own handle")));
+        let mut daemon = spawn_group(daemon, "tilo-runtime");
+        let out = daemon.stdout.take().expect("the daemon's output");
+        told_at_end(out, Some(listening), tell.clone(), &log);
+        self.daemon = Some(daemon);
+        // The daemon holds the device once its native endpoint answers, before the person's
+        // services start: from then on the session finds it there and asks it for its shell.
+        let native = root
+            .join("runtime/tilo")
+            .join(tilo_paths::machine::DAEMON_NATIVE);
+        let label = self.label.clone();
+        let logged = logs.join("session.log");
+        tilo_test_env::wait_for(
+            format!("{label}'s daemon to answer at {}", native.display()),
+            || {
+                if let Some(daemon) = self.daemon.as_mut()
+                    && let Ok(Some(ended)) = daemon.try_wait()
+                {
+                    panic!(
+                        "{label}'s daemon ended as it started ({ended}):\n{}",
+                        std::fs::read_to_string(&logged).unwrap_or_default()
+                    );
+                }
+                UnixStream::connect(&native).ok()
+            },
+        );
+
         let mut command = Command::new(&program);
         if self.seeds.get() {
             // It serves the development session's apps, and its launcher starts their windows on
@@ -1470,23 +1507,46 @@ impl Device {
                 &super::dev_apps::runtimes().trusted,
             );
         }
+        command.args([
+            "--backend",
+            "headless",
+            "--no-x11",
+            "--session-bus",
+            "none",
+            "--system-bus",
+            "none",
+            "--test-control",
+            control.to_str().expect("a socket path"),
+        ]);
+        if SEED_APPS.get().is_some() {
+            command.arg("--seed-apps");
+        }
+        self.device_env(&mut command, &logs);
+        if let Some(invitation) = invitation {
+            let path = root.join("invitation.txt");
+            std::fs::write(&path, invitation).expect("the invitation is written");
+            command.env(INVITATION_ENV, path);
+        }
         command
-            .args([
-                "--backend",
-                "headless",
-                "--no-x11",
-                "--session-bus",
-                "none",
-                "--system-bus",
-                "none",
-                "--test-control",
-                control.to_str().expect("a socket path"),
-            ])
-            .args(if SEED_APPS.get().is_some() {
-                vec!["--seed-apps"]
-            } else {
-                Vec::new()
-            })
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(log.try_clone().expect("the log's own handle")));
+        let mut child = spawn_group(command, "tilo-session");
+        // The session stands in for the shell the daemon started until that shell ends: its
+        // output ending is the session ending, the shell's start refused included.
+        let out = child.stdout.take().expect("the session's output");
+        told_at_end(out, None, tell, &log);
+        self.child = Some(child);
+        self.announced = Some(told);
+    }
+
+    /// Give `command`, this device's daemon or its session, the device's environment: its own
+    /// home, XDG tree, identity root, secrets and log filter, and the variables a test set
+    /// ([`Self::env`], [`share_view_periods`]). The session the daemon starts takes these from the
+    /// session that asks for it, as a login's session hands its own.
+    fn device_env(&self, command: &mut Command, logs: &Path) {
+        let root = self.home.path();
+        command
             .env("HOME", root.join("home"))
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_DATA_HOME", root.join("data"))
@@ -1509,7 +1569,7 @@ impl Device {
             .env(FILE_SECRETS_ENV, "1")
             // The session says at info why a join did not land, and its direct links say at debug
             // what they carried: what a failed step reads. A test that needs more of it asked
-            // first ([`log_sessions_at`]).
+            // first ([`log_sessions_at`]). The shell the daemon starts keeps the daemon's.
             .env(
                 "RUST_LOG",
                 SESSION_LOG.get().map_or(
@@ -1519,21 +1579,25 @@ impl Device {
                     String::as_str,
                 ),
             )
-            .env("TILO_APP_STDERR_DIR", &logs)
+            .env("TILO_APP_STDERR_DIR", logs)
             // Every launch writes its startup timeline, which the open-budget test reads.
             .env(tilo_startup_metrics::STARTUP_TIMELINE_ENV, "1")
             // The tests of this process mount the trees this device's session serves, so the
             // session records this process as the Files endpoint the login's unit would be.
             .env("TILO_FILES_ENDPOINT_PID", std::process::id().to_string())
             // This device hears the person's other devices on this machine's loopback: the
-            // sessions a test starts are beside each other there, and the network the runner
+            // devices a test starts are beside each other there, and the network the runner
             // gives them carries no multicast between them.
             .env(tilo_endpoint_reachability::NETWORKS_ENV, "127.0.0.1")
+            // This device's daemon is the person's own service, over their own profile.
+            .env_remove("TILO_RUNTIME_PROFILE")
+            .env_remove(runtime_collab::wire::shell::SHELL_FD_ENV)
             .env_remove("TILO_TEST_CONTROL")
             .env_remove("TILO_ADMIN_CONTROL")
-            .env_remove("TILO_SHELL_JOIN_INVITATION_FILE")
+            .env_remove(INVITATION_ENV)
             .env_remove("TILO_SHELL_JOIN_ADMINISTRATOR")
             .env_remove("WAYLAND_DISPLAY")
+            .env_remove("WAYLAND_SOCKET")
             .env_remove("DISPLAY");
         for (key, value) in &self.extra_env {
             command.env(key, value);
@@ -1549,57 +1613,10 @@ impl Device {
                     expiry.as_millis().to_string(),
                 );
         }
-        command
-            // A stop of the whole group reaches it, as a session is stopped.
-            .process_group(0)
-            // And a test that ends without its destructors — the runner killing it for running
-            // past its bound, above all — ends the session with it rather than leaving a session
-            // of its own running on the machine.
-            .dies_with_the_test()
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(log.try_clone().expect("the log's own handle")));
-        if let Some(invitation) = invitation {
-            let path = root.join("invitation.txt");
-            std::fs::write(&path, invitation).expect("the invitation is written");
-            command.env("TILO_SHELL_JOIN_INVITATION_FILE", path);
-        }
-        let mut child = command.spawn_locked().unwrap_or_else(|error| {
-            panic!(
-                "the session at {} starts: {error} (the program is there: {}; the directory it \
-                 is in is there: {})",
-                program.display(),
-                program.is_file(),
-                program.parent().is_some_and(Path::is_dir),
-            )
-        });
-        let mut out = BufReader::new(child.stdout.take().expect("the session's output"));
-        // What the session prints once it listens, the last thing it prints.
-        let listening = format!("TILO_TEST_CONTROL={}", control.display());
-        let (tell, told) = mpsc::channel();
-        let mut logged = log.try_clone().expect("the log's own handle");
-        std::thread::spawn(move || {
-            let mut line = String::new();
-            let mut announced = false;
-            loop {
-                line.clear();
-                match out.read_line(&mut line) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {}
-                }
-                if !announced && line.trim_end() == listening {
-                    announced = true;
-                    let _ = tell.send(true);
-                }
-                let _ = writeln!(logged, "{}", line.trim_end());
-            }
-            let _ = tell.send(false);
-        });
-        self.child = Some(child);
-        self.announced = Some(told);
     }
 
     /// Wait until the session [`Self::begin`] started opens its control socket, failing with what
-    /// it logged if it never does.
+    /// the device logged if it never does.
     fn ready(&mut self) {
         let Some(told) = self.announced.take() else {
             return;
@@ -1612,6 +1629,12 @@ impl Device {
                 self.log()
             ),
         }
+        self.shell = Some(listener_of(&self.control).unwrap_or_else(|| {
+            panic!(
+                "{}'s control socket names no process listening on it",
+                self.label
+            )
+        }));
     }
 
     /// Ask the device's session `request` , as `tilo-control` does, and return its answer.
@@ -2240,6 +2263,104 @@ impl std::fmt::Display for NoWindow<'_> {
 impl Drop for Device {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// The variable naming the invitation a session joins by as it starts.
+const INVITATION_ENV: &str = "TILO_SHELL_JOIN_INVITATION_FILE";
+
+/// Start `command`, the program `name`, as a device's process: leading its own process group, so a
+/// stop of the group reaches everything it started, and ending with the test, so a test that ends
+/// without its destructors (the runner killing it for running past its bound) leaves nothing of
+/// its own running on the machine.
+fn spawn_group(mut command: Command, name: &str) -> Child {
+    command.process_group(0).dies_with_the_test();
+    command.spawn_locked().unwrap_or_else(|error| {
+        let program = Path::new(command.get_program());
+        panic!(
+            "{name} at {} starts: {error} (the program is there: {}; the directory it is in is \
+             there: {})",
+            program.display(),
+            program.is_file(),
+            program.parent().is_some_and(Path::is_dir),
+        )
+    })
+}
+
+/// Copy what `out` prints into `log` until it ends, telling `tell` `true` once it prints
+/// `listening`, and `false` when it ends.
+fn told_at_end(
+    out: std::process::ChildStdout,
+    listening: Option<String>,
+    tell: mpsc::Sender<bool>,
+    log: &std::fs::File,
+) {
+    let mut logged = log.try_clone().expect("the log's own handle");
+    let mut out = BufReader::new(out);
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match out.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            if listening.as_deref() == Some(line.trim_end()) {
+                let _ = tell.send(true);
+            }
+            let _ = writeln!(logged, "{}", line.trim_end());
+        }
+        let _ = tell.send(false);
+    });
+}
+
+/// The process listening on the socket at `control`, as the kernel says of a connection to it.
+fn listener_of(control: &Path) -> Option<u32> {
+    use std::os::fd::AsRawFd as _;
+    let stream = UnixStream::connect(control).ok()?;
+    let mut peer = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
+    // SAFETY: the option is read into `peer`, whose size `length` says, on a socket this owns.
+    let read = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut peer).cast(),
+            &raw mut length,
+        )
+    };
+    (read == 0).then(|| u32::try_from(peer.pid).ok()).flatten()
+}
+
+/// Stop the process group `child` leads, as a device's process is stopped: asked first, and
+/// ended if it is still there after a while.
+fn end_group(mut child: Child) {
+    let pid = i32::try_from(child.id()).unwrap_or(0);
+    if pid > 0 {
+        // SAFETY: a signal to a process group this test started.
+        unsafe {
+            libc::killpg(pid, libc::SIGTERM);
+        }
+    }
+    let deadline = Instant::now().checked_add(Duration::from_secs(20));
+    loop {
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            // SAFETY: as above.
+            unsafe {
+                libc::killpg(pid, libc::SIGKILL);
+            }
+            let _ = child.wait();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

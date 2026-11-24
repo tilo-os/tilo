@@ -97,7 +97,9 @@ setup = "property-cases"
 # The programs the session's tests start beside their own: the lock screen
 # and the on-screen keyboard are apps of other packages, tilolang-process runs a task's programs, and the launcher is what
 # a test asks whether it takes the command line the session starts an app
-# with; Cargo builds none of them for a test. The harness builds them before any
+# with. Each device a test starts runs the device daemon, which starts the test's
+# session as its person's shell (`test-support` names that session to it). Cargo
+# builds none of them for a test. The harness builds them before any
 # test starts, in one Cargo invocation (tools/build-sibling-binaries.sh), and
 # hands each path to the run's tests as TILO_SIBLING_BIN_<bin>, which
 # tilo_test_env::sibling_binary answers with. A test starts only programs its
@@ -112,6 +114,7 @@ command = [
     "bash", "tools/build-sibling-binaries.sh",
     "tilo-lock-screen:tilo-lock-screen", "osk:osk",
     "tilolang-process:tilolang-process", "launcher:tilo-launcher",
+    "tilo-runtime:tilo-runtime=tilo-runtime/test-support",
 ]
 
 [[profile.default.scripts]]
@@ -220,7 +223,7 @@ setup = "vault-siblings"
 [scripts.setup.app-open-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "tilo-runtime:tilo-runtime",
+    "tilo-runtime:tilo-runtime=tilo-runtime/test-support",
     "model-providers:model-providers", "launcher:tilo-launcher",
     "tilolang-process:tilolang-process=app-launch",
 ]

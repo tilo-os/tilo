@@ -542,17 +542,8 @@ impl crate::seats::Shells for PersonShells {
         env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
         window: Option<std::os::fd::OwnedFd>,
     ) -> io::Result<std::process::Child> {
-        /// The shell, installed beside this daemon.
-        const SHELL: &str = "tilo-session";
         let daemon = self.daemon()?;
-        let program = std::env::current_exe()?
-            .parent()
-            .map(|dir| dir.join(SHELL))
-            .filter(|program| program.is_file())
-            .ok_or_else(|| {
-                io::Error::other(format!("{SHELL} is not installed beside tilo-runtime"))
-            })?;
-        let mut command = std::process::Command::new(program);
+        let mut command = std::process::Command::new(shell_program()?);
         command.args(args).stdin(std::process::Stdio::null());
         the_shells_environment(&mut command, env);
         daemon.start_shell(command, window)
@@ -584,6 +575,27 @@ fn the_shells_environment(
         .env_clear()
         .envs(std::env::vars_os().filter(|(name, _)| shell_keeps_from_the_daemon(name)))
         .envs(env.into_iter().filter(|(name, _)| shell_reads(name)));
+}
+
+/// Names the session program a test's daemon starts as its person's shell, in the daemon's own
+/// environment, where a test build of the session is not installed beside the daemon's.
+#[cfg(feature = "test-support")]
+pub const TEST_SHELL_ENV: &str = "TILO_TEST_SHELL";
+
+/// The shell the daemon starts: the session installed beside it.
+#[cfg(target_os = "linux")]
+fn shell_program() -> io::Result<PathBuf> {
+    /// The shell, installed beside this daemon.
+    const SHELL: &str = "tilo-session";
+    #[cfg(feature = "test-support")]
+    if let Some(program) = std::env::var_os(TEST_SHELL_ENV) {
+        return Ok(PathBuf::from(program));
+    }
+    std::env::current_exe()?
+        .parent()
+        .map(|dir| dir.join(SHELL))
+        .filter(|program| program.is_file())
+        .ok_or_else(|| io::Error::other(format!("{SHELL} is not installed beside tilo-runtime")))
 }
 
 /// Whether the shell the daemon starts is handed the variable `name` the account asked it with:

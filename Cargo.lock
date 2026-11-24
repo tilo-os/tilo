@@ -21098,6 +21098,7 @@ dependencies = [
  "typst-pdf",
  "typst-render",
  "wat",
+ "workspace-hack",
 ]
 
 [[package]]

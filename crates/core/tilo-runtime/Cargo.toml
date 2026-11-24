@@ -30,8 +30,9 @@ dev-overrides = [
 # it: the server's agent session, which links every web app.
 agents = ["tilo-server/agents"]
 # Lets a test hand a session it runs in its own process the shell's end of a link the daemon
-# made ([`daemon::Running::link_shell`]). A production start never builds it: its shell is a
-# process the daemon starts itself.
+# made ([`daemon::Running::link_shell`]), and a test's daemon start the test build of the session
+# as its person's shell ([`daemon::TEST_SHELL_ENV`]), which is not installed beside it. A
+# production start never builds it: its shell is the session installed beside the daemon.
 test-support = []
 
 [[bin]]

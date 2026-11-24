@@ -1671,8 +1671,8 @@ impl crate::seats::Shells for Linked {
 }
 
 /// A daemon that runs as its person's own account starts their shell when that account asks, and
-/// answers how it ended; no other account starts one, and a request that asks for one founds
-/// nothing.
+/// answers how it ended, the shell asked for before the person's services run once they do; no
+/// other account starts one, and a request that asks for one founds nothing.
 #[test]
 fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
     use io::{BufRead as _, Write as _};
@@ -1714,7 +1714,6 @@ fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
         frames,
         to_agents: None,
     });
-    native.seats.serve(std::sync::Arc::new(Linked::default()));
     let socket = dir.path().join("native.sock");
     let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
     {
@@ -1747,8 +1746,14 @@ fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
 
     let start =
         json!({"native": "shells#start", "args": ["-c", "exit \"$CODE\""], "env": {"CODE": "7"}});
+    // Asked while the person's services still start (a sign-in as the computer boots): the shell
+    // starts once they run.
     let mut person = connect(DAEMON);
-    let started = ask(&mut person, &start);
+    writeln!(person.1, "{start}").unwrap();
+    native.seats.serve(std::sync::Arc::new(Linked::default()));
+    let mut line = String::new();
+    person.0.read_line(&mut line).expect("the daemon answers");
+    let started: Value = serde_json::from_str(&line).unwrap();
     let pid = started["pid"].clone();
     assert!(pid.is_u64(), "{started}");
     let ended = ask(&mut person, &json!({"native": "shells#wait", "pid": pid}));

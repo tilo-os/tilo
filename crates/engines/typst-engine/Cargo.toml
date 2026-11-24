@@ -19,6 +19,7 @@ comemo = "0.5"
 tilo-typst-fonts = { version = "0.1.0", path = "../tilo-typst-fonts" }
 image = { workspace = true, features = ["png"] }
 serde = { workspace = true, features = ["derive"] }
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(windows)'.dependencies]
 # The system's colour-emoji face completes Typst's set on Windows, which ships none.
