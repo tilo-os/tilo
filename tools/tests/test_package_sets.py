@@ -87,7 +87,6 @@ class PackageSetsTests(unittest.TestCase):
         # Each has an x86_64 and an aarch64 code path of its own; the derivation must keep
         # finding them, whatever else it finds.
         known = {
-            "tilo-agent-session": "seccomp confinement",
             "app-cli": "ISA detection",
             "tilo-environment": "the host architecture",
             "ush": "ELF loader, runtime image by ISA",
@@ -96,7 +95,6 @@ class PackageSetsTests(unittest.TestCase):
             "windows-vm": "the guest architecture",
             "local-model-service": "CMAKE_SYSTEM_PROCESSOR, the AOT CPU check",
             "imager-backend": "capture build --arch",
-            "store": "the native target in tests",
             "launcher": "seccomp in tests",
             "tilo-app-builder": "the other architecture in tests",
         }
@@ -112,7 +110,7 @@ class PackageSetsTests(unittest.TestCase):
         packages = {name: {} for name in (*package_sets.WASM_ALSO, "native-only")}
         self.assertEqual(package_sets.wasm_crates(packages),
                          {"tilo-session-client", "tilo-key-group", "tilo-peer-state",
-                          "tilo-workspace-service"})
+                          "tilo-workspace-service", "tilolang-window"})
 
     def test_vendored_test_crates_are_workspaces_the_runner_tests_by_default(self):
         self.assertIsInstance(package_sets.VENDORED_TEST_CRATES, dict)

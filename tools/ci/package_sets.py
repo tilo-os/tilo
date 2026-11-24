@@ -52,6 +52,9 @@ WASM_ALSO = {
     "tilo-key-group": (),
     "tilo-peer-state": (),
     "tilo-workspace-service": (),
+    # The staged window tilolang-web builds its page's apps in: a crate the page
+    # compiles for the browser, with no wasm-bindgen of its own.
+    "tilolang-window": (),
 }
 
 
