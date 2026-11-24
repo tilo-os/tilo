@@ -466,6 +466,9 @@ settings-store = { package = "tilo-settings-store", path = "../../desktop/settin
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
+# What a session keeps for the next one, held in the test's process as the device's daemon keeps
+# it.
+tilo-session-client = { path = "../../core/session-client", features = ["test-support"] }
 # A test runs a session in its own process as the device's daemon's shell
 # (`shell_session`), on the link the daemon hands out behind this feature.
 tilo-runtime = { path = "../../core/tilo-runtime", features = ["test-support"] }

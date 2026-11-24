@@ -9,6 +9,10 @@
 //! session bus its environment names, or on the one `--session-bus` names instead.
 //! SIGTERM, SIGINT and SIGHUP end the session as ending on its own does.
 
+/// This computer's Windows programs, which the session's system service publishes.
+#[cfg(target_os = "linux")]
+mod windows_manager;
+
 #[cfg(target_os = "linux")]
 use tilo_session::desktop_services::{Bus, Buses};
 #[cfg(target_os = "linux")]

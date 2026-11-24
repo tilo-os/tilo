@@ -34,7 +34,7 @@ use crate::workspaces::providers::Reach;
 
 /// Apply the typed actions of the resources [`Declared`] names on this device from now on, for
 /// its own callers and the devices of the workspaces it keeps.
-pub(crate) fn register(workspaces: &Workspaces) {
+pub fn register(workspaces: &Workspaces) {
     workspaces.providers().provide(
         RESOURCE_PROVIDER,
         RESOURCE_PROVIDER,
