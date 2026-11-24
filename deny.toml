@@ -37,7 +37,6 @@ exclude = [
     "terminal",
     "tilo-console",
     "typst-editor",
-    "weather",
 ]
 
 [advisories]

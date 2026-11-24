@@ -1508,7 +1508,6 @@ doc = false
 "wayland-protocols-wlr-0_3_10" = { package = "wayland-protocols-wlr", version = "^0.3.10", default-features = false, features = ["client", "server", "wayland-client", "wayland-server"] }
 "wayland-server-0_31_13" = { package = "wayland-server", version = "^0.31.13", default-features = false, features = [] }
 "wayland-sys-0_31_11" = { package = "wayland-sys", version = "^0.31.11", default-features = false, features = ["client", "dlopen", "egl", "once_cell"] }
-"weather" = { path = "../../apps/weather", default-features = false, features = ["samples"] }
 "web-async-0_1_5" = { package = "web-async", version = "^0.1.5", default-features = false, features = ["tracing"] }
 "web-time-1_1_0" = { package = "web-time", version = "^1.1.0", default-features = false, features = ["serde"] }
 "web-transport-proto-0_6_3" = { package = "web-transport-proto", version = "^0.6.3", default-features = false, features = [] }
@@ -4261,7 +4260,6 @@ doc = false
 "wayland-protocols-wlr-0_3_10" = { package = "wayland-protocols-wlr", version = "^0.3.10", default-features = false, features = ["client", "server", "wayland-client", "wayland-server"] }
 "wayland-server-0_31_13" = { package = "wayland-server", version = "^0.31.13", default-features = false, features = [] }
 "wayland-sys-0_31_11" = { package = "wayland-sys", version = "^0.31.11", default-features = false, features = ["client", "dlopen", "egl", "once_cell"] }
-"weather" = { path = "../../apps/weather", default-features = false, features = ["samples"] }
 "web-async-0_1_5" = { package = "web-async", version = "^0.1.5", default-features = false, features = ["tracing"] }
 "web-time-1_1_0" = { package = "web-time", version = "^1.1.0", default-features = false, features = ["serde"] }
 "web-transport-proto-0_6_3" = { package = "web-transport-proto", version = "^0.6.3", default-features = false, features = [] }

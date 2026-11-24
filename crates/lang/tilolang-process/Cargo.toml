@@ -31,6 +31,7 @@ app-launch = [
     "dep:tilo-api-client",
     "dep:tilolang-calendar",
     "dep:tilo-feeds",
+    "dep:tilo-weather",
     "dep:video-edit",
     "dep:video-picture",
     "dep:passwords-engine",
@@ -210,6 +211,8 @@ workspace-hack = { version = "0.1" }
 tilo-api-client = { version = "0.1.0", path = "../../engines/tilo-api-client", optional = true }
 # The Feeds app's engine: its feeds read away from the frame, and OPML read and written.
 tilo-feeds = { path = "../../engines/feeds", optional = true }
+# The Weather app's engine: its forecasts, air quality and place search read away from the frame.
+tilo-weather = { path = "../../engines/weather", optional = true }
 video-edit = { package = "tilo-video-edit", path = "../../engines/video-edit", default-features = false, optional = true }
 video-picture = { package = "tilo-video-picture", path = "../../engines/video-picture", default-features = false, features = ["decode", "gst"], optional = true }
 # The Print Centre's printers and print jobs, through the system's print service.

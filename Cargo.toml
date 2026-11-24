@@ -142,7 +142,6 @@ members = [
     "apps/thumbnails",
     "apps/totp",
     "apps/typst-editor",
-    "apps/weather",
     "apps/windows",
 
     # Agent
@@ -349,6 +348,7 @@ members = [
     "crates/platform/tilo-files",
     "crates/engines/tilo-archive",
     "crates/engines/feeds",
+    "crates/engines/weather",
     "crates/integrations/tilo-cloud-files",
     "crates/platform/tilo-location",
     "crates/desktop/tilo-system-resources",

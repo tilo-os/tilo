@@ -57,32 +57,12 @@ reason = "A sample label in the widget that trips on a replaced widget."
 # the shot shows, not this window's own copy.
 
 [[allow]]
-file = "apps/weather/src/app.rs"
-text = "Par"
-reason = "Sample search query behind the `samples` feature, never a person's own window."
-
-[[allow]]
-file = "apps/weather/src/app.rs"
-text = "Reykjav"
-reason = "Sample place behind the `samples` feature, never a person's own window."
-
-[[allow]]
-file = "apps/weather/src/app.rs"
-text = "Zzqx"
-reason = "Sample query with no results behind the `samples` feature, never a person's own window."
-
-[[allow]]
 file = "apps/terminal/src/main_body.rs"
 text = "Writing"
 reason = "A name the headless harness gives a new environment, never a person's own window."
 
 [[allow]]
 file = "apps/totp/src/list.rs"
-text = "Ag"
-reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
-
-[[allow]]
-file = "apps/weather/src/presentation.rs"
 text = "Ag"
 reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
 

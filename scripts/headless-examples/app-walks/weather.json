@@ -1,0 +1,116 @@
+{
+  "app": "weather",
+  "said": "Weather",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.weather",
+    "package": "weather"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Weather first, on a workspace that follows no place yet",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "empty",
+      "said": "Meet the one empty state, and the way to follow the first place",
+      "ops": [
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "No places yet"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Add place"
+          }
+        }
+      ]
+    },
+    {
+      "id": "save",
+      "said": "Save a place, as an agent or a search pick does",
+      "ops": [
+        {
+          "use": {
+            "kind": "Locations",
+            "action": "save-place",
+            "args": {
+              "name": "Amsterdam",
+              "latitude": 52.374,
+              "longitude": 4.8897,
+              "region": "North Holland",
+              "country": "Netherlands"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Amsterdam"
+          }
+        }
+      ]
+    },
+    {
+      "id": "shown",
+      "said": "The place a person follows stands first, with its own commands over its forecast",
+      "ops": [
+        {
+          "wait_for": {
+            "shown": "Move to top"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Refresh"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Places"
+          }
+        }
+      ]
+    },
+    {
+      "id": "search",
+      "said": "Add place opens the search, which the Esc key gives up",
+      "ops": [
+        {
+          "press_any": [
+            "Add place"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Add a place"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Cancel"
+          }
+        }
+      ]
+    }
+  ]
+}

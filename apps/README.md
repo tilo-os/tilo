@@ -173,7 +173,6 @@ touch. Expanded neighbouring targets must not overlap.
 | `camera`       | Camera with QR/barcode and multi-page document scanning; typed SANE capture, reversible crop/rotation, and shared structured OCR; captured photos and videos open in their owning media apps; live v4l2 capture via GStreamer.      |
 | `imager`       | Install-media creator + Tilo installer ("Install Media"): `lsblk` target enumeration, dd-style ISO write + verify, structured/unattended install config.                                                                            |
 | `maps`         | OpenStreetMap client: Nominatim search, OSRM routing (car/bike/foot), Transitous/MOTIS transit; Vello vector basemap; device location via the XDG Location portal (GeoClue2).                                                       |
-| `weather`      | Weather from the keyless Open-Meteo API: current conditions, 24h chart, 7-day forecast; reads display units from the shared Settings store.                                                                                         |
 
 ## Communication
 
@@ -188,7 +187,7 @@ touch. Expanded neighbouring targets must not overlap.
 
 | Crate          | What it is                                                                                                                                                                                              |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `settings`     | OS settings hub; owns the shared external-accounts and region/format stores consumed by Mail/Calendar/Sheets/Weather; drives hardware via the `os-actions` crate.                                       |
+| `settings`     | OS settings hub; owns the shared external-accounts and region/format stores consumed by Mail/Calendar/Sheets; drives hardware via the `os-actions` crate.                                       |
 | `permissions`  | Tilo's OS-wide permission model (roles / members / contexts / registered `PermissionDef`s) — both a reusable library and a standalone role/permission editor.                                           |
 | `themes`       | Theme studio: browse presets, edit the OS token set live, duplicate/export themes.                                                                                                                      |
 | `store`        | Unified Tilo app store: verified registry packages plus Flatpak/Flathub search, details, remotes, install, update, launch, and removal.                                                                 |

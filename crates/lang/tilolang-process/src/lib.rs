@@ -65,6 +65,11 @@ pub mod testing;
 ))]
 pub mod video_engine;
 pub mod wait;
+#[cfg(all(
+    feature = "app-launch",
+    any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+))]
+pub mod weather_engine;
 pub mod web;
 #[cfg(feature = "app-launch")]
 pub mod window;

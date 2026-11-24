@@ -21794,6 +21794,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-weather"
+version = "0.1.0"
+dependencies = [
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tilo-net",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-web-search"
 version = "0.1.0"
 dependencies = [
@@ -22441,6 +22452,7 @@ dependencies = [
  "tilo-video-edit",
  "tilo-video-picture",
  "tilo-wake",
+ "tilo-weather",
  "tilo-workspace-service",
  "tilolang",
  "tilolang-calendar",
@@ -25064,31 +25076,6 @@ dependencies = [
  "log",
  "once_cell",
  "pkg-config",
-]
-
-[[package]]
-name = "weather"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "runtime-dylib",
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-history",
- "tilo-locale",
- "tilo-net",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing-subscriber",
- "uuid",
- "weather",
- "workspace-hack",
 ]
 
 [[package]]
@@ -28096,7 +28083,6 @@ dependencies = [
  "wayland-scanner",
  "wayland-server",
  "wayland-sys",
- "weather",
  "web-async",
  "web-time",
  "web-transport-proto",
