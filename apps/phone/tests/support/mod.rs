@@ -196,7 +196,9 @@ impl Approver for RootSigns {
 
 /// Ask `read` until it answers `Ok`; what it answered last is the failure.
 pub fn until<T>(what: &str, mut read: impl FnMut() -> Result<T, String>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(60))
+        .expect("a minute from now is on the clock");
     loop {
         match read() {
             Ok(value) => return value,

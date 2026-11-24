@@ -127,8 +127,8 @@ impl Server {
         let workspaces = self.host.workspaces();
         let file = workspaces.keep_app_file(&self.workspace, &bytes).unwrap();
         let release = AppRelease {
-            app: manifest.id.to_string(),
-            version: manifest.version.to_string(),
+            app: manifest.id.clone(),
+            version: manifest.version.clone(),
             surface: String::new(),
             package: hex::encode(read.meta.id.0),
             publisher: hex::encode(read.meta.root.publisher_identity),
