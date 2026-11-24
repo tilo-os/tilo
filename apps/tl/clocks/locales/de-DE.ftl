@@ -169,6 +169,8 @@ d-tp56af3m-w = W
 
 d-aozz4wlf = Neuer Wecker
     .doc = Stellt einen Wecker: zur Tageszeit `when`, an den Tagen, an denen er sich wiederholt, klingelnd auf `rings_on`, auf jedem Gerät der Person, wenn nichts genannt ist.
+    .w-an-alarm-rings-at-an-hour = Ein Wecker klingelt zu einer Stunde von 0 bis 23
+    .w-an-alarm-rings-at-a-minute = Ein Wecker klingelt zu einer Minute von 0 bis 59
 
 d-aozz4wlf-label = Bezeichnung
 
@@ -182,6 +184,8 @@ d-aozz4wlf-rings_on = Klingelt auf
 
 d-fivi3e67 = Wecker bearbeiten
     .doc = Ändert die Worte, die Zeit und die Tage eines Weckers.
+    .w-an-alarm-rings-at-an-hour = Ein Wecker klingelt zu einer Stunde von 0 bis 23
+    .w-an-alarm-rings-at-a-minute = Ein Wecker klingelt zu einer Minute von 0 bis 59
 
 d-fivi3e67-label = Bezeichnung
 
