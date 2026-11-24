@@ -1158,11 +1158,12 @@ impl Daemon {
             identity.place.dir(),
             identity.key.verifying_key().to_bytes(),
         ));
+        records.bind(&workspaces);
         records.carry_into(&identity.cert.user_public_key);
         workspaces.hold_device_records(Arc::clone(&records));
         workspaces.copies().publish_own(
             tilo_actions::remote::DEVICE_SETTINGS,
-            tilo_workspace_service::workspaces::OwnReaders::Workspace,
+            tilo_workspace_service::workspaces::OwnReaders::ItsPersonAndAdministrators,
             records,
         );
         let home = Arc::new(super::home::Home::new(

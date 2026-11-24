@@ -9,9 +9,10 @@
 //! reader of a record reads them the way it reads a workspace's.
 //!
 //! Writes are typed actions on the one dispatch: `settings#set` and `settings#remove` on the
-//! `tilo.device` provider, answered by the store here. The device alone reads them: its operating
-//! system, the person whose certificate names it on this computer, an app on this device, and no
-//! one else, before or after the device is claimed.
+//! `tilo.device` provider, answered by the store here. In its own space the device alone reads
+//! them: its operating system, the person whose certificate names it on this computer, and an app
+//! on this device. In the person's workspace the rule a machine's controls admit by holds: their
+//! person from any of their devices, and the administrators of a workspace this device serves.
 //!
 //! When the person's services start, the same store is published in the person's own workspace
 //! (app [`tilo_actions::remote::DEVICE_SETTINGS`]), so the settings the device kept before it was
@@ -24,8 +25,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tilo_actions::remote::{
-    ActionCallError, Caller, DEVICE_SETTINGS, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, RESOURCE_READ_REFUSED, RemoteActionMessage, ResourceAddress,
+    ActionCallError, Caller, DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, InvocationReceipt,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, ResourceAddress,
     ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake, device_record_space,
 };
 use tilo_lock::MutexRecover as _;
@@ -54,11 +55,19 @@ const MAX_NAME_BYTES: usize = 128;
 pub struct DeviceRecords {
     /// The device whose records these are.
     device: [u8; 32],
+    /// The space they are read in before anyone claims the device.
+    space: String,
     /// Where they are kept.
     dir: PathBuf,
     /// The record spaces their readers reach them in: the device's own, and the person's own
     /// workspace once the person's services start.
     spaces: Mutex<Vec<String>>,
+    /// The person whose certificate names the device, once one does: who reads its settings in
+    /// their workspace, from any of their devices.
+    person: Mutex<Option<[u8; 32]>>,
+    /// The workspaces this device keeps, once the person's services run: who administers one
+    /// decides who else reads the settings.
+    workspaces: std::sync::OnceLock<std::sync::Weak<super::workspaces::ServiceWorkspaces>>,
     /// The records as they stand.
     records: Mutex<BTreeMap<String, Value>>,
     /// Moves on with every change, waking every reader following one.
@@ -108,13 +117,23 @@ impl DeviceRecords {
                 "this device's records could not be read"
             ),
         }
+        let space = device_record_space(&device);
         Self {
             device,
+            space: space.clone(),
             dir,
-            spaces: Mutex::new(vec![device_record_space(&device)]),
+            spaces: Mutex::new(vec![space]),
+            person: Mutex::default(),
+            workspaces: std::sync::OnceLock::new(),
             records: Mutex::new(records),
             revision: tokio::sync::watch::Sender::new(0),
         }
+    }
+
+    /// The workspaces this device keeps, bound once the person's services run: what decides
+    /// whether a caller administers one of them.
+    pub fn bind(&self, workspaces: &Arc<super::workspaces::ServiceWorkspaces>) {
+        let _ = self.workspaces.set(Arc::downgrade(workspaces));
     }
 
     /// The records the device whose key is `device` keeps below the login's directory `place`.
@@ -126,6 +145,7 @@ impl DeviceRecords {
     /// Take the records into the person's own workspace, so their reads there answer the same
     /// settings: what the person's services do when they start.
     pub fn carry_into(&self, person: &[u8; 32]) {
+        *self.person.lock_recover() = Some(*person);
         let workspace = tilo_server_protocol::servers::person_workspace_id(person);
         let mut spaces = self.spaces.lock_recover();
         if !spaces.contains(&workspace) {
@@ -185,13 +205,17 @@ impl DeviceRecords {
         *self.revision.borrow()
     }
 
-    /// Whether the device's records are `caller`'s to read and write: its operating system, this
-    /// device itself (the person whose certificate names it on this computer, their apps), and an
-    /// app on this device before anyone is founded here. No other device, agent, bot, automation
-    /// or stranger reads them, then or later.
-    fn admits(&self, caller: &Caller) -> Result<(), ActionCallError> {
+    /// Whether the device's records are `caller`'s to read and write in `workspace`.
+    ///
+    /// Its own space, before anyone claims it, is the device's alone: its operating system, the
+    /// person whose certificate names it on this computer, and an app on this device. In the
+    /// person's workspace the rule a machine's controls admit by holds: the device's person, from
+    /// any of their devices, and the administrators of a workspace this device serves
+    /// ([`tilo_workspace_service::workspaces::Workspaces::administers_person`]). No other member, agent,
+    /// bot, automation or stranger reads them.
+    fn admits(&self, caller: &Caller, workspace: &str) -> Result<(), ActionCallError> {
         let refused = || ActionCallError::Refused {
-            reason: RESOURCE_READ_REFUSED.into(),
+            reason: DEVICE_SETTINGS_REFUSED.into(),
         };
         if caller.is_system() {
             return Ok(());
@@ -208,11 +232,34 @@ impl DeviceRecords {
         if caller.device_public_key() == Some(&self.device) {
             return Ok(());
         }
-        // An app on this device, acting for nobody because nobody is founded here yet.
-        if acting.app().is_some() && caller.user_public_key().is_none() {
+        if workspace == self.space {
+            // An app on this device, acting for nobody because nobody is founded here yet.
+            return if acting.app().is_some() && caller.user_public_key().is_none() {
+                Ok(())
+            } else {
+                Err(refused())
+            };
+        }
+        let Some(person) = caller.user_public_key() else {
+            return Err(refused());
+        };
+        if self.person.lock_recover().as_ref() == Some(person) {
             return Ok(());
         }
-        Err(refused())
+        let Some(workspace) = caller.workspace().map(str::to_owned) else {
+            return Err(refused());
+        };
+        let Some(served) = self.workspaces.get().and_then(std::sync::Weak::upgrade) else {
+            return Err(refused());
+        };
+        let person = *person;
+        let administers = super::workspaces::block_on_owned(async move {
+            served
+                .copies()
+                .administers_person(&workspace, &person)
+                .await
+        });
+        if administers { Ok(()) } else { Err(refused()) }
     }
 
     /// Whether `address` names a record of this device, read in one of the spaces its readers
@@ -239,7 +286,7 @@ impl DeviceRecords {
         action: &str,
         args: &serde_json::Map<String, Value>,
     ) -> Result<Value, ActionCallError> {
-        self.admits(caller)?;
+        self.admits(caller, &self.space)?;
         let invalid = |why: String| ActionCallError::InvalidRequest { reason: why };
         let name = args
             .get("name")
@@ -301,7 +348,7 @@ impl ResourceReads for DeviceRecords {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
-        self.admits(caller)?;
+        self.admits(caller, &address.workspace)?;
         if !self.names(address) {
             return Ok(ResourceCopy::Absent);
         }
@@ -317,7 +364,7 @@ impl ResourceReads for DeviceRecords {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(self.admits(caller).and_then(|()| {
+        Pending::ready(self.admits(caller, &address.workspace).and_then(|()| {
             if self.names(address) {
                 Ok(())
             } else {
@@ -334,7 +381,7 @@ impl ResourceReads for DeviceRecords {
         workspace: &str,
         app: &str,
     ) -> Result<Vec<ResourceAddress>, ActionCallError> {
-        self.admits(caller)?;
+        self.admits(caller, workspace)?;
         if app != DEVICE_SETTINGS
             || !self
                 .spaces
@@ -373,7 +420,7 @@ impl ResourceReads for DeviceRecords {
         address: &ResourceAddress,
         wake: &ResourceWake,
     ) -> Result<(), ActionCallError> {
-        self.admits(caller)?;
+        self.admits(caller, &address.workspace)?;
         if !self.names(address) {
             return Ok(());
         }

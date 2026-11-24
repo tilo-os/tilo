@@ -19,6 +19,13 @@ const DEVICE: [u8; 32] = [7; 32];
 const PERSON: [u8; 32] = [9; 32];
 const STRANGER: [u8; 32] = [1; 32];
 
+/// This device's public key, as its records are addressed.
+fn device_key() -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(&DEVICE)
+        .verifying_key()
+        .to_bytes()
+}
+
 /// The device's own actions, keeping its records below `dir`.
 fn device(dir: &Path) -> crate::device::unclaimed::DeviceOnly {
     let keys = tilo_device_identity::IdentityPaths::under(dir.join("identity"));
@@ -119,13 +126,13 @@ async fn a_device_reads_writes_and_follows_its_own_setting_before_anyone_claims_
     let dir = tempfile::tempdir().unwrap();
     let provider = device(dir.path());
     let caller = Caller::local_system();
-    let space = tilo_actions::remote::device_record_space(&DEVICE);
+    let space = tilo_actions::remote::device_record_space(&device_key());
     let reads = provider
         .resource_reads()
         .expect("the device answers reads of its own records");
 
     // Nothing is written yet: the record is absent, not refused.
-    let address = device_record_address(&DEVICE, "keymap");
+    let address = device_record_address(&device_key(), "keymap");
     assert_eq!(
         reads
             .read(&caller, &address)
@@ -249,7 +256,7 @@ async fn the_same_setting_is_read_in_the_persons_workspace_once_they_found_it() 
     let records: Arc<DeviceRecords> = provider.records();
     records.carry_into(&PERSON);
     let workspace = tilo_server_protocol::servers::person_workspace_id(&PERSON);
-    let as_person = Caller::authenticated(PERSON, DEVICE);
+    let as_person = Caller::authenticated(PERSON, device_key());
     assert_eq!(
         reading(&reads, &as_person, &workspace, "network").await,
         json!({"wifi": "home"})
@@ -267,8 +274,8 @@ async fn the_same_setting_is_read_in_the_persons_workspace_once_they_found_it() 
         "a stranger is refused: {refused:?}"
     );
     let refused = reads.read(
-        &Caller::authenticated(PERSON, DEVICE),
-        &device_record_address(&DEVICE, "network"),
+        &Caller::authenticated(PERSON, device_key()),
+        &device_record_address(&device_key(), "network"),
     );
     assert!(
         refused.is_ok(),

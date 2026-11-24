@@ -76,6 +76,13 @@ fn write_refused() -> ActionCallError {
     }
 }
 
+/// What a caller that may not read a device's own settings is refused with: who may.
+fn device_refused() -> ActionCallError {
+    ActionCallError::Refused {
+        reason: tilo_actions::remote::DEVICE_SETTINGS_REFUSED.into(),
+    }
+}
+
 impl RecordReads {
     /// The reader of a device's action service: the workspaces it holds, and the app action
     /// server it was given.
@@ -155,7 +162,10 @@ impl RecordReads {
     /// published for the workspace's readers ([`super::OwnReaders::Workspace`]), every other
     /// caller reads it as that workspace's read rules decide ([`Self::decides`]), exactly as they
     /// read any record of it: the person at a page of theirs, a member's view, an agent; otherwise
-    /// nobody else does.
+    /// nobody else does. Where it is published for a machine's controllers
+    /// ([`super::OwnReaders::ItsPersonAndAdministrators`]), the person reads it from any of their
+    /// devices and the administrators of a workspace this device serves read it
+    /// ([`Workspaces::administers_person`]); nobody else does.
     fn own(
         &self,
         caller: &Caller,
@@ -176,13 +186,37 @@ impl RecordReads {
         if mine {
             return Some(Ok(reads));
         }
-        if readers == super::OwnReaders::ThisDevice {
-            return Some(Err(refused()));
+        match readers {
+            super::OwnReaders::ThisDevice => Some(Err(refused())),
+            super::OwnReaders::Workspace => {
+                let admitted = Self::kept_here(&workspaces, &address.workspace)
+                    .ok_or_else(refused)
+                    .and_then(|state| self.decides(&state, caller, address, ActionKind::Read));
+                Some(admitted.map(|()| reads))
+            }
+            // The rule a machine's controls admit by: this device's person, from any of their
+            // devices, and an administrator of a workspace this device serves.
+            super::OwnReaders::ItsPersonAndAdministrators => {
+                let Some(person) = caller.user_public_key() else {
+                    return Some(Err(device_refused()));
+                };
+                if *person == device.user_public_key {
+                    return Some(Ok(reads));
+                }
+                let Some(workspace) = caller.workspace().map(str::to_owned) else {
+                    return Some(Err(device_refused()));
+                };
+                let (workspaces, person) = (workspaces, *person);
+                let administers = crate::device_documents::on_its_own(async move {
+                    workspaces.administers_person(&workspace, &person).await
+                });
+                Some(if administers {
+                    Ok(reads)
+                } else {
+                    Err(device_refused())
+                })
+            }
         }
-        let admitted = Self::kept_here(&workspaces, &address.workspace)
-            .ok_or_else(refused)
-            .and_then(|state| self.decides(&state, caller, address, ActionKind::Read));
-        Some(admitted.map(|()| reads))
     }
 
     /// Whether `caller` may take `kind` at `address` now, decided by the workspace the address

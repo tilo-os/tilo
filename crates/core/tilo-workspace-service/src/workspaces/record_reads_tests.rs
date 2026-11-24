@@ -3,11 +3,16 @@
 
 #![cfg(feature = "agents")]
 
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
-use tilo_actions::remote::{ActionCallError, Caller, ResourceAddress, ResourceCopy, ResourceReads};
+use ed25519_dalek::SigningKey;
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath, roles};
+use tilo_actions::remote::{
+    ActionCallError, Caller, DEVICE_SETTINGS, Pending, RemoteActionMessage, ResourceAddress,
+    ResourceCopy, ResourceReadRequest, ResourceReads,
+};
+use tilo_user_identity::DeviceCapabilities;
 
 use super::super::OwnWorkspaceOffer;
-use super::super::fixtures::{governor, test_host};
+use super::super::fixtures::{device_cert, entry_join_as, governor, record_grants, test_host};
 
 const NOTES: &str = "tilo.notes";
 /// Someone no workspace here admitted.
@@ -786,5 +791,128 @@ async fn a_grant_that_reads_a_record_alone_changes_nothing_of_it() {
     .await;
     let write = write_with(reads, &bo(NOTES), &h.kitchen, NOTES, "").await;
     assert!(write.is_ok(), "{write:?}");
+    h.server.shutdown().await;
+}
+
+/// A device's own settings, as the store answers them once the reader let its caller through.
+struct Settings;
+
+impl ResourceReads for Settings {
+    fn read(&self, _: &Caller, _: &ResourceAddress) -> Result<ResourceCopy, ActionCallError> {
+        Ok(ResourceCopy::reading(
+            serde_json::json!({"layout": "us"}),
+            None,
+        ))
+    }
+
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: ResourceReadRequest,
+    ) -> Pending<RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+}
+
+/// A device's own settings are read by its person from any of their devices and by the
+/// administrators of a workspace it serves; another member and that member's agent are refused
+/// with the rule in words.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_devices_own_settings_are_read_by_its_person_and_served_workspace_administrators() {
+    use tilo_server_protocol::workspaces::Role;
+
+    let h = host().await;
+    let workspaces = h.workspaces();
+    // Bob joins Kitchen as a member; Carol joins and is made one of its administrators.
+    let bob_root = SigningKey::from_bytes(&[2; 32]);
+    let (bob_key, bob_cert) = device_cert(&bob_root, "Bob's", DeviceCapabilities::primary());
+    entry_join_as(
+        workspaces,
+        &h.cert,
+        &h.kitchen,
+        (&bob_key, &bob_cert),
+        1,
+        Role::Editor,
+    )
+    .await;
+    let carol_root = SigningKey::from_bytes(&[3; 32]);
+    let (carol_key, carol_cert) = device_cert(&carol_root, "Carol's", DeviceCapabilities::member());
+    entry_join_as(
+        workspaces,
+        &h.cert,
+        &h.kitchen,
+        (&carol_key, &carol_cert),
+        2,
+        Role::Editor,
+    )
+    .await;
+    let carol = hex::encode(carol_root.verifying_key().to_bytes());
+    record_grants(
+        workspaces,
+        &h.kitchen,
+        &[roles::administrator_grant(
+            &h.kitchen,
+            &carol,
+            Grantee::person(h.person.clone()),
+        )],
+    )
+    .await;
+
+    workspaces.publish_own(
+        DEVICE_SETTINGS,
+        super::super::OwnReaders::ItsPersonAndAdministrators,
+        std::sync::Arc::new(Settings),
+    );
+    let reads = workspaces.resource_reads();
+    let own = tilo_server_protocol::servers::person_workspace_id(&h.cert.user_public_key);
+    let address = ResourceAddress {
+        workspace: own.clone(),
+        app: DEVICE_SETTINGS.to_owned(),
+        record: "keymap".to_owned(),
+    };
+
+    // The person's own laptop: a device of theirs this computer never saw.
+    let laptop = Caller::authenticated(h.cert.user_public_key, [21; 32]).in_workspace(own);
+    assert!(
+        reads.read(&laptop, &address).is_ok(),
+        "the person reads their device's settings from another of their devices"
+    );
+
+    // Bob, a member of a workspace this device serves, reads nothing, and neither does his agent.
+    let bob = Caller::authenticated(
+        bob_root.verifying_key().to_bytes(),
+        bob_key.verifying_key().to_bytes(),
+    )
+    .in_workspace(h.kitchen.clone());
+    let refusal = reads
+        .read(&bob, &address)
+        .expect_err("a member reads no settings of this device");
+    assert!(
+        matches!(refusal, ActionCallError::Refused { .. }),
+        "a member is refused: {refusal:?}"
+    );
+    assert!(
+        refusal.to_string().contains("Only this device's person"),
+        "the refusal says who reads them: {refusal}"
+    );
+    let agent = Caller::local_agent("bob-agent")
+        .acting_for(hex::encode(bob_root.verifying_key().to_bytes()))
+        .in_workspace(h.kitchen.clone());
+    assert!(
+        reads.read(&agent, &address).is_err(),
+        "a member's agent reads none of them"
+    );
+
+    // Carol administers Kitchen, which this device serves, so she reads them.
+    let carol_caller = Caller::authenticated(
+        carol_root.verifying_key().to_bytes(),
+        carol_key.verifying_key().to_bytes(),
+    )
+    .in_workspace(h.kitchen.clone());
+    assert!(
+        reads.read(&carol_caller, &address).is_ok(),
+        "an administrator of a served workspace reads them"
+    );
     h.server.shutdown().await;
 }

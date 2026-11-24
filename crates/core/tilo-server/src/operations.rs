@@ -150,12 +150,7 @@ impl Controls {
     /// administrator there who was neither removed nor banned. Nobody
     /// administers a workspace this server does not govern.
     pub async fn administers(&self, workspace: &str, person: &[u8; 32]) -> bool {
-        let Ok((_, people)) = self.workspaces.kept_membership(workspace).await else {
-            return false;
-        };
-        people
-            .get(&hex::encode(person))
-            .is_some_and(|mark| mark.role == "owner" && !mark.removed && !mark.banned)
+        self.workspaces.administers_person(workspace, person).await
     }
 }
 
