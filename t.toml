@@ -1868,6 +1868,18 @@ timeout_secs = 3600
 on = ["dispatch", "idle"]
 
 [[check]]
+name = "kept-content-3gib"
+# A member's 3 GiB folder reaches their own server whole when nobody set a content limit: the files
+# are generated and streamed a piece at a time, then read back from the store and hashed, and no
+# refusal may be published. It writes and hashes gigabytes, which an unoptimized build takes tens of
+# minutes over, so it runs in release and is dispatched rather than run with every change that
+# reaches the server.
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "cargo test --locked --release -p tilo-server --test it kept_limits::a_three_gib_folder_reaches_its_own_server_whole -- --ignored --nocapture"
+timeout_secs = 3600
+on = ["dispatch"]
+
+[[check]]
 name = "perf-server"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
