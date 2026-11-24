@@ -292,6 +292,7 @@ fn posted(
     tilo_automation::dispatch::DocumentEvent {
         workspace: workspace.to_owned(),
         record: "general".to_owned(),
+        app: CHAT.to_owned(),
         kind: MESSAGE.to_owned(),
         change: format!("change-{message}"),
         actor: tilo_actions::Acting::person(person),
