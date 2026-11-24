@@ -510,8 +510,19 @@ view window_controls(s: LayoutStrip, shown: Option<LayoutPlace>, listed: Bool) {
     row(gap: .tight, align: .center) {
         if let p = shown {
             if let w = shown_window(p) {
-                window_menu(w, shown, listed)
-                window_bar_actions(w)
+                // What the window's bar holds open, when its app or the person asked for it: the
+                // name field, the location the app edits, or the window's search. Each stands in
+                // the bar's own controls, and the session's own verbs act on it.
+                if w.bar_field == "rename" {
+                    bar_rename(w)
+                } else if w.bar_field == "location" {
+                    bar_location(w)
+                } else if w.bar_field == "find" or w.bar_field == "replace" {
+                    bar_search(w)
+                } else {
+                    window_menu(w, shown, listed)
+                    window_bar_actions(w)
+                }
             }
         }
         if s.maximized {
@@ -535,6 +546,51 @@ view window_controls(s: LayoutStrip, shown: Option<LayoutPlace>, listed: Bool) {
 /// share the tab's key, so a place's own controls offer the rows of the window it shows.
 fn shown_window(p: LayoutPlace) -> Option<device.Window> {
     return device.windows.all.find(w -> w.key == p.key)
+}
+
+/// The field a window's bar holds open to name the tab: the person's own word for the window,
+/// committed with Enter and left as it was with Escape.
+view bar_rename(w: device.Window) {
+    state typed: Text = w.title
+    ui.TextInput(bind: typed, autofocus: true, placeholder: "Window name") {
+        on submit: session.rename(tab: w.key, name: typed).then(session.close_bar_field(tab: w.key))
+        on cancel: session.close_bar_field(tab: w.key)
+    }
+}
+
+/// The field a window's bar holds open to edit the app's location (what the window shows, as its
+/// app names it): committed with Enter, as the app's own Ctrl+L asks.
+view bar_location(w: device.Window) {
+    state typed: Text = w.bar_location
+    ui.TextInput(bind: typed, autofocus: true, placeholder: "Where the window goes") {
+        on submit: session.bar_commit(tab: w.key, text: typed)
+        on cancel: session.close_bar_field(tab: w.key)
+    }
+}
+
+/// The field a window's bar holds open to search what the window shows, as its app's Ctrl+F (or
+/// Ctrl+H, for replace) asks: the query goes to the app, the arrows step through what it found,
+/// and the close takes the field away.
+view bar_search(w: device.Window) {
+    state query: Text = ""
+    row(gap: .tight, align: .center) {
+        ui.TextInput(bind: query, autofocus: true, placeholder: if w.bar_field == "replace" {
+            "Search this window and replace"
+        } else {
+            "Search this window"
+        }) {
+            on submit: session.bar_search(tab: w.key, query: query)
+        }
+        ui.Button("Previous match", icon: .arrow_up, icon_only: true, role: .plain) {
+            on press: session.bar_search_step(tab: w.key, forward: false)
+        }
+        ui.Button("Next match", icon: .arrow_down, icon_only: true, role: .plain) {
+            on press: session.bar_search_step(tab: w.key, forward: true)
+        }
+        ui.Button("Close the search", icon: .x, icon_only: true, role: .plain) {
+            on press: session.bar_search_close(tab: w.key)
+        }
+    }
 }
 
 /// What a window's bar carries beside its tab, as the desktop's window bar does: another tab of
@@ -754,8 +810,6 @@ fn strip_row(a: Layout, strip: Text) -> Text {
 /// (another tab, its name, a split, its pin), stopping its app's control of the desktop, and
 /// closing it.
 view window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool) {
-    state renaming: Bool = false
-    state typed: Text = w.title
     ui.MenuButton(
         "This window",
         icon: .more_horizontal,
@@ -896,7 +950,7 @@ view window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool) {
         }
         if w.renameable and w.local {
             ui.MenuItem("Rename", icon: .pencil) {
-                on choose: set(renaming, true)
+                on choose: session.rename_in_bar(tab: w.key)
             }
         }
         if tabs_in_group(w) > 1 {
@@ -929,14 +983,6 @@ view window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool) {
         }
         ui.MenuItem("Close this window", icon: .x, destructive: true) {
             on choose: session.close_window(group: w.group_key)
-        }
-    }
-    if renaming {
-        ui.Popover(label: "Rename this window", open: renaming) {
-            ui.TextInput(bind: typed, autofocus: true, placeholder: "A new name") {
-                on submit: session.rename(tab: w.key, name: typed).then(set(renaming, false))
-            }
-            on dismiss: set(renaming, false)
         }
     }
 }
