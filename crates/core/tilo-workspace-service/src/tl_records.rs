@@ -547,6 +547,9 @@ impl Opened {
         })
         .map_err(|error| error.to_string())?;
         load(&host)?;
+        // Whom a resource's people field names reads it as the access decides: the store's
+        // reader decision follows it, as a window's host does each frame.
+        host.follow_members();
         if let Some(policy) = members
             && let Some(owner) = policy.owner.clone()
         {
