@@ -8,6 +8,7 @@ app so.tilo.chat "Chat" (
 )
 
 use tilo.workspace as workspace
+use so.tilo.settings.sections as settings
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people. Beside them,
@@ -20,6 +21,9 @@ type Conversations {
     /// author alone, so a change to it is never news to the conversation: nobody else sees that
     /// someone is half-way through a message.
     drafts: Collection<Draft>
+    /// The reports filed about a person rather than one of their messages, for the workspace's
+    /// moderators.
+    reports: Collection<Report>
 }
 
 root conversations: Conversations
@@ -86,6 +90,9 @@ type OutsideAuthor {
     avatar: Text = ""
     /// What the place they wrote from is called, as its people read it ("Discord").
     service: Text = ""
+    /// The person here who linked that account to themselves, when one did: the message wears
+    /// their face and colour beside the account's name, so the workspace sees who it is.
+    member: Option<Actor> = .none
 }
 
 /// A picture a message from outside carries in its words: a custom emoji of that service.
@@ -111,6 +118,10 @@ type Message {
     /// Stop cancels and whose steps, questions and cost are the turn's. Empty for a message a
     /// person wrote.
     turn: Text = ""
+    /// What the agent's model reasoned while it wrote this answer, as its provider shows it:
+    /// written beside the answer as it comes, and folded under it. Empty for a message a person
+    /// wrote, or a model that shows no reasoning.
+    reasoning: Text = ""
     /// Who reacted, by emoji.
     reactions: Map<Set<Actor>>
     /// A view the message sends, as its sender had it among their views: a reader adds it to
@@ -164,6 +175,9 @@ type Report (readers: author and moderator) {
     /// What a moderator, or the workspace's moderation agent, decided about it: empty while it
     /// is open.
     decision: Text = ""
+    /// Why a moderator overturned that decision, which opens the report again: empty while the
+    /// decision stands. Who decided and who overturned, and when, are the report's history.
+    overturned: Text = ""
 }
 
 /// A side conversation branched off one message.
@@ -789,8 +803,14 @@ action message_person(all: Conversations, who: Actor) -> Direct (
 }
 
 /// Whether `who` may be written to here by `me`: an agent, `me`, or a person of the workspace.
+/// A host that knows no membership (none but a workspace's own policy names it) refuses no one
+/// by it: the app's own seeded conversations are people of no real workspace, and refusing
+/// every one of them would leave the workspace without the conversations it ships with.
 fn in_workspace(who: Actor, me: Actor) -> Bool {
-    who.kind() != .person or who == me or workspace.members.people.contains(who)
+    who.kind() != .person
+        or who == me
+        or workspace.members.people.is_empty()
+        or workspace.members.people.contains(who)
 }
 
 /// The direct conversation between the invoker and `who`, none while the two of them have none:
@@ -832,6 +852,75 @@ fn unread_of(d: Direct) -> Int {
     if let first = first_unseen(d) {
         d.messages.len() - d.messages.filter(m -> made_before(m, first)).len()
     } else { 0 }
+}
+
+/// What the person is half-way through writing in `t`, as its row in the sidebar says it: the
+/// first line of their draft, and nothing for a conversation with no draft of theirs.
+fn draft_line(writing: List<Draft>, t: TextChannel | Thread | Direct) -> Option<Text> {
+    for d in writing {
+        if d.conversation == t and not d.body.is_empty() {
+            let line = d.body.excerpt
+            return .some(std.say("Draft: {line}"))
+        }
+    }
+    .none
+}
+
+/// What is working in a conversation: the agent's turn that one of its messages answers in,
+/// while that turn runs or waits on the person. None when nothing is, and then the composer's
+/// button sends.
+fn working_turn(said: List<Message>) -> Option<host.Invoked> {
+    for m in said {
+        if m.turn != "" {
+            if let t = invoked(m.turn) {
+                if t.state == "running" or t.state == "waiting" {
+                    return t
+                }
+            }
+        }
+    }
+    .none
+}
+
+/// What one of an agent's answers cost, in US dollars: what its turn's model calls cost, which
+/// is what its line shows beside the model. Nothing for a message a person wrote.
+fn answer_cost(m: Message) -> Float {
+    if m.turn == "" { 0.0 } else if let t = invoked(m.turn) { t.cost } else { 0.0 }
+}
+
+/// What the agent's answers in a conversation have cost so far, in US dollars.
+fn answers_cost(said: List<Message>) -> Float {
+    said.map(m -> answer_cost(m)).sum()
+}
+
+/// Whether the agent's turn that wrote `m` ended, as it may: stopped, broken off or done. An
+/// answer that is still being written, or a person's message, has nothing to continue.
+fn answer_ended(m: Message) -> Bool {
+    if m.turn == "" {
+        false
+    } else if let t = invoked(m.turn) {
+        t.state == "ended" or t.state == "failed" or t.state == "cancelled"
+    } else { false }
+}
+
+/// How someone is in a call, as the sidebar says it under their name: talking now, their
+/// microphone or hearing off, their camera on, their screen shared. Nothing while they only
+/// listen.
+fn call_state(m: host.CallMember) -> Text {
+    let says = [
+        if m.speaking { std.say("Speaking") } else { "" },
+        if m.deafened { std.say("Deafened") } else if m.muted { std.say("Muted") } else { "" },
+        if m.camera { std.say("Camera on") } else { "" },
+        if m.screen { std.say("Sharing their screen") } else { "" },
+    ]
+    says.filter(x -> x != "").join(", ")
+}
+
+/// Whether a relayed message may be linked to `member`: no one, or a person of the workspace.
+fn member_here(member: Option<Actor>, me: Actor) -> Bool {
+    if let p = member {
+        p.kind() == .person and in_workspace(p, me)
+    } else { true }
 }
 
 /// Whether `x` was made before `y`.
@@ -1022,8 +1111,10 @@ action relay(
     avatar: Text = "",
     service: Text = "",
     outside_emoji: List<OutsideEmoji> = [],
+    member: Option<Actor> = .none,
 ) -> Message (icon: .send, label: "Relay", did: "relayed a message") {
     require by.trim() != "" "Say who wrote the message"
+    require member_here(member, invoker) "The person a relayed message is linked to is not in this workspace"
     let m = Message(
         body: body,
         reply_to: reply_to,
@@ -1035,6 +1126,7 @@ action relay(
                 name: by.trim(),
                 avatar: avatar,
                 service: if service == "" { written_in } else { service },
+                member: member,
             ),
         ),
     )
@@ -1182,14 +1274,46 @@ action archive_channel(ch: TextChannel, archived: Bool = not ch.archived) (
 
 /// Changes what a message says. Only its author may. An agent retrying its answer writes it
 /// again in the same message, naming the new turn.
-action edit(m: Message, body: RichText = m.body, turn: Text = m.turn) (
-    icon: .pencil,
-    label: "Edit",
-) {
+action edit(
+    m: Message,
+    body: RichText = m.body,
+    turn: Text = m.turn,
+    reasoning: Text = m.reasoning,
+) (icon: .pencil, label: "Edit") {
     require created(m)?.who == invoker "Only its author can edit a message"
-    require not body.is_empty() "Type a message first"
+    // An agent's answer is written as it comes, and its model may reason before it writes a
+    // word: its message stands empty until then.
+    require turn != "" or not body.is_empty() "Type a message first"
     m.body = body
     m.turn = turn
+    m.reasoning = reasoning
+}
+
+/// Asks the agent that wrote `m` to carry on where its answer stopped: a reply to it from the
+/// person, naming the agent, which the agent's next turn reads with the answer before it. An answer that ran out
+/// of room, was stopped or broke off is finished this way, not written again from its start.
+action continue_answer(to: TextChannel | Thread | Direct, m: Message) -> Message (
+    icon: .skip_forward,
+    label: "Continue",
+    did: "asked an answer to continue",
+) {
+    require m.turn != "" "Only an agent's answer continues"
+    let words = std.say(
+        "Continue your answer where it stopped, without repeating it or doing anything again.",
+    )
+    // The reply names the agent, as a person's own "@" does: that is what starts its turn in a
+    // channel, where a reply alone would not.
+    let asked = Message(
+        body: if let agent = created(m)?.who {
+            RichText(agent, " ", words)
+        } else { RichText(words) },
+        reply_to: .some(m),
+    )
+    match to {
+        c: TextChannel => c.messages.insert(asked),
+        t: Thread => t.messages.insert(asked),
+        d: Direct => d.messages.insert(asked),
+    }
 }
 
 /// Deletes a message from the channel or thread it is in. Its author, or anyone the
@@ -1259,11 +1383,45 @@ action report(to: TextChannel | Thread | Direct, m: Message, reason: Text = "") 
     }
 }
 
-/// Settles a report: what a moderator decided about it.
+/// Copies what a message says, as plain words, to the clipboard.
+action copy_text(m: Message) uses clipboard (icon: .copy, label: "Copy text") {
+    clipboard.copy(m.body.text)
+}
+
+/// Reports a person to the workspace's moderators, for how they behave here rather than for one
+/// message: what the reporter says is the whole of it, and the moderators decide it as any other
+/// report.
+action report_person(all: Conversations, who: Actor, reason: Text) -> Report (
+    icon: .flag,
+    label: "Report person",
+    did: "reported a person",
+) {
+    require who != invoker "You can't report yourself"
+    require reason.trim() != "" "Say what happened"
+    all.reports.insert(Report(message: .none, person: who, said: "", reason: reason.trim()))
+}
+
+/// Settles a report: what a moderator decided about it. A report whose decision was overturned
+/// is decided again this way.
 action decide(r: Report, decision: Text) (icon: .shield, label: "Decide") {
     require moderates(invoker) "Only the workspace's moderators settle a report"
     require decision.trim() != "" "Say what was decided"
     r.decision = decision.trim()
+    r.overturned = ""
+}
+
+/// Overturns what was decided about a report, saying why: the report is open again, for a
+/// moderator to decide anew, and the decision overturned stays in its history.
+action overturn(r: Report, why: Text) (icon: .undo_2, label: "Overturn decision") {
+    require moderates(invoker) "Only the workspace's moderators overturn a decision"
+    require r.decision != "" "Only a decided report can be overturned"
+    require why.trim() != "" "Say why the decision is overturned"
+    r.overturned = why.trim()
+}
+
+/// Whether a report waits on a moderator: nothing decided yet, or its decision overturned.
+fn report_open(r: Report) -> Bool {
+    r.decision == "" or r.overturned != ""
 }
 
 /// Whether `who` acts on what other people wrote here, as the workspace's moderators and its
@@ -1433,6 +1591,10 @@ view example_row(s: Skill, e: Example) {
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
 view sidebar(all: Conversations) {
     state shown: Text = ""
+    // What the person is writing and has not sent, read once: each conversation's row says the
+    // first line of its draft, so a half-written message is found again rather than lost in a
+    // composer the person has to remember to open.
+    let writing = all.drafts.filter(d -> created(d)?.mine ?? false)
     // Choosing a person makes their conversation and shows it here: the window opens what the
     // action made as a conversation of its own.
     on show(d: Direct): open(d)
@@ -1458,6 +1620,37 @@ view sidebar(all: Conversations) {
                                 // nothing.
                                 if not c.channels.is_empty() {
                                     ui.NavSection(c.name, collapsible: true) {
+                                        // What is done to the group itself stays on the group:
+                                        // its heading's menu, not a place in it.
+                                        menu: {
+                                            if moderates(invoker) {
+                                                ui.MenuItem("Rename category", icon: .pencil) {
+                                                    on choose: rename_category(c)
+                                                }
+                                                ui.MenuItem("Move up", icon: .arrow_up) {
+                                                    on choose: move_category(
+                                                        all,
+                                                        c,
+                                                        at: (all.channels.index_of(c) ?? 0) - 1,
+                                                    )
+                                                }
+                                                ui.MenuItem("Move down", icon: .arrow_down) {
+                                                    on choose: move_category(
+                                                        all,
+                                                        c,
+                                                        at: (all.channels.index_of(c) ?? 0) + 1,
+                                                    )
+                                                }
+                                                ui.MenuSeparator()
+                                                ui.MenuItem(
+                                                    "Delete category",
+                                                    icon: .trash,
+                                                    destructive: true,
+                                                ) {
+                                                    on choose: delete_category(all, c)
+                                                }
+                                            }
+                                        }
                                         for x in c.channels {
                                             match x {
                                                 ch: TextChannel => {
@@ -1467,9 +1660,34 @@ view sidebar(all: Conversations) {
                                                             ch.name,
                                                             icon: .hash,
                                                             item: ch,
-                                                            unread: first_unseen(ch) != .none,
+                                                            secondary: draft_line(writing, ch),
                                                             mentions: mentions(ch),
                                                         ) {
+                                                            menu: {
+                                                                ui.MenuItem(
+                                                                    "Rename channel",
+                                                                    icon: .pencil,
+                                                                ) {
+                                                                    on choose: rename_channel(ch)
+                                                                }
+                                                                ui.MenuItem(
+                                                                    "Set the topic",
+                                                                    icon: .file_text,
+                                                                ) {
+                                                                    on choose: set_topic(ch)
+                                                                }
+                                                                ui.MenuItem(
+                                                                    if ch.archived {
+                                                                        "Restore channel"
+                                                                    } else { "Archive channel" },
+                                                                    icon: .archive,
+                                                                ) {
+                                                                    on choose: archive_channel(
+                                                                        ch,
+                                                                        archived: not ch.archived,
+                                                                    )
+                                                                }
+                                                            }
                                                             on select: set(
                                                                     shown,
                                                                     "{c.name}/{ch.name}",
@@ -1497,6 +1715,7 @@ view sidebar(all: Conversations) {
                                                             "{key}/{m.who.name()}",
                                                             m.who.name(),
                                                             person: m.who,
+                                                            secondary: call_state(m),
                                                             parent: key,
                                                         ) {
                                                             on select: set(shown, key).then(open(v))
@@ -1515,9 +1734,28 @@ view sidebar(all: Conversations) {
                                         ch.name,
                                         icon: .hash,
                                         item: ch,
-                                        unread: first_unseen(ch) != .none,
+                                        secondary: draft_line(writing, ch),
                                         mentions: mentions(ch),
                                     ) {
+                                        menu: {
+                                            ui.MenuItem("Rename channel", icon: .pencil) {
+                                                on choose: rename_channel(ch)
+                                            }
+                                            ui.MenuItem("Set the topic", icon: .file_text) {
+                                                on choose: set_topic(ch)
+                                            }
+                                            ui.MenuItem(
+                                                if ch.archived {
+                                                    "Restore channel"
+                                                } else { "Archive channel" },
+                                                icon: .archive,
+                                            ) {
+                                                on choose: archive_channel(
+                                                    ch,
+                                                    archived: not ch.archived,
+                                                )
+                                            }
+                                        }
                                         on select: set(shown, "/{ch.name}").then(open(ch))
                                     }
                                 }
@@ -1532,6 +1770,7 @@ view sidebar(all: Conversations) {
                                         "{key}/{m.who.name()}",
                                         m.who.name(),
                                         person: m.who,
+                                        secondary: call_state(m),
                                         parent: key,
                                     ) {
                                         on select: set(shown, key).then(open(v))
@@ -1549,7 +1788,7 @@ view sidebar(all: Conversations) {
                                             other.name(),
                                             person: other,
                                             item: d,
-                                            unread: first_unseen(d) != .none,
+                                            secondary: draft_line(writing, d),
                                             mentions: mentions(d),
                                         ) {
                                             on select: set(shown, "/dm/{other.id()}").then(open(d))
@@ -1560,7 +1799,7 @@ view sidebar(all: Conversations) {
                                             "Notes to self",
                                             icon: .bookmark,
                                             item: d,
-                                            unread: first_unseen(d) != .none,
+                                            secondary: draft_line(writing, d),
                                             mentions: mentions(d),
                                         ) {
                                             on select: set(shown, "/dm/self").then(open(d))
@@ -1586,6 +1825,13 @@ view sidebar(all: Conversations) {
                         ui.NavItem("/skills", "Workspace skills", icon: .sparkles) {
                             on select: set(shown, "/skills").then(open(all, view: skills))
                         }
+                        // What people reported, for those who decide it: every report of the
+                        // workspace on one page, the open ones to decide.
+                        if moderates(invoker) {
+                            ui.NavItem("/reports", "Reports", icon: .flag) {
+                                on select: set(shown, "/reports").then(open(all, view: reports))
+                            }
+                        }
                     }
                 }
             }
@@ -1610,14 +1856,21 @@ view channel(c: TextChannel) {
             typing_here(c)
             // What can be done to the channel itself: its name, what it is for, the page its
             // pins stand on, and setting it aside. A press that needs words opens the form that
-            // asks for them.
-            row(distribute: .end) {
+            // asks for them. What the channel is about stands beside them, so everyone reading
+            // it sees the topic without opening the menu that set it.
+            row(distribute: .end, gap: .related, align: .center) {
+                if c.topic != "" {
+                    text(c.topic, role: .caption, secondary: true, fill: 1.0, truncate)
+                }
                 if c.messages.any(m -> m.pinned) {
                     ui.Button("Pinned messages", icon: .pin, size: .small, role: .plain) {
                         on press: open(c, view: pins)
                     }
                 }
-                ui.MenuButton("Channel", icon: .more_horizontal) {
+                // The same commands the channel's row in the sidebar offers, so either way
+                // reaches one change, and, for a moderator, where it stands among the places
+                // of the sidebar and taking it away.
+                ui.MenuButton("Channel", icon: .more_horizontal, icon_only: true) {
                     ui.MenuItem("Rename channel", icon: .pencil) {
                         on choose: rename_channel(c)
                     }
@@ -1629,6 +1882,23 @@ view channel(c: TextChannel) {
                         icon: .archive,
                     ) {
                         on choose: archive_channel(c, archived: not c.archived)
+                    }
+                    if c.messages.any(m -> m.pinned) {
+                        ui.MenuItem("Pinned messages", icon: .pin) {
+                            on choose: open(c, view: pins)
+                        }
+                    }
+                    if moderates(invoker) {
+                        ui.MenuSeparator
+                        ui.MenuItem("Move up", icon: .arrow_up) {
+                            on choose: move_channel(all, c, at: (all.channels.index_of(c) ?? 0) - 1)
+                        }
+                        ui.MenuItem("Move down", icon: .arrow_down) {
+                            on choose: move_channel(all, c, at: (all.channels.index_of(c) ?? 0) + 1)
+                        }
+                        ui.MenuItem("Delete channel", icon: .trash, destructive: true) {
+                            on choose: delete_channel(all, c)
+                        }
                     }
                 }
             }
@@ -1650,6 +1920,11 @@ view direct(d: Direct) {
         direct_message(d, m, d.messages, replying, editing, revised)
         composer: {
             direct_typing_here(d)
+            if d.people.any(p -> p.kind() == .agent) {
+                row(distribute: .end) {
+                    model_switcher(d.messages)
+                }
+            }
             if let writing = all.drafts.find(
                     x -> x.conversation == d and (created(x)?.mine ?? false),
                 ) {
@@ -1724,11 +1999,100 @@ view people(all: Conversations) {
                                 ui.Button("Message", icon: .message_circle, size: .small) {
                                     on press: message_person(all, p)
                                 }
+                                button(report_person(all, p), icon_only: true)
                             }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/// Every report of the workspace, for its moderators: the people reported, then each channel's,
+/// thread's and direct conversation's, each with who it is about, what they wrote, why it was
+/// reported, and what was decided. An open one is decided here, a decided one overturned.
+view reports(all: Conversations) {
+    ui.NavShell(content_kind: .page, title: "Reports") {
+        content: {
+            ui.Scroll {
+                page {
+                    if not moderates(invoker) {
+                        ui.EmptyState("Only moderators read reports", icon: .shield)
+                    } else {
+                        for r in all.reports {
+                            report_row(r, "")
+                        }
+                        for x in all.channels {
+                            match x {
+                                c: Category => {
+                                    for y in c.channels {
+                                        match y {
+                                            ch: TextChannel => channel_reports(ch),
+                                            v: VoiceChannel => {}
+                                        }
+                                    }
+                                }
+                                ch: TextChannel => channel_reports(ch),
+                                v: VoiceChannel => {}
+                                d: Direct => {
+                                    for r in d.reports {
+                                        report_row(r, "")
+                                    }
+                                    for t in d.threads {
+                                        for r in t.reports {
+                                            report_row(r, t.name)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The reports of a channel and its threads, each under the place it was filed in.
+view channel_reports(ch: TextChannel) {
+    for r in ch.reports {
+        report_row(r, "#{ch.name}")
+    }
+    for t in ch.threads {
+        for r in t.reports {
+            report_row(r, t.name)
+        }
+    }
+}
+
+/// One report as a moderator reads it: who it is about and where, what they wrote and why it
+/// was reported, and what was decided or why that was overturned, with the one thing to do next.
+view report_row(r: Report, place: Text) {
+    row(gap: .related, align: .start) {
+        if let p = r.person {
+            avatar(p)
+        }
+        stack(fill: 1.0, gap: .tight) {
+            if let p = r.person {
+                text(if place == "" { p.name() } else { "{p.name()} in {place}" }, role: .label)
+            }
+            if r.said != "" {
+                text(r.said, secondary: true)
+            }
+            if r.reason != "" {
+                text("Reported: {r.reason}", role: .caption)
+            }
+            if r.overturned != "" {
+                text("Overturned: {r.overturned}", role: .caption, secondary: true)
+            } else if r.decision != "" {
+                text("Decided: {r.decision}", role: .caption, secondary: true)
+            }
+        }
+        if report_open(r) {
+            button(decide(r))
+        } else {
+            button(overturn(r))
         }
     }
 }
@@ -1796,6 +2160,10 @@ view direct_message(
             button(start_thread(d, m), icon_only: true)
         }
         edit_button(m, editing, revised)
+        if answer_ended(m) {
+            button(continue_answer(d, m), icon_only: true)
+        }
+        button(copy_text(m), icon_only: true)
         button(pin(m), icon_only: true)
         button(report(d, m), icon_only: true)
         ui.EmojiPicker {
@@ -1822,6 +2190,10 @@ view channel_message(
             button(start_thread(c, m), icon_only: true)
         }
         edit_button(m, editing, revised)
+        if answer_ended(m) {
+            button(continue_answer(c, m), icon_only: true)
+        }
+        button(copy_text(m), icon_only: true)
         button(pin(m), icon_only: true)
         button(report(c, m), icon_only: true)
         ui.EmojiPicker {
@@ -1862,6 +2234,10 @@ view thread_message(
             on press: set(replying, m)
         }
         edit_button(m, editing, revised)
+        if answer_ended(m) {
+            button(continue_answer(t, m), icon_only: true)
+        }
+        button(copy_text(m), icon_only: true)
         button(pin(m), icon_only: true)
         button(report(t, m), icon_only: true)
         ui.EmojiPicker {
@@ -1902,6 +2278,11 @@ view composer(
             }
         }
     }
+    // While a turn works here, the button that would send stops it instead, until the person
+    // types something to say.
+    let stop: Option<Action> = if let t = working_turn(said) {
+        .some(host.cancel(t.record))
+    } else { .none }
     std.composer_draft(
         draft,
         placeholder,
@@ -1912,6 +2293,7 @@ view composer(
         },
         speakers: speakers(said),
         attach: .some(file.choose(attach(draft))),
+        stop: stop,
     )
 }
 
@@ -1925,6 +2307,44 @@ fn reads_as_call(text: Text) -> Bool {
     if let name = line.split("(").first() {
         name != "" and name.contains(".") and not name.contains(" ")
     } else { false }
+}
+
+/// The model the workspace's agents answer with, as a conversation with one offers it: every
+/// model of every provider the person set up, the one in use marked, and what the answers here
+/// have cost so far. Choosing one is the same change Settings' Agent models pane makes, and the
+/// choice before it can be taken back.
+view model_switcher(said: List<Message>) {
+    let m = settings.agent_models
+    ui.PopoverButton(
+        if m.in_use.model_label != "" { m.in_use.model_label } else { std.say("Model") },
+        icon: .sparkles,
+        side: .above,
+        trailing: true,
+    ) {
+        stack(gap: .tight) {
+            ui.Text(std.say("Agents answer with"), role: .caption, secondary: true)
+            for provider in m.providers.filter(p -> p.enabled) {
+                ui.Text(provider.label, role: .label)
+                for model in provider.models {
+                    ui.ListRow(
+                        model.label,
+                        secondary: model.id,
+                        selected: provider.id == m.in_use.provider and model.id == m.in_use.model,
+                        icon: .sparkles,
+                    ) {
+                        on activate: settings.use_model(m, provider.id, model.id)
+                    }
+                }
+            }
+            if m.in_use.model != "" {
+                let cost = answers_cost(said).round(4)
+                ui.Text(std.say("Answers so far: ${cost}"), role: .caption, secondary: true)
+                ui.Button(std.say("Undo the choice"), size: .small) {
+                    on press: settings.undo_model(settings.agent_models)
+                }
+            }
+        }
+    }
 }
 
 /// A line the person ran from the composer, and what it answered: Running while it runs.
@@ -2029,7 +2449,15 @@ view message(
     std.origin(m)
     if let o = m.outside {
         row(gap: .tight, align: .center) {
-            if o.avatar != "" {
+            // A linked account is drawn as the member it belongs to, in their colour, wearing
+            // the account's own picture when it has one.
+            if let p = o.member {
+                ui.Avatar(
+                    who: p,
+                    name: o.name,
+                    picture: if o.avatar != "" { o.avatar } else { .none },
+                )
+            } else if o.avatar != "" {
                 ui.Avatar(name: o.name, picture: o.avatar)
             }
             ui.Text("{o.name} wrote this in {o.service}", role: .caption, secondary: true)
@@ -2040,6 +2468,7 @@ view message(
     if m.pinned {
         ui.Text("Pinned", role: .caption, secondary: true)
     }
+    reasoning(m)
     if let e = editing {
         if e == m {
             revision(m, shown, editing, revised)
@@ -2127,7 +2556,23 @@ view message(
 /// which cancels the invocation; Retry once it ended, which runs it again into this message.
 view turn_steps(m: Message) {
     if let t = invoked(m.turn) {
-        stack(gap: .tight) {
+        // What the turn is doing stands on one line, and what it did folds under it: an answer
+        // read for its words is not run through a dozen steps, and one that is working shows
+        // them as they come. Stop and Retry stay on the line, where the turn stands.
+        ui.DisclosureRow(
+            turn_said(t),
+            dense: true,
+            expanded: if t.state == "running" or t.state == "waiting" {
+                .some(true)
+            } else { .none },
+        ) {
+            trailing: {
+                if t.state == "running" or t.state == "waiting" {
+                    button(host.cancel(t.record), icon_only: true)
+                } else if t.state == "ended" or t.state == "failed" or t.state == "cancelled" {
+                    button(host.retry(t.record), icon_only: true)
+                }
+            }
             for c in t.calls {
                 if let s = invoked(c) {
                     turn_step(s)
@@ -2135,14 +2580,6 @@ view turn_steps(m: Message) {
             }
             if t.failure != "" {
                 ui.Text(t.failure, role: .caption)
-            }
-            row(gap: .tight, align: .center) {
-                ui.Text(turn_said(t), role: .caption, secondary: true, fill: 1.0, truncate)
-                if t.state == "running" or t.state == "waiting" {
-                    button(host.cancel(t.record), icon_only: true)
-                } else if t.state == "ended" or t.state == "failed" or t.state == "cancelled" {
-                    button(host.retry(t.record), icon_only: true)
-                }
             }
         }
     }
@@ -2206,9 +2643,21 @@ view turn(m: Message) {
         if let r = m.reply_to {
             text(r.body.excerpt, secondary: true)
         }
+        reasoning(m)
         said(m)
         if m.turn != "" {
             turn_steps(m)
+        }
+    }
+}
+
+/// What the agent's model reasoned toward an answer, folded above it: one quiet line that opens
+/// the reasoning, so the answer reads first and how it was reached is a press away. Nothing for a
+/// message that carries none.
+view reasoning(m: Message) {
+    if m.reasoning != "" {
+        ui.DisclosureRow(std.say("Reasoning"), dense: true) {
+            ui.Text(m.reasoning, role: .caption, secondary: true)
         }
     }
 }
@@ -2229,7 +2678,23 @@ view said(m: Message) {
         ui.Text("A view, to add to your own views", role: .caption, secondary: true)
     }
     if history(m).any(v -> v.is(edit)) {
-        ui.Text("edited", role: .caption, secondary: true)
+        edit_history(m)
+    }
+}
+
+/// What a message said before it was edited: one quiet line, which opens each version it had
+/// with who changed it and when, so what it said before is read without leaving the
+/// conversation. The words above are the message as it stands.
+view edit_history(m: Message) {
+    ui.DisclosureRow(std.say("Edited"), dense: true) {
+        for v in history(m).filter(v -> v.is(edit)) {
+            for c in v.changes.filter(c -> c.field == "body") {
+                stack(gap: .tight) {
+                    ui.Text("{v.actor} · {v.at}", role: .caption, secondary: true)
+                    c.before
+                }
+            }
+        }
     }
 }
 

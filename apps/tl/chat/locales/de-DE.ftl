@@ -227,6 +227,15 @@ d-5rkfnkg4 = Seitenleiste
     .w-workspace = Arbeitsbereich
     .w-workspace-skills = Fähigkeiten im Arbeitsbereich
     .w-no-channel-open = Kein Kanal offen
+    .w-rename-category = Kategorie umbenennen
+    .w-move-up = Nach oben
+    .w-move-down = Nach unten
+    .w-delete-category = Kategorie löschen
+    .w-rename-channel = Kanal umbenennen
+    .w-set-the-topic = Thema setzen
+    .w-restore-channel = Kanal wiederherstellen
+    .w-archive-channel = Kanal archivieren
+    .w-reports = Meldungen
 
 d-ymtess4x = Kanal
     .w-pinned-messages = Angeheftete Nachrichten
@@ -235,6 +244,9 @@ d-ymtess4x = Kanal
     .w-set-the-topic = Thema setzen
     .w-restore-channel = Kanal zurückholen
     .w-archive-channel = Kanal archivieren
+    .w-move-up = Nach oben
+    .w-move-down = Nach unten
+    .w-delete-channel = Kanal löschen
     .w-message = Nachricht an #{ $name }
     .w-attach = Anhängen
     .w-send = Senden
@@ -315,7 +327,6 @@ d-h327uiql = Frage und Antwort
 
 d-hjw5xd6b = Gesagt
     .w-a-view-to-add-to-your = Eine Ansicht, die du den eigenen hinzufügen kannst
-    .w-edited = bearbeitet
 
 d-peb7lz2j-to = An
 
@@ -394,6 +405,7 @@ d-6372fg6z = Weiterleiten
     .doc = Stellt eine Nachricht ein, die auf einem anderen Dienst geschrieben wurde, so wie sie dort geschrieben wurde.
     .did = hat eine Nachricht weitergeleitet
     .w-say-who-wrote-the-message = Sag, wer die Nachricht geschrieben hat
+    .w-the-person-a-relayed-message-is = Die Person, mit der eine weitergeleitete Nachricht verknüpft ist, ist nicht in diesem Arbeitsbereich
 
 d-jozxp5qy = Kanal löschen
     .doc = Löscht einen Kanal und was darin gesagt wurde, aus der Seitenleiste oder der Kategorie, in der er ist.
@@ -882,3 +894,92 @@ d-ldhzcfxm-outside_id = Fremde Id
 d-6372fg6z-service = Dienst
 
 d-6372fg6z-outside_emoji = Fremdes Emoji
+
+d-z5btqqxi = Entwurfszeile
+    .w-draft = Entwurf: { $line }
+
+d-s6tsrsha = Modellauswahl
+    .w-model = Modell
+    .w-agents-answer-with = Agenten antworten mit
+    .w-answers-so-far = Bisherige Antworten: ${ $cost }
+    .w-undo-the-choice = Auswahl rückgängig machen
+
+d-dznrvwyx = Bearbeitungsverlauf
+    .w-edited = Bearbeitet
+
+d-7spkrvju = Meldungen
+    .doc = Die Meldungen über eine Person statt über eine ihrer Nachrichten, für die Moderierenden des Arbeitsbereichs.
+
+d-ew25p5fb = Mitglied
+    .doc = Die Person hier, die jenes Konto mit sich verknüpft hat, falls jemand es tat: die Nachricht trägt ihr Gesicht und ihre Farbe neben dem Namen des Kontos, damit der Arbeitsbereich sieht, wer es ist.
+
+d-3ngvkwox-filter-member = Mitglied
+
+d-t2kepujk = Überlegung
+    .doc = Was das Modell des Agenten beim Schreiben dieser Antwort überlegt hat, so wie sein Anbieter es zeigt: neben der Antwort geschrieben, während sie entsteht, und über ihr eingeklappt. Leer bei einer Nachricht, die eine Person schrieb, oder bei einem Modell, das keine Überlegung zeigt.
+
+d-maczz6ef = Aufgehoben
+    .doc = Warum eine moderierende Person diese Entscheidung aufgehoben hat, was die Meldung wieder öffnet: leer, solange die Entscheidung steht. Wer entschied, wer aufhob und wann, steht im Verlauf der Meldung.
+
+d-6372fg6z-member = Mitglied
+
+d-yjc4fmrk-reasoning = Überlegung
+
+d-ryvwj3mk = Fortsetzen
+    .doc = Bittet den Agenten, der `m` schrieb, dort weiterzumachen, wo seine Antwort aufhörte: eine Antwort darauf von der Person, die den Agenten nennt und die sein nächster Zug mit der Antwort davor liest. Eine Antwort, der der Platz ausging, die angehalten wurde oder abbrach, wird so beendet, nicht von vorn geschrieben.
+    .did = hat eine Antwort fortsetzen lassen
+    .w-only-an-agent-s-answer-continues = Nur die Antwort eines Agenten lässt sich fortsetzen
+    .w-continue-your-answer-where-it-stopped = Setze deine Antwort dort fort, wo sie aufhörte, ohne sie zu wiederholen oder etwas erneut zu tun.
+
+d-ryvwj3mk-to = An
+
+d-ryvwj3mk-m = Nachricht
+
+d-eltshl3a = Fortsetzen
+
+d-c4qrg6s6 = Text kopieren
+    .doc = Kopiert, was eine Nachricht sagt, als einfache Worte in die Zwischenablage.
+
+d-cfajw6ne = Person melden
+    .doc = Meldet eine Person den Moderierenden des Arbeitsbereichs, für ihr Verhalten hier statt für eine Nachricht: was die meldende Person sagt, ist alles daran, und die Moderierenden entscheiden sie wie jede andere Meldung.
+    .did = hat eine Person gemeldet
+    .w-you-can-t-report-yourself = Du kannst dich nicht selbst melden
+    .w-say-what-happened = Sag, was passiert ist
+
+d-cfajw6ne-who = Wer
+
+d-cfajw6ne-reason = Grund
+
+d-zkys4zdn = Person melden
+
+d-trsgwzny = Entscheidung aufheben
+    .doc = Hebt auf, was über eine Meldung entschieden wurde, mit dem Grund: die Meldung ist wieder offen, damit eine moderierende Person neu entscheidet, und die aufgehobene Entscheidung bleibt in ihrem Verlauf.
+    .w-only-the-workspace-s-moderators-overturn = Nur die Moderierenden des Arbeitsbereichs heben eine Entscheidung auf
+    .w-only-a-decided-report-can-be = Nur eine entschiedene Meldung lässt sich aufheben
+    .w-say-why-the-decision-is-overturned = Sag, warum die Entscheidung aufgehoben wird
+
+d-trsgwzny-why = Warum
+
+d-i2nfhat3 = Entscheidung aufheben
+
+d-ejjotbyg = Anrufstatus
+    .w-speaking = Spricht
+    .w-deafened = Hört nichts
+    .w-muted = Stummgeschaltet
+    .w-camera-on = Kamera an
+    .w-sharing-their-screen = Teilt den Bildschirm
+
+d-tvcqqdxd = Meldungen
+    .w-reports = Meldungen
+    .w-only-moderators-read-reports = Nur Moderierende lesen Meldungen
+
+d-yg35odmx = Kanalmeldungen
+
+d-zmfzcl37 = Meldungszeile
+    .w-in = { $name } in { $place }
+    .w-reported = Gemeldet: { $reason }
+    .w-overturned = Aufgehoben: { $overturned }
+    .w-decided = Entschieden: { $decision }
+
+d-vghhlimb = Überlegung
+    .w-reasoning = Überlegung

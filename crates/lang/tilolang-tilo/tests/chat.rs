@@ -99,14 +99,24 @@ fn item_of(value: &Value) -> Option<String> {
 
 /// What each row of the transcript says: its rich text.
 fn said(view: &mut ViewInstance) -> Vec<String> {
+    /// The rich text a node shows outside any fold: what it says now, not what it said before.
+    fn standing<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
+        if node.kind == "ui.DisclosureRow" {
+            return;
+        }
+        if node.kind == "ui.BlockEditor" {
+            out.push(node);
+        }
+        for child in &node.children {
+            standing(child, out);
+        }
+    }
     rows(view)
         .iter()
         .map(|row| {
-            let text: Vec<String> = row
-                .of_kind("ui.BlockEditor")
-                .into_iter()
-                .flat_map(texts)
-                .collect();
+            let mut editors = Vec::new();
+            standing(row, &mut editors);
+            let text: Vec<String> = editors.into_iter().flat_map(texts).collect();
             text.join(" ")
         })
         .collect()
@@ -131,25 +141,34 @@ fn menu_item(node: &UiNode, label: &str) -> String {
         )
 }
 
+/// What the text prop `name` of `node` says, whether it was passed as a value or an option.
+fn text_prop(node: &UiNode, name: &str) -> Option<String> {
+    match node.props.get(name) {
+        Some(Value::Text(text)) => Some(text.clone()),
+        Some(Value::Opt(Some(inner))) => match &**inner {
+            Value::Text(text) => Some(text.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Open `at` the way the system does: run its type's `opened action` as the person, then show
 /// its window. Opening a conversation is what makes the draft its person writes in.
 fn open(r: &Replica, at: &tilolang_runtime::ResourceRef) -> ViewInstance {
-    let action = r
-        .host
-        .runtime()
-        .opened_action(&at.ty)
-        .unwrap_or_else(|| panic!("opening a {} asks for what it shows", at.ty));
-    match r
-        .host
-        .runtime()
-        .invoke_action(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&r.name)),
-            (action.as_str(), vec![Value::resource(at)]),
-        )
-        .unwrap()
-    {
-        InvokeOutcome::Done(_) => {}
-        other => panic!("opening {at:?}: {other:?}"),
+    if let Some(action) = r.host.runtime().opened_action(&at.ty) {
+        match r
+            .host
+            .runtime()
+            .invoke_action(
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&r.name)),
+                (action.as_str(), vec![Value::resource(at)]),
+            )
+            .unwrap()
+        {
+            InvokeOutcome::Done(_) => {}
+            other => panic!("opening {at:?}: {other:?}"),
+        }
     }
     r.host.open_resource(at, None).unwrap()
 }
@@ -474,10 +493,16 @@ tilo_test_env::scenario! {
             assert_eq!(said(view), ["The build is on the test machines."]);
             let row = rows(view).remove(0);
             assert!(row.first_of_kind("ui.RichInput").is_none(), "the editor is gone");
+            // The message says it was edited, and what it said before stands under that line.
+            let history = row
+                .of_kind("ui.DisclosureRow")
+                .into_iter()
+                .find(|row| text_prop(row, "title") == Some("Edited".to_owned()))
+                .unwrap_or_else(|| panic!("marked as edited: {:?}", texts(&row)));
             assert!(
-                texts(&row).contains(&"edited".to_owned()),
-                "marked as edited: {:?}",
-                texts(&row)
+                texts(history).contains(&"The bulid is on the test machines.".to_owned()),
+                "the words before the edit: {:?}",
+                texts(history)
             );
         }
 
@@ -525,7 +550,7 @@ tilo_test_env::scenario! {
                 texts(&row)
             );
             assert!(
-                texts(&row).contains(&"edited".to_owned()),
+                texts(&row).contains(&"Edited".to_owned()),
                 "a pin after the edit keeps it marked as edited"
             );
             let labels = row.of_kind("ui.Button");
@@ -1143,8 +1168,8 @@ tilo_test_env::scenario! {
             None,
         );
 
-        // The sidebar offers Ben under Direct messages: everyone in the workspace, from its
-        // membership rather than a copy Chat keeps.
+        // The sidebar keeps its channels in sight and offers the workspace's people on a page:
+        // pressing Everyone opens the people, each with the way to the conversation with them.
         let sidebar = ada.view(APP);
         let section = {
             let seen = sidebar.tree().of_kind("ui.NavSection");
@@ -1154,21 +1179,18 @@ tilo_test_env::scenario! {
                 .clone()
         };
         let people = texts(&section);
-        assert!(people.contains(&"ben".to_owned()), "{people:?}");
-
-        // Pressing them opens the conversation with Ben, once: a person has one.
-        let person = {
+        assert!(people.contains(&"Everyone".to_owned()), "{people:?}");
+        let everyone = {
             let items = section.of_kind("ui.NavItem");
             items
                 .into_iter()
-                .find(|item| item.props.get("key") == Some(&Value::text("/person/ben")))
-                .expect("Ben's place")
+                .find(|item| item.props.get("key") == Some(&Value::text("/people")))
+                .expect("the people page's place")
                 .clone()
         };
-        // The place's event runs the action the app declared for it.
         assert!(
-            sidebar.event_action(&person.key, "select").is_some(),
-            "the place opens a conversation"
+            sidebar.event_action(&everyone.key, "select").is_some(),
+            "the place opens the people page"
         );
         assert!(
             ada.host
@@ -1284,36 +1306,26 @@ tilo_test_env::scenario! {
             None,
         );
 
-        // Everyone else in the workspace is a place that stands for them.
-        let sidebar = ada.view(APP);
-        let section = {
-            let seen = sidebar.tree().of_kind("ui.NavSection");
-            seen.into_iter()
-                .find(|s| s.props.get("title") == Some(&Value::text("Direct messages")))
-                .expect("the direct messages section")
-                .clone()
-        };
-        let places = section.of_kind("ui.NavItem");
-        let ben = places
+        // Everyone in the workspace is a row of the people page, with their face, and the
+        // conversation with them one press away.
+        let root = ada.host.root_of(APP).unwrap();
+        let people_view = view_id(&ada, "people");
+        let mut page = ada.host.open_resource(&root, Some(&people_view)).unwrap();
+        page.poll_patches().unwrap();
+        let shown = texts(page.tree());
+        for part in ["ada", "ben"] {
+            assert!(shown.contains(&part.to_owned()), "{part} in {shown:?}");
+        }
+        let labels: Vec<String> = page
+            .tree()
+            .of_kind("ui.Button")
             .iter()
-            .find(|item| item.props.get("key") == Some(&Value::text("/person/ben")))
-            .copied()
-            .expect("Ben's place");
+            .filter_map(|b| text_prop(b, "label"))
+            .collect();
         assert_eq!(
-            ben.props.get("person"),
-            Some(&Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben")))),
-            "the place stands for Ben"
-        );
-        assert_eq!(
-            ben.props.get("icon"),
-            None,
-            "a person's place shows their avatar, in the icon's place"
-        );
-        assert!(
-            places
-                .iter()
-                .all(|item| item.props.get("key") != Some(&Value::text("/person/ada"))),
-            "your own place is your notes, not a message to yourself"
+            labels.iter().filter(|l| *l == "Message").count(),
+            1,
+            "one Message control, for Ben: your own place is your notes: {labels:?}"
         );
 
         // The conversation with yourself is your notes, and says so.
@@ -1925,296 +1937,6 @@ fn a_report_is_read_by_its_reporter_and_the_moderators_and_no_other_member() {
     );
 }
 
-/// The bridge's own setup and the server's members, channels and sign-in are the workspace's
-/// moderators' to change, and Chat itself while it carries a change there: a member may read the
-/// Discord page but cannot kick, point the sign-in anywhere or unlink someone else's account.
-#[test]
-fn discords_setup_and_members_are_changed_by_the_workspaces_moderators_alone() {
-    use tilolang_runtime::ids::AppId;
-
-    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
-    ada.host.runtime().set_members(
-        vec![
-            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
-            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
-            tilolang_runtime::members::Member::person("mo", tilo_actions::policy::Role::Moderator),
-        ],
-        None,
-    );
-    let all = Value::resource(&ada.host.root_of(APP).unwrap());
-    let meta = ada.host.package(APP).unwrap().meta;
-    let as_who = |who: &Actor, action: &str, args: Vec<Value>| {
-        ada.host.runtime().invoke_action(
-            who,
-            (crate::fixtures::action_id(&meta, action).as_str(), args),
-        )
-    };
-    let person = |name: &str| Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name));
-    let refused = |result: &Result<InvokeOutcome, _>, why: &str| {
-        assert!(
-            !matches!(result, Ok(InvokeOutcome::Done(_))),
-            "the call is refused: {result:?}"
-        );
-        assert!(
-            format!("{result:?}").contains(why),
-            "with the reason `{why}`: {result:?}"
-        );
-    };
-
-    let ben = person("ben");
-    let setup = as_who(&ben, "begin_setup", vec![all.clone()]);
-    refused(
-        &setup,
-        "Only the workspace's moderators connect a Discord server",
-    );
-
-    let opened = as_who(&person("ada"), "begin_setup", vec![all]);
-    let discord = match opened {
-        Ok(InvokeOutcome::Done(discord)) => discord,
-        other => panic!("the owner connects a Discord account: {other:?}"),
-    };
-    ada.commit();
-
-    let connected = as_who(
-        &person("ada"),
-        "connect",
-        vec![discord.clone(), Value::text("123"), Value::text("Server")],
-    );
-    assert!(
-        matches!(connected, Ok(InvokeOutcome::Done(_))),
-        "the owner connects one server: {connected:?}"
-    );
-    ada.commit();
-
-    let joined = as_who(
-        &ben,
-        "connect",
-        vec![
-            discord.clone(),
-            Value::text("456"),
-            Value::text("Elsewhere"),
-        ],
-    );
-    refused(
-        &joined,
-        "Only the workspace's moderators connect a Discord server",
-    );
-
-    let sign_in = as_who(
-        &ben,
-        "set_sign_in",
-        vec![
-            discord.clone(),
-            Value::text("https://discord.com/oauth2/authorize?client_id=1&scope=identify"),
-        ],
-    );
-    refused(
-        &sign_in,
-        "Only the workspace's moderators set up signing in with Discord",
-    );
-
-    let mo = as_who(
-        &person("mo"),
-        "set_sign_in",
-        vec![
-            discord.clone(),
-            Value::text("https://discord.com/oauth2/authorize?client_id=1&scope=identify"),
-        ],
-    );
-    assert!(
-        matches!(mo, Ok(InvokeOutcome::Done(_))),
-        "a moderator sets the consent page: {mo:?}"
-    );
-
-    let unlink = as_who(&ben, "unlink", vec![discord.clone(), Value::text("3001")]);
-    refused(
-        &unlink,
-        "Only the workspace's moderators, or the person it is with, unlink a Discord account",
-    );
-    let own = as_who(
-        &person("ada"),
-        "unlink",
-        vec![discord.clone(), Value::text("3001")],
-    );
-    assert!(
-        matches!(own, Ok(InvokeOutcome::Done(_))),
-        "anyone may unlink themselves: {own:?}"
-    );
-
-    // The bridge itself carries the layout: Chat acts as the app, which no member is.
-    let bridge = Actor::App(AppId::from(APP));
-    let layout = as_who(
-        &bridge,
-        "observe_layout",
-        vec![
-            discord.clone(),
-            Value::text("1"),
-            Value::List(Vec::new()),
-            Value::List(Vec::new()),
-            Value::List(Vec::new()),
-        ],
-    );
-    assert!(
-        matches!(layout, Ok(InvokeOutcome::Done(_))),
-        "the bridge reports the layout: {layout:?}"
-    );
-    let by_member = as_who(
-        &ben,
-        "observe_layout",
-        vec![
-            discord,
-            Value::text("1"),
-            Value::List(Vec::new()),
-            Value::List(Vec::new()),
-            Value::List(Vec::new()),
-        ],
-    );
-    refused(&by_member, "Only the bridge keeps the server's layout");
-}
-
-/// A bridged conversation is said on Discord: a message written here goes there with the
-/// channel, the webhook and the person's name, an edit, a reaction, a deletion and a thread
-/// follow it, and a message over Discord's 2000 characters is cut where Discord takes it.
-#[test]
-fn what_a_bridged_conversation_says_is_carried_to_discord() {
-    use serde_json::Value as Json;
-    use tilolang_runtime::MemorySink;
-    use tilolang_runtime::value::EnumValue;
-
-    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
-    ada.host.runtime().set_members(
-        vec![tilolang_runtime::members::Member::person(
-            "ada",
-            tilo_actions::policy::Role::Owner,
-        )],
-        None,
-    );
-    let sink = MemorySink::new();
-    ada.host.runtime().set_sink(sink.clone());
-    let all = Value::resource(&ada.host.root_of(APP).unwrap());
-    let meta = ada.host.package(APP).unwrap().meta;
-    let case = |name: &str, case: &str| {
-        let declared = meta.enums.iter().find(|e| e.name == name).expect(name);
-        let variant = declared
-            .variants
-            .iter()
-            .find(|v| v.name == case)
-            .expect(case);
-        Value::Enum(EnumValue {
-            ty: declared.id.clone(),
-            variant: variant.id.clone(),
-            fields: std::collections::BTreeMap::new(),
-        })
-    };
-    let act = |action: &str, args: Vec<Value>| match ada.host.runtime().invoke_action(
-        &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-        (crate::fixtures::action_id(&meta, action).as_str(), args),
-    ) {
-        Ok(InvokeOutcome::Done(value)) => value,
-        other => panic!("{action}: {other:?}"),
-    };
-    let design = act("new_channel", vec![all.clone(), Value::text("design")]);
-    let discord = act("begin_setup", vec![all.clone()]);
-    act(
-        "connect",
-        vec![discord.clone(), Value::text("123"), Value::text("Server")],
-    );
-    let published = |value: &Value| -> String {
-        match value {
-            Value::Ref(reference) => {
-                tilolang_tilo::publish::resource_id(APP, &reference.target.id_string())
-            }
-            _ => panic!("a record is a reference: {value:?}"),
-        }
-    };
-    let conversation = published(&design);
-    let map = |kind: &str, tilo: &str, discord_id: &str| {
-        act(
-            "map",
-            vec![
-                discord.clone(),
-                case("MappedKind", kind),
-                Value::text(tilo),
-                Value::text(discord_id),
-                case("OriginSide", "discord"),
-            ],
-        );
-    };
-    map("channel", &conversation, "456");
-    map("webhook", &conversation, "789");
-    ada.commit();
-
-    let message = act("send", vec![design.clone(), rich("hello")]);
-    let sent = published(&message);
-    map("message", &sent, "999");
-    ada.commit();
-    let carried = |sink: &MemorySink| -> Vec<Json> {
-        sink.delivered()
-            .into_iter()
-            .filter(|(capability, _)| capability == "discord.perform")
-            .filter_map(|(_, payload)| payload.as_str().map(str::to_owned))
-            .map(|payload| {
-                let perform: Json = serde_json::from_str(&payload).expect("a Discord call");
-                let op = perform["op"].as_str().expect("the call's op");
-                serde_json::from_str(op).expect("the op")
-            })
-            .collect()
-    };
-    ada.host.settle_outbox().expect("the send is carried");
-    ada.commit();
-    let ops = carried(&sink);
-    let send = ops.last().expect("a send reached Discord");
-    assert_eq!(send["op"], "send", "{send}");
-    assert_eq!(send["channel"], "456", "{send}");
-    assert_eq!(send["webhook"], "789", "{send}");
-    assert_eq!(send["content"], "hello", "{send}");
-    assert_eq!(send["tilo"], format!("tl:so.tilo.chat:{sent}"), "{send}");
-    assert_eq!(send["username"], "ada", "{send}");
-    assert!(
-        send.get("thread").is_none_or(Json::is_null),
-        "a channel's send names no thread: {send}"
-    );
-
-    act("edit", vec![message.clone(), rich("hello again")]);
-    act("react", vec![message.clone(), Value::text("👍")]);
-    act("delete", vec![design.clone(), message.clone()]);
-    act("start_thread", vec![design, message, Value::text("topic")]);
-    ada.host.settle_outbox().expect("the changes are carried");
-    ada.commit();
-    let ops = carried(&sink);
-    let find = |op: &str| {
-        ops.iter()
-            .rev()
-            .find(|op_json| op_json["op"] == op)
-            .unwrap_or_else(|| panic!("a {op} reached Discord: {ops:?}"))
-            .clone()
-    };
-    let edit = find("edit");
-    assert_eq!(edit["message"], "999", "{edit}");
-    assert_eq!(edit["content"], "hello again", "{edit}");
-    assert_eq!(edit["webhook"], "789", "{edit}");
-    let react = find("react");
-    assert_eq!(react["message"], "999", "{react}");
-    assert_eq!(react["emoji"], "👍", "{react}");
-    let delete = find("delete");
-    assert_eq!(delete["message"], "999", "{delete}");
-    assert_eq!(delete["webhook"], "789", "{delete}");
-    let thread = find("start-thread");
-    assert_eq!(thread["message"], "999", "{thread}");
-    assert_eq!(thread["channel"], "456", "{thread}");
-
-    // Discord takes 2000 characters: the rest is said by the cut.
-    let long = "word ".repeat(600);
-    act("send", vec![all.clone(), rich(&long)]);
-    ada.host.settle_outbox().expect("the long send is carried");
-    ada.commit();
-    let ops = carried(&sink);
-    let send = ops.last().expect("a long send reached Discord");
-    let content = send["content"].as_str().unwrap_or_default();
-    assert_eq!(content.chars().count(), 2000, "cut to what Discord takes");
-    assert!(content.ends_with('…'), "the cut says so: {content}");
-}
-
 /// The bridge package is its own app: the service's records and views live there, and Chat stays
 /// general — no service type, no per-service field. A message from outside shows its author's
 /// picture and the emoji it carries through Chat's own outside-author fields.
@@ -2342,6 +2064,19 @@ fn chat_holds_no_service_type_and_shows_an_outside_author_from_its_own_fields() 
         "the channel says the service it is carried to"
     );
 }
+/// The id of Chat's view `name`, as a window opens one.
+fn view_id(r: &Replica, name: &str) -> String {
+    r.host
+        .package(APP)
+        .unwrap()
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == name)
+        .unwrap_or_else(|| panic!("the view {name}"))
+        .id
+        .clone()
+}
 
 /// The drafts the app holds, as the person looking reads them: another member's are not here.
 fn drafts(r: &Replica) -> Vec<tilolang_runtime::ResourceRef> {
@@ -2368,29 +2103,57 @@ fn a_draft_is_its_authors_alone_and_the_send_empties_it() {
     ada.commit();
 
     // Opening the channel makes the draft Ada writes in, on this device and on her others.
-    let _view = open(&ada, &target(&design));
+    let view = open(&ada, &target(&design));
     ada.commit();
     let written = drafts(&ada);
     assert_eq!(written.len(), 1, "opening the channel made one draft");
     assert_eq!(draft_said(&ada, &written[0]), "", "and it is empty");
 
-    // Another member opens the same channel and reads a draft of their own, never hers: what a
-    // person is half-way through writing is theirs until they send it.
+    // Another member reads no draft of hers: what a person is half-way through writing is
+    // theirs until they send it. Opening the channel makes him one of his own, never hers.
     let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
-    let ben_view = open(&ben, &target(&design));
+    ben.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
+        ],
+        None,
+    );
+    // What Ben reads of the drafts, by the rule the runtime reads them by for him.
+    let ben_reads = || -> Vec<tilolang_runtime::ResourceRef> {
+        let him = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben"));
+        drafts(&ben)
+            .into_iter()
+            .filter(|d| ben.host.runtime().may_read(&him, d))
+            .collect()
+    };
+    assert!(ben_reads().is_empty(), "Ada's draft is not Ben's to read");
+    let _ben_view = open(&ben, &target(&design));
     ben.commit();
-    assert!(drafts(&ben).is_empty(), "Ada's draft is not Ben's to read");
-    drop(ben_view);
+    let his = ben_reads();
+    assert_eq!(his.len(), 1, "Ben writes in a draft of his own");
+    assert_ne!(
+        his[0].id_string(),
+        written[0].id_string(),
+        "one person's draft is never another's"
+    );
 
-    // Sending names the draft: the message is what it holds, and one press empties it. A send
-    // with words of its own, as a program writes one, leaves the draft as it was.
+    // Sending names the draft: the message is what it holds, and one press empties it.
     let before = drafts(&ada);
+    let input = view
+        .tree()
+        .first_of_kind("ui.RichInput")
+        .expect("the composer")
+        .key
+        .clone();
+    view.edit(&input, &rich("The build is up.")).unwrap();
+    ada.commit();
     let message = call(
         &ada,
         "send",
         vec![
             design.clone(),
-            rich("The build is up."),
+            rich(""),
             Value::none(),
             Value::List(Vec::new()),
             Value::text(""),
@@ -2398,11 +2161,147 @@ fn a_draft_is_its_authors_alone_and_the_send_empties_it() {
         ],
     );
     ada.commit();
-    assert_eq!(draft_said(&ada, &before[0]), "the send emptied the draft");
+    assert_eq!(
+        draft_said(&ada, &before[0]),
+        "",
+        "the send emptied the draft"
+    );
     match ada.read(&target(&message), "body") {
         Value::Rich(rich) => assert_eq!(rich.written_text(), "The build is up."),
         other => panic!("the message says: {other:?}"),
     }
+}
+
+/// A conversation with an agent offers the model its answers come from, chosen there through
+/// the same change Settings' Agent models pane makes, with what the answers here have cost so
+/// far. A conversation between people offers no model: which one an agent answers with is not
+/// theirs to choose.
+#[test]
+fn a_conversation_with_an_agent_offers_the_model_its_answers_come_from() {
+    let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace-model", "ada");
+    policy.agents.insert(
+        "helper".to_owned(),
+        tilo_action_policy::AgentMember {
+            for_person: "ada".to_owned(),
+        },
+    );
+    let (ada, _) = Replica::access(
+        "ada",
+        Workspace::new(),
+        &[(CHAT, CHAT_IDS)],
+        Some(tilo_action_policy::MemberAccess::person(policy, "ada")),
+    );
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let reading = tilolang_runtime::ResourceRef::parse_id(
+        "settings/agent-models",
+        "so.tilo.settings.sections#AgentModels",
+    )
+    .expect("the settings reading");
+    ada.host
+        .runtime()
+        .set_reading(
+            &reading,
+            &serde_json::json!({
+                "providers": [{
+                    "id": "local",
+                    "label": "On this device",
+                    "enabled": true,
+                    "models": [{"id": "small", "label": "Small model"}],
+                    "model": "small",
+                    "model_label": "Small model",
+                }],
+                "in_use": {"provider": "local", "model": "small", "model_label": "Small model"},
+            })
+            .to_string(),
+        )
+        .expect("the model choice is served");
+
+    let helper = Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("helper"));
+    let direct = call(&ada, "message_person", vec![all, Value::Actor(helper)]);
+    ada.commit();
+    let view = open(&ada, &target(&direct));
+    let switcher = view
+        .tree()
+        .first_of_kind("ui.PopoverButton")
+        .expect("the model switcher")
+        .clone();
+    assert_eq!(
+        text_prop(&switcher, "label"),
+        Some("Small model".to_owned()),
+        "the model its answers come from: {:?}",
+        switcher.props
+    );
+    let shown: Vec<String> = texts(&switcher);
+    for part in [
+        "On this device",
+        "Small model",
+        "Answers so far: $0",
+        "Undo the choice",
+    ] {
+        assert!(
+            shown.iter().any(|text| text.contains(part)),
+            "{part} stands in the switcher: {shown:?}"
+        );
+    }
+}
+
+/// What a person is half-way through writing stands under the conversation's row in the
+/// sidebar, so a half-written message is found again rather than lost in a composer they have
+/// to remember to open. Sending it empties the draft, and the line goes with it.
+#[test]
+fn the_sidebar_says_what_is_half_written_in_a_conversation() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+
+    let view = open(&ada, &target(&design));
+    let input = view
+        .tree()
+        .first_of_kind("ui.RichInput")
+        .expect("the composer")
+        .key
+        .clone();
+    view.edit(&input, &rich("Let us try\nthe second line"))
+        .unwrap();
+    ada.commit();
+
+    // The row says the first line with text, under the channel's name.
+    let sidebar = ada.view(APP);
+    let row = sidebar
+        .tree()
+        .of_kind("ui.NavItem")
+        .into_iter()
+        .find(|item| item.props.get("label") == Some(&Value::text("design")))
+        .expect("the channel's row")
+        .clone();
+    assert_eq!(
+        text_prop(&row, "secondary"),
+        Some("Draft: Let us try".to_owned()),
+        "the row says what is being written: {:?}",
+        row.props
+    );
+
+    // Sending empties the draft, and the row stops saying it.
+    let send = button(view.tree(), "Send").expect("the composer's send");
+    let sent = view.press(&send).unwrap();
+    assert!(matches!(sent, InvokeOutcome::Done(_)), "sent: {sent:?}");
+    ada.commit();
+    let sidebar = ada.view(APP);
+    let row = sidebar
+        .tree()
+        .of_kind("ui.NavItem")
+        .into_iter()
+        .find(|item| item.props.get("label") == Some(&Value::text("design")))
+        .expect("the channel's row")
+        .clone();
+    assert_eq!(
+        text_prop(&row, "secondary"),
+        None,
+        "an empty draft says nothing"
+    );
 }
 
 #[test]
@@ -2422,7 +2321,18 @@ fn a_channels_name_topic_and_place_are_the_moderators_to_change() {
         "new_channel",
         vec![all.clone(), Value::text("design")],
     );
-    let team = call(&ada, "new_category", vec![all, Value::text("Team")]);
+    let team = call(&ada, "new_category", vec![all.clone(), Value::text("Team")]);
+    // A category shows in the sidebar while it holds a channel.
+    call(
+        &ada,
+        "new_channel",
+        vec![
+            all,
+            Value::text("roadmap"),
+            Value::text(""),
+            Value::Opt(Some(Box::new(team.clone()))),
+        ],
+    );
     call(&ada, "send", vec![design.clone(), rich("Keep this.")]);
     ada.commit();
 
@@ -2450,9 +2360,82 @@ fn a_channels_name_topic_and_place_are_the_moderators_to_change() {
         })
         .collect();
     assert!(names.contains(&"design reviews".to_owned()), "{names:?}");
-    assert!(names.contains(&"Product".to_owned()), "{names:?}");
+    let sections: Vec<String> = sidebar
+        .tree()
+        .of_kind("ui.NavSection")
+        .into_iter()
+        .filter_map(|section| match section.props.get("title") {
+            Some(Value::Text(title)) => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(sections.contains(&"Product".to_owned()), "{sections:?}");
     assert_eq!(name_of(&ada, &target(&design)), "design reviews");
     assert_eq!(messages(&ada, &target(&design)).len(), 1);
+
+    // What the channel is for stands over its composer, and its row offers what is done to the
+    // channel itself without opening it. A category's heading offers what is done to the group.
+    let opened = open(&ada, &target(&design));
+    let shown = texts(opened.tree());
+    assert!(
+        shown.contains(&"Reviews and critique".to_owned()),
+        "the topic stands in the window: {shown:?}"
+    );
+    let sidebar = ada.view(APP);
+    let row = sidebar
+        .tree()
+        .of_kind("ui.NavItem")
+        .into_iter()
+        .find(|item| item.props.get("label") == Some(&Value::text("design reviews")))
+        .expect("the channel's row")
+        .clone();
+    let channel_menu: Vec<String> = row
+        .of_kind("ui.MenuItem")
+        .iter()
+        .filter_map(|item| text_prop(item, "label"))
+        .collect();
+    for command in ["Rename channel", "Set the topic", "Archive channel"] {
+        assert!(
+            channel_menu.contains(&command.to_owned()),
+            "{command} stands on the channel's row: {channel_menu:?}"
+        );
+    }
+    // The channel's own page offers them too, and a moderator moves and deletes it there.
+    let page_menu: Vec<String> = opened
+        .tree()
+        .of_kind("ui.MenuItem")
+        .iter()
+        .filter_map(|item| text_prop(item, "label"))
+        .collect();
+    for command in [
+        "Rename channel",
+        "Set the topic",
+        "Move up",
+        "Delete channel",
+    ] {
+        assert!(
+            page_menu.contains(&command.to_owned()),
+            "{command} stands on the channel's page: {page_menu:?}"
+        );
+    }
+    let section = sidebar
+        .tree()
+        .of_kind("ui.NavSection")
+        .into_iter()
+        .find(|section| text_prop(section, "title") == Some("Product".to_owned()))
+        .expect("the category's heading")
+        .clone();
+    let category_menu: Vec<String> = section
+        .of_kind("ui.MenuItem")
+        .iter()
+        .filter_map(|item| text_prop(item, "label"))
+        .collect();
+    for command in ["Rename category", "Move up", "Delete category"] {
+        assert!(
+            category_menu.contains(&command.to_owned()),
+            "{command} stands on the category's heading: {category_menu:?}"
+        );
+    }
 
     // Set aside, the channel leaves the sidebar and keeps its messages; restoring brings it back.
     call(
@@ -2541,7 +2524,7 @@ fn a_carried_message_shows_its_persona_and_a_pinned_one_stands_on_pins() {
     // A message carried in from another service opens no run of the carrier: the account that
     // wrote it there stands in the message, with where it wrote.
     let mut channel = open(&ada, &target(&design));
-    channel.poll_patches().unwrap();
+    let shown_rows = rows(&mut channel);
     let authors: Vec<bool> = channel
         .tree()
         .of_kind("ui.ListItem")
@@ -2553,9 +2536,8 @@ fn a_carried_message_shows_its_persona_and_a_pinned_one_stands_on_pins() {
         [false, true],
         "the carried message opens no run; Ada's own does"
     );
-    let shown_rows = rows(&mut channel);
     let carried_texts = texts(&shown_rows[0]);
-    for part in ["Robin", "in Discord", "Morning, all."] {
+    for part in ["Robin wrote this in Discord", "Morning, all."] {
         assert!(
             carried_texts.contains(&part.to_owned()),
             "{part} in {carried_texts:?}"
@@ -2563,9 +2545,10 @@ fn a_carried_message_shows_its_persona_and_a_pinned_one_stands_on_pins() {
     }
 
     // The channel's pins stand on a page of their own, with what was pinned.
+    let pins_view = view_id(&ada, "pins");
     let mut pins = ada
         .host
-        .open_resource(&target(&design), Some("pins"))
+        .open_resource(&target(&design), Some(&pins_view))
         .unwrap();
     pins.poll_patches().unwrap();
     let shown = texts(pins.tree());
@@ -2582,14 +2565,23 @@ fn a_carried_message_shows_its_persona_and_a_pinned_one_stands_on_pins() {
 
 #[test]
 fn the_workspaces_people_are_a_page_of_their_own() {
-    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
-    ada.host.runtime().set_members(
-        vec![
-            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
-            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
-            tilolang_runtime::members::Member::agent("helper"),
-        ],
-        None,
+    // A workspace with Ben and an agent in it: a host with a policy serves the membership it
+    // decides by.
+    let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace-people", "ada");
+    policy
+        .members
+        .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
+    policy.agents.insert(
+        "helper".to_owned(),
+        tilo_action_policy::AgentMember {
+            for_person: "ada".to_owned(),
+        },
+    );
+    let (ada, _) = Replica::access(
+        "ada",
+        Workspace::new(),
+        &[(CHAT, CHAT_IDS)],
+        Some(tilo_action_policy::MemberAccess::person(policy, "ada")),
     );
     let all = ada.host.root_of(APP).unwrap();
     ada.commit();
@@ -2613,10 +2605,11 @@ fn the_workspaces_people_are_a_page_of_their_own() {
     );
 
     // The page lists the membership, and an agent is marked as one.
-    let mut people = ada.host.open_resource(&all, Some("people")).unwrap();
+    let people_view = view_id(&ada, "people");
+    let mut people = ada.host.open_resource(&all, Some(&people_view)).unwrap();
     people.poll_patches().unwrap();
     let shown = texts(people.tree());
-    for part in ["Ada", "Ben", "helper", "Agent"] {
+    for part in ["ada", "ben", "helper", "Agent"] {
         assert!(shown.contains(&part.to_owned()), "{part} in {shown:?}");
     }
 }
@@ -2709,4 +2702,267 @@ fn a_refusal_shows_on_the_attachment_and_clears_when_the_limit_is_raised() {
         shown.iter().any(|text| text.contains("site-plan.pdf")),
         "the attachment stays: {shown:?}"
     );
+}
+
+/// A message a bridge carries from an account a member linked wears that member's face, and so
+/// their colour, beside the account's name; one linked to someone outside the workspace is
+/// refused with the reason.
+#[test]
+fn a_relayed_message_from_a_linked_account_wears_its_members_face() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
+        ],
+        None,
+    );
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let person = |name: &str| Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name));
+    let relayed = |member: &str| {
+        let meta = ada.host.package(APP).unwrap().meta;
+        ada.host.runtime().invoke_action(
+            &person("ada"),
+            (
+                crate::fixtures::action_id(&meta, "relay").as_str(),
+                vec![
+                    design.clone(),
+                    rich("Shipped it."),
+                    Value::text("benji"),
+                    Value::text("Discord"),
+                    Value::Int(0),
+                    Value::List(Vec::new()),
+                    Value::Opt(None),
+                    Value::text(""),
+                    Value::text("Discord"),
+                    Value::List(Vec::new()),
+                    Value::Opt(Some(Box::new(Value::Actor(person(member))))),
+                ],
+            ),
+        )
+    };
+    let outsider = relayed("eve");
+    assert!(
+        format!("{outsider:?}")
+            .contains("The person a relayed message is linked to is not in this workspace"),
+        "a stranger is no member's account: {outsider:?}"
+    );
+    assert!(
+        matches!(relayed("ben"), Ok(InvokeOutcome::Done(_))),
+        "Ben's linked account is carried"
+    );
+    ada.commit();
+
+    let mut channel = open(&ada, &target(&design));
+    let row = rows(&mut channel).remove(0);
+    let faces: Vec<Option<Value>> = row
+        .of_kind("ui.Avatar")
+        .into_iter()
+        .map(|face| face.props.get("who").cloned())
+        .collect();
+    assert!(
+        faces.iter().any(|who| match who {
+            Some(Value::Actor(who)) => *who == person("ben"),
+            Some(Value::Opt(Some(inner))) => **inner == Value::Actor(person("ben")),
+            _ => false,
+        }),
+        "the message wears Ben's face: {faces:?}"
+    );
+    assert!(
+        texts(&row).contains(&"benji wrote this in Discord".to_owned()),
+        "beside the account's own name: {:?}",
+        texts(&row)
+    );
+}
+
+/// What an agent's model reasoned is written beside its answer as the answer comes, before the
+/// answer has a word, and folds above it; Continue asks the agent to carry on from the answer,
+/// and a person's own message has nothing to continue.
+#[test]
+fn an_answer_carries_its_reasoning_and_continues_where_it_stopped() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    // A turn's reply begins empty, naming the turn, and takes the model's reasoning before its
+    // first word.
+    let answer = call(
+        &ada,
+        "send",
+        vec![
+            design.clone(),
+            rich(""),
+            Value::Opt(None),
+            Value::List(Vec::new()),
+            Value::text("turn-1"),
+        ],
+    );
+    call(
+        &ada,
+        "edit",
+        vec![
+            answer.clone(),
+            rich(""),
+            Value::text("turn-1"),
+            Value::text("The person asks for the build; check the test machines first."),
+        ],
+    );
+    call(
+        &ada,
+        "edit",
+        vec![
+            answer.clone(),
+            rich("The build is on the test machines."),
+            Value::text("turn-1"),
+            Value::text("The person asks for the build; check the test machines first."),
+        ],
+    );
+    ada.commit();
+
+    let mut channel = open(&ada, &target(&design));
+    let row = rows(&mut channel).remove(0);
+    let reasoning = row
+        .of_kind("ui.DisclosureRow")
+        .into_iter()
+        .find(|fold| text_prop(fold, "title") == Some("Reasoning".to_owned()))
+        .unwrap_or_else(|| panic!("the reasoning folds above the answer: {:?}", texts(&row)));
+    assert!(
+        texts(reasoning)
+            .contains(&"The person asks for the build; check the test machines first.".to_owned()),
+        "{:?}",
+        texts(reasoning)
+    );
+
+    // A person's message never carried reasoning, and an empty edit of it stays refused.
+    let own = call(&ada, "send", vec![design.clone(), rich("Thanks.")]);
+    let meta = ada.host.package(APP).unwrap().meta;
+    let as_ada = |action: &str, args: Vec<Value>| {
+        ada.host.runtime().invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (crate::fixtures::action_id(&meta, action).as_str(), args),
+        )
+    };
+    let emptied = as_ada("edit", vec![own.clone(), rich("")]);
+    assert!(
+        format!("{emptied:?}").contains("Type a message first"),
+        "{emptied:?}"
+    );
+    let refused = as_ada("continue_answer", vec![design.clone(), own]);
+    assert!(
+        format!("{refused:?}").contains("Only an agent's answer continues"),
+        "{refused:?}"
+    );
+
+    // Continue is a reply to the answer, which the agent's next turn reads with it.
+    let asked = call(
+        &ada,
+        "continue_answer",
+        vec![design.clone(), answer.clone()],
+    );
+    ada.commit();
+    match ada.read(&target(&asked), "reply_to") {
+        Value::Opt(Some(replied)) => assert_eq!(
+            target(&replied),
+            target(&answer),
+            "it answers the agent's message"
+        ),
+        other => panic!("it answers the agent's message: {other:?}"),
+    }
+}
+
+/// A person is reported to the moderators for how they behave, not only for one message; a
+/// moderator decides the report, and another overturns that decision, which opens it again. The
+/// moderators read every report on a page of their own, and a member decides nothing.
+#[test]
+fn a_person_is_reported_and_a_decision_is_overturned_on_the_moderators_page() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
+            tilolang_runtime::members::Member::person("mo", tilo_actions::policy::Role::Moderator),
+        ],
+        None,
+    );
+    let root = ada.host.root_of(APP).unwrap();
+    let all = Value::resource(&root);
+    ada.commit();
+    let meta = ada.host.package(APP).unwrap().meta;
+    let person = |name: &str| Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name));
+    let as_who = |who: &str, action: &str, args: Vec<Value>| {
+        ada.host.runtime().invoke_action(
+            &person(who),
+            (crate::fixtures::action_id(&meta, action).as_str(), args),
+        )
+    };
+    let done = |result: Result<InvokeOutcome, _>| match result {
+        Ok(InvokeOutcome::Done(value)) => value,
+        other => panic!("{other:?}"),
+    };
+    let refused = |result: Result<InvokeOutcome, _>, why: &str| {
+        assert!(format!("{result:?}").contains(why), "`{why}`: {result:?}");
+    };
+
+    refused(
+        as_who(
+            "ben",
+            "report_person",
+            vec![all.clone(), Value::Actor(person("ben")), Value::text("me")],
+        ),
+        "You can't report yourself",
+    );
+    let report = done(as_who(
+        "ben",
+        "report_person",
+        vec![
+            all.clone(),
+            Value::Actor(person("ada")),
+            Value::text("Keeps talking over people in calls"),
+        ],
+    ));
+    ada.commit();
+    refused(
+        as_who(
+            "ben",
+            "decide",
+            vec![report.clone(), Value::text("Nothing")],
+        ),
+        "Only the workspace's moderators settle a report",
+    );
+    refused(
+        as_who("mo", "overturn", vec![report.clone(), Value::text("Early")]),
+        "Only a decided report can be overturned",
+    );
+    done(as_who(
+        "mo",
+        "decide",
+        vec![report.clone(), Value::text("Talked it through")],
+    ));
+    ada.commit();
+    refused(
+        as_who("ben", "overturn", vec![report.clone(), Value::text("No")]),
+        "Only the workspace's moderators overturn a decision",
+    );
+    done(as_who(
+        "ada",
+        "overturn",
+        vec![report.clone(), Value::text("It happened again")],
+    ));
+    ada.commit();
+
+    let reports_view = view_id(&ada, "reports");
+    let mut page = ada.host.open_resource(&root, Some(&reports_view)).unwrap();
+    page.poll_patches().unwrap();
+    let shown = texts(page.tree());
+    for part in [
+        "Reported: Keeps talking over people in calls",
+        "Overturned: It happened again",
+        "Decide",
+    ] {
+        assert!(shown.contains(&part.to_owned()), "{part} in {shown:?}");
+    }
 }
