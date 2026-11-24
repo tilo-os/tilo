@@ -85,7 +85,11 @@ mod cases {
         fn window(&self) -> ViewInstance {
             let mut view = self
                 .rt
-                .open_view(&me(), &self.app.view("deck"), vec![Value::resource(&self.deck)])
+                .open_view(
+                    &me(),
+                    &self.app.view("deck"),
+                    vec![Value::resource(&self.deck)],
+                )
                 .unwrap_or_else(|e| panic!("deck: {e}"));
             view.set_lazy_rows(false).unwrap();
             view
@@ -152,7 +156,10 @@ mod cases {
             second.id_string(),
             "a slide lands after the shown one"
         );
-        assert_eq!(s.rt.read(&third, "layout").unwrap(), s.case("Layout", "Layout.two_column"));
+        assert_eq!(
+            s.rt.read(&third, "layout").unwrap(),
+            s.case("Layout", "Layout.two_column")
+        );
 
         // The template a slide comes from carries its boxes, and the words go in the first two.
         let boxes = s.elements(&third);
@@ -177,7 +184,11 @@ mod cases {
             vec![Value::resource(&s.deck), Value::resource(&second)],
         ));
         assert_eq!(s.slides().len(), 3);
-        assert_eq!(s.slides()[1].id_string(), copy.id_string(), "a copy follows the slide");
+        assert_eq!(
+            s.slides()[1].id_string(),
+            copy.id_string(),
+            "a copy follows the slide"
+        );
         s.call(
             "move_slide",
             vec![
@@ -186,7 +197,11 @@ mod cases {
                 Value::Int(0),
             ],
         );
-        assert_eq!(s.slides()[0].id_string(), copy.id_string(), "a slide moves to the front");
+        assert_eq!(
+            s.slides()[0].id_string(),
+            copy.id_string(),
+            "a slide moves to the front"
+        );
         s.call(
             "delete_slide",
             vec![Value::resource(&s.deck), Value::resource(&copy)],
@@ -239,7 +254,10 @@ mod cases {
         );
         let later = returned_ref(s.call_with(
             "add_slide",
-            &[("d", Value::resource(&s.deck)), ("title", Value::text("Agenda"))],
+            &[
+                ("d", Value::resource(&s.deck)),
+                ("title", Value::text("Agenda")),
+            ],
         ));
         assert_eq!(s.slides().len(), 2, "the slide someone wrote on stays");
         assert_eq!(s.slides()[1].id_string(), later.id_string());
@@ -300,7 +318,11 @@ mod cases {
                 Value::List(vec![Value::Int(4), Value::Int(200)]),
             ],
         );
-        assert_eq!(s.rt.read(&rect, "w").unwrap(), Value::Int(16), "a size floors at 16");
+        assert_eq!(
+            s.rt.read(&rect, "w").unwrap(),
+            Value::Int(16),
+            "a size floors at 16"
+        );
         assert_eq!(s.rt.read(&rect, "h").unwrap(), Value::Int(200));
 
         // The inspector's swatches write the element's own fields.
@@ -337,12 +359,20 @@ mod cases {
             vec![Value::resource(&slide), Value::resource(&text)],
         );
         let order = s.elements(&slide);
-        assert_eq!(order.last().unwrap().id_string(), text.id_string(), "the text came to the front");
+        assert_eq!(
+            order.last().unwrap().id_string(),
+            text.id_string(),
+            "the text came to the front"
+        );
         s.call(
             "send_to_back",
             vec![Value::resource(&slide), Value::resource(&text)],
         );
-        assert_eq!(s.elements(&slide)[0].id_string(), text.id_string(), "and back again");
+        assert_eq!(
+            s.elements(&slide)[0].id_string(),
+            text.id_string(),
+            "and back again"
+        );
     }
 
     #[test]
@@ -364,7 +394,11 @@ mod cases {
             "duplicate_element",
             vec![Value::resource(&slide), Value::resource(&rect)],
         ));
-        assert_eq!(s.rt.read(&copy, "x").unwrap(), Value::Int(116), "the copy stands off by 16");
+        assert_eq!(
+            s.rt.read(&copy, "x").unwrap(),
+            Value::Int(116),
+            "the copy stands off by 16"
+        );
         assert_eq!(s.rt.read(&copy, "y").unwrap(), Value::Int(116));
         assert_eq!(s.rt.read(&copy, "w").unwrap(), Value::Int(200));
         assert_eq!(s.rt.read(&copy, "fill").unwrap(), Value::text("accent"));
@@ -393,7 +427,11 @@ mod cases {
             "insert_element",
             vec![Value::resource(&slide), Value::text("not an element")],
         );
-        assert_eq!(s.elements(&slide).len(), before + 1, "a bad paste changes nothing");
+        assert_eq!(
+            s.elements(&slide).len(),
+            before + 1,
+            "a bad paste changes nothing"
+        );
     }
 
     /// The device's content store: a file's hash is its bytes, kept as a file's name says.
@@ -716,7 +754,10 @@ mod cases {
         let s = Slides::new();
         let mut view = s.window();
         let insert = s.app.anchor("insert_tools", "insert_text");
-        assert!(matches!(view.press(&insert).unwrap(), InvokeOutcome::Done(_)));
+        assert!(matches!(
+            view.press(&insert).unwrap(),
+            InvokeOutcome::Done(_)
+        ));
         view.poll_patches().unwrap();
 
         let elements = s.elements(&s.slide(0));
@@ -731,6 +772,33 @@ mod cases {
             Some(Value::Bool(true)),
             "and it is open for typing"
         );
-    }
 
+        // The box it made is the editor the keyboard lands in: the editor the stage places on
+        // the slide, bound to that box's words, asks for the keyboard as it is built.
+        use tilolang_runtime::{BindTarget, Binding};
+        let mut editors = Vec::new();
+        of_kind(view.tree(), "ui.BlockEditor", &mut editors);
+        let editor = editors
+            .iter()
+            .find(|node| {
+                matches!(
+                    &node.binding,
+                    Some(Binding {
+                        target: BindTarget::Field { target, .. },
+                        ..
+                    }) if target.id_string() == made.id_string()
+                )
+            })
+            .unwrap_or_else(|| panic!("the made box's editor: {}", dump(view.tree())));
+        let focused = match editor.props.get("focus") {
+            Some(Value::Bool(on)) => *on,
+            Some(Value::Opt(Some(inner))) => matches!(**inner, Value::Bool(true)),
+            other => panic!("the made box's editor asks for the keyboard: {other:?}"),
+        };
+        assert!(
+            focused,
+            "the box the press made takes the keyboard: {:?}",
+            editor.props.get("focus")
+        );
+    }
 }
